@@ -73,6 +73,20 @@ test("bash timeout kills the whole process group", async () => {
   assert.ok(Date.now() - t0 < 5_000);
 });
 
+test("edit_file tolerates LF patterns against CRLF files", async () => {
+  const ctx = await tmpCtx();
+  await executeTool("write_file", JSON.stringify({ path: "crlf.txt", content: "line1\r\nline2\r\n" }), ctx);
+  const e = await executeTool(
+    "edit_file",
+    JSON.stringify({ path: "crlf.txt", old_text: "line1\nline2", new_text: "one\ntwo" }),
+    ctx,
+  );
+  assert.ok(e.ok, e.result);
+  assert.match(e.result, /CRLF→LF/);
+  const r = await executeTool("read_file", JSON.stringify({ path: "crlf.txt" }), ctx);
+  assert.match(r.result, /1\| one\n2\| two/);
+});
+
 test("unknown tool and invalid JSON args", async () => {
   const ctx = await tmpCtx();
   assert.equal((await executeTool("nope", "{}", ctx)).ok, false);

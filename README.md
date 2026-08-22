@@ -227,7 +227,14 @@ GET  /brew                           418 I'm a teapot (RFC 2324)
 Designed for a dedicated agent Linux user; workspaces are path-confined,
 subprocesses run in killable process groups with hard timeouts, and resource
 limits (RLIMIT_* / cgroups) have a natural insertion point in
-`src/agent/tools.ts:runShell`. The master survives agent crashes by
+`src/agent/tools.ts:runShell`.
+
+**LAN exposure**: the API has no auth by default (localhost-first tool). To
+expose it beyond localhost, set `TEAPOT_API_TOKEN=<secret>` — every `/api/*`
+route then requires `Authorization: Bearer <secret>` (WebSocket handshakes
+accept `?token=<secret>`). In the web UI, open
+`http://host:7788/#token=<secret>` once; the token is stored locally and
+attached automatically. The master survives agent crashes by
 construction: agent errors never escape their own loop, and global handlers
 keep the process alive.
 

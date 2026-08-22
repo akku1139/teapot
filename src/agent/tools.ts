@@ -175,13 +175,25 @@ export const TOOLS: ToolDef[] = [
     },
     async run(args, ctx) {
       const p = safeJoin(ctx.cwd, str(args.path));
-      const text = await readText(p);
+      let text = await readText(p);
       const oldText = str(args.old_text);
-      const count = text.split(oldText).length - 1;
+      const newText = str(args.new_text);
+      let count = text.split(oldText).length - 1;
+      let normalized = false;
+      // tolerate LF patterns against CRLF files (convert once, on success)
+      if (count === 0 && oldText.includes("\n") && text.includes("\r\n")) {
+        const lf = text.replace(/\r\n/g, "\n");
+        const lfCount = lf.split(oldText).length - 1;
+        if (lfCount === 1) {
+          text = lf;
+          count = 1;
+          normalized = true;
+        }
+      }
       if (count === 0) return { ok: false, result: "old_text not found in file" };
       if (count > 1) return { ok: false, result: `old_text matched ${count} times; must be unique` };
-      await fs.writeFile(p, text.replace(oldText, str(args.new_text)), "utf8");
-      return { ok: true, result: "edited" };
+      await fs.writeFile(p, text.replace(oldText, newText), "utf8");
+      return { ok: true, result: normalized ? "edited (file converted CRLF→LF)" : "edited" };
     },
   },
   {

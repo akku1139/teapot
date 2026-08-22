@@ -29,10 +29,25 @@ const fmtTs = (iso: string) => {
 };
 
 async function api(path: string, opts?: RequestInit) {
-  const res = await fetch(path, opts);
+  const token = localStorage.getItem("teapot.token");
+  const headers = new Headers(opts?.headers);
+  if (token && !headers.has("authorization")) headers.set("authorization", `Bearer ${token}`);
+  const res = await fetch(path, { ...opts, headers });
   if (!res.ok) throw new Error(`${path}: ${res.status}`);
   return res.json();
 }
+
+// TEAPOT_API_TOKEN flow: open the UI as http://host/#token=<secret> once —
+// it is stored and stripped from the URL, then attached to every request.
+const hashTok = location.hash.match(/[#&]token=([^&]+)/);
+if (hashTok) {
+  localStorage.setItem("teapot.token", decodeURIComponent(hashTok[1]));
+  history.replaceState(null, "", location.pathname + location.search);
+}
+const wsTokenQuery = () => {
+  const t = localStorage.getItem("teapot.token");
+  return t ? `?token=${encodeURIComponent(t)}` : "";
+};
 
 /* ---------- app ---------- */
 export default function App() {
@@ -127,7 +142,7 @@ export default function App() {
   onCleanup(() => ws?.close());
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    ws = new WebSocket(`${proto}${location.host}/api/ws`);
+    ws = new WebSocket(`${proto}${location.host}/api/ws${wsTokenQuery()}`);
     ws.onopen = () => setConnected(true);
     ws.onclose = () => {
       setConnected(false);
@@ -254,7 +269,7 @@ export default function App() {
         xterm = t;
         fitAddon = f;
         const proto = location.protocol === "https:" ? "wss://" : "ws://";
-        const w = new WebSocket(`${proto}${location.host}/api/agents/${agentId}/term`);
+        const w = new WebSocket(`${proto}${location.host}/api/agents/${agentId}/term${wsTokenQuery()}`);
         termWs = w;
         w.onmessage = (m) => {
           const msg = JSON.parse(m.data);

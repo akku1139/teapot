@@ -18,6 +18,21 @@ import type { Master } from "../master.ts";
 export function buildApp(master: Master): Hono {
   const app = new Hono();
 
+  // Optional bearer auth for LAN exposure — set TEAPOT_API_TOKEN to enable.
+  // WebSocket handshakes can't send headers, so they accept ?token= instead.
+  const apiToken = process.env.TEAPOT_API_TOKEN || "";
+  if (apiToken)
+    app.use("/api/*", async (c, next) => {
+      const h = c.req.header("authorization");
+      const provided = h?.startsWith("Bearer ") ? h.slice(7) : undefined;
+      const q = c.req.query("token");
+      if ((provided && provided === apiToken) || (q && q === apiToken)) return next();
+      return c.json({ error: "unauthorized" }, 401);
+    });
+
+  // per-agent terminal spawn guard
+  const termCounts = new Map<string, number>();
+
   // ---- realtime events over WebSocket (replaces SSE for the web UI) ----
   app.get(
     "/api/ws",
@@ -83,6 +98,12 @@ export function buildApp(master: Master): Hono {
               /* client gone */
             }
           };
+          const cur = termCounts.get(agentId) ?? 0;
+          if (cur >= 2) {
+            send({ kind: "exit", error: "too many terminals for this agent (max 2)" });
+            return;
+          }
+          termCounts.set(agentId, cur + 1);
           if (!agent) {
             send({ kind: "exit", error: `no such agent: ${agentId}` });
             return;
@@ -123,6 +144,9 @@ export function buildApp(master: Master): Hono {
         },
         onClose() {
           cleanup();
+          const n = (termCounts.get(agentId) ?? 1) - 1;
+          if (n <= 0) termCounts.delete(agentId);
+          else termCounts.set(agentId, n);
         },
       };
     }),

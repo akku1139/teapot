@@ -56,28 +56,23 @@ export interface AgentOptions {
   chatFn?: ChatFn;
 }
 
+/**
+ * SYSTEM_TEMPLATE must stay byte-identical across every request of a session:
+ * provider prefix caches key on it, so changing it (or injecting per-turn
+ * state) re-prices the whole context. That is why session state lives behind
+ * meta tools instead. The cache rationale itself stays HERE in a comment —
+ * the model does not need our cost-engineering notes every turn.
+ */
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
-This system prompt is intentionally STATIC — session state is never injected
-into it, so API prompt caches stay hot across turns. Fetch state with tools
-instead; they are cheap and always current.
-
-## Goal (harness-managed)
-- get_goal() → current objective + status. Call it at session start, after a
+Session state is not injected into prompts — fetch it with tools instead:
+- get_goal() → current objective + status. Call at session start, after a
   compaction notice, or whenever you lose the thread.
 - set_goal(text) → change the objective itself (not routine updates).
 - finish(goalComplete=true, summary) → goal fully achieved.
-
-## Your notes (memory.md, harness-managed)
-- read_memory() / set_memory(content) → durable notes injected nowhere else.
-  Keep them terse: decisions, gotchas, where you left off.
-
-## Skills (reusable playbooks)
-- list_skills() → what exists. load_skill(name) → full playbook.
-- save_skill(name, description, content) → distill a reusable procedure.
-
-## Project knowledge
-- AGENTS.md in the workspace root (optional): conventions & commands. Read it
+- read_memory() / set_memory(content) → your durable notes (memory.md).
+- list_skills() / load_skill(name) / save_skill(...) → reusable playbooks.
+- AGENTS.md in the workspace root (optional) holds project knowledge — read it
   with read_file at session start when present, keep it current.
 
 ## Rules
