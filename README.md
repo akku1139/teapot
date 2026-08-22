@@ -9,8 +9,10 @@ tab, and any number of long-running agents.
 - **TypeScript + Node.js**, minimal dependencies (`hono`, `openai`, `@hono/node-server`)
 - **Idle cost ≈ 0**: no polling loops; everything is event-driven or driven by
   one 15-second scheduler tick. Verified: master sits at ~0% CPU when idle.
-- **No TUI** — information-dense vanilla-JS web UI (no framework, no bundler)
-  with a hand-written, XSS-safe Markdown renderer (`src/web/md.js`)
+- **No TUI** — Discord-style chat UI built with **SolidJS + Vite**
+  (`frontend/`, built to `public/`): agents as channels, events flowing as chat
+  messages, tool calls as compact embeds. Markdown is rendered by a hand-written,
+  XSS-safe renderer (`frontend/md.js`)
 - **Human-readable persistence** — append-only JSONL event logs you can read
   with `cat` / `jq`; goal & memory as plain Markdown files in git
 

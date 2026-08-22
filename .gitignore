@@ -4,3 +4,4 @@ workspaces/
 .teapot/
 teapot.config.json
 *.log
+public/

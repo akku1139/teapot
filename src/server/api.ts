@@ -130,30 +130,37 @@ export function buildApp(master: Master): Hono {
     c.text("418 I'm a teapot — coffee not supported (see RFC 2324 §2.3.2)", 418),
   );
 
-  // ---- web ui (static, no bundler needed) ----
+  // ---- web ui (built by vite into ./public; no bundler needed to serve) ----
   const webRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
-    import.meta.url.includes("/dist/") ? "../web" : "../../src/web",
+    import.meta.url.includes("/dist/") ? "../../public" : "../../public",
   );
 
   const mime: Record<string, string> = {
     ".html": "text/html",
     ".js": "text/javascript",
     ".css": "text/css",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
   };
-  for (const file of ["index.html", "app.js", "style.css", "md.js"]) {
-    const url = file === "index.html" ? "/" : `/${file}`;
-    app.get(url, (c) => {
-      try {
-        const ext = path.extname(file);
-        return c.body(readFileSync(path.join(webRoot, file), "utf8"), 200, {
-          "content-type": mime[ext] ?? "text/plain",
-        });
-      } catch {
-        return c.text(`web UI missing (${file})`, 404);
-      }
-    });
-  }
+  app.get("/", (c) => {
+    try {
+      return c.html(readFileSync(path.join(webRoot, "index.html"), "utf8"));
+    } catch {
+      return c.text("web UI not built — run: pnpm build-web", 404);
+    }
+  });
+  app.get("/assets/*", (c) => {
+    const rel = c.req.path.replace("/assets/", "");
+    const file = path.resolve(webRoot, "assets", path.basename(rel)); // basename: no traversal
+    try {
+      return c.body(readFileSync(file), 200, {
+        "content-type": mime[path.extname(file)] ?? "application/octet-stream",
+      });
+    } catch {
+      return c.notFound();
+    }
+  });
 
   return app;
 }
