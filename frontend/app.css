@@ -80,6 +80,24 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes pulse { 50% { opacity: .55; } }
 
+/* websocket connection indicator */
+.conn {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--err); margin-left: 8px; vertical-align: middle;
+  box-shadow: 0 0 6px var(--err);
+}
+.conn.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+
+/* copy buttons */
+.copybtn {
+  background: none; border: 1px solid var(--bg-light); color: var(--dim);
+  border-radius: 4px; font-size: 11px; cursor: pointer; padding: 0 5px;
+  line-height: 16px; flex-shrink: 0;
+}
+.copybtn:hover { color: var(--fg); filter: brightness(1.3); }
+.embed summary { display: flex; align-items: center; gap: 6px; }
+.msgfoot { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--dim); font-size: 11px; }
+
 /* jump-to-present pill */
 .jump {
   position: absolute; bottom: 86px; left: 50%; transform: translateX(-50%);

@@ -9,18 +9,24 @@ importers:
   .:
     dependencies:
       '@hono/node-server':
-        specifier: ^1.14.0
-        version: 1.19.17(hono@4.13.3)
+        specifier: ^2.1.1
+        version: 2.1.1(hono@4.13.3)
       hono:
         specifier: ^4.7.0
         version: 4.13.3
       openai:
         specifier: ^5.0.0
-        version: 5.23.2
+        version: 5.23.2(ws@8.21.3)
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       solid-js:
         specifier: ^1.9.15
         version: 1.9.15
@@ -117,9 +123,9 @@ packages:
     resolution: {integrity: sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==}
     engines: {node: '>=6.9.0'}
 
-  '@hono/node-server@1.19.17':
-    resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
-    engines: {node: '>=18.14.1'}
+  '@hono/node-server@2.1.1':
+    resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
+    engines: {node: '>=20'}
     peerDependencies:
       hono: ^4
 
@@ -255,6 +261,9 @@ packages:
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   babel-plugin-jsx-dom-expressions@0.40.10:
     resolution: {integrity: sha512-lxve6Y02YiZTldB7efKpnbf1BH00XCFZNYYW235jSGsYaJNFtHrYlKV6/O+miHbjqpIr9FTe5+0no4hofAMbfA==}
@@ -584,6 +593,18 @@ packages:
       vite:
         optional: true
 
+  ws@8.21.3:
+    resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
@@ -700,7 +721,7 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@hono/node-server@1.19.17(hono@4.13.3)':
+  '@hono/node-server@2.1.1(hono@4.13.3)':
     dependencies:
       hono: 4.13.3
 
@@ -796,6 +817,10 @@ snapshots:
   '@types/node@24.13.3':
     dependencies:
       undici-types: 7.18.2
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 24.13.3
 
   babel-plugin-jsx-dom-expressions@0.40.10(@babel/core@7.29.7):
     dependencies:
@@ -925,7 +950,9 @@ snapshots:
 
   node-releases@2.0.53: {}
 
-  openai@5.23.2: {}
+  openai@5.23.2(ws@8.21.3):
+    optionalDependencies:
+      ws: 8.21.3
 
   parse5@7.3.0:
     dependencies:
@@ -1029,5 +1056,7 @@ snapshots:
   vitefu@1.1.3(vite@8.2.2(@types/node@24.13.3)):
     optionalDependencies:
       vite: 8.2.2(@types/node@24.13.3)
+
+  ws@8.21.3: {}
 
   yallist@3.1.1: {}

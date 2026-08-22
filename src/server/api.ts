@@ -2,7 +2,8 @@
  * REST + SSE API on Hono, plus static file serving for the web UI.
  */
 import { Hono } from "hono";
-import { serve } from "@hono/node-server";
+import { serve, upgradeWebSocket } from "@hono/node-server";
+import { WebSocketServer } from "ws";
 import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,44 @@ import type { Master } from "../master.ts";
 
 export function buildApp(master: Master): Hono {
   const app = new Hono();
+
+  // ---- realtime events over WebSocket (replaces SSE for the web UI) ----
+  app.get(
+    "/api/ws",
+    upgradeWebSocket(() => {
+      let onUpdate: ((ev: unknown) => void) | null = null;
+      let ka: ReturnType<typeof setInterval> | null = null;
+      return {
+        onOpen(_evt, ws) {
+          const send = (data: unknown) => {
+            try {
+              ws.send(JSON.stringify(data));
+            } catch {
+              /* client gone */
+            }
+          };
+          send({ kind: "hello", agents: [...master.agents.values()].map((a) => a.snapshot()) });
+          onUpdate = (ev) => send(ev);
+          bus.on("update", onUpdate);
+          // app-level liveness ping every 30s
+          ka = setInterval(() => send({ kind: "ping" }), 30_000);
+        },
+        onMessage(evt, ws) {
+          // clients may send {"kind":"ping"} — nothing else to do today
+          try {
+            const m = JSON.parse(String(evt.data));
+            if (m?.kind === "ping") ws.send(JSON.stringify({ kind: "pong" }));
+          } catch {
+            /* ignore junk */
+          }
+        },
+        onClose() {
+          if (ka) clearInterval(ka);
+          if (onUpdate) bus.off("update", onUpdate);
+        },
+      };
+    }),
+  );
 
   // ---- agents ----
   app.get("/api/agents", (c) => c.json({ agents: [...master.agents.values()].map((a) => a.snapshot()) }));
@@ -266,12 +305,21 @@ export function buildApp(master: Master): Hono {
     ".svg": "image/svg+xml",
     ".ico": "image/x-icon",
   };
-  app.get("/", (c) => {
+  const indexHtml = () => {
     try {
-      return c.html(readFileSync(path.join(webRoot, "index.html"), "utf8"));
+      return readFileSync(path.join(webRoot, "index.html"), "utf8");
     } catch {
-      return c.text("web UI not built — run: pnpm build-web", 404);
+      return null;
     }
+  };
+  app.get("/", (c) => {
+    const html = indexHtml();
+    return html ? c.html(html) : c.text("web UI not built — run: pnpm build-web", 404);
+  });
+  // SPA deep links: /session/<agentId> serves the app; the client routes it
+  app.get("/session/*", (c) => {
+    const html = indexHtml();
+    return html ? c.html(html) : c.text("web UI not built — run: pnpm build-web", 404);
   });
   app.get("/assets/*", (c) => {
     const rel = c.req.path.replace("/assets/", "");
@@ -289,7 +337,8 @@ export function buildApp(master: Master): Hono {
 }
 
 export function serveApp(app: Hono, port: number): void {
-  serve({ fetch: app.fetch, port }, (info) => {
+  const wss = new WebSocketServer({ noServer: true });
+  serve({ fetch: app.fetch, port, websocket: { server: wss } }, (info) => {
     console.log(`[teapot] master listening on http://localhost:${info.port}`);
   });
 }

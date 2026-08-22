@@ -1,4 +1,4 @@
-import { createSignal, onMount, For, Show, createMemo } from "solid-js";
+import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect } from "solid-js";
 import { renderMarkdown } from "./md";
 
 /* ---------- types ---------- */
@@ -82,22 +82,32 @@ export default function App() {
     }
   }
 
-  async function select(id: string) {
+  async function select(id: string, push = true) {
     setSelected(id);
     setLive(null);
+    localStorage.setItem("teapot.session", id);
+    navigate(id, push);
     await loadEvents(id);
     requestAnimationFrame(() => scrollBottom(true));
   }
 
-  onMount(() => {
-    loadCfg();
-    refreshAgents().then(() => agents()[0] && select(agents()[0].id));
-    refreshMetrics();
-    // push updates via SSE; coalesce bursts at 400ms (deltas bypass the
-    // coalescer so streaming text renders immediately)
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    new EventSource("/api/events").onmessage = (m) => {
+  /* ---------- realtime over WebSocket (auto-reconnect) ---------- */
+  const [connected, setConnected] = createSignal(false);
+  let ws: WebSocket | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  onCleanup(() => ws?.close());
+  function connectWs() {
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    ws = new WebSocket(`${proto}${location.host}/api/ws`);
+    ws.onopen = () => setConnected(true);
+    ws.onclose = () => {
+      setConnected(false);
+      setTimeout(connectWs, 1500); // reconnect with a fixed short backoff
+    };
+    ws.onerror = () => ws?.close();
+    ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
+      if (msg.kind === "ping" || msg.kind === "pong") return;
       if (msg.kind === "llm-delta") {
         if (msg.agentId === selected()) setLive({ text: msg.text ?? "", reasoning: msg.reasoning ?? "" });
         return;
@@ -118,6 +128,62 @@ export default function App() {
         }
       }, 400);
     };
+  }
+
+  /* ---------- /session/<id> routing ---------- */
+  const pathId = () => decodeURIComponent(location.pathname.split("/")[2] ?? "");
+  function navigate(id: string, push = true) {
+    const url = `/session/${encodeURIComponent(id)}`;
+    if (push) history.pushState(null, "", url);
+    else history.replaceState(null, "", url);
+  }
+  window.addEventListener("popstate", () => {
+    const id = pathId();
+    if (id && agents().some((a) => a.id === id) && id !== selected()) select(id, false);
+  });
+
+  /* ---------- small UX niceties ---------- */
+  createEffect(() => {
+    const a = sel();
+    document.title = a ? `${a.status === "running" ? "▶ " : a.status === "error" ? "⚠ " : ""}${a.id} · teapot` : "teapot";
+  });
+  window.addEventListener("keydown", (e) => {
+    const t = e.target as HTMLElement | null;
+    const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+    if (typing) {
+      if (e.key === "Escape") (t as HTMLElement).blur();
+      return;
+    }
+    if (e.key === "Escape") {
+      if (showNew()) setShowNew(false);
+      else if (showCfg()) setShowCfg(false);
+      else if (showRight()) setShowRight(false);
+      return;
+    }
+    if (showNew() || showCfg()) return;
+    if (e.key === "/") {
+      e.preventDefault();
+      document.querySelector<HTMLInputElement>(".composer input[type=text]")?.focus();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const list = agents();
+      if (list.length === 0) return;
+      e.preventDefault();
+      const idx = list.findIndex((a) => a.id === selected());
+      const next = e.key === "ArrowDown" ? Math.min(idx + 1, list.length - 1) : Math.max(idx - 1, 0);
+      if (next !== idx) select(list[next].id);
+    }
+  });
+
+  onMount(() => {
+    loadCfg();
+    refreshAgents().then(() => {
+      // deep link → last session → first agent
+      const want = pathId() || localStorage.getItem("teapot.session") || "";
+      const initial = agents().find((a) => a.id === want) ?? agents()[0];
+      if (initial) select(initial.id, false);
+    });
+    refreshMetrics();
+    connectWs();
     setInterval(refreshMetrics, 30_000);
   });
 
@@ -155,6 +221,7 @@ export default function App() {
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
         <h1>🫖 teapot
+          <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
           <span style="float:right;display:flex;gap:4px">
             <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
             <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
@@ -364,6 +431,9 @@ function SwitchContent(props: { e: Ev }) {
             </details>
           </Show>
           <div class="content" innerHTML={renderMarkdown(String(e.data.content ?? ""))} />
+          <Show when={e.data.final}>
+            <div class="msgfoot"><CopyBtn text={String(e.data.content ?? "")} /><span>copy summary</span></div>
+          </Show>
         </>
       );
     case "tool_call": {
@@ -380,7 +450,10 @@ function SwitchContent(props: { e: Ev }) {
       const out = String(e.data.result);
       return (
         <details class={"embed" + (e.data.ok ? "" : " fail")}>
-          <summary><span class="meta">{oneLine(out, 120)}</span></summary>
+          <summary>
+            <span class="meta">{oneLine(out, 120)}</span>
+            <CopyBtn text={out} />
+          </summary>
           <div class="mono">{truncate(out, 4000)}</div>
           <div class="meta">{e.data.durationMs}ms{e.data.ok ? "" : " · FAILED"}</div>
         </details>
@@ -410,6 +483,24 @@ function truncate(s: string, n: number): string {
 function oneLine(s: string, n: number): string {
   const line = s.replace(/\s+/g, " ").trim();
   return truncate(line, n);
+}
+
+/* ---------- copy-to-clipboard button ---------- */
+function CopyBtn(props: { text: string }) {
+  const [done, setDone] = createSignal(false);
+  return (
+    <button
+      class="copybtn"
+      title="copy to clipboard"
+      onclick={(e: MouseEvent) => {
+        e.stopPropagation(); // don't toggle the enclosing <details>
+        navigator.clipboard.writeText(props.text).then(() => {
+          setDone(true);
+          setTimeout(() => setDone(false), 900);
+        });
+      }}
+    >{done() ? "✓" : "⧉"}</button>
+  );
 }
 
 /* ---------- modal shell ---------- */
