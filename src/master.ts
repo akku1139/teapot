@@ -3,7 +3,8 @@
  * Agents are in-process async loops (I/O bound only); all CPU-heavy work is
  * delegated to subprocesses managed by the bash tool with hard timeouts.
  */
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { Agent } from "./agent/agent.ts";
@@ -255,8 +256,17 @@ export class Master {
     setInterval(() => void this.tick(), 15_000).unref();
   }
 
-  /** Create an agent; optionally persist it to the config file. */
-  async addAgent(ac: AgentConfig, persist = false): Promise<Agent> {
+  /**
+   * Create an agent; optionally persist it to the config file.
+   * Each incarnation gets its own session directory under
+   * <dataDir>/sessions/<agentId>-<uuid>/ (chat.jsonl, goal.md, memory.md).
+   * Restarts reuse the latest existing session; fresh creations never touch
+   * an older one's history.
+   */
+  async addAgent(
+    ac: AgentConfig,
+    opts: { persist?: boolean; fresh?: boolean } = {},
+  ): Promise<Agent> {
     if (this.agents.has(ac.id)) throw new Error(`agent id already exists: ${ac.id}`);
     // provider resolution: inline overrides > named provider > legacy llm block
     const provName = ac.provider ?? this.config.defaultProvider ?? "openrouter";
@@ -271,12 +281,13 @@ export class Master {
       timeoutMs: 120_000,
     };
     if (!llm.model) throw new Error(`agent ${ac.id}: no model configured (set model on the agent or on its provider)`);
-    const logFile = path.join(this.config.dataDir, `${ac.id}.jsonl`);
+    const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
+    await mkdirSync(sessionDir, { recursive: true });
     const agent = new Agent({
       id: ac.id,
       workspace: path.resolve(ac.workspace),
       llm,
-      logFile,
+      sessionDir,
       progressIntervalMs: this.config.progressIntervalMs,
       autoContinue: true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
@@ -286,11 +297,70 @@ export class Master {
     agent.log.onEvent = (e) => printAgentEvent(e);
     await agent.init();
     this.agents.set(ac.id, agent);
-    if (persist) {
+    if (opts.persist) {
       this.config.agents.push(ac);
       this.saveConfig();
     }
     return agent;
+  }
+
+  /** sessions root + helpers */
+  private sessionsRoot(): string {
+    return path.join(this.config.dataDir, "sessions");
+  }
+
+  private findLatestSessionDir(agentId: string): string | null {
+    let dirs: string[] = [];
+    try {
+      dirs = readdirSync(this.sessionsRoot())
+        .filter((d) => d === agentId || d.startsWith(`${agentId}-`))
+        .sort((a, b) => {
+          // newest chat.jsonl wins
+          const ma = this.sessionMtime(path.join(this.sessionsRoot(), a));
+          const mb = this.sessionMtime(path.join(this.sessionsRoot(), b));
+          return mb - ma;
+        });
+    } catch {
+      return null;
+    }
+    return dirs[0] ? path.join(this.sessionsRoot(), dirs[0]) : null;
+  }
+
+  private sessionMtime(dir: string): number {
+    try {
+      return statSync(path.join(dir, "chat.jsonl")).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  private resolveSessionDir(agentId: string, fresh: boolean): string {
+    const root = this.sessionsRoot();
+    mkdirSync(root, { recursive: true });
+
+    // one-time migration from the ≤0.5.0 flat layout (<dataDir>/<id>.jsonl)
+    if (!fresh) {
+      const legacy = path.join(this.config.dataDir, `${agentId}.jsonl`);
+      if (existsSync(legacy)) {
+        const target = path.join(root, agentId);
+        if (!existsSync(target)) {
+          mkdirSync(target, { recursive: true });
+          renameSync(legacy, path.join(target, "chat.jsonl"));
+          console.log(`[teapot] migrated session storage: ${agentId}.jsonl → sessions/${agentId}/chat.jsonl`);
+        }
+      }
+    }
+
+    if (!fresh) {
+      const existing = this.findLatestSessionDir(agentId);
+      if (existing) return existing; // restart → continue where we left off
+    }
+    // fresh incarnation: guaranteed-unique directory
+    let sid = "";
+    do {
+      sid = `${agentId}-${randomUUID().slice(0, 8)}`;
+    } while (existsSync(path.join(root, sid)));
+    return path.join(root, sid);
   }
 
   async removeAgent(id: string): Promise<void> {

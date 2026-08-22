@@ -35,7 +35,8 @@ export interface AgentOptions {
   id: string;
   workspace: string;
   llm: LlmConfig;
-  logFile: string;
+  /** per-session storage directory (chat.jsonl / goal.md / memory.md) */
+  sessionDir: string;
   /** ms of activity after which the harness asks for a progress report */
   progressIntervalMs?: number;
   /** continue automatically toward the goal without human input */
@@ -57,12 +58,17 @@ export interface AgentOptions {
 
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
-## Persistent context files (human-readable, git-tracked)
-- AGENTS.md    : project knowledge/conventions written for agents (read it first)
-- GOAL.md      : your current long-term goal and its status
-- MEMORY.md    : durable notes you write for yourself
+## Goal (managed by the harness)
+The current goal is injected into this prompt by the harness. Change it with
+set_goal(text) when the objective itself changes; call finish(goalComplete=true)
+only when the goal is fully achieved.
 
-Keep these files updated with edit_file/write_file. They survive restarts.
+## Persistent context (all optional — create only if useful)
+- AGENTS.md (workspace root): project knowledge/conventions. When present, the
+  harness injects it into this prompt; keep it current with edit_file/write_file.
+- memory.md: your durable notes, harness-managed — update them with
+  set_memory(content); they are injected into future prompts.
+- skills/: reusable playbooks via load_skill / save_skill.
 
 ## Rules
 - Work step by step with tools. Verify results (run tests/builds) before claiming progress.
@@ -113,7 +119,7 @@ export class Agent {
       provider: "",
       ...opts,
     };
-    this.log = new EventLog(opts.logFile, opts.id);
+    this.log = new EventLog(path.join(opts.sessionDir, "chat.jsonl"), opts.id);
     this.skillRoots = [
       { dir: path.join(opts.workspace, "skills"), source: "workspace" },
       ...(opts.globalSkillsDir ? [{ dir: opts.globalSkillsDir, source: "global" }] : []),
@@ -124,7 +130,8 @@ export class Agent {
       maxOutputBytes: 60_000,
       skillRoots: this.skillRoots,
     };
-    this.mainSession = `sess-${opts.id}-main`;
+    // the session id IS the directory name — one directory per incarnation
+    this.mainSession = path.basename(opts.sessionDir);
     this.currentSession = this.mainSession;
   }
 
@@ -187,14 +194,50 @@ export class Agent {
   async init(): Promise<void> {
     await this.log.load();
     await fs.mkdir(this.workspace, { recursive: true });
-    // seed persistent context files if missing
-    await this.seed("AGENTS.md", "# Project knowledge\n\n(Describe conventions, build commands, and gotchas here.)\n");
-    await this.seed("MEMORY.md", "# Memory\n");
-    const goalText = await this.readGoalFile();
-    if (goalText !== null) this.goal = this.parseGoalFile(goalText);
-    else await this.writeGoalFile();
+    // goal lives next to the session log (dataDir), NOT in the workspace —
+    // migrate a legacy workspace GOAL.md once, then never touch the workspace
+    await this.migrateGoalFromWorkspace();
+    const stored = await this.readGoalStore();
+    this.goal = stored ?? { text: "", status: "active", updatedAt: new Date().toISOString() };
     if (this.opts.restoreSession) await this.restoreFromLog();
     await this.refreshSkills();
+  }
+
+  /** harness-managed files inside the session directory */
+  private get goalFile(): string {
+    return path.join(this.opts.sessionDir, "goal.md");
+  }
+
+  private get memoryFile(): string {
+    return path.join(this.opts.sessionDir, "memory.md");
+  }
+
+  private async readGoalStoreRaw(): Promise<string | null> {
+    return fs.readFile(this.goalFile, "utf8").catch(() => null);
+  }
+
+  private async readGoalStore(): Promise<GoalState | null> {
+    const raw = await this.readGoalStoreRaw();
+    return raw === null ? null : this.parseGoalFile(raw);
+  }
+
+  /** One-time import of a pre-0.6.0 workspace GOAL.md; content is preserved. */
+  private async migrateGoalFromWorkspace(): Promise<void> {
+    const legacy = path.join(this.workspace, "GOAL.md");
+    let wsText: string;
+    try {
+      wsText = await fs.readFile(legacy, "utf8");
+    } catch {
+      return; // nothing to migrate
+    }
+    const existing = await this.readGoalStoreRaw();
+    if (existing === null) await fs.writeFile(this.goalFile, wsText, "utf8");
+    await fs.rm(legacy).catch(() => {});
+    await this.log.append("system_note", this.currentSession, this.currentBranch, {
+      event: "goal-migrated",
+      from: "GOAL.md",
+      to: this.goalFile,
+    });
   }
 
   /**
@@ -294,25 +337,19 @@ export class Agent {
     }
   }
 
-  private async seed(file: string, content: string): Promise<void> {
-    const p = path.join(this.workspace, file);
-    try {
-      await fs.access(p);
-    } catch {
-      await fs.writeFile(p, content, "utf8");
-    }
-  }
-
-  private readGoalFile(): Promise<string | null> {
-    return fs.readFile(path.join(this.workspace, "GOAL.md"), "utf8").catch(() => null);
-  }
-
   private parseGoalFile(text: string): GoalState {
     // humans and agents may append their own status lines — latest wins
     const all = [...text.matchAll(/status:\s*(\w+)/gi)];
     const last = all[all.length - 1]?.[1];
     const status = last === "done" ? "done" : last === "paused" ? "paused" : "active";
-    return { text: text.trim(), status, updatedAt: new Date().toISOString() };
+    // keep bookkeeping lines out of the injected goal text
+    let body = text.trim();
+    for (let i = 0; i < 4; i++) {
+      const stripped = body.replace(/\n+(?:status|updated):[^\n]*$/i, "").trimEnd();
+      if (stripped === body) break;
+      body = stripped;
+    }
+    return { text: body, status, updatedAt: new Date().toISOString() };
   }
 
   private async writeGoalFile(): Promise<void> {
@@ -324,7 +361,7 @@ export class Agent {
       body = stripped;
     }
     await fs.writeFile(
-      path.join(this.workspace, "GOAL.md"),
+      this.goalFile,
       `${body}\n\nstatus: ${this.goal.status}\nupdated: ${this.goal.updatedAt}\n`,
       "utf8",
     );
@@ -355,6 +392,7 @@ export class Agent {
       stats: { ...this.stats },
       model: this.opts.llm.model,
       provider: this.opts.provider,
+      sessionDir: this.opts.sessionDir,
     };
   }
 
@@ -426,7 +464,7 @@ export class Agent {
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
         const nudge =
-          "Continue working toward the goal in GOAL.md. If you are blocked, explain why briefly.";
+          "Continue working toward the current goal. If you are blocked, explain why briefly.";
         await this.log.append("prompt", this.currentSession, this.currentBranch, {
           source: "harness",
           text: nudge,
@@ -516,7 +554,7 @@ export class Agent {
         turn: ++this.stats.turns,
       });
       // stream the assistant reply live to connected clients
-      const res = await this.llmCall(this.buildMessages(), allToolSpecs(), (s) => {
+      const res = await this.llmCall(await this.buildMessages(), allToolSpecs(), (s) => {
         bus.emit("update", {
           kind: "llm-delta",
           agentId: this.opts.id,
@@ -563,6 +601,28 @@ export class Agent {
           });
           continue;
         }
+        if (call.function.name === "set_goal") {
+          const a = safeParse(call.function.arguments);
+          const text = String(a.text ?? "").trim();
+          if (text) await this.setGoal(text);
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: text ? "goal updated" : "empty goal rejected",
+          });
+          continue;
+        }
+        if (call.function.name === "set_memory") {
+          const a = safeParse(call.function.arguments);
+          const content = String(a.content ?? "").slice(0, 32_000);
+          await fs.writeFile(this.memoryFile, content, "utf8");
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: "memory saved (injected into future prompts)",
+          });
+          continue;
+        }
         await this.log.append("tool_call", this.currentSession, this.currentBranch, {
           callId: call.id,
           name: call.function.name,
@@ -591,11 +651,31 @@ export class Agent {
     throw new Error("runaway detection: too many turns in one round (>200)");
   }
 
-  private buildMessages(): ChatMessage[] {
+  /** AGENTS.md is optional project knowledge — injected when present. */
+  private agentsMdCache: { mtimeMs: number; text: string } | null = null;
+  private async readAgentsMd(): Promise<string> {
+    try {
+      const p = path.join(this.workspace, "AGENTS.md");
+      const st = await fs.stat(p);
+      if (this.agentsMdCache?.mtimeMs === st.mtimeMs) return this.agentsMdCache.text;
+      const text = await fs.readFile(p, "utf8");
+      this.agentsMdCache = { mtimeMs: st.mtimeMs, text };
+      return text;
+    } catch {
+      this.agentsMdCache = null;
+      return "";
+    }
+  }
+
+  private async buildMessages(): Promise<ChatMessage[]> {
     const sys: string[] = [SYSTEM_TEMPLATE];
     if (this.goal.text) {
       sys.push(`## Current goal (${this.goal.status})\n${this.goal.text}`);
     }
+    const agentsMd = await this.readAgentsMd();
+    if (agentsMd.trim()) sys.push(`## Project knowledge (AGENTS.md)\n${clipText(agentsMd, 8000)}`);
+    const memory = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
+    if (memory.trim()) sys.push(`## Your notes (memory.md)\n${clipText(memory, 4000)}`);
     sys.push(this.skillsListing());
     const hasSystem = this.messages[0]?.role === "system";
     const head: ChatMessage[] = [{ role: "system", content: sys.join("\n\n") }];
@@ -624,7 +704,7 @@ export class Agent {
       text: request,
     });
     this.messages.push({ role: "user", content: request });
-    const res = await this.llmCall(this.buildMessages(), []); // no tools: pure report
+    const res = await this.llmCall(await this.buildMessages(), []); // no tools: pure report
     await this.recordProgress(JSON.stringify({ freeform: res.message.content }));
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
@@ -702,7 +782,7 @@ export class Agent {
           role: "user",
           content:
             `[harness] Context was compacted: ${oldCount} earlier messages were summarized. ` +
-            "Persistent files (GOAL.md / AGENTS.md / MEMORY.md) are still on disk — re-read them when needed.\n\n" +
+            "Goal and notes are managed by the harness (AGENTS.md / memory.md are injected into your prompt when present).\n\n" +
             `## Summary of earlier conversation\n${summary}`,
         },
         ...this.messages.slice(cut),
@@ -813,7 +893,7 @@ export class Agent {
   }
 }
 
-/** workspace tools + agent-meta tools (finish / report_progress) */
+/** workspace tools + agent-meta tools (finish / report_progress / set_goal / set_memory) */
 function allToolSpecs(): ReturnType<typeof toolSpecs> {
   return [
     ...toolSpecs(),
@@ -822,7 +902,7 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
       function: {
         name: "finish",
         description:
-          "End the current round. Call with goalComplete=true only when the goal in GOAL.md is fully achieved.",
+          "End the current round. Call with goalComplete=true only when the current goal (shown in your prompt) is fully achieved.",
         parameters: {
           type: "object",
           properties: {
@@ -851,7 +931,37 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
         },
       },
     },
+    {
+      type: "function" as const,
+      function: {
+        name: "set_goal",
+        description:
+          "Replace the harness-managed goal text (it is injected into your prompt). Use when the objective itself changes — not for routine updates.",
+        parameters: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "set_memory",
+        description:
+          "Overwrite your durable session notes (memory.md, injected into future prompts). Keep them terse: decisions, gotchas, where you left off.",
+        parameters: {
+          type: "object",
+          properties: { content: { type: "string" } },
+          required: ["content"],
+        },
+      },
+    },
   ];
+}
+
+function clipText(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max) + `\n… [truncated, ${s.length} chars total]`;
 }
 
 function str(v: unknown): string {

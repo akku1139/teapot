@@ -152,7 +152,7 @@ export function buildApp(master: Master): Hono {
     try {
       const agent = await master.addAgent(
         { id, workspace: ws, provider: body.provider, model: body.model },
-        true, // persist to config so it survives restarts
+        { persist: true, fresh: true }, // new incarnation → never reuse old history
       );
       if (body.start !== false) agent.start("created via web");
       return c.json({ ok: true, agent: agent.snapshot() });

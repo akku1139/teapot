@@ -49,17 +49,17 @@ const reply = (content: string, toolCalls?: ReturnType<typeof tc>[]): LlmResult 
 
 async function mkAgent(more: Partial<ConstructorParameters<typeof Agent>[0]> = {}) {
   const ws = await mkdtemp(path.join(tmpdir(), "teapot-agent-ws-"));
-  const data = await mkdtemp(path.join(tmpdir(), "teapot-agent-data-"));
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "teapot-agent-sess-"));
   const agent = new Agent({
     id: "t",
     workspace: ws,
     llm: LLM,
-    logFile: path.join(data, "t.jsonl"),
+    sessionDir,
     continueDelayMs: 10,
     ...more,
   });
   await agent.init();
-  return { agent, ws, data };
+  return { agent, ws, data: sessionDir };
 }
 
 /* ---------- basic round / finish ---------- */
@@ -162,7 +162,7 @@ test("restart rebuilds conversation (incl. tool args/results) from the log", asy
     id: "t",
     workspace: a.ws,
     llm: LLM,
-    logFile: path.join(a.data, "t.jsonl"),
+    sessionDir: a.data, // restart → same session directory
     continueDelayMs: 10,
     chatFn: second.chat,
   });

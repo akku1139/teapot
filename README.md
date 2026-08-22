@@ -110,13 +110,18 @@ master (Hono server, src/master.ts + src/server/api.ts)
   never hard-coded.
 - **Tools** (`src/agent/tools.ts`): provider-agnostic JSON-schema function
   specs — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash` (git goes
-  through bash), plus meta tools `finish` / `report_progress`. Paths are
-  confined to the workspace; bash runs detached in its own process group and
-  the whole group is SIGKILLed on timeout.
-- **Goal / knowledge**: `GOAL.md` (goal + status), `AGENTS.md` (project
-  knowledge), `MEMORY.md` (agent notes) live in each workspace as normal git-
-  editable Markdown. The goal file is the source of truth; the harness re-reads
-  it on restart.
+  through bash), plus meta tools `finish` / `report_progress` / `set_goal` /
+  `set_memory`. Paths are confined to the workspace; bash runs detached in its
+  own process group and the whole group is SIGKILLed on timeout.
+- **Session storage** — everything teapot manages lives under
+  `<dataDir>/sessions/<sid>/` (`chat.jsonl`, `goal.md`, `memory.md`), so agent
+  workspaces stay clean. Each incarnation gets a fresh `<agentId>-<uuid>`
+  directory (no history leaks across projects); restarts reuse the latest one.
+  Legacy layouts are migrated automatically.
+- **Goal / knowledge** — goal + memory are harness-managed and injected into
+  the prompt every turn (agents update them via `set_goal` / `set_memory`);
+  `AGENTS.md` is optional project knowledge in the workspace root that is
+  injected when present. Nothing is seeded into your project anymore.
 
 ### Web UI
 
@@ -162,13 +167,14 @@ description: Steps to cut a release safely
 
 ### Session log format (JSONL)
 
-One file per agent (`dataDir/<agent>.jsonl`); every conversation *including
-forks* lives in the same interleaved stream:
+One file per session (`<dataDir>/sessions/<sid>/chat.jsonl`, sid =
+`<agentId>-<uuid8>`); every conversation *including forks* lives in the same
+interleaved stream:
 
 ```json
-{"v":1,"id":"e27","seq":27,"ts":"…","agent":"alpha","session":"sess-alpha-main",
+{"v":1,"id":"e27","seq":27,"ts":"…","agent":"alpha","session":"alpha-9f3c21ab",
  "branch":"br032sl","parent":"e26","type":"fork",
- "data":{"fromSession":"sess-alpha-main","fromBranch":"br0","fromEvent":"e26","newBranch":"br032sl"}}
+ "data":{"fromSession":"alpha-9f3c21ab","fromBranch":"br0","fromEvent":"e26","newBranch":"br032sl"}}
 ```
 
 - every event carries `session`, `branch`, `parent` (previous event on the same branch), monotonic `seq`
