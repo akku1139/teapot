@@ -193,6 +193,50 @@ export function buildApp(master: Master): Hono {
     return c.json({ ok: true });
   });
 
+  // ---- providers & models (for the session panel's model switcher) ----
+  app.get("/api/providers", (c) =>
+    c.json({
+      providers: Object.entries(master.config.providers ?? {}).map(([name, p]) => ({
+        name,
+        baseUrl: p.baseUrl,
+        hasKey: !!p.apiKey,
+        model: p.model,
+      })),
+      defaultProvider: master.config.defaultProvider,
+    }),
+  );
+
+  // OpenAI-compatible upstream model listing (GET /v1/models)
+  app.get("/api/models", async (c) => {
+    const provName = c.req.query("provider") || master.config.defaultProvider || "";
+    const prov = master.config.providers?.[provName];
+    if (!prov?.baseUrl) return c.json({ error: `unknown provider: ${provName}` }, 400);
+    try {
+      const res = await fetch(`${prov.baseUrl.replace(/\/+$/, "")}/models`, {
+        headers: prov.apiKey ? { authorization: `Bearer ${prov.apiKey}` } : {},
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) return c.json({ error: `upstream ${res.status}` }, 502);
+      const j = (await res.json()) as { data?: { id?: string }[] };
+      const models = (j.data ?? []).map((m) => m.id).filter((x): x is string => !!x).sort();
+      return c.json({ provider: provName, models });
+    } catch (err) {
+      return c.json({ error: `model list failed: ${(err as Error).message}` }, 502);
+    }
+  });
+
+  // switch a running session's model/provider
+  app.post("/api/agents/:id/model", async (c) => {
+    const body = await c.req.json<{ provider?: string; model?: string }>().catch(() => null);
+    if (!body) return c.json({ error: "invalid JSON" }, 400);
+    try {
+      const r = master.setAgentModel(c.req.param("id"), body.provider, body.model);
+      return c.json({ ok: true, ...r });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
   app.post("/api/agents/:id/stop", (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);

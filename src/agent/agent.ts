@@ -47,6 +47,8 @@ export interface AgentOptions {
   contextTokenBudget?: number;
   /** rebuild conversation from the JSONL log on init (default true) */
   restoreSession?: boolean;
+  /** provider name this agent was created with (for the UI's model switcher) */
+  provider?: string;
   /** shared skill dir (defaults to none; workspace skills always enabled) */
   globalSkillsDir?: string;
   /** injectable LLM call for tests (defaults to the real one) */
@@ -108,6 +110,7 @@ export class Agent {
       contextTokenBudget: 96_000,
       restoreSession: true,
       globalSkillsDir: "",
+      provider: "",
       ...opts,
     };
     this.log = new EventLog(opts.logFile, opts.id);
@@ -169,6 +172,16 @@ export class Agent {
 
   get workspace(): string {
     return this.opts.workspace;
+  }
+
+  /** current LLM settings (read-only view) */
+  get llm(): LlmConfig {
+    return this.opts.llm;
+  }
+
+  /** Swap LLM settings mid-flight; the next turn picks them up. */
+  setLlmConfig(llm: LlmConfig): void {
+    this.opts.llm = llm;
   }
 
   async init(): Promise<void> {
@@ -341,6 +354,7 @@ export class Agent {
       latestProgress: this.latestProgress,
       stats: { ...this.stats },
       model: this.opts.llm.model,
+      provider: this.opts.provider,
     };
   }
 

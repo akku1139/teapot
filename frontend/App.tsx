@@ -5,7 +5,7 @@ import { renderMarkdown } from "./md";
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
   session: string; branch: string; goal: { status: string; text: string };
-  latestProgress: any; stats: any; model: string;
+  latestProgress: any; stats: any; model: string; provider?: string;
 }
 interface Ev {
   id: string; seq: number; ts: string; session: string; branch: string;
@@ -45,7 +45,35 @@ export default function App() {
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
   const [showCfg, setShowCfg] = createSignal(false);
-  const [showRight, setShowRight] = createSignal(false); // drawer on narrow screens
+  const [showRight, setShowRight] = createSignal(
+    localStorage.getItem("teapot.panel") !== null
+      ? localStorage.getItem("teapot.panel") === "1"
+      : window.innerWidth > 1100,
+  );
+  const toggleRight = () => {
+    setShowRight(!showRight());
+    localStorage.setItem("teapot.panel", showRight() ? "1" : "0");
+  };
+  // model switcher state
+  const [modelProvider, setModelProvider] = createSignal("");
+  const [modelDraft, setModelDraft] = createSignal("");
+  const [models, setModels] = createSignal<string[]>([]);
+  const providerList = () => Object.keys(cfg().providers ?? {});
+  async function loadModels(prov: string) {
+    if (!prov) return;
+    try {
+      const r = await api(`/api/models?provider=${encodeURIComponent(prov)}`);
+      setModels(r.models ?? []);
+    } catch { setModels([]); }
+  }
+  // keep the switcher aligned with the selected session
+  createEffect(() => {
+    const a = sel();
+    if (!a) return;
+    setModelProvider(a.provider || cfg().defaultProvider || providerList()[0] || "");
+    setModelDraft("");
+    loadModels(modelProvider());
+  });
   // autoscroll: follow the tail only while the reader is already at the bottom
   const [atBottom, setAtBottom] = createSignal(true);
   const [missed, setMissed] = createSignal(0);
@@ -155,15 +183,23 @@ export default function App() {
       return;
     }
     if (e.key === "Escape") {
-      if (showNew()) setShowNew(false);
-      else if (showCfg()) setShowCfg(false);
-      else if (showRight()) setShowRight(false);
+      if (showNew()) { setShowNew(false); return; }
+      if (showCfg()) { setShowCfg(false); return; }
+      const s = sel();
+      if (s?.status === "running") {
+        // Claude-Code-style: Esc interrupts the running agent
+        api(`/api/agents/${s.id}/stop`, { method: "POST" }).then(refreshAgents);
+        return;
+      }
+      if (showRight() && window.innerWidth <= 1100) setShowRight(false);
       return;
     }
     if (showNew() || showCfg()) return;
     if (e.key === "/") {
       e.preventDefault();
       document.querySelector<HTMLInputElement>(".composer input[type=text]")?.focus();
+    } else if (e.key === "d") {
+      toggleRight();
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       const list = agents();
       if (list.length === 0) return;
@@ -217,7 +253,7 @@ export default function App() {
 
   return (
     <>
-    <div class="layout">
+    <div class={"layout" + (showRight() ? "" : " right-hidden")}>
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
         <h1>🫖 teapot
@@ -258,7 +294,7 @@ export default function App() {
               <Show when={sel()!.statusReason}>
                 <span class="sub" title={sel()!.statusReason}>ℹ</span>
               </Show>
-              <button class="iconbtn" title="toggle details panel" onclick={() => setShowRight(!showRight())}>▤</button>
+              <button class="iconbtn" title="toggle details panel (d)" onclick={toggleRight}>▤</button>
             </span>
           </header>
 
@@ -316,7 +352,7 @@ export default function App() {
               <button type="submit">send</button>
             </form>
             <div class="hint">
-              enter to send · prompts are appended to the conversation and the agent keeps working toward its goal
+              enter send · ↑↓ sessions · / focus · d panel · esc stop · prompts queue while the agent works
             </div>
           </div>
         </Show>
@@ -325,10 +361,54 @@ export default function App() {
       {/* ---------- right bar ---------- */}
       <aside class={"rightbar" + (showRight() ? " open" : "")}>
         <Show when={sel()}>
-          <h3>controls</h3>
+          <h3>🎛 session</h3>
+          <div class="card sesscard">
+            <div class="sessrow"><span class="k">agent</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
+            <div class="sessrow"><span class="k">workspace</span><span class="mono ellip" title={sel()!.workspace}>{sel()!.workspace}</span></div>
+            <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
+          </div>
+
+          <h3>🧦 model</h3>
+          <div class="modelbox">
+            <select
+              value={modelProvider()}
+              onchange={(e) => { setModelProvider(e.currentTarget.value); loadModels(e.currentTarget.value); }}
+              title="provider (OpenAI-compatible endpoint)"
+            >
+              <For each={providerList()}>{(p) => <option value={p}>{p}{p === cfg().defaultProvider ? " ★" : ""}</option>}</For>
+            </select>
+            <div style="display:flex;gap:4px">
+              <input
+                type="text"
+                list="model-list"
+                placeholder={sel()!.model}
+                value={modelDraft()}
+                oninput={(e) => setModelDraft(e.currentTarget.value)}
+                style="flex:1;min-width:0"
+              />
+              <datalist id="model-list">
+                <For each={models()}>{(m) => <option value={m} />}</For>
+              </datalist>
+              <button
+                title="apply model to this session"
+                onclick={async () => {
+                  if (!selected()) return;
+                  await api(`/api/agents/${selected()}/model`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ provider: modelProvider(), model: modelDraft().trim() || undefined }),
+                  });
+                  refreshAgents();
+                }}
+              >apply</button>
+            </div>
+            <div class="meta">current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show></div>
+          </div>
+
+          <h3>⏯ controls</h3>
           <div class="btnrow">
-            <button onclick={act("/start")}>▶ start</button>
-            <button onclick={act("/stop")}>■ stop</button>
+            <button onclick={act("/start")} title="run toward the goal">▶ start</button>
+            <button onclick={act("/stop")} title="interrupt after the current tool finishes">■ stop</button>
             <button onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}>⑂ fork</button>
             <button onclick={async () => {
               if (!confirm(`remove agent ${sel()!.id}? (log is kept)`)) return;
@@ -337,30 +417,29 @@ export default function App() {
             }} title="remove agent">🗑</button>
           </div>
 
-          <h3>goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
+          <h3>🎯 goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
           <form onsubmit={setGoal} style="display:flex;gap:4px;margin-bottom:6px">
             <input id="goal-input" type="text" placeholder="set new goal…" style="flex:1;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit" />
             <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:0 10px;cursor:pointer">✓</button>
           </form>
           <div class="card">{sel()!.goal.text || "no goal set"}</div>
 
-          <h3>latest progress</h3>
+          <h3>📈 progress</h3>
           <Show when={sel()!.latestProgress} fallback={<div class="muted">none yet</div>}>
             <div class="card">{sel()!.latestProgress.doing}{"\n"}{sel()!.latestProgress.recent ?? ""}
               {"\n"}<span class="muted">{sel()!.latestProgress.ts}</span></div>
           </Show>
 
-          <h3>branches</h3>
+          <h3>📊 runtime</h3>
+          <div class="card muted">turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls} · compacted {sel()!.stats.compactions ?? 0}
+            {"\n"}tokens in/out {sel()!.stats.inputTokens}/{sel()!.stats.outputTokens}</div>
+
+          <h3>🌿 branches</h3>
           <For each={branches()}>
             {(b) => (
               <div class={"branch-row" + (b.branch === sel()!.branch ? " cur" : "")}>{b.branch}<span>{b.events}</span></div>
             )}
           </For>
-
-          <h3>runtime</h3>
-          <div class="card muted">turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls}
-            {"\n"}tokens in/out {sel()!.stats.inputTokens}/{sel()!.stats.outputTokens}
-            {"\n"}{sel()!.workspace}</div>
         </Show>
       </aside>
     </div>

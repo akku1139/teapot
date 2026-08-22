@@ -175,6 +175,8 @@ function printAgentEvent(e: TeapotEvent): void {
         line = `${c("33", "🗜 compact")} tokens ${d.tokensBefore}→${d.tokensAfter} (${d.mode})`;
       else if (d.event === "session-restored")
         line = `${c("33", "⟲ restore")} branch ${d.branch}, ${d.messages} messages`;
+      else if (d.event === "model-changed")
+        line = `${c("33", "🧦 model")} → ${d.model} (${d.provider})`;
       break;
     }
     default:
@@ -279,6 +281,7 @@ export class Master {
       autoContinue: true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
+      provider: provName,
     });
     agent.log.onEvent = (e) => printAgentEvent(e);
     await agent.init();
@@ -297,6 +300,47 @@ export class Master {
     await agent.dispose();
     this.config.agents = this.config.agents.filter((a) => a.id !== id);
     this.saveConfig();
+  }
+
+  /**
+   * Switch a running agent's model/provider mid-session.
+   * With provider: use that named provider's baseUrl/key (+ model override).
+   * Without: keep the current endpoint, swap only the model name.
+   * The choice is persisted on the agent config so it survives restarts.
+   */
+  setAgentModel(id: string, providerName?: string, model?: string): { provider: string; model: string } {
+    const agent = this.agents.get(id);
+    if (!agent) throw new Error(`no such agent: ${id}`);
+    let llm: LlmConfig;
+    let effectiveProvider = providerName ?? "";
+    if (providerName) {
+      const prov = this.config.providers?.[providerName];
+      if (!prov?.baseUrl) throw new Error(`unknown provider: ${providerName}`);
+      llm = {
+        baseUrl: prov.baseUrl,
+        apiKey: prov.apiKey ?? "",
+        model: model || prov.model || "",
+        timeoutMs: 120_000,
+      };
+    } else {
+      llm = { ...agent.llm };
+      if (model) llm.model = model;
+      const ac = this.config.agents.find((a) => a.id === id);
+      effectiveProvider = ac?.provider ?? this.config.defaultProvider ?? "";
+    }
+    if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
+    if (!llm.baseUrl) throw new Error("no baseUrl resolved");
+    agent.setLlmConfig(llm);
+    const ac = this.config.agents.find((a) => a.id === id);
+    if (ac && providerName) ac.provider = providerName;
+    if (ac) ac.model = llm.model;
+    this.saveConfig();
+    void agent.log.append("system_note", agent.currentSession, agent.currentBranch, {
+      event: "model-changed",
+      provider: effectiveProvider,
+      model: llm.model,
+    });
+    return { provider: effectiveProvider, model: llm.model };
   }
 
   /** 4 ticks/min; each tick is a few integer compares per task. */
