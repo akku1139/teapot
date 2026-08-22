@@ -61,9 +61,9 @@ test("legacy workspace GOAL.md is migrated into the session dir", async () => {
   await agent.dispose();
 });
 
-/* ---------- AGENTS.md is optional knowledge ---------- */
+/* ---------- static system prompt (cache-friendly) ---------- */
 
-test("AGENTS.md content is injected when present, absent otherwise", async () => {
+test("system prompt stays byte-identical across turns even if AGENTS.md appears", async () => {
   const seen: string[] = [];
   let n = 0;
   const chat: ChatFn = async (_c, messages) => {
@@ -76,13 +76,45 @@ test("AGENTS.md content is injected when present, absent otherwise", async () =>
   await agent.settled();
   assert.ok(!seen[0].includes("CONVENTION_MARKER"));
 
+  // project knowledge appearing mid-session must NOT change the prompt
   await writeFile(path.join(ws, "AGENTS.md"), "# Conventions\nCONVENTION_MARKER keep tests fast\n");
   agent.enqueuePrompt("again");
   agent.start("t2");
   await agent.settled();
-  assert.match(seen.at(-1)!, /CONVENTION_MARKER/);
+  assert.equal(seen.at(-1), seen[0]); // identical bytes → prefix cache stays hot
   await agent.dispose();
 });
+
+/* ---------- on-demand state tools ---------- */
+
+test("get_goal / read_memory return harness-managed state on demand", async () => {
+  const toolResults: string[] = [];
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i > 0) {
+      const t = [...messages].reverse().find((m) => m.role === "tool");
+      toolResults.push(t?.content ?? "");
+    }
+    if (i === 0) return reply("checking goal", [tc("g1", "get_goal", {})]);
+    if (i === 1) return reply("noting", [tc("m1", "set_memory", { content: "user prefers pnpm" })]);
+    if (i === 2) return reply("recalling", [tc("m2", "read_memory", {})]);
+    return reply("done");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  await agent.setGoal("ship the thing");
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  await agent.settled();
+
+  assert.match(toolResults[0]!, /ship the thing/);
+  assert.ok(toolResults.some((r) => r.includes("prefers pnpm")));
+  void rm;
+  void readdir;
+  await agent.dispose();
+});
+
+/* ---------- meta tools write harness-managed files ---------- */
 
 /* ---------- meta tools write harness-managed files ---------- */
 
@@ -100,14 +132,18 @@ test("set_goal tool updates goal.md and the snapshot", async () => {
   await agent.dispose();
 });
 
-test("set_memory tool writes memory.md which is injected later", async () => {
-  const seen: string[] = [];
+test("set_memory tool writes memory.md; read_memory fetches it back", async () => {
+  const toolResults: string[] = [];
   let n = 0;
   const chat: ChatFn = async (_c, messages) => {
-    if (n > 0) seen.push(String(messages[0]?.content ?? ""));
-    return n++ === 0
-      ? reply("noting", [tc("m1", "set_memory", { content: "user prefers pnpm" })])
-      : reply("done", [tc("f", "finish", { goalComplete: true })]);
+    const i = n++;
+    if (i > 0) {
+      const t = [...messages].reverse().find((m) => m.role === "tool");
+      toolResults.push(t?.content ?? "");
+    }
+    if (i === 0) return reply("noting", [tc("m1", "set_memory", { content: "user prefers pnpm" })]);
+    if (i === 1) return reply("recalling", [tc("m2", "read_memory", {})]);
+    return reply("done");
   };
   const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
   agent.enqueuePrompt("remember");
@@ -116,7 +152,7 @@ test("set_memory tool writes memory.md which is injected later", async () => {
 
   const memPath = path.join(agent.snapshot().sessionDir, "memory.md");
   assert.match(await readFile(memPath, "utf8"), /prefers pnpm/);
-  assert.match(seen.at(-1)!, /prefers pnpm/); // injected into the next turn
+  assert.ok(toolResults.some((r) => r.includes("prefers pnpm")));
   await agent.dispose();
 });
 

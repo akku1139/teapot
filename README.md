@@ -110,18 +110,24 @@ master (Hono server, src/master.ts + src/server/api.ts)
   never hard-coded.
 - **Tools** (`src/agent/tools.ts`): provider-agnostic JSON-schema function
   specs — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash` (git goes
-  through bash), plus meta tools `finish` / `report_progress` / `set_goal` /
-  `set_memory`. Paths are confined to the workspace; bash runs detached in its
-  own process group and the whole group is SIGKILLed on timeout.
+  through bash), plus meta tools `finish` / `report_progress` / `get_goal` /
+  `set_goal` / `read_memory` / `set_memory` / `list_skills`. Paths are
+  confined to the workspace; bash runs detached in its own process group and
+  the whole group is SIGKILLed on timeout.
+- **Cache-friendly prompt design** — the system prompt is byte-identical on
+  every turn; session state (goal, memory, skills) is fetched via tools, never
+  injected. Combined with the append-only message history this keeps provider
+  prefix caches hot, so long sessions pay incremental input prices instead of
+  re-sending full context every turn.
 - **Session storage** — everything teapot manages lives under
   `<dataDir>/sessions/<sid>/` (`chat.jsonl`, `goal.md`, `memory.md`), so agent
   workspaces stay clean. Each incarnation gets a fresh `<agentId>-<uuid>`
   directory (no history leaks across projects); restarts reuse the latest one.
   Legacy layouts are migrated automatically.
-- **Goal / knowledge** — goal + memory are harness-managed and injected into
-  the prompt every turn (agents update them via `set_goal` / `set_memory`);
-  `AGENTS.md` is optional project knowledge in the workspace root that is
-  injected when present. Nothing is seeded into your project anymore.
+- **Goal / knowledge** — goal + memory are harness-managed and read/written
+  through tools (`get_goal` / `set_goal` / `read_memory` / `set_memory`);
+  `AGENTS.md` is optional project knowledge in the workspace root that agents
+  are told to read at session start. Nothing is seeded into your project.
 
 ### Web UI
 

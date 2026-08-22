@@ -205,9 +205,10 @@ test("consecutive tool failures trip the runaway guard", async () => {
 
 /* ---------- skills integration ---------- */
 
-test("agent saves then loads its own skill via tools", async () => {
+test("agent saves, lists, then loads its own skill via tools", async () => {
   const body = "# Coffee protocol\n1. grind\n2. bloom\n3. pour";
   const mock = mkMock((req): LlmResult => {
+    const lastTool = () => [...req.messages].reverse().find((m) => m.role === "tool");
     if (req.n === 0)
       return reply("saving skill", [
         tc("s1", "save_skill", {
@@ -216,21 +217,19 @@ test("agent saves then loads its own skill via tools", async () => {
           content: body,
         }),
       ]);
-    if (req.n === 1) {
-      // system prompt of this turn must already list the fresh skill
-      const sys = String(req.messages[0]?.content ?? "");
-      assert.match(sys, /coffee-brewing/);
-      return reply("loading my skill", [tc("s2", "load_skill", { name: "coffee-brewing" })]);
-    }
+    if (req.n === 1) return reply("checking my skills", [tc("s2", "list_skills", {})]);
     if (req.n === 2) {
-      const toolMsg = [...req.messages].reverse().find((m) => m.role === "tool")!;
-      assert.match(toolMsg.content ?? "", /grind/);
+      assert.match(lastTool()!.content ?? "", /coffee-brewing/); // listed
+      return reply("loading my skill", [tc("s3", "load_skill", { name: "coffee-brewing" })]);
+    }
+    if (req.n === 3) {
+      assert.match(lastTool()!.content ?? "", /grind/); // full playbook returned
       return reply("skill loaded, finishing");
     }
-    return reply("done", [tc("f9", "finish", { goalComplete: true })]);
+    throw new Error("too many llm calls");
   });
 
-  const { agent, ws } = await mkAgent({ chatFn: mock.chat });
+  const { agent, ws } = await mkAgent({ chatFn: mock.chat, autoContinue: false });
   agent.enqueuePrompt("document your coffee knowledge as a skill");
   agent.start("test");
   await agent.settled();

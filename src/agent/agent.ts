@@ -58,24 +58,32 @@ export interface AgentOptions {
 
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
-## Goal (managed by the harness)
-The current goal is injected into this prompt by the harness. Change it with
-set_goal(text) when the objective itself changes; call finish(goalComplete=true)
-only when the goal is fully achieved.
+This system prompt is intentionally STATIC — session state is never injected
+into it, so API prompt caches stay hot across turns. Fetch state with tools
+instead; they are cheap and always current.
 
-## Persistent context (all optional — create only if useful)
-- AGENTS.md (workspace root): project knowledge/conventions. When present, the
-  harness injects it into this prompt; keep it current with edit_file/write_file.
-- memory.md: your durable notes, harness-managed — update them with
-  set_memory(content); they are injected into future prompts.
-- skills/: reusable playbooks via load_skill / save_skill.
+## Goal (harness-managed)
+- get_goal() → current objective + status. Call it at session start, after a
+  compaction notice, or whenever you lose the thread.
+- set_goal(text) → change the objective itself (not routine updates).
+- finish(goalComplete=true, summary) → goal fully achieved.
+
+## Your notes (memory.md, harness-managed)
+- read_memory() / set_memory(content) → durable notes injected nowhere else.
+  Keep them terse: decisions, gotchas, where you left off.
+
+## Skills (reusable playbooks)
+- list_skills() → what exists. load_skill(name) → full playbook.
+- save_skill(name, description, content) → distill a reusable procedure.
+
+## Project knowledge
+- AGENTS.md in the workspace root (optional): conventions & commands. Read it
+  with read_file at session start when present, keep it current.
 
 ## Rules
 - Work step by step with tools. Verify results (run tests/builds) before claiming progress.
-- When a task matches an available skill's description, load_skill it first and follow the playbook.
-- When you develop a reusable procedure, save_skill it — skills persist and are offered to future sessions.
+- When a loaded skill matches your task, follow its playbook.
 - When you make meaningful progress, call report_progress.
-- When the goal is fully achieved, call finish(goalComplete=true) with a short summary.
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
 
 export class Agent {
@@ -145,22 +153,6 @@ export class Agent {
     } catch {
       /* keep previous cache */
     }
-  }
-
-  private skillsListing(): string {
-    if (this.skillsCache.length === 0) {
-      return (
-        "## Skills\n" +
-        "No skills exist yet. When you develop a reusable procedure worth keeping " +
-        "(build steps, checklists, project conventions), distill it into a durable playbook " +
-        "with save_skill so future sessions can load it via load_skill."
-      );
-    }
-    return (
-      "## Skills (reusable playbooks)\n" +
-      "When the current task matches a description below, call load_skill(name) first and follow it.\n" +
-      this.skillsCache.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n")
-    );
   }
 
   private callLlm(
@@ -554,7 +546,7 @@ export class Agent {
         turn: ++this.stats.turns,
       });
       // stream the assistant reply live to connected clients
-      const res = await this.llmCall(await this.buildMessages(), allToolSpecs(), (s) => {
+      const res = await this.llmCall(this.buildMessages(), allToolSpecs(), (s) => {
         bus.emit("update", {
           kind: "llm-delta",
           agentId: this.opts.id,
@@ -612,6 +604,35 @@ export class Agent {
           });
           continue;
         }
+        if (call.function.name === "get_goal") {
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: JSON.stringify(
+              { goal: this.goal.text || "(none set)", status: this.goal.status },
+              null,
+              1,
+            ),
+          });
+          continue;
+        }
+        if (call.function.name === "read_memory") {
+          const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: mem.trim() || "(memory.md is empty — nothing noted yet)",
+          });
+          continue;
+        }
+        if (call.function.name === "list_skills") {
+          await this.refreshSkills();
+          const list = this.skillsCache.length
+            ? this.skillsCache.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n")
+            : "(no skills yet — create one with save_skill)";
+          this.messages.push({ role: "tool", tool_call_id: call.id, content: list });
+          continue;
+        }
         if (call.function.name === "set_memory") {
           const a = safeParse(call.function.arguments);
           const content = String(a.content ?? "").slice(0, 32_000);
@@ -651,34 +672,10 @@ export class Agent {
     throw new Error("runaway detection: too many turns in one round (>200)");
   }
 
-  /** AGENTS.md is optional project knowledge — injected when present. */
-  private agentsMdCache: { mtimeMs: number; text: string } | null = null;
-  private async readAgentsMd(): Promise<string> {
-    try {
-      const p = path.join(this.workspace, "AGENTS.md");
-      const st = await fs.stat(p);
-      if (this.agentsMdCache?.mtimeMs === st.mtimeMs) return this.agentsMdCache.text;
-      const text = await fs.readFile(p, "utf8");
-      this.agentsMdCache = { mtimeMs: st.mtimeMs, text };
-      return text;
-    } catch {
-      this.agentsMdCache = null;
-      return "";
-    }
-  }
-
-  private async buildMessages(): Promise<ChatMessage[]> {
-    const sys: string[] = [SYSTEM_TEMPLATE];
-    if (this.goal.text) {
-      sys.push(`## Current goal (${this.goal.status})\n${this.goal.text}`);
-    }
-    const agentsMd = await this.readAgentsMd();
-    if (agentsMd.trim()) sys.push(`## Project knowledge (AGENTS.md)\n${clipText(agentsMd, 8000)}`);
-    const memory = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
-    if (memory.trim()) sys.push(`## Your notes (memory.md)\n${clipText(memory, 4000)}`);
-    sys.push(this.skillsListing());
+  private buildMessages(): ChatMessage[] {
+    // deliberately static: [system] + append-only history keeps prefix caches hot
     const hasSystem = this.messages[0]?.role === "system";
-    const head: ChatMessage[] = [{ role: "system", content: sys.join("\n\n") }];
+    const head: ChatMessage[] = [{ role: "system", content: SYSTEM_TEMPLATE }];
     return hasSystem ? [...head, ...this.messages.slice(1)] : [...head, ...this.messages];
   }
 
@@ -704,7 +701,7 @@ export class Agent {
       text: request,
     });
     this.messages.push({ role: "user", content: request });
-    const res = await this.llmCall(await this.buildMessages(), []); // no tools: pure report
+    const res = await this.llmCall(this.buildMessages(), []); // no tools: pure report
     await this.recordProgress(JSON.stringify({ freeform: res.message.content }));
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
@@ -936,7 +933,7 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
       function: {
         name: "set_goal",
         description:
-          "Replace the harness-managed goal text (it is injected into your prompt). Use when the objective itself changes — not for routine updates.",
+          "Replace the harness-managed goal text. Use when the objective itself changes — not for routine updates.",
         parameters: {
           type: "object",
           properties: { text: { type: "string" } },
@@ -947,9 +944,26 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
     {
       type: "function" as const,
       function: {
+        name: "get_goal",
+        description:
+          "Fetch the current goal and its status. Cheap — call at session start, after a compaction notice, or when unsure.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "read_memory",
+        description: "Read your durable notes (memory.md).",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
         name: "set_memory",
         description:
-          "Overwrite your durable session notes (memory.md, injected into future prompts). Keep them terse: decisions, gotchas, where you left off.",
+          "Overwrite your durable notes (memory.md). Keep them terse: decisions, gotchas, where you left off.",
         parameters: {
           type: "object",
           properties: { content: { type: "string" } },
@@ -957,12 +971,18 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
         },
       },
     },
+    {
+      type: "function" as const,
+      function: {
+        name: "list_skills",
+        description:
+          "List available skills (name + description). Call before load_skill or to avoid duplicating an existing skill.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
   ];
 }
 
-function clipText(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max) + `\n… [truncated, ${s.length} chars total]`;
-}
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
