@@ -8,9 +8,10 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { EventLog } from "../log/events.js";
-import { chat, type ChatMessage, type LlmConfig } from "./llm.js";
-import { executeTool, toolSpecs, type ToolContext } from "./tools.js";
+import { EventLog, readEvents } from "../log/events.js";
+import { chat, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.js";
+import { executeTool, toolSpecs, currentSkills, type ToolContext } from "./tools.js";
+import type { SkillDef } from "./skills.js";
 import { bus, type BusEvent } from "../bus.js";
 
 export type AgentStatus = "idle" | "running" | "stopped" | "error";
@@ -42,6 +43,14 @@ export interface AgentOptions {
   /** pause between auto-continue rounds */
   continueDelayMs?: number;
   maxConsecutiveToolErrors?: number;
+  /** estimated-token budget; older history is compacted when exceeded */
+  contextTokenBudget?: number;
+  /** rebuild conversation from the JSONL log on init (default true) */
+  restoreSession?: boolean;
+  /** shared skill dir (defaults to none; workspace skills always enabled) */
+  globalSkillsDir?: string;
+  /** injectable LLM call for tests (defaults to the real one) */
+  chatFn?: ChatFn;
 }
 
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
@@ -55,6 +64,8 @@ Keep these files updated with edit_file/write_file. They survive restarts.
 
 ## Rules
 - Work step by step with tools. Verify results (run tests/builds) before claiming progress.
+- When a task matches an available skill's description, load_skill it first and follow the playbook.
+- When you develop a reusable procedure, save_skill it — skills persist and are offered to future sessions.
 - When you make meaningful progress, call report_progress.
 - When the goal is fully achieved, call finish(goalComplete=true) with a short summary.
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
@@ -75,13 +86,15 @@ export class Agent {
     toolCalls: 0,
     inputTokens: 0,
     outputTokens: 0,
+    compactions: 0,
     startedAt: null as string | null,
   };
 
-  private opts: Required<AgentOptions>;
+  private opts: Required<Omit<AgentOptions, "chatFn">> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   private stopRequested = false;
   private wake: (() => void) | null = null;
+  private abort: AbortController | null = null;
   private runChain: Promise<void> = Promise.resolve();
   private lastProgressAt = Date.now();
   private consecutiveToolErrors = 0;
@@ -92,16 +105,57 @@ export class Agent {
       autoContinue: true,
       continueDelayMs: 15_000,
       maxConsecutiveToolErrors: 5,
+      contextTokenBudget: 96_000,
+      restoreSession: true,
+      globalSkillsDir: "",
       ...opts,
     };
     this.log = new EventLog(opts.logFile, opts.id);
+    this.skillRoots = [
+      { dir: path.join(opts.workspace, "skills"), source: "workspace" },
+      ...(opts.globalSkillsDir ? [{ dir: opts.globalSkillsDir, source: "global" }] : []),
+    ];
     this.toolCtx = {
       cwd: opts.workspace,
       defaultTimeoutMs: 120_000,
       maxOutputBytes: 60_000,
+      skillRoots: this.skillRoots,
     };
     this.mainSession = `sess-${opts.id}-main`;
     this.currentSession = this.mainSession;
+  }
+
+  private skillRoots: { dir: string; source: string }[];
+  private skillsCache: SkillDef[] = [];
+
+  /** Rescan skill roots (cheap: a readdir per root, done once per turn). */
+  private async refreshSkills(): Promise<void> {
+    try {
+      this.skillsCache = await currentSkills(this.toolCtx);
+    } catch {
+      /* keep previous cache */
+    }
+  }
+
+  private skillsListing(): string {
+    if (this.skillsCache.length === 0) {
+      return (
+        "## Skills\n" +
+        "No skills exist yet. When you develop a reusable procedure worth keeping " +
+        "(build steps, checklists, project conventions), distill it into a durable playbook " +
+        "with save_skill so future sessions can load it via load_skill."
+      );
+    }
+    return (
+      "## Skills (reusable playbooks)\n" +
+      "When the current task matches a description below, call load_skill(name) first and follow it.\n" +
+      this.skillsCache.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n")
+    );
+  }
+
+  private callLlm(messages: ChatMessage[], tools: ReturnType<typeof toolSpecs>) {
+    const fn = this.opts.chatFn ?? chat;
+    return fn(this.opts.llm, messages, tools, this.abort?.signal);
   }
 
   /** expose id for metrics */
@@ -122,6 +176,105 @@ export class Agent {
     const goalText = await this.readGoalFile();
     if (goalText !== null) this.goal = this.parseGoalFile(goalText);
     else await this.writeGoalFile();
+    if (this.opts.restoreSession) await this.restoreFromLog();
+    await this.refreshSkills();
+  }
+
+  /**
+   * Rebuild the in-memory conversation from the JSONL event log so a restart
+   * continues where the agent left off instead of starting blank.
+   *
+   * Strategy: find the most recent event overall (its branch is where the
+   * agent was), walk the `parent` chain backwards (crossing fork points),
+   * then replay events forward into ChatMessages. Meta-tool calls
+   * (finish / report_progress) never produced logged tool results, so we
+   * synthesize their responses to keep the message sequence valid.
+   */
+  private async restoreFromLog(): Promise<void> {
+    const events = await readEvents(this.log.filePath);
+    if (events.length === 0) return;
+    const byId = new Map(events.map((e) => [e.id, e]));
+    let last = events[events.length - 1]!;
+    // walk backwards to the root via parent links (fork-safe)
+    const lineage: typeof events = [];
+    const seen = new Set<string>();
+    for (let cur: typeof last | undefined = last; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) {
+      if (seen.has(cur.id)) break;
+      seen.add(cur.id);
+      lineage.push(cur);
+    }
+    lineage.reverse();
+    // skip the trailing fork event itself (it is bookkeeping, not conversation)
+    while (lineage.length && lineage[0].type === "fork") lineage.shift();
+
+    const msgs: ChatMessage[] = [];
+    for (const e of lineage) {
+      const d = e.data as Record<string, unknown>;
+      if (e.type === "prompt" && typeof d.text === "string") {
+        msgs.push({ role: "user", content: d.text });
+      } else if (e.type === "message") {
+        const role = d.role === "assistant" ? "assistant" : "user";
+        const m: ChatMessage = { role, content: typeof d.content === "string" ? d.content : "" };
+        if (Array.isArray(d.toolCalls) && d.toolCalls.length > 0) {
+          m.tool_calls = (d.toolCalls as { id: string; name: string }[]).map((c) => ({
+            id: c.id,
+            type: "function" as const,
+            function: { name: c.name, arguments: "{}" },
+          }));
+        }
+        msgs.push(m);
+      } else if (e.type === "tool_call") {
+        // enrich the preceding assistant tool_calls with real arguments
+        const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
+        const tc = prev?.tool_calls?.find((t) => t.id === d.callId);
+        if (tc) tc.function.arguments = JSON.stringify(d.args ?? {});
+      } else if (e.type === "tool_result") {
+        msgs.push({
+          role: "tool",
+          tool_call_id: String(d.callId ?? ""),
+          content: `${d.ok === false ? "(failed) " : ""}${typeof d.result === "string" ? d.result : ""}`,
+        });
+      } else if (e.type === "progress") {
+        // progress events may follow an assistant report_progress call that
+        // has no logged tool result — patch it in when present
+        const lastAssistant = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.length);
+        if (lastAssistant?.tool_calls?.some((t) => t.function.name === "report_progress")) {
+          for (const t of lastAssistant.tool_calls!) {
+            if (!msgs.some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
+              msgs.push({ role: "tool", tool_call_id: t.id, content: "progress recorded" });
+            }
+          }
+        }
+      }
+    }
+
+    // every assistant tool_call must be answered by a tool message, or the
+    // API rejects the sequence — close any holes left by meta tools (finish)
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i]!;
+      if (m.role === "assistant" && m.tool_calls?.length) {
+        for (const t of m.tool_calls) {
+          if (!msgs.slice(i + 1).some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
+            msgs.splice(i + 1, 0, {
+              role: "tool",
+              tool_call_id: t.id,
+              content: t.function.name === "finish" ? `(round ended: ${m.content || "finished"})` : "(no result recorded)",
+            });
+            i++;
+          }
+        }
+      }
+    }
+
+    if (msgs.length > 0) {
+      this.messages = msgs;
+      this.currentBranch = last.branch;
+      await this.log.append("system_note", this.currentSession, this.currentBranch, {
+        event: "session-restored",
+        branch: last.branch,
+        messages: msgs.length,
+      });
+    }
   }
 
   private async seed(file: string, content: string): Promise<void> {
@@ -184,6 +337,11 @@ export class Agent {
     });
   }
 
+  /** Resolves when all queued work (including a running loop) has settled. */
+  settled(): Promise<void> {
+    return this.runChain.catch(() => {});
+  }
+
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
     const p = this.runChain.then(fn);
     this.runChain = p.then(
@@ -206,6 +364,8 @@ export class Agent {
 
   stop(reason = "stopped by user"): void {
     this.stopRequested = true;
+    // interrupt an in-flight LLM call immediately instead of waiting it out
+    this.abort?.abort();
     this.wake?.();
     void this.enqueue(() => {
       this.setStatus("stopped", reason);
@@ -236,20 +396,54 @@ export class Agent {
         // auto-continue: wait quietly, then nudge with a fresh round
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
-        this.messages.push({
-          role: "user",
-          content:
-            "Continue working toward the goal in GOAL.md. If you are blocked, explain why briefly.",
+        const nudge =
+          "Continue working toward the goal in GOAL.md. If you are blocked, explain why briefly.";
+        await this.log.append("prompt", this.currentSession, this.currentBranch, {
+          source: "harness",
+          text: nudge,
         });
+        this.messages.push({ role: "user", content: nudge });
       } catch (err) {
+        const name = (err as Error).name;
+        // a stop (user abort or pre-call guard) is control flow, not a failure
+        if (this.stopRequested || name === "AbortError" || name === "StopRequested") break;
         const msg = (err as Error).message ?? String(err);
         await this.log.append("error", this.currentSession, this.currentBranch, { message: msg });
-        if ((err as Error).name === "AbortError" || this.stopRequested) break;
         this.setStatus("error", msg.slice(0, 300));
         return;
       }
     }
     if (!this.stopRequested) this.setStatus("idle", "round complete");
+  }
+
+  /**
+   * One LLM call with a fresh abort controller so stop() can interrupt it
+   * immediately, plus loop-level retries for provider flakiness (the SDK
+   * already backsoff 429/5xx; this covers exhausted rate limits and 400s).
+   */
+  private async llmCall(messages: ChatMessage[], tools: ReturnType<typeof toolSpecs>) {
+    const maxAttempts = 4;
+    const waits = [30_000, 60_000, 120_000];
+    for (let attempt = 1; ; attempt++) {
+      if (this.stopRequested) throw Object.assign(new Error("stopped"), { name: "StopRequested" });
+      this.abort = new AbortController();
+      try {
+        return await this.callLlm(messages, tools);
+      } catch (err) {
+        this.abort = null;
+        const name = (err as Error).name;
+        if (name === "StopRequested" || name === "AbortError" || this.stopRequested) throw err;
+        if (attempt >= maxAttempts) throw err;
+        const waitMs = waits[Math.min(attempt - 1, waits.length - 1)]!;
+        await this.log.append("system_note", this.currentSession, this.currentBranch, {
+          event: "llm-retry",
+          attempt,
+          waitMs,
+          error: String((err as Error).message).slice(0, 300),
+        });
+        await this.sleepInterruptible(waitMs);
+      }
+    }
   }
 
   /**
@@ -261,8 +455,12 @@ export class Agent {
     let finished = false;
     for (let guard = 0; guard < 200; guard++) {
       if (this.stopRequested) return finished;
+      // skills may have been created last turn — refresh the prompt listing
+      await this.refreshSkills();
       // periodic progress report at turn boundary (no mid-turn interruption)
       await this.maybeRequestProgress();
+      // keep the context window bounded before spending tokens on a turn
+      await this.maybeCompact();
 
       await this.log.append("state", this.currentSession, this.currentBranch, {
         from: this.status,
@@ -270,7 +468,7 @@ export class Agent {
         detail: "llm turn start",
         turn: ++this.stats.turns,
       });
-      const res = await chat(this.opts.llm, this.buildMessages(), allToolSpecs());
+      const res = await this.llmCall(this.buildMessages(), allToolSpecs());
       if (res.usage) {
         this.stats.inputTokens += res.usage.inputTokens ?? 0;
         this.stats.outputTokens += res.usage.outputTokens ?? 0;
@@ -291,6 +489,12 @@ export class Agent {
         if (this.stopRequested) return finished;
         if (call.function.name === "finish") {
           await this.handleFinish(call.function.arguments);
+          // answer the tool_call so a follow-up round stays API-valid
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: this.goal.status === "done" ? "(goal complete)" : "(round ended)",
+          });
           finished = true;
           continue;
         }
@@ -336,6 +540,7 @@ export class Agent {
     if (this.goal.text) {
       sys.push(`## Current goal (${this.goal.status})\n${this.goal.text}`);
     }
+    sys.push(this.skillsListing());
     const hasSystem = this.messages[0]?.role === "system";
     const head: ChatMessage[] = [{ role: "system", content: sys.join("\n\n") }];
     return hasSystem ? [...head, ...this.messages.slice(1)] : [...head, ...this.messages];
@@ -354,15 +559,137 @@ export class Agent {
   private async maybeRequestProgress(): Promise<void> {
     if (Date.now() - this.lastProgressAt < this.opts.progressIntervalMs) return;
     this.lastProgressAt = Date.now();
-    this.messages.push({
-      role: "user",
-      content:
-        "[harness] Please give a brief progress report now: what you are doing, goal progress, " +
-        "what you recently tried, any problems, and your next step. Keep it under 10 lines.",
+    const request =
+      "[harness] Please give a brief progress report now: what you are doing, goal progress, " +
+      "what you recently tried, any problems, and your next step. Keep it under 10 lines.";
+    // log both sides so a session restore replays this exchange faithfully
+    await this.log.append("prompt", this.currentSession, this.currentBranch, {
+      source: "harness",
+      text: request,
     });
-    const res = await chat(this.opts.llm, this.buildMessages(), []); // no tools: pure report
+    this.messages.push({ role: "user", content: request });
+    const res = await this.llmCall(this.buildMessages(), []); // no tools: pure report
     await this.recordProgress(JSON.stringify({ freeform: res.message.content }));
+    await this.log.append("message", this.currentSession, this.currentBranch, {
+      role: "assistant",
+      content: res.message.content ?? "",
+    });
     this.messages.push(res.message);
+  }
+
+  /* ---------- context compaction ---------- */
+
+  /** rough token estimate (~4 chars/token); good enough to trigger before overflow */
+  private estimateTokens(): number {
+    let chars = 0;
+    for (const m of this.messages) {
+      chars += (m.content?.length ?? 0) + JSON.stringify(m.tool_calls ?? "").length;
+    }
+    return Math.ceil(chars / 4);
+  }
+
+  /**
+   * Latest index whose message may START the kept tail of a compacted
+   * history. Anything except a dangling tool result is safe: a kept
+   * assistant-with-tool_calls always has its tool responses after it (they
+   * are never cut apart — we only remove a prefix).
+   */
+  private safeCut(maxCut: number): number {
+    for (let i = Math.min(maxCut, this.messages.length - 1); i >= 1; i--) {
+      if (this.messages[i]!.role !== "tool") return i;
+    }
+    return -1;
+  }
+
+  /** Compact history when the estimated token count exceeds the budget. */
+  private async maybeCompact(): Promise<void> {
+    const before = this.estimateTokens();
+    if (before < this.opts.contextTokenBudget) return;
+
+    // keep roughly the most recent quarter of the budget as live context
+    const keepCharBudget = (this.opts.contextTokenBudget / 4) * 4;
+    let keepChars = 0;
+    let cut = -1;
+    for (let i = this.messages.length - 1; i >= 1; i--) {
+      keepChars += (this.messages[i]!.content?.length ?? 0) + JSON.stringify(this.messages[i]!.tool_calls ?? "").length;
+      if (keepChars > keepCharBudget) break;
+      cut = i;
+    }
+    cut = this.safeCut(cut);
+    if (cut <= 0) return; // nothing safely compactable (should not happen)
+
+    const old = this.messages.slice(0, cut);
+    const oldCount = old.length;
+    let summary = "";
+    let mode: "summarize" | "truncate" = "summarize";
+    let summarizedCount = oldCount;
+    let droppedCount = 0;
+    try {
+      summary = await this.summarize(old);
+    } catch (err) {
+      await this.log.append("error", this.currentSession, this.currentBranch, {
+        message: `compaction summarize failed, falling back to truncation: ${(err as Error).message}`,
+      });
+    }
+    if (!summary) {
+      // fallback: drop the oldest half without LLM help so work can continue
+      mode = "truncate";
+      summarizedCount = 0;
+      const halfCut = this.safeCut(Math.floor(oldCount / 2));
+      if (halfCut <= 0) return;
+      droppedCount = halfCut;
+      this.messages = this.messages.slice(halfCut);
+    } else {
+      this.messages = [
+        {
+          role: "user",
+          content:
+            `[harness] Context was compacted: ${oldCount} earlier messages were summarized. ` +
+            "Persistent files (GOAL.md / AGENTS.md / MEMORY.md) are still on disk — re-read them when needed.\n\n" +
+            `## Summary of earlier conversation\n${summary}`,
+        },
+        ...this.messages.slice(cut),
+      ];
+    }
+    const after = this.estimateTokens();
+    this.stats.compactions++;
+    await this.log.append("system_note", this.currentSession, this.currentBranch, {
+      event: "context-compacted",
+      tokensBefore: before,
+      tokensAfter: after,
+      summarized: summarizedCount,
+      dropped: droppedCount,
+      mode,
+    });
+  }
+
+  /** Ask the model for dense continuation notes over the compacted range. */
+  private async summarize(old: ChatMessage[]): Promise<string> {
+    const transcript = old
+      .map((m) => {
+        const who = m.role === "tool" ? "tool" : m.role;
+        const tc = m.tool_calls?.map((t) => `\n[calls ${t.function.name}(${t.function.arguments})]`).join("");
+        return `${who}: ${m.content ?? ""}${tc}`;
+      })
+      .join("\n\n")
+      .slice(-120_000);
+    const fn = this.opts.chatFn ?? chat;
+    const res = await fn(
+      this.opts.llm,
+      [
+        {
+          role: "system",
+          content:
+            "You compress a coding agent's conversation into dense notes for it to continue working. " +
+            "Preserve: current goal state, key decisions, files created/changed, important command results, " +
+            "open problems, and the next step. Be terse bullet points, no prose flourishes.",
+        },
+        { role: "user", content: `Conversation:\n\n${transcript}\n\nWrite the continuation notes now.` },
+      ],
+      [],
+      undefined, // never abortable by stop(): losing the summary would lose history
+    );
+    return res.message.content ?? "";
   }
 
   private async recordProgress(argsJson: string): Promise<void> {

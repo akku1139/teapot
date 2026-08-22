@@ -5,12 +5,21 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import {
+  discoverSkills,
+  isValidSkillName,
+  readSkillFile,
+  saveSkill,
+  type SkillDef,
+} from "./skills.js";
 
 export interface ToolContext {
   cwd: string;
   /** hard cap per command */
   defaultTimeoutMs: number;
   maxOutputBytes: number;
+  /** skill roots in priority order ([0] = workspace, wins on name clash) */
+  skillRoots?: { dir: string; source: string }[];
 }
 
 export interface ToolResult {
@@ -50,7 +59,6 @@ function safeJoin(cwd: string, p: string): string {
 /** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {
-    const started = Date.now();
     const child = spawn("/bin/bash", ["-lc", cmd], {
       cwd: ctx.cwd,
       detached: true, // own process group
@@ -59,6 +67,7 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
     });
     let out = "";
     let done = false;
+    let timedOut = false;
     const collect = (chunk: Buffer) => {
       if (out.length < ctx.maxOutputBytes) out += chunk.toString("utf8");
     };
@@ -74,36 +83,35 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
     };
 
     const timer = setTimeout(() => {
+      timedOut = true;
       killGroup();
-      child.once("close", () => {
-        if (!done) {
-          done = true;
-          resolve({
-            ok: false,
-            result: `TIMEOUT after ${timeoutMs}ms. Partial output:\n${clip(out, ctx.maxOutputBytes)}`,
-          });
-        }
-      });
-    }, timeoutMs);    child.on("error", (err) => {
+    }, timeoutMs);
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
       if (!done) {
         done = true;
-        clearTimeout(timer);
         resolve({ ok: false, result: `spawn error: ${err.message}` });
       }
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      if (!done) {
-        done = true;
+      if (done) return;
+      done = true;
+      if (timedOut) {
         resolve({
-          ok: code === 0,
-          result:
-            (code === 0 ? "" : `exit=${code}${signal ? ` signal=${signal}` : ""}\n`) +
-            clip(out.trim() || "(no output)", ctx.maxOutputBytes),
+          ok: false,
+          result: `TIMEOUT after ${timeoutMs}ms. Partial output:\n${clip(out.trim() || "(no output)", ctx.maxOutputBytes)}`,
         });
+        return;
       }
+      resolve({
+        ok: code === 0,
+        result:
+          (code === 0 ? "" : `exit=${code}${signal ? ` signal=${signal}` : ""}\n`) +
+          clip(out.trim() || "(no output)", ctx.maxOutputBytes),
+      });
     });
-    void started;
   });
 }
 
@@ -209,7 +217,66 @@ export const TOOLS: ToolDef[] = [
       return runShell(str(args.command), ctx, Math.min(num(args.timeout_ms, ctx.defaultTimeoutMs), 600_000));
     },
   },
+  {
+    name: "load_skill",
+    description:
+      "Load a skill's full instructions by name. Use when the system prompt's skill list " +
+      "matches your current task; follow the loaded playbook.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "skill name from the list in your system prompt" },
+      },
+      required: ["name"],
+    },
+    async run(args, ctx) {
+      const roots = ctx.skillRoots ?? [];
+      const skills = await discoverSkills(roots);
+      const def = skills.find((s) => s.name === str(args.name));
+      if (!def) {
+        return {
+          ok: false,
+          result: `unknown skill: ${str(args.name)}. Available: ${skills.map((s) => s.name).join(", ") || "(none)"}`,
+        };
+      }
+      return { ok: true, result: await readSkillFile(def) };
+    },
+  },
+  {
+    name: "save_skill",
+    description:
+      "Create or update a reusable skill (a playbook you want to survive this session and be " +
+      "loadable later via load_skill). Write distilled, step-by-step instructions — not a chat log. " +
+      "The skill becomes available in your system prompt from the next turn.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "kebab-case id, e.g. release-checklist" },
+        description: { type: "string", description: "one line: what it is for / when to use it" },
+        content: { type: "string", description: "markdown instructions" },
+      },
+      required: ["name", "description", "content"],
+    },
+    async run(args, ctx) {
+      const roots = ctx.skillRoots ?? [];
+      if (roots.length === 0) return { ok: false, result: "no skill roots configured" };
+      const name = str(args.name);
+      if (!isValidSkillName(name))
+        return { ok: false, result: "invalid skill name (use kebab-case: [a-z0-9.-], max 64 chars)" };
+      const description = str(args.description).slice(0, 200);
+      if (!description) return { ok: false, result: "description required" };
+      const content = str(args.content);
+      if (!content.trim()) return { ok: false, result: "content required" };
+      const filePath = await saveSkill(roots[0].dir, name, description, content.slice(0, 64_000));
+      return { ok: true, result: `saved skill "${name}" to ${filePath} (listed from next turn)` };
+    },
+  },
 ];
+
+/** Current skills across the configured roots (for the system prompt listing). */
+export async function currentSkills(ctx: ToolContext): Promise<SkillDef[]> {
+  return discoverSkills(ctx.skillRoots ?? []);
+}
 
 export function toolSpecs(): ToolSpecLike[] {
   return TOOLS.map((t) => ({

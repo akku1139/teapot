@@ -49,6 +49,8 @@ export interface TeapotConfig {
   agents: AgentConfig[];
   tasks?: TaskConfig[];
   progressIntervalMs?: number;
+  /** per-agent estimated-token history budget before compaction kicks in */
+  contextTokenBudget?: number;
 }
 
 const CONFIG_DIR =
@@ -203,6 +205,8 @@ export class Master {
       logFile,
       progressIntervalMs: this.config.progressIntervalMs,
       autoContinue: true,
+      ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
+      globalSkillsDir: path.join(CONFIG_DIR, "skills"),
     });
     await agent.init();
     this.agents.set(ac.id, agent);

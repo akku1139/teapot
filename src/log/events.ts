@@ -74,6 +74,21 @@ export class EventLog {
     } catch {
       /* new log */
     }
+    // repair a torn tail: without this, the next append would fuse into the
+    // corrupt partial line and destroy two events instead of one
+    try {
+      const { stat, appendFile } = await import("node:fs/promises");
+      const st = await stat(this.filePath);
+      if (st.size > 0) {
+        const buf = Buffer.alloc(1);
+        const fh = await import("node:fs/promises").then((m) => m.open(this.filePath, "r"));
+        await fh.read(buf, 0, 1, st.size - 1);
+        await fh.close();
+        if (buf[0] !== 0x0a) await appendFile(this.filePath, "\n");
+      }
+    } catch {
+      /* file may not exist yet */
+    }
     this.stream = createWriteStream(this.filePath, { flags: "a" });
     this.stream.on("error", (err) => {
       console.error(`[teapot] log write error (${this.filePath}):`, err.message);
