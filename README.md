@@ -65,8 +65,16 @@ master (Hono server, src/master.ts + src/server/api.ts)
 
 - **Agent** (`src/agent/agent.ts`): an async loop that alternates LLM turns and
   tool executions until the model stops calling tools, then auto-continues
-  toward its goal. Stop/resume at any time via API/UI. Runaway guards: turn cap
+  toward its goal. Stop/resume at any time via API/UI — stop aborts an
+  in-flight LLM call immediately (AbortController). Runaway guards: turn cap
   per round, consecutive-tool-error cap, per-command timeouts.
+- **Context compaction**: message history is token-estimated each turn; past a
+  budget (`contextTokenBudget`, default ~96k) older turns are summarized by
+  the LLM into dense continuation notes (fallback: safe truncation). Cut
+  points never split a tool_call/tool_result pair.
+- **Session persistence**: conversations are rebuilt from the JSONL log on
+  restart (`restoreSession`), so agents resume mid-task across master
+  restarts instead of starting blank.
 - **LLM** (`src/agent/llm.ts`): official `openai` npm client against any
   OpenAI-compatible endpoint (OpenRouter, vLLM, Ollama...). Model is config,
   never hard-coded.
@@ -79,6 +87,32 @@ master (Hono server, src/master.ts + src/server/api.ts)
   knowledge), `MEMORY.md` (agent notes) live in each workspace as normal git-
   editable Markdown. The goal file is the source of truth; the harness re-reads
   it on restart.
+
+### Agent Skills
+
+Skills are reusable playbooks the agent loads on demand — and writes itself,
+so hard-won procedure knowledge survives sessions:
+
+```
+<workspace>/skills/<name>/SKILL.md      # project skills (git-friendly)
+~/.config/teapot-coding-agent/skills/<name>/SKILL.md   # shared across agents
+```
+
+```markdown
+---
+name: release-checklist
+description: Steps to cut a release safely
+---
+
+1. run pnpm test
+2. bump version ...
+```
+
+- The system prompt lists every discovered skill (name + description);
+  workspace skills override same-named global ones.
+- The agent calls `load_skill(name)` when a task matches and follows it.
+- The agent calls `save_skill(name, description, content)` to distill a
+  reusable procedure it developed — available from the next turn, forever.
 
 ### Session log format (JSONL)
 

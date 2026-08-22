@@ -1,0 +1,59 @@
+# Publish teapot-coding-agent to npm.
+#
+# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret is stored in the
+# repository. One-time setup on npmjs.com:
+#   package → Settings → Trusted Publisher →
+#     repository: akku1139/teapot
+#     workflow:   .github/workflows/publish.yml
+#
+# Release flow:
+#   1. bump "version" in package.json
+#   2. git tag vX.Y.Z && git push origin vX.Y.Z  (or run manually via workflow_dispatch)
+
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC: required for trusted publishing + provenance attestation
+      # Optional hardening: restrict to a protected GitHub environment.
+      # environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches package.json version (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          PKG_V="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_V" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${PKG_V}"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm test
+
+      # runners ship an npm that may predate OIDC trusted publishing support
+      - name: Ensure npm supports trusted publishing (>= 11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Publish
+        run: npm publish --provenance --access public

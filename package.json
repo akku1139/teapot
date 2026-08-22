@@ -4,20 +4,38 @@
   "description": "A lightweight, always-on multi-agent harness for AI coding agents",
   "type": "module",
   "license": "AGPL-3.0-or-later",
+  "keywords": [
+    "ai",
+    "agent",
+    "coding-agent",
+    "llm",
+    "harness",
+    "autonomous-agents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akku1139/teapot.git"
+  },
   "packageManager": "pnpm@11.3.0",
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "teapot": "./dist/index.js"
+    "teapot": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "public",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json && vite build",
     "build-server": "tsc -p tsconfig.json",
     "build-web": "vite build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "dev-web": "vite"
+    "dev-web": "vite",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.0",
