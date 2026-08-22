@@ -4,7 +4,6 @@
  * Usage: teapot [config.json]
  * Config may also come from TEAPOT_* env vars (see src/master.ts).
  */
-import path from "node:path";
 import { loadConfig, resolveConfigPath, Master } from "./master.js";
 import { buildApp, serveApp } from "./server/api.js";
 
@@ -16,7 +15,7 @@ async function main(): Promise<void> {
   if (!config.llm.apiKey && !hasProviders) console.warn("[teapot] warning: no API key configured");
   if (!config.llm.model && !hasProviders) console.warn("[teapot] warning: no model configured");
 
-  const master = new Master(config);
+  const master = new Master(config, configPath);
   await master.start();
 
   const app = buildApp(master);

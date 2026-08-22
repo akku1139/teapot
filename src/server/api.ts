@@ -4,7 +4,10 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parseSchedule } from "../scheduler/cron.js";
+import type { ProviderConfig } from "../master.js";
 import path from "node:path";
 import { bus } from "../bus.js";
 import { readEvents } from "../log/events.js";
@@ -15,6 +18,119 @@ export function buildApp(master: Master): Hono {
 
   // ---- agents ----
   app.get("/api/agents", (c) => c.json({ agents: [...master.agents.values()].map((a) => a.snapshot()) }));
+
+  // create + start an agent on an arbitrary directory
+  app.post("/api/agents", async (c) => {
+    const body = await c.req.json<{
+      workspace?: string;
+      id?: string;
+      provider?: string;
+      model?: string;
+      start?: boolean;
+    }>();
+    if (!body.workspace?.trim()) return c.json({ error: "workspace required" }, 400);
+    const ws = path.resolve(body.workspace.replace(/^~/, process.env.HOME ?? "~"));
+    try {
+      const st = await fs.stat(ws);
+      if (!st.isDirectory()) return c.json({ error: "not a directory" }, 400);
+    } catch {
+      return c.json({ error: `directory not found: ${ws}` }, 400);
+    }
+    const id = (body.id?.trim() || path.basename(ws)).replace(/[^\w.-]/g, "-").slice(0, 40);
+    try {
+      const agent = await master.addAgent(
+        { id, workspace: ws, provider: body.provider, model: body.model },
+        true, // persist to config so it survives restarts
+      );
+      if (body.start !== false) agent.start("created via web");
+      return c.json({ ok: true, agent: agent.snapshot() });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  // remove agent (log file is kept)
+  app.delete("/api/agents/:id", async (c) => {
+    try {
+      await master.removeAgent(c.req.param("id"));
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 404);
+    }
+  });
+
+  // ---- filesystem browsing (read-only, for the workspace picker) ----
+  app.get("/api/fs", async (c) => {
+    let p = c.req.query("path") || process.env.HOME || "/";
+    p = path.resolve(p.replace(/^~/, process.env.HOME ?? "~"));
+    try {
+      const entries = await fs.readdir(p, { withFileTypes: true });
+      return c.json({
+        path: p,
+        parent: path.dirname(p),
+        entries: entries
+          .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+          .slice(0, 500)
+          .map((e) => e.name)
+          .sort(),
+      });
+    } catch {
+      return c.json({ error: "cannot read" }, 400);
+    }
+  });
+
+  // ---- config (view/edit from the web UI) ----
+  app.get("/api/config", (c) => {
+    const mask = (p: Record<string, { baseUrl: string; apiKey?: string; model?: string }> | undefined) =>
+      Object.fromEntries(
+        Object.entries(p ?? {}).map(([k, v]) => [
+          k,
+          { ...v, apiKey: v.apiKey ? "•••" + String(v.apiKey).slice(-4) : undefined },
+        ]),
+      );
+    return c.json({
+      configPath: master.configPath,
+      providers: mask(master.config.providers),
+      defaultProvider: master.config.defaultProvider,
+      progressIntervalMs: master.config.progressIntervalMs,
+      tasks: master.config.tasks,
+      agents: master.config.agents.map((a) => ({ id: a.id, workspace: a.workspace, provider: a.provider, model: a.model })),
+    });
+  });
+
+  app.put("/api/config", async (c) => {
+    const body = await c.req.json<{
+      providers?: Record<string, { baseUrl: string; apiKey?: string; model?: string }>;
+      defaultProvider?: string;
+      progressIntervalMs?: number;
+      tasks?: { id: string; agent: string; schedule: string; prompt: string; forked?: boolean }[];
+    }>().catch(() => null);
+    if (!body) return c.json({ error: "invalid JSON" }, 400);
+    try {
+      // validate schedules before applying anything
+      for (const t of body.tasks ?? []) parseSchedule(t.schedule);
+      // keep masked keys intact: "•••1234" means "unchanged"
+      const prev = master.config.providers ?? {};
+      const providers: Record<string, ProviderConfig> = {};
+      for (const [name, p] of Object.entries(body.providers ?? {})) {
+        const masked = !p.apiKey || p.apiKey.startsWith("•••");
+        providers[name] = {
+          baseUrl: p.baseUrl,
+          apiKey: masked ? prev[name]?.apiKey : p.apiKey,
+          ...(p.model ? { model: p.model } : {}),
+        };
+      }
+      master.updateConfig({
+        providers,
+        defaultProvider: body.defaultProvider,
+        progressIntervalMs: body.progressIntervalMs,
+        tasks: body.tasks,
+      });
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
 
   app.get("/api/agents/:id", (c) => {
     const a = master.agents.get(c.req.param("id"));

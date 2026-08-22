@@ -42,6 +42,10 @@ export default function App() {
   const [metrics, setMetrics] = createSignal<any>(null);
   const [draft, setDraft] = createSignal("");
   const [autoStart, setAutoStart] = createSignal(true);
+  const [cfg, setCfg] = createSignal<any>({ providers: {} });
+  const [showNew, setShowNew] = createSignal(false);
+  const [showCfg, setShowCfg] = createSignal(false);
+  const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
 
@@ -71,6 +75,7 @@ export default function App() {
   }
 
   onMount(() => {
+    loadCfg();
     refreshAgents().then(() => agents()[0] && select(agents()[0].id));
     refreshMetrics();
     // push updates via SSE; coalesce bursts at 400ms
@@ -121,10 +126,16 @@ export default function App() {
   };
 
   return (
+    <>
     <div class="layout">
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
-        <h1>🫖 teapot</h1>
+        <h1>🫖 teapot
+          <span style="float:right;display:flex;gap:4px">
+            <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
+            <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
+          </span>
+        </h1>
         <For each={agents()}>
           {(a) => (
             <div class={"agent-item" + (a.id === selected() ? " sel" : "")} onclick={() => select(a.id)}>
@@ -190,6 +201,11 @@ export default function App() {
             <button onclick={act("/start")}>▶ start</button>
             <button onclick={act("/stop")}>■ stop</button>
             <button onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}>⑂ fork</button>
+            <button onclick={async () => {
+              if (!confirm(`remove agent ${sel()!.id}? (log is kept)`)) return;
+              await api(`/api/agents/${sel()!.id}`, { method: "DELETE" });
+              setSelected(null); setAgents(agents().filter((a) => a.id !== sel()!.id));
+            }} title="remove agent">🗑</button>
           </div>
 
           <h3>goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
@@ -219,6 +235,17 @@ export default function App() {
         </Show>
       </aside>
     </div>
+    <Show when={showNew()}>
+      <NewAgentModal
+        providers={Object.keys(cfg().providers ?? {})}
+        onClose={() => setShowNew(false)}
+        onCreated={(id) => { setShowNew(false); refreshAgents(); select(id); }}
+      />
+    </Show>
+    <Show when={showCfg()}>
+      <ConfigModal cfg={cfg()} onClose={() => setShowCfg(false)} onSaved={loadCfg} />
+    </Show>
+    </>
   );
 }
 
@@ -299,4 +326,126 @@ function SwitchContent(props: { e: Ev }) {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + " …" : s;
+}
+
+/* ---------- modal shell ---------- */
+function Modal(props: { title: string; onClose: () => void; children: any }) {
+  return (
+    <div class="overlay" onclick={(e: Event) => e.target === e.currentTarget && props.onClose()}>
+      <div class="modal">
+        <div class="modal-head">
+          <b>{props.title}</b>
+          <button class="iconbtn" onclick={props.onClose}>✕</button>
+        </div>
+        {props.children}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- new agent ---------- */
+function NewAgentModal(props: { providers: string[]; onClose: () => void; onCreated: (id: string) => void }) {
+  const [dir, setDir] = createSignal("~");
+  const [entries, setEntries] = createSignal<string[]>([]);
+  const [name, setName] = createSignal("");
+  const [provider, setProvider] = createSignal(props.providers[0] ?? "");
+  const [model, setModel] = createSignal("");
+  const [err, setErr] = createSignal("");
+
+  async function browse(p?: string) {
+    const d = await api(`/api/fs${p ? `?path=${encodeURIComponent(p)}` : ""}`);
+    setDir(d.path); setEntries(d.entries);
+  }
+  onMount(() => browse(dir()));
+
+  const create = async (e: Event) => {
+    e.preventDefault(); setErr("");
+    try {
+      const r = await api("/api/agents", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspace: dir(), id: name(), provider: provider() || undefined, model: model() || undefined }),
+      });
+      props.onCreated(r.agent.id);
+    } catch (ex) { setErr(String((ex as Error).message)); }
+  };
+
+  return (
+    <Modal title="new agent" onClose={props.onClose}>
+      <form onsubmit={create} style="display:flex;flex-direction:column;gap:10px">
+        <label>workspace directory
+          <div style="display:flex;gap:6px">
+            <input type="text" class="w100 mono" value={dir()} oninput={(e) => setDir(e.currentTarget.value)} />
+            <button type="button" onclick={() => browse(dir())}>go</button>
+            <button type="button" onclick={() => browse("..")}>↑</button>
+          </div>
+        </label>
+        <div class="dirlist">
+          <For each={entries()}>{(n) =>
+            <div class="direntry" onclick={() => browse(`${dir()}/${n}`.replace(/\/+/g, "/"))}>📁 {n}</div>
+          }</For>
+        </div>
+        <div style="display:flex;gap:10px">
+          <label style="flex:1">agent name <input type="text" placeholder="(directory name)" value={name()} oninput={(e) => setName(e.currentTarget.value)} /></label>
+          <label>provider
+            <select value={provider()} onchange={(e) => setProvider(e.currentTarget.value)}>
+              <For each={props.providers}>{(p) => <option>{p}</option>}</For>
+            </select>
+          </label>
+          <label style="flex:1">model <input type="text" placeholder="(provider default)" value={model()} oninput={(e) => setModel(e.currentTarget.value)} /></label>
+        </div>
+        <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
+        <button type="submit" style="align-self:flex-end">create & start</button>
+      </form>
+    </Modal>
+  );
+}
+
+/* ---------- settings / config editor ---------- */
+function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void }) {
+  const [provText, setProvText] = createSignal(
+    JSON.stringify(Object.fromEntries(Object.entries(props.cfg.providers ?? {}).map(([k, v]: [string, any]) => [k, { baseUrl: v.baseUrl, apiKey: v.apiKey ?? "", model: v.model ?? "" }])), null, 2),
+  );
+  const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? Object.keys(props.cfg.providers ?? {})[0] ?? "");
+  const [intervalMin, setIntervalMin] = createSignal(Math.round((props.cfg.progressIntervalMs ?? 600000) / 60000));
+  const [tasksText, setTasksText] = createSignal(JSON.stringify(props.cfg.tasks ?? [], null, 2));
+  const [err, setErr] = createSignal("");
+
+  const save = async (e: Event) => {
+    e.preventDefault(); setErr("");
+    let providers, tasks;
+    try { providers = JSON.parse(provText()); } catch { return setErr("providers: invalid JSON"); }
+    try { tasks = JSON.parse(tasksText()); } catch { return setErr("tasks: invalid JSON"); }
+    try {
+      await api("/api/config", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          providers, defaultProvider: defaultProvider(),
+          progressIntervalMs: Math.max(1, intervalMin()) * 60000,
+          tasks,
+        }),
+      });
+      props.onSaved(); props.onClose();
+    } catch (ex) { setErr(String((ex as Error).message)); }
+  };
+
+  return (
+    <Modal title="settings" onClose={props.onClose}>
+      <form onsubmit={save} style="display:flex;flex-direction:column;gap:10px">
+        <label>providers ({props.cfg.configPath})
+          <textarea rows={8} class="mono w100" value={provText()} oninput={(e) => setProvText(e.currentTarget.value)} />
+        </label>
+        <div style="display:flex;gap:10px">
+          <label style="flex:1">default provider <input type="text" value={defaultProvider()} oninput={(e) => setDefaultProvider(e.currentTarget.value)} /></label>
+          <label>progress interval (min) <input type="number" min="1" style="width:90px" value={intervalMin()} oninput={(e) => setIntervalMin(Number(e.currentTarget.value))} /></label>
+        </div>
+        <label>scheduled tasks (JSON array)
+          <textarea rows={7} class="mono w100" value={tasksText()} oninput={(e) => setTasksText(e.currentTarget.value)} />
+        </label>
+        <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
+        <button type="submit" style="align-self:flex-end">save</button>
+      </form>
+    </Modal>
+  );
 }

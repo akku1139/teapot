@@ -3,7 +3,7 @@
  * Agents are in-process async loops (I/O bound only); all CPU-heavy work is
  * delegated to subprocesses managed by the bash tool with hard timeouts.
  */
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Agent } from "./agent/agent.js";
@@ -93,10 +93,13 @@ export function resolveConfigPath(explicitPath?: string): string {
   return path.resolve("teapot.config.json");
 }
 
+let masterRawConfig: Record<string, unknown> = {};
+
 export function loadConfig(configPath: string): TeapotConfig {
   if (!existsSync(configPath)) return DEFAULT_CONFIG;
   mkdirSync(CONFIG_DIR, { recursive: true });
   const user = JSON.parse(readFileSync(configPath, "utf8")) as Partial<TeapotConfig>;
+  masterRawConfig = user as Record<string, unknown>;
   return {
     ...DEFAULT_CONFIG,
     ...user,
@@ -106,12 +109,59 @@ export function loadConfig(configPath: string): TeapotConfig {
   };
 }
 
+/** Raw parsed user config (for lossless persistence of web edits). */
+export function loadedRaw(): Record<string, unknown> {
+  return masterRawConfig;
+}
+
 export class Master {
   readonly agents = new Map<string, Agent>();
   private tasks: { task: TaskConfig; schedule: ReturnType<typeof parseSchedule>; lastRunMin: number }[] = [];
   private startedAt = Date.now();
 
-  constructor(readonly config: TeapotConfig) {}
+  constructor(
+    readonly config: TeapotConfig,
+    readonly configPath: string,
+  ) {}
+
+  /** Persist current logical config back to disk (lossless via raw user config). */
+  private saveConfig(): void {
+    this.raw.agents = this.config.agents;
+    this.raw.providers = this.config.providers;
+    this.raw.defaultProvider = this.config.defaultProvider;
+    this.raw.tasks = this.config.tasks;
+    if (this.raw.progressIntervalMs === undefined && this.config.progressIntervalMs !== undefined)
+      this.raw.progressIntervalMs = this.config.progressIntervalMs;
+    writeFileSync(this.configPath, JSON.stringify(this.raw, null, 2) + "\n");
+  }
+  private raw: Record<string, unknown> = loadedRaw();
+
+  /** Apply partial config edits from the web UI and persist them. */
+  updateConfig(patch: {
+    providers?: Record<string, ProviderConfig>;
+    defaultProvider?: string;
+    progressIntervalMs?: number;
+    tasks?: TaskConfig[];
+  }): void {
+    if (patch.providers) this.config.providers = patch.providers;
+    if (patch.defaultProvider !== undefined) this.config.defaultProvider = patch.defaultProvider;
+    if (patch.progressIntervalMs !== undefined) {
+      this.config.progressIntervalMs = patch.progressIntervalMs;
+      for (const a of this.agents.values())
+        (a as unknown as { opts: { progressIntervalMs: number } }).opts.progressIntervalMs =
+          patch.progressIntervalMs;
+    }
+    if (patch.tasks) {
+      this.config.tasks = patch.tasks;
+      // rebuild schedule table live
+      this.tasks = patch.tasks.map((t) => ({
+        task: t,
+        schedule: parseSchedule(t.schedule),
+        lastRunMin: -1,
+      }));
+    }
+    this.saveConfig();
+  }
 
   async start(): Promise<void> {
     mkdirSync(this.config.dataDir, { recursive: true });
@@ -129,7 +179,9 @@ export class Master {
     setInterval(() => void this.tick(), 15_000).unref();
   }
 
-  async addAgent(ac: AgentConfig): Promise<Agent> {
+  /** Create an agent; optionally persist it to the config file. */
+  async addAgent(ac: AgentConfig, persist = false): Promise<Agent> {
+    if (this.agents.has(ac.id)) throw new Error(`agent id already exists: ${ac.id}`);
     // provider resolution: inline overrides > named provider > legacy llm block
     const provName = ac.provider ?? this.config.defaultProvider ?? "openrouter";
     const prov = this.config.providers?.[provName];
@@ -142,6 +194,7 @@ export class Master {
       model: ac.model ?? prov?.model ?? this.config.llm.model!,
       timeoutMs: 120_000,
     };
+    if (!llm.model) throw new Error(`agent ${ac.id}: no model configured (set model on the agent or on its provider)`);
     const logFile = path.join(this.config.dataDir, `${ac.id}.jsonl`);
     const agent = new Agent({
       id: ac.id,
@@ -153,7 +206,20 @@ export class Master {
     });
     await agent.init();
     this.agents.set(ac.id, agent);
+    if (persist) {
+      this.config.agents.push(ac);
+      this.saveConfig();
+    }
     return agent;
+  }
+
+  async removeAgent(id: string): Promise<void> {
+    const agent = this.agents.get(id);
+    if (!agent) throw new Error(`no such agent: ${id}`);
+    this.agents.delete(id);
+    await agent.dispose();
+    this.config.agents = this.config.agents.filter((a) => a.id !== id);
+    this.saveConfig();
   }
 
   /** 4 ticks/min; each tick is a few integer compares per task. */
