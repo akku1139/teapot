@@ -28,6 +28,8 @@ export interface LlmConfig {
 
 export interface LlmResult {
   message: ChatMessage;
+  /** chain-of-thought text some providers attach; never sent back upstream */
+  reasoning?: string;
   usage?: { inputTokens?: number; outputTokens?: number };
 }
 
@@ -95,6 +97,7 @@ export async function chat(
       role: "assistant",
       content: typeof rm.content === "string" ? rm.content : "",
     };
+    const reasoning = typeof rm.reasoning === "string" && rm.reasoning ? rm.reasoning : undefined;
     const calls = rm.tool_calls as
       | { id?: string; function?: { name?: string; arguments?: string } }[]
       | undefined;
@@ -117,6 +120,7 @@ export async function chat(
     }
     return {
       message,
+      reasoning,
       usage: res.usage
         ? { inputTokens: res.usage.prompt_tokens, outputTokens: res.usage.completion_tokens }
         : undefined,

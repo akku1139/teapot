@@ -45,6 +45,11 @@ export default function App() {
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
   const [showCfg, setShowCfg] = createSignal(false);
+  const [showRight, setShowRight] = createSignal(false); // drawer on narrow screens
+  // autoscroll: follow the tail only while the reader is already at the bottom
+  const [atBottom, setAtBottom] = createSignal(true);
+  const [missed, setMissed] = createSignal(0);
+  const chatEvents = createMemo(() => events().filter(isChat));
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
@@ -63,15 +68,23 @@ export default function App() {
     } catch { /* agent may be gone */ }
   }
 
+  function feedEl() { return document.querySelector(".feed"); }
+  function nearBottom() {
+    const f = feedEl();
+    return !f || f.scrollHeight - f.scrollTop - f.clientHeight < 80;
+  }
+  function scrollBottom(force = false) {
+    const f = feedEl();
+    if (f && (force || atBottom())) {
+      f.scrollTop = f.scrollHeight;
+      setMissed(0);
+    }
+  }
+
   async function select(id: string) {
     setSelected(id);
     await loadEvents(id);
-    requestAnimationFrame(scrollBottom);
-  }
-
-  function scrollBottom() {
-    const f = document.querySelector(".feed");
-    if (f) f.scrollTop = f.scrollHeight;
+    requestAnimationFrame(() => scrollBottom(true));
   }
 
   onMount(() => {
@@ -90,7 +103,10 @@ export default function App() {
         if (selected()) {
           const before = events().length;
           await loadEvents(selected()!);
-          if (events().length !== before) scrollBottom();
+          if (events().length !== before) {
+            if (nearBottom()) scrollBottom(true);
+            else setMissed(missed() + (events().length - before));
+          }
         }
       }, 400);
     };
@@ -136,15 +152,17 @@ export default function App() {
             <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
           </span>
         </h1>
-        <For each={agents()}>
-          {(a) => (
-            <div class={"agent-item" + (a.id === selected() ? " sel" : "")} onclick={() => select(a.id)}>
-              <span class={`dot ${a.status}`} />
-              <span>{a.id}</span>
-              <Show when={a.goal.status === "done"}><span title="goal done">✓</span></Show>
-            </div>
-          )}
-        </For>
+        <div class="agent-list">
+          <For each={agents()}>
+            {(a) => (
+              <div class={"agent-item" + (a.id === selected() ? " sel" : "")} onclick={() => select(a.id)}>
+                <span class={`dot ${a.status}`} />
+                <span>{a.id}</span>
+                <Show when={a.goal.status === "done"}><span title="goal done">✓</span></Show>
+              </div>
+            )}
+          </For>
+        </div>
         <div class="metrics">
           <Show when={metrics()}>
             master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB<br />
@@ -160,17 +178,30 @@ export default function App() {
             <span class="hash">#</span>
             <span class="title">{sel()!.id}</span>
             <span class={`badge ${sel()!.status}`}>{sel()!.status}</span>
-            <Show when={sel()!.statusReason}>
-              <span class="sub">{sel()!.statusReason}</span>
-            </Show>
             <span class="sub">{sel()!.model} · {sel()!.session}/{sel()!.branch} · turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls}</span>
+            <span style="margin-left:auto;display:flex;gap:4px">
+              <Show when={sel()!.statusReason}>
+                <span class="sub" title={sel()!.statusReason}>ℹ</span>
+              </Show>
+              <button class="iconbtn" title="toggle details panel" onclick={() => setShowRight(!showRight())}>▤</button>
+            </span>
           </header>
 
-          <div class="feed">
-            <For each={events().filter(isChat)}>
-              {(e, i) => <MessageRow e={e} prev={events().filter(isChat)[i() - 1]} />}
-            </For>
+          <div class="feed" onscroll={() => { const nb = nearBottom(); if (nb && missed()) setMissed(0); setAtBottom(nb); }}>
+            <Show when={chatEvents().length > 0} fallback={
+              <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
+            }>
+              <For each={chatEvents()}>
+                {(e, i) => <MessageRow e={e} prev={chatEvents()[i() - 1]} />}
+              </For>
+            </Show>
           </div>
+
+          <Show when={!atBottom() || missed() > 0}>
+            <button class="jump" onclick={() => scrollBottom(true)}>
+              ↓ {missed() > 0 ? `${missed()} new message${missed() > 1 ? "s" : ""}` : "jump to present"}
+            </button>
+          </Show>
 
           <div class="composer">
             <form onsubmit={send}>
@@ -194,7 +225,7 @@ export default function App() {
       </section>
 
       {/* ---------- right bar ---------- */}
-      <aside class="rightbar">
+      <aside class={"rightbar" + (showRight() ? " open" : "")}>
         <Show when={sel()}>
           <h3>controls</h3>
           <div class="btnrow">
@@ -293,21 +324,37 @@ function SwitchContent(props: { e: Ev }) {
     case "prompt":
       return <div class="content" innerHTML={renderMarkdown(String(e.data.text ?? ""))} />;
     case "message":
-      return <div class="content" innerHTML={renderMarkdown(String(e.data.content ?? ""))} />;
-    case "tool_call":
       return (
-        <div class="embed">
-          <b>⚙ {String(e.data.name)}</b>
-          <div class="mono">{truncate(JSON.stringify(e.data.args, null, 1), 500)}</div>
-        </div>
+        <>
+          <Show when={typeof e.data.reasoning === "string" && e.data.reasoning.trim()}>
+            <details class="reasoning">
+              <summary>💭 reasoning</summary>
+              <div class="mono">{String(e.data.reasoning)}</div>
+            </details>
+          </Show>
+          <div class="content" innerHTML={renderMarkdown(String(e.data.content ?? ""))} />
+        </>
       );
-    case "tool_result":
+    case "tool_call": {
+      const args = JSON.stringify(e.data.args, null, 1);
+      const preview = oneLine(JSON.stringify(e.data.args ?? {}), 110);
       return (
-        <div class={"embed" + (e.data.ok ? "" : " fail")}>
-          <div class="mono">{truncate(String(e.data.result), 700)}</div>
+        <details class="embed">
+          <summary><b>⚙ {String(e.data.name)}</b> <span class="meta">{preview}</span></summary>
+          <div class="mono">{args}</div>
+        </details>
+      );
+    }
+    case "tool_result": {
+      const out = String(e.data.result);
+      return (
+        <details class={"embed" + (e.data.ok ? "" : " fail")}>
+          <summary><span class="meta">{oneLine(out, 120)}</span></summary>
+          <div class="mono">{truncate(out, 4000)}</div>
           <div class="meta">{e.data.durationMs}ms{e.data.ok ? "" : " · FAILED"}</div>
-        </div>
+        </details>
       );
+    }
     case "progress":
       return (
         <div class="embed" style="border-color: var(--ok)">
@@ -326,6 +373,12 @@ function SwitchContent(props: { e: Ev }) {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + " …" : s;
+}
+
+/** single-line preview with collapsed whitespace */
+function oneLine(s: string, n: number): string {
+  const line = s.replace(/\s+/g, " ").trim();
+  return truncate(line, n);
 }
 
 /* ---------- modal shell ---------- */

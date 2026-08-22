@@ -480,6 +480,7 @@ export class Agent {
         role: "assistant",
         content: m.content ?? "",
         toolCalls: m.tool_calls?.map((c) => ({ id: c.id, name: c.function.name })),
+        reasoning: res.reasoning,
       });
       this.messages.push(m);
 
@@ -573,6 +574,7 @@ export class Agent {
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
       content: res.message.content ?? "",
+      reasoning: res.reasoning,
     });
     this.messages.push(res.message);
   }
