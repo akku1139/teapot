@@ -1,0 +1,25 @@
+{
+  "name": "teapot-coding-agent",
+  "version": "0.1.0",
+  "description": "A lightweight, always-on multi-agent harness for AI coding agents",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "packageManager": "pnpm@11.3.0",
+  "engines": { "node": ">=22" },
+  "bin": { "teapot": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "hono": "^4.7.0",
+    "openai": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}
