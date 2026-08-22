@@ -18,6 +18,31 @@ tab, and any number of long-running agents.
 
 ## Quick start
 
+Requires Node.js **>= 24** (TypeScript is executed natively in dev mode).
+
+### Install globally from npm
+
+```sh
+npm install -g teapot-coding-agent
+mkdir -p ~/.config/teapot-coding-agent
+curl -o ~/.config/teapot-coding-agent/config.json \
+  https://raw.githubusercontent.com/akku1139/teapot/main/teapot.config.example.json  # then edit it
+teapot
+# open http://localhost:7788
+```
+
+The global install puts a `teapot` binary on your PATH (it serves the compiled
+server plus the pre-built web UI — no build step, no repo checkout needed).
+Alternatives:
+
+```sh
+npx teapot-coding-agent          # run without installing
+teapot ~/my-config.json          # explicit config path
+TEAPOT_PORT=8080 teapot          # env overrides work as usual
+```
+
+### Run from a checkout (development)
+
 ```sh
 pnpm install
 mkdir -p ~/.config/teapot-coding-agent

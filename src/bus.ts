@@ -6,4 +6,5 @@ bus.setMaxListeners(100);
 
 export type BusEvent =
   | { kind: "agent-update"; agentId: string }
+  | { kind: "llm-delta"; agentId: string; text: string; reasoning: string }
   | { kind: "event"; agentId: string; event: unknown };

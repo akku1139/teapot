@@ -9,7 +9,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { EventLog, readEvents } from "../log/events.ts";
-import { chat, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
+import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { executeTool, toolSpecs, currentSkills, type ToolContext } from "./tools.ts";
 import type { SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
@@ -153,9 +153,13 @@ export class Agent {
     );
   }
 
-  private callLlm(messages: ChatMessage[], tools: ReturnType<typeof toolSpecs>) {
-    const fn = this.opts.chatFn ?? chat;
-    return fn(this.opts.llm, messages, tools, this.abort?.signal);
+  private callLlm(
+    messages: ChatMessage[],
+    tools: ReturnType<typeof toolSpecs>,
+    onDelta?: (snap: { text: string; reasoning: string }) => void,
+  ) {
+    const fn = this.opts.chatFn ?? chatStream;
+    return fn(this.opts.llm, messages, tools, this.abort?.signal, onDelta);
   }
 
   /** expose id for metrics */
@@ -291,15 +295,26 @@ export class Agent {
   }
 
   private parseGoalFile(text: string): GoalState {
-    const m = text.match(/status:\s*(\w+)/i);
-    const status = m?.[1] === "done" ? "done" : m?.[1] === "paused" ? "paused" : "active";
+    // humans and agents may append their own status lines — latest wins
+    const all = [...text.matchAll(/status:\s*(\w+)/gi)];
+    const last = all[all.length - 1]?.[1];
+    const status = last === "done" ? "done" : last === "paused" ? "paused" : "active";
     return { text: text.trim(), status, updatedAt: new Date().toISOString() };
   }
 
   private async writeGoalFile(): Promise<void> {
-    const body =
-      `${this.goal.text}\n\nstatus: ${this.goal.status}\nupdated: ${this.goal.updatedAt}\n`;
-    await fs.writeFile(path.join(this.workspace, "GOAL.md"), body, "utf8");
+    // don't let previously-appended bookkeeping lines accumulate in the body
+    let body = this.goal.text.trimEnd();
+    for (let i = 0; i < 4; i++) {
+      const stripped = body.replace(/\n+(?:status|updated):[^\n]*$/i, "").trimEnd();
+      if (stripped === body) break;
+      body = stripped;
+    }
+    await fs.writeFile(
+      path.join(this.workspace, "GOAL.md"),
+      `${body}\n\nstatus: ${this.goal.status}\nupdated: ${this.goal.updatedAt}\n`,
+      "utf8",
+    );
   }
 
   async setGoal(text: string): Promise<void> {
@@ -421,14 +436,32 @@ export class Agent {
    * immediately, plus loop-level retries for provider flakiness (the SDK
    * already backsoff 429/5xx; this covers exhausted rate limits and 400s).
    */
-  private async llmCall(messages: ChatMessage[], tools: ReturnType<typeof toolSpecs>) {
+  /**
+   * One LLM call with a fresh abort controller so stop() can interrupt it
+   * immediately, plus loop-level retries for provider flakiness (the SDK
+   * already backsoff 429/5xx; this covers exhausted rate limits and 400s).
+   * When onDelta is given, cumulative stream snapshots are forwarded to the
+   * UI via the bus (reset to empty at the start of every attempt).
+   */
+  private async llmCall(
+    messages: ChatMessage[],
+    tools: ReturnType<typeof toolSpecs>,
+    onDelta?: (snap: { text: string; reasoning: string }) => void,
+  ) {
     const maxAttempts = 4;
     const waits = [30_000, 60_000, 120_000];
     for (let attempt = 1; ; attempt++) {
       if (this.stopRequested) throw Object.assign(new Error("stopped"), { name: "StopRequested" });
       this.abort = new AbortController();
+      if (onDelta)
+        bus.emit("update", {
+          kind: "llm-delta",
+          agentId: this.opts.id,
+          text: "",
+          reasoning: "",
+        } satisfies BusEvent);
       try {
-        return await this.callLlm(messages, tools);
+        return await this.callLlm(messages, tools, onDelta);
       } catch (err) {
         this.abort = null;
         const name = (err as Error).name;
@@ -468,7 +501,15 @@ export class Agent {
         detail: "llm turn start",
         turn: ++this.stats.turns,
       });
-      const res = await this.llmCall(this.buildMessages(), allToolSpecs());
+      // stream the assistant reply live to connected clients
+      const res = await this.llmCall(this.buildMessages(), allToolSpecs(), (s) => {
+        bus.emit("update", {
+          kind: "llm-delta",
+          agentId: this.opts.id,
+          text: s.text,
+          reasoning: s.reasoning,
+        } satisfies BusEvent);
+      });
       if (res.usage) {
         this.stats.inputTokens += res.usage.inputTokens ?? 0;
         this.stats.outputTokens += res.usage.outputTokens ?? 0;

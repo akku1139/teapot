@@ -54,6 +54,7 @@ export type ChatFn = (
   messages: ChatMessage[],
   tools: ToolSpec[],
   signal?: AbortSignal,
+  onDelta?: (snap: { text: string; reasoning: string }) => void,
 ) => Promise<LlmResult>;
 
 /**
@@ -131,5 +132,88 @@ export async function chat(
       throw err; // not an API error (abort, bug, ...)
     const detail = e.error?.message ?? e.message ?? "unknown provider error";
     throw new Error(`LLM API error ${e.status ?? "?"}: ${String(detail).slice(0, 500)}`);
+  }
+}
+
+/**
+ * Streaming variant of chat(): same result shape, but calls onDelta with
+ * cumulative {text, reasoning} snapshots as chunks arrive so the UI can show
+ * the response live. Falls back to plain chat() once if the provider rejects
+ * streaming before producing any chunk.
+ */
+export async function chatStream(
+  cfg: LlmConfig,
+  messages: ChatMessage[],
+  tools: ToolSpec[],
+  signal?: AbortSignal,
+  onDelta?: (snap: { text: string; reasoning: string }) => void,
+): Promise<LlmResult> {
+  let gotChunk = false;
+  try {
+    const stream = await client(cfg).chat.completions.create(
+      {
+        model: cfg.model,
+        messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+        ...(tools.length ? { tools } : {}),
+        stream: true,
+      },
+      { signal },
+    );
+    let text = "";
+    let reasoning = "";
+    const calls: Record<number, { id: string; name: string; args: string }> = {};
+    let finishReason: string | undefined;
+    let usage: LlmResult["usage"];
+
+    for await (const chunk of stream) {
+      gotChunk = true;
+      const ch = chunk as unknown as {
+        choices?: {
+          delta?: {
+            content?: string | null;
+            reasoning?: string | null;
+            tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[];
+          };
+          finish_reason?: string | null;
+        }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+      };
+      const c = ch.choices?.[0];
+      const d = c?.delta;
+      if (d?.content) text += d.content;
+      if (d?.reasoning) reasoning += d.reasoning;
+      for (const tc of d?.tool_calls ?? []) {
+        const i = tc.index ?? 0;
+        calls[i] ??= { id: "", name: "", args: "" };
+        if (tc.id) calls[i].id = tc.id;
+        if (tc.function?.name) calls[i].name += tc.function.name;
+        if (tc.function?.arguments) calls[i].args += tc.function.arguments;
+      }
+      if (c?.finish_reason) finishReason = c.finish_reason;
+      if (ch.usage)
+        usage = { inputTokens: ch.usage.prompt_tokens, outputTokens: ch.usage.completion_tokens };
+      if (onDelta) onDelta({ text, reasoning });
+    }
+
+    if (finishReason === "error")
+      throw new Error("LLM API error: provider returned an errored completion");
+    const message: ChatMessage = { role: "assistant", content: text };
+    const list = Object.keys(calls)
+      .map(Number)
+      .sort((a, b) => a - b)
+      .map((i) => calls[i]!);
+    if (list.length)
+      message.tool_calls = list.map((c, i) => ({
+        id: c.id || `call_${i}`,
+        type: "function" as const,
+        function: { name: c.name, arguments: c.args || "{}" },
+      }));
+    if (!message.content && !message.tool_calls)
+      throw new Error("LLM API error: empty completion");
+    return { message, reasoning: reasoning || undefined, usage };
+  } catch (err) {
+    // provider may not support streaming at all — one clean fallback
+    if (!gotChunk && !signal?.aborted) return chat(cfg, messages, tools, signal);
+    throw err;
   }
 }

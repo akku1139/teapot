@@ -9,6 +9,7 @@ import os from "node:os";
 import { Agent } from "./agent/agent.ts";
 import { parseSchedule, matches } from "./scheduler/cron.ts";
 import type { LlmConfig } from "./agent/llm.ts";
+import type { TeapotEvent } from "./log/events.ts";
 
 export interface ProviderConfig {
   /** OpenAI-compatible base URL, e.g. https://openrouter.ai/api/v1 */
@@ -116,6 +117,72 @@ export function loadedRaw(): Record<string, unknown> {
   return masterRawConfig;
 }
 
+/* ---------- console activity log ---------- */
+
+const isTTY = process.stdout.isTTY;
+const c = (code: string, s: string) => (isTTY ? `\x1b[${code}m${s}\x1b[0m` : s);
+const dim = (s: string) => c("2", s);
+const clip1 = (s: unknown, n: number) => {
+  const one = String(s ?? "").replace(/\s+/g, " ").trim();
+  return one.length > n ? one.slice(0, n) + "…" : one;
+};
+const hhmmss = () => new Date().toTimeString().slice(0, 8);
+
+/** Print one agent event as a compact human-readable console line. */
+function printAgentEvent(e: TeapotEvent): void {
+  const ts = dim(hhmmss());
+  const who = c("36", e.agent); // cyan
+  const d = e.data as Record<string, unknown>;
+  let line: string | null = null;
+  switch (e.type) {
+    case "prompt":
+      line = `${c("33", "▶ prompt")} (${d.source}) ${clip1(d.text, 110)}`;
+      break;
+    case "tool_call":
+      line = `${c("36", "⚙ exec")} ${d.name} ${dim(clip1(JSON.stringify(d.args ?? {}), 130))}`;
+      break;
+    case "tool_result": {
+      const ok = d.ok !== false;
+      const mark = ok ? c("32", "✔ done") : c("31", "✖ fail");
+      line = `${mark} ${d.name} ${dim(`${d.durationMs}ms`)} ${dim(clip1(d.result, 90))}`;
+      break;
+    }
+    case "state": {
+      if (d.from === d.to && !d.reason && !d.detail) break;
+      if (d.detail === "llm turn start") {
+        line = `${c("35", "· llm")} turn ${d.turn}`;
+        break;
+      }
+      line = `${c("35", "◆ state")} ${d.from}→${d.to}${d.reason ? ` (${clip1(d.reason, 80)})` : ""}`;
+      break;
+    }
+    case "message":
+      if (d.final && d.content) line = `${c("34", "🏁 final")} ${clip1(d.content, 140)}`;
+      break; // regular assistant messages are visible in the UI
+    case "progress":
+      line = `${c("32", "📈 progress")} ${clip1(d.doing, 100)}`;
+      break;
+    case "goal":
+      line = `🎯 goal ${d.event}: ${clip1(d.text ?? d.status, 100)}`;
+      break;
+    case "error":
+      line = `${c("31", "⚠ error")} ${clip1(d.message, 160)}`;
+      break;
+    case "system_note": {
+      if (d.event === "llm-retry")
+        line = `${c("33", "↻ retry")} attempt ${d.attempt} in ${Math.round(Number(d.waitMs) / 1000)}s — ${clip1(d.error, 100)}`;
+      else if (d.event === "context-compacted")
+        line = `${c("33", "🗜 compact")} tokens ${d.tokensBefore}→${d.tokensAfter} (${d.mode})`;
+      else if (d.event === "session-restored")
+        line = `${c("33", "⟲ restore")} branch ${d.branch}, ${d.messages} messages`;
+      break;
+    }
+    default:
+      break;
+  }
+  if (line) console.log(`${dim(ts)} ${who} ${line}`);
+}
+
 export class Master {
   readonly agents = new Map<string, Agent>();
   private tasks: { task: TaskConfig; schedule: ReturnType<typeof parseSchedule>; lastRunMin: number }[] = [];
@@ -213,6 +280,7 @@ export class Master {
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
     });
+    agent.log.onEvent = (e) => printAgentEvent(e);
     await agent.init();
     this.agents.set(ac.id, agent);
     if (persist) {

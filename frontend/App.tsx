@@ -49,6 +49,7 @@ export default function App() {
   // autoscroll: follow the tail only while the reader is already at the bottom
   const [atBottom, setAtBottom] = createSignal(true);
   const [missed, setMissed] = createSignal(0);
+  const [live, setLive] = createSignal<{ text: string; reasoning: string } | null>(null);
   const chatEvents = createMemo(() => events().filter(isChat));
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
@@ -83,6 +84,7 @@ export default function App() {
 
   async function select(id: string) {
     setSelected(id);
+    setLive(null);
     await loadEvents(id);
     requestAnimationFrame(() => scrollBottom(true));
   }
@@ -91,10 +93,15 @@ export default function App() {
     loadCfg();
     refreshAgents().then(() => agents()[0] && select(agents()[0].id));
     refreshMetrics();
-    // push updates via SSE; coalesce bursts at 400ms
+    // push updates via SSE; coalesce bursts at 400ms (deltas bypass the
+    // coalescer so streaming text renders immediately)
     let timer: ReturnType<typeof setTimeout> | null = null;
     new EventSource("/api/events").onmessage = (m) => {
       const msg = JSON.parse(m.data);
+      if (msg.kind === "llm-delta") {
+        if (msg.agentId === selected()) setLive({ text: msg.text ?? "", reasoning: msg.reasoning ?? "" });
+        return;
+      }
       if (timer) return;
       timer = setTimeout(async () => {
         timer = null;
@@ -104,6 +111,7 @@ export default function App() {
           const before = events().length;
           await loadEvents(selected()!);
           if (events().length !== before) {
+            setLive(null); // a persisted event landed — live bubble is now history
             if (nearBottom()) scrollBottom(true);
             else setMissed(missed() + (events().length - before));
           }
@@ -194,6 +202,29 @@ export default function App() {
               <For each={chatEvents()}>
                 {(e, i) => <MessageRow e={e} prev={chatEvents()[i() - 1]} />}
               </For>
+              <Show when={live()}>
+                <div class="msg live">
+                  <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">🫖</div>
+                  <div class="msg-body">
+                    <div class="msg-head">
+                      <span class="author" style="color:var(--acc)">agent</span>
+                      <span class="ts">streaming…</span>
+                    </div>
+                    <Show when={live()!.reasoning}>
+                      <details class="reasoning">
+                        <summary>💭 reasoning</summary>
+                        <div class="mono">{live()!.reasoning}</div>
+                      </details>
+                    </Show>
+                    <Show
+                      when={live()!.text}
+                      fallback={<div class="content muted">thinking…</div>}
+                    >
+                      <div class="content">{live()!.text}<span class="cursor">▍</span></div>
+                    </Show>
+                  </div>
+                </div>
+              </Show>
             </Show>
           </div>
 

@@ -50,6 +50,8 @@ export class EventLog {
   private chain: Promise<void> = Promise.resolve();
   /** branch -> last event id (in-memory reconstruction of parent chains) */
   private lastByBranch = new Map<string, string>();
+  /** optional observer (e.g. console logger wired by the master) */
+  onEvent: ((e: TeapotEvent) => void) | null = null;
 
   readonly filePath: string;
   readonly agentId: string;
@@ -116,6 +118,11 @@ export class EventLog {
       data,
     };
     this.lastByBranch.set(branch, evt.id);
+    try {
+      this.onEvent?.(evt);
+    } catch {
+      /* observer must never break the log */
+    }
     const p = new Promise<TeapotEvent>((resolve, reject) => {
       this.chain = this.chain.then(() => {
         if (!this.stream) return resolve(evt);

@@ -74,6 +74,12 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .reasoning[open] summary { margin-bottom: 4px; }
 .reasoning .mono { white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
 
+/* live streaming bubble */
+.msg.live .avatar { animation: pulse 1.6s ease-in-out infinite; }
+.cursor { animation: blink 1s step-end infinite; color: var(--acc); }
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes pulse { 50% { opacity: .55; } }
+
 /* jump-to-present pill */
 .jump {
   position: absolute; bottom: 86px; left: 50%; transform: translateX(-50%);

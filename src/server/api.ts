@@ -216,24 +216,31 @@ export function buildApp(master: Master): Hono {
     const stream = new ReadableStream({
       start(controller) {
         const enc = new TextEncoder();
-        const send = (data: unknown) =>
-          controller.enqueue(enc.encode(`data: ${JSON.stringify(data)}\n\n`));
-        send({ kind: "hello", agents: [...master.agents.values()].map((a) => a.snapshot()) });
-        const onUpdate = (ev: unknown) => send(ev);
-        bus.on("update", onUpdate);
-        // keep-alive comment every 30s so proxies don't close the stream
-        const ka = setInterval(() => controller.enqueue(enc.encode(": ping\n\n")), 30_000);
-        ;(controller as unknown as { _cleanup?: () => void })._cleanup = () => {
+        let closed = false;
+        const cleanup = () => {
+          closed = true;
           clearInterval(ka);
           bus.off("update", onUpdate);
         };
+        const send = (data: unknown) => {
+          if (closed) return;
+          try {
+            controller.enqueue(enc.encode(`data: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            // client vanished mid-write — never let this reach event emitters
+            cleanup();
+          }
+        };
+        send({ kind: "hello", agents: [...master.agents.values()].map((a) => a.snapshot()) });
+        const onUpdate = (ev: unknown) => send(ev);
+        bus.on("update", onUpdate);
+        // keep-alive ping every 30s so proxies don't close the stream
+        const ka = setInterval(() => send({ kind: "ping" }), 30_000);
+        c.req.raw.signal.addEventListener("abort", cleanup);
       },
       cancel() {
-        /* handled in _cleanup via abort signal below */
+        /* cleanup also runs via the abort listener above */
       },
-    });
-    c.req.raw.signal.addEventListener("abort", () => {
-      /* node-server closes the stream; cleanup runs on cancel */
     });
     return c.body(stream);
   });
