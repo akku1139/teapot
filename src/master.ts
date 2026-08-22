@@ -10,10 +10,21 @@ import { Agent } from "./agent/agent.js";
 import { parseSchedule, matches } from "./scheduler/cron.js";
 import type { LlmConfig } from "./agent/llm.js";
 
+export interface ProviderConfig {
+  /** OpenAI-compatible base URL, e.g. https://openrouter.ai/api/v1 */
+  baseUrl: string;
+  apiKey?: string;
+  /** optional default model for this provider */
+  model?: string;
+}
+
 export interface AgentConfig {
   id: string;
   workspace: string;
+  /** which named provider to use (defaults to config.defaultProvider) */
+  provider?: string;
   model?: string;
+  /** inline overrides win over the provider entry */
   baseUrl?: string;
   apiKey?: string;
 }
@@ -31,30 +42,67 @@ export interface TeapotConfig {
   port: number;
   dataDir: string;
   llm: Partial<LlmConfig>;
+  /** named OpenAI-compatible providers */
+  providers?: Record<string, ProviderConfig>;
+  /** provider used when an agent does not specify one (default "openrouter") */
+  defaultProvider?: string;
   agents: AgentConfig[];
   tasks?: TaskConfig[];
   progressIntervalMs?: number;
 }
 
+const CONFIG_DIR =
+  process.env.TEAPOT_CONFIG_DIR ??
+  path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "teapot-coding-agent");
+
+const DATA_DIR =
+  process.env.TEAPOT_DATA_DIR ??
+  process.env.XDG_DATA_HOME ??
+  path.join(os.homedir(), ".local", "share", "teapot-coding-agent");
+
 const DEFAULT_CONFIG: TeapotConfig = {
   port: Number(process.env.TEAPOT_PORT ?? 7788),
-  dataDir: process.env.TEAPOT_DATA_DIR ?? ".teapot",
+  dataDir: DATA_DIR,
   llm: {
     baseUrl: process.env.TEAPOT_BASE_URL ?? "https://openrouter.ai/api/v1",
     apiKey: process.env.TEAPOT_API_KEY ?? "",
     model: process.env.TEAPOT_MODEL ?? "",
   },
+  providers: {},
   agents: [],
   tasks: [],
 };
 
+/** Where config is looked up / stored. */
+export function configDir(): string {
+  return CONFIG_DIR;
+}
+
+/**
+ * Resolution order:
+ *   1. explicit path argument (CLI)
+ *   2. $TEAPOT_CONFIG
+ *   3. ~/.config/teapot-coding-agent/config.json
+ *   4. ./teapot.config.json (legacy project-local)
+ */
+export function resolveConfigPath(explicitPath?: string): string {
+  if (explicitPath) return path.resolve(explicitPath);
+  if (process.env.TEAPOT_CONFIG) return path.resolve(process.env.TEAPOT_CONFIG);
+  const xdg = path.join(CONFIG_DIR, "config.json");
+  if (existsSync(xdg)) return xdg;
+  return path.resolve("teapot.config.json");
+}
+
 export function loadConfig(configPath: string): TeapotConfig {
   if (!existsSync(configPath)) return DEFAULT_CONFIG;
+  mkdirSync(CONFIG_DIR, { recursive: true });
   const user = JSON.parse(readFileSync(configPath, "utf8")) as Partial<TeapotConfig>;
   return {
     ...DEFAULT_CONFIG,
     ...user,
+    dataDir: user.dataDir ? path.resolve(user.dataDir.replace(/^~/, os.homedir())) : DEFAULT_CONFIG.dataDir,
     llm: { ...DEFAULT_CONFIG.llm, ...user.llm },
+    providers: { ...user.providers },
   };
 }
 
@@ -82,10 +130,16 @@ export class Master {
   }
 
   async addAgent(ac: AgentConfig): Promise<Agent> {
+    // provider resolution: inline overrides > named provider > legacy llm block
+    const provName = ac.provider ?? this.config.defaultProvider ?? "openrouter";
+    const prov = this.config.providers?.[provName];
+    if (!prov && !ac.baseUrl && !this.config.llm.baseUrl) {
+      throw new Error(`agent ${ac.id}: unknown provider "${provName}" and no fallback`);
+    }
     const llm: LlmConfig = {
-      baseUrl: ac.baseUrl ?? this.config.llm.baseUrl!,
-      apiKey: ac.apiKey ?? this.config.llm.apiKey!,
-      model: ac.model ?? this.config.llm.model!,
+      baseUrl: ac.baseUrl ?? prov?.baseUrl ?? this.config.llm.baseUrl!,
+      apiKey: ac.apiKey ?? prov?.apiKey ?? this.config.llm.apiKey!,
+      model: ac.model ?? prov?.model ?? this.config.llm.model!,
       timeoutMs: 120_000,
     };
     const logFile = path.join(this.config.dataDir, `${ac.id}.jsonl`);

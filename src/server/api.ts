@@ -122,6 +122,14 @@ export function buildApp(master: Master): Hono {
     return c.body(stream);
   });
 
+  // RFC 2324 / HTCPCP compliance
+  app.on(["GET", "POST", "BREW"], "/brew", (c) =>
+    c.text("418 I'm a teapot \u{1FAD6}", 418),
+  );
+  app.on(["GET", "POST", "BREW"], "/brew/coffee", (c) =>
+    c.text("418 I'm a teapot — coffee not supported (see RFC 2324 §2.3.2)", 418),
+  );
+
   // ---- web ui (static, no bundler needed) ----
   const webRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),

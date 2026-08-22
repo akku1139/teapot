@@ -1,14 +1,28 @@
 {
   "port": 7788,
-  "dataDir": ".teapot",
-  "llm": {
-    "baseUrl": "https://openrouter.ai/api/v1",
-    "apiKey": "sk-or-...",
-    "model": "your-provider/your-model"
+  "//dataDir": "defaults to ~/.local/share/teapot-coding-agent",
+  "providers": {
+    "openrouter": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "sk-or-..."
+    },
+    "openai": {
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "sk-...",
+      "model": "gpt-4o-mini"
+    },
+    "local": {
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKey": "ollama",
+      "model": "qwen3-coder"
+    }
   },
+  "defaultProvider": "openrouter",
   "progressIntervalMs": 600000,
   "agents": [
-    { "id": "alpha", "workspace": "workspaces/alpha" }
+    { "id": "alpha", "workspace": "workspaces/alpha" },
+    { "id": "beta", "workspace": "workspaces/beta", "provider": "local", "model": "llama3.1" },
+    { "id": "gamma", "workspace": "workspaces/gamma", "provider": "openai" }
   ],
   "tasks": [
     { "id": "status-check", "agent": "alpha", "schedule": "every 30m", "forked": true, "prompt": "Briefly check the workspace state (git status, failing tests) and report via report_progress. Do not start large work." }

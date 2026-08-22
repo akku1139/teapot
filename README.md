@@ -18,13 +18,39 @@ tab, and any number of long-running agents.
 
 ```sh
 pnpm install
-cp teapot.config.example.json teapot.config.json   # edit: apiKey, model
+mkdir -p ~/.config/teapot-coding-agent
+cp teapot.config.example.json ~/.config/teapot-coding-agent/config.json  # edit it
 pnpm dev            # or: pnpm build && pnpm start
 # open http://localhost:7788
 ```
 
-Config keys can also come from `TEAPOT_PORT`, `TEAPOT_API_KEY`,
-`TEAPOT_BASE_URL`, `TEAPOT_MODEL`, `TEAPOT_DATA_DIR`.
+Config lookup order: CLI arg → `$TEAPOT_CONFIG` →
+`~/.config/teapot-coding-agent/config.json` → `./teapot.config.json` (legacy).
+Data (event logs) goes to `~/.local/share/teapot-coding-agent` by default.
+Env overrides: `TEAPOT_PORT`, `TEAPOT_API_KEY`, `TEAPOT_BASE_URL`,
+`TEAPOT_MODEL`, `TEAPOT_CONFIG_DIR`, `TEAPOT_DATA_DIR`.
+
+## Multiple providers
+
+Agents are matched to named OpenAI-compatible providers:
+
+```jsonc
+{
+  "providers": {
+    "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-..." },
+    "local":      { "baseUrl": "http://localhost:11434/v1", "apiKey": "ollama", "model": "qwen3-coder" }
+  },
+  "defaultProvider": "openrouter",
+  "agents": [
+    { "id": "alpha", "workspace": "workspaces/alpha" },                          // default provider
+    { "id": "beta",  "workspace": "workspaces/beta", "provider": "local" },      // local model
+    { "id": "gamma", "workspace": "workspaces/gamma", "provider": "openrouter",
+      "model": "anthropic/claude-sonnet-4" }                                     // per-agent model
+  ]
+}
+```
+
+Per-agent inline `baseUrl`/`apiKey`/`model` override the provider entry.
 
 ## Architecture
 
@@ -99,6 +125,7 @@ GET  /api/agents/:id/events?limit&branch&session
 GET  /api/agents/:id/branches
 GET  /api/metrics                    master rss/heap/load + per-agent stats
 GET  /api/events                     SSE updates (push, no polling)
+GET  /brew                           418 I'm a teapot (RFC 2324)
 ```
 
 ## Security / execution model
