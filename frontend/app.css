@@ -101,6 +101,19 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .embed summary { display: flex; align-items: center; gap: 6px; }
 .msgfoot { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--dim); font-size: 11px; }
 
+/* terminal drawer */
+.termdrawer {
+  height: 38vh; min-height: 220px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  background: #0d0e12; border-top: 2px solid var(--line);
+}
+.termbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 10px; font-size: 11.5px; color: var(--dim);
+  border-bottom: 1px solid var(--line); background: var(--bg-darkest);
+}
+.termhost { flex: 1; padding: 6px 8px; overflow: hidden; min-height: 0; }
+
 /* jump-to-present pill */
 .jump {
   position: absolute; bottom: 86px; left: 50%; transform: translateX(-50%);

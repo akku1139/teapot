@@ -1,5 +1,6 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect } from "solid-js";
 import { renderMarkdown } from "./md";
+import "@xterm/xterm/css/xterm.css";
 
 /* ---------- types ---------- */
 interface Agent {
@@ -198,8 +199,10 @@ export default function App() {
     if (e.key === "/") {
       e.preventDefault();
       document.querySelector<HTMLInputElement>(".composer input[type=text]")?.focus();
-    } else if (e.key === "d") {
+    } else     if (e.key === "d") {
       toggleRight();
+    } else if (e.key === "t") {
+      toggleTerm();
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       const list = agents();
       if (list.length === 0) return;
@@ -209,6 +212,82 @@ export default function App() {
       if (next !== idx) select(list[next].id);
     }
   });
+
+  /* ---------- human terminal (bottom drawer, xterm.js over WS) ---------- */
+  const [termOpen, setTermOpen] = createSignal(localStorage.getItem("teapot.term") === "1");
+  const toggleTerm = () => {
+    setTermOpen(!termOpen());
+    localStorage.setItem("teapot.term", termOpen() ? "1" : "0");
+  };
+  let termHost: HTMLDivElement | null = null;
+  let xterm: any = null;
+  let fitAddon: any = null;
+  let termWs: WebSocket | null = null;
+  let ro: ResizeObserver | null = null;
+  let lastResize = { cols: 0, rows: 0 };
+  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function closeTerm() {
+    ro?.disconnect();
+    ro = null;
+    termWs?.close();
+    termWs = null;
+    xterm?.dispose();
+    xterm = null;
+    fitAddon = null;
+  }
+  function openTerm(agentId: string) {
+    closeTerm();
+    if (!termHost) return;
+    Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]).then(
+      ([{ Terminal }, { FitAddon }]) => {
+        const t = new Terminal({
+          cursorBlink: true,
+          fontSize: 12.5,
+          fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
+          theme: { background: "#0d0e12", foreground: "#dcdee4" },
+        });
+        const f = new FitAddon();
+        t.loadAddon(f);
+        t.open(termHost!);
+        f.fit();
+        xterm = t;
+        fitAddon = f;
+        const proto = location.protocol === "https:" ? "wss://" : "ws://";
+        const w = new WebSocket(`${proto}${location.host}/api/agents/${agentId}/term`);
+        termWs = w;
+        w.onmessage = (m) => {
+          const msg = JSON.parse(m.data);
+          if (msg.kind === "data") t.write(msg.data);
+          else if (msg.kind === "exit") t.write(`\r\n\x1b[2m[terminal exited ${msg.code ?? ""}]\x1b[0m\r\n`);
+        };
+        t.onData((d) => {
+          if (w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: d }));
+        });
+        const pushResize = () => {
+          try { f.fit(); } catch { /* host hidden */ }
+          const { cols, rows } = t;
+          if ((cols !== lastResize.cols || rows !== lastResize.rows) && w.readyState === WebSocket.OPEN) {
+            lastResize = { cols, rows };
+            w.send(JSON.stringify({ kind: "resize", cols, rows }));
+          }
+        };
+        ro = new ResizeObserver(() => {
+          if (resizeTimer) clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(pushResize, 300); // debounce: stty injection is visible
+        });
+        ro.observe(termHost!);
+        setTimeout(pushResize, 50);
+      },
+    );
+  }
+  createEffect(() => {
+    const id = selected();
+    const open = termOpen();
+    if (!open || !id) closeTerm();
+    else requestAnimationFrame(() => id && openTerm(id));
+  });
+  onCleanup(closeTerm);
 
   onMount(() => {
     loadCfg();
@@ -294,6 +373,7 @@ export default function App() {
               <Show when={sel()!.statusReason}>
                 <span class="sub" title={sel()!.statusReason}>ℹ</span>
               </Show>
+              <button class="iconbtn" title="terminal (t)" onclick={toggleTerm}>⌨</button>
               <button class="iconbtn" title="toggle details panel (d)" onclick={toggleRight}>▤</button>
             </span>
           </header>
@@ -337,6 +417,16 @@ export default function App() {
             </button>
           </Show>
 
+          <Show when={termOpen() && sel()}>
+            <div class="termdrawer">
+              <div class="termbar">
+                <span>⌨ terminal — <span class="mono">{sel()!.workspace}</span></span>
+                <button class="iconbtn" title="close terminal (t)" onclick={toggleTerm}>✕</button>
+              </div>
+              <div class="termhost" ref={(el) => (termHost = el)} />
+            </div>
+          </Show>
+
           <div class="composer">
             <form onsubmit={send}>
               <input
@@ -352,7 +442,7 @@ export default function App() {
               <button type="submit">send</button>
             </form>
             <div class="hint">
-              enter send · ↑↓ sessions · / focus · d panel · esc stop · prompts queue while the agent works
+              enter send · ↑↓ sessions · / focus · t terminal · d panel · esc stop · prompts queue while the agent works
             </div>
           </div>
         </Show>

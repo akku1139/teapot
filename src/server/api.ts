@@ -4,7 +4,8 @@
 import { Hono } from "hono";
 import { serve, upgradeWebSocket } from "@hono/node-server";
 import { WebSocketServer } from "ws";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
@@ -50,6 +51,78 @@ export function buildApp(master: Master): Hono {
         onClose() {
           if (ka) clearInterval(ka);
           if (onUpdate) bus.off("update", onUpdate);
+        },
+      };
+    }),
+  );
+
+  // ---- human terminal: interactive shell in the agent's workspace ----
+  // Uses util-linux `script` as a zero-dependency PTY when available (colors,
+  // line editing, ctrl+c); falls back to plain pipes otherwise.
+  app.get(
+    "/api/agents/:id/term",
+    upgradeWebSocket((c) => {
+      const agentId = c.req.param("id") ?? "";
+      let child: ChildProcess | null = null;
+      const cleanup = () => {
+        if (!child) return;
+        try {
+          child.kill("SIGHUP");
+        } catch {
+          /* already gone */
+        }
+        child = null;
+      };
+      return {
+        onOpen(_evt, ws) {
+          const agent = master.agents.get(agentId);
+          const send = (d: unknown) => {
+            try {
+              ws.send(JSON.stringify(d));
+            } catch {
+              /* client gone */
+            }
+          };
+          if (!agent) {
+            send({ kind: "exit", error: `no such agent: ${agentId}` });
+            return;
+          }
+          const shell = process.env.SHELL || "/bin/bash";
+          const hasScript = existsSync("/usr/bin/script");
+          // script's pty reports a 0x0 winsize, so shells fall back to these
+          const env = { ...process.env, TERM: "xterm-256color", COLUMNS: "100", LINES: "30" };
+          child = hasScript
+            ? spawn("script", ["-qec", shell, "/dev/null"], { cwd: agent.workspace, env })
+            : spawn(shell, [], { cwd: agent.workspace, env: { ...env, TERM: "dumb" } });
+          console.log(
+            `[teapot] ⌨ terminal open: ${agentId} @ ${agent.workspace} (${hasScript ? "pty" : "pipe"})`,
+          );
+          child.stdout?.on("data", (b: Buffer) => send({ kind: "data", data: b.toString("utf8") }));
+          child.stderr?.on("data", (b: Buffer) => send({ kind: "data", data: b.toString("utf8") }));
+          child.on("close", (code) => {
+            send({ kind: "exit", code });
+            console.log(`[teapot] ⌨ terminal exit: ${agentId} (${code ?? "signal"})`);
+            child = null;
+          });
+        },
+        onMessage(evt) {
+          if (!child?.stdin?.writable) return;
+          let m: { kind?: string; data?: string; rows?: number; cols?: number };
+          try {
+            m = JSON.parse(String(evt.data));
+          } catch {
+            return;
+          }
+          if (m.kind === "input") child.stdin.write(String(m.data ?? ""));
+          else if (m.kind === "resize") {
+            const r = Number(m.rows) | 0;
+            const cl = Number(m.cols) | 0;
+            if (r > 0 && cl > 0)
+              child.stdin.write(`stty rows ${r} cols ${cl} >/dev/null 2>&1\n`);
+          }
+        },
+        onClose() {
+          cleanup();
         },
       };
     }),

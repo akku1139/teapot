@@ -13,6 +13,11 @@ tab, and any number of long-running agents.
   (`frontend/`, built to `public/`): agents as channels, events flowing as chat
   messages, tool calls as compact embeds. Markdown is rendered by a hand-written,
   XSS-safe renderer (`frontend/md.js`)
+- **Integrated terminal** — humans get an interactive shell (xterm.js over
+  WebSocket) inside the selected agent's workspace: inspect what the agent
+  did, run tests, fix things alongside it. Zero native dependencies — the PTY
+  comes from util-linux `script` when available (colors, line editing,
+  ctrl+c), with a plain-pipe fallback elsewhere.
 - **Human-readable persistence** — append-only JSONL event logs you can read
   with `cat` / `jq`; goal & memory as plain Markdown files in git
 
@@ -112,6 +117,22 @@ master (Hono server, src/master.ts + src/server/api.ts)
   knowledge), `MEMORY.md` (agent notes) live in each workspace as normal git-
   editable Markdown. The goal file is the source of truth; the harness re-reads
   it on restart.
+
+### Web UI
+
+- **Sessions as channels** — chat feed with live-streamed LLM output (💭
+  reasoning collapsible), tool calls/results as expandable embeds, progress
+  reports and state changes as dividers
+- **Deep links** — every session has a URL (`http://localhost:7788/session/<id>`);
+  the last open session is remembered
+- **Details panel** (`d`) — session info, model switcher (provider select +
+  OpenAI-compatible `GET /models` autocomplete; applies to the running
+  session from the next turn), controls, goal editor, progress, runtime stats
+- **Terminal** (`t`) — interactive shell in the agent's workspace for humans,
+  rendered with xterm.js over WebSocket
+- **Keyboard** — `↑`/`↓` switch sessions · `/` focus composer · `t` terminal ·
+  `d` panel · `esc` interrupt a running agent
+- Realtime updates flow over WebSocket (`/api/ws`) with auto-reconnect
 
 ### Agent Skills
 
