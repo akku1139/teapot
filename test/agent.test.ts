@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Agent } from "../src/agent/agent.js";
-import type { ChatFn, ChatMessage, LlmConfig, LlmResult, ToolSpec } from "../src/agent/llm.js";
-import { readEvents } from "../src/log/events.js";
+import { Agent } from "../src/agent/agent.ts";
+import type { ChatFn, ChatMessage, LlmConfig, LlmResult, ToolSpec } from "../src/agent/llm.ts";
+import { readEvents } from "../src/log/events.ts";
 
 const LLM: LlmConfig = { baseUrl: "http://mock", apiKey: "mock", model: "mock-model" };
 

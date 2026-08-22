@@ -8,7 +8,7 @@ import {
   discoverSkills,
   saveSkill,
   isValidSkillName,
-} from "../src/agent/skills.js";
+} from "../src/agent/skills.ts";
 
 test("frontmatter parsing", () => {
   const p = parseSkillMd("---\nname: foo\ndescription: does bar\n---\n\n# Steps\n1. do it\n");

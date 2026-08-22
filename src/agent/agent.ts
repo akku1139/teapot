@@ -8,11 +8,11 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { EventLog, readEvents } from "../log/events.js";
-import { chat, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.js";
-import { executeTool, toolSpecs, currentSkills, type ToolContext } from "./tools.js";
-import type { SkillDef } from "./skills.js";
-import { bus, type BusEvent } from "../bus.js";
+import { EventLog, readEvents } from "../log/events.ts";
+import { chat, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
+import { executeTool, toolSpecs, currentSkills, type ToolContext } from "./tools.ts";
+import type { SkillDef } from "./skills.ts";
+import { bus, type BusEvent } from "../bus.ts";
 
 export type AgentStatus = "idle" | "running" | "stopped" | "error";
 

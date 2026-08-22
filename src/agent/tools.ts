@@ -11,7 +11,7 @@ import {
   readSkillFile,
   saveSkill,
   type SkillDef,
-} from "./skills.js";
+} from "./skills.ts";
 
 export interface ToolContext {
   cwd: string;

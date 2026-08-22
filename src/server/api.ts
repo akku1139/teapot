@@ -6,12 +6,12 @@ import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parseSchedule } from "../scheduler/cron.js";
-import type { ProviderConfig } from "../master.js";
+import { parseSchedule } from "../scheduler/cron.ts";
+import type { ProviderConfig } from "../master.ts";
 import path from "node:path";
-import { bus } from "../bus.js";
-import { readEvents } from "../log/events.js";
-import type { Master } from "../master.js";
+import { bus } from "../bus.ts";
+import { readEvents } from "../log/events.ts";
+import type { Master } from "../master.ts";
 
 export function buildApp(master: Master): Hono {
   const app = new Hono();

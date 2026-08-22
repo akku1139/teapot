@@ -51,10 +51,16 @@ export class EventLog {
   /** branch -> last event id (in-memory reconstruction of parent chains) */
   private lastByBranch = new Map<string, string>();
 
+  readonly filePath: string;
+  readonly agentId: string;
+
   constructor(
-    readonly filePath: string,
-    readonly agentId: string,
-  ) {}
+    filePath: string,
+    agentId: string,
+  ) {
+    this.filePath = filePath;
+    this.agentId = agentId;
+  }
 
   async load(): Promise<void> {
     mkdirSync(path.dirname(this.filePath), { recursive: true });

@@ -1,6 +1,6 @@
 {
   "name": "teapot-coding-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A lightweight, always-on multi-agent harness for AI coding agents",
   "type": "module",
   "license": "AGPL-3.0-or-later",
@@ -18,7 +18,7 @@
   },
   "packageManager": "pnpm@11.3.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "bin": {
     "teapot": "dist/index.js"
@@ -33,9 +33,9 @@
     "build-server": "tsc -p tsconfig.json",
     "build-web": "vite build",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
+    "dev": "node src/index.ts",
     "dev-web": "vite",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.0",
@@ -45,7 +45,6 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "solid-js": "^1.9.15",
-    "tsx": "^4.20.0",
     "typescript": "^5.8.0",
     "vite": "^8.2.2",
     "vite-plugin-solid": "^2.11.14"

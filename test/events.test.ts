@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { EventLog, readEvents } from "../src/log/events.js";
+import { EventLog, readEvents } from "../src/log/events.ts";
 
 async function tmpFile(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), "teapot-events-"));

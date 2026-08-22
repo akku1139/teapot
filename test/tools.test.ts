@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { executeTool, type ToolContext } from "../src/agent/tools.js";
+import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 
 async function tmpCtx(): Promise<ToolContext> {
   const dir = await mkdtemp(path.join(tmpdir(), "teapot-tools-"));

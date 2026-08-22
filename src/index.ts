@@ -4,8 +4,8 @@
  * Usage: teapot [config.json]
  * Config may also come from TEAPOT_* env vars (see src/master.ts).
  */
-import { loadConfig, resolveConfigPath, Master } from "./master.js";
-import { buildApp, serveApp } from "./server/api.js";
+import { loadConfig, resolveConfigPath, Master } from "./master.ts";
+import { buildApp, serveApp } from "./server/api.ts";
 
 async function main(): Promise<void> {
   const configPath = resolveConfigPath(process.argv[2]);

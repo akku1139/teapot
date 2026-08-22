@@ -6,9 +6,9 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { Agent } from "./agent/agent.js";
-import { parseSchedule, matches } from "./scheduler/cron.js";
-import type { LlmConfig } from "./agent/llm.js";
+import { Agent } from "./agent/agent.ts";
+import { parseSchedule, matches } from "./scheduler/cron.ts";
+import type { LlmConfig } from "./agent/llm.ts";
 
 export interface ProviderConfig {
   /** OpenAI-compatible base URL, e.g. https://openrouter.ai/api/v1 */
@@ -120,11 +120,16 @@ export class Master {
   readonly agents = new Map<string, Agent>();
   private tasks: { task: TaskConfig; schedule: ReturnType<typeof parseSchedule>; lastRunMin: number }[] = [];
   private startedAt = Date.now();
+  readonly config: TeapotConfig;
+  readonly configPath: string;
 
   constructor(
-    readonly config: TeapotConfig,
-    readonly configPath: string,
-  ) {}
+    config: TeapotConfig,
+    configPath: string,
+  ) {
+    this.config = config;
+    this.configPath = configPath;
+  }
 
   /** Persist current logical config back to disk (lossless via raw user config). */
   private saveConfig(): void {
