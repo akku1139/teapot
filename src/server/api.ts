@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { bus } from "../bus.js";
 import { readEvents } from "../log/events.js";
@@ -122,28 +123,31 @@ export function buildApp(master: Master): Hono {
   });
 
   // ---- web ui (static, no bundler needed) ----
-  const resolveWeb = (): string =>
-    import.meta.url.includes("/dist/") ? path.resolve(process.cwd(), "web") : path.resolve(process.cwd(), "src/web");
+  const webRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    import.meta.url.includes("/dist/") ? "../web" : "../../src/web",
+  );
 
   const mime: Record<string, string> = {
     ".html": "text/html",
     ".js": "text/javascript",
     ".css": "text/css",
-    ".svg": "image/svg+xml",
   };
-  app.get("/", (c) => c.html(readFileSyncSafe(resolveWeb(), "index.html")));
-  app.get("/app.js", (c) => c.body(readFileSyncSafe(resolveWeb(), "app.js"), 200, { "content-type": mime[".js"] }));
-  app.get("/style.css", (c) => c.body(readFileSyncSafe(resolveWeb(), "style.css"), 200, { "content-type": mime[".css"] }));
+  for (const file of ["index.html", "app.js", "style.css", "md.js"]) {
+    const url = file === "index.html" ? "/" : `/${file}`;
+    app.get(url, (c) => {
+      try {
+        const ext = path.extname(file);
+        return c.body(readFileSync(path.join(webRoot, file), "utf8"), 200, {
+          "content-type": mime[ext] ?? "text/plain",
+        });
+      } catch {
+        return c.text(`web UI missing (${file})`, 404);
+      }
+    });
+  }
 
   return app;
-}
-
-function readFileSyncSafe(dir: string, file: string): string {
-  try {
-    return readFileSync(path.join(dir, file), "utf8");
-  } catch {
-    return `<html><body><p>web UI not built (${file})</p></body></html>`;
-  }
 }
 
 export function serveApp(app: Hono, port: number): void {

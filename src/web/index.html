@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>teapot — agents</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <strong>🫖 teapot</strong>
+  <span id="metrics" class="muted"></span>
+</header>
+<main>
+  <nav id="agent-list"><div class="muted">loading…</div></nav>
+  <section id="detail">
+    <div id="placeholder" class="muted">select an agent</div>
+    <div id="pane" hidden>
+      <h2><span id="a-id"></span> <span id="a-status" class="badge"></span> <span id="a-model" class="muted"></span></h2>
+      <div class="row">
+        <button id="btn-start">▶ start</button>
+        <button id="btn-stop">■ stop</button>
+        <button id="btn-fork">⑂ fork branch</button>
+        <span id="branch-info" class="muted"></span>
+      </div>
+      <div class="grid2">
+        <div>
+          <h3>goal <span id="goal-status" class="badge"></span></h3>
+          <pre id="goal-text" class="box small"></pre>
+          <form id="goal-form">
+            <input id="goal-input" placeholder="new goal text…">
+            <button>set goal</button>
+          </form>
+        </div>
+        <div>
+          <h3>latest progress report</h3>
+          <div id="progress" class="box small muted">none yet</div>
+          <h3>runtime</h3>
+          <div id="runtime" class="box small muted"></div>
+        </div>
+      </div>
+      <h3>prompt</h3>
+      <form id="prompt-form" class="row">
+        <input id="prompt-input" placeholder="send a prompt / task to this agent…" style="flex:1">
+        <label class="muted"><input type="checkbox" id="prompt-start" checked> start if stopped</label>
+        <button>send</button>
+      </form>
+      <h3>events <span id="ev-count" class="muted"></span></h3>
+      <div id="events" class="box scroll"></div>
+    </div>
+  </section>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

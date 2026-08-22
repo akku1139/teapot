@@ -1,0 +1,16 @@
+{
+  "port": 7788,
+  "dataDir": ".teapot",
+  "llm": {
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKey": "sk-or-...",
+    "model": "your-provider/your-model"
+  },
+  "progressIntervalMs": 600000,
+  "agents": [
+    { "id": "alpha", "workspace": "workspaces/alpha" }
+  ],
+  "tasks": [
+    { "id": "status-check", "agent": "alpha", "schedule": "every 30m", "forked": true, "prompt": "Briefly check the workspace state (git status, failing tests) and report via report_progress. Do not start large work." }
+  ]
+}
