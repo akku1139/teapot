@@ -310,6 +310,32 @@ test("apply_patch supports rename, EOF append and whitespace tolerance", async (
   assert.equal(bad.ok, false);
 });
 
+/* ---------- skills with bundled scripts ---------- */
+
+test("load_skill surfaces bundled scripts as runnable paths", async () => {
+  const ctx = await tmpCtx();
+  await mkdir(path.join(ctx.cwd, "skills", "deploy"), { recursive: true });
+  await executeTool(
+    "write_file",
+    JSON.stringify({
+      path: "skills/deploy/SKILL.md",
+      content: "---\nname: deploy\ndescription: ship it\n---\n1. build\n2. run ./rollback.sh on failure",
+    }),
+    ctx,
+  );
+  await executeTool(
+    "write_file",
+    JSON.stringify({ path: "skills/deploy/rollback.sh", content: "#!/bin/sh\necho rolling back\n" }),
+    ctx,
+  );
+
+  const r = await executeTool("load_skill", JSON.stringify({ name: "deploy" }), ctx);
+  assert.ok(r.ok, r.result);
+  assert.match(r.result, /run \.\/rollback\.sh on failure/); // SKILL.md body
+  assert.match(r.result, /Files bundled with this skill:/);
+  assert.match(r.result, /skills\/deploy\/rollback\.sh/); // runnable, workspace-relative
+});
+
 /* ---------- read_url ---------- */
 
 test("read_url extracts readable text from a local page (and caches it)", async () => {

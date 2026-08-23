@@ -788,7 +788,24 @@ export const TOOLS: ToolDef[] = [
           result: `unknown skill: ${str(args.name)}. Available: ${skills.map((s) => s.name).join(", ") || "(none)"}`,
         };
       }
-      return { ok: true, result: await readSkillFile(def) };
+      let result = await readSkillFile(def);
+      if (def.files.length) {
+        // surface bundled scripts as runnable paths: workspace-relative when
+        // possible (bash runs in the workspace), absolute for global skills
+        const dirAbs = path.dirname(def.filePath);
+        const rootDir = roots
+          .map((r) => r.dir)
+          .find((d) => def.filePath.startsWith(d + path.sep));
+        const listed = def.files.map((f) => {
+          const abs = path.join(dirAbs, f);
+          return rootDir ? path.relative(ctx.cwd, abs) || f : abs;
+        });
+        result +=
+          `\n\n--- Files bundled with this skill:\n` +
+          listed.map((f) => `- ${f}`).join("\n") +
+          `\nRun scripts with bash (chmod +x first if needed).`;
+      }
+      return { ok: true, result };
     },
   },
   {

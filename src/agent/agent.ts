@@ -39,6 +39,15 @@ export interface AgentOptions {
   sessionDir: string;
   /** ms of activity after which the harness asks for a progress report */
   progressIntervalMs?: number;
+  /**
+   * Progress prompts fire only when BOTH gates pass: the interval above has
+   * elapsed AND enough real model output happened since the last report.
+   * This stops the harness from burning a turn asking for progress while the
+   * provider is stalling (retries produce wall-clock time but no output).
+   */
+  progressMinChars?: number;
+  /** escape hatch: even near-silent tool-grinding rounds get asked eventually */
+  progressMaxQuietTurns?: number;
   /** continue automatically toward the goal without human input */
   autoContinue?: boolean;
   /** pause between auto-continue rounds */
@@ -84,6 +93,9 @@ Session state is not injected into prompts — fetch it with tools instead:
   text-munging (sed/awk/heredoc) remains available for quick bulk transforms
   when that is genuinely faster.
 - When a loaded skill matches your task, follow its playbook.
+- Turn proven procedures into skills: once something non-trivial worked well,
+  save_skill(name, description, content) so future sessions can load_skill it.
+  Helper scripts can live next to SKILL.md in the skill folder.
 - When you make meaningful progress, call report_progress.
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
 
@@ -123,11 +135,16 @@ export class Agent {
   private toolAbort = new AbortController();
   private runChain: Promise<void> = Promise.resolve();
   private lastProgressAt = Date.now();
+  /** real assistant output since the last progress report (chars / turns) */
+  private activityChars = 0;
+  private turnsSinceProgress = 0;
   private consecutiveToolErrors = 0;
 
   constructor(opts: AgentOptions) {
     this.opts = {
       progressIntervalMs: 10 * 60_000,
+      progressMinChars: 4_000,
+      progressMaxQuietTurns: 40,
       autoContinue: true,
       continueDelayMs: 15_000,
       maxConsecutiveToolErrors: 5,
@@ -632,6 +649,8 @@ export class Agent {
         reasoning: res.reasoning,
       });
       this.messages.push(m);
+      this.turnsSinceProgress++;
+      this.activityChars += m.content?.length ?? 0;
 
       if (!m.tool_calls?.length) return finished;
 
@@ -754,8 +773,14 @@ export class Agent {
   }
 
   private async maybeRequestProgress(): Promise<void> {
-    if (Date.now() - this.lastProgressAt < this.opts.progressIntervalMs) return;
+    const elapsedOk = Date.now() - this.lastProgressAt >= this.opts.progressIntervalMs;
+    const activityOk =
+      this.activityChars >= this.opts.progressMinChars ||
+      this.turnsSinceProgress >= this.opts.progressMaxQuietTurns;
+    if (!elapsedOk || !activityOk) return; // stalling provider → don't waste a turn asking
     this.lastProgressAt = Date.now();
+    this.activityChars = 0;
+    this.turnsSinceProgress = 0;
     const request =
       "[harness] Please give a brief progress report now: what you are doing, goal progress, " +
       "what you recently tried, any problems, and your next step. Keep it under 10 lines.";
@@ -900,6 +925,10 @@ export class Agent {
       next: str(a.next) || undefined,
       ts: new Date().toISOString(),
     };
+    // a report (voluntary or requested) restarts the progress gates
+    this.lastProgressAt = Date.now();
+    this.activityChars = 0;
+    this.turnsSinceProgress = 0;
     await this.log.append("progress", this.currentSession, this.currentBranch, this.latestProgress);
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
   }

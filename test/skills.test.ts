@@ -56,6 +56,20 @@ test("discover merges roots with workspace priority and skips invalid dirs", asy
   assert.ok(!byName.has("not-a-skill"));
 });
 
+test("discover collects bundled files next to SKILL.md", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "teapot-skills-files-"));
+  const ws = path.join(base, "skills");
+  await mkdir(path.join(ws, "deploy"), { recursive: true });
+  await writeFile(path.join(ws, "deploy", "SKILL.md"), "---\nname: deploy\ndescription: d\n---\nbody");
+  await writeFile(path.join(ws, "deploy", "rollback.sh"), "#!/bin/sh\necho hi");
+  await writeFile(path.join(ws, "deploy", "notes.md"), "internal notes");
+  await mkdir(path.join(ws, "deploy", "subdir"), { recursive: true }); // dirs are not files
+
+  const skills = await discoverSkills([{ dir: ws, source: "workspace" }]);
+  assert.equal(skills.length, 1);
+  assert.deepEqual(skills[0].files, ["notes.md", "rollback.sh"]);
+});
+
 test("saveSkill writes frontmatter file and it is rediscoverable", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "teapot-skills-save-"));
   const wsRoot = path.join(base, "skills");

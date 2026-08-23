@@ -203,6 +203,50 @@ test("a queued prompt keeps a finished round going", async (t) => {
   await agent.dispose();
 });
 
+/* ---------- progress gating ---------- */
+
+test("progress prompts wait for real output, not just elapsed time", async (t) => {
+  t.timeout?.(25_000);
+  let big = false;
+  let sawAsk = false;
+  let harnessedAt = Infinity;
+  const mock: ChatFn = (_cfg, _messages, tools) => {
+    if (tools.length === 0) {
+      // the harness's dedicated progress-report call (no tools)
+      harnessedAt = Math.min(harnessedAt, Date.now());
+      sawAsk = true;
+      return { message: { role: "assistant", content: "report: on track" } };
+    }
+    if (!big) return { message: { role: "assistant", content: "k" } }; // stalling provider: tiny output
+    if (sawAsk)
+      return reply("done", [tc("f", "finish", { goalComplete: true })]);
+    return { message: { role: "assistant", content: "x".repeat(5000) } };
+  };
+  const { agent } = await mkAgent({
+    chatFn: mock,
+    progressIntervalMs: 50,
+    progressMinChars: 4000,
+    progressMaxQuietTurns: 60,
+    continueDelayMs: 5,
+  });
+  await agent.setGoal("grind away");
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  await new Promise((r) => setTimeout(r, 150)); // many tiny turns, way past the interval
+  assert.equal(sawAsk, false); // …but no progress request while nothing real happened
+  const bigAt = Date.now();
+  big = true;
+  await agent.settled();
+  assert.ok(Number.isFinite(harnessedAt), "a progress request should happen once output flows");
+  assert.ok(harnessedAt >= bigAt, "progress request must not precede sufficient output");
+  const events = await readEvents(agent.log.filePath);
+  const asks = events.filter(
+    (e) => e.type === "prompt" && String((e.data as Record<string, unknown>).text ?? "").includes("[harness]"),
+  );
+  assert.equal(asks.length, 1);
+  await agent.dispose();
+});
+
 /* ---------- context compaction ---------- */
 
 test("compaction summarizes old turns when the budget is exceeded", async () => {

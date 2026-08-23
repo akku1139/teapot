@@ -51,6 +51,8 @@ export interface TeapotConfig {
   agents: AgentConfig[];
   tasks?: TaskConfig[];
   progressIntervalMs?: number;
+  /** progress prompts also require this much real model output since the last report */
+  progressMinChars?: number;
   /** per-agent estimated-token history budget before compaction kicks in */
   contextTokenBudget?: number;
 }
@@ -209,6 +211,8 @@ export class Master {
     this.raw.tasks = this.config.tasks;
     if (this.raw.progressIntervalMs === undefined && this.config.progressIntervalMs !== undefined)
       this.raw.progressIntervalMs = this.config.progressIntervalMs;
+    if (this.raw.progressMinChars === undefined && this.config.progressMinChars !== undefined)
+      this.raw.progressMinChars = this.config.progressMinChars;
     writeFileSync(this.configPath, JSON.stringify(this.raw, null, 2) + "\n");
   }
   private raw: Record<string, unknown> = loadedRaw();
@@ -218,6 +222,7 @@ export class Master {
     providers?: Record<string, ProviderConfig>;
     defaultProvider?: string;
     progressIntervalMs?: number;
+    progressMinChars?: number;
     tasks?: TaskConfig[];
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
@@ -227,6 +232,12 @@ export class Master {
       for (const a of this.agents.values())
         (a as unknown as { opts: { progressIntervalMs: number } }).opts.progressIntervalMs =
           patch.progressIntervalMs;
+    }
+    if (patch.progressMinChars !== undefined) {
+      this.config.progressMinChars = patch.progressMinChars;
+      for (const a of this.agents.values())
+        (a as unknown as { opts: { progressMinChars: number } }).opts.progressMinChars =
+          patch.progressMinChars;
     }
     if (patch.tasks) {
       this.config.tasks = patch.tasks;
@@ -289,6 +300,7 @@ export class Master {
       llm,
       sessionDir,
       progressIntervalMs: this.config.progressIntervalMs,
+      ...(this.config.progressMinChars ? { progressMinChars: this.config.progressMinChars } : {}),
       autoContinue: true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),

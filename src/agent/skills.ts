@@ -27,6 +27,8 @@ export interface SkillDef {
   /** which root provided it ("workspace" | "global" | any label really) */
   source: string;
   filePath: string;
+  /** sibling files bundled with the skill (bare names, e.g. helper scripts) */
+  files: string[];
 }
 
 export interface ParsedSkill {
@@ -75,11 +77,23 @@ export async function discoverSkills(roots: { dir: string; source: string }[]): 
       const parsed = parseSkillMd(text);
       const name = parsed.meta.name || e.name;
       if (byName.has(name)) continue; // higher-priority root already defined it
+      // collect bundled files (helper scripts, templates, ...) next to SKILL.md
+      let files: string[] = [];
+      try {
+        const siblings = await fs.readdir(path.join(root.dir, e.name), { withFileTypes: true });
+        files = siblings
+          .filter((f) => f.isFile() && f.name !== SKILL_FILE && !f.name.startsWith("."))
+          .map((f) => f.name)
+          .sort();
+      } catch {
+        /* unreadable dir → no bundled files */
+      }
       byName.set(name, {
         name,
         description: parsed.meta.description || "",
         source: root.source,
         filePath,
+        files,
       });
     }
   }
