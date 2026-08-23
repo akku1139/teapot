@@ -143,6 +143,14 @@ export default function App() {
   });
   onCleanup(() => clearTimeout(liveRenderTimer));
 
+  // NOTE: createMemo factories run IMMEDIATELY at declaration — anything they
+  // read must be declared ABOVE them (createEffect is deferred, memos are not)
+  const sel = createMemo(() => agents().find((a) => a.id === selected()));
+  // prompt being edited → edit-prompt fork dialog
+  const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
+  // optimistic echoes of prompts we just sent but haven't seen in the log yet
+  const [pendingMsgs, setPendingMsgs] = createSignal<{ id: string; text: string; at: number }[]>([]);
+
   // pair tool_call events with their (possibly still missing) results:
   // consumed results are hidden from the feed, calls render as one merged row
   // that shows "running…" until its result lands
@@ -207,11 +215,6 @@ export default function App() {
   });
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
-  const sel = createMemo(() => agents().find((a) => a.id === selected()));
-  // prompt being edited → edit-prompt fork dialog
-  const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
-  // optimistic echoes of prompts we just sent but haven't seen in the log yet
-  const [pendingMsgs, setPendingMsgs] = createSignal<{ id: string; text: string; at: number }[]>([]);
   // operator task list draft — seeded per selected agent; while the user
   // hasn't touched it, it follows server updates (the agent edits it too)
   const [todoDraft, setTodoDraft] = createSignal("");
