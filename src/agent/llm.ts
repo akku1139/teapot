@@ -149,6 +149,9 @@ export async function chatStream(
   onDelta?: (snap: { text: string; reasoning: string }) => void,
 ): Promise<LlmResult> {
   let gotChunk = false;
+  // hoisted so the abort handler below can attach whatever streamed so far
+  let text = "";
+  let reasoning = "";
   try {
     const stream = await client(cfg).chat.completions.create(
       {
@@ -159,8 +162,6 @@ export async function chatStream(
       },
       { signal },
     );
-    let text = "";
-    let reasoning = "";
     const calls: Record<number, { id: string; name: string; args: string }> = {};
     let finishReason: string | undefined;
     let usage: LlmResult["usage"];
@@ -214,6 +215,11 @@ export async function chatStream(
   } catch (err) {
     // provider may not support streaming at all — one clean fallback
     if (!gotChunk && !signal?.aborted) return chat(cfg, messages, tools, signal);
+    // user interrupt: hand back whatever streamed so far so the harness can
+    // keep the partial output visible instead of losing it
+    if (signal?.aborted && (text || reasoning)) {
+      (err as { partial?: unknown }).partial = { text, reasoning };
+    }
     throw err;
   }
 }

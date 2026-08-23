@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSchedule, matches } from "../src/scheduler/cron.ts";
+import { parseSchedule, matches, nextFireAt } from "../src/scheduler/cron.ts";
 
 const at = (min: number, hour = 10, day = 15, month = 6, dow = 3) =>
   new Date(2026, month - 1, day, hour, min, 0);
@@ -44,4 +44,16 @@ test("cron: sunday as 7 matches day 0", () => {
 test("cron: rejects garbage", () => {
   assert.throws(() => parseSchedule("nope"));
   assert.throws(() => parseSchedule("* * * *"));
+});
+
+test("cron: nextFireAt finds the next matching minute", () => {
+  const from = new Date(2026, 5, 15, 10, 3, 0); // 10:03
+  const step = nextFireAt(parseSchedule("*/10 * * * *"), from);
+  assert.equal(step, new Date(2026, 5, 15, 10, 10, 0).toISOString());
+
+  const daily = nextFireAt(parseSchedule("30 8 * * *"), new Date(2026, 5, 15, 12, 0, 0));
+  assert.equal(daily, new Date(2026, 5, 16, 8, 30, 0).toISOString()); // past 08:30 → tomorrow
+
+  const every2h = nextFireAt(parseSchedule("every 2h"), new Date(2026, 5, 15, 10, 1, 0));
+  assert.equal(every2h, new Date(2026, 5, 15, 12, 0, 0).toISOString());
 });

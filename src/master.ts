@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { Agent } from "./agent/agent.ts";
-import { parseSchedule, matches } from "./scheduler/cron.ts";
+import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/cron.ts";
 import type { LlmConfig } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
@@ -191,7 +191,12 @@ function printAgentEvent(e: TeapotEvent): void {
 
 export class Master {
   readonly agents = new Map<string, Agent>();
-  private tasks: { task: TaskConfig; schedule: ReturnType<typeof parseSchedule>; lastRunMin: number }[] = [];
+  private tasks: {
+    task: TaskConfig;
+    schedule: Schedule;
+    lastRunMin: number;
+    lastRunAt?: number;
+  }[] = [];
   private startedAt = Date.now();
   readonly config: TeapotConfig;
   readonly configPath: string;
@@ -441,6 +446,7 @@ export class Master {
         if (!matches(t.schedule, now)) continue;
         if (t.lastRunMin === minuteKey) continue; // dedupe within the same minute
         t.lastRunMin = minuteKey;
+        t.lastRunAt = Date.now();
         const agent = this.agents.get(t.task.agent);
         if (!agent) continue;
         console.log(`[teapot] scheduled task "${t.task.id}" -> agent ${t.task.agent}`);
@@ -453,6 +459,27 @@ export class Master {
         console.error(`[teapot] scheduler error (${t.task.id}):`, (err as Error).message);
       }
     }
+  }
+
+  /** Everything the UI needs to make cron schedules legible. */
+  tasksView(): {
+    id: string;
+    agent: string;
+    schedule: string;
+    forked: boolean;
+    prompt: string;
+    next: string | null;
+    last: string | null;
+  }[] {
+    return this.tasks.map((t) => ({
+      id: t.task.id,
+      agent: t.task.agent,
+      schedule: t.schedule.raw,
+      forked: !!t.task.forked,
+      prompt: t.task.prompt,
+      next: nextFireAt(t.schedule),
+      last: t.lastRunAt ? new Date(t.lastRunAt).toISOString() : null,
+    }));
   }
 
   metrics() {

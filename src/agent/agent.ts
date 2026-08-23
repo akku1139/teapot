@@ -661,14 +661,38 @@ export class Agent {
         turn: ++this.stats.turns,
       });
       // stream the assistant reply live to connected clients
-      const res = await this.llmCall(this.buildMessages(), allToolSpecs(), (s) => {
-        bus.emit("update", {
-          kind: "llm-delta",
-          agentId: this.opts.id,
-          text: s.text,
-          reasoning: s.reasoning,
-        } satisfies BusEvent);
-      });
+      let res;
+      try {
+        res = await this.llmCall(this.buildMessages(), allToolSpecs(), (s) => {
+          bus.emit("update", {
+            kind: "llm-delta",
+            agentId: this.opts.id,
+            text: s.text,
+            reasoning: s.reasoning,
+          } satisfies BusEvent);
+        });
+      } catch (err) {
+        // user stop mid-stream: persist the partial output so the timeline
+        // keeps what was already visible (otherwise it silently vanishes)
+        const partial = (err as { partial?: { text?: string; reasoning?: string } }).partial;
+        if (this.stopRequested && partial && (partial.text || partial.reasoning)) {
+          await this.log.append("message", this.currentSession, this.currentBranch, {
+            role: "assistant",
+            content: partial.text ?? "",
+            reasoning: partial.reasoning,
+            interrupted: true,
+          });
+          this.messages.push({ role: "assistant", content: partial.text ?? "" });
+        } else if (this.stopRequested) {
+          // nothing had streamed — leave an explicit marker so the log shows
+          // why this prompt has no reply
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "turn-interrupted",
+            detail: "stopped before any output arrived",
+          });
+        }
+        throw err;
+      }
       if (res.usage) {
         this.stats.inputTokens += res.usage.inputTokens ?? 0;
         this.stats.outputTokens += res.usage.outputTokens ?? 0;

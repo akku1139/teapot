@@ -127,6 +127,42 @@ test("dispose() kills a running tool so master shutdown never hangs", async (t) 
   await agent.dispose();
 });
 
+test("stopping mid-stream keeps the partial reply in the log", async () => {
+  const { agent } = await mkAgent({
+    chatFn: (_cfg, _m, _t, signal) =>
+      new Promise<LlmResult>((_, rej) => {
+        const fail = () =>
+          rej(
+            Object.assign(new Error("aborted"), {
+              name: "APIUserAbortError",
+              partial: { text: "half-written rep", reasoning: "partial thoughts" },
+            }),
+          );
+        const t = setTimeout(fail, 5_000);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(t);
+          fail();
+        });
+      }),
+  });
+  agent.enqueuePrompt("write me a poem");
+  agent.start("test");
+  await new Promise((r) => setTimeout(r, 60));
+  agent.stop("user");
+  await agent.settled();
+  assert.equal(agent.status, "stopped");
+
+  const events = await readEvents(agent.log.filePath);
+  const m = events.find((e) => e.type === "message" && (e.data as Record<string, unknown>).interrupted);
+  assert.ok(m, "interrupted partial message must be logged");
+  assert.match((m.data as Record<string, unknown>).content as string, /half-written rep/);
+  // the in-memory conversation keeps it too (restart replays it from the log)
+  assert.ok(agent.messages.some((x) => x.role === "assistant" && x.content?.includes("half-written")));
+  // stop is control flow — no error events
+  assert.ok(!events.some((e) => e.type === "error"));
+  await agent.dispose();
+});
+
 /* ---------- prompt mailbox ---------- */
 
 test("prompts sent mid-run are logged instantly and delivered at the next turn boundary", async (t) => {

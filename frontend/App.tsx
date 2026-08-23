@@ -150,6 +150,11 @@ export default function App() {
   const refreshAgents = () => api("/api/agents").then((d) => setAgents(d.agents)).catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
 
+  // scheduled (cron) tasks — shown in the right panel so "what runs when" is legible
+  const [tasks, setTasks] = createSignal<any[]>([]);
+  const loadTasks = () => api("/api/tasks").then((d) => setTasks(d.tasks)).catch(() => {});
+  const agentTasks = (id: string | null) => tasks().filter((t) => t.agent === id);
+
   // null = show everything; otherwise only the chosen branch's events
   const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
   async function loadEvents(id: string) {
@@ -206,12 +211,14 @@ export default function App() {
     // event types that don't change the feed — refreshing on every one of
     // these would hammer /events several times per turn for nothing
     const FEED_IRRELEVANT = new Set(["state", "usage", "session_start"]);
-    let lastDeltaAt = 0;
+    // last streaming delta per agent — decides whether the live bubble is
+    // still generating or already fully persisted
+    let lastDelta: { id: string; at: number } | null = null;
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.kind === "ping" || msg.kind === "pong") return;
       if (msg.kind === "llm-delta") {
-        lastDeltaAt = Date.now();
+        lastDelta = { id: msg.agentId, at: Date.now() };
         if (msg.agentId === selected()) setLive({ text: msg.text ?? "", reasoning: msg.reasoning ?? "" });
         return;
       }
@@ -223,12 +230,15 @@ export default function App() {
         await refreshMetrics();
         if (selected()) {
           const before = events().length;
+          const fetchStartedAt = Date.now();
           await loadEvents(selected()!);
           if (events().length !== before) {
-            // a persisted event landed — the live bubble is now history, but
-            // only if the stream actually went quiet; wiping it mid-generation
-            // made messages flicker/vanish between turns
-            if (Date.now() - lastDeltaAt > 2000) setLive(null);
+            // keep the bubble only if THIS agent streamed a delta after the
+            // fetch started (i.e. the bubble shows something newer than
+            // everything persisted). Otherwise it must go — otherwise a
+            // stale "thinking…"/duplicate bubble outlives an idle agent.
+            const stillStreaming = lastDelta?.id === selected() && lastDelta.at >= fetchStartedAt;
+            if (!stillStreaming) setLive(null);
             if (nearBottom()) scrollBottom(true);
             else setMissed(missed() + (events().length - before));
           }
@@ -377,8 +387,12 @@ export default function App() {
       if (initial) select(initial.id, false);
     });
     refreshMetrics();
+    loadTasks();
     connectWs();
-    const mi = setInterval(refreshMetrics, 30_000);
+    const mi = setInterval(() => {
+      refreshMetrics();
+      loadTasks();
+    }, 30_000);
     onCleanup(() => clearInterval(mi));
   });
 
@@ -434,6 +448,9 @@ export default function App() {
               <div class={"agent-item" + (a.id === selected() ? " sel" : "")} onclick={() => select(a.id)}>
                 <span class={`dot ${a.status}`} />
                 <span>{a.id}</span>
+                <Show when={agentTasks(a.id).length > 0}>
+                  <span class="mini-cron" title={agentTasks(a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
+                </Show>
                 <Show when={a.goal.status === "done"}><span title="goal done">✓</span></Show>
               </div>
             )}
@@ -457,6 +474,11 @@ export default function App() {
             <Show when={(sel()!.pendingPrompts ?? 0) > 0}>
               <span class="badge queued" title={`${sel()!.pendingPrompts} prompt(s) waiting — the agent picks them up at the next turn boundary`}>
                 ⏳ {sel()!.pendingPrompts} queued
+              </span>
+            </Show>
+            <Show when={agentTasks(sel()!.id).length > 0}>
+              <span class="badge cron" title={`scheduled tasks:\n${agentTasks(sel()!.id).map((t) => `${t.schedule} · ${t.id}${t.forked ? " (forked)" : ""}`).join("\n")}`}>
+                ⏰ {agentTasks(sel()!.id).length}
               </span>
             </Show>
             <span class="sub">
@@ -671,6 +693,32 @@ export default function App() {
               </div>
             )}
           </For>
+
+          <h3>⏰ schedule <span class="muted" style="text-transform:none;letter-spacing:0">· cron tasks, all agents · edit in settings</span></h3>
+          <Show
+            when={tasks().length > 0}
+            fallback={<div class="muted">no scheduled tasks — add them in ⚙ settings ("scheduled tasks")</div>}
+          >
+            <For each={tasks()}>
+              {(t) => (
+                <div
+                  class={"sched-row" + (t.agent === selected() ? " cur" : "")}
+                  title={`${oneLine(t.prompt, 200)}\nclick to open #${t.agent}`}
+                  onclick={() => select(t.agent)}
+                >
+                  <div class="sched-top">
+                    <b>{t.id}</b>
+                    <span class="muted">@{t.agent}</span>
+                    <Show when={t.forked}><span title="runs on a forked branch so chatter stays off the main line">⑂</span></Show>
+                  </div>
+                  <div class="sched-meta mono">
+                    {t.schedule} → next {t.next ? relTime(t.next) : "—"}{t.last ? ` · last ${relTime(t.last)}` : " · never ran"}
+                  </div>
+                  <div class="sched-prompt muted">{oneLine(t.prompt, 90)}</div>
+                </div>
+              )}
+            </For>
+          </Show>
         </Show>
       </aside>
     </div>
@@ -682,7 +730,7 @@ export default function App() {
       />
     </Show>
     <Show when={showCfg()}>
-      <ConfigModal cfg={cfg()} onClose={() => setShowCfg(false)} onSaved={loadCfg} />
+      <ConfigModal cfg={cfg()} onClose={() => setShowCfg(false)} onSaved={() => { loadCfg(); loadTasks(); }} />
     </Show>
     </>
   );
@@ -755,6 +803,9 @@ function SwitchContent(props: { e: Ev; res?: Ev }) {
             </details>
           </Show>
           <div class="content" innerHTML={renderMarkdown(String(e.data.content ?? ""))} />
+          <Show when={e.data.interrupted}>
+            <div class="interrupted">⚠ interrupted — partial output kept</div>
+          </Show>
           <Show when={e.data.final}>
             <div class="msgfoot"><CopyBtn text={String(e.data.content ?? "")} /><span>copy summary</span></div>
           </Show>
@@ -816,6 +867,17 @@ function SwitchContent(props: { e: Ev; res?: Ev }) {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + " …" : s;
+}
+
+/** "in 5m" / "3m ago" — for schedule next/last columns */
+function relTime(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  const abs = Math.abs(ms);
+  const unit =
+    abs < 90_000 ? `${Math.round(abs / 1000)}s`
+    : abs < 5_400_000 ? `${Math.round(abs / 60_000)}m`
+    : `${(abs / 3_600_000).toFixed(1)}h`;
+  return ms >= 0 ? `in ${unit}` : `${unit} ago`;
 }
 
 /** single-line preview with collapsed whitespace */

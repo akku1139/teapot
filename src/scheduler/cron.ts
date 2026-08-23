@@ -76,3 +76,18 @@ export function matches(schedule: Schedule, d: Date): boolean {
   }
   return true;
 }
+
+/**
+ * Next fire time after `from`, scanning minute by minute (cheap: a handful of
+ * integer compares per minute). Returns null when nothing fires within ~31
+ * days (e.g. a Feb-29-only cron in August).
+ */
+export function nextFireAt(schedule: Schedule, from = new Date()): string | null {
+  const startMinute = Math.floor(from.getTime() / 60_000) + 1; // next whole minute
+  const horizon = 60 * 24 * 31;
+  for (let i = 0; i < horizon; i++) {
+    const d = new Date((startMinute + i) * 60_000);
+    if (matches(schedule, d)) return d.toISOString();
+  }
+  return null;
+}

@@ -399,6 +399,9 @@ export function buildApp(master: Master): Hono {
   // ---- metrics / SSE ----
   app.get("/api/metrics", (c) => c.json(master.metrics()));
 
+  // scheduled tasks with computed next-fire times (cron visibility for the UI)
+  app.get("/api/tasks", (c) => c.json({ tasks: master.tasksView() }));
+
   app.get("/api/events", (c) => {
     c.header("content-type", "text/event-stream");
     c.header("cache-control", "no-cache");
