@@ -189,6 +189,83 @@ test("token estimate counts CJK near 1 token/char, ASCII ~4 chars/token", async 
   await agent.dispose();
 });
 
+/* ---------- prefix-cache safety across restarts ---------- */
+
+test("session restore reproduces byte-identical request payloads", async () => {
+  const LLM2: LlmConfig = { baseUrl: "http://mock", apiKey: "k", model: "m" };
+  const tc = (id: string, name: string, args: unknown) => ({
+    id,
+    type: "function" as const,
+    function: { name, arguments: JSON.stringify(args) },
+  });
+  const reply = (content: string, calls?: ReturnType<typeof tc>[]): LlmResult => ({
+    message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
+  });
+
+  const livePayloads: string[] = [];
+  let n = 0;
+  // deliberately emit tool args with SPACES — the raw string must survive the
+  // log round-trip instead of being re-canonicalized by JSON.stringify
+  const RAW_ARGS = '{ "path": "a.txt", "content": "hi", "limit": 5 }';
+  const chatA: ChatFn = async (_c, _m, _t) => {
+    const i = n++;
+    livePayloads.push(JSON.stringify(_m));
+    if (i === 0)
+      return {
+        message: {
+          role: "assistant",
+          content: "writing with oddly spaced args",
+          tool_calls: [{ id: "w1", type: "function" as const, function: { name: "write_file", arguments: RAW_ARGS } }],
+        },
+      };
+    if (i === 1) return reply("noting progress", [tc("p1", "report_progress", { doing: "x", goalStatus: "ok", recent: "y" })]);
+    if (i === 2) return reply("checking state", [tc("g1", "get_goal", {})]);
+    if (i === 3) return reply("finishing", [tc("f1", "finish", { goalComplete: true, summary: "done deal" })]);
+    throw new Error("too many calls");
+  };
+
+  const ws = await mkdtemp(path.join(tmpdir(), "cache-ws-"));
+  const sess = await mkdtemp(path.join(tmpdir(), "cache-sess-"));
+  const a = new Agent({ id: "t", workspace: ws, llm: LLM2, sessionDir: sess, continueDelayMs: 10, chatFn: chatA });
+  await a.init();
+  await a.setGoal("cache check");
+  a.enqueuePrompt("go");
+  a.start("t");
+  await a.settled();
+  assert.equal(a.status, "idle");
+
+  const beforeBytes = JSON.stringify(
+    (a as unknown as { buildMessages(): unknown }).buildMessages(),
+  );
+  await a.dispose();
+
+  // restart on the same session dir; capture the very first request payload
+  const restoredPayloads: string[][] = [];
+  const chatB: ChatFn = async (_c, messages) => {
+    restoredPayloads.push(JSON.stringify(messages));
+    return reply("resumed");
+  };
+  const b = new Agent({ id: "t", workspace: ws, llm: LLM2, sessionDir: sess, continueDelayMs: 10, chatFn: chatB });
+  await b.init();
+  await b.load();
+
+  const afterBytes = JSON.stringify(
+    (b as unknown as { buildMessages(): unknown }).buildMessages(),
+  );
+  assert.equal(afterBytes, beforeBytes); // prefix cache survives the restart
+  // and the next real request starts from that exact same prefix (+ the
+  // newly queued "continue" user message at the tail)
+  const continued = beforeBytes.replace(
+    /\]$/,
+    ',{"role":"user","content":"continue"}]',
+  );
+  b.enqueuePrompt("continue");
+  b.start("resume");
+  await b.settled();
+  assert.equal(restoredPayloads[0], continued);
+  await b.dispose();
+});
+
 /* ---------- master: per-incarnation session dirs ---------- */
 
 function mkMaster(dataDir: string): Master {

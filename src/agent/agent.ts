@@ -754,44 +754,34 @@ export class Agent {
         if (call.function.name === "finish") {
           await this.handleFinish(call.function.arguments);
           // answer the tool_call so a follow-up round stays API-valid
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: this.goal.status === "done" ? "(goal complete)" : "(round ended)",
-          });
+          await this.answerMeta(
+            call,
+            this.goal.status === "done" ? "(goal complete)" : "(round ended)",
+          );
           finished = true;
           continue;
         }
         if (call.function.name === "report_progress") {
           await this.recordProgress(call.function.arguments);
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: "progress recorded",
-          });
+          await this.answerMeta(call, "progress recorded");
           continue;
         }
         if (call.function.name === "set_goal") {
           const a = safeParse(call.function.arguments);
           const text = String(a.text ?? "").trim();
           if (text) await this.setGoal(text);
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: text ? "goal updated" : "empty goal rejected",
-          });
+          await this.answerMeta(call, text ? "goal updated" : "empty goal rejected");
           continue;
         }
         if (call.function.name === "get_goal") {
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: JSON.stringify(
+          await this.answerMeta(
+            call,
+            JSON.stringify(
               { goal: this.goal.text || "(none set)", status: this.goal.status },
               null,
               1,
             ),
-          });
+          );
           continue;
         }
         if (call.function.name === "ask_user") {
@@ -802,42 +792,32 @@ export class Agent {
             question,
             options,
           });
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: "question shown to the operator — the loop is parked until they reply",
-          });
+          await this.answerMeta(
+            call,
+            "question shown to the operator — the loop is parked until they reply",
+          );
           this.awaitingUser = true;
           this.setStatus("waiting", question.slice(0, 80));
           // control flow: park the loop; the operator's next prompt resumes it
           throw Object.assign(new Error("waiting for user"), { name: "WaitForUser" });
         }
         if (call.function.name === "get_todo") {
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: this.todo.trim() || "(todo.md is empty — no task list yet)",
-          });
+          await this.answerMeta(
+            call,
+            this.todo.trim() || "(todo.md is empty — no task list yet)",
+          );
           continue;
         }
         if (call.function.name === "set_todo") {
           const a = safeParse(call.function.arguments);
           const content = String(a.content ?? "").slice(0, 32_000);
           await this.setTodo(content, "agent");
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: "task list updated (visible to the operator)",
-          });
+          await this.answerMeta(call, "task list updated (visible to the operator)");
           continue;
         }
         if (call.function.name === "read_memory") {
           const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: mem.trim() || "(memory.md is empty — nothing noted yet)",
-          });
+          await this.answerMeta(call, mem.trim() || "(memory.md is empty — nothing noted yet)");
           continue;
         }
         if (call.function.name === "list_skills") {
@@ -845,24 +825,21 @@ export class Agent {
           const list = this.skillsCache.length
             ? this.skillsCache.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n")
             : "(no skills yet — create one with save_skill)";
-          this.messages.push({ role: "tool", tool_call_id: call.id, content: list });
+          await this.answerMeta(call, list);
           continue;
         }
         if (call.function.name === "set_memory") {
           const a = safeParse(call.function.arguments);
           const content = String(a.content ?? "").slice(0, 32_000);
           await fs.writeFile(this.memoryFile, content, "utf8");
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: "memory saved (injected into future prompts)",
-          });
+          await this.answerMeta(call, "memory saved (injected into future prompts)");
           continue;
         }
         await this.log.append("tool_call", this.currentSession, this.currentBranch, {
           callId: call.id,
           name: call.function.name,
           args: safeParse(call.function.arguments),
+          argsRaw: call.function.arguments, // byte-exact for cache-safe restore
         });
         const t0 = Date.now();
         const result = await executeTool(call.function.name, call.function.arguments, this.toolCtx);
@@ -970,6 +947,35 @@ export class Agent {
       if (this.messages[i]!.role !== "tool") return i;
     }
     return -1;
+  }
+
+  /**
+   * Answer a meta tool call (finish / get_goal / ask_user / …): into the
+   * in-memory history AND the log as a regular tool_result, so session
+   * restores replay the exact same bytes and provider prefix caches stay
+   * warm across restarts.
+   */
+  private async answerMeta(
+    call: { id: string; function: { name: string; arguments?: string } },
+    content: string,
+  ): Promise<void> {
+    const raw = call.function.arguments ?? "{}";
+    this.messages.push({ role: "tool", tool_call_id: call.id, content });
+    // log the call AND its answer so restores replay byte-exact sequences
+    // (meta calls previously went unlogged and restored as bare "{}" args)
+    await this.log.append("tool_call", this.currentSession, this.currentBranch, {
+      callId: call.id,
+      name: call.function.name,
+      args: safeParse(raw),
+      argsRaw: raw,
+    });
+    await this.log.append("tool_result", this.currentSession, this.currentBranch, {
+      callId: call.id,
+      name: call.function.name,
+      ok: true,
+      durationMs: 0,
+      result: content,
+    });
   }
 
   /** Compact history when the real prompt size exceeds the budget. */
@@ -1321,6 +1327,11 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
     "read_memory", "set_memory", "list_skills", "get_todo", "set_todo",
   ]);
   const openCalls = new Map<string, string>(); // real tool_call id -> name
+  // meta answers are now logged as regular tool_results; the legacy progress
+  // synthesizer below must not duplicate them
+  const loggedResults = new Set(
+    list.filter((e) => e.type === "tool_result").map((e) => String((e.data as Record<string, unknown>).callId ?? "")),
+  );
   const bufferedUsers: string[] = [];
   const flushUsers = () => {
     if (openCalls.size === 0) {
@@ -1333,6 +1344,9 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       if (openCalls.size > 0) bufferedUsers.push(d.text);
       else msgs.push({ role: "user", content: d.text });
     } else if (e.type === "message") {
+      // final summaries are operator-facing only — the live loop never puts
+      // them in model history, so restores must skip them too
+      if (d.final === true) continue;
       const role = d.role === "assistant" ? "assistant" : "user";
       const m: ChatMessage = { role, content: typeof d.content === "string" ? d.content : "" };
       if (Array.isArray(d.toolCalls) && d.toolCalls.length > 0) {
@@ -1347,12 +1361,17 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
           if (!META_TOOLS.has(t.function.name)) openCalls.set(t.id, t.function.name);
       }
       msgs.push(m);
-    } else if (e.type === "tool_call") {
-      // enrich the preceding assistant tool_calls with real arguments
-      const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
-      const tc = prev?.tool_calls?.find((t) => t.id === d.callId);
-      if (tc) tc.function.arguments = JSON.stringify(d.args ?? {});
-    } else if (e.type === "tool_result") {
+      } else if (e.type === "tool_call") {
+        // enrich the preceding assistant tool_calls with real arguments —
+        // prefer the provider's raw string so restored requests stay
+        // byte-identical (prefix caches stay warm across restarts)
+        const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
+        const tc = prev?.tool_calls?.find((t) => t.id === d.callId);
+        if (tc) {
+          if (typeof d.argsRaw === "string") tc.function.arguments = d.argsRaw;
+          else if (d.args !== undefined) tc.function.arguments = JSON.stringify(d.args ?? {});
+        }
+      } else if (e.type === "tool_result") {
       msgs.push({
         role: "tool",
         tool_call_id: String(d.callId ?? ""),
@@ -1366,7 +1385,7 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       const lastAssistant = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.length);
       if (lastAssistant?.tool_calls?.some((t) => t.function.name === "report_progress")) {
         for (const t of lastAssistant.tool_calls!) {
-          if (!msgs.some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
+          if (!loggedResults.has(t.id) && !msgs.some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
             msgs.push({ role: "tool", tool_call_id: t.id, content: "progress recorded" });
           }
           openCalls.delete(t.id);
