@@ -473,7 +473,7 @@ export class Agent {
         window: this.opts.contextWindowTokens || 0,
       },
       pendingPrompts: this.pendingPrompts.length,
-      todo: this.todo.slice(0, 4000),
+      todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
     };
   }
 

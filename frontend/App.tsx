@@ -212,14 +212,20 @@ export default function App() {
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
   // optimistic echoes of prompts we just sent but haven't seen in the log yet
   const [pendingMsgs, setPendingMsgs] = createSignal<{ id: string; text: string; at: number }[]>([]);
-  // operator task list draft — seeded once per selected agent, not on every refresh
+  // operator task list draft — seeded per selected agent; while the user
+  // hasn't touched it, it follows server updates (the agent edits it too)
   const [todoDraft, setTodoDraft] = createSignal("");
+  const [todoDirty, setTodoDirty] = createSignal(false);
   let todoSeededFor = "";
   createEffect(() => {
     const id = selected();
+    const serverTodo = agents().find((a) => a.id === id)?.todo ?? "";
     if (id && id !== todoSeededFor) {
       todoSeededFor = id;
-      setTodoDraft(agents().find((a) => a.id === id)?.todo ?? "");
+      setTodoDirty(false);
+      setTodoDraft(serverTodo);
+    } else if (id && !todoDirty()) {
+      setTodoDraft(serverTodo); // stay current with agent-side set_todo edits
     }
   });
   const saveTodo = async () => {
@@ -231,6 +237,7 @@ export default function App() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: todoDraft(), notify }),
       });
+      setTodoDirty(false);
       flashHint(`tasks saved${notify && todoDraft().trim() ? " & notification queued" : ""}`);
       refreshAgents();
     } catch (ex) {
@@ -905,7 +912,11 @@ export default function App() {
             rows={5}
             placeholder={"- task one\n- task two"}
             value={todoDraft()}
-            oninput={(e) => setTodoDraft(e.currentTarget.value)}
+            oninput={(e) => {
+              setTodoDraft(e.currentTarget.value);
+              setTodoDirty(true);
+            }}
+            title="shared with the agent — it may check items off via set_todo; your unsaved edits win until you save"
             style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
           />
           <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px">
