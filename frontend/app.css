@@ -241,6 +241,9 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .btnrow button:hover { filter: brightness(1.2); }
 .btnrow .runbtn { background: var(--ok); color: #fff; font-weight: 600; }
 .btnrow .danger { background: var(--err); color: #fff; font-weight: 600; }
+.ctrlrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12.5px; }
+.ctrlrow label { display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--fg); white-space: nowrap; }
+.ctrlrow .muted { font-size: 11.5px; }
 
 /* ---- modals & misc ---- */
 .iconbtn { background: var(--bg-light); border: none; color: var(--fg); border-radius: 6px; width: 26px; height: 24px; cursor: pointer; font-size: 13px; }

@@ -147,7 +147,20 @@ export default function App() {
   });
   const chatEvents = createMemo(() => {
     const { consumed } = pairInfo();
-    return events().filter((e) => FEED_TYPES.has(e.type) && !(e.type === "tool_result" && consumed.has(e.id)));
+    return events().filter((e) => {
+      if (!FEED_TYPES.has(e.type)) return false;
+      // paired tool results live inside their call's merged row
+      if (e.type === "tool_result") return !consumed.has(e.id);
+      // tool-call carrier turns have no visible payload — the ToolRow below
+      // already tells that story; an empty agent bubble is just noise
+      if (e.type === "message")
+        return (
+          String(e.data?.content ?? "").trim() !== "" ||
+          String(e.data?.reasoning ?? "").trim() !== "" ||
+          !!e.data?.final
+        );
+      return true;
+    });
   });
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
@@ -656,16 +669,6 @@ export default function App() {
                   }
                 }}
               />
-              <label
-                title="when unchecked, sending only queues the prompt without waking an idle agent"
-              >
-                <input
-                  type="checkbox"
-                  checked={autoStart()}
-                  onchange={(e) => setAutoStartPersist(e.currentTarget.checked)}
-                />
-                start if idle
-              </label>
               <button type="submit">send</button>
             </form>
             <div class="hint">
@@ -762,20 +765,35 @@ export default function App() {
               setAgents(rest);
               if (rest[0]) select(rest[0].id);
               else { setSelected(null); setEvents([]); }
-            }} title="remove agent from teapot (session log stays on disk)">🗑 remove</button>
+              }} title="remove agent from teapot (session log stays on disk)">🗑 remove</button>
+          </div>
+          <div class="ctrlrow">
+            <label
+              title="after each round the agent keeps working toward its goal without waiting for input; sending a prompt also starts an idle agent"
+            >
+              <input
+                type="checkbox"
+                checked={autoStart()}
+                onchange={(e) => setAutoStartPersist(e.currentTarget.checked)}
+              />
+              auto-continue
+            </label>
+            <span class="muted">loops while the goal is active</span>
           </div>
 
           <h3>🎯 goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
-          <form onsubmit={setGoal} style="display:flex;gap:4px;margin-bottom:6px">
-            <input id="goal-input" type="text" placeholder="set new goal…" style="flex:1;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit" />
-            <label
-              class="muted"
-              style="display:flex;align-items:center;gap:3px;font-size:11px;white-space:nowrap;cursor:pointer"
-              title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
-            >
-              <input id="goal-notify" type="checkbox" checked /> notify
-            </label>
-            <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:0 10px;cursor:pointer">✓</button>
+          <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px">
+            <input id="goal-input" type="text" placeholder="set new goal…" style="background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;width:100%" />
+            <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
+              <label
+                class="muted"
+                style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
+                title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
+              >
+                <input id="goal-notify" type="checkbox" checked /> notify agent
+              </label>
+              <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer">✓ save</button>
+            </div>
           </form>
           <div class="card">{sel()!.goal.text || "no goal set — the agent has nothing to auto-continue toward"}</div>
           <div class="muted" style="font-size:11px;margin-top:4px">

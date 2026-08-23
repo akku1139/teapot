@@ -1,0 +1,27 @@
+# Run the test suite (and a build to catch type/bundle errors) on every push
+# to main and every pull request, so regressions surface before release.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build # tsc + vite: catches type and bundling breakage
+
+      - run: pnpm test
