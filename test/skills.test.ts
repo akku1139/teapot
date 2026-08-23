@@ -10,6 +10,16 @@ import {
   isValidSkillName,
 } from "../src/agent/skills.ts";
 
+const REPO_BUNDLED_SKILLS = path.join(new URL("..", import.meta.url).pathname, "skills");
+
+test("bundled repo skills are discoverable via the bundled root", async () => {
+  const skills = await discoverSkills([{ dir: REPO_BUNDLED_SKILLS, source: "bundled" }]);
+  const byName = new Map(skills.map((s) => [s.name, s]));
+  assert.ok(byName.has("qa-adversarial"), "qa-adversarial missing");
+  assert.ok(byName.has("gyaru-review"), "gyaru-review missing");
+  assert.equal(byName.get("qa-adversarial")?.source, "bundled");
+});
+
 test("frontmatter parsing", () => {
   const p = parseSkillMd("---\nname: foo\ndescription: does bar\n---\n\n# Steps\n1. do it\n");
   assert.equal(p.meta.name, "foo");

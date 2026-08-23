@@ -64,6 +64,8 @@ export interface AgentOptions {
   provider?: string;
   /** shared skill dir (defaults to none; workspace skills always enabled) */
   globalSkillsDir?: string;
+  /** package-shipped skills (lowest priority root; auto-resolved by master) */
+  bundledSkillsDir?: string;
   /** depth in the sub-agent spawn tree (0 = top level); enforced by the master */
   spawnDepth?: number;
   /** restrict this agent to read-only tools (sub-agent personas) */
@@ -180,6 +182,7 @@ export class Agent {
       contextWindowTokens: 0,
       restoreSession: true,
       globalSkillsDir: "",
+      bundledSkillsDir: "",
       spawnDepth: 0,
       readOnlyTools: false,
       parent: "",
@@ -196,6 +199,8 @@ export class Agent {
     this.skillRoots = [
       { dir: path.join(opts.workspace, "skills"), source: "workspace" },
       ...(opts.globalSkillsDir ? [{ dir: opts.globalSkillsDir, source: "global" }] : []),
+      // shipped-with-package skills: lowest priority, always discoverable
+      ...(opts.bundledSkillsDir ? [{ dir: opts.bundledSkillsDir, source: "bundled" }] : []),
     ];
     this.toolCtx = {
       cwd: opts.workspace,

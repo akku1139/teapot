@@ -249,7 +249,8 @@ limits (RLIMIT_* / cgroups) have a natural insertion point in
 `src/agent/tools.ts:runShell`.
 
 **LAN exposure**: the API has no auth by default (localhost-first tool). To
-expose it beyond localhost, set `TEAPOT_API_TOKEN=<secret>` — every `/api/*`
+expose it beyond localhost, set `TEAPOT_API_TOKEN=<secret>` (env wins) or a
+`password` field in the config — every `/api/*`
 route then requires `Authorization: Bearer <secret>` (WebSocket handshakes
 accept `?token=<secret>`). In the web UI, open
 `http://host:7788/#token=<secret>` once; the token is stored locally and

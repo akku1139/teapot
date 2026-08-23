@@ -7,6 +7,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSy
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { Agent } from "./agent/agent.ts";
 import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/cron.ts";
 import type { LlmConfig, ChatFn } from "./agent/llm.ts";
@@ -15,6 +16,16 @@ import { bus, type BusEvent } from "./bus.ts";
 
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 const MAX_SPAWN_DEPTH = 3;
+
+/**
+ * Skills shipped with the package — resolved relative to this module so it
+ * works from a global `npm install -g` install, an npx cache, or a repo
+ * checkout alike. Lowest-priority skill root (workspace > global > bundled).
+ */
+const BUNDLED_SKILLS_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../skills",
+);
 
 /** default sub-agent personas — mentionable from the composer (@name) and
  *  usable by agents via spawn_agent({persona}) */
@@ -43,6 +54,12 @@ export const SUB_PERSONAS: Record<
     label: "🔨 implementer",
     directive:
       "ROLE: hands-on implementer. Make the change end-to-end (code + tests), keep edits small and verified, then report what changed and why.",
+  },
+  "gyaru-reviewer": {
+    label: "💅 gyaru reviewer",
+    directive:
+      "ROLE: pre-commit diff reviewer in a blunt gyaru voice. Read the whole diff and hunt: debug leftovers, unclear UI copy, silent data-loss risks, convention drift. Every finding must be concrete — suggested fix or an explicit shrug.",
+    readOnly: true,
   },
 };
 
@@ -101,6 +118,8 @@ export interface TeapotConfig {
   contextWindowTokens?: number;
   /** how deep agents may nest sub-agent spawning (default 3) */
   maxSpawnDepth?: number;
+  /** optional shared secret protecting /api/* (env TEAPOT_API_TOKEN wins) */
+  password?: string;
 }
 
 const CONFIG_DIR =
@@ -245,6 +264,8 @@ export class Master {
   private startedAt = Date.now();
   readonly config: TeapotConfig;
   readonly configPath: string;
+  /** false on first boot with no config file → web UI shows the setup wizard */
+  configFileExists = true;
 
   constructor(
     config: TeapotConfig,
@@ -329,6 +350,67 @@ export class Master {
   }
 
   /**
+   * First-run wizard bootstrap: write a minimal config file, apply it to the
+   * running master, and optionally create + start the first agent. Only
+   * available while no config file exists — after this, edits go through
+   * PUT /api/config behind whatever auth is configured.
+   */
+  async applySetup(body: {
+    baseUrl: string;
+    apiKey?: string;
+    model: string;
+    defaultProvider?: string;
+    workspace?: string;
+    agentName?: string;
+    password?: string;
+  }): Promise<{ ok: true; agentId?: string }> {
+    if (this.configFileExists)
+      throw new Error("setup already completed — edit the config file instead");
+
+    const llm = {
+      baseUrl: body.baseUrl,
+      ...(body.apiKey ? { apiKey: body.apiKey } : {}),
+      model: body.model,
+    };
+    const raw: Record<string, unknown> = {
+      llm,
+      ...(body.password ? { password: body.password } : {}),
+      agents: [] as unknown[],
+    };
+
+    const dir = path.dirname(this.configPath);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(this.configPath, JSON.stringify(raw, null, 2) + "\n");
+
+    // hot-apply to the running master (no restart needed)
+    this.config.llm = { ...this.config.llm, ...llm };
+    if (body.password) this.config.password = body.password;
+    this.configFileExists = true;
+    this.raw.llm = llm;
+    if (body.password) this.raw.password = body.password;
+
+    let agentId: string | undefined;
+    if (body.workspace?.trim()) {
+      const ws = path.resolve(body.workspace.replace(/^~/, process.env.HOME ?? "~"));
+      await mkdirSync(ws, { recursive: true });
+      const name =
+        (body.agentName?.trim() || path.basename(ws))
+          .replace(/[^\w.-]/g, "-")
+          .slice(0, 40) || "agent";
+      let id = name;
+      let n = 2;
+      while (this.agents.has(id)) id = `${name.slice(0, 38)}-${n++}`;
+      const agent = await this.addAgent(
+        { id, workspace: ws },
+        { persist: true, fresh: true },
+      );
+      agentId = id;
+      agent.start("created by setup wizard");
+    }
+    return { ok: true, agentId };
+  }
+
+  /**
    * Create an agent; optionally persist it to the config file.
    * Each incarnation gets its own session directory under
    * <dataDir>/sessions/<agentId>-<uuid>/ (chat.jsonl, goal.md, memory.md).
@@ -371,6 +453,7 @@ export class Master {
         ? { contextWindowTokens: (ac.contextWindowTokens ?? this.config.contextWindowTokens)! }
         : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
+      bundledSkillsDir: BUNDLED_SKILLS_DIR,
       provider: provName,
       spawnDepth: myDepth,
       ...(ac.readOnly ? { readOnlyTools: true } : {}),

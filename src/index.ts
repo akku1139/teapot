@@ -3,19 +3,24 @@
  * teapot master entry point.
  * Usage: teapot [config.json]
  * Config may also come from TEAPOT_* env vars (see src/master.ts).
+ * First run (no config file): boot anyway and finish setup in the web UI.
  */
+import { existsSync } from "node:fs";
 import { loadConfig, resolveConfigPath, Master } from "./master.ts";
 import { buildApp, serveApp } from "./server/api.ts";
 
 async function main(): Promise<void> {
   const configPath = resolveConfigPath(process.argv[2]);
+  const configExisted = existsSync(configPath);
   const config = loadConfig(configPath);
-  console.log(`[teapot] config: ${configPath}`);
+  console.log(`[teapot] config: ${configPath}${configExisted ? "" : " (not found — first run)"}`);
   const hasProviders = Object.keys(config.providers ?? {}).length > 0;
-  if (!config.llm.apiKey && !hasProviders) console.warn("[teapot] warning: no API key configured");
+  if (!config.llm.apiKey && !hasProviders)
+    console.warn("[teapot] warning: no API key configured — finish setup in the web UI");
   if (!config.llm.model && !hasProviders) console.warn("[teapot] warning: no model configured");
 
   const master = new Master(config, configPath);
+  master.configFileExists = configExisted;
   await master.start();
 
   const app = buildApp(master);

@@ -54,6 +54,8 @@ async function api(path: string, opts?: RequestInit) {
   if (token && !headers.has("authorization")) headers.set("authorization", `Bearer ${token}`);
   const res = await fetch(path, { ...opts, headers });
   if (!res.ok) {
+    // auth gate: surface once so the login overlay can appear
+    if (res.status === 401) window.dispatchEvent(new CustomEvent("teapot:unauthorized"));
     let detail = "";
     try { detail = (await res.json())?.error ?? ""; } catch { /* not json */ }
     throw new Error(detail || `${path}: HTTP ${res.status}`);
@@ -247,6 +249,13 @@ export default function App() {
     return [...expanded, ...echoes];
   });
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
+  // password auth: any 401 from /api/* flips this on → login overlay
+  const [authLocked, setAuthLocked] = createSignal(false);
+  onMount(() => {
+    const onUnauthorized = () => setAuthLocked(true);
+    window.addEventListener("teapot:unauthorized", onUnauthorized);
+    onCleanup(() => window.removeEventListener("teapot:unauthorized", onUnauthorized));
+  });
 
   // operator task list draft — seeded per selected agent; while the user
   // hasn't touched it, it follows server updates (the agent edits it too)
@@ -744,6 +753,30 @@ export default function App() {
 
   return (
     <>
+    <Show when={cfg()?.needsSetup} fallback={null}>
+      <SetupWizard onDone={() => location.reload()} />
+    </Show>
+    <Show when={authLocked()}>
+      <div class="overlay">
+        <div class="modal" style="max-width:360px">
+          <div class="modal-head"><b>🔒 sign in</b><span /></div>
+          <form
+            onsubmit={(e) => {
+              e.preventDefault();
+              const el = document.getElementById("pw-input") as HTMLInputElement;
+              localStorage.setItem("teapot.token", el.value);
+              location.reload();
+            }}
+            style="display:flex;flex-direction:column;gap:10px"
+          >
+            <input id="pw-input" type="password" placeholder="password" autofocus />
+            <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:7px 12px;cursor:pointer">unlock</button>
+            <span class="muted" style="font-size:11px">the token is stored locally and sent as Bearer to this server only</span>
+          </form>
+        </div>
+      </div>
+    </Show>
+    <Show when={!cfg()?.needsSetup}>
     <div class={"layout" + (showRight() ? "" : " right-hidden")}>
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
@@ -1180,6 +1213,7 @@ export default function App() {
         </Show>
       </aside>
     </div>
+    </Show>
     <Show when={showNew()}>
       <NewAgentModal
         providers={Object.keys(cfg().providers ?? {})}
@@ -1691,6 +1725,91 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
 }
 
 /* ---------- settings / config editor ---------- */
+/* ---------- first-run setup wizard ---------- */
+
+const PROVIDER_PRESETS = [
+  { key: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4" },
+  { key: "openai", label: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  { key: "ollama", label: "Ollama (local)", url: "http://localhost:11434/v1", model: "qwen3-coder" },
+];
+
+function SetupWizard(props: { onDone: () => void }) {
+  const [preset, setPreset] = createSignal(PROVIDER_PRESETS[0]);
+  const [baseUrl, setBaseUrl] = createSignal(PROVIDER_PRESETS[0].url);
+  const [apiKey, setApiKey] = createSignal("");
+  const [model, setModel] = createSignal(PROVIDER_PRESETS[0].model);
+  const [workspace, setWorkspace] = createSignal("~/teapot-workspace");
+  const [password, setPassword] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+  const [err, setErr] = createSignal("");
+
+  const pick = (p: (typeof PROVIDER_PRESETS)[number]) => {
+    setPreset(p);
+    if (p.url) { setBaseUrl(p.url); setModel(p.model); }
+  };
+
+  const submit = async (e: Event) => {
+    e.preventDefault(); setErr(""); setBusy(true);
+    try {
+      await api("/api/setup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: baseUrl(),
+          apiKey: apiKey() || undefined,
+          model: model(),
+          workspace: workspace(),
+          ...(password() ? { password: password() } : {}),
+        }),
+      });
+      props.onDone();
+    } catch (ex) {
+      setErr((ex as Error).message); setBusy(false);
+    }
+  };
+
+  return (
+    <div class="overlay" style={{ background: "var(--bg-darkest)" }}>
+      <div class="modal" style="max-width:560px">
+        <div class="modal-head"><b>🫖 welcome to teapot</b></div>
+        <p class="muted" style="margin:0 0 10px;font-size:13px">
+          first run — pick an OpenAI-compatible provider and you're done.
+          everything below can be changed later in ⚙ settings.
+        </p>
+        <form onsubmit={submit} style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;gap:6px">
+            <For each={PROVIDER_PRESETS}>
+              {(p) => (
+                <button
+                  type="button"
+                  class={"presetbtn" + (preset().key === p.key ? " active" : "")}
+                  onclick={() => pick(p)}
+                >{p.label}</button>
+              )}
+            </For>
+          </div>
+          <label>base url
+            <input type="text" class="w100 mono" value={baseUrl()} oninput={(e) => setBaseUrl(e.currentTarget.value)} />
+          </label>
+          <label>api key <input type="password" class="w100" value={apiKey()} oninput={(e) => setApiKey(e.currentTarget.value)} placeholder="(local providers may not need one)" /></label>
+          <label>default model <input type="text" class="w100 mono" value={model()} oninput={(e) => setModel(e.currentTarget.value)} /></label>
+          <fieldset>
+            <legend>first agent</legend>
+            <label>workspace directory
+              <input type="text" class="w100 mono" value={workspace()} oninput={(e) => setWorkspace(e.currentTarget.value)} />
+            </label>
+            <label style="margin-top:4px">protect the API with a password? <input type="password" class="w100" value={password()} oninput={(e) => setPassword(e.currentTarget.value)} placeholder="(optional — LAN traffic is still plain HTTP)" /></label>
+          </fieldset>
+          <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
+          <button type="submit" disabled={busy()} style="background:var(--acc);border:none;border-radius:8px;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer">
+            {busy() ? "saving…" : "finish setup"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void }) {
   type PRow = { name: string; baseUrl: string; apiKey: string; model: string };
   const [providers, setProviders] = createSignal<PRow[]>(

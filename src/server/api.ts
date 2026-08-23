@@ -20,9 +20,10 @@ import type { Master } from "../master.ts";
 export function buildApp(master: Master): Hono {
   const app = new Hono();
 
-  // Optional bearer auth for LAN exposure — set TEAPOT_API_TOKEN to enable.
-  // WebSocket handshakes can't send headers, so they accept ?token= instead.
-  const apiToken = process.env.TEAPOT_API_TOKEN || "";
+  // Optional bearer auth for LAN exposure — TEAPOT_API_TOKEN env wins, else
+  // the config's `password` field. Static files stay public; only /api/* is
+  // gated. WebSocket handshakes can't send headers → they accept ?token=.
+  const apiToken = process.env.TEAPOT_API_TOKEN || master.config.password || "";
   if (apiToken)
     app.use("/api/*", async (c, next) => {
       const h = c.req.header("authorization");
@@ -233,6 +234,7 @@ export function buildApp(master: Master): Hono {
       );
     return c.json({
       configPath: master.configPath,
+      needsSetup: !master.configFileExists,
       providers: mask(master.config.providers),
       defaultProvider: master.config.defaultProvider,
       progressIntervalMs: master.config.progressIntervalMs,
@@ -410,6 +412,28 @@ export function buildApp(master: Master): Hono {
       return c.json({ ok: true, ...(await a.compactNow()) });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 409);
+    }
+  });
+
+  // first-run wizard bootstrap — only while no config file exists
+  app.post("/api/setup", async (c) => {
+    if (master.configFileExists) return c.json({ error: "setup already completed" }, 409);
+    const body = await c.req
+      .json<{
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+        workspace?: string;
+        agentName?: string;
+        password?: string;
+      }>()
+      .catch(() => null);
+    if (!body?.baseUrl || !body.model)
+      return c.json({ error: "baseUrl and model are required" }, 400);
+    try {
+      return c.json(await master.applySetup(body as Parameters<Master["applySetup"]>[0]));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
     }
   });
 
