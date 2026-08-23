@@ -120,6 +120,7 @@ export class Agent {
     turns: 0,
     toolCalls: 0,
     inputTokens: 0,
+    cachedInputTokens: 0,
     outputTokens: 0,
     compactions: 0,
     startedAt: null as string | null,
@@ -161,6 +162,12 @@ export class Agent {
       provider: "",
       ...opts,
     };
+    // a declared window implies its own budget: compact at ~75% of the
+    // model's real context unless the config set an explicit one (the 96k
+    // default only makes sense for unknown-window models)
+    if (this.opts.contextWindowTokens && !opts.contextTokenBudget) {
+      this.opts.contextTokenBudget = Math.round(this.opts.contextWindowTokens * 0.75);
+    }
     this.log = new EventLog(path.join(opts.sessionDir, "chat.jsonl"), opts.id);
     this.skillRoots = [
       { dir: path.join(opts.workspace, "skills"), source: "workspace" },
@@ -674,6 +681,7 @@ export class Agent {
       }
       if (res.usage) {
         this.stats.inputTokens += res.usage.inputTokens ?? 0;
+        this.stats.cachedInputTokens += res.usage.cachedInputTokens ?? 0;
         this.stats.outputTokens += res.usage.outputTokens ?? 0;
         await this.log.append("usage", this.currentSession, this.currentBranch, res.usage);
       }

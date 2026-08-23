@@ -30,7 +30,12 @@ export interface LlmResult {
   message: ChatMessage;
   /** chain-of-thought text some providers attach; never sent back upstream */
   reasoning?: string;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    /** served from the provider's prompt cache — billed far cheaper */
+    cachedInputTokens?: number;
+  };
 }
 
 const clients = new WeakMap<LlmConfig, OpenAI>();
@@ -123,7 +128,14 @@ export async function chat(
       message,
       reasoning,
       usage: res.usage
-        ? { inputTokens: res.usage.prompt_tokens, outputTokens: res.usage.completion_tokens }
+        ? {
+            inputTokens: res.usage.prompt_tokens,
+            outputTokens: res.usage.completion_tokens,
+            // OpenAI-compatible providers attach cache details here (OpenRouter included)
+            cachedInputTokens:
+              (res.usage as { prompt_tokens_details?: { cached_tokens?: number | null } })
+                .prompt_tokens_details?.cached_tokens ?? undefined,
+          }
         : undefined,
     };
   } catch (err) {
@@ -177,7 +189,11 @@ export async function chatStream(
           };
           finish_reason?: string | null;
         }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          prompt_tokens_details?: { cached_tokens?: number | null } | null;
+        } | null;
       };
       const c = ch.choices?.[0];
       const d = c?.delta;
@@ -192,7 +208,11 @@ export async function chatStream(
       }
       if (c?.finish_reason) finishReason = c.finish_reason;
       if (ch.usage)
-        usage = { inputTokens: ch.usage.prompt_tokens, outputTokens: ch.usage.completion_tokens };
+        usage = {
+          inputTokens: ch.usage.prompt_tokens,
+          outputTokens: ch.usage.completion_tokens,
+          cachedInputTokens: ch.usage.prompt_tokens_details?.cached_tokens ?? undefined,
+        };
       if (onDelta) onDelta({ text, reasoning });
     }
 

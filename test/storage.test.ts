@@ -157,6 +157,21 @@ test("set_memory tool writes memory.md; read_memory fetches it back", async () =
   await agent.dispose();
 });
 
+test("a declared context window implies its own compaction budget", async () => {
+  const { agent } = await mkAgent({ contextWindowTokens: 1_000_000 }); // no explicit budget
+  assert.equal(agent.snapshot().ctx!.compactAt, 750_000); // ~75% of the window
+  assert.equal(agent.snapshot().ctx!.window, 1_000_000);
+  // explicit budget still wins over derivation
+  const { agent: b } = await mkAgent({ contextWindowTokens: 1_000_000, contextTokenBudget: 10_000 });
+  assert.equal(b.snapshot().ctx!.compactAt, 10_000);
+  // unknown window keeps the safe default
+  const { agent: c } = await mkAgent({});
+  assert.equal(c.snapshot().ctx!.compactAt, 96_000);
+  await agent.dispose();
+  await b.dispose();
+  await c.dispose();
+});
+
 /* ---------- master: per-incarnation session dirs ---------- */
 
 function mkMaster(dataDir: string): Master {

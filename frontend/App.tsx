@@ -887,7 +887,10 @@ export default function App() {
           <h3>📊 runtime</h3>
           <div class="card muted">
             turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls} · compacted {sel()!.stats.compactions ?? 0}
-            {"\n"}tokens in/out {sel()!.stats.inputTokens}/{sel()!.stats.outputTokens}
+            {"\n"}tokens in/out {fmtK(sel()!.stats.inputTokens)}/{fmtK(sel()!.stats.outputTokens)}
+            <Show when={sel()!.stats.cachedInputTokens > 0}>
+              {" · "}cached {Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}% ({fmtK(sel()!.stats.cachedInputTokens)})
+            </Show>
             <Show when={sel()!.ctx}>
               {(c) => (
                 <>
@@ -1311,9 +1314,13 @@ function relTime(iso: string): string {
   return ms >= 0 ? `in ${unit}` : `${unit} ago`;
 }
 
-/** compact token counts: 12345 → "12k", 980 → "980" */
+/** compact token counts with k/m/b suffixes: 12345 → "12k", 2.2M → "2.2m" */
 function fmtK(n: number): string {
-  return n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  if (n >= 1e9) return `${+(n / 1e9).toFixed(1)}b`;
+  if (n >= 1e6) return `${+(n / 1e6).toFixed(1)}m`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }
 
 /** single-line preview with collapsed whitespace */
