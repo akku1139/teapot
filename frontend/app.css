@@ -168,6 +168,8 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .btnrow { display: flex; gap: 6px; margin: 8px 0; }
 .btnrow button { background: var(--bg-light); color: var(--fg); border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
 .btnrow button:hover { filter: brightness(1.2); }
+.btnrow .runbtn { background: var(--ok); color: #fff; font-weight: 600; }
+.btnrow .danger { background: var(--err); color: #fff; font-weight: 600; }
 
 /* ---- modals & misc ---- */
 .iconbtn { background: var(--bg-light); border: none; color: var(--fg); border-radius: 6px; width: 26px; height: 24px; cursor: pointer; font-size: 13px; }

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Agent } from "../src/agent/agent.ts";
 import { Master } from "../src/master.ts";
+import { bus } from "../src/bus.ts";
 import type { ChatFn, LlmConfig, LlmResult } from "../src/agent/llm.ts";
 
 const LLM: LlmConfig = { baseUrl: "http://mock", apiKey: "k", model: "m" };
@@ -165,6 +166,29 @@ function mkMaster(dataDir: string): Master {
   );
 }
 
+test("every appended event is broadcast on the bus (web UI freshness)", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "bus-root-"));
+  const ws = await mkdtemp(path.join(tmpdir(), "bus-ws-"));
+  const m = mkMaster(dataDir);
+  const a = await m.addAgent({ id: "b", workspace: ws, provider: "p" });
+
+  const seen: { kind: string; event?: { type: string } }[] = [];
+  const handler = (ev: unknown) => seen.push(ev as { kind: string; event?: { type: string } });
+  bus.on("update", handler);
+  try {
+    await a.enqueuePrompt("hello"); // resolves its log append before emitting
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(
+      seen.some((s) => s.kind === "event" && s.event?.type === "prompt"),
+      `expected a prompt event broadcast, got: ${JSON.stringify(seen.map((s) => s.kind))}`,
+    );
+  } finally {
+    bus.off("update", handler);
+    await a.dispose();
+    await m.removeAgent("b");
+  }
+});
+
 test("fresh incarnation gets a clean session dir; restart reuses the latest", async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "sess-root-"));
   const ws = await mkdtemp(path.join(tmpdir(), "sess-ws-"));
@@ -204,6 +228,7 @@ test("legacy flat <id>.jsonl is migrated into sessions/<id>/chat.jsonl", async (
   const dir = a.snapshot().sessionDir;
   assert.equal(path.basename(dir), "s");
   assert.ok(existsSync(path.join(dir, "chat.jsonl")));
+  await a.load(); // lazy: history is rebuilt on first interaction
   assert.ok(a.messages.length === 1 && a.messages[0].content === "old");
   assert.ok(!existsSync(path.join(dataDir, "s.jsonl"))); // moved
   await a.dispose();

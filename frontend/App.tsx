@@ -146,6 +146,8 @@ export default function App() {
     setBranchFilter(null);
     localStorage.setItem("teapot.session", id);
     navigate(id, push);
+    // lazy sessions sit in "stopped" until touched — clicking loads them
+    api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id);
     requestAnimationFrame(() => scrollBottom(true));
   }
@@ -164,13 +166,19 @@ export default function App() {
       setTimeout(connectWs, 1500); // reconnect with a fixed short backoff
     };
     ws.onerror = () => ws?.close();
+    // event types that don't change the feed — refreshing on every one of
+    // these would hammer /events several times per turn for nothing
+    const FEED_IRRELEVANT = new Set(["state", "usage", "session_start"]);
+    let lastDeltaAt = 0;
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.kind === "ping" || msg.kind === "pong") return;
       if (msg.kind === "llm-delta") {
+        lastDeltaAt = Date.now();
         if (msg.agentId === selected()) setLive({ text: msg.text ?? "", reasoning: msg.reasoning ?? "" });
         return;
       }
+      if (msg.kind === "event" && FEED_IRRELEVANT.has(msg.event?.type)) return;
       if (timer) return;
       timer = setTimeout(async () => {
         timer = null;
@@ -180,7 +188,10 @@ export default function App() {
           const before = events().length;
           await loadEvents(selected()!);
           if (events().length !== before) {
-            setLive(null); // a persisted event landed — live bubble is now history
+            // a persisted event landed — the live bubble is now history, but
+            // only if the stream actually went quiet; wiping it mid-generation
+            // made messages flicker/vanish between turns
+            if (Date.now() - lastDeltaAt > 2000) setLive(null);
             if (nearBottom()) scrollBottom(true);
             else setMissed(missed() + (events().length - before));
           }
@@ -552,8 +563,22 @@ export default function App() {
 
           <h3>⏯ controls</h3>
           <div class="btnrow">
-            <button onclick={act("/start")} title="run toward the goal (starts the loop)">▶ start</button>
-            <button onclick={act("/stop")} title="interrupt: aborts the current LLM call; the running tool finishes first">■ stop</button>
+            <Show
+              when={sel()!.status === "running"}
+              fallback={
+                <button class="runbtn" onclick={act("/start")} title="run toward the goal (starts the loop)">
+                  ▶ start
+                </button>
+              }
+            >
+              <button
+                class="danger"
+                onclick={act("/stop")}
+                title="interrupt: aborts the current LLM call; the running tool finishes first"
+              >
+                ■ stop
+              </button>
+            </Show>
             <button
               title="branch off the conversation here — try things without disturbing the main line"
               onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}

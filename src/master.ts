@@ -11,6 +11,7 @@ import { Agent } from "./agent/agent.ts";
 import { parseSchedule, matches } from "./scheduler/cron.ts";
 import type { LlmConfig } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
+import { bus, type BusEvent } from "./bus.ts";
 
 export interface ProviderConfig {
   /** OpenAI-compatible base URL, e.g. https://openrouter.ai/api/v1 */
@@ -306,7 +307,13 @@ export class Master {
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
       provider: provName,
     });
-    agent.log.onEvent = (e) => printAgentEvent(e);
+    // console line + broadcast: the web UI only refreshes on bus traffic, so
+    // every appended event must reach it (otherwise messages sit invisible
+    // until an unrelated status change happens to fire)
+    agent.log.onEvent = (e) => {
+      printAgentEvent(e);
+      bus.emit("update", { kind: "event", agentId: e.agent, event: e } satisfies BusEvent);
+    };
     await agent.init();
     this.agents.set(ac.id, agent);
     if (opts.persist) {

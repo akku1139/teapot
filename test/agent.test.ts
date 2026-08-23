@@ -302,6 +302,8 @@ test("restart rebuilds conversation (incl. tool args/results) from the log", asy
     chatFn: second.chat,
   });
   await b.init();
+  assert.equal(b.status, "stopped"); // lazy: not restored at boot
+  await b.load(); // explicit load (what clicking the agent in the UI does)
 
   const msgs = b.messages;
   assert.equal(msgs.length, 4); // prompt, assistant+call, tool result, final assistant

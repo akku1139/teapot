@@ -110,6 +110,8 @@ export class Agent {
   currentBranch = "br0";
   goal: GoalState = { text: "", status: "active", updatedAt: new Date().toISOString() };
   latestProgress: ProgressReport | null = null;
+  /** set once the conversation has been restored (lazy: on first interaction) */
+  private readyPromise: Promise<void> | null = null;
   stats = {
     turns: 0,
     toolCalls: 0,
@@ -219,8 +221,36 @@ export class Agent {
     await this.migrateGoalFromWorkspace();
     const stored = await this.readGoalStore();
     this.goal = stored ?? { text: "", status: "active", updatedAt: new Date().toISOString() };
-    if (this.opts.restoreSession) await this.restoreFromLog();
     await this.refreshSkills();
+    // the conversation is NOT restored here: boot cost stays O(agents), not
+    // O(history). It is rebuilt lazily by ensureReady() on first interaction.
+    if (this.opts.restoreSession) {
+      this.status = "stopped";
+      this.statusReason = "session not loaded — select it or send a prompt";
+      bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+    }
+  }
+
+  /**
+   * Restore the conversation from the JSONL log exactly once, on demand.
+   * Everything that touches history (prompts, start, fork, UI selection)
+   * funnels through here; boot stays cheap no matter how many sessions exist.
+   */
+  private ensureReady(): Promise<void> {
+    if (!this.readyPromise) {
+      this.readyPromise = (async () => {
+        if (this.opts.restoreSession) {
+          await this.restoreFromLog();
+          if (this.status === "stopped") this.setStatus("idle", "session loaded");
+        }
+      })();
+    }
+    return this.readyPromise;
+  }
+
+  /** Explicit load (e.g. the user clicked the agent in the UI): stopped → idle. */
+  async load(): Promise<void> {
+    await this.ensureReady();
   }
 
   /** harness-managed files inside the session directory */
@@ -447,12 +477,15 @@ export class Agent {
    * Queue a user prompt. Returns immediately: the event is logged right away
    * (so every connected UI sees it instantly) and the text is handed to the
    * model at the next turn boundary — never mid-turn, and never blocked by
-   * the running loop.
+   * the running loop. The very first prompt on a fresh boot also triggers the
+   * lazy session restore (before the mailbox is filled, so no duplicates).
    */
   enqueuePrompt(text: string, source = "user"): void {
-    this.pendingPrompts.push({ source, text });
-    void this.log
-      .append("prompt", this.currentSession, this.currentBranch, { source, text })
+    void this.ensureReady()
+      .then(() => {
+        this.pendingPrompts.push({ source, text });
+        return this.log.append("prompt", this.currentSession, this.currentBranch, { source, text });
+      })
       .then(() =>
         bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
       )
@@ -485,6 +518,7 @@ export class Agent {
     if (this.status === "running") return;
     this.stopRequested = false;
     void this.enqueue(async () => {
+      await this.ensureReady(); // lazy restore before the loop touches history
       this.setStatus("running", reason);
       this.stats.startedAt ??= new Date().toISOString();
     });

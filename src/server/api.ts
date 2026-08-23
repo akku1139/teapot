@@ -273,6 +273,14 @@ export function buildApp(master: Master): Hono {
     return a ? c.json(a.snapshot()) : c.json({ error: "not found" }, 404);
   });
 
+  // lazy session load: stopped (not restored) → idle, history rebuilt from the log
+  app.post("/api/agents/:id/load", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    await a.load();
+    return c.json({ ok: true, agent: a.snapshot() });
+  });
+
   app.post("/api/agents/:id/prompt", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
