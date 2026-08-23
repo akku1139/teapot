@@ -30,7 +30,8 @@ export type EventType =
   | "error" // data:{message, fatal?}
   | "usage" // data:{inputTokens, outputTokens, costEstimate?}
   | "goal" // data:{event:"set"|"status", ...}
-  | "todo"; // operator-maintained task list changed: data:{event:"set", by}
+  | "todo" // operator-maintained task list changed: data:{event:"set", by}
+  | "question"; // agent asked the operator something: data:{question, options?}
 
 export interface TeapotEvent {
   v: 1;

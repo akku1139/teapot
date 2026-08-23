@@ -360,6 +360,43 @@ test("get_todo/set_todo round-trips the operator task list", async () => {
   await agent.dispose();
 });
 
+/* ---------- ask_user parks the loop for the operator ---------- */
+
+test("ask_user waits for the operator and resumes with their answer", async (t) => {
+  t.timeout?.(15_000);
+  const mock = mkMock((req): LlmResult => {
+    if (req.n === 0)
+      return reply("need a decision", [
+        tc("q", "ask_user", { question: "A or B?", options: ["do A", "do B"] }),
+      ]);
+    // after resume, the operator's answer must be in front of us
+    const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+    assert.match(lastUser?.content ?? "", /B/);
+    return reply("went with B", [tc("f", "finish", { goalComplete: true })]);
+  });
+  const { agent } = await mkAgent({ chatFn: mock.chat });
+  await agent.setGoal("decide something");
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  for (let i = 0; i < 40 && agent.status !== "waiting"; i++)
+    await new Promise((r) => setTimeout(r, 10));
+  assert.equal(agent.status, "waiting");
+  assert.equal(agent.snapshot().awaiting, true);
+
+  const events = await readEvents(agent.log.filePath);
+  const q = events.find((e) => e.type === "question");
+  assert.ok(q);
+  assert.deepEqual((q.data as Record<string, unknown>).options, ["do A", "do B"]);
+
+  // operator taps an option → prompt + start → agent resumes
+  agent.enqueuePrompt("B");
+  agent.start("reply");
+  await agent.settled();
+  assert.equal(agent.status, "idle");
+  assert.equal(agent.goal.status, "done");
+  await agent.dispose();
+});
+
 /* ---------- compaction driven by real usage ---------- */
 
 test("compaction keys off the API's prompt_tokens, not the char estimate", async () => {

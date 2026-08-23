@@ -30,6 +30,8 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .agent-item.sel { background: var(--bg-mid); color: var(--fg); }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .dot.running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.dot.waiting { background: var(--acc); box-shadow: 0 0 6px var(--acc); animation: pulse 1.6s ease-in-out infinite; }
+.badge.waiting { color: var(--acc); }
 .dot.idle { background: var(--warn); }
 .dot.stopped { background: var(--dim); }
 .dot.error { background: var(--err); box-shadow: 0 0 6px var(--err); }
@@ -98,6 +100,16 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .toolbody.patch .pline.add { color: #9fd8ae; background: #3ba55d14; border-left: 2px solid var(--ok); padding-left: 4px; }
 .toolbody.patch .pline.del { color: #f0a5a6; background: #ed424514; border-left: 2px solid var(--err); padding-left: 4px; }
 .toolbody.patch .pline.meta { color: var(--dim); }
+
+/* ask_user question embed + tappable options */
+.embed.question { border-color: var(--acc); background: #5865f20f; }
+.qopts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.qopt {
+  background: var(--acc); border: none; color: #fff; border-radius: 999px;
+  padding: 3px 12px; cursor: pointer; font-size: 12.5px;
+}
+.qopt:hover { filter: brightness(1.15); }
+.embed.question .meta { margin-top: 6px; }
 .embed summary { cursor: pointer; user-select: none; list-style-position: outside; }
 .embed summary::marker { color: var(--dim); }
 .embed[open] summary { margin-bottom: 4px; }

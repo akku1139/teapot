@@ -14,7 +14,7 @@ import { executeTool, toolSpecs, currentSkills, type ToolContext } from "./tools
 import type { SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
-export type AgentStatus = "idle" | "running" | "stopped" | "error";
+export type AgentStatus = "idle" | "running" | "stopped" | "error" | "waiting";
 
 export interface GoalState {
   text: string;
@@ -82,6 +82,8 @@ Session state is not injected into prompts — fetch it with tools instead:
   compaction notice, or whenever you lose the thread.
 - set_goal(text) → change the objective itself (not routine updates).
 - finish(goalComplete=true, summary) → goal fully achieved.
+- ask_user(question, options?) → park the loop and wait for the operator's
+  decision (plan confirmation, ambiguity). One concrete question at a time.
 - read_memory() / set_memory(content) → your durable notes (memory.md).
 - get_todo() / set_todo(content) → the operator-maintained task list
   (todo.md); check it when picking up work, keep it current as you go.
@@ -148,6 +150,10 @@ export class Agent {
   private lastProgressAt = Date.now();
   /** the provider's own prompt_tokens from the last completed turn */
   private lastUsage?: { input: number; output: number; cached?: number };
+  /** messages.length right after the last successful compaction */
+  private compactedAtLen = 0;
+  /** set by ask_user: the loop is parked until the operator replies */
+  private awaitingUser = false;
   /** real assistant output since the last progress report (chars / turns) */
   private activityChars = 0;
   private turnsSinceProgress = 0;
@@ -491,6 +497,7 @@ export class Agent {
       },
       pendingPrompts: this.pendingPrompts.length,
       todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
+      awaiting: this.awaitingUser,
     };
   }
 
@@ -538,6 +545,7 @@ export class Agent {
   start(reason = "start"): void {
     if (this.status === "running") return;
     this.stopRequested = false;
+    this.awaitingUser = false; // a fresh start answers/resumes past any ask_user
     void this.enqueue(async () => {
       await this.ensureReady(); // lazy restore before the loop touches history
       this.setStatus("running", reason);
@@ -599,14 +607,16 @@ export class Agent {
       } catch (err) {
         const name = (err as Error).name;
         // a stop (user abort or pre-call guard) is control flow, not a failure
-        if (this.stopRequested || name === "AbortError" || name === "StopRequested") break;
+        if (this.stopRequested || name === "AbortError" || name === "StopRequested" || name === "WaitForUser") break;
         const msg = (err as Error).message ?? String(err);
         await this.log.append("error", this.currentSession, this.currentBranch, { message: msg });
         this.setStatus("error", msg.slice(0, 300));
         return;
       }
     }
-    if (!this.stopRequested) this.setStatus("idle", "round complete");
+    // waiting on an ask_user answer is a status of its own — not idle (which
+    // would let auto-continue nag) and not stopped
+    if (!this.stopRequested && !this.awaitingUser) this.setStatus("idle", "round complete");
   }
 
   /**
@@ -784,6 +794,24 @@ export class Agent {
           });
           continue;
         }
+        if (call.function.name === "ask_user") {
+          const a = safeParse(call.function.arguments);
+          const question = String(a.question ?? "").slice(0, 2000);
+          const options = Array.isArray(a.options) ? a.options.map(String).slice(0, 6) : [];
+          await this.log.append("question", this.currentSession, this.currentBranch, {
+            question,
+            options,
+          });
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: "question shown to the operator — the loop is parked until they reply",
+          });
+          this.awaitingUser = true;
+          this.setStatus("waiting", question.slice(0, 80));
+          // control flow: park the loop; the operator's next prompt resumes it
+          throw Object.assign(new Error("waiting for user"), { name: "WaitForUser" });
+        }
         if (call.function.name === "get_todo") {
           this.messages.push({
             role: "tool",
@@ -953,7 +981,7 @@ export class Agent {
     if (!force && before < this.opts.contextTokenBudget) return;
     // a forced pass on an already-tiny history would just summarize the
     // summary — report ran=false instead
-    if (force && this.messages.length <= 3) return;
+    if (force && this.messages.length <= this.compactedAtLen) return;
     this.lastUsage = undefined; // stale after compaction — re-armed next turn
 
     // keep roughly the most recent quarter of the budget as live context
@@ -1003,6 +1031,7 @@ export class Agent {
     }
     const after = this.estimateTokens();
     this.stats.compactions++;
+    this.compactedAtLen = this.messages.length;
     await this.log.append("system_note", this.currentSession, this.currentBranch, {
       event: "context-compacted",
       tokensBefore: before,
@@ -1161,6 +1190,28 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
           type: "object",
           properties: { text: { type: "string" } },
           required: ["text"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "ask_user",
+        description:
+          "Pause and ask the operator a question — plan confirmation, ambiguous requirements, " +
+          "a decision only they can make. The loop parks until they reply; their message arrives " +
+          "as your next user turn. Use sparingly: do your homework first, then ask once, concretely.",
+        parameters: {
+          type: "object",
+          properties: {
+            question: { type: "string", description: "what you need decided — include the context and trade-offs" },
+            options: {
+              type: "array",
+              items: { type: "string" },
+              description: "optional short answer choices the operator can tap",
+            },
+          },
+          required: ["question"],
         },
       },
     },

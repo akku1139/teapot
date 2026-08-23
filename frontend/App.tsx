@@ -21,6 +21,7 @@ const AUTHORS: Record<string, { name: string; icon: string; color: string }> = {
   user: { name: "you", icon: "🟧", color: "#faa81a" },
   message: { name: "agent", icon: "🫖", color: "#5865f2" },
   progress: { name: "progress", icon: "📈", color: "#3ba55d" },
+  question: { name: "agent", icon: "❓", color: "#5865f2" }, // ask_user comes from the agent too
 };
 const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
 
@@ -39,7 +40,7 @@ const authorOf = (e: Ev) => {
 // state/error/fork/goal render as dividers or embeds inside the feed
 const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
-  "state", "error", "fork", "goal", "todo",
+  "state", "error", "fork", "goal", "todo", "question",
 ]);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
@@ -278,6 +279,29 @@ export default function App() {
 
   // null = show everything; otherwise only the chosen branch's events
   const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
+  // Reference-stabilize events across fetches: logged events are immutable,
+  // so reuse the previous object when the id already exists. Without this,
+  // every refresh produced all-new references and Solid's <For> tore down
+  // and rebuilt EVERY timeline row (markdown re-parse included) — heavy on
+  // long sessions and it collapsed open <details>.
+  const evCache = new Map<string, Ev>();
+  function stabilize(list: Ev[]): Ev[] {
+    const out = new Array<Ev>(list.length);
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i]!;
+      const known = evCache.get(e.id);
+      out[i] = known ?? e;
+      if (!known) {
+        evCache.set(e.id, e);
+        if (evCache.size > 3000) {
+          const oldest = evCache.keys().next().value;
+          if (oldest !== undefined) evCache.delete(oldest);
+        }
+      }
+    }
+    return out;
+  }
+
   async function loadEvents(id: string) {
     try {
       const bf = branchFilter();
@@ -285,7 +309,7 @@ export default function App() {
         api(`/api/agents/${id}/events?limit=300${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`),
         api(`/api/agents/${id}/branches`),
       ]);
-      setEvents(ev.events);
+      setEvents(stabilize(ev.events));
       setEventsTotal(ev.total ?? ev.events.length);
       setBranches(br.branches);
     } catch { /* agent may be gone */ }
@@ -570,6 +594,24 @@ export default function App() {
     autosizeComposer();
   });
 
+  /** post a raw prompt (used by composer AND question-option taps) */
+  const sendText = async (text: string) => {
+    const id = selected();
+    if (!id) return;
+    try {
+      await api(`/api/agents/${id}/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, start: autoStart() }),
+      });
+      // optimistic echo — replaced by the logged event once the feed catches up
+      setPendingMsgs((l) => [...l, { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now() }]);
+    } catch (ex) {
+      setDraft(text); // never eat the user's message on a failed send
+      console.error("send failed:", ex);
+    }
+  };
+
   const send = async (e: Event) => {
     e.preventDefault();
     const id = selected();
@@ -611,18 +653,7 @@ export default function App() {
     }
 
     setDraft("");
-    try {
-      await api(`/api/agents/${id}/prompt`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, start: autoStart() }),
-      });
-      // optimistic echo — replaced by the logged event once the feed catches up
-      setPendingMsgs((l) => [...l, { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now() }]);
-    } catch (ex) {
-      setDraft(text); // never eat the user's message on a failed send
-      console.error("send failed:", ex);
-    }
+    await sendText(text);
   };
 
   const act = (path: string) =>
@@ -715,6 +746,7 @@ export default function App() {
                     e={e}
                     prev={chatEvents()[i() - 1]}
                     res={pairInfo().resFor.get(e.id)}
+                    onOption={(t) => void sendText(t)}
                     onEdit={
                       e.type === "prompt" && e.data?.source === "user"
                         ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
@@ -1285,7 +1317,7 @@ function ToolRow(props: { e: Ev; res?: Ev }) {
   );
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onOption?: (text: string) => void }) {
   const e = props.e;
   const a = authorOf(e);
   const grouped =
@@ -1340,13 +1372,13 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void }) 
           </div>
         </Show>
 
-        <SwitchContent e={e} res={props.res} />
+        <SwitchContent e={e} res={props.res} onOption={props.onOption} />
       </div>
     </div>
   );
 }
 
-function SwitchContent(props: { e: Ev; res?: Ev }) {
+function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => void }) {
   const e = props.e;
   switch (e.type) {
     case "prompt":
@@ -1383,6 +1415,20 @@ function SwitchContent(props: { e: Ev; res?: Ev }) {
           <div class="mono">{truncate(out, 4000)}</div>
           <div class="meta">{e.data.durationMs}ms{e.data.ok ? "" : " · FAILED"}</div>
         </details>
+      );
+    }
+    case "question": {
+      const opts = Array.isArray(e.data?.options) ? (e.data.options as string[]) : [];
+      return (
+        <div class="embed question">
+          <div>❓ {String(e.data?.question ?? "")}</div>
+          <Show when={opts.length > 0}>
+            <div class="qopts">
+              <For each={opts}>{(o) => <button class="qopt" onclick={() => props.onOption?.(o)}>{o}</button>}</For>
+            </div>
+          </Show>
+          <div class="meta">the agent is waiting for your reply — answer below or tap an option</div>
+        </div>
       );
     }
     case "progress":
