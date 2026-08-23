@@ -172,6 +172,23 @@ test("a declared context window implies its own compaction budget", async () => 
   await c.dispose();
 });
 
+test("token estimate counts CJK near 1 token/char, ASCII ~4 chars/token", async () => {
+  const { agent } = await mkAgent({});
+  const est = () => (agent as unknown as { estimateTokens(): number }).estimateTokens();
+  (agent as unknown as { messages: unknown[] }).messages.length = 0;
+  (agent as unknown as { messages: unknown[] }).messages.push({ role: "user", content: "あ".repeat(100) });
+  const jp = est();
+  (agent as unknown as { messages: unknown[] }).messages.length = 0;
+  (agent as unknown as { messages: unknown[] }).messages.push({ role: "user", content: "a".repeat(400) });
+  const en = est();
+  // both should land near ~100 tokens (+ small per-message overhead)
+  assert.ok(jp >= 100 && jp <= 160, `jp=${jp}`);
+  assert.ok(en >= 100 && en <= 160, `en=${en}`);
+  // and the old flat /4 would have scored the Japanese text ~25 — no more
+  assert.ok(jp > 60, `CJK must not be divided by four: jp=${jp}`);
+  await agent.dispose();
+});
+
 /* ---------- master: per-incarnation session dirs ---------- */
 
 function mkMaster(dataDir: string): Master {

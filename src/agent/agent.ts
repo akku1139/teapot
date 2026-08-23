@@ -884,13 +884,29 @@ export class Agent {
 
   /* ---------- context compaction ---------- */
 
-  /** rough token estimate (~4 chars/token); good enough to trigger before overflow */
+  /**
+   * Rough token estimate good enough to trigger compaction before overflow.
+   * ASCII runs ≈ 4 chars/token; CJK (kana/kanji/hanja and friends) ≈ 1
+   * token/char — the old flat /4 underestimated Japanese sessions ~4x.
+   * Adds a small per-message overhead for role/framing tokens.
+   */
   private estimateTokens(): number {
-    let chars = 0;
+    let ascii = 0;
+    let wide = 0;
+    const count = (s: string) => {
+      for (let i = 0; i < s.length; i++) {
+        if (s.charCodeAt(i) > 0x2e7f) wide++;
+        else ascii++;
+      }
+    };
     for (const m of this.messages) {
-      chars += (m.content?.length ?? 0) + JSON.stringify(m.tool_calls ?? "").length;
+      count(m.content ?? "");
+      for (const t of m.tool_calls ?? []) {
+        count(t.function.name);
+        count(t.function.arguments);
+      }
     }
-    return Math.ceil(chars / 4);
+    return Math.ceil(ascii / 4 + wide * 1.2 + this.messages.length * 8);
   }
 
   /**
