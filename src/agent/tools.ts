@@ -10,6 +10,7 @@ import {
   isValidSkillName,
   readSkillFile,
   saveSkill,
+  SKILL_FILE,
   type SkillDef,
 } from "./skills.ts";
 
@@ -813,13 +814,26 @@ export const TOOLS: ToolDef[] = [
     description:
       "Create or update a reusable skill (a playbook you want to survive this session and be " +
       "loadable later via load_skill). Write distilled, step-by-step instructions — not a chat log. " +
-      "The skill becomes available in your system prompt from the next turn.",
+      "Bundle helper scripts with the files argument; they are saved NEXT TO SKILL.md, listed by " +
+      "load_skill, and made executable (.sh/.py/.js). Available from the next turn.",
     parameters: {
       type: "object",
       properties: {
         name: { type: "string", description: "kebab-case id, e.g. release-checklist" },
         description: { type: "string", description: "one line: what it is for / when to use it" },
         content: { type: "string", description: "markdown instructions" },
+        files: {
+          type: "array",
+          description: "helper scripts/files stored beside SKILL.md",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: 'bare file name, e.g. "rollback.sh"' },
+              content: { type: "string" },
+            },
+            required: ["name", "content"],
+          },
+        },
       },
       required: ["name", "description", "content"],
     },
@@ -834,7 +848,22 @@ export const TOOLS: ToolDef[] = [
       const content = str(args.content);
       if (!content.trim()) return { ok: false, result: "content required" };
       const filePath = await saveSkill(roots[0].dir, name, description, content.slice(0, 64_000));
-      return { ok: true, result: `saved skill "${name}" to ${filePath} (listed from next turn)` };
+
+      // bundled scripts/files next to SKILL.md
+      const written: string[] = [];
+      const rawFiles = Array.isArray(args.files) ? args.files : [];
+      for (const f of rawFiles.slice(0, 10)) {
+        const fname = str((f as Record<string, unknown>)?.name);
+        const fcontent = str((f as Record<string, unknown>)?.content);
+        if (!fcontent.trim()) continue;
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(fname) || fname === SKILL_FILE) continue;
+        const abs = path.join(path.dirname(filePath), fname);
+        await fs.writeFile(abs, fcontent, "utf8");
+        if (/\.(sh|py|js|mjs)$/.test(fname)) await fs.chmod(abs, 0o755);
+        written.push(fname);
+      }
+      const extra = written.length ? `\nbundled files: ${written.join(", ")}` : "";
+      return { ok: true, result: `saved skill "${name}" to ${filePath}${extra} (listed from next turn)` };
     },
   },
 ];

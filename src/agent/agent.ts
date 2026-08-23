@@ -8,7 +8,7 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { EventLog, readEvents } from "../log/events.ts";
+import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { executeTool, toolSpecs, currentSkills, type ToolContext } from "./tools.ts";
 import type { SkillDef } from "./skills.ts";
@@ -94,8 +94,9 @@ Session state is not injected into prompts — fetch it with tools instead:
   when that is genuinely faster.
 - When a loaded skill matches your task, follow its playbook.
 - Turn proven procedures into skills: once something non-trivial worked well,
-  save_skill(name, description, content) so future sessions can load_skill it.
-  Helper scripts can live next to SKILL.md in the skill folder.
+  save_skill(name, description, content, files=[{name, content}]) so future
+  sessions can load_skill them — helper scripts go through files and are made
+  executable automatically.
 - When you make meaningful progress, call report_progress.
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
 
@@ -303,104 +304,10 @@ export class Agent {
   private async restoreFromLog(): Promise<void> {
     const events = await readEvents(this.log.filePath);
     if (events.length === 0) return;
-    const byId = new Map(events.map((e) => [e.id, e]));
-    let last = events[events.length - 1]!;
-    // walk backwards to the root via parent links (fork-safe)
-    const lineage: typeof events = [];
-    const seen = new Set<string>();
-    for (let cur: typeof last | undefined = last; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) {
-      if (seen.has(cur.id)) break;
-      seen.add(cur.id);
-      lineage.push(cur);
-    }
-    lineage.reverse();
-    // skip the trailing fork event itself (it is bookkeeping, not conversation)
-    while (lineage.length && lineage[0].type === "fork") lineage.shift();
-
-    const msgs: ChatMessage[] = [];
-    // Prompts are logged the moment the user hits send — which can be while a
-    // tool batch is still open. Replaying them verbatim would slot a user
-    // message BETWEEN an assistant tool_call and its tool_result (API-invalid),
-    // so hold them until the open batch is answered, like live delivery does.
-    const META_TOOLS = new Set([
-      "finish", "report_progress", "set_goal", "get_goal",
-      "read_memory", "set_memory", "list_skills",
-    ]);
-    const openCalls = new Map<string, string>(); // real tool_call id -> name
-    const bufferedUsers: string[] = [];
-    const flushUsers = () => {
-      if (openCalls.size === 0) {
-        for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
-      }
-    };
-    for (const e of lineage) {
-      const d = e.data as Record<string, unknown>;
-      if (e.type === "prompt" && typeof d.text === "string") {
-        if (openCalls.size > 0) bufferedUsers.push(d.text);
-        else msgs.push({ role: "user", content: d.text });
-      } else if (e.type === "message") {
-        const role = d.role === "assistant" ? "assistant" : "user";
-        const m: ChatMessage = { role, content: typeof d.content === "string" ? d.content : "" };
-        if (Array.isArray(d.toolCalls) && d.toolCalls.length > 0) {
-          m.tool_calls = (d.toolCalls as { id: string; name: string }[]).map((c) => ({
-            id: c.id,
-            type: "function" as const,
-            function: { name: c.name, arguments: "{}" },
-          }));
-          // meta tools are answered inline by the harness (no logged result);
-          // the hole-filling pass below synthesizes theirs where they belong
-          for (const t of m.tool_calls)
-            if (!META_TOOLS.has(t.function.name)) openCalls.set(t.id, t.function.name);
-        }
-        msgs.push(m);
-      } else if (e.type === "tool_call") {
-        // enrich the preceding assistant tool_calls with real arguments
-        const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
-        const tc = prev?.tool_calls?.find((t) => t.id === d.callId);
-        if (tc) tc.function.arguments = JSON.stringify(d.args ?? {});
-      } else if (e.type === "tool_result") {
-        msgs.push({
-          role: "tool",
-          tool_call_id: String(d.callId ?? ""),
-          content: `${d.ok === false ? "(failed) " : ""}${typeof d.result === "string" ? d.result : ""}`,
-        });
-        openCalls.delete(String(d.callId ?? ""));
-        flushUsers();
-      } else if (e.type === "progress") {
-        // progress events may follow an assistant report_progress call that
-        // has no logged tool result — patch it in when present
-        const lastAssistant = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.length);
-        if (lastAssistant?.tool_calls?.some((t) => t.function.name === "report_progress")) {
-          for (const t of lastAssistant.tool_calls!) {
-            if (!msgs.some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
-              msgs.push({ role: "tool", tool_call_id: t.id, content: "progress recorded" });
-            }
-            openCalls.delete(t.id);
-          }
-          flushUsers();
-        }
-      }
-    }
-
-    // every assistant tool_call must be answered by a tool message, or the
-    // API rejects the sequence — close any holes left by meta tools (finish)
-    for (let i = 0; i < msgs.length; i++) {
-      const m = msgs[i]!;
-      if (m.role === "assistant" && m.tool_calls?.length) {
-        for (const t of m.tool_calls) {
-          if (!msgs.slice(i + 1).some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
-            msgs.splice(i + 1, 0, {
-              role: "tool",
-              tool_call_id: t.id,
-              content: t.function.name === "finish" ? `(round ended: ${m.content || "finished"})` : "(no result recorded)",
-            });
-            i++;
-          }
-        }
-      }
-    }
-    // prompts that were still waiting on a hole-filled tail land here
-    for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
+    const lineage = lineageOf(events);
+    if (!lineage.length) return;
+    const last = lineage[lineage.length - 1];
+    const msgs = rebuildMessagesFrom(lineage);
 
     if (msgs.length > 0) {
       this.messages = msgs;
@@ -411,6 +318,69 @@ export class Agent {
         messages: msgs.length,
       });
     }
+  }
+
+  /**
+   * Edit a previously-sent prompt: fork the conversation at that point,
+   * replace its text, and optionally fold everything that happened after it
+   * into a summary note on the new branch (ChatGPT-edit style). The agent
+   * must not be running — editing under a live loop would race its history.
+   */
+  async editPromptAt(
+    eventId: string,
+    text: string,
+    tail: "discard" | "summarize",
+  ): Promise<{ droppedEvents: number; branch: string }> {
+    if (this.status === "running")
+      throw new Error("agent is running — stop it before editing history");
+    const all = await readEvents(this.log.filePath);
+    const target = all.find((e) => e.id === eventId);
+    if (!target || target.type !== "prompt")
+      throw new Error("event not found on this session (or not a prompt)");
+
+    const lineage = lineageOf(all);
+    const tIdx = lineage.findIndex((e) => e.id === eventId);
+    if (tIdx === -1) throw new Error("prompt is not on this agent's current lineage");
+
+    const kept = lineage.slice(0, tIdx);
+    const dropped = lineage.slice(tIdx); // includes the original prompt itself
+
+    const msgs = rebuildMessagesFrom(kept);
+    if (tail === "summarize" && dropped.length > 0) {
+      try {
+        const droppedMsgs = rebuildMessagesFrom(dropped);
+        if (droppedMsgs.length) {
+          const summary = await this.summarize(droppedMsgs);
+          if (summary.trim()) {
+            msgs.push({
+              role: "user",
+              content:
+                "[harness] The conversation continued past this point on another timeline. " +
+                `Notes from what happened there:\n\n${summary}`,
+            });
+          }
+        }
+      } catch {
+        // summarization is best-effort; the fork proceeds without notes
+      }
+    }
+    msgs.push({ role: "user", content: text });
+
+    const newBranch = `br${this.branchCount()}${Date.now().toString(36).slice(-4)}`;
+    await this.log.append("fork", this.currentSession, newBranch, {
+      fromSession: this.currentSession,
+      fromBranch: this.currentBranch,
+      fromEvent: kept.at(-1)?.id ?? null,
+      newBranch,
+      reason: "prompt-edited",
+      droppedEvents: dropped.length,
+      tailMode: tail,
+    });
+    this.currentBranch = newBranch;
+    this.messages = msgs;
+    await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "user", text });
+    bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+    return { droppedEvents: dropped.length, branch: newBranch };
   }
 
   private parseGoalFile(text: string): GoalState {
@@ -1147,4 +1117,111 @@ function safeParse(json: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/** Walk parent links backwards from the newest event, then flip forward. */
+function lineageOf(events: TeapotEvent[]): TeapotEvent[] {
+  if (events.length === 0) return [];
+  const byId = new Map(events.map((e) => [e.id, e]));
+  const last = events[events.length - 1]!;
+  const lineage: TeapotEvent[] = [];
+  const seen = new Set<string>();
+  for (let cur: typeof last | undefined = last; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) {
+    if (seen.has(cur.id)) break;
+    seen.add(cur.id);
+    lineage.push(cur);
+  }
+  lineage.reverse();
+  // the trailing fork event itself is bookkeeping, not conversation
+  while (lineage.length && lineage[0].type === "fork") lineage.shift();
+  return lineage;
+}
+
+/**
+ * Replay ordered events into ChatMessages (shared by session restore and
+ * prompt-edit forks). Prompts logged inside an open tool batch are buffered
+ * until it closes, so user messages never split a tool_call/tool_result pair.
+ */
+function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
+  const msgs: ChatMessage[] = [];
+  const META_TOOLS = new Set([
+    "finish", "report_progress", "set_goal", "get_goal",
+    "read_memory", "set_memory", "list_skills",
+  ]);
+  const openCalls = new Map<string, string>(); // real tool_call id -> name
+  const bufferedUsers: string[] = [];
+  const flushUsers = () => {
+    if (openCalls.size === 0) {
+      for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
+    }
+  };
+  for (const e of list) {
+    const d = e.data as Record<string, unknown>;
+    if (e.type === "prompt" && typeof d.text === "string") {
+      if (openCalls.size > 0) bufferedUsers.push(d.text);
+      else msgs.push({ role: "user", content: d.text });
+    } else if (e.type === "message") {
+      const role = d.role === "assistant" ? "assistant" : "user";
+      const m: ChatMessage = { role, content: typeof d.content === "string" ? d.content : "" };
+      if (Array.isArray(d.toolCalls) && d.toolCalls.length > 0) {
+        m.tool_calls = (d.toolCalls as { id: string; name: string }[]).map((c) => ({
+          id: c.id,
+          type: "function" as const,
+          function: { name: c.name, arguments: "{}" },
+        }));
+        // meta tools are answered inline by the harness (no logged result);
+        // the hole-filling pass below synthesizes theirs where they belong
+        for (const t of m.tool_calls)
+          if (!META_TOOLS.has(t.function.name)) openCalls.set(t.id, t.function.name);
+      }
+      msgs.push(m);
+    } else if (e.type === "tool_call") {
+      // enrich the preceding assistant tool_calls with real arguments
+      const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
+      const tc = prev?.tool_calls?.find((t) => t.id === d.callId);
+      if (tc) tc.function.arguments = JSON.stringify(d.args ?? {});
+    } else if (e.type === "tool_result") {
+      msgs.push({
+        role: "tool",
+        tool_call_id: String(d.callId ?? ""),
+        content: `${d.ok === false ? "(failed) " : ""}${typeof d.result === "string" ? d.result : ""}`,
+      });
+      openCalls.delete(String(d.callId ?? ""));
+      flushUsers();
+    } else if (e.type === "progress") {
+      // progress events may follow an assistant report_progress call that
+      // has no logged tool result — patch it in when present
+      const lastAssistant = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.length);
+      if (lastAssistant?.tool_calls?.some((t) => t.function.name === "report_progress")) {
+        for (const t of lastAssistant.tool_calls!) {
+          if (!msgs.some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
+            msgs.push({ role: "tool", tool_call_id: t.id, content: "progress recorded" });
+          }
+          openCalls.delete(t.id);
+        }
+        flushUsers();
+      }
+    }
+  }
+
+  // every assistant tool_call must be answered by a tool message, or the
+  // API rejects the sequence — close any holes left by meta tools (finish)
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]!;
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      for (const t of m.tool_calls) {
+        if (!msgs.slice(i + 1).some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
+          msgs.splice(i + 1, 0, {
+            role: "tool",
+            tool_call_id: t.id,
+            content: t.function.name === "finish" ? `(round ended: ${m.content || "finished"})` : "(no result recorded)",
+          });
+          i++;
+        }
+      }
+    }
+  }
+  // prompts that were still waiting on a hole-filled tail land here
+  for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
+  return msgs;
 }

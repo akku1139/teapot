@@ -283,6 +283,52 @@ test("progress prompts wait for real output, not just elapsed time", async (t) =
   await agent.dispose();
 });
 
+/* ---------- prompt-edit forks ---------- */
+
+test("editing a sent prompt forks and can summarize the abandoned tail", async () => {
+  const mock = mkMock((req): LlmResult => {
+    const sys = String(req.messages[0]?.content ?? "");
+    if (sys.includes("compress")) return reply("- created hello.txt"); // tail summarizer
+    if (req.n === 0)
+      return reply("creating", [tc("w1", "write_file", { path: "hello.txt", content: "hi" })]);
+    return reply("done creating");
+  });
+  const { agent } = await mkAgent({ chatFn: mock.chat, autoContinue: false });
+  await agent.setGoal("make files");
+  agent.enqueuePrompt("create hello.txt");
+  agent.start("t");
+  await agent.settled();
+
+  const events = await readEvents(agent.log.filePath);
+  const firstPrompt = events.find((e) => e.type === "prompt")!;
+  const r = await agent.editPromptAt(firstPrompt.id, "create hello2.txt instead", "summarize");
+  assert.ok(r.droppedEvents >= 1);
+  assert.notEqual(r.branch, "br0");
+
+  // fork event records why/where
+  const ev2 = await readEvents(agent.log.filePath);
+  const forkEv = ev2.find((e) => e.type === "fork" && (e.data as Record<string, unknown>).reason === "prompt-edited");
+  assert.ok(forkEv);
+  const newPrompt = ev2.filter((e) => e.type === "prompt").at(-1)!;
+  assert.equal((newPrompt.data as Record<string, unknown>).text, "create hello2.txt instead");
+
+  // history keeps prefix + tail notes + edited prompt
+  const texts = agent.messages.map((m) => m.content ?? "");
+  assert.ok(texts.some((t) => t.includes("another timeline")), "summary note expected");
+  assert.match(texts.find((t) => t.includes("Notes from what happened")) ?? "", /created hello\.txt/);
+
+  // editing while running is refused
+  agent.enqueuePrompt("kick");
+  agent.start("kick");
+  await new Promise((r2) => setTimeout(r2, 30));
+  if (agent.status === "running") {
+    await assert.rejects(() => agent.editPromptAt(firstPrompt.id, "x", "discard"));
+    agent.stop("cleanup");
+    await agent.settled();
+  }
+  await agent.dispose();
+});
+
 /* ---------- context compaction ---------- */
 
 test("compaction summarizes old turns when the budget is exceeded", async () => {
