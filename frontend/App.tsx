@@ -935,7 +935,8 @@ export default function App() {
                   autosizeComposer();
                 }}
                 onkeydown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  // IME composition: Enter confirms the conversion, never sends
+                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
                     e.preventDefault();
                     void send(e);
                   }
@@ -1401,7 +1402,12 @@ function ToolRow(props: { e: Ev; res?: Ev }) {
         body = (
           <>
             <div class="meta">
-              <a href={argStr("url")} target="_blank" rel="noopener noreferrer">open ↗</a>
+              <Show
+                when={/^https?:/i.test(argStr("url"))}
+                fallback={<span class="muted">{oneLine(argStr("url"), 80)}</span>}
+              >
+                <a href={argStr("url")} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">open ↗</a>
+              </Show>
             </div>
             {resultBlock(3000)}
           </>

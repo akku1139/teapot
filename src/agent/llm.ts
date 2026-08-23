@@ -84,6 +84,7 @@ export async function chat(
   messages: ChatMessage[],
   tools: ToolSpec[],
   signal?: AbortSignal,
+  onDelta?: (snap: { text: string; reasoning: string }) => void,
 ): Promise<LlmResult> {
   try {
     const res = await client(cfg).chat.completions.create(
@@ -124,6 +125,8 @@ export async function chat(
     if (!message.content && !message.tool_calls) {
       throw new Error("LLM API error: empty completion");
     }
+    // non-streaming fallback still feeds the UI one final snapshot
+    onDelta?.({ text: message.content ?? "", reasoning: reasoning ?? "" });
     return {
       message,
       reasoning,
@@ -234,7 +237,7 @@ export async function chatStream(
     return { message, reasoning: reasoning || undefined, usage };
   } catch (err) {
     // provider may not support streaming at all — one clean fallback
-    if (!gotChunk && !signal?.aborted) return chat(cfg, messages, tools, signal);
+    if (!gotChunk && !signal?.aborted) return chat(cfg, messages, tools, signal, onDelta);
     // user interrupt: hand back whatever streamed so far so the harness can
     // keep the partial output visible instead of losing it
     if (signal?.aborted && (text || reasoning)) {

@@ -97,6 +97,8 @@ export interface TaskConfig {
   prompt: string;
   /** run in a forked branch so scheduled chatter never disturbs the main line */
   forked?: boolean;
+  /** runtime dedupe marker, persisted across restarts */
+  lastRunMin?: number;
 }
 
 export interface TeapotConfig {
@@ -321,7 +323,7 @@ export class Master {
       this.tasks = patch.tasks.map((t) => ({
         task: t,
         schedule: parseSchedule(t.schedule),
-        lastRunMin: -1,
+        lastRunMin: t.lastRunMin ?? -1,
       }));
     }
     this.saveConfig();
@@ -342,7 +344,7 @@ export class Master {
       this.tasks.push({
         task: t,
         schedule: parseSchedule(t.schedule),
-        lastRunMin: -1,
+        lastRunMin: t.lastRunMin ?? -1,
       });
     }
     // single low-frequency tick for everything periodic (idle cost ≈ 0)
@@ -540,7 +542,10 @@ export class Master {
     o: { task: string; context: "none" | "fork"; name?: string; persona?: string },
   ): Promise<{ id: string }> {
     const parentId = parent.opts_id();
-    const persona = o.persona && SUB_PERSONAS[o.persona] ? o.persona : undefined;
+    const persona =
+      o.persona && Object.prototype.hasOwnProperty.call(SUB_PERSONAS, o.persona)
+        ? o.persona
+        : undefined;
     const base = `${parentId}-sub${persona ? `-${persona}` : ""}${o.name ? `-${o.name.replace(/[^\w.-]/g, "-").slice(0, 24)}` : ""}`.slice(0, 60);
     let id = base;
     let n = 2;
@@ -782,6 +787,9 @@ export class Master {
         if (t.lastRunMin === minuteKey) continue; // dedupe within the same minute
         t.lastRunMin = minuteKey;
         t.lastRunAt = Date.now();
+        // persist so a master restart doesn't re-fire the same minute
+        t.task.lastRunMin = minuteKey;
+        this.saveConfig();
         const agent = this.agents.get(t.task.agent);
         if (!agent) continue;
         console.log(`[teapot] scheduled task "${t.task.id}" -> agent ${t.task.agent}`);

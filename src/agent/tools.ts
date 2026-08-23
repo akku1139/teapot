@@ -3,7 +3,7 @@
  * Tool specs are plain JSON-schema function definitions — provider-agnostic.
  */
 import { spawn } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   discoverSkills,
@@ -66,6 +66,18 @@ function safeJoin(cwd: string, p: string): string {
   const rel = path.relative(cwd, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error(`path escapes workspace: ${p}`);
+  }
+  // symlinks inside the workspace can point anywhere — resolve the real
+  // target and confine THAT too (path.resolve alone doesn't follow links)
+  let real = abs;
+  try {
+    real = realpathSync(abs);
+  } catch {
+    /* target may not exist yet (write_file) — lexical check above still holds */
+  }
+  const relReal = path.relative(cwd, real);
+  if (relReal.startsWith("..") || path.isAbsolute(relReal)) {
+    throw new Error(`path escapes workspace via symlink: ${p}`);
   }
   return abs;
 }
