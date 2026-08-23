@@ -31,7 +31,9 @@ export type EventType =
   | "usage" // data:{inputTokens, outputTokens, costEstimate?}
   | "goal" // data:{event:"set"|"status", ...}
   | "todo" // operator-maintained task list changed: data:{event:"set", by}
-  | "question"; // agent asked the operator something: data:{question, options?}
+  | "question" // agent asked the operator something: data:{question, options?}
+  | "sub_fork" // child session header: data:{parentAgent, parentSession, upToEvent}
+  | "sub"; // mirrored child activity in the parent feed: data:{sub, type, data}
 
 export interface TeapotEvent {
   v: 1;

@@ -23,6 +23,15 @@ export interface ToolContext {
   skillRoots?: { dir: string; source: string }[];
   /** aborted on harness shutdown — kills in-flight commands immediately */
   signal?: AbortSignal;
+  /** sub-agent management hooks (wired by the master; absent → tools refuse) */
+  subAgents?: {
+    /** depth of THIS agent in the spawn tree (0 = top level) */
+    depth: number;
+    spawn(o: { task: string; context: "none" | "fork"; name?: string }): Promise<{ id: string }>;
+    list(): { id: string; status: string; goal: string }[];
+    stop(ids?: string[]): Promise<{ stopped: string[] }>;
+    message(id: string, text: string): Promise<void>;
+  };
 }
 
 export interface ToolResult {
@@ -765,6 +774,102 @@ export const TOOLS: ToolDef[] = [
         urlCache.set(key, { at: Date.now(), text });
       }
       return { ok: res.ok || text.length > 0, result: clipText(text, num(args.limit, 20_000)) };
+    },
+  },
+  {
+    name: "spawn_agent",
+    description:
+      "Spawn a sub-agent to work a task in parallel (same workspace, own session). " +
+      'context "none" = fresh start with just the task; "fork" = inherit this conversation ' +
+      "byte-exactly (provider prefix cache stays warm) before the task is appended. " +
+      "Returns the sub-agent id immediately; its finish summary is delivered back to you.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "self-contained instructions for the sub-agent" },
+        context: { type: "string", enum: ["none", "fork"], description: "default none" },
+        name: { type: "string", description: "optional short name fragment for the id" },
+      },
+      required: ["task"],
+    },
+    async run(args, ctx) {
+      const sa = ctx.subAgents;
+      if (!sa) return { ok: false, result: "sub-agents are not available here" };
+      const task = str(args.task).trim();
+      if (!task) return { ok: false, result: "task required" };
+      const context = args.context === "fork" ? "fork" : "none";
+      try {
+        const r = await sa.spawn({
+          task,
+          context,
+          name: str(args.name).trim() || undefined,
+        });
+        return { ok: true, result: `spawned sub-agent ${r.id} — it works in parallel; use list_children / message_agent to steer it, stop_children to halt` };
+      } catch (e) {
+        return { ok: false, result: `spawn failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  {
+    name: "list_children",
+    description: "List your live sub-agents: id, status, current goal.",
+    parameters: { type: "object", properties: {} },
+    async run(_args, ctx) {
+      const sa = ctx.subAgents;
+      if (!sa) return { ok: false, result: "sub-agents are not available here" };
+      const kids = sa.list();
+      if (!kids.length) return { ok: true, result: "(no sub-agents)" };
+      return {
+        ok: true,
+        result: kids.map((k) => `${k.id} · ${k.status} · ${oneLine(k.goal, 60)}`).join("\n"),
+      };
+    },
+  },
+  {
+    name: "stop_children",
+    description:
+      "Stop one or more of your sub-agents. Without ids: stops ALL of them (and their descendants).",
+    parameters: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "string" }, description: "sub-agent ids; omit for all" },
+      },
+    },
+    async run(args, ctx) {
+      const sa = ctx.subAgents;
+      if (!sa) return { ok: false, result: "sub-agents are not available here" };
+      const ids = Array.isArray(args.ids) ? args.ids.map(String) : undefined;
+      const r = await sa.stop(ids);
+      return {
+        ok: true,
+        result: r.stopped.length ? `stopped: ${r.stopped.join(", ")}` : "(nothing running to stop)",
+      };
+    },
+  },
+  {
+    name: "message_agent",
+    description:
+      "Send a message to a specific sub-agent (steer it mid-flight or answer its ask_user question).",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "sub-agent id" },
+        text: { type: "string" },
+      },
+      required: ["id", "text"],
+    },
+    async run(args, ctx) {
+      const sa = ctx.subAgents;
+      if (!sa) return { ok: false, result: "sub-agents are not available here" };
+      const id = str(args.id);
+      const text = str(args.text);
+      if (!text.trim()) return { ok: false, result: "text required" };
+      try {
+        await sa.message(id, text);
+        return { ok: true, result: `message delivered to ${id}` };
+      } catch (e) {
+        return { ok: false, result: (e as Error).message };
+      }
     },
   },
   {

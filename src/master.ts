@@ -9,9 +9,41 @@ import path from "node:path";
 import os from "node:os";
 import { Agent } from "./agent/agent.ts";
 import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/cron.ts";
-import type { LlmConfig } from "./agent/llm.ts";
+import type { LlmConfig, ChatFn } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
+
+/** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
+const MAX_SPAWN_DEPTH = 3;
+
+/** default sub-agent personas — mentionable from the composer (@name) and
+ *  usable by agents via spawn_agent({persona}) */
+export const SUB_PERSONAS: Record<string, { label: string; directive: string }> = {
+  reviewer: {
+    label: "🔍 reviewer",
+    directive:
+      "ROLE: code reviewer. Read-only except notes. Inspect the change set, judge correctness, " +
+      "style, tests; report concrete findings as a prioritized list. Do not rewrite the code.",
+  },
+  tester: {
+    label: "🧪 tester",
+    directive:
+      "ROLE: test engineer. Write and run tests for the task at hand, hunt edge cases, " +
+      "report pass/fail with exact commands so results are reproducible.",
+  },
+  researcher: {
+    label: "🔎 researcher",
+    directive:
+      "ROLE: read-only explorer. Search the codebase/docs, map how things work, and report a " +
+      "compact briefing with file:line references. Do not modify anything.",
+  },
+  implementer: {
+    label: "🔨 implementer",
+    directive:
+      "ROLE: hands-on implementer. Make the change end-to-end (code + tests), keep edits small " +
+      "and verified, then report what changed and why.",
+  },
+};
 
 export interface ProviderConfig {
   /** OpenAI-compatible base URL, e.g. https://openrouter.ai/api/v1 */
@@ -32,6 +64,10 @@ export interface AgentConfig {
   apiKey?: string;
   /** optional: this model's context window, for the UI usage gauge */
   contextWindowTokens?: number;
+  /** set when this agent was spawned by another agent — survives restarts */
+  parent?: string;
+  /** test hook: inject a mock LLM function */
+  chatFn?: ChatFn;
 }
 
 export interface TaskConfig {
@@ -308,6 +344,9 @@ export class Master {
       timeoutMs: 120_000,
     };
     if (!llm.model) throw new Error(`agent ${ac.id}: no model configured (set model on the agent or on its provider)`);
+    // spawn-tree depth: computed from the config chain (ac may not be
+    // registered yet when this runs — spawnChildFor persists AFTER creation)
+    const myDepth = ac.parent ? this.depthOf(ac.parent) + 1 : 0;
     const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
     await mkdirSync(sessionDir, { recursive: true });
     const agent = new Agent({
@@ -324,6 +363,8 @@ export class Master {
         : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
       provider: provName,
+      spawnDepth: myDepth,
+      ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
     });
     // console line + broadcast: the web UI only refreshes on bus traffic, so
     // every appended event must reach it (otherwise messages sit invisible
@@ -331,7 +372,30 @@ export class Master {
     agent.log.onEvent = (e) => {
       printAgentEvent(e);
       bus.emit("update", { kind: "event", agentId: e.agent, event: e } satisfies BusEvent);
+      this.onChildEvent(ac, e);
     };
+    // sub-agent management hooks — only when this agent can legally spawn
+    if (myDepth < MAX_SPAWN_DEPTH) {
+      const self = agent;
+      const hooks = {
+        depth: myDepth,
+        spawn: (o: { task: string; context: "none" | "fork"; name?: string; persona?: string }) =>
+          this.spawnChildFor(self, o),
+        list: () =>
+          this.childrenOf(ac.id).map((c) => ({
+            id: c.id,
+            status: c.agent.status,
+            goal: c.agent.goal.text,
+          })),
+        stop: (ids?: string[]) => this.stopChildrenFor(ac.id, ids),
+        message: (id: string, text: string) => this.messageChild(ac.id, id, text),
+      };
+      (
+        agent as unknown as {
+          toolCtx: { subAgents: typeof hooks };
+        }
+      ).toolCtx.subAgents = hooks;
+    }
     await agent.init();
     this.agents.set(ac.id, agent);
     if (opts.persist) {
@@ -339,6 +403,162 @@ export class Master {
       this.saveConfig();
     }
     return agent;
+  }
+
+  /** spawn-tree depth of an agent (0 = top level); unknown → 0 */
+  private depthOf(id: string, seen = new Set<string>()): number {
+    let depth = 0;
+    let cur = this.config.agents.find((a) => a.id === id);
+    while (cur?.parent && !seen.has(cur.id) && depth < MAX_SPAWN_DEPTH + 2) {
+      seen.add(cur.id);
+      cur = this.config.agents.find((a) => a.id === cur!.parent);
+      depth++;
+    }
+    return depth;
+  }
+
+  /** direct children of an agent, with their Agent instances */
+  private childrenOf(id: string): { id: string; agent: Agent }[] {
+    const kids = this.config.agents.filter((a) => a.parent === id);
+    const out: { id: string; agent: Agent }[] = [];
+    for (const k of kids) {
+      const inst = this.agents.get(k.id);
+      if (inst) out.push({ id: k.id, agent: inst });
+    }
+    return out;
+  }
+
+  /**
+   * Create a sub-agent on behalf of `parent`. context "fork" writes a
+   * sub_fork header into the child log pointing at the parent's current
+   * tip — the parent's history is NEVER copied into the child's file; the
+   * child resolves it at restore time.
+   */
+  async spawnChildFor(
+    parent: Agent,
+    o: { task: string; context: "none" | "fork"; name?: string; persona?: string },
+  ): Promise<{ id: string }> {
+    const parentId = parent.opts_id();
+    const persona = o.persona && SUB_PERSONAS[o.persona] ? o.persona : undefined;
+    const base = `${parentId}-sub${persona ? `-${persona}` : ""}${o.name ? `-${o.name.replace(/[^\w.-]/g, "-").slice(0, 24)}` : ""}`.slice(0, 60);
+    let id = base;
+    let n = 2;
+    while (this.agents.has(id) || this.config.agents.some((a) => a.id === id))
+      id = `${base.slice(0, 56)}-${n++}`;
+
+    // persona directives shape how the sub approaches the task
+    const directive = persona ? `${SUB_PERSONAS[persona].label}\n${SUB_PERSONAS[persona].directive}\n\n` : "";
+    const pcfg = this.config.agents.find((a) => a.id === parentId);
+    let forkTip: string | null | undefined;
+    let forkBranch: string | undefined;
+    if (o.context === "fork") {
+      // capture the fork tip BEFORE creating the child (parent keeps running)
+      forkTip = parent.log.lastEventId(parent.currentBranch);
+      forkBranch = parent.currentBranch;
+    }
+    const child = await this.addAgent(
+      {
+        id,
+        workspace: parent.workspace,
+        provider: pcfg?.provider,
+        model: pcfg?.model,
+        contextWindowTokens: pcfg?.contextWindowTokens,
+        parent: parentId,
+      },
+      { persist: true, fresh: true },
+    );
+    if (o.context === "fork" && forkTip) {
+      await child.log.append("sub_fork", id, "br0", {
+        parentAgent: parentId,
+        parentSession: path.basename(parent.snapshot().sessionDir),
+        parentBranch: forkBranch,
+        upToEvent: forkTip,
+      });
+      // the inherited prefix becomes visible history for the child's loop
+      child.messages = parent.exportMessages();
+    }
+    await child.setGoal(`${directive}${o.task}`.slice(0, 2000));
+    await child.enqueuePrompt(
+      (o.context === "fork"
+        ? `[harness] You are sub-agent ${id}, spawned by @${parentId} with the conversation above. `
+        : `[harness] You are sub-agent ${id}, spawned by @${parentId}. `) +
+        `Work solely on this task:\n\n${directive}${o.task}`,
+      "harness",
+    );
+    child.start(`spawned by ${parentId}`);
+    console.log(`[teapot] sub-agent ${id} spawned by ${parentId} (context: ${o.context ?? "none"}${persona ? `, persona: ${persona}` : ""})`);
+    return { id };
+  }
+
+  /** Stop direct children (and their descendants by default) of an agent. */
+  async stopChildrenFor(parentId: string, ids?: string[]): Promise<{ stopped: string[] }> {
+    const stopped: string[] = [];
+    const walk = (pid: string) => {
+      for (const { id, agent } of this.childrenOf(pid)) {
+        if (ids && !ids.includes(id)) {
+          // still descend: stopping a parent implies stopping its subtree
+          walk(id);
+          continue;
+        }
+        agent.stop("stopped by parent agent");
+        stopped.push(id);
+        if (ids) {
+          // explicit id → also take its subtree
+          const sub = this.childrenOf(id);
+          for (const { id: gid, agent: g } of sub) {
+            g.stop("stopped with parent");
+            stopped.push(gid);
+          }
+        } else {
+          walk(id); // full-subtree default
+        }
+      }
+    };
+    walk(parentId);
+    return { stopped };
+  }
+
+  /** Deliver a parent's message into a child's mailbox (and wake it). */
+  private async messageChild(parentId: string, childId: string, text: string): Promise<void> {
+    const cfg = this.config.agents.find((a) => a.id === childId);
+    if (!cfg || cfg.parent !== parentId) throw new Error(`not your sub-agent: ${childId}`);
+    const child = this.agents.get(childId);
+    if (!child) throw new Error(`sub-agent not running: ${childId}`);
+    child.enqueuePrompt(`[harness] Message from @${parentId}:\n\n${text}`, "harness");
+    if (child.status !== "running") child.start(`message from ${parentId}`);
+  }
+
+  /**
+   * Mirror interesting child events into the parent's timeline (tagged with
+   * the acting sub id) and forward terminal outcomes to the parent's mailbox.
+   */
+  private onChildEvent(ac: { parent?: string; id: string }, e: { type: string; data: unknown; agent: string }): void {
+    const parentId = ac.parent;
+    if (!parentId) return;
+    const parent = this.agents.get(parentId);
+    if (!parent) return;
+
+    // forward outcomes so the parent hears the result without polling
+    if (e.type === "message" && (e.data as { final?: boolean; content?: string }).final) {
+      const summary = String((e.data as { content?: string }).content ?? "").trim();
+      parent.enqueuePrompt(
+        `[harness] Sub-agent ${ac.id} finished. Final report:\n${summary.slice(0, 2000) || "(no summary)"}`,
+        "harness",
+      );
+    } else if (e.type === "error") {
+      parent.enqueuePrompt(
+        `[harness] Sub-agent ${ac.id} hit an error: ${String((e.data as { message?: string }).message ?? "").slice(0, 500)}`,
+        "harness",
+      );
+    }
+
+    // mirror feed-worthy activity; nested subs keep their original actor id
+    const MIRROR = new Set(["prompt", "message", "tool_call", "tool_result", "progress", "error", "question", "state"]);
+    if (!MIRROR.has(e.type)) return;
+    const inner = e.type === "sub" ? (e.data as { sub?: string; type?: string; data?: unknown }) : null;
+    const actor = inner?.sub ?? ac.id;
+    const payload = inner ? { sub: actor, type: inner.type, data: inner.data } : { sub: ac.id, type: e.type, data: e.data };
+    void parent.log.append("sub", parent.currentSession, parent.currentBranch, payload);
   }
 
   /** sessions root + helpers */

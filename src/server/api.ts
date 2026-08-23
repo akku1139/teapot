@@ -9,6 +9,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
+import { SUB_PERSONAS } from "../master.ts";
 import type { ProviderConfig } from "../master.ts";
 import path from "node:path";
 import { bus } from "../bus.ts";
@@ -403,6 +404,47 @@ export function buildApp(master: Master): Hono {
       return c.json({ ok: true, ...(await a.compactNow()) });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 409);
+    }
+  });
+
+  // default sub-agent personas for @mentions and spawn_agent
+  app.get("/api/personas", (c) =>
+    c.json({
+      personas: Object.entries(SUB_PERSONAS).map(([key, p]) => ({ key, label: p.label, directive: p.directive })),
+    }),
+  );
+
+  // spawn a sub-agent from the UI (@mention flow / manual)
+  app.post("/api/agents/:id/spawn", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req
+      .json<{ task?: string; context?: string; name?: string; persona?: string }>()
+      .catch(() => null);
+    if (!body?.task?.trim()) return c.json({ error: "task required" }, 400);
+    try {
+      const r = await master.spawnChildFor(a, {
+        task: body.task,
+        context: body.context === "fork" ? "fork" : "none",
+        name: body.name,
+        persona: body.persona,
+      });
+      return c.json({ ok: true, ...r });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  // bulk-stop a parent's sub-agents (descendants included by default)
+  app.post("/api/agents/:id/stop-children", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req.json<{ ids?: string[] }>().catch(() => ({ ids: undefined }));
+    try {
+      const r = await master.stopChildrenFor(c.req.param("id"), body.ids);
+      return c.json({ ok: true, ...r });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
     }
   });
 

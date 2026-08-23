@@ -64,6 +64,8 @@ export interface AgentOptions {
   provider?: string;
   /** shared skill dir (defaults to none; workspace skills always enabled) */
   globalSkillsDir?: string;
+  /** depth in the sub-agent spawn tree (0 = top level); enforced by the master */
+  spawnDepth?: number;
   /** injectable LLM call for tests (defaults to the real one) */
   chatFn?: ChatFn;
 }
@@ -171,6 +173,7 @@ export class Agent {
       contextWindowTokens: 0,
       restoreSession: true,
       globalSkillsDir: "",
+      spawnDepth: 0,
       provider: "",
       ...opts,
     };
@@ -221,6 +224,11 @@ export class Agent {
   /** expose id for metrics */
   opts_id(): string {
     return this.opts.id;
+  }
+
+  /** snapshot of the current conversation for fork-by-reference spawning */
+  exportMessages(): ChatMessage[] {
+    return [...this.messages];
   }
 
   get workspace(): string {
@@ -330,9 +338,58 @@ export class Agent {
    * (finish / report_progress) never produced logged tool results, so we
    * synthesize their responses to keep the message sequence valid.
    */
+  /**
+   * Resolve a leading sub_fork header: load the parent session's file (and
+   * recurse if THAT one is itself a sub_fork), take its lineage up to the
+   * recorded event, and return it prepended to our own events. Never copies
+   * bytes into our log — the prefix lives in the parent's file. Cycle-safe.
+   */
+  private async spliceSubForkPrefix(
+    own: TeapotEvent[],
+    baseDir = path.dirname(this.log.filePath),
+  ): Promise<TeapotEvent[]> {
+    const header = own.find((e) => e.type === "sub_fork");
+    if (!header) return own;
+    const d = header.data as { parentAgent?: string; parentSession?: string; upToEvent?: string };
+    if (!d.parentSession || !d.upToEvent) return own;
+
+    const parentDir = path.join(baseDir, d.parentSession);
+    let parentEvents = await readEvents(path.join(parentDir, "chat.jsonl")).catch(
+      () => [] as TeapotEvent[],
+    );
+    // grandchild chains: the parent file may itself open with a sub_fork
+    if (parentEvents.some((e) => e.type === "sub_fork")) {
+      parentEvents = await this.spliceSubForkPrefix(parentEvents, parentDir);
+    }
+    if (parentEvents.length === 0) {
+      console.warn(`[teapot] sub_fork: parent session ${d.parentSession} unreadable — starting without inherited context`);
+      return own;
+    }
+
+    // lineage of the parent up to (and including) the recorded fork point
+    const byId = new Map(parentEvents.map((e) => [e.id, e]));
+    const tip = byId.get(d.upToEvent);
+    if (!tip) {
+      console.warn(`[teapot] sub_fork: fork point ${d.upToEvent} not found in ${d.parentSession}`);
+      return own;
+    }
+    const prefix: TeapotEvent[] = [];
+    for (let cur: TeapotEvent | undefined = tip; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) {
+      if (prefix.some((p) => p.id === cur!.id)) break; // cycle guard
+      prefix.push(cur);
+    }
+    prefix.reverse();
+    while (prefix.length && prefix[0].type === "fork") prefix.shift();
+    return [...prefix, ...own.filter((e) => e !== header)];
+  }
+
   private async restoreFromLog(): Promise<void> {
-    const events = await readEvents(this.log.filePath);
-    if (events.length === 0) return;
+    const own = await readEvents(this.log.filePath);
+    if (own.length === 0) return;
+    // a sub_fork header points at the session this agent branched from —
+    // splice that prefix in from the parent's file (recursively, cycle-safe)
+    // instead of ever copying parent history into our own log
+    const events = await this.spliceSubForkPrefix(own);
     const lineage = lineageOf(events);
     if (!lineage.length) return;
     const last = lineage[lineage.length - 1];
@@ -637,7 +694,9 @@ export class Agent {
     onDelta?: (snap: { text: string; reasoning: string }) => void,
   ) {
     const maxAttempts = 4;
-    const waits = [30_000, 60_000, 120_000];
+    // fail fast, escalate late: most provider hiccups recover in seconds;
+    // only sustained failure earns a long cooldown (operator request)
+    const waits = [5_000, 5_000, 30_000];
     for (let attempt = 1; ; attempt++) {
       if (this.stopRequested) throw Object.assign(new Error("stopped"), { name: "StopRequested" });
       this.abort = new AbortController();
@@ -1010,6 +1069,7 @@ export class Agent {
     let droppedCount = 0;
     try {
       summary = await this.summarize(old);
+      if (summary) await this.harvestLessons(summary); // durable knowledge → memory.md
     } catch (err) {
       await this.log.append("error", this.currentSession, this.currentBranch, {
         message: `compaction summarize failed, falling back to truncation: ${(err as Error).message}`,
@@ -1067,7 +1127,9 @@ export class Agent {
           content:
             "You compress a coding agent's conversation into dense notes for it to continue working. " +
             "Preserve: current goal state, key decisions, files created/changed, important command results, " +
-            "open problems, and the next step. Be terse bullet points, no prose flourishes.",
+            "open problems, and the next step. Be terse bullet points, no prose flourishes. " +
+            'Finish with a section "## Durable lessons" listing reusable insights worth keeping forever ' +
+            "(gotchas, user preferences, what worked) — or omit the section if there are none.",
         },
         { role: "user", content: `Conversation:\n\n${transcript}\n\nWrite the continuation notes now.` },
       ],
@@ -1075,6 +1137,19 @@ export class Agent {
       undefined, // never abortable by stop(): losing the summary would lose history
     );
     return res.message.content ?? "";
+  }
+
+  /**
+   * Extract the "## Durable lessons" block from a compaction summary and
+   * append it to memory.md — knowledge survives compaction automatically
+   * (inspired by hook-driven CLAUDE.md growers; zero extra LLM calls).
+   */
+  private async harvestLessons(summary: string): Promise<void> {
+    const m = summary.match(/##\s*Durable lessons?\s*\n([\s\S]*?)(?=\n##\s|$)/i);
+    const lessons = m?.[1]?.trim();
+    if (!lessons) return;
+    const stamped = `\n<!-- lessons harvested from compaction ${new Date().toISOString()} -->\n${lessons}\n`;
+    await fs.appendFile(this.memoryFile, stamped, "utf8").catch(() => {});
   }
 
   private async recordProgress(argsJson: string): Promise<void> {
