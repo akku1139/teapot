@@ -18,17 +18,27 @@ const AUTHORS: Record<string, { name: string; icon: string; color: string }> = {
   prompt: { name: "you", icon: "🟧", color: "#faa81a" },
   user: { name: "you", icon: "🟧", color: "#faa81a" },
   message: { name: "agent", icon: "🫖", color: "#5865f2" },
-  tool_call: { name: "tool", icon: "🔧", color: "#3ba0c9" },
   progress: { name: "progress", icon: "📈", color: "#3ba55d" },
 };
-const authorOf = (e: Ev) => AUTHORS[e.type] ?? { name: e.type, icon: "•", color: "#9298a5" };
+const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
+
+/** author for an event — tool rows are named after the tool itself */
+const authorOf = (e: Ev) => {
+  if (e.type === "tool_call" || e.type === "tool_result")
+    return { name: String(e.data?.name ?? "tool"), icon: "⚙", color: "#3ba0c9" };
+  if (e.type === "prompt") {
+    const src = String(e.data?.source ?? "user");
+    if (src === "user") return AUTHORS.prompt;
+    return src.startsWith("scheduler:") ? { name: src.slice(10), icon: "📣", color: "#3ba55d" } : HARNESS_AUTH;
+  }
+  return AUTHORS[e.type] ?? { name: e.type, icon: "•", color: "#9298a5" };
+};
 
 // state/error/fork/goal render as dividers or embeds inside the feed
-const CHAT_TYPES = new Set([
+const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
   "state", "error", "fork", "goal",
 ]);
-const isChat = (e: Ev) => CHAT_TYPES.has(e.type);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -105,7 +115,34 @@ export default function App() {
   const [atBottom, setAtBottom] = createSignal(true);
   const [missed, setMissed] = createSignal(0);
   const [live, setLive] = createSignal<{ text: string; reasoning: string } | null>(null);
-  const chatEvents = createMemo(() => events().filter(isChat));
+
+  // pair tool_call events with their (possibly still missing) results:
+  // consumed results are hidden from the feed, calls render as one merged row
+  // that shows "running…" until its result lands
+  const pairInfo = createMemo(() => {
+    const resFor = new Map<string, Ev>();
+    const consumed = new Set<string>();
+    const awaiting = new Map<string, Ev[]>();
+    for (const e of events()) {
+      if (!FEED_TYPES.has(e.type)) continue;
+      if (e.type === "tool_call") {
+        const q = awaiting.get(e.data.callId) ?? [];
+        q.push(e);
+        awaiting.set(e.data.callId, q);
+      } else if (e.type === "tool_result") {
+        const call = awaiting.get(e.data.callId)?.shift();
+        if (call) {
+          resFor.set(call.id, e);
+          consumed.add(e.id);
+        }
+      }
+    }
+    return { resFor, consumed };
+  });
+  const chatEvents = createMemo(() => {
+    const { consumed } = pairInfo();
+    return events().filter((e) => FEED_TYPES.has(e.type) && !(e.type === "tool_result" && consumed.has(e.id)));
+  });
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
@@ -439,7 +476,13 @@ export default function App() {
               <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
             }>
               <For each={chatEvents()}>
-                {(e, i) => <MessageRow e={e} prev={chatEvents()[i() - 1]} />}
+                {(e, i) => (
+                  <MessageRow
+                    e={e}
+                    prev={chatEvents()[i() - 1]}
+                    res={pairInfo().resFor.get(e.id)}
+                  />
+                )}
               </For>
               <Show when={live()}>
                 <div class="msg live">
@@ -646,11 +689,12 @@ export default function App() {
 }
 
 /* ---------- one chat message row ---------- */
-function MessageRow(props: { e: Ev; prev?: Ev }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev }) {
   const e = props.e;
   const a = authorOf(e);
   const grouped =
     props.prev && props.prev.type === e.type &&
+    authorOf(props.prev).name === a.name && // don't group you/harness/scheduler together
     e.session === props.prev.session && e.branch === props.prev.branch;
 
   // non-chat-looking events become divider lines
@@ -690,13 +734,13 @@ function MessageRow(props: { e: Ev; prev?: Ev }) {
           </div>
         </Show>
 
-        <SwitchContent e={e} />
+        <SwitchContent e={e} res={props.res} />
       </div>
     </div>
   );
 }
 
-function SwitchContent(props: { e: Ev }) {
+function SwitchContent(props: { e: Ev; res?: Ev }) {
   const e = props.e;
   switch (e.type) {
     case "prompt":
@@ -717,16 +761,31 @@ function SwitchContent(props: { e: Ev }) {
         </>
       );
     case "tool_call": {
+      const res = props.res;
       const args = JSON.stringify(e.data.args, null, 1);
       const preview = oneLine(JSON.stringify(e.data.args ?? {}), 110);
       return (
-        <details class="embed">
-          <summary><b>⚙ {String(e.data.name)}</b> <span class="meta">{preview}</span></summary>
+        <details class={"embed" + (res ? (res.data.ok ? " done" : " fail") : " running")}>
+          <summary>
+            <b>⚙ {String(e.data.name)}</b>
+            <span class="meta">
+              {res
+                ? oneLine(String(res.data.result ?? ""), 110)
+                : "running…"}
+            </span>
+          </summary>
           <div class="mono">{args}</div>
+          <Show when={res}>
+            <div class="mono">{truncate(String(res!.data.result ?? ""), 4000)}</div>
+            <div class="meta">
+              {res!.data.durationMs}ms{res!.data.ok ? "" : " · FAILED"}
+            </div>
+          </Show>
         </details>
       );
     }
     case "tool_result": {
+      // orphan result (its call scrolled past the 300-event window)
       const out = String(e.data.result);
       return (
         <details class={"embed" + (e.data.ok ? "" : " fail")}>

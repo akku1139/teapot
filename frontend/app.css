@@ -62,6 +62,8 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
 .embed.fail { border-color: var(--err); }
+.embed.running { border-color: var(--warn); }
+.embed.running summary .meta::after { content: "⋯"; display: inline-block; margin-left: 6px; animation: blink 1s step-end infinite; color: var(--warn); }
 .embed summary { cursor: pointer; user-select: none; list-style-position: outside; }
 .embed summary::marker { color: var(--dim); }
 .embed[open] summary { margin-bottom: 4px; }
