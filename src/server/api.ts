@@ -172,7 +172,12 @@ export function buildApp(master: Master): Hono {
     } catch {
       return c.json({ error: `directory not found: ${ws}` }, 400);
     }
-    const id = (body.id?.trim() || path.basename(ws)).replace(/[^\w.-]/g, "-").slice(0, 40);
+    const base = (body.id?.trim() || path.basename(ws)).replace(/[^\w.-]/g, "-").slice(0, 40);
+    // agent ids are unique among running agents (they key the URL) — on a
+    // collision, auto-suffix so creating ~/a/proj and ~/b/proj just works
+    let id = base;
+    let n = 2;
+    while (master.agents.has(id)) id = `${base.slice(0, 38)}-${n++}`;
     try {
       const agent = await master.addAgent(
         { id, workspace: ws, provider: body.provider, model: body.model },

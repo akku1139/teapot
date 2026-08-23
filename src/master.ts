@@ -264,7 +264,13 @@ export class Master {
   async start(): Promise<void> {
     mkdirSync(this.config.dataDir, { recursive: true });
     for (const ac of this.config.agents) {
-      await this.addAgent(ac);
+      try {
+        await this.addAgent(ac);
+      } catch (err) {
+        // one bad entry (duplicate id, unknown provider, …) must not take the
+        // whole master down — skip it loudly and keep serving the rest
+        console.error(`[teapot] skipping agent "${ac.id}": ${(err as Error).message}`);
+      }
     }
     for (const t of this.config.tasks ?? []) {
       this.tasks.push({
