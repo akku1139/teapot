@@ -112,6 +112,97 @@ test("stop() interrupts a hanging LLM call immediately", async () => {
   await agent.dispose();
 });
 
+test("dispose() kills a running tool so master shutdown never hangs", async (t) => {
+  t.timeout?.(15_000);
+  const mock = mkMock(() =>
+    reply("running a long job", [tc("l1", "bash", { command: "sleep 30", timeout_ms: 600_000 })]),
+  );
+  const { agent } = await mkAgent({ chatFn: mock.chat });
+  agent.enqueuePrompt("go");
+  agent.start("test");
+  await new Promise((r) => setTimeout(r, 80)); // loop is inside the 30s sleep command
+  const t0 = Date.now();
+  await agent.dispose();
+  assert.ok(Date.now() - t0 < 3_000, `dispose took ${Date.now() - t0}ms — tool was not killed`);
+  await agent.dispose();
+});
+
+/* ---------- prompt mailbox ---------- */
+
+test("prompts sent mid-run are logged instantly and delivered at the next turn boundary", async (t) => {
+  t.timeout?.(20_000);
+  let secondRoundUserTexts: (string | null)[] = [];
+  const mock = mkMock((req): LlmResult => {
+    if (req.n === 0)
+      return reply("starting work", [tc("b1", "bash", { command: "sleep 1" })]);
+    secondRoundUserTexts = req.messages.filter((m) => m.role === "user").map((m) => m.content ?? null);
+    return reply("got your follow-up");
+  });
+  const { agent } = await mkAgent({ chatFn: mock.chat, autoContinue: false });
+  agent.enqueuePrompt("first task");
+  agent.start("test");
+  await new Promise((r) => setTimeout(r, 80)); // first turn underway; bash tool sleeping
+  assert.equal(agent.status, "running");
+  const t0 = Date.now();
+  agent.enqueuePrompt("second, urgent"); // must return immediately, not wait for the round
+  assert.ok(Date.now() - t0 < 100, "enqueuePrompt must not block on the running loop");
+  await agent.settled();
+
+  // delivered to the model as a user message at the turn boundary
+  assert.ok(
+    secondRoundUserTexts.includes("second, urgent"),
+    `model should see the queued prompt, saw: ${JSON.stringify(secondRoundUserTexts)}`,
+  );
+  // and logged while the first tool was still running → the UI sees it instantly
+  const events = await readEvents(agent.log.filePath);
+  const promptEv = events.find((e) => e.type === "prompt" && (e.data as Record<string, unknown>).text === "second, urgent");
+  const toolResultEv = events.find((e) => e.type === "tool_result");
+  assert.ok(promptEv && toolResultEv);
+  assert.ok(promptEv.seq < toolResultEv.seq, "prompt event must be logged before the running tool finished");
+  await agent.dispose();
+});
+
+test("an agent without a goal text does not auto-continue forever", async (t) => {
+  t.timeout?.(15_000);
+  let calls = 0;
+  const { agent } = await mkAgent({
+    chatFn: () => {
+      calls++;
+      return reply("ok, standing by");
+    },
+    continueDelayMs: 10,
+    // autoContinue defaults to true — but there is no goal to continue toward
+  });
+  agent.enqueuePrompt("hello");
+  agent.start("test");
+  await agent.settled();
+  assert.equal(agent.status, "idle");
+  assert.equal(calls, 1); // one round, then stop instead of nudging itself forever
+  await agent.dispose();
+});
+
+test("a queued prompt keeps a finished round going", async (t) => {
+  t.timeout?.(15_000);
+  const mock = mkMock(async (req): Promise<LlmResult> => {
+    if (req.n === 0) {
+      await new Promise((r) => setTimeout(r, 300)); // keep round one open
+      return reply("done with round one");
+    }
+    return reply("round two handled", [tc("f1", "finish", { goalComplete: true })]);
+  });
+  const { agent } = await mkAgent({ chatFn: mock.chat, continueDelayMs: 10 });
+  await agent.setGoal("stay available");
+  agent.enqueuePrompt("first");
+  agent.start("test");
+  await new Promise((r) => setTimeout(r, 60));
+  agent.enqueuePrompt("second arrives right at the boundary");
+  await agent.settled();
+  assert.equal(agent.goal.status, "done");
+  const userMsgs = agent.messages.filter((m) => m.role === "user");
+  assert.ok(userMsgs.some((m) => m.content === "second arrives right at the boundary"));
+  await agent.dispose();
+});
+
 /* ---------- context compaction ---------- */
 
 test("compaction summarizes old turns when the budget is exceeded", async () => {

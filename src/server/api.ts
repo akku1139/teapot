@@ -278,9 +278,11 @@ export function buildApp(master: Master): Hono {
     if (!a) return c.json({ error: "not found" }, 404);
     const body = await c.req.json<{ text?: string; start?: boolean }>();
     if (!body.text?.trim()) return c.json({ error: "text required" }, 400);
-    await a.enqueuePrompt(body.text, "user");
+    // returns immediately: the prompt is logged + broadcast now, delivered to
+    // the model at the next turn boundary (never blocks on a running agent)
+    a.enqueuePrompt(body.text, "user");
     if (body.start !== false && a.status !== "running") a.start("prompt");
-    return c.json({ ok: true });
+    return c.json({ ok: true, queued: a.snapshot().pendingPrompts });
   });
 
   app.post("/api/agents/:id/start", (c) => {
@@ -434,10 +436,8 @@ export function buildApp(master: Master): Hono {
   );
 
   // ---- web ui (built by vite into ./public; no bundler needed to serve) ----
-  const webRoot = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    import.meta.url.includes("/dist/") ? "../../public" : "../../public",
-  );
+  // works both from dist/server/api.js and src/server/api.ts: ../../public
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../public");
 
   const mime: Record<string, string> = {
     ".html": "text/html",

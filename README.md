@@ -108,12 +108,17 @@ master (Hono server, src/master.ts + src/server/api.ts)
 - **LLM** (`src/agent/llm.ts`): official `openai` npm client against any
   OpenAI-compatible endpoint (OpenRouter, vLLM, Ollama...). Model is config,
   never hard-coded.
-- **Tools** (`src/agent/tools.ts`): provider-agnostic JSON-schema function
-  specs — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash` (git goes
-  through bash), plus meta tools `finish` / `report_progress` / `get_goal` /
-  `set_goal` / `read_memory` / `set_memory` / `list_skills`. Paths are
-  confined to the workspace; bash runs detached in its own process group and
-  the whole group is SIGKILLed on timeout.
+- **Tools** (`src/agent/tools.ts`): provider-agnostic JSON-schema function specs —
+  file work via `read_file` (numbered lines, grep-style `pattern` mode, negative
+  offsets), `write_file`, `edit_file` (unique replacement, `replace_all`,
+  whitespace-tolerant fallbacks with recovery hints), `apply_patch`
+  (Codex-style multi-file add/update/rename/delete patches, validated
+  atomically before writing) and `list_dir`; `bash` for git/builds/tests and
+  quick bulk transforms; `read_url` fetches a web page's readable content
+  (Mozilla Readability + happy-dom); plus meta tools `finish` /
+  `report_progress` / `get_goal` / `set_goal` / `read_memory` / `set_memory` /
+  `list_skills`. Paths are confined to the workspace; bash runs detached in its
+  own process group and the whole group is SIGKILLed on timeout or shutdown.
 - **Cache-friendly prompt design** — the system prompt is byte-identical on
   every turn; session state (goal, memory, skills) is fetched via tools, never
   injected. Combined with the append-only message history this keeps provider

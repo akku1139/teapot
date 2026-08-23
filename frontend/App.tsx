@@ -7,6 +7,7 @@ interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
   session: string; branch: string; goal: { status: string; text: string };
   latestProgress: any; stats: any; model: string; provider?: string;
+  pendingPrompts?: number;
 }
 interface Ev {
   id: string; seq: number; ts: string; session: string; branch: string;
@@ -14,14 +15,19 @@ interface Ev {
 }
 
 const AUTHORS: Record<string, { name: string; icon: string; color: string }> = {
-  user: { name: "you", icon: "🧑", color: "#faa81a" },
+  prompt: { name: "you", icon: "🟧", color: "#faa81a" },
+  user: { name: "you", icon: "🟧", color: "#faa81a" },
   message: { name: "agent", icon: "🫖", color: "#5865f2" },
   tool_call: { name: "tool", icon: "🔧", color: "#3ba0c9" },
   progress: { name: "progress", icon: "📈", color: "#3ba55d" },
 };
 const authorOf = (e: Ev) => AUTHORS[e.type] ?? { name: e.type, icon: "•", color: "#9298a5" };
 
-const CHAT_TYPES = new Set(["user", "message", "prompt", "tool_call", "tool_result", "progress"]);
+// state/error/fork/goal render as dividers or embeds inside the feed
+const CHAT_TYPES = new Set([
+  "user", "message", "prompt", "tool_call", "tool_result", "progress",
+  "state", "error", "fork", "goal",
+]);
 const isChat = (e: Ev) => CHAT_TYPES.has(e.type);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
@@ -33,7 +39,11 @@ async function api(path: string, opts?: RequestInit) {
   const headers = new Headers(opts?.headers);
   if (token && !headers.has("authorization")) headers.set("authorization", `Bearer ${token}`);
   const res = await fetch(path, { ...opts, headers });
-  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json())?.error ?? ""; } catch { /* not json */ }
+    throw new Error(detail || `${path}: HTTP ${res.status}`);
+  }
   return res.json();
 }
 
@@ -67,8 +77,9 @@ export default function App() {
       : window.innerWidth > 1100,
   );
   const toggleRight = () => {
-    setShowRight(!showRight());
-    localStorage.setItem("teapot.panel", showRight() ? "1" : "0");
+    const next = !showRight();
+    setShowRight(next);
+    localStorage.setItem("teapot.panel", next ? "1" : "0");
   };
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
@@ -102,10 +113,13 @@ export default function App() {
   const refreshAgents = () => api("/api/agents").then((d) => setAgents(d.agents)).catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
 
+  // null = show everything; otherwise only the chosen branch's events
+  const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
   async function loadEvents(id: string) {
     try {
+      const bf = branchFilter();
       const [ev, br] = await Promise.all([
-        api(`/api/agents/${id}/events?limit=300`),
+        api(`/api/agents/${id}/events?limit=300${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`),
         api(`/api/agents/${id}/branches`),
       ]);
       setEvents(ev.events);
@@ -129,6 +143,7 @@ export default function App() {
   async function select(id: string, push = true) {
     setSelected(id);
     setLive(null);
+    setBranchFilter(null);
     localStorage.setItem("teapot.session", id);
     navigate(id, push);
     await loadEvents(id);
@@ -214,7 +229,7 @@ export default function App() {
     if (e.key === "/") {
       e.preventDefault();
       document.querySelector<HTMLInputElement>(".composer input[type=text]")?.focus();
-    } else     if (e.key === "d") {
+    } else if (e.key === "d") {
       toggleRight();
     } else if (e.key === "t") {
       toggleTerm();
@@ -231,8 +246,9 @@ export default function App() {
   /* ---------- human terminal (bottom drawer, xterm.js over WS) ---------- */
   const [termOpen, setTermOpen] = createSignal(localStorage.getItem("teapot.term") === "1");
   const toggleTerm = () => {
-    setTermOpen(!termOpen());
-    localStorage.setItem("teapot.term", termOpen() ? "1" : "0");
+    const next = !termOpen();
+    setTermOpen(next);
+    localStorage.setItem("teapot.term", next ? "1" : "0");
   };
   let termHost: HTMLDivElement | null = null;
   let xterm: any = null;
@@ -314,19 +330,26 @@ export default function App() {
     });
     refreshMetrics();
     connectWs();
-    setInterval(refreshMetrics, 30_000);
+    const mi = setInterval(refreshMetrics, 30_000);
+    onCleanup(() => clearInterval(mi));
   });
 
   const send = async (e: Event) => {
     e.preventDefault();
-    if (!selected() || !draft().trim()) return;
-    const text = draft();
+    const id = selected();
+    const text = draft().trim();
+    if (!id || !text) return;
     setDraft("");
-    await api(`/api/agents/${selected()}/prompt`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, start: autoStart() }),
-    });
+    try {
+      await api(`/api/agents/${id}/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, start: autoStart() }),
+      });
+    } catch (ex) {
+      setDraft(text); // never eat the user's message on a failed send
+      console.error("send failed:", ex);
+    }
   };
 
   const act = (path: string) =>
@@ -383,7 +406,14 @@ export default function App() {
             <span class="hash">#</span>
             <span class="title">{sel()!.id}</span>
             <span class={`badge ${sel()!.status}`}>{sel()!.status}</span>
-            <span class="sub">{sel()!.model} · {sel()!.session}/{sel()!.branch} · turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls}</span>
+            <Show when={(sel()!.pendingPrompts ?? 0) > 0}>
+              <span class="badge queued" title={`${sel()!.pendingPrompts} prompt(s) waiting — the agent picks them up at the next turn boundary`}>
+                ⏳ {sel()!.pendingPrompts} queued
+              </span>
+            </Show>
+            <span class="sub">
+              {sel()!.model} · {sel()!.session}/{sel()!.branch} · turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls}
+            </span>
             <span style="margin-left:auto;display:flex;gap:4px">
               <Show when={sel()!.statusReason}>
                 <span class="sub" title={sel()!.statusReason}>ℹ</span>
@@ -457,7 +487,8 @@ export default function App() {
               <button type="submit">send</button>
             </form>
             <div class="hint">
-              enter send · ↑↓ sessions · / focus · t terminal · d panel · esc stop · prompts queue while the agent works
+              enter send · ↑↓ sessions · / focus · t terminal · d panel · esc interrupt ·
+              messages sent while the agent works are queued and delivered at the next turn boundary
             </div>
           </div>
         </Show>
@@ -495,15 +526,24 @@ export default function App() {
                 <For each={models()}>{(m) => <option value={m} />}</For>
               </datalist>
               <button
-                title="apply model to this session"
-                onclick={async () => {
+                title="apply to this session — takes effect from the agent's next turn"
+                onclick={async (e) => {
                   if (!selected()) return;
-                  await api(`/api/agents/${selected()}/model`, {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ provider: modelProvider(), model: modelDraft().trim() || undefined }),
-                  });
-                  refreshAgents();
+                  const btn = e.currentTarget as HTMLButtonElement;
+                  btn.disabled = true;
+                  try {
+                    await api(`/api/agents/${selected()}/model`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ provider: modelProvider(), model: modelDraft().trim() || undefined }),
+                    });
+                    btn.textContent = "✓ applied";
+                    refreshAgents();
+                  } catch (ex) {
+                    alert(`model switch failed: ${(ex as Error).message}`);
+                  } finally {
+                    setTimeout(() => { btn.textContent = "apply"; btn.disabled = false; }, 1200);
+                  }
                 }}
               >apply</button>
             </div>
@@ -512,14 +552,21 @@ export default function App() {
 
           <h3>⏯ controls</h3>
           <div class="btnrow">
-            <button onclick={act("/start")} title="run toward the goal">▶ start</button>
-            <button onclick={act("/stop")} title="interrupt after the current tool finishes">■ stop</button>
-            <button onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}>⑂ fork</button>
+            <button onclick={act("/start")} title="run toward the goal (starts the loop)">▶ start</button>
+            <button onclick={act("/stop")} title="interrupt: aborts the current LLM call; the running tool finishes first">■ stop</button>
+            <button
+              title="branch off the conversation here — try things without disturbing the main line"
+              onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}
+            >⑂ fork</button>
             <button onclick={async () => {
-              if (!confirm(`remove agent ${sel()!.id}? (log is kept)`)) return;
-              await api(`/api/agents/${sel()!.id}`, { method: "DELETE" });
-              setSelected(null); setAgents(agents().filter((a) => a.id !== sel()!.id));
-            }} title="remove agent">🗑</button>
+              const id = selected();
+              if (!id || !confirm(`remove agent ${id}? (log is kept)`)) return;
+              await api(`/api/agents/${id}`, { method: "DELETE" }).catch(() => {});
+              const rest = agents().filter((a) => a.id !== id);
+              setAgents(rest);
+              if (rest[0]) select(rest[0].id);
+              else { setSelected(null); setEvents([]); }
+            }} title="remove agent from teapot (session log stays on disk)">🗑 remove</button>
           </div>
 
           <h3>🎯 goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
@@ -539,10 +586,21 @@ export default function App() {
           <div class="card muted">turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls} · compacted {sel()!.stats.compactions ?? 0}
             {"\n"}tokens in/out {sel()!.stats.inputTokens}/{sel()!.stats.outputTokens}</div>
 
-          <h3>🌿 branches</h3>
+          <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span></h3>
           <For each={branches()}>
             {(b) => (
-              <div class={"branch-row" + (b.branch === sel()!.branch ? " cur" : "")}>{b.branch}<span>{b.events}</span></div>
+              <div
+                class={"branch-row" + (b.branch === sel()!.branch || b.branch === branchFilter() ? " cur" : "")}
+                title={b.branch === branchFilter() ? "click to show all branches again" : `show only ${b.branch}`}
+                onclick={() => {
+                  const next = branchFilter() === b.branch ? null : b.branch;
+                  setBranchFilter(next);
+                  if (selected()) loadEvents(selected()!);
+                }}
+              >
+                <span>{b.branch}{b.branch === sel()!.branch ? " (current)" : ""}</span>
+                <span>{b.events} events</span>
+              </div>
             )}
           </For>
         </Show>
@@ -571,6 +629,19 @@ function MessageRow(props: { e: Ev; prev?: Ev }) {
     e.session === props.prev.session && e.branch === props.prev.branch;
 
   // non-chat-looking events become divider lines
+  if (e.type === "fork") {
+    const d = e.data ?? {};
+    return (
+      <div class="divider-msg">
+        ⑂ forked from {String(d.fromBranch ?? "?")} → {String(d.newBranch ?? e.branch)}
+      </div>
+    );
+  }
+  if (e.type === "goal") {
+    const d = e.data ?? {};
+    const what = d.event === "status" ? `marked ${String(d.status ?? "")}` : oneLine(String(d.text ?? ""), 80);
+    return <div class="divider-msg">🎯 goal {String(d.event ?? "")}: {what}</div>;
+  }
   if (e.type === "state") {
     if (e.data.from === e.data.to) return null;
     return (

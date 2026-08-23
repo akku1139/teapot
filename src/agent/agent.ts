@@ -77,6 +77,12 @@ Session state is not injected into prompts — fetch it with tools instead:
 
 ## Rules
 - Work step by step with tools. Verify results (run tests/builds) before claiming progress.
+- File changes — pick by scope: write_file (one new file / full rewrite) ·
+  edit_file (exactly one small unique replacement) · apply_patch (several
+  edits, renames or deletes across one or more files, applied atomically).
+  read_file numbers lines and can grep via its pattern option. bash
+  text-munging (sed/awk/heredoc) remains available for quick bulk transforms
+  when that is genuinely faster.
 - When a loaded skill matches your task, follow its playbook.
 - When you make meaningful progress, call report_progress.
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
@@ -103,9 +109,18 @@ export class Agent {
 
   private opts: Required<Omit<AgentOptions, "chatFn">> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
+  /**
+   * User prompts waiting for the next turn boundary. Deliberately NOT queued
+   * on runChain: that chain holds the long-running loop, so queueing behind
+   * it would delay both the log entry (UI) and delivery until the round —
+   * sometimes the whole goal — finished.
+   */
+  private pendingPrompts: { source: string; text: string }[] = [];
   private stopRequested = false;
   private wake: (() => void) | null = null;
   private abort: AbortController | null = null;
+  /** aborted only by dispose(): kills in-flight subprocess groups instantly */
+  private toolAbort = new AbortController();
   private runChain: Promise<void> = Promise.resolve();
   private lastProgressAt = Date.now();
   private consecutiveToolErrors = 0;
@@ -132,6 +147,7 @@ export class Agent {
       defaultTimeoutMs: 120_000,
       maxOutputBytes: 60_000,
       skillRoots: this.skillRoots,
+      signal: this.toolAbort.signal,
     };
     // the session id IS the directory name — one directory per incarnation
     this.mainSession = path.basename(opts.sessionDir);
@@ -255,10 +271,26 @@ export class Agent {
     while (lineage.length && lineage[0].type === "fork") lineage.shift();
 
     const msgs: ChatMessage[] = [];
+    // Prompts are logged the moment the user hits send — which can be while a
+    // tool batch is still open. Replaying them verbatim would slot a user
+    // message BETWEEN an assistant tool_call and its tool_result (API-invalid),
+    // so hold them until the open batch is answered, like live delivery does.
+    const META_TOOLS = new Set([
+      "finish", "report_progress", "set_goal", "get_goal",
+      "read_memory", "set_memory", "list_skills",
+    ]);
+    const openCalls = new Map<string, string>(); // real tool_call id -> name
+    const bufferedUsers: string[] = [];
+    const flushUsers = () => {
+      if (openCalls.size === 0) {
+        for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
+      }
+    };
     for (const e of lineage) {
       const d = e.data as Record<string, unknown>;
       if (e.type === "prompt" && typeof d.text === "string") {
-        msgs.push({ role: "user", content: d.text });
+        if (openCalls.size > 0) bufferedUsers.push(d.text);
+        else msgs.push({ role: "user", content: d.text });
       } else if (e.type === "message") {
         const role = d.role === "assistant" ? "assistant" : "user";
         const m: ChatMessage = { role, content: typeof d.content === "string" ? d.content : "" };
@@ -268,6 +300,10 @@ export class Agent {
             type: "function" as const,
             function: { name: c.name, arguments: "{}" },
           }));
+          // meta tools are answered inline by the harness (no logged result);
+          // the hole-filling pass below synthesizes theirs where they belong
+          for (const t of m.tool_calls)
+            if (!META_TOOLS.has(t.function.name)) openCalls.set(t.id, t.function.name);
         }
         msgs.push(m);
       } else if (e.type === "tool_call") {
@@ -281,6 +317,8 @@ export class Agent {
           tool_call_id: String(d.callId ?? ""),
           content: `${d.ok === false ? "(failed) " : ""}${typeof d.result === "string" ? d.result : ""}`,
         });
+        openCalls.delete(String(d.callId ?? ""));
+        flushUsers();
       } else if (e.type === "progress") {
         // progress events may follow an assistant report_progress call that
         // has no logged tool result — patch it in when present
@@ -290,7 +328,9 @@ export class Agent {
             if (!msgs.some((x) => x.role === "tool" && x.tool_call_id === t.id)) {
               msgs.push({ role: "tool", tool_call_id: t.id, content: "progress recorded" });
             }
+            openCalls.delete(t.id);
           }
+          flushUsers();
         }
       }
     }
@@ -312,6 +352,8 @@ export class Agent {
         }
       }
     }
+    // prompts that were still waiting on a hole-filled tail land here
+    for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
 
     if (msgs.length > 0) {
       this.messages = msgs;
@@ -380,15 +422,31 @@ export class Agent {
       model: this.opts.llm.model,
       provider: this.opts.provider,
       sessionDir: this.opts.sessionDir,
+      pendingPrompts: this.pendingPrompts.length,
     };
   }
 
-  /** Queue a user prompt; wakes the loop if needed. Returns immediately. */
-  enqueuePrompt(text: string, source = "user"): Promise<void> {
-    return this.enqueue(async () => {
-      await this.log.append("prompt", this.currentSession, this.currentBranch, { source, text });
-      this.messages.push({ role: "user", content: text });
-    });
+  /**
+   * Queue a user prompt. Returns immediately: the event is logged right away
+   * (so every connected UI sees it instantly) and the text is handed to the
+   * model at the next turn boundary — never mid-turn, and never blocked by
+   * the running loop.
+   */
+  enqueuePrompt(text: string, source = "user"): void {
+    this.pendingPrompts.push({ source, text });
+    void this.log
+      .append("prompt", this.currentSession, this.currentBranch, { source, text })
+      .then(() =>
+        bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
+      )
+      .catch(() => {});
+  }
+
+  /** Hand queued user prompts to the model at a turn boundary. */
+  private drainPendingPrompts(): void {
+    for (const p of this.pendingPrompts.splice(0)) {
+      this.messages.push({ role: "user", content: p.text });
+    }
   }
 
   /** Resolves when all queued work (including a running loop) has settled. */
@@ -445,8 +503,17 @@ export class Agent {
     while (!this.stopRequested) {
       try {
         const finished = await this.runTurnsUntilIdle();
-        if (finished || this.stopRequested) break;
-        if (!this.opts.autoContinue || this.goal.status !== "active") break;
+        if (this.stopRequested) break;
+        // fresh user input arrived while we were finishing up — another round now
+        if (this.pendingPrompts.length) continue;
+        // auto-continue only makes sense with an active goal to continue toward
+        if (
+          finished ||
+          !this.opts.autoContinue ||
+          this.goal.status !== "active" ||
+          !this.goal.text.trim()
+        )
+          break;
         // auto-continue: wait quietly, then nudge with a fresh round
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
@@ -527,6 +594,8 @@ export class Agent {
     let finished = false;
     for (let guard = 0; guard < 200; guard++) {
       if (this.stopRequested) return finished;
+      // deliver prompts queued while the previous turn was running
+      this.drainPendingPrompts();
       // skills may have been created last turn — refresh the prompt listing
       await this.refreshSkills();
       // periodic progress report at turn boundary (no mid-turn interruption)
@@ -851,6 +920,9 @@ export class Agent {
 
   async dispose(): Promise<void> {
     this.stop("disposed");
+    // kill any in-flight subprocess group NOW so shutdown never waits out a
+    // long-running command (up to 10 min otherwise)
+    this.toolAbort.abort();
     await this.runChain.catch(() => {});
     await this.log.close();
   }
