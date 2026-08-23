@@ -58,6 +58,8 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .msg-body { min-width: 0; flex: 1; }
 .msg-head { display: flex; gap: 8px; align-items: baseline; }
 .actor { color: var(--warn); font-size: 11px; white-space: nowrap; }
+.ctxwarn { color: var(--warn); font-weight: 600; }
+.ctxcrit { color: var(--err); font-weight: 700; }
 .author { font-weight: 600; font-size: 14.5px; }
 .ts { color: var(--dim); font-size: 11px; }
 .content { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
@@ -199,6 +201,8 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 }
 .cmdrow { display: flex; gap: 10px; align-items: baseline; padding: 7px 12px; cursor: pointer; font-size: 13.5px; }
 .cmdrow:hover { background: var(--bg-light); }
+.cmdrow.active { background: var(--acc); color: #fff; }
+.cmdrow.active .muted { color: #e6e9ff; }
 .cmdrow .muted { font-size: 12px; }
 .composer button { background: var(--acc); border: none; color: white; border-radius: 8px; padding: 7px 14px; cursor: pointer; font-weight: 600; }
 .composer button:hover { opacity: .9; }

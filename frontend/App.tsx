@@ -326,13 +326,15 @@ export default function App() {
   async function loadEvents(id: string) {
     try {
       const bf = branchFilter();
-      const [ev, br] = await Promise.all([
+      const [ev, br, sk] = await Promise.all([
         api(`/api/agents/${id}/events?limit=300${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`),
         api(`/api/agents/${id}/branches`),
+        api(`/api/agents/${id}/skills`).catch(() => ({ skills: [] })),
       ]);
       setEvents(stabilize(ev.events));
       setEventsTotal(ev.total ?? ev.events.length);
       setBranches(br.branches);
+      setAgentSkills(sk.skills ?? []);
     } catch { /* agent may be gone */ }
   }
 
@@ -596,6 +598,7 @@ export default function App() {
     { cmd: "/fork", desc: "branch the conversation here" },
     { cmd: "/goal", desc: "/goal <text> — set goal & notify the agent" },
     { cmd: "/compact", desc: "force a context compaction now" },
+    { cmd: "/skill", desc: "/skill <name> — force-load a skill and follow it" },
   ];
 
   // @mentions: personas spawn sub-agents, agent ids target existing ones
@@ -624,7 +627,36 @@ export default function App() {
     return SLASH_COMMANDS.filter((c) => c.cmd.slice(1).startsWith(d.slice(1).toLowerCase()));
   };
 
-  // auto-grow the composer with its content, capped by CSS max-height
+  // unified suggestions: slash commands, then /skill argument completion
+  // (skill names come from the selected agent's roots via /api/agents/:id/skills)
+  type Suggest = { insert: string; title: string };
+  const NO_ARG_COMMANDS = new Set(["start", "stop", "fork", "compact"]);
+  const [agentSkills, setAgentSkills] = createSignal<{ name: string; description: string }[]>([]);
+  const [cmdIdx, setCmdIdx] = createSignal(-1);
+  const suggestions = (): Suggest[] => {
+    const d = draft();
+    if (!d.startsWith("/") || d.includes("\n")) return [];
+    const m = d.match(/^\/([a-z]*)(?:\s+(.*))?$/i);
+    if (!m) return [];
+    const cmdName = m[1]!.toLowerCase();
+    const argPart = (m[3] ?? "").trim();
+    if (!argPart && cmdName !== "skill") {
+      const rows = SLASH_COMMANDS.filter((c) => c.cmd.slice(1).startsWith(cmdName));
+      // an exact, argument-less command must EXECUTE on Enter — don't keep a
+      // popup open that would swallow the keystroke as another selection
+      const exact = rows.find((c) => c.cmd.slice(1) === cmdName);
+      if (exact && NO_ARG_COMMANDS.has(cmdName)) return [];
+      return rows.map((c) => ({ insert: c.cmd + " ", title: c.desc }));
+    }
+    if (cmdName === "skill") {
+      let rows = agentSkills().filter((s) => s.name.toLowerCase().startsWith(argPart.toLowerCase()));
+      // a single exact match means the name is complete — stop suggesting so
+      // the following Enter dispatches /skill instead of re-selecting
+      if (rows.length === 1 && rows[0]!.name.toLowerCase() === argPart.toLowerCase()) return [];
+      return rows.map((s) => ({ insert: `/skill ${s.name} `, title: s.description || "(bundled skill)" }));
+    }
+    return [];
+  };
   let composerEl: HTMLTextAreaElement | undefined;
   const autosizeComposer = () => {
     if (!composerEl) return;
@@ -701,37 +733,52 @@ export default function App() {
       const sp = text.indexOf(" ");
       const name = (sp === -1 ? text.slice(1) : text.slice(1, sp)).toLowerCase();
       const arg = sp === -1 ? "" : text.slice(sp + 1).trim();
-      const post = (p: string, body?: unknown) =>
-        api(`/api/agents/${id}${p}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-        }).then(refreshAgents);
-      try {
-        if (name === "start") await post("/start");
-        else if (name === "stop") await post("/stop");
-        else if (name === "fork") { await post("/fork", {}); await select(id); }
-        else if (name === "compact") {
-          const r = await post("/compact");
-          flashHint((r as any)?.ran ? "context compacted" : "nothing to compact yet");
-        }
-        else if (name === "goal") {
-          if (!arg) { flashHint("usage: /goal <text>"); return; }
-          await post("/goal", { text: arg, notify: true });
-          flashHint("goal saved & notification queued");
-        } else {
-          flashHint(`unknown command "${name}" — /start /stop /fork /goal /compact`);
-          return;
-        }
-        setDraft("");
-      } catch (ex) {
-        flashHint(`/${name} failed: ${(ex as Error).message}`);
-      }
+      if (name === "goal" && !arg) { setDraft("/goal "); return; } // keep typing
+      if (name === "skill" && !arg) { setDraft("/skill "); return; }
+      setDraft("");
+      await executeSlash(name, arg);
       return;
     }
 
     setDraft("");
     await sendText(text);
+  };
+
+  const executeSlash = async (name: string, arg: string): Promise<void> => {
+    const id = selected();
+    if (!id) return;
+    const post = (p: string, body?: unknown) =>
+      api(`/api/agents/${id}${p}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      }).then(refreshAgents);
+    try {
+      if (name === "start") await post("/start");
+      else if (name === "stop") await post("/stop");
+      else if (name === "fork") { await post("/fork", {}); await select(id); }
+      else if (name === "compact") {
+        const r: any = await post("/compact");
+        flashHint(r?.ran ? "context compacted" : "nothing to compact yet");
+      }
+      else if (name === "goal") {
+        if (!arg) { flashHint("usage: /goal <text>"); return; }
+        await post("/goal", { text: arg, notify: true });
+        flashHint("goal saved & notification queued");
+      }
+      else if (name === "skill") {
+        if (!arg) { flashHint("usage: /skill <name>"); return; }
+        await sendText(
+          `[harness] Force-load and follow the skill "${arg}" now: call load_skill("${arg}") and execute its playbook for the current task.`,
+        );
+        flashHint(`skill "${arg}" dispatched`);
+      }
+      else {
+        flashHint(`unknown command "${name}" — /start /stop /fork /goal /skill /compact`);
+      }
+    } catch (ex) {
+      flashHint(`/${name} failed: ${(ex as Error).message}`);
+    }
   };
 
   const act = (path: string) =>
@@ -900,13 +947,17 @@ export default function App() {
           </Show>
 
           <div class="composer">
-            <Show when={filteredCmds().length > 0}>
+            <Show when={suggestions().length > 0}>
               <div class="cmds">
-                <For each={filteredCmds()}>
-                  {(c) => (
-                    <div class="cmdrow" title={c.desc} onclick={() => setDraft(c.cmd + " ")}>
-                      <b>{c.cmd}</b>
-                      <span class="muted">{c.desc}</span>
+                <For each={suggestions()}>
+                  {(s, i) => (
+                    <div
+                      class={"cmdrow" + (i() === cmdIdx() ? " active" : "")}
+                      title={s.title}
+                      onclick={() => { setDraft(s.insert); setCmdIdx(-1); }}
+                    >
+                      <b class="mono">{s.insert.trim()}</b>
+                      <span class="muted">{s.title}</span>
                     </div>
                   )}
                 </For>
@@ -916,7 +967,7 @@ export default function App() {
               <div class="cmds">
                 <For each={mentionMatches()}>
                   {(m) => (
-                    <div class="cmdrow" title={m.label} onclick={() => setDraft(`@${m.key} `)}>
+                    <div class="cmdrow" title={m.label} onclick={() => { setDraft(`@${m.key} `); setCmdIdx(-1); }}>
                       <b>@{m.key}</b>
                       <span class="muted">{m.label}</span>
                     </div>
@@ -932,9 +983,33 @@ export default function App() {
                 value={draft()}
                 oninput={(e) => {
                   setDraft(e.currentTarget.value);
+                  setCmdIdx(0); // highlight first suggestion while popup is open
                   autosizeComposer();
                 }}
                 onkeydown={(e) => {
+                  // unified suggestion navigation — the input keeps focus, the
+                  // highlighted row just moves (↑↓), Tab/Enter accepts
+                  const sugg = suggestions();
+                  if (sugg.length > 0 && e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setCmdIdx((i) => Math.min(i() + 1, sugg.length - 1));
+                    return;
+                  }
+                  if (sugg.length > 0 && e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setCmdIdx((i) => Math.max(i() - 1, 0));
+                    return;
+                  }
+                  if (sugg.length > 0 && (e.key === "Tab" || e.key === "Enter") && !e.shiftKey && cmdIdx() >= 0) {
+                    e.preventDefault();
+                    setDraft(sugg[cmdIdx()]!.insert);
+                    setCmdIdx(-1);
+                    return;
+                  }
+                  if (e.key === "Escape" && sugg.length > 0) {
+                    setCmdIdx(-1); // close popup only
+                    return;
+                  }
                   // IME composition: Enter confirms the conversion, never sends
                   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
                     e.preventDefault();
@@ -1002,7 +1077,14 @@ export default function App() {
                     await api(`/api/agents/${selected()}/model`, {
                       method: "POST",
                       headers: { "content-type": "application/json" },
-                      body: JSON.stringify({ provider: modelProvider(), model: modelDraft().trim() || undefined }),
+                      body: JSON.stringify({
+                        provider: modelProvider(),
+                        model: modelDraft().trim() || undefined,
+                        // pass the provider-reported window so the runtime
+                        // gauge + derived compaction budget work immediately
+                        contextWindowTokens:
+                          models().find((m) => m.id === (modelDraft().trim() || undefined))?.contextLength,
+                      }),
                     });
                     btn.textContent = "✓ applied";
                     refreshAgents();
@@ -1158,13 +1240,21 @@ export default function App() {
               {" · "}cached {Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}% ({fmtK(sel()!.stats.cachedInputTokens)})
             </Show>
             <Show when={sel()!.ctx}>
-              {(c) => (
-                <>
-                  {"\n"}context ~{fmtK(c().usedTokens)} tok
-                  <Show when={c().window}> · {Math.min(999, Math.round((c().usedTokens / c().window) * 100))}% of {fmtK(c().window)}</Show>
-                  {"\n"}compaction at ~{fmtK(c().compactAt)} tok (older turns summarized)
-                </>
-              )}
+              {(c) => {
+                const pct = Math.min(999, Math.round((c().usedTokens / c().window) * 100));
+                const cls =
+                  !c().window ? "" : pct >= 85 ? " ctxcrit" : pct >= 70 ? " ctxwarn" : "";
+                return (
+                  <>
+                    {"\n"}context ~{fmtK(c().usedTokens)} tok
+                    <Show when={c().window}>
+                      {" · "}
+                      <span class={cls.trim()}>{pct}% of {fmtK(c().window)}</span>
+                    </Show>
+                    {"\n"}compaction at ~{fmtK(c().compactAt)} tok (older turns summarized)
+                  </>
+                );
+              }}
             </Show>
           </div>
 

@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { serve, upgradeWebSocket } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import { readFileSync, existsSync } from "node:fs";
+import { currentSkills } from "../agent/tools.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -369,10 +370,12 @@ export function buildApp(master: Master): Hono {
 
   // switch a running session's model/provider
   app.post("/api/agents/:id/model", async (c) => {
-    const body = await c.req.json<{ provider?: string; model?: string }>().catch(() => null);
+    const body = await c.req
+      .json<{ provider?: string; model?: string; contextWindowTokens?: number }>()
+      .catch(() => null);
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     try {
-      const r = master.setAgentModel(c.req.param("id"), body.provider, body.model);
+      const r = await master.setAgentModel(c.req.param("id"), body.provider, body.model, body.contextWindowTokens);
       return c.json({ ok: true, ...r });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
@@ -402,6 +405,20 @@ export function buildApp(master: Master): Hono {
     } else if (body.status) await a.setGoalStatus(body.status);
     else return c.json({ error: "text or status required" }, 400);
     return c.json({ ok: true });
+  });
+
+  // skills visible to an agent (workspace + global + bundled roots)
+  app.get("/api/agents/:id/skills", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    try {
+      const list = await currentSkills(a.toolCtx);
+      return c.json({
+        skills: list.map((s) => ({ name: s.name, description: s.description, source: s.source })),
+      });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
   });
 
   // force a context compaction pass (slash command /compact)

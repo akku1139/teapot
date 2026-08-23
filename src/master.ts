@@ -13,6 +13,7 @@ import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/c
 import type { LlmConfig, ChatFn } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
+import { fetchModelList, contextLengthFor } from "./model-meta.ts";
 
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 const MAX_SPAWN_DEPTH = 3;
@@ -390,6 +391,19 @@ export class Master {
     this.configFileExists = true;
     this.raw.llm = llm;
     if (body.password) this.raw.password = body.password;
+    // learn the window size up front so compaction derives 75% of it
+    try {
+      const list = await fetchModelList(llm.baseUrl, body.apiKey);
+      const cl = contextLengthFor(list, llm.model);
+      if (cl) {
+        this.config.contextWindowTokens = cl;
+        this.raw.contextWindowTokens = cl;
+        raw.contextWindowTokens = cl; // also persist into the fresh config file
+        writeFileSync(this.configPath, JSON.stringify(raw, null, 2) + "\n");
+      }
+    } catch {
+      /* metadata is best-effort */
+    }
 
     let agentId: string | undefined;
     if (body.workspace?.trim()) {
@@ -440,6 +454,13 @@ export class Master {
     // spawn-tree depth: computed from the config chain (ac may not be
     // registered yet when this runs — spawnChildFor persists AFTER creation)
     const myDepth = ac.parent ? this.depthOf(ac.parent) + 1 : 0;
+    // learn the model's real context window from provider metadata (once per
+    // endpoint, cached) unless the config already pins one explicitly
+    let inferredWindow: number | undefined;
+    if (!ac.contextWindowTokens && !this.config.contextWindowTokens) {
+      const list = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => []);
+      inferredWindow = contextLengthFor(list, llm.model);
+    }
     const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
     await mkdirSync(sessionDir, { recursive: true });
     const agent = new Agent({
@@ -451,8 +472,14 @@ export class Master {
       ...(this.config.progressMinChars ? { progressMinChars: this.config.progressMinChars } : {}),
       autoContinue: true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
-      ...(ac.contextWindowTokens || this.config.contextWindowTokens
-        ? { contextWindowTokens: (ac.contextWindowTokens ?? this.config.contextWindowTokens)! }
+      ...(ac.contextWindowTokens || this.config.contextWindowTokens || inferredWindow
+        ? {
+            contextWindowTokens: (
+              ac.contextWindowTokens ??
+              this.config.contextWindowTokens ??
+              inferredWindow
+            )!,
+          }
         : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
       bundledSkillsDir: BUNDLED_SKILLS_DIR,
@@ -742,7 +769,12 @@ export class Master {
    * Without: keep the current endpoint, swap only the model name.
    * The choice is persisted on the agent config so it survives restarts.
    */
-  setAgentModel(id: string, providerName?: string, model?: string): { provider: string; model: string } {
+  async setAgentModel(
+    id: string,
+    providerName?: string,
+    model?: string,
+    contextWindowTokens?: number,
+  ): Promise<{ provider: string; model: string }> {
     const agent = this.agents.get(id);
     if (!agent) throw new Error(`no such agent: ${id}`);
     let llm: LlmConfig;
@@ -768,6 +800,22 @@ export class Master {
     const ac = this.config.agents.find((a) => a.id === id);
     if (ac && providerName) ac.provider = providerName;
     if (ac) ac.model = llm.model;
+    // learn the new model's window (metadata lookup) unless explicitly given
+    let win = contextWindowTokens;
+    if (win === undefined && ac && !ac.contextWindowTokens && !this.config.contextWindowTokens) {
+      try {
+        const list = await fetchModelList(llm.baseUrl, llm.apiKey);
+        win = contextLengthFor(list, llm.model);
+      } catch {
+        /* metadata is best-effort */
+      }
+    }
+    if (win !== undefined) {
+      if (ac) ac.contextWindowTokens = win;
+      (
+        agent as unknown as { opts: { contextWindowTokens: number } }
+      ).opts.contextWindowTokens = win;
+    }
     this.saveConfig();
     void agent.log.append("system_note", agent.currentSession, agent.currentBranch, {
       event: "model-changed",

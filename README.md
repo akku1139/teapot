@@ -6,7 +6,9 @@ tab, and any number of long-running agents.
 
 ## Design principles
 
-- **TypeScript + Node.js**, minimal dependencies (`hono`, `openai`, `@hono/node-server`)
+- **TypeScript + Node.js**, small dependency set (`hono`, `openai`,
+  `@hono/node-server`, `ws`, `zod`, `@mozilla/readability` + `happy-dom` for
+  `read_url`)
 - **Idle cost ≈ 0**: no polling loops; everything is event-driven or driven by
   one 15-second scheduler tick. Verified: master sits at ~0% CPU when idle.
 - **No TUI** — Discord-style chat UI built with **SolidJS + Vite**
@@ -29,21 +31,22 @@ Requires Node.js **>= 24** (TypeScript is executed natively in dev mode).
 
 ```sh
 npm install -g teapot-coding-agent
-mkdir -p ~/.config/teapot-coding-agent
-curl -o ~/.config/teapot-coding-agent/config.json \
-  https://raw.githubusercontent.com/akku1139/teapot/main/teapot.config.example.json  # then edit it
 teapot
-# open http://localhost:7788
+# open http://localhost:7788 — the first-run wizard walks you through
+# provider → API key → model → first agent (writes config.json for you)
 ```
 
 The global install puts a `teapot` binary on your PATH (it serves the compiled
 server plus the pre-built web UI — no build step, no repo checkout needed).
+Prefer hand-writing the config? Skip the wizard and drop an edited copy of
+[`teapot.config.example.json`](teapot.config.example.json) at the path below.
 Alternatives:
 
 ```sh
-npx teapot-coding-agent          # run without installing
-teapot ~/my-config.json          # explicit config path
-TEAPOT_PORT=8080 teapot          # env overrides work as usual
+npx teapot-coding-agent                    # run without installing
+teapot --port 8080                         # CLI flags: --port/-p, --config/-c
+teapot ~/my-config.json                    # explicit config path
+TEAPOT_PORT=8080 teapot                    # env overrides work as usual
 ```
 
 ### Run from a checkout (development)
@@ -95,16 +98,21 @@ master (Hono server, src/master.ts + src/server/api.ts)
 
 - **Agent** (`src/agent/agent.ts`): an async loop that alternates LLM turns and
   tool executions until the model stops calling tools, then auto-continues
-  toward its goal. Stop/resume at any time via API/UI — stop aborts an
+  toward its goal. `ask_user` parks the loop in a `waiting` status until the
+  operator replies. Stop/resume at any time via API/UI — stop aborts an
   in-flight LLM call immediately (AbortController). Runaway guards: turn cap
   per round, consecutive-tool-error cap, per-command timeouts.
-- **Context compaction**: message history is token-estimated each turn; past a
-  budget (`contextTokenBudget`, default ~96k) older turns are summarized by
-  the LLM into dense continuation notes (fallback: safe truncation). Cut
-  points never split a tool_call/tool_result pair.
+- **Context management (staged)**: each turn prefers the provider's real
+  `prompt_tokens`; past ~60% of budget, old oversized tool outputs are pruned
+  (recent window protected); past the budget (`contextTokenBudget`, default
+  ~96k — auto-derived at 75% when a model's `contextWindowTokens` is known)
+  older turns are summarized into dense continuation notes plus a
+  "## Durable lessons" section harvested into memory.md. Cut points never
+  split a tool_call/tool_result pair.
 - **Session persistence**: conversations are rebuilt from the JSONL log on
-  restart (`restoreSession`), so agents resume mid-task across master
-  restarts instead of starting blank.
+  first interaction (lazy — boot cost stays O(agents)), so agents resume
+  mid-task across master restarts instead of starting blank. Restores replay
+  byte-identical request payloads, keeping provider prefix caches warm.
 - **LLM** (`src/agent/llm.ts`): official `openai` npm client against any
   OpenAI-compatible endpoint (OpenRouter, vLLM, Ollama...). Model is config,
   never hard-coded.
@@ -115,24 +123,43 @@ master (Hono server, src/master.ts + src/server/api.ts)
   (Codex-style multi-file add/update/rename/delete patches, validated
   atomically before writing) and `list_dir`; `bash` for git/builds/tests and
   quick bulk transforms; `read_url` fetches a web page's readable content
-  (Mozilla Readability + happy-dom); plus meta tools `finish` /
-  `report_progress` / `get_goal` / `set_goal` / `read_memory` / `set_memory` /
-  `list_skills`. Paths are confined to the workspace; bash runs detached in its
-  own process group and the whole group is SIGKILLed on timeout or shutdown.
+  (Mozilla Readability + happy-dom); plus meta tools `finish` / `ask_user` /
+  `report_progress` / `get_goal` / `set_goal` / `get_todo` / `set_todo` /
+  `read_memory` / `set_memory` / `get_feedback` / `add_feedback` /
+  `record_decision` / `get_decisions` / `list_skills`. Paths are confined to
+  the workspace (symlink-aware); bash runs detached in its own process group
+  and the whole group is SIGKILLed on timeout or shutdown.
+- **Sub-agents** — an agent can `spawn_agent({task, context, persona?})` to
+  delegate work: `context:"fork"` starts the child with a byte-exact copy of
+  the parent's conversation prefix (provider prefix caches stay warm; stored
+  as a reference header in the child's log — parent history is never copied),
+  `"none"` starts fresh. Parents steer children via `message_agent`, check on
+  them with `list_children`, and can bulk-stop them (`stop_children`,
+  descendants included). Children mirror their activity into the parent's
+  timeline tagged `@<id>`, and their finish/error reports are delivered back
+  automatically. Nesting depth is capped by `maxSpawnDepth` (default 3).
+  Default personas: reviewer/tester/researcher/implementer (+ read-only
+  enforcement for researcher/reviewer), plus `@mention` spawning from the
+  composer.
 - **Cache-friendly prompt design** — the system prompt is byte-identical on
   every turn; session state (goal, memory, skills) is fetched via tools, never
   injected. Combined with the append-only message history this keeps provider
   prefix caches hot, so long sessions pay incremental input prices instead of
   re-sending full context every turn.
 - **Session storage** — everything teapot manages lives under
-  `<dataDir>/sessions/<sid>/` (`chat.jsonl`, `goal.md`, `memory.md`), so agent
-  workspaces stay clean. Each incarnation gets a fresh `<agentId>-<uuid>`
-  directory (no history leaks across projects); restarts reuse the latest one.
-  Legacy layouts are migrated automatically.
+  `<dataDir>/sessions/<sid>/` (`chat.jsonl`, `goal.md`, `todo.md`,
+  `memory.md`, `feedback.md`, `decisions.md`), so agent workspaces stay
+  clean. Each incarnation gets a fresh `<agentId>-<uuid>` directory (no
+  history leaks across projects); restarts reuse the latest one. Legacy
+  layouts are migrated automatically.
 - **Goal / knowledge** — goal + memory are harness-managed and read/written
   through tools (`get_goal` / `set_goal` / `read_memory` / `set_memory`);
   `AGENTS.md` is optional project knowledge in the workspace root that agents
   are told to read at session start. Nothing is seeded into your project.
+- **Decisions & feedback** — `record_decision(decision, rationale,
+  alternatives?)` keeps the *why* behind choices in `decisions.md`
+  (compaction forgets reasoning, this file doesn't); corrections become
+  durable rules via `add_feedback(rule)` with repetition counts.
 - **Task list** — `todo.md` in the session dir, editable by BOTH sides:
   humans write it from the web UI (✅ tasks panel) or
   `POST /api/agents/:id/todo {text, notify?}`, the agent reads and updates it
