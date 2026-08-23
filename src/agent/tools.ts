@@ -23,6 +23,8 @@ export interface ToolContext {
   skillRoots?: { dir: string; source: string }[];
   /** aborted on harness shutdown — kills in-flight commands immediately */
   signal?: AbortSignal;
+  /** read-only persona: mutating tools are refused (enforced, not advisory) */
+  readOnly?: boolean;
   /** sub-agent management hooks (wired by the master; absent → tools refuse) */
   subAgents?: {
     /** depth of THIS agent in the spawn tree (0 = top level) */
@@ -988,10 +990,16 @@ export function toolSpecs(): ToolSpecLike[] {
 }
 type ToolSpecLike = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
 
+/** tools that mutate the workspace — blocked for read-only personas */
+const MUTATING_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "bash"]);
+
 export async function executeTool(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
   const def = TOOLS.find((t) => t.name === name);
   if (!def) return { ok: false, result: `unknown tool: ${name}` };
   if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
+  // read-only personas (researcher/reviewer) are enforced, not just asked
+  if (ctx.readOnly && MUTATING_TOOLS.has(name))
+    return { ok: false, result: `${name} is blocked: this agent runs with read-only tools` };
   let args: Record<string, unknown>;
   try {
     args = rawArgs ? JSON.parse(rawArgs) : {};

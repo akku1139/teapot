@@ -43,7 +43,8 @@
     "happy-dom": "^20.11.6",
     "hono": "^4.7.0",
     "openai": "^5.0.0",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

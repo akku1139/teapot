@@ -1570,48 +1570,139 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
 
 /* ---------- settings / config editor ---------- */
 function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void }) {
-  const [provText, setProvText] = createSignal(
-    JSON.stringify(Object.fromEntries(Object.entries(props.cfg.providers ?? {}).map(([k, v]: [string, any]) => [k, { baseUrl: v.baseUrl, apiKey: v.apiKey ?? "", model: v.model ?? "" }])), null, 2),
+  type PRow = { name: string; baseUrl: string; apiKey: string; model: string };
+  const [providers, setProviders] = createSignal<PRow[]>(
+    Object.entries(props.cfg.providers ?? {}).map(([name, v]: [string, any]) => ({
+      name, baseUrl: v.baseUrl ?? "", apiKey: v.apiKey ?? "", model: v.model ?? "",
+    })),
   );
-  const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? Object.keys(props.cfg.providers ?? {})[0] ?? "");
+  const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? "");
   const [intervalMin, setIntervalMin] = createSignal(Math.round((props.cfg.progressIntervalMs ?? 600000) / 60000));
-  const [tasksText, setTasksText] = createSignal(JSON.stringify(props.cfg.tasks ?? [], null, 2));
+  const [minChars, setMinChars] = createSignal(props.cfg.progressMinChars ?? 4000);
+  const [ctxBudgetK, setCtxBudgetK] = createSignal(Math.round((props.cfg.contextTokenBudget ?? 96000) / 1000));
+  const [ctxWinK, setCtxWinK] = createSignal(props.cfg.contextWindowTokens ? Math.round(props.cfg.contextWindowTokens / 1000) : 0);
+  const [maxDepth, setMaxDepth] = createSignal(props.cfg.maxSpawnDepth ?? 3);
+  const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
   const [err, setErr] = createSignal("");
+
+  const agentIds = () => (props.cfg.agents ?? []).map((a: any) => a.id);
+
+  const saveProviders = (): Record<string, any> | null => {
+    const out: Record<string, any> = {};
+    for (const p of providers()) {
+      if (!p.name.trim()) { setErr("provider name is required"); return null; }
+      if (p.baseUrl && !/^https?:\/\//.test(p.baseUrl)) { setErr(`provider ${p.name}: baseUrl must start with http(s)://`); return null; }
+      out[p.name.trim()] = { baseUrl: p.baseUrl, ...(p.apiKey ? { apiKey: p.apiKey } : {}), ...(p.model ? { model: p.model } : {}) };
+    }
+    return out;
+  };
 
   const save = async (e: Event) => {
     e.preventDefault(); setErr("");
-    let providers, tasks;
-    try { providers = JSON.parse(provText()); } catch { return setErr("providers: invalid JSON"); }
-    try { tasks = JSON.parse(tasksText()); } catch { return setErr("tasks: invalid JSON"); }
+    const providers = saveProviders();
+    if (!providers) return;
+    const cleanTasks = tasks()
+      .filter((t) => t.id?.trim() || t.prompt?.trim())
+      .map((t, i) => ({ id: t.id?.trim() || `task-${i + 1}`, agent: t.agent, schedule: t.schedule, prompt: t.prompt, ...(t.forked ? { forked: true } : {}) }));
+    for (const t of cleanTasks) {
+      if (!t.agent) { setErr(`task "${t.id}": agent is required`); return; }
+      if (!t.schedule?.trim()) { setErr(`task "${t.id}": schedule is required`); return; }
+    }
     try {
       await api("/api/config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          providers, defaultProvider: defaultProvider(),
+          providers,
+          defaultProvider: defaultProvider() || undefined,
           progressIntervalMs: Math.max(1, intervalMin()) * 60000,
-          tasks,
+          progressMinChars: Math.max(100, minChars()),
+          contextTokenBudget: Math.max(1000, ctxBudgetK()) * 1000,
+          ...(ctxWinK() > 0 ? { contextWindowTokens: ctxWinK() * 1000 } : {}),
+          maxSpawnDepth: Math.max(0, maxDepth()),
+          tasks: cleanTasks,
         }),
       });
       props.onSaved(); props.onClose();
-    } catch (ex) { setErr(String((ex as Error).message)); }
+    } catch (ex) { setErr((ex as Error).message); }
   };
+
+  const numInput = (label: string, value: number, oninput: (v: number) => void, hint?: string) => (
+    <label title={hint}>{label}
+      <input type="number" min="0" value={value} oninput={(e) => oninput(Number(e.currentTarget.value))} />
+    </label>
+  );
 
   return (
     <Modal title="settings" onClose={props.onClose}>
-      <form onsubmit={save} style="display:flex;flex-direction:column;gap:10px">
-        <label>providers ({props.cfg.configPath})
-          <textarea rows={8} class="mono w100" value={provText()} oninput={(e) => setProvText(e.currentTarget.value)} />
-        </label>
-        <div style="display:flex;gap:10px">
-          <label style="flex:1">default provider <input type="text" value={defaultProvider()} oninput={(e) => setDefaultProvider(e.currentTarget.value)} /></label>
-          <label>progress interval (min) <input type="number" min="1" style="width:90px" value={intervalMin()} oninput={(e) => setIntervalMin(Number(e.currentTarget.value))} /></label>
-        </div>
-        <label>scheduled tasks (JSON array)
-          <textarea rows={7} class="mono w100" value={tasksText()} oninput={(e) => setTasksText(e.currentTarget.value)} />
-        </label>
+      <form onsubmit={save} style="display:flex;flex-direction:column;gap:14px">
+        <fieldset>
+          <legend>providers</legend>
+          <For each={providers()}>
+            {(p, i) => (
+              <div class="cfgrow">
+                <input class="cfgname" placeholder="name" value={p.name} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, name: e.currentTarget.value } : x)))} />
+                <input placeholder="https://…/v1" value={p.baseUrl} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
+                <input placeholder="api key" type="password" value={p.apiKey} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, apiKey: e.currentTarget.value } : x)))} />
+                <input placeholder="default model" value={p.model} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, model: e.currentTarget.value } : x)))} />
+                <button type="button" class="danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i()))}>✕</button>
+              </div>
+            )}
+          </For>
+          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKey: "", model: "" }])}>+ add provider</button>
+          <div><label style="display:flex;align-items:center;gap:6px;margin-top:6px">default provider
+            <input type="text" value={defaultProvider()} oninput={(e) => setDefaultProvider(e.currentTarget.value)} />
+          </label></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>agent runtime</legend>
+          <div class="cfggrid">
+            {numInput("progress interval (min)", intervalMin(), (v) => setIntervalMin(v), "how often the harness asks for a progress report")}
+            {numInput("progress min chars", minChars(), (v) => setMinChars(v), "progress prompts wait for this much real output")}
+            {numInput("compact budget (k tok)", ctxBudgetK(), (v) => setCtxBudgetK(v), "auto-compact when estimated context exceeds this")}
+            {numInput("context window (k tok)", ctxWinK(), (v) => setCtxWinK(v), "model's real window — 0/blank hides the % gauge")}
+            {numInput("max spawn depth", maxDepth(), (v) => setMaxDepth(v), "sub-agent nesting limit (0 = no spawning)")}
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>scheduled tasks</legend>
+          <Show when={tasks().length > 0}>
+            <For each={tasks()}>
+              {(t, i) => (
+                <div class="cfgcol">
+                  <div class="cfgrow">
+                    <input placeholder="id" value={t.id} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, id: e.currentTarget.value } : x)))} />
+                    <input placeholder="agent id" value={t.agent} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, agent: e.currentTarget.value } : x)))} />
+                    <input placeholder="every 30m / cron" value={t.schedule} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, schedule: e.currentTarget.value } : x)))} />
+                    <label style="display:flex;gap:3px;align-items:center;white-space:nowrap;color:var(--dim);font-size:11px">
+                      <input type="checkbox" checked={!!t.forked} onchange={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, forked: e.currentTarget.checked } : x)))} />fork
+                    </label>
+                    <button type="button" class="danger" onclick={() => setTasks(tasks().filter((_, j) => j !== i()))}>✕</button>
+                  </div>
+                  <textarea rows={2} placeholder="prompt to send" value={t.prompt} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, prompt: e.currentTarget.value } : x)))} />
+                </div>
+              )}
+            </For>
+          </Show>
+          <button type="button" onclick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ add task</button>
+        </fieldset>
+
+        <fieldset>
+          <legend>agents (read-only — edit config file or use +)</legend>
+          <For each={props.cfg.agents ?? []}>
+            {(a: any) => (
+              <div class="cfgrow">
+                <b>{a.id}</b><span class="muted">{a.workspace}</span>
+                <Show when={a.parent}><span class="muted">🧩 sub of @{a.parent}</span></Show>
+              </div>
+            )}
+          </For>
+        </fieldset>
+
         <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
-        <button type="submit" style="align-self:flex-end">save</button>
+        <button type="submit" style="align-self:flex-end;background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer">save settings</button>
       </form>
     </Modal>
   );

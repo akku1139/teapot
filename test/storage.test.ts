@@ -266,6 +266,32 @@ test("session restore reproduces byte-identical request payloads", async () => {
   await b.dispose();
 });
 
+/* ---------- feedback rules ---------- */
+
+test("add_feedback dedupes with count escalation; get_feedback reads it", async () => {
+  const toolResults: string[] = [];
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i > 0) {
+      const t = [...messages].reverse().find((m) => m.role === "tool");
+      toolResults.push(t?.content ?? "");
+    }
+    if (i === 0) return reply("noted", [tc("fb1", "add_feedback", { rule: "always run pnpm test" })]);
+    if (i === 1) return reply("again?!", [tc("fb2", "add_feedback", { rule: "always run pnpm test" })]);
+    if (i === 2) return reply("reading rules", [tc("fb3", "get_feedback", {})]);
+    return reply("done");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  agent.enqueuePrompt("remember my correction");
+  agent.start("t");
+  await agent.settled();
+  assert.match(toolResults[0]!, /feedback rule recorded/);
+  assert.match(toolResults[1]!, /count raised to 2/);
+  assert.match(toolResults[2]!, /\[x2\] always run pnpm test/);
+  await agent.dispose();
+});
+
 /* ---------- master: per-incarnation session dirs ---------- */
 
 function mkMaster(dataDir: string): Master {

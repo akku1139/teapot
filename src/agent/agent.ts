@@ -66,6 +66,8 @@ export interface AgentOptions {
   globalSkillsDir?: string;
   /** depth in the sub-agent spawn tree (0 = top level); enforced by the master */
   spawnDepth?: number;
+  /** restrict this agent to read-only tools (sub-agent personas) */
+  readOnlyTools?: boolean;
   /** injectable LLM call for tests (defaults to the real one) */
   chatFn?: ChatFn;
 }
@@ -89,6 +91,7 @@ Session state is not injected into prompts — fetch it with tools instead:
 - read_memory() / set_memory(content) → your durable notes (memory.md).
 - get_todo() / set_todo(content) → the operator-maintained task list
   (todo.md); check it when picking up work, keep it current as you go.
+- When corrected, add_feedback(rule) so it sticks; review via get_feedback().
 - list_skills() / load_skill(name) / save_skill(...) → reusable playbooks.
 - AGENTS.md in the workspace root (optional) holds project knowledge — read it
   with read_file at session start when present, keep it current.
@@ -174,6 +177,7 @@ export class Agent {
       restoreSession: true,
       globalSkillsDir: "",
       spawnDepth: 0,
+      readOnlyTools: false,
       provider: "",
       ...opts,
     };
@@ -194,6 +198,7 @@ export class Agent {
       maxOutputBytes: 60_000,
       skillRoots: this.skillRoots,
       signal: this.toolAbort.signal,
+      readOnly: this.opts.readOnlyTools,
     };
     // the session id IS the directory name — one directory per incarnation
     this.mainSession = path.basename(opts.sessionDir);
@@ -304,6 +309,10 @@ export class Agent {
 
   private get todoFile(): string {
     return path.join(this.opts.sessionDir, "todo.md");
+  }
+
+  private get feedbackFile(): string {
+    return path.join(this.opts.sessionDir, "feedback.md");
   }
 
   private async readGoalStoreRaw(): Promise<string | null> {
@@ -880,6 +889,43 @@ export class Agent {
           await this.answerMeta(call, "task list updated (visible to the operator)");
           continue;
         }
+        if (call.function.name === "get_feedback") {
+          const fb = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: fb.trim() || "(no feedback rules recorded yet)",
+          });
+          continue;
+        }
+        if (call.function.name === "add_feedback") {
+          const a = safeParse(call.function.arguments);
+          const rule = String(a.rule ?? "").trim().slice(0, 500);
+          if (!rule) {
+            this.messages.push({ role: "tool", tool_call_id: call.id, content: "rule required" });
+            continue;
+          }
+          // repeated corrections gain weight: [xN] tag counts occurrences
+          const existing = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
+          const lines = existing.split("\n");
+          const idx = lines.findIndex((l) => l.includes(rule.slice(0, 60)));
+          if (idx !== -1 && /^\s*- /.test(lines[idx]!)) {
+            const m = lines[idx].match(/\[x(\d+)\]/);
+            const count = m ? Number(m[1]) + 1 : 2;
+            lines[idx] = lines[idx].replace(/\[x\d+\]\s*/, "").replace(/- /, `- [x${count}] `);
+            await fs.writeFile(this.feedbackFile, lines.join("\n"), "utf8");
+            this.messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: `rule already existed — count raised to ${count}. Repeated violations will be enforced more strictly.`,
+            });
+          } else {
+            const entry = `\n- [x1] ${rule}`;
+            await fs.writeFile(this.feedbackFile, existing + (existing ? "\n" : "") + "# Feedback rules\n" + entry, "utf8");
+            this.messages.push({ role: "tool", tool_call_id: call.id, content: "feedback rule recorded — follow it from now on" });
+          }
+          continue;
+        }
         if (call.function.name === "read_memory") {
           const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
           await this.answerMeta(call, mem.trim() || "(memory.md is empty — nothing noted yet)");
@@ -1314,6 +1360,28 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
     {
       type: "function" as const,
       function: {
+        name: "get_feedback",
+        description:
+          "Read the operator's feedback rules (corrections they've given you, with repetition counts). Check after being corrected.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "add_feedback",
+        description:
+          "Record a correction as a durable rule (or raise an existing rule's count). Call whenever the operator corrects your behavior so the same mistake isn't repeated.",
+        parameters: {
+          type: "object",
+          properties: { rule: { type: "string", description: "the rule in one imperative sentence" } },
+          required: ["rule"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
         name: "get_todo",
         description:
           "Fetch the operator-maintained task list (todo.md). Check it when picking up work or when unsure what to do next.",
@@ -1406,6 +1474,7 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
   const META_TOOLS = new Set([
     "finish", "report_progress", "set_goal", "get_goal",
     "read_memory", "set_memory", "list_skills", "get_todo", "set_todo",
+    "get_feedback", "add_feedback",
   ]);
   const openCalls = new Map<string, string>(); // real tool_call id -> name
   // meta answers are now logged as regular tool_results; the legacy progress

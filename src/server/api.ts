@@ -10,6 +10,7 @@ import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
 import { SUB_PERSONAS } from "../master.ts";
+import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
 import type { ProviderConfig } from "../master.ts";
 import path from "node:path";
 import { bus } from "../bus.ts";
@@ -235,38 +236,43 @@ export function buildApp(master: Master): Hono {
       providers: mask(master.config.providers),
       defaultProvider: master.config.defaultProvider,
       progressIntervalMs: master.config.progressIntervalMs,
+      progressMinChars: master.config.progressMinChars,
+      contextTokenBudget: master.config.contextTokenBudget,
+      contextWindowTokens: master.config.contextWindowTokens,
+      maxSpawnDepth: master.config.maxSpawnDepth,
       tasks: master.config.tasks,
       agents: master.config.agents.map((a) => ({ id: a.id, workspace: a.workspace, provider: a.provider, model: a.model })),
     });
   });
 
   app.put("/api/config", async (c) => {
-    const body = await c.req.json<{
-      providers?: Record<string, { baseUrl: string; apiKey?: string; model?: string }>;
-      defaultProvider?: string;
-      progressIntervalMs?: number;
-      tasks?: { id: string; agent: string; schedule: string; prompt: string; forked?: boolean }[];
-    }>().catch(() => null);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => null);
     if (!body) return c.json({ error: "invalid JSON" }, 400);
+    // schema gate first: reject malformed edits with actionable messages
+    const parsed = ConfigPatchSchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: formatZodError(parsed.error) }, 400);
+    const patch = parsed.data;
     try {
-      // validate schedules before applying anything
-      for (const t of body.tasks ?? []) parseSchedule(t.schedule);
+      for (const t of patch.tasks ?? []) parseSchedule(t.schedule);
       // keep masked keys intact: "•••1234" means "unchanged"
       const prev = master.config.providers ?? {};
       const providers: Record<string, ProviderConfig> = {};
-      for (const [name, p] of Object.entries(body.providers ?? {})) {
+      for (const [name, p] of Object.entries(patch.providers ?? {})) {
         const masked = !p.apiKey || p.apiKey.startsWith("•••");
         providers[name] = {
-          baseUrl: p.baseUrl,
+          baseUrl: p.baseUrl ?? "",
           apiKey: masked ? prev[name]?.apiKey : p.apiKey,
           ...(p.model ? { model: p.model } : {}),
         };
       }
       master.updateConfig({
         providers,
-        defaultProvider: body.defaultProvider,
-        progressIntervalMs: body.progressIntervalMs,
-        tasks: body.tasks,
+        defaultProvider: patch.defaultProvider,
+        progressIntervalMs: patch.progressIntervalMs,
+        progressMinChars: patch.progressMinChars,
+        contextTokenBudget: patch.contextTokenBudget,
+        maxSpawnDepth: patch.maxSpawnDepth,
+        tasks: patch.tasks,
       });
       return c.json({ ok: true });
     } catch (err) {

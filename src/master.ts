@@ -18,30 +18,31 @@ const MAX_SPAWN_DEPTH = 3;
 
 /** default sub-agent personas — mentionable from the composer (@name) and
  *  usable by agents via spawn_agent({persona}) */
-export const SUB_PERSONAS: Record<string, { label: string; directive: string }> = {
+export const SUB_PERSONAS: Record<
+  string,
+  { label: string; directive: string; readOnly?: boolean }
+> = {
   reviewer: {
     label: "🔍 reviewer",
     directive:
-      "ROLE: code reviewer. Read-only except notes. Inspect the change set, judge correctness, " +
-      "style, tests; report concrete findings as a prioritized list. Do not rewrite the code.",
+      "ROLE: code reviewer. Inspect the change set, judge correctness, style, tests; report concrete findings as a prioritized list.",
+    readOnly: true,
   },
   tester: {
     label: "🧪 tester",
     directive:
-      "ROLE: test engineer. Write and run tests for the task at hand, hunt edge cases, " +
-      "report pass/fail with exact commands so results are reproducible.",
+      "ROLE: test engineer. Write and run tests for the task at hand, hunt edge cases, report pass/fail with exact commands.",
   },
   researcher: {
     label: "🔎 researcher",
     directive:
-      "ROLE: read-only explorer. Search the codebase/docs, map how things work, and report a " +
-      "compact briefing with file:line references. Do not modify anything.",
+      "ROLE: read-only explorer. Search the codebase/docs, map how things work, and report a compact briefing with file:line references.",
+    readOnly: true,
   },
   implementer: {
     label: "🔨 implementer",
     directive:
-      "ROLE: hands-on implementer. Make the change end-to-end (code + tests), keep edits small " +
-      "and verified, then report what changed and why.",
+      "ROLE: hands-on implementer. Make the change end-to-end (code + tests), keep edits small and verified, then report what changed and why.",
   },
 };
 
@@ -68,7 +69,9 @@ export interface AgentConfig {
   parent?: string;
   /** test hook: inject a mock LLM function */
   chatFn?: ChatFn;
-}
+  /** restrict to read-only tools (set automatically for read-only personas) */
+  readOnly?: boolean;
+};
 
 export interface TaskConfig {
   id: string;
@@ -96,6 +99,8 @@ export interface TeapotConfig {
   contextTokenBudget?: number;
   /** default model context window for agents that don't set their own */
   contextWindowTokens?: number;
+  /** how deep agents may nest sub-agent spawning (default 3) */
+  maxSpawnDepth?: number;
 }
 
 const CONFIG_DIR =
@@ -269,6 +274,8 @@ export class Master {
     defaultProvider?: string;
     progressIntervalMs?: number;
     progressMinChars?: number;
+    contextTokenBudget?: number;
+    maxSpawnDepth?: number;
     tasks?: TaskConfig[];
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
@@ -285,6 +292,8 @@ export class Master {
         (a as unknown as { opts: { progressMinChars: number } }).opts.progressMinChars =
           patch.progressMinChars;
     }
+    if (patch.contextTokenBudget !== undefined) this.config.contextTokenBudget = patch.contextTokenBudget;
+    if (patch.maxSpawnDepth !== undefined) this.config.maxSpawnDepth = patch.maxSpawnDepth;
     if (patch.tasks) {
       this.config.tasks = patch.tasks;
       // rebuild schedule table live
@@ -364,6 +373,7 @@ export class Master {
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
       provider: provName,
       spawnDepth: myDepth,
+      ...(ac.readOnly ? { readOnlyTools: true } : {}),
       ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
     });
     // console line + broadcast: the web UI only refreshes on bus traffic, so
@@ -375,7 +385,7 @@ export class Master {
       this.onChildEvent(ac, e);
     };
     // sub-agent management hooks — only when this agent can legally spawn
-    if (myDepth < MAX_SPAWN_DEPTH) {
+    if (myDepth < this.maxSpawnDepth()) {
       const self = agent;
       const hooks = {
         depth: myDepth,
@@ -407,14 +417,21 @@ export class Master {
 
   /** spawn-tree depth of an agent (0 = top level); unknown → 0 */
   private depthOf(id: string, seen = new Set<string>()): number {
+    const cap = this.maxSpawnDepth();
     let depth = 0;
     let cur = this.config.agents.find((a) => a.id === id);
-    while (cur?.parent && !seen.has(cur.id) && depth < MAX_SPAWN_DEPTH + 2) {
+    while (cur?.parent && !seen.has(cur.id) && depth < cap + 2) {
       seen.add(cur.id);
       cur = this.config.agents.find((a) => a.id === cur!.parent);
       depth++;
     }
     return depth;
+  }
+
+  /** configured nesting limit (config.maxSpawnDepth, default 3) */
+  private maxSpawnDepth(): number {
+    const v = this.config.maxSpawnDepth;
+    return typeof v === "number" && v >= 0 ? v : MAX_SPAWN_DEPTH;
   }
 
   /** direct children of an agent, with their Agent instances */
@@ -464,6 +481,7 @@ export class Master {
         model: pcfg?.model,
         contextWindowTokens: pcfg?.contextWindowTokens,
         parent: parentId,
+        ...(persona && SUB_PERSONAS[persona]?.readOnly ? { readOnly: true } : {}),
       },
       { persist: true, fresh: true },
     );
