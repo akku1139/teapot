@@ -329,6 +329,37 @@ test("editing a sent prompt forks and can summarize the abandoned tail", async (
   await agent.dispose();
 });
 
+/* ---------- operator todo list ---------- */
+
+test("get_todo/set_todo round-trips the operator task list", async () => {
+  const toolResults: string[] = [];
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i > 0) {
+      const t = [...messages].reverse().find((m) => m.role === "tool");
+      toolResults.push(t?.content ?? "");
+    }
+    if (i === 0) return reply("checking the list", [tc("t1", "get_todo", {})]);
+    if (i === 1)
+      return reply("first item done", [tc("t2", "set_todo", { content: "- [x] a\n- [ ] b" })]);
+    return reply("list updated");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  await agent.setGoal("work the list");
+  await agent.setTodo("- [ ] a\n- [ ] b"); // human wrote it via UI/API
+  agent.enqueuePrompt("start working through the tasks");
+  agent.start("t");
+  await agent.settled();
+
+  assert.match(toolResults[0]!, /\[ \] a/); // get_todo returned the list
+  assert.match(toolResults[1]!, /task list updated/);
+  assert.equal(agent.todo, "- [x] a\n- [ ] b"); // agent checked off an item
+  const todoPath = path.join(agent.snapshot().sessionDir, "todo.md");
+  assert.match(await readFile(todoPath, "utf8"), /\[x\] a/);
+  await agent.dispose();
+});
+
 /* ---------- context compaction ---------- */
 
 test("compaction summarizes old turns when the budget is exceeded", async () => {

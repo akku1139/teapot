@@ -374,6 +374,21 @@ export function buildApp(master: Master): Hono {
     return c.json({ ok: true });
   });
 
+  // operator-maintained task list (todo.md) with optional agent notification
+  app.post("/api/agents/:id/todo", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req.json<{ text?: string; notify?: boolean }>().catch(() => null);
+    if (!body) return c.json({ error: "invalid JSON" }, 400);
+    await a.setTodo(body.text ?? "");
+    if (body.notify !== false && body.text?.trim())
+      a.enqueuePrompt(
+        `[harness] The operator updated the task list:\n\n${body.text}\n\nWork through it (get_todo() always has the latest).`,
+        "harness",
+      );
+    return c.json({ ok: true });
+  });
+
   // edit a previously-sent prompt: forks there, optionally summarizes the tail
   app.post("/api/agents/:id/edit-prompt", async (c) => {
     const a = master.agents.get(c.req.param("id"));

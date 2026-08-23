@@ -29,7 +29,8 @@ export type EventType =
   | "progress" // progress report: data:{doing, goalStatus, recent, problems?, next?}
   | "error" // data:{message, fatal?}
   | "usage" // data:{inputTokens, outputTokens, costEstimate?}
-  | "goal"; // data:{event:"set"|"status", ...}
+  | "goal" // data:{event:"set"|"status", ...}
+  | "todo"; // operator-maintained task list changed: data:{event:"set", by}
 
 export interface TeapotEvent {
   v: 1;

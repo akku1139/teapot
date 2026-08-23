@@ -8,6 +8,7 @@ interface Agent {
   session: string; branch: string; goal: { status: string; text: string };
   latestProgress: any; stats: any; model: string; provider?: string;
   pendingPrompts?: number;
+  todo?: string;
   ctx?: { usedTokens: number; compactAt: number; window: number };
 }
 interface Ev {
@@ -38,7 +39,7 @@ const authorOf = (e: Ev) => {
 // state/error/fork/goal render as dividers or embeds inside the feed
 const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
-  "state", "error", "fork", "goal",
+  "state", "error", "fork", "goal", "todo",
 ]);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
@@ -211,6 +212,31 @@ export default function App() {
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
   // optimistic echoes of prompts we just sent but haven't seen in the log yet
   const [pendingMsgs, setPendingMsgs] = createSignal<{ id: string; text: string; at: number }[]>([]);
+  // operator task list draft — seeded once per selected agent, not on every refresh
+  const [todoDraft, setTodoDraft] = createSignal("");
+  let todoSeededFor = "";
+  createEffect(() => {
+    const id = selected();
+    if (id && id !== todoSeededFor) {
+      todoSeededFor = id;
+      setTodoDraft(agents().find((a) => a.id === id)?.todo ?? "");
+    }
+  });
+  const saveTodo = async () => {
+    const notify = (document.getElementById("todo-notify") as HTMLInputElement)?.checked ?? true;
+    if (!selected()) return;
+    try {
+      await api(`/api/agents/${selected()}/todo`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: todoDraft(), notify }),
+      });
+      flashHint(`tasks saved${notify && todoDraft().trim() ? " & notification queued" : ""}`);
+      refreshAgents();
+    } catch (ex) {
+      flashHint(`save failed: ${(ex as Error).message}`);
+    }
+  };
 
   const refreshAgents = () => api("/api/agents").then((d) => setAgents(d.agents)).catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
@@ -569,7 +595,7 @@ export default function App() {
 
   const setGoal = async (e: Event) => {
     e.preventDefault();
-    const input = document.getElementById("goal-input") as HTMLInputElement;
+    const input = document.getElementById("goal-input") as HTMLTextAreaElement;
     const notify = (document.getElementById("goal-notify") as HTMLInputElement)?.checked ?? true;
     if (!selected() || !input.value.trim()) return;
     await api(`/api/agents/${selected()}/goal`, {
@@ -848,7 +874,12 @@ export default function App() {
 
           <h3>🎯 goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
           <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px">
-            <input id="goal-input" type="text" placeholder="set new goal…" style="background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;width:100%" />
+            <textarea
+              id="goal-input"
+              rows={3}
+              placeholder="set new goal…"
+              style="background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;width:100%;resize:vertical"
+            />
             <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
               <label
                 class="muted"
@@ -865,6 +896,30 @@ export default function App() {
             stored with the session · the model reads it via get_goal() ·
             <Show when={sel()!.goal.text && sel()!.goal.status === "active"}> auto-continue keeps it working until this is done</Show>
             <Show when={!sel()!.goal.text}> set one and tick ▶ start to begin</Show>
+          </div>
+
+          <h3>✅ tasks <span class="muted" style="text-transform:none;letter-spacing:0">· todo.md, editable by you and the agent</span></h3>
+          <textarea
+            id="todo-input"
+            class="mono"
+            rows={5}
+            placeholder={"- task one\n- task two"}
+            value={todoDraft()}
+            oninput={(e) => setTodoDraft(e.currentTarget.value)}
+            style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
+          />
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px">
+            <label
+              class="muted"
+              style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
+              title="queue a harness prompt telling the agent the task list changed"
+            >
+              <input id="todo-notify" type="checkbox" checked /> notify agent
+            </label>
+            <button
+              onclick={saveTodo}
+              style="background:var(--ok);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer"
+            >✓ save tasks</button>
           </div>
 
           <h3>📈 progress</h3>
@@ -1207,6 +1262,9 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void }) 
     const d = e.data ?? {};
     const what = d.event === "status" ? `marked ${String(d.status ?? "")}` : oneLine(String(d.text ?? ""), 80);
     return <div class="divider-msg">🎯 goal {String(d.event ?? "")}: {what}</div>;
+  }
+  if (e.type === "todo") {
+    return <div class="divider-msg">✅ tasks updated ({String(e.data?.by ?? "human")})</div>;
   }
   if (e.type === "state") {
     if (e.data.from === e.data.to) return null;

@@ -83,6 +83,8 @@ Session state is not injected into prompts — fetch it with tools instead:
 - set_goal(text) → change the objective itself (not routine updates).
 - finish(goalComplete=true, summary) → goal fully achieved.
 - read_memory() / set_memory(content) → your durable notes (memory.md).
+- get_todo() / set_todo(content) → the operator-maintained task list
+  (todo.md); check it when picking up work, keep it current as you go.
 - list_skills() / load_skill(name) / save_skill(...) → reusable playbooks.
 - AGENTS.md in the workspace root (optional) holds project knowledge — read it
   with read_file at session start when present, keep it current.
@@ -114,6 +116,8 @@ export class Agent {
   currentBranch = "br0";
   goal: GoalState = { text: "", status: "active", updatedAt: new Date().toISOString() };
   latestProgress: ProgressReport | null = null;
+  /** operator-maintained task list (todo.md) — humans edit, agent reads */
+  todo = "";
   /** set once the conversation has been restored (lazy: on first interaction) */
   private readyPromise: Promise<void> | null = null;
   stats = {
@@ -233,6 +237,8 @@ export class Agent {
     await this.migrateGoalFromWorkspace();
     const stored = await this.readGoalStore();
     this.goal = stored ?? { text: "", status: "active", updatedAt: new Date().toISOString() };
+    // operator-maintained task list lives beside goal.md
+    this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");
     await this.refreshSkills();
     // the conversation is NOT restored here: boot cost stays O(agents), not
     // O(history). It is rebuilt lazily by ensureReady() on first interaction.
@@ -272,6 +278,10 @@ export class Agent {
 
   private get memoryFile(): string {
     return path.join(this.opts.sessionDir, "memory.md");
+  }
+
+  private get todoFile(): string {
+    return path.join(this.opts.sessionDir, "todo.md");
   }
 
   private async readGoalStoreRaw(): Promise<string | null> {
@@ -430,6 +440,13 @@ export class Agent {
     await this.log.append("goal", this.currentSession, this.currentBranch, { event: "set", text });
   }
 
+  /** Persist the operator-maintained task list (todo.md). */
+  async setTodo(text: string, by = "human"): Promise<void> {
+    this.todo = text;
+    await fs.writeFile(this.todoFile, text, "utf8");
+    await this.log.append("todo", this.currentSession, this.currentBranch, { event: "set", by });
+  }
+
   async setGoalStatus(status: GoalState["status"]): Promise<void> {
     this.goal = { ...this.goal, status, updatedAt: new Date().toISOString() };
     await this.writeGoalFile();
@@ -456,6 +473,7 @@ export class Agent {
         window: this.opts.contextWindowTokens || 0,
       },
       pendingPrompts: this.pendingPrompts.length,
+      todo: this.todo.slice(0, 4000),
     };
   }
 
@@ -741,6 +759,25 @@ export class Agent {
               null,
               1,
             ),
+          });
+          continue;
+        }
+        if (call.function.name === "get_todo") {
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: this.todo.trim() || "(todo.md is empty — no task list yet)",
+          });
+          continue;
+        }
+        if (call.function.name === "set_todo") {
+          const a = safeParse(call.function.arguments);
+          const content = String(a.content ?? "").slice(0, 32_000);
+          await this.setTodo(content, "agent");
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: "task list updated (visible to the operator)",
           });
           continue;
         }
@@ -1094,6 +1131,28 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
     {
       type: "function" as const,
       function: {
+        name: "get_todo",
+        description:
+          "Fetch the operator-maintained task list (todo.md). Check it when picking up work or when unsure what to do next.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "set_todo",
+        description:
+          "Replace the operator-visible task list (todo.md) — e.g. check off finished items or restate what remains. Keep it terse.",
+        parameters: {
+          type: "object",
+          properties: { content: { type: "string" } },
+          required: ["content"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
         name: "read_memory",
         description: "Read your durable notes (memory.md).",
         parameters: { type: "object", properties: {} },
@@ -1163,7 +1222,7 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   const META_TOOLS = new Set([
     "finish", "report_progress", "set_goal", "get_goal",
-    "read_memory", "set_memory", "list_skills",
+    "read_memory", "set_memory", "list_skills", "get_todo", "set_todo",
   ]);
   const openCalls = new Map<string, string>(); // real tool_call id -> name
   const bufferedUsers: string[] = [];

@@ -133,6 +133,11 @@ master (Hono server, src/master.ts + src/server/api.ts)
   through tools (`get_goal` / `set_goal` / `read_memory` / `set_memory`);
   `AGENTS.md` is optional project knowledge in the workspace root that agents
   are told to read at session start. Nothing is seeded into your project.
+- **Task list** — `todo.md` in the session dir, editable by BOTH sides:
+  humans write it from the web UI (✅ tasks panel) or
+  `POST /api/agents/:id/todo {text, notify?}`, the agent reads and updates it
+  via `get_todo` / `set_todo`. Saving with notify queues a harness prompt so
+  the agent picks up changes at the next turn boundary.
 
 ### Web UI
 
