@@ -75,6 +75,7 @@ export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [selected, setSelected] = createSignal<string | null>(null);
   const [events, setEvents] = createSignal<Ev[]>([]);
+  const [eventsTotal, setEventsTotal] = createSignal(0); // server-side count (window is capped)
   const [branches, setBranches] = createSignal<any[]>([]);
   const [metrics, setMetrics] = createSignal<any>(null);
   const [draft, setDraft] = createSignal("");
@@ -121,6 +122,25 @@ export default function App() {
   const [atBottom, setAtBottom] = createSignal(true);
   const [missed, setMissed] = createSignal(0);
   const [live, setLive] = createSignal<{ text: string; reasoning: string } | null>(null);
+  // markdown-rendered live body, throttled so per-chunk deltas don't re-parse
+  // the whole (growing) text on every single WS message
+  const [liveText, setLiveText] = createSignal("");
+  let liveRenderTimer: ReturnType<typeof setTimeout> | undefined;
+  createEffect(() => {
+    const l = live();
+    if (!l) {
+      clearTimeout(liveRenderTimer);
+      liveRenderTimer = undefined;
+      setLiveText("");
+      return;
+    }
+    if (liveRenderTimer) return; // a render is already scheduled
+    liveRenderTimer = setTimeout(() => {
+      liveRenderTimer = undefined;
+      setLiveText(live()?.text ?? "");
+    }, 60);
+  });
+  onCleanup(() => clearTimeout(liveRenderTimer));
 
   // pair tool_call events with their (possibly still missing) results:
   // consumed results are hidden from the feed, calls render as one merged row
@@ -147,7 +167,7 @@ export default function App() {
   });
   const chatEvents = createMemo(() => {
     const { consumed } = pairInfo();
-    return events().filter((e) => {
+    const real = events().filter((e) => {
       if (!FEED_TYPES.has(e.type)) return false;
       // paired tool results live inside their call's merged row
       if (e.type === "tool_result") return !consumed.has(e.id);
@@ -161,12 +181,36 @@ export default function App() {
         );
       return true;
     });
+    // append optimistic echoes not yet present in the log
+    const pend = pendingMsgs().filter(
+      (p) =>
+        !real.some(
+          (e) =>
+            e.type === "prompt" &&
+            e.data?.source === "user" &&
+            e.data?.text === p.text &&
+            new Date(e.ts).getTime() >= p.at - 1000,
+        ),
+    );
+    const echoes: Ev[] = pend.map((p) => ({
+      id: p.id,
+      seq: 0,
+      ts: new Date(p.at).toISOString(),
+      session: sel()?.session ?? "",
+      branch: sel()?.branch ?? "br0",
+      parent: null,
+      type: "prompt",
+      data: { source: "user", text: p.text, pending: true },
+    }));
+    return [...real, ...echoes];
   });
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
   // prompt being edited → edit-prompt fork dialog
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
+  // optimistic echoes of prompts we just sent but haven't seen in the log yet
+  const [pendingMsgs, setPendingMsgs] = createSignal<{ id: string; text: string; at: number }[]>([]);
 
   const refreshAgents = () => api("/api/agents").then((d) => setAgents(d.agents)).catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
@@ -186,6 +230,7 @@ export default function App() {
         api(`/api/agents/${id}/branches`),
       ]);
       setEvents(ev.events);
+      setEventsTotal(ev.total ?? ev.events.length);
       setBranches(br.branches);
     } catch { /* agent may be gone */ }
   }
@@ -207,6 +252,7 @@ export default function App() {
     setSelected(id);
     setLive(null);
     setBranchFilter(null);
+    setPendingMsgs([]);
     localStorage.setItem("teapot.session", id);
     navigate(id, push);
     // lazy sessions sit in "stopped" until touched — clicking loads them
@@ -250,10 +296,15 @@ export default function App() {
         await refreshAgents();
         await refreshMetrics();
         if (selected()) {
-          const before = events().length;
+          // compare last event ID, not array length: the /events window is
+          // capped at 300, so long sessions have a CONSTANT length and a
+          // length check never noticed new events (leaving the live bubble
+          // blinking forever after the agent went idle)
+          const beforeId = events().at(-1)?.id;
+          const beforeTotal = eventsTotal();
           const fetchStartedAt = Date.now();
           await loadEvents(selected()!);
-          if (events().length !== before) {
+          if (events().at(-1)?.id !== beforeId) {
             // keep the bubble only if THIS agent streamed a delta after the
             // fetch started (i.e. the bubble shows something newer than
             // everything persisted). Otherwise it must go — otherwise a
@@ -261,8 +312,20 @@ export default function App() {
             const stillStreaming = lastDelta?.id === selected() && lastDelta.at >= fetchStartedAt;
             if (!stillStreaming) setLive(null);
             if (nearBottom()) scrollBottom(true);
-            else setMissed(missed() + (events().length - before));
+            else setMissed(missed() + Math.max(0, eventsTotal() - beforeTotal));
           }
+          // drop optimistic echoes that the log has now caught up with
+          setPendingMsgs((list) =>
+            list.filter(
+              (p) =>
+                !events().some(
+                  (e) =>
+                    e.type === "prompt" &&
+                    e.data?.text === p.text &&
+                    new Date(e.ts).getTime() >= p.at - 1000,
+                ),
+            ),
+          );
         }
       }, 400);
     };
@@ -493,6 +556,8 @@ export default function App() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, start: autoStart() }),
       });
+      // optimistic echo — replaced by the logged event once the feed catches up
+      setPendingMsgs((l) => [...l, { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now() }]);
     } catch (ex) {
       setDraft(text); // never eat the user's message on a failed send
       console.error("send failed:", ex);
@@ -612,10 +677,10 @@ export default function App() {
                       </details>
                     </Show>
                     <Show
-                      when={live()!.text}
+                      when={liveText()}
                       fallback={<div class="content muted">thinking…</div>}
                     >
-                      <div class="content">{live()!.text}<span class="cursor">▍</span></div>
+                      <div class="content" innerHTML={renderMarkdown(liveText() + "▍")} />
                     </Show>
                   </div>
                 </div>
@@ -1150,7 +1215,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void }) 
   }
 
   return (
-    <div class={"msg" + (grouped ? " grouped" : "")}>
+    <div class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "")}>
       <Show when={!grouped} fallback={<span style="width:38px" />}>
         <div class="avatar" style={{ background: a.color + "33", border: `1px solid ${a.color}66` }}>{a.icon}</div>
       </Show>
@@ -1158,7 +1223,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void }) 
         <Show when={!grouped}>
           <div class="msg-head">
             <span class="author" style={{ color: a.color }}>{a.name}</span>
-            <span class="ts">{fmtTs(e.ts)}</span>
+            <span class="ts">{e.data?.pending ? "pending…" : fmtTs(e.ts)}</span>
             <span class="ts">{e.branch}</span>
             <Show when={props.onEdit}>
               <button
