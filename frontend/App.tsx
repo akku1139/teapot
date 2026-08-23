@@ -298,6 +298,41 @@ export default function App() {
   const loadTasks = () => api("/api/tasks").then((d) => setTasks(d.tasks)).catch(() => {});
   const agentTasks = (id: string | null) => tasks().filter((t) => t.agent === id);
 
+  // sidebar tree: subs hang under their parent, collapsible per parent
+  const [collapsedSubs, setCollapsedSubs] = createSignal<Set<string>>((() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem("teapot.collapsed") ?? "[]"));
+    } catch { return new Set(); }
+  })());
+  const toggleCollapse = (id: string) => {
+    const next = new Set(collapsedSubs());
+    next.has(id) ? next.delete(id) : next.add(id);
+    setCollapsedSubs(next);
+    localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
+  };
+  const treeRows = createMemo(() => {
+    const list = agents();
+    const byParent = new Map<string, Agent[]>();
+    const roots: Agent[] = [];
+    for (const a of list) {
+      const isSub = a.parent && list.some((p) => p.id === a.parent);
+      if (isSub) {
+        if (!byParent.has(a.parent!)) byParent.set(a.parent!, []);
+        byParent.get(a.parent!)!.push(a);
+      } else roots.push(a);
+    }
+    const rows: { a: Agent; depth: number }[] = [];
+    const walk = (nodes: Agent[], depth: number) => {
+      for (const a of nodes) {
+        rows.push({ a, depth });
+        const kids = byParent.get(a.id);
+        if (kids?.length && !collapsedSubs().has(a.id)) walk(kids, depth + 1);
+      }
+    };
+    walk(roots, 0);
+    return rows;
+  });
+
   // null = show everything; otherwise only the chosen branch's events
   const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
   // Reference-stabilize events across fetches: logged events are immutable,
@@ -479,7 +514,8 @@ export default function App() {
     } else if (e.key === "t") {
       toggleTerm();
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      const list = agents();
+      // follow the visible sidebar tree order (parents, then expanded subs)
+      const list = treeRows().map((r) => r.a);
       if (list.length === 0) return;
       e.preventDefault();
       const idx = list.findIndex((a) => a.id === selected());
@@ -835,11 +871,24 @@ export default function App() {
           </span>
         </h1>
         <div class="agent-list">
-          <For each={agents()}>
-            {(a) => (
-              <div class={"agent-item" + (a.id === selected() ? " sel" : "")} onclick={() => select(a.id)}>
+          <For each={treeRows()}>
+            {({ a, depth }) => (
+              <div
+                class={"agent-item" + (a.id === selected() ? " sel" : "") + (depth > 0 ? " sub-row" : "")}
+                style={depth > 0 ? `padding-left:${10 + depth * 14}px` : ""}
+                onclick={() => select(a.id)}
+                title={a.parent ? `sub-agent of @${a.parent}` : undefined}
+              >
+                <Show when={agents().some((x) => x.parent === a.id)} fallback={<span class="caret-spacer" />}>
+                  <span
+                    class="caret"
+                    title={collapsedSubs().has(a.id) ? "expand sub-agents" : "collapse sub-agents"}
+                    onclick={(e: MouseEvent) => { e.stopPropagation(); toggleCollapse(a.id); }}
+                  >{collapsedSubs().has(a.id) ? "▸" : "▾"}</span>
+                </Show>
                 <span class={`dot ${a.status}`} />
                 <span>{a.id}</span>
+                <Show when={a.parent}><span class="subtag">🧩</span></Show>
                 <Show when={agentTasks(a.id).length > 0}>
                   <span class="mini-cron" title={agentTasks(a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
                 </Show>
