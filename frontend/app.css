@@ -58,7 +58,25 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .content { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
 .content p { margin: 2px 0; } .content pre { background: var(--bg-darkest); padding: 8px; border-radius: 6px; overflow-x: auto; }
 .content code { background: var(--bg-darkest); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
-.content h1,.content h2,.content h3,.content h4 { margin: 8px 0 2px; font-size: 15px; }
+.content pre code { background: none; padding: 0; }
+.content h1,.content h2,.content h3,.content h4,.content h5,.content h6 { margin: 8px 0 2px; font-size: 15px; }
+.content h1 { font-size: 16.5px; } .content h2 { font-size: 15.5px; }
+
+/* markdown extras */
+.content blockquote {
+  margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--bg-light);
+  color: var(--dim); background: #ffffff05; border-radius: 0 4px 4px 0;
+}
+.content blockquote p { margin: 2px 0; }
+.content hr { border: none; border-top: 1px solid var(--bg-light); margin: 8px 0; }
+.content del { color: var(--dim); }
+.content img { max-width: 100%; border-radius: 6px; }
+.content li.task, .content li:has(> input[type=checkbox]) { list-style: none; margin-left: -18px; }
+.content li input[type=checkbox] { margin-right: 6px; accent-color: var(--ok); }
+.tbl { overflow-x: auto; margin: 6px 0; }
+.tbl table { border-collapse: collapse; font-size: 13px; }
+.tbl th, .tbl td { border: 1px solid var(--bg-light); padding: 3px 9px; text-align: left; }
+.tbl th { background: var(--bg-darkest); font-weight: 600; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
 .embed.fail { border-color: var(--err); }
