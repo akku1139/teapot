@@ -26,6 +26,7 @@
   "files": [
     "dist",
     "public",
+    "skills",
     "README.md"
   ],
   "scripts": {

@@ -1136,11 +1136,53 @@ export class Agent {
     });
   }
 
+  /**
+   * Stage 1 of context management (OpenCode-style): before paying for a full
+   * summarize, clip OLD oversized tool outputs — they are the usual bulk and
+   * their details rarely matter once executed. The most recent window is
+   * protected so current work never loses its footing.
+   */
+  private maybePrune(): number {
+    const est = this.lastUsage?.input ?? this.estimateTokens();
+    const budget = this.opts.contextTokenBudget;
+    if (!budget || est < budget * 0.6) return 0; // prune only when it matters
+    // protect the recent tail (~half the budget in chars) from any pruning
+    const protectChars = budget * 2;
+    let seen = 0;
+    let boundary = this.messages.length;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      seen += this.messages[i]!.content?.length ?? 0;
+      boundary = i;
+      if (seen >= protectChars) break;
+    }
+    const PRUNE_MIN = 3_000;
+    let saved = 0;
+    let count = 0;
+    for (let i = 0; i < boundary; i++) {
+      const m = this.messages[i]!;
+      if (m.role === "tool" && (m.content?.length ?? 0) > PRUNE_MIN) {
+        const len = m.content!.length;
+        saved += len - 400;
+        m.content = m.content!.slice(0, 400) + `\n…[pruned ${len} bytes of tool output]`;
+        count++;
+      }
+    }
+    if (count > 0)
+      void this.log.append("system_note", this.currentSession, this.currentBranch, {
+        event: "context-pruned",
+        outputs: count,
+        savedBytes: saved,
+      });
+    return count;
+  }
+
   /** Compact history when the real prompt size exceeds the budget. */
   private async maybeCompact(force = false): Promise<void> {
     // prefer the provider's own count from the last response — it is exactly
     // what would overflow the window; the char heuristic is only a fallback
     // for providers that omit usage
+    // stage 1: clip oversized old tool outputs before considering a summarize
+    this.maybePrune();
     const before = this.lastUsage?.input ?? this.estimateTokens();
     if (!force && before < this.opts.contextTokenBudget) return;
     // a forced pass on an already-tiny history would just summarize the

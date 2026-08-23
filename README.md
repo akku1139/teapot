@@ -182,6 +182,10 @@ description: Steps to cut a release safely
   reusable procedure — `files` bundles helper scripts next to `SKILL.md`
   (made executable automatically), and `load_skill` lists them as runnable
   workspace paths. Available from the next turn, forever.
+- Bundled skill: [`skills/qa-adversarial`](skills/qa-adversarial/SKILL.md) —
+  seven adversarial QA personas. Copy it into
+  `~/.config/teapot-coding-agent/skills/` (global) or a workspace's
+  `skills/` folder to enable it.
 
 ### Session log format (JSONL)
 
