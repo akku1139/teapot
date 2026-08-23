@@ -231,6 +231,12 @@ export class Agent {
     return [...this.messages];
   }
 
+  /** seed a conversation (fork-by-reference sub-agents) — replaces history */
+  importMessages(msgs: ChatMessage[]): void {
+    this.messages = msgs;
+    this.compactedAtLen = 0;
+  }
+
   get workspace(): string {
     return this.opts.workspace;
   }

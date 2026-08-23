@@ -821,7 +821,9 @@ export const TOOLS: ToolDef[] = [
       if (!kids.length) return { ok: true, result: "(no sub-agents)" };
       return {
         ok: true,
-        result: kids.map((k) => `${k.id} · ${k.status} · ${oneLine(k.goal, 60)}`).join("\n"),
+        result: kids
+          .map((k) => `${k.id} · ${k.status} · ${clip(k.goal, 60)}`)
+          .join("\n"),
       };
     },
   },

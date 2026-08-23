@@ -475,7 +475,7 @@ export class Master {
         upToEvent: forkTip,
       });
       // the inherited prefix becomes visible history for the child's loop
-      child.messages = parent.exportMessages();
+      child.importMessages(parent.exportMessages());
     }
     await child.setGoal(`${directive}${o.task}`.slice(0, 2000));
     await child.enqueuePrompt(
