@@ -292,6 +292,47 @@ test("add_feedback dedupes with count escalation; get_feedback reads it", async 
   await agent.dispose();
 });
 
+/* ---------- decision log ---------- */
+
+test("record_decision persists rationale; get_decisions reads it back", async () => {
+  const toolResults: string[] = [];
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i > 0) {
+      const t = [...messages].reverse().find((m) => m.role === "tool");
+      toolResults.push(t?.content ?? "");
+    }
+    if (i === 0)
+      return reply("choosing pnpm", [
+        tc("d1", "record_decision", {
+          decision: "use pnpm workspaces",
+          rationale: "faster installs and strict node_modules beat npm here",
+          alternatives: ["npm", "yarn"],
+        }),
+      ]);
+    if (i === 1) return reply("recalling", [tc("d2", "get_decisions", {})]);
+    return reply("done");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  agent.enqueuePrompt("pick a package manager");
+  agent.start("t");
+  await agent.settled();
+
+  assert.match(toolResults[0]!, /decision recorded/);
+  assert.match(toolResults[1]!, /use pnpm workspaces/);
+  assert.match(toolResults[1]!, /faster installs/); // rationale survives
+  const decPath = path.join(agent.snapshot().sessionDir, "decisions.md");
+  const md = await readFile(decPath, "utf8");
+  assert.match(md, /use pnpm workspaces/);
+  assert.match(md, /Why: faster installs/);
+  assert.match(md, /npm/); // alternatives logged
+  // missing rationale is refused
+  const bad = await mkAgent({ chatFn: mkMock(() => reply("x")), autoContinue: false });
+  void bad;
+  await agent.dispose();
+});
+
 /* ---------- master: per-incarnation session dirs ---------- */
 
 function mkMaster(dataDir: string): Master {

@@ -68,6 +68,8 @@ export interface AgentOptions {
   spawnDepth?: number;
   /** restrict this agent to read-only tools (sub-agent personas) */
   readOnlyTools?: boolean;
+  /** set when spawned by another agent (sub-agent lineage) */
+  parent?: string;
   /** injectable LLM call for tests (defaults to the real one) */
   chatFn?: ChatFn;
 }
@@ -92,6 +94,8 @@ Session state is not injected into prompts — fetch it with tools instead:
 - get_todo() / set_todo(content) → the operator-maintained task list
   (todo.md); check it when picking up work, keep it current as you go.
 - When corrected, add_feedback(rule) so it sticks; review via get_feedback().
+- Log significant choices with record_decision(decision, rationale,
+  alternatives?) — compaction forgets reasoning, decisions.md doesn't.
 - list_skills() / load_skill(name) / save_skill(...) → reusable playbooks.
 - AGENTS.md in the workspace root (optional) holds project knowledge — read it
   with read_file at session start when present, keep it current.
@@ -178,6 +182,7 @@ export class Agent {
       globalSkillsDir: "",
       spawnDepth: 0,
       readOnlyTools: false,
+      parent: "",
       provider: "",
       ...opts,
     };
@@ -313,6 +318,10 @@ export class Agent {
 
   private get feedbackFile(): string {
     return path.join(this.opts.sessionDir, "feedback.md");
+  }
+
+  private get decisionsFile(): string {
+    return path.join(this.opts.sessionDir, "decisions.md");
   }
 
   private async readGoalStoreRaw(): Promise<string | null> {
@@ -569,6 +578,7 @@ export class Agent {
       },
       pendingPrompts: this.pendingPrompts.length,
       todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
+      parent: this.opts.parent,
       awaiting: this.awaitingUser,
     };
   }
@@ -926,6 +936,43 @@ export class Agent {
           }
           continue;
         }
+        if (call.function.name === "record_decision") {
+          const a = safeParse(call.function.arguments);
+          const decision = String(a.decision ?? "").trim().slice(0, 500);
+          const rationale = String(a.rationale ?? "").trim().slice(0, 2000);
+          const alternatives = Array.isArray(a.alternatives) ? a.alternatives.map(String).slice(0, 5) : [];
+          if (!decision || !rationale) {
+            this.messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: "decision and rationale are both required — record why, not just what",
+            });
+            continue;
+          }
+          await fs.appendFile(
+            this.decisionsFile,
+            `\n## ${new Date().toISOString()} — ${decision}\n` +
+              `- Why: ${rationale}\n` +
+              (alternatives.length ? `- Alternatives considered:\n${alternatives.map((x) => `  - ${x}`).join("\n")}\n` : ""),
+            "utf8",
+          );
+          await this.log.append("decision", this.currentSession, this.currentBranch, {
+            decision,
+            rationale,
+            alternatives,
+          });
+          await this.answerMeta(call, "decision recorded to decisions.md");
+          continue;
+        }
+        if (call.function.name === "get_decisions") {
+          const dec = await fs.readFile(this.decisionsFile, "utf8").catch(() => "");
+          this.messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: dec.trim() || "(decisions.md is empty — no decisions recorded yet)",
+          });
+          continue;
+        }
         if (call.function.name === "read_memory") {
           const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
           await this.answerMeta(call, mem.trim() || "(memory.md is empty — nothing noted yet)");
@@ -1178,8 +1225,8 @@ export class Agent {
           role: "system",
           content:
             "You compress a coding agent's conversation into dense notes for it to continue working. " +
-            "Preserve: current goal state, key decisions, files created/changed, important command results, " +
-            "open problems, and the next step. Be terse bullet points, no prose flourishes. " +
+            "Preserve: current goal state, key decisions AND the reasoning behind them, files created/changed, " +
+            "important command results, open problems, and the next step. Be terse bullet points, no prose flourishes. " +
             'Finish with a section "## Durable lessons" listing reusable insights worth keeping forever ' +
             "(gotchas, user preferences, what worked) — or omit the section if there are none.",
         },
@@ -1360,6 +1407,35 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
     {
       type: "function" as const,
       function: {
+        name: "record_decision",
+        description:
+          "Log a significant choice you made AND why — alternatives considered, trade-offs. Compaction forgets reasoning; this file doesn't.",
+        parameters: {
+          type: "object",
+          properties: {
+            decision: { type: "string", description: "what was decided, in one sentence" },
+            rationale: { type: "string", description: "why — the reasoning and trade-offs" },
+            alternatives: {
+              type: "array",
+              items: { type: "string" },
+              description: "options considered but rejected",
+            },
+          },
+          required: ["decision", "rationale"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "get_decisions",
+        description: "Read previously logged decisions and their rationale (decisions.md).",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
         name: "get_feedback",
         description:
           "Read the operator's feedback rules (corrections they've given you, with repetition counts). Check after being corrected.",
@@ -1474,7 +1550,7 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
   const META_TOOLS = new Set([
     "finish", "report_progress", "set_goal", "get_goal",
     "read_memory", "set_memory", "list_skills", "get_todo", "set_todo",
-    "get_feedback", "add_feedback",
+    "get_feedback", "add_feedback", "record_decision", "get_decisions",
   ]);
   const openCalls = new Map<string, string>(); // real tool_call id -> name
   // meta answers are now logged as regular tool_results; the legacy progress

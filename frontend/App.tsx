@@ -25,8 +25,9 @@ const AUTHORS: Record<string, { name: string; icon: string; color: string }> = {
 };
 const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
 
-/** author for an event — tool rows are named after the tool itself */
+/** author for an event — mirrored sub-agent rows act under their own id */
 const authorOf = (e: Ev) => {
+  if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
   if (e.type === "tool_call" || e.type === "tool_result")
     return { name: String(e.data?.name ?? "tool"), icon: "⚙", color: "#3ba0c9" };
   if (e.type === "prompt") {
@@ -40,7 +41,7 @@ const authorOf = (e: Ev) => {
 // state/error/fork/goal render as dividers or embeds inside the feed
 const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
-  "state", "error", "fork", "goal", "todo", "question",
+  "state", "error", "fork", "goal", "todo", "question", "decision",
 ]);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
@@ -211,10 +212,21 @@ export default function App() {
         );
       return true;
     });
+    // expand mirrored child activity ("sub" events) into normal-looking rows
+    // tagged with the acting sub id, so the parent feed shows who did what
+    const expanded: Ev[] = [];
+    for (const e of real) {
+      if (e.type === "sub") {
+        const d = e.data as { sub?: string; type?: string; data?: any };
+        const kind = String(d?.type ?? "message");
+        if (kind === "state") continue; // child state churn is noise up here
+        expanded.push({ ...e, type: kind, data: { ...(d?.data ?? {}), actor: d?.sub } });
+      } else expanded.push(e);
+    }
     // append optimistic echoes not yet present in the log
     const pend = pendingMsgs().filter(
       (p) =>
-        !real.some(
+        !expanded.some(
           (e) =>
             e.type === "prompt" &&
             e.data?.source === "user" &&
@@ -232,7 +244,7 @@ export default function App() {
       type: "prompt",
       data: { source: "user", text: p.text, pending: true },
     }));
-    return [...real, ...echoes];
+    return [...expanded, ...echoes];
   });
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
@@ -552,6 +564,7 @@ export default function App() {
     });
     refreshMetrics();
     loadTasks();
+    loadPersonas();
     connectWs();
     const mi = setInterval(() => {
       refreshMetrics();
@@ -575,6 +588,26 @@ export default function App() {
     { cmd: "/goal", desc: "/goal <text> — set goal & notify the agent" },
     { cmd: "/compact", desc: "force a context compaction now" },
   ];
+
+  // @mentions: personas spawn sub-agents, agent ids target existing ones
+  const [personas, setPersonas] = createSignal<{ key: string; label: string }[]>([]);
+  const loadPersonas = () => api("/api/personas").then((d) => setPersonas(d.personas)).catch(() => {});
+  const [mentionFork, setMentionFork] = createSignal(false);
+  const mentionQuery = () => {
+    const m = draft().match(/^@([A-Za-z0-9._-]*)$/);
+    return m ? m[1]!.toLowerCase() : null;
+  };
+  const mentionMatches = () => {
+    const q = mentionQuery();
+    if (q === null) return [];
+    const list = [
+      ...personas().map((p) => ({ key: p.key, label: `${p.label} — spawns a sub-agent`, kind: "persona" as const })),
+      ...agents()
+        .filter((a) => a.id !== selected())
+        .map((a) => ({ key: a.id, label: `${a.status} — send directly`, kind: "agent" as const })),
+    ];
+    return list.filter((x) => x.key.toLowerCase().startsWith(q));
+  };
   // popup shows while typing the first token of a command
   const filteredCmds = () => {
     const d = draft();
@@ -617,6 +650,42 @@ export default function App() {
     const id = selected();
     const text = draft().trim();
     if (!id || !text) return;
+
+    // @mentions: persona → spawn sub-agent; agent id → direct message
+    if (text.startsWith("@")) {
+      const sp = text.indexOf(" ");
+      const name = (sp === -1 ? text.slice(1) : text.slice(1, sp)).toLowerCase();
+      const arg = sp === -1 ? "" : text.slice(sp + 1).trim();
+      const isPersona = personas().some((p) => p.key.toLowerCase() === name);
+      const knownAgent = agents().some((a) => a.id.toLowerCase() === name);
+      try {
+        if (isPersona) {
+          if (!arg) { flashHint(`usage: @${name} <task>`); return; }
+          const r = await api(`/api/agents/${selected()}/spawn`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ persona: name, task: arg, context: mentionFork() ? "fork" : "none" }),
+          });
+          flashHint(`🧩 spawned ${(r as any).id}${mentionFork() ? " (forked context)" : ""}`);
+          refreshAgents(); setDraft("");
+        } else if (knownAgent) {
+          if (!arg) { flashHint(`usage: @${name} <message>`); return; }
+          await api(`/api/agents/${encodeURIComponent(name)}/prompt`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: arg, start: autoStart() }),
+          });
+          flashHint(`→ delivered to @${name}`);
+          setDraft("");
+        } else {
+          flashHint(`unknown @${name} — personas: ${personas().map((p) => p.key).join(", ") || "(none)"}`);
+          return;
+        }
+      } catch (ex) {
+        flashHint(`@${name} failed: ${(ex as Error).message}`);
+      }
+      return;
+    }
 
     // slash commands are client-side operations
     if (text.startsWith("/")) {
@@ -810,6 +879,18 @@ export default function App() {
                 </For>
               </div>
             </Show>
+            <Show when={mentionMatches().length > 0}>
+              <div class="cmds">
+                <For each={mentionMatches()}>
+                  {(m) => (
+                    <div class="cmdrow" title={m.label} onclick={() => setDraft(`@${m.key} `)}>
+                      <b>@{m.key}</b>
+                      <span class="muted">{m.label}</span>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
             <form onsubmit={send}>
               <textarea
                 ref={composerEl}
@@ -827,6 +908,15 @@ export default function App() {
                   }
                 }}
               />
+              <Show when={draft().startsWith("@") && draft().includes(" ")}>
+                <label
+                  class="forkchip"
+                  title="inherit the conversation prefix byte-exactly — the sub-agent's provider prefix cache starts warm"
+                >
+                  <input type="checkbox" checked={mentionFork()} onchange={(e) => setMentionFork(e.currentTarget.checked)} />
+                  fork ctx
+                </label>
+              </Show>
               <button type="submit">send</button>
             </form>
             <div class="hint">
@@ -929,6 +1019,17 @@ export default function App() {
               if (rest[0]) select(rest[0].id);
               else { setSelected(null); setEvents([]); }
               }} title="remove agent from teapot (session log stays on disk)">🗑 remove</button>
+              <Show when={agents().some((a) => a.parent === selected())}>
+                <button
+                  onclick={async () => {
+                    if (!selected()) return;
+                    const r = await api(`/api/agents/${selected()}/stop-children`, { method: "POST" });
+                    flashHint(`stopped: ${((r as any).stopped ?? []).join(", ") || "(none)"}`);
+                    refreshAgents();
+                  }}
+                  title="stop every sub-agent this agent spawned (descendants included)"
+                >⏹ subs</button>
+              </Show>
           </div>
           <div class="ctrlrow">
             <label
@@ -1310,6 +1411,9 @@ function ToolRow(props: { e: Ev; res?: Ev }) {
     >
       <summary>
         <b>{icon} {label}</b>
+        <Show when={e.data?.actor}>
+          <span class="actor">@{String(e.data.actor)}</span>
+        </Show>
         <span class="meta">{res ? hint || "" : "running…"}</span>
       </summary>
       {body}
@@ -1360,6 +1464,9 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
         <Show when={!grouped}>
           <div class="msg-head">
             <span class="author" style={{ color: a.color }}>{a.name}</span>
+            <Show when={e.data?.actor}>
+              <span class="actor">@{String(e.data.actor)}</span>
+            </Show>
             <span class="ts">{e.data?.pending ? "pending…" : fmtTs(e.ts)}</span>
             <span class="ts">{e.branch}</span>
             <Show when={props.onEdit}>
@@ -1414,6 +1521,21 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
           </summary>
           <div class="mono">{truncate(out, 4000)}</div>
           <div class="meta">{e.data.durationMs}ms{e.data.ok ? "" : " · FAILED"}</div>
+        </details>
+      );
+    }
+    case "decision": {
+      const alts = Array.isArray(e.data?.alternatives) ? (e.data.alternatives as string[]) : [];
+      return (
+        <details class="embed decision">
+          <summary>
+            <b>📌 {oneLine(String(e.data?.decision ?? ""), 90)}</b>
+            <span class="meta">decision logged</span>
+          </summary>
+          <div class="content"><b>Why:</b>{String(e.data?.rationale ?? "")}</div>
+          <Show when={alts.length}>
+            <div class="content muted">Rejected: {alts.join(" / ")}</div>
+          </Show>
         </details>
       );
     }

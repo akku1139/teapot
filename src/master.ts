@@ -374,6 +374,7 @@ export class Master {
       provider: provName,
       spawnDepth: myDepth,
       ...(ac.readOnly ? { readOnlyTools: true } : {}),
+      ...(ac.parent ? { parent: ac.parent } : {}),
       ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
     });
     // console line + broadcast: the web UI only refreshes on bus traffic, so
