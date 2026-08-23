@@ -360,6 +360,48 @@ test("get_todo/set_todo round-trips the operator task list", async () => {
   await agent.dispose();
 });
 
+/* ---------- compaction driven by real usage ---------- */
+
+test("compaction keys off the API's prompt_tokens, not the char estimate", async () => {
+  const mock = mkMock((req): LlmResult => {
+    const sys = String(req.messages[0]?.content ?? "");
+    if (sys.includes("compress")) return reply("- notes from earlier");
+    const base = req.n === 0
+      ? reply("working", [tc("w", "write_file", { path: "f.txt", content: "x" })])
+      : reply("done");
+    // provider reports a huge prefix while the text itself is tiny — the old
+    // char heuristic would never have triggered on this history
+    return { ...base, usage: { inputTokens: 5000, outputTokens: 2 } };
+  });
+  const { agent } = await mkAgent({ chatFn: mock.chat, contextTokenBudget: 4000, autoContinue: false });
+  await agent.setGoal("exercise compaction");
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  await agent.settled();
+  assert.equal(agent.stats.compactions, 1, "usage above budget must compact");
+  assert.match(agent.messages[0]!.content ?? "", /Context was compacted/);
+  await agent.dispose();
+});
+
+test("compactNow forces a pass and reports whether it ran", async () => {
+  const mock = mkMock((req): LlmResult =>
+    req.n === 0 ? reply("working", [tc("w", "write_file", { path: "a.txt", content: "hi" })]) : reply("done"),
+  );
+  const { agent } = await mkAgent({ chatFn: mock.chat, autoContinue: false });
+  agent.enqueuePrompt("make a file");
+  agent.start("t");
+  await agent.settled();
+
+  const r = await agent.compactNow();
+  assert.equal(r.ran, true);
+  assert.equal(agent.stats.compactions, 1);
+  assert.match(agent.messages[0]!.content ?? "", /Context was compacted/);
+  // second call: already-compacted tiny history has nothing to cut
+  const r2 = await agent.compactNow();
+  assert.equal(r2.ran, false);
+  await agent.dispose();
+});
+
 /* ---------- context compaction ---------- */
 
 test("compaction summarizes old turns when the budget is exceeded", async () => {

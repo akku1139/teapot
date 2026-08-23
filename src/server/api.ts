@@ -329,8 +329,29 @@ export function buildApp(master: Master): Hono {
         signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) return c.json({ error: `upstream ${res.status}` }, 502);
-      const j = (await res.json()) as { data?: { id?: string }[] };
-      const models = (j.data ?? []).map((m) => m.id).filter((x): x is string => !!x).sort();
+      // OpenRouter-style entries carry context_length + per-token pricing —
+      // surface them so the model switcher can show what each model offers
+      const j = (await res.json()) as {
+        data?: {
+          id?: string;
+          context_length?: number;
+          pricing?: { prompt?: string | number; completion?: string | number };
+        }[];
+      };
+      const models = (j.data ?? [])
+        .map((m) => ({
+          id: typeof m.id === "string" ? m.id : "",
+          contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
+          pricing:
+            m.pricing && (m.pricing.prompt !== undefined || m.pricing.completion !== undefined)
+              ? {
+                  prompt: Number(m.pricing.prompt ?? 0),
+                  completion: Number(m.pricing.completion ?? 0),
+                }
+              : undefined,
+        }))
+        .filter((m) => m.id)
+        .sort((a, b) => a.id.localeCompare(b.id));
       return c.json({ provider: provName, models });
     } catch (err) {
       return c.json({ error: `model list failed: ${(err as Error).message}` }, 502);
@@ -372,6 +393,17 @@ export function buildApp(master: Master): Hono {
     } else if (body.status) await a.setGoalStatus(body.status);
     else return c.json({ error: "text or status required" }, 400);
     return c.json({ ok: true });
+  });
+
+  // force a context compaction pass (slash command /compact)
+  app.post("/api/agents/:id/compact", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    try {
+      return c.json({ ok: true, ...(await a.compactNow()) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 409);
+    }
   });
 
   // operator-maintained task list (todo.md) with optional agent notification

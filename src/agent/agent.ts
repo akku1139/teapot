@@ -146,6 +146,8 @@ export class Agent {
   private toolAbort = new AbortController();
   private runChain: Promise<void> = Promise.resolve();
   private lastProgressAt = Date.now();
+  /** the provider's own prompt_tokens from the last completed turn */
+  private lastUsage?: { input: number; output: number; cached?: number };
   /** real assistant output since the last progress report (chars / turns) */
   private activityChars = 0;
   private turnsSinceProgress = 0;
@@ -342,6 +344,21 @@ export class Agent {
   }
 
   /**
+   * Force a compaction pass (manual /compact). Serialized on the run chain so
+   * it lands at a safe point relative to a running loop; reports whether
+   * anything was actually compacted.
+   */
+  async compactNow(): Promise<{ ran: boolean }> {
+    const ran = await this.enqueue(async () => {
+      await this.ensureReady();
+      const before = this.stats.compactions;
+      await this.maybeCompact(true);
+      return this.stats.compactions > before;
+    });
+    return { ran };
+  }
+
+  /**
    * Edit a previously-sent prompt: fork the conversation at that point,
    * replace its text, and optionally fold everything that happened after it
    * into a summary note on the new branch (ChatGPT-edit style). The agent
@@ -468,7 +485,7 @@ export class Agent {
       provider: this.opts.provider,
       sessionDir: this.opts.sessionDir,
       ctx: {
-        usedTokens: this.estimateTokens(),
+        usedTokens: this.lastUsage?.input ?? this.estimateTokens(),
         compactAt: this.opts.contextTokenBudget,
         window: this.opts.contextWindowTokens || 0,
       },
@@ -701,6 +718,11 @@ export class Agent {
         this.stats.inputTokens += res.usage.inputTokens ?? 0;
         this.stats.cachedInputTokens += res.usage.cachedInputTokens ?? 0;
         this.stats.outputTokens += res.usage.outputTokens ?? 0;
+        this.lastUsage = {
+          input: res.usage.inputTokens ?? 0,
+          output: res.usage.outputTokens ?? 0,
+          cached: res.usage.cachedInputTokens,
+        };
         await this.log.append("usage", this.currentSession, this.currentBranch, res.usage);
       }
 
@@ -922,10 +944,17 @@ export class Agent {
     return -1;
   }
 
-  /** Compact history when the estimated token count exceeds the budget. */
-  private async maybeCompact(): Promise<void> {
-    const before = this.estimateTokens();
-    if (before < this.opts.contextTokenBudget) return;
+  /** Compact history when the real prompt size exceeds the budget. */
+  private async maybeCompact(force = false): Promise<void> {
+    // prefer the provider's own count from the last response — it is exactly
+    // what would overflow the window; the char heuristic is only a fallback
+    // for providers that omit usage
+    const before = this.lastUsage?.input ?? this.estimateTokens();
+    if (!force && before < this.opts.contextTokenBudget) return;
+    // a forced pass on an already-tiny history would just summarize the
+    // summary — report ran=false instead
+    if (force && this.messages.length <= 3) return;
+    this.lastUsage = undefined; // stale after compaction — re-armed next turn
 
     // keep roughly the most recent quarter of the budget as live context
     const keepCharBudget = (this.opts.contextTokenBudget / 4) * 4;

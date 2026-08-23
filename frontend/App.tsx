@@ -102,7 +102,9 @@ export default function App() {
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
-  const [models, setModels] = createSignal<string[]>([]);
+  const [models, setModels] = createSignal<
+    { id: string; contextLength?: number; pricing?: { prompt: number; completion: number } }[]
+  >([]);
   const providerList = () => Object.keys(cfg().providers ?? {});
   async function loadModels(prov: string) {
     if (!prov) return;
@@ -111,6 +113,24 @@ export default function App() {
       setModels(r.models ?? []);
     } catch { setModels([]); }
   }
+  /** "ctx 1m · $3/M in · $15/M out" for the draft (or current) model */
+  const modelSpec = () => {
+    const id = modelDraft().trim() || sel()?.model || "";
+    if (!id) return "";
+    const m = models().find((x) => x.id === id);
+    if (!m) return "";
+    const parts: string[] = [];
+    if (m.contextLength) parts.push(`ctx ${fmtK(m.contextLength)} tok`);
+    const price = (p?: number) =>
+      p === undefined ? "" : `$${p * 1e6 >= 10 ? Math.round(p * 1e6) : +(p * 1e6).toFixed(1)}/M`;
+    if (m.pricing) {
+      const pin = price(m.pricing.prompt);
+      const pout = price(m.pricing.completion);
+      if (pin && pout) parts.push(`${pin} in · ${pout} out`);
+      else if (pin || pout) parts.push(price(m.pricing.prompt ?? m.pricing.completion));
+    }
+    return parts.join(" · ");
+  };
   // keep the switcher aligned with the selected session
   createEffect(() => {
     const a = sel();
@@ -529,6 +549,7 @@ export default function App() {
     { cmd: "/stop", desc: "interrupt the running agent" },
     { cmd: "/fork", desc: "branch the conversation here" },
     { cmd: "/goal", desc: "/goal <text> — set goal & notify the agent" },
+    { cmd: "/compact", desc: "force a context compaction now" },
   ];
   // popup shows while typing the first token of a command
   const filteredCmds = () => {
@@ -570,12 +591,16 @@ export default function App() {
         if (name === "start") await post("/start");
         else if (name === "stop") await post("/stop");
         else if (name === "fork") { await post("/fork", {}); await select(id); }
+        else if (name === "compact") {
+          const r = await post("/compact");
+          flashHint((r as any)?.ran ? "context compacted" : "nothing to compact yet");
+        }
         else if (name === "goal") {
           if (!arg) { flashHint("usage: /goal <text>"); return; }
           await post("/goal", { text: arg, notify: true });
           flashHint("goal saved & notification queued");
         } else {
-          flashHint(`unknown command "${name}" — /start /stop /fork /goal`);
+          flashHint(`unknown command "${name}" — /start /stop /fork /goal /compact`);
           return;
         }
         setDraft("");
@@ -809,7 +834,7 @@ export default function App() {
                 style="flex:1;min-width:0"
               />
               <datalist id="model-list">
-                <For each={models()}>{(m) => <option value={m} />}</For>
+                <For each={models()}>{(m) => <option value={m.id} />}</For>
               </datalist>
               <button
                 title="apply to this session — takes effect from the agent's next turn"
@@ -833,7 +858,12 @@ export default function App() {
                 }}
               >apply</button>
             </div>
-            <div class="meta">current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show></div>
+            <div class="meta">
+              current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show>
+            </div>
+            <Show when={modelSpec()}>
+              <div class="meta" style="color:var(--fg)">{modelSpec()}</div>
+            </Show>
           </div>
 
           <h3>⏯ controls</h3>
