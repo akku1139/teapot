@@ -425,6 +425,18 @@ export default function App() {
     return SLASH_COMMANDS.filter((c) => c.cmd.slice(1).startsWith(d.slice(1).toLowerCase()));
   };
 
+  // auto-grow the composer with its content, capped by CSS max-height
+  let composerEl: HTMLTextAreaElement | undefined;
+  const autosizeComposer = () => {
+    if (!composerEl) return;
+    composerEl.style.height = "auto";
+    composerEl.style.height = `${Math.min(composerEl.scrollHeight, 160)}px`;
+  };
+  createEffect(() => {
+    draft(); // re-run on typing AND after send() clears the draft
+    autosizeComposer();
+  });
+
   const send = async (e: Event) => {
     e.preventDefault();
     const id = selected();
@@ -629,10 +641,14 @@ export default function App() {
             </Show>
             <form onsubmit={send}>
               <textarea
+                ref={composerEl}
                 rows={1}
                 placeholder={`message #${sel()!.id} — / for commands`}
                 value={draft()}
-                oninput={(e) => setDraft(e.currentTarget.value)}
+                oninput={(e) => {
+                  setDraft(e.currentTarget.value);
+                  autosizeComposer();
+                }}
                 onkeydown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
