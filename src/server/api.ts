@@ -354,11 +354,40 @@ export function buildApp(master: Master): Hono {
   app.post("/api/agents/:id/goal", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    const body = await c.req.json<{ text?: string; status?: "active" | "done" | "paused" }>();
-    if (body.text) await a.setGoal(body.text);
-    else if (body.status) await a.setGoalStatus(body.status);
+    const body = await c.req.json<{ text?: string; status?: "active" | "done" | "paused"; notify?: boolean }>();
+    if (body.text) {
+      await a.setGoal(body.text);
+      // goals live behind get_goal(), so a silent save would go unnoticed —
+      // queue a harness prompt unless the caller explicitly declines
+      if (body.notify !== false)
+        a.enqueuePrompt(
+          `[harness] The operator set a new goal:\n\n${body.text}\n\nAlign your work with it.`,
+          "harness",
+        );
+    } else if (body.status) await a.setGoalStatus(body.status);
     else return c.json({ error: "text or status required" }, 400);
     return c.json({ ok: true });
+  });
+
+  // edit a previously-sent prompt: forks there, optionally summarizes the tail
+  app.post("/api/agents/:id/edit-prompt", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req
+      .json<{ eventId?: string; text?: string; tail?: string }>()
+      .catch(() => null);
+    if (!body?.eventId || !body.text?.trim())
+      return c.json({ error: "eventId and text required" }, 400);
+    try {
+      const r = await a.editPromptAt(
+        body.eventId,
+        body.text,
+        body.tail === "summarize" ? "summarize" : "discard",
+      );
+      return c.json({ ok: true, ...r });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 409);
+    }
   });
 
   app.post("/api/agents/:id/fork", async (c) => {

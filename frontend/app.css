@@ -80,8 +80,22 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
 .embed.fail { border-color: var(--err); }
+.embed.done { border-color: var(--ok); }
 .embed.running { border-color: var(--warn); }
 .embed.running summary .meta::after { content: "⋯"; display: inline-block; margin-left: 6px; animation: blink 1s step-end infinite; color: var(--warn); }
+.embed summary { gap: 8px; }
+.embed summary .mono { font-family: ui-monospace, Menlo, monospace; }
+.toolbody {
+  background: var(--bg-darkest); border-radius: 4px; padding: 6px 8px; margin: 4px 0;
+  white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow-y: auto; font-size: 12.5px;
+}
+.toolbody.del { border-left: 2px solid var(--err); color: #f0a5a6; background: #ed424514; }
+.toolbody.add { border-left: 2px solid var(--ok); color: #9fd8ae; background: #3ba55d14; }
+.toolbody.patch { padding: 4px 8px; }
+.toolbody.patch .pline { white-space: pre-wrap; word-break: break-word; }
+.toolbody.patch .pline.add { color: #9fd8ae; background: #3ba55d14; border-left: 2px solid var(--ok); padding-left: 4px; }
+.toolbody.patch .pline.del { color: #f0a5a6; background: #ed424514; border-left: 2px solid var(--err); padding-left: 4px; }
+.toolbody.patch .pline.meta { color: var(--dim); }
 .embed summary { cursor: pointer; user-select: none; list-style-position: outside; }
 .embed summary::marker { color: var(--dim); }
 .embed[open] summary { margin-bottom: 4px; }
@@ -153,9 +167,21 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .day-divider span { color: var(--dim); font-size: 11px; }
 
 /* ---- composer ---- */
-.composer { padding: 0 16px 18px; }
-.composer form { background: var(--bg-light); border-radius: 10px; display: flex; gap: 8px; padding: 10px 12px; align-items: center; }
-.composer input[type=text] { flex: 1; background: none; border: none; outline: none; color: var(--fg); font: inherit; }
+.composer { padding: 0 16px 18px; position: relative; }
+.composer form { background: var(--bg-light); border-radius: 10px; display: flex; gap: 8px; padding: 10px 12px; align-items: flex-end; }
+.composer textarea {
+  flex: 1; background: none; border: none; outline: none; color: var(--fg); font: inherit;
+  resize: none; max-height: 160px; overflow-y: auto; line-height: 1.4;
+}
+/* slash-command popup */
+.cmds {
+  position: absolute; bottom: calc(100% - 8px); left: 16px; right: 16px;
+  background: var(--bg-mid); border: 1px solid var(--bg-light); border-radius: 8px;
+  box-shadow: 0 -6px 20px #0007; overflow: hidden; z-index: 3;
+}
+.cmdrow { display: flex; gap: 10px; align-items: baseline; padding: 7px 12px; cursor: pointer; font-size: 13.5px; }
+.cmdrow:hover { background: var(--bg-light); }
+.cmdrow .muted { font-size: 12px; }
 .composer button { background: var(--acc); border: none; color: white; border-radius: 8px; padding: 7px 14px; cursor: pointer; font-weight: 600; }
 .composer button:hover { opacity: .9; }
 .composer label { color: var(--dim); font-size: 12px; display: flex; gap: 4px; align-items: center; white-space: nowrap; }
@@ -167,6 +193,21 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .rightbar h3:first-child { margin-top: 0; }
 .card { background: var(--bg-darkest); border-radius: 8px; padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
 .muted { color: var(--dim); }
+/* structured progress card */
+.prog .progrow { display: flex; gap: 8px; margin-bottom: 4px; }
+.prog .progrow b {
+  color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .05em;
+  min-width: 62px; padding-top: 2px; flex-shrink: 0;
+}
+.prog .progrow.warn span { color: var(--err); }
+/* edit affordance on user prompts */
+.msg-head .editbtn {
+  background: none; border: none; color: var(--dim); cursor: pointer;
+  font-size: 11px; padding: 0 2px; opacity: 0; transition: opacity .12s;
+}
+.msg:hover .msg-head .editbtn { opacity: 1; }
+.msg-head .editbtn:hover { color: var(--acc); }
+.modal textarea { resize: vertical; }
 .branch-row { display: flex; justify-content: space-between; padding: 3px 0; color: var(--dim); font-size: 12px; cursor: pointer; }
 .branch-row:hover, .branch-row.cur { color: var(--fg); }
 .mini-cron { margin-left: auto; font-size: 10px; opacity: .75; }

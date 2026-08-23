@@ -19,6 +19,8 @@
   },
   "defaultProvider": "openrouter",
   "progressIntervalMs": 600000,
+  "//contextWindowTokens": "optional: model context window size — powers the usage gauge in the web UI",
+  "contextWindowTokens": 200000,
   "agents": [
     { "id": "alpha", "workspace": "workspaces/alpha" },
     { "id": "beta", "workspace": "workspaces/beta", "provider": "local", "model": "llama3.1" },

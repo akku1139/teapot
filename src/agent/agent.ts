@@ -54,7 +54,10 @@ export interface AgentOptions {
   continueDelayMs?: number;
   maxConsecutiveToolErrors?: number;
   /** estimated-token budget; older history is compacted when exceeded */
+  /** estimated-token budget; older history is compacted when exceeded */
   contextTokenBudget?: number;
+  /** the model's real context window — powers the % gauge in the web UI */
+  contextWindowTokens?: number;
   /** rebuild conversation from the JSONL log on init (default true) */
   restoreSession?: boolean;
   /** provider name this agent was created with (for the UI's model switcher) */
@@ -152,6 +155,7 @@ export class Agent {
       continueDelayMs: 15_000,
       maxConsecutiveToolErrors: 5,
       contextTokenBudget: 96_000,
+      contextWindowTokens: 0,
       restoreSession: true,
       globalSkillsDir: "",
       provider: "",
@@ -439,6 +443,11 @@ export class Agent {
       model: this.opts.llm.model,
       provider: this.opts.provider,
       sessionDir: this.opts.sessionDir,
+      ctx: {
+        usedTokens: this.estimateTokens(),
+        compactAt: this.opts.contextTokenBudget,
+        window: this.opts.contextWindowTokens || 0,
+      },
       pendingPrompts: this.pendingPrompts.length,
     };
   }

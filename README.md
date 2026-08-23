@@ -173,8 +173,10 @@ description: Steps to cut a release safely
 - The system prompt lists every discovered skill (name + description);
   workspace skills override same-named global ones.
 - The agent calls `load_skill(name)` when a task matches and follows it.
-- The agent calls `save_skill(name, description, content)` to distill a
-  reusable procedure it developed — available from the next turn, forever.
+- The agent calls `save_skill(name, description, content, files?)` to distill a
+  reusable procedure — `files` bundles helper scripts next to `SKILL.md`
+  (made executable automatically), and `load_skill` lists them as runnable
+  workspace paths. Available from the next turn, forever.
 
 ### Session log format (JSONL)
 
@@ -218,10 +220,13 @@ GET  /api/agents                     list snapshots
 GET  /api/agents/:id                 one snapshot
 POST /api/agents/:id/prompt          {text, start?}
 POST /api/agents/:id/start | /stop
-POST /api/agents/:id/goal            {text} or {status}
+POST /api/agents/:id/load            lazy session restore (stopped → idle)
+POST /api/agents/:id/goal            {text, notify?} or {status}
 POST /api/agents/:id/fork            {} → new branch, same session log
+POST /api/agents/:id/edit-prompt     {eventId, text, tail: "discard"|"summarize"} → fork & resend
 GET  /api/agents/:id/events?limit&branch&session
 GET  /api/agents/:id/branches
+GET  /api/tasks                      scheduled tasks with computed next-fire times
 GET  /api/metrics                    master rss/heap/load + per-agent stats
 GET  /api/events                     SSE updates (push, no polling)
 GET  /brew                           418 I'm a teapot (RFC 2324)

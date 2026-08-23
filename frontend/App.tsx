@@ -8,6 +8,7 @@ interface Agent {
   session: string; branch: string; goal: { status: string; text: string };
   latestProgress: any; stats: any; model: string; provider?: string;
   pendingPrompts?: number;
+  ctx?: { usedTokens: number; compactAt: number; window: number };
 }
 interface Ev {
   id: string; seq: number; ts: string; session: string; branch: string;
@@ -77,7 +78,12 @@ export default function App() {
   const [branches, setBranches] = createSignal<any[]>([]);
   const [metrics, setMetrics] = createSignal<any>(null);
   const [draft, setDraft] = createSignal("");
-  const [autoStart, setAutoStart] = createSignal(true);
+  // persisted: "0" means the user explicitly turned auto-start off
+  const [autoStart, setAutoStart] = createSignal(localStorage.getItem("teapot.autostart") !== "0");
+  const setAutoStartPersist = (v: boolean) => {
+    setAutoStart(v);
+    localStorage.setItem("teapot.autostart", v ? "1" : "0");
+  };
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
   const [showCfg, setShowCfg] = createSignal(false);
@@ -146,6 +152,8 @@ export default function App() {
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
 
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
+  // prompt being edited → edit-prompt fork dialog
+  const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
 
   const refreshAgents = () => api("/api/agents").then((d) => setAgents(d.agents)).catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
@@ -286,7 +294,7 @@ export default function App() {
     if (showNew() || showCfg()) return;
     if (e.key === "/") {
       e.preventDefault();
-      document.querySelector<HTMLInputElement>(".composer input[type=text]")?.focus();
+      document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus();
     } else if (e.key === "d") {
       toggleRight();
     } else if (e.key === "t") {
@@ -396,11 +404,63 @@ export default function App() {
     onCleanup(() => clearInterval(mi));
   });
 
+  const [flash, setFlash] = createSignal("");
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  const flashHint = (msg: string) => {
+    setFlash(msg);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => setFlash(""), 3200);
+  };
+
+  const SLASH_COMMANDS = [
+    { cmd: "/start", desc: "start working toward the goal" },
+    { cmd: "/stop", desc: "interrupt the running agent" },
+    { cmd: "/fork", desc: "branch the conversation here" },
+    { cmd: "/goal", desc: "/goal <text> — set goal & notify the agent" },
+  ];
+  // popup shows while typing the first token of a command
+  const filteredCmds = () => {
+    const d = draft();
+    if (!d.startsWith("/") || d.includes(" ") || d.includes("\n")) return [];
+    return SLASH_COMMANDS.filter((c) => c.cmd.slice(1).startsWith(d.slice(1).toLowerCase()));
+  };
+
   const send = async (e: Event) => {
     e.preventDefault();
     const id = selected();
     const text = draft().trim();
     if (!id || !text) return;
+
+    // slash commands are client-side operations
+    if (text.startsWith("/")) {
+      const sp = text.indexOf(" ");
+      const name = (sp === -1 ? text.slice(1) : text.slice(1, sp)).toLowerCase();
+      const arg = sp === -1 ? "" : text.slice(sp + 1).trim();
+      const post = (p: string, body?: unknown) =>
+        api(`/api/agents/${id}${p}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        }).then(refreshAgents);
+      try {
+        if (name === "start") await post("/start");
+        else if (name === "stop") await post("/stop");
+        else if (name === "fork") { await post("/fork", {}); await select(id); }
+        else if (name === "goal") {
+          if (!arg) { flashHint("usage: /goal <text>"); return; }
+          await post("/goal", { text: arg, notify: true });
+          flashHint("goal saved & notification queued");
+        } else {
+          flashHint(`unknown command "${name}" — /start /stop /fork /goal`);
+          return;
+        }
+        setDraft("");
+      } catch (ex) {
+        flashHint(`/${name} failed: ${(ex as Error).message}`);
+      }
+      return;
+    }
+
     setDraft("");
     try {
       await api(`/api/agents/${id}/prompt`, {
@@ -420,11 +480,12 @@ export default function App() {
   const setGoal = async (e: Event) => {
     e.preventDefault();
     const input = document.getElementById("goal-input") as HTMLInputElement;
+    const notify = (document.getElementById("goal-notify") as HTMLInputElement)?.checked ?? true;
     if (!selected() || !input.value.trim()) return;
     await api(`/api/agents/${selected()}/goal`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: input.value }),
+      body: JSON.stringify({ text: input.value, notify }),
     });
     input.value = "";
     refreshAgents();
@@ -503,6 +564,11 @@ export default function App() {
                     e={e}
                     prev={chatEvents()[i() - 1]}
                     res={pairInfo().resFor.get(e.id)}
+                    onEdit={
+                      e.type === "prompt" && e.data?.source === "user"
+                        ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
+                        : undefined
+                    }
                   />
                 )}
               </For>
@@ -549,22 +615,46 @@ export default function App() {
           </Show>
 
           <div class="composer">
+            <Show when={filteredCmds().length > 0}>
+              <div class="cmds">
+                <For each={filteredCmds()}>
+                  {(c) => (
+                    <div class="cmdrow" title={c.desc} onclick={() => setDraft(c.cmd + " ")}>
+                      <b>{c.cmd}</b>
+                      <span class="muted">{c.desc}</span>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
             <form onsubmit={send}>
-              <input
-                type="text"
-                placeholder={`message #${sel()!.id}`}
+              <textarea
+                rows={1}
+                placeholder={`message #${sel()!.id} — / for commands`}
                 value={draft()}
                 oninput={(e) => setDraft(e.currentTarget.value)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send(e);
+                  }
+                }}
               />
-              <label>
-                <input type="checkbox" checked={autoStart()} onchange={(e) => setAutoStart(e.currentTarget.checked)} />
-                auto-start
+              <label
+                title="when unchecked, sending only queues the prompt without waking an idle agent"
+              >
+                <input
+                  type="checkbox"
+                  checked={autoStart()}
+                  onchange={(e) => setAutoStartPersist(e.currentTarget.checked)}
+                />
+                start if idle
               </label>
               <button type="submit">send</button>
             </form>
             <div class="hint">
-              enter send · ↑↓ sessions · / focus · t terminal · d panel · esc interrupt ·
-              messages sent while the agent works are queued and delivered at the next turn boundary
+              {flash() ||
+                "enter send · shift+enter newline · ↑↓ sessions · / commands & focus · t terminal · d panel · esc interrupt · messages sent while the agent works queue up and land at the next turn boundary"}
             </div>
           </div>
         </Show>
@@ -662,19 +752,53 @@ export default function App() {
           <h3>🎯 goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
           <form onsubmit={setGoal} style="display:flex;gap:4px;margin-bottom:6px">
             <input id="goal-input" type="text" placeholder="set new goal…" style="flex:1;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit" />
+            <label
+              class="muted"
+              style="display:flex;align-items:center;gap:3px;font-size:11px;white-space:nowrap;cursor:pointer"
+              title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
+            >
+              <input id="goal-notify" type="checkbox" checked /> notify
+            </label>
             <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:0 10px;cursor:pointer">✓</button>
           </form>
-          <div class="card">{sel()!.goal.text || "no goal set"}</div>
+          <div class="card">{sel()!.goal.text || "no goal set — the agent has nothing to auto-continue toward"}</div>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            stored with the session · the model reads it via get_goal() ·
+            <Show when={sel()!.goal.text && sel()!.goal.status === "active"}> auto-continue keeps it working until this is done</Show>
+            <Show when={!sel()!.goal.text}> set one and tick ▶ start to begin</Show>
+          </div>
 
           <h3>📈 progress</h3>
-          <Show when={sel()!.latestProgress} fallback={<div class="muted">none yet</div>}>
-            <div class="card">{sel()!.latestProgress.doing}{"\n"}{sel()!.latestProgress.recent ?? ""}
-              {"\n"}<span class="muted">{sel()!.latestProgress.ts}</span></div>
+          <Show
+            when={sel()!.latestProgress}
+            fallback={<div class="muted">none yet — the harness asks for a report after real activity, and the agent can report_progress anytime</div>}
+          >
+            {(p) => (
+              <div class="card prog">
+                <div class="progrow"><b>doing</b><span>{p().doing}</span></div>
+                <Show when={p().recent}><div class="progrow"><b>recent</b><span>{p().recent}</span></div></Show>
+                <Show when={p().problems}><div class="progrow warn"><b>⚠ problems</b><span>{p().problems}</span></div></Show>
+                <Show when={p().next}><div class="progrow"><b>next</b><span>{p().next}</span></div></Show>
+                <Show when={p().goalStatus}><div class="progrow"><b>goal</b><span>{p().goalStatus}</span></div></Show>
+                <div class="meta muted">{relTime(p().ts)}</div>
+              </div>
+            )}
           </Show>
 
           <h3>📊 runtime</h3>
-          <div class="card muted">turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls} · compacted {sel()!.stats.compactions ?? 0}
-            {"\n"}tokens in/out {sel()!.stats.inputTokens}/{sel()!.stats.outputTokens}</div>
+          <div class="card muted">
+            turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls} · compacted {sel()!.stats.compactions ?? 0}
+            {"\n"}tokens in/out {sel()!.stats.inputTokens}/{sel()!.stats.outputTokens}
+            <Show when={sel()!.ctx}>
+              {(c) => (
+                <>
+                  {"\n"}context ~{fmtK(c().usedTokens)} tok
+                  <Show when={c().window}> · {Math.min(999, Math.round((c().usedTokens / c().window) * 100))}% of {fmtK(c().window)}</Show>
+                  {"\n"}compaction at ~{fmtK(c().compactAt)} tok (older turns summarized)
+                </>
+              )}
+            </Show>
+          </div>
 
           <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span></h3>
           <For each={branches()}>
@@ -732,12 +856,235 @@ export default function App() {
     <Show when={showCfg()}>
       <ConfigModal cfg={cfg()} onClose={() => setShowCfg(false)} onSaved={() => { loadCfg(); loadTasks(); }} />
     </Show>
+    <Show when={editing()} fallback={null}>
+      {(ed) => {
+        const idx = () => events().findIndex((e) => e.id === ed().eventId);
+        const afterCount = () => Math.max(0, events().length - idx() - 1);
+        const [tail, setTail] = createSignal<"summarize" | "discard">(afterCount() > 0 ? "summarize" : "discard");
+        return (
+          <Modal title="edit prompt — forks the conversation" onClose={() => setEditing(null)}>
+            <form
+              onsubmit={async (ev) => {
+                ev.preventDefault();
+                const ta = document.getElementById("edit-text") as HTMLTextAreaElement;
+                try {
+                  await api(`/api/agents/${selected()}/edit-prompt`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ eventId: ed().eventId, text: ta.value, tail: tail() }),
+                  });
+                  setEditing(null);
+                  refreshAgents();
+                  if (selected()) await select(selected());
+                } catch (ex) {
+                  alert(`edit failed: ${(ex as Error).message}`);
+                }
+              }}
+              style="display:flex;flex-direction:column;gap:10px"
+            >
+              <textarea id="edit-text" class="mono w100" rows={6} value={ed().text} />
+              <Show when={afterCount() > 0}>
+                <div>
+                  <div style="font-size:12.5px;margin-bottom:4px">
+                    {afterCount()} event(s) came after this prompt — what should happen to them on the new branch?
+                  </div>
+                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
+                    <input type="radio" name="tail" checked={tail() === "summarize"} onchange={() => setTail("summarize")} />
+                    summarize them into a note the agent can still read
+                  </label>
+                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
+                    <input type="radio" name="tail" checked={tail() === "discard"} onchange={() => setTail("discard")} />
+                    discard them entirely (clean timeline)
+                  </label>
+                </div>
+              </Show>
+              <div style="display:flex;justify-content:flex-end;gap:8px">
+                <button type="button" onclick={() => setEditing(null)}>cancel</button>
+                <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 12px;cursor:pointer">
+                  ⑂ fork & resend
+                </button>
+              </div>
+            </form>
+          </Modal>
+        );
+      }}
+    </Show>
     </>
   );
 }
 
 /* ---------- one chat message row ---------- */
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev }) {
+/* ---------- per-tool timeline rendering ---------- */
+
+function ToolRow(props: { e: Ev; res?: Ev }) {
+  const e = props.e;
+  const res = props.res;
+  const d = e.data ?? {};
+  const name = String(d.name ?? "tool");
+  const out = () => (res ? String(res.data?.result ?? "") : "");
+
+  // per-tool summary line: [icon, label, hint]
+  let icon = "⚙";
+  let label = name;
+  let hint = "";
+  let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
+
+  const argStr = (k: string) => String(d.args?.[k] ?? "");
+  const codeBlock = (text: string, max = 1500) => (
+    <pre class="mono toolbody">{truncate(text, max)}</pre>
+  );
+  const resultBlock = (max = 4000) =>
+    res ? (
+      <>
+        {codeBlock(out(), max)}
+        <div class="meta">
+          {res.data?.durationMs}ms{res.data?.ok === false ? " · FAILED" : ""}
+          <CopyBtn text={out()} />
+        </div>
+      </>
+    ) : (
+      <div class="meta">waiting for output…</div>
+    );
+
+  try {
+    switch (name) {
+      case "bash": {
+        const cmd = argStr("command");
+        label = "$ " + oneLine(cmd, 96);
+        hint = argStr("timeout_ms") ? `timeout ${Math.round(Number(argStr("timeout_ms")) / 1000)}s` : "";
+        body = (
+          <>
+            {cmd !== label.slice(2) ? codeBlock(cmd, 800) : null}
+            {resultBlock(6000)}
+          </>
+        );
+        break;
+      }
+      case "read_file": {
+        label = argStr("path") || "(no path)";
+        const bits: string[] = [];
+        if (argStr("pattern")) bits.push(`grep /${oneLine(argStr("pattern"), 40)}/`);
+        if (Number(d.args?.offset) < 0) bits.push(`last ${-Number(d.args.offset)} lines`);
+        else if (d.args?.offset) bits.push(`from L${d.args.offset}`);
+        if (d.args?.limit) bits.push(`≤${d.args.limit} lines`);
+        hint = bits.join(" · ");
+        body = resultBlock(6000);
+        break;
+      }
+      case "write_file": {
+        const content = String(d.args?.content ?? "");
+        label = argStr("path") || "(no path)";
+        hint = `${content.length} bytes`;
+        body = (
+          <>
+            {codeBlock(content)}
+            {res ? <div class="meta">{oneLine(out(), 160)}</div> : <div class="meta">writing…</div>}
+          </>
+        );
+        break;
+      }
+      case "edit_file": {
+        label = argStr("path") || "(no path)";
+        hint = d.args?.replace_all === true ? "replace all" : "unique spot";
+        body = (
+          <>
+            <pre class="mono toolbody del">{truncate("- " + argStr("old_text"), 900)}</pre>
+            <pre class="mono toolbody add">{"+ " + truncate(argStr("new_text"), 900)}</pre>
+            {res ? (
+              <div class="meta">
+                {oneLine(out(), 120)} · {res.data?.durationMs}ms
+              </div>
+            ) : (
+              <div class="meta">applying…</div>
+            )}
+          </>
+        );
+        break;
+      }
+      case "apply_patch": {
+        const patchLines = argStr("patch").split("\n").filter((l) => l && !/^---$/.test(l.trim()));
+        const files = patchLines
+          .map((l) => l.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)?.[1])
+          .filter(Boolean) as string[];
+        label = files.length ? `${files.length} file${files.length > 1 ? "s" : ""}: ${oneLine(files.join(", "), 80)}` : "patch";
+        body = (
+          <>
+            <pre class="mono toolbody patch">
+              {patchLines.map((l) => {
+                const cls = l.startsWith("+") ? " add" : l.startsWith("-") ? " del" : /^\*\*\*|^@@/.test(l) ? " meta" : "";
+                return <div class={"pline" + cls}>{l.length > 240 ? l.slice(0, 240) + "…" : l}</div>;
+              })}
+            </pre>
+            {res ? <div class="meta">{oneLine(out().split("\n")[0] ?? "", 140)}{res.data?.ok === false ? " · FAILED" : ""}</div> : <div class="meta">validating…</div>}
+          </>
+        );
+        break;
+      }
+      case "list_dir": {
+        label = argStr("path") || ".";
+        body = resultBlock(4000);
+        break;
+      }
+      case "read_url": {
+        let host = argStr("url");
+        try { const u = new URL(host); host = u.host + u.pathname; } catch { /* keep raw */ }
+        label = oneLine(host, 70);
+        hint = "web";
+        body = (
+          <>
+            <div class="meta">
+              <a href={argStr("url")} target="_blank" rel="noopener noreferrer">open ↗</a>
+            </div>
+            {resultBlock(3000)}
+          </>
+        );
+        break;
+      }
+      case "load_skill": {
+        label = `skill: ${argStr("name")}`;
+        const mdBody = out().replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ""); // strip frontmatter
+        body = res ? (
+          <>
+            <div class="content" innerHTML={renderMarkdown(mdBody)} />
+            <div class="meta">{res.data?.durationMs}ms</div>
+          </>
+        ) : (
+          <div class="meta">loading…</div>
+        );
+        break;
+      }
+      case "save_skill": {
+        label = `skill: ${argStr("name")}`;
+        hint = oneLine(argStr("description"), 60);
+        const files = Array.isArray(d.args?.files) ? d.args.files.map((f: any) => f?.name).filter(Boolean) : [];
+        body = (
+          <>
+            {files.length ? <div class="meta">bundled: {files.join(", ")}</div> : null}
+            {res ? <div class="meta">{oneLine(out(), 160)} · {res.data?.durationMs}ms</div> : <div class="meta">saving…</div>}
+          </>
+        );
+        break;
+      }
+    }
+  } catch {
+    /* fall back to the generic view on anything unexpected */
+  }
+
+  return (
+    <details
+      class={"embed" + (res ? (res.data?.ok === false ? " fail" : " done") : " running")}
+      title={`${name}${hint ? " — " + hint : ""}`}
+    >
+      <summary>
+        <b>{icon} {label}</b>
+        <span class="meta">{res ? hint || "" : "running…"}</span>
+      </summary>
+      {body}
+    </details>
+  );
+}
+
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   const grouped =
@@ -779,6 +1126,13 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev }) {
             <span class="author" style={{ color: a.color }}>{a.name}</span>
             <span class="ts">{fmtTs(e.ts)}</span>
             <span class="ts">{e.branch}</span>
+            <Show when={props.onEdit}>
+              <button
+                class="editbtn"
+                title="edit this prompt — forks the conversation here (later events are dropped or summarized)"
+                onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onEdit!(); }}
+              >✎ edit</button>
+            </Show>
           </div>
         </Show>
 
@@ -811,30 +1165,8 @@ function SwitchContent(props: { e: Ev; res?: Ev }) {
           </Show>
         </>
       );
-    case "tool_call": {
-      const res = props.res;
-      const args = JSON.stringify(e.data.args, null, 1);
-      const preview = oneLine(JSON.stringify(e.data.args ?? {}), 110);
-      return (
-        <details class={"embed" + (res ? (res.data.ok ? " done" : " fail") : " running")}>
-          <summary>
-            <b>⚙ {String(e.data.name)}</b>
-            <span class="meta">
-              {res
-                ? oneLine(String(res.data.result ?? ""), 110)
-                : "running…"}
-            </span>
-          </summary>
-          <div class="mono">{args}</div>
-          <Show when={res}>
-            <div class="mono">{truncate(String(res!.data.result ?? ""), 4000)}</div>
-            <div class="meta">
-              {res!.data.durationMs}ms{res!.data.ok ? "" : " · FAILED"}
-            </div>
-          </Show>
-        </details>
-      );
-    }
+    case "tool_call":
+      return <ToolRow e={e} res={props.res} />;
     case "tool_result": {
       // orphan result (its call scrolled past the 300-event window)
       const out = String(e.data.result);
@@ -878,6 +1210,11 @@ function relTime(iso: string): string {
     : abs < 5_400_000 ? `${Math.round(abs / 60_000)}m`
     : `${(abs / 3_600_000).toFixed(1)}h`;
   return ms >= 0 ? `in ${unit}` : `${unit} ago`;
+}
+
+/** compact token counts: 12345 → "12k", 980 → "980" */
+function fmtK(n: number): string {
+  return n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
 /** single-line preview with collapsed whitespace */

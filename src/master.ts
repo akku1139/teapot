@@ -30,6 +30,8 @@ export interface AgentConfig {
   /** inline overrides win over the provider entry */
   baseUrl?: string;
   apiKey?: string;
+  /** optional: this model's context window, for the UI usage gauge */
+  contextWindowTokens?: number;
 }
 
 export interface TaskConfig {
@@ -56,6 +58,8 @@ export interface TeapotConfig {
   progressMinChars?: number;
   /** per-agent estimated-token history budget before compaction kicks in */
   contextTokenBudget?: number;
+  /** default model context window for agents that don't set their own */
+  contextWindowTokens?: number;
 }
 
 const CONFIG_DIR =
@@ -309,6 +313,9 @@ export class Master {
       ...(this.config.progressMinChars ? { progressMinChars: this.config.progressMinChars } : {}),
       autoContinue: true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
+      ...(ac.contextWindowTokens || this.config.contextWindowTokens
+        ? { contextWindowTokens: (ac.contextWindowTokens ?? this.config.contextWindowTokens)! }
+        : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
       provider: provName,
     });
