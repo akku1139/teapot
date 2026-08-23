@@ -84,12 +84,6 @@ export default function App() {
   const [branches, setBranches] = createSignal<any[]>([]);
   const [metrics, setMetrics] = createSignal<any>(null);
   const [draft, setDraft] = createSignal("");
-  // persisted: "0" means the user explicitly turned auto-start off
-  const [autoStart, setAutoStart] = createSignal(localStorage.getItem("teapot.autostart") !== "0");
-  const setAutoStartPersist = (v: boolean) => {
-    setAutoStart(v);
-    localStorage.setItem("teapot.autostart", v ? "1" : "0");
-  };
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
   const [showCfg, setShowCfg] = createSignal(false);
@@ -167,8 +161,16 @@ export default function App() {
   });
   onCleanup(() => clearTimeout(liveRenderTimer));
 
-  // NOTE: createMemo factories run IMMEDIATELY at declaration — anything they
-  // read must be declared ABOVE them (createEffect is deferred, memos are not)
+  // auto-scroll the feed when live reasoning grows and we're at the bottom
+  createEffect(() => {
+    const txt = liveText();
+    if (!txt) return;
+    if (!atBottom()) return;
+    // wait for the DOM to paint the new text
+    requestAnimationFrame(() => {
+      if (nearBottom()) scrollBottom(true);
+    });
+  });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
   // prompt being edited → edit-prompt fork dialog
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
@@ -358,6 +360,45 @@ export default function App() {
     return out;
   }
 
+  // upward pagination: prepend the page before the oldest loaded id
+  const [loadingOlder, setLoadingOlder] = createSignal(false);
+  const [olderDone, setOlderDone] = createSignal(false);
+
+  /** merge fetched page into state by id, seq-ascending, refs stabilized */
+  function mergeEvents(incoming: Ev[]): void {
+    setEvents((prev) => {
+      const map = new Map<string, Ev>();
+      for (const e of prev) map.set(e.id, e);
+      for (const e of stabilize(incoming)) if (!map.has(e.id)) map.set(e.id, e);
+      return [...map.values()].sort((a, b) => a.seq - b.seq);
+    });
+  }
+
+  async function loadOlder(): Promise<void> {
+    const id = selected();
+    const oldest = events()[0];
+    if (!id || !oldest || loadingOlder() || olderDone()) return;
+    setLoadingOlder(true);
+    try {
+      const f = feedEl();
+      const prevH = f?.scrollHeight ?? 0;
+      const prevTop = f?.scrollTop ?? 0;
+      const bf = branchFilter();
+      const res = await api(
+        `/api/agents/${id}/events?limit=300&before=${encodeURIComponent(oldest.id)}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`,
+      );
+      const page: Ev[] = res.events ?? [];
+      if (page.length === 0) { setOlderDone(true); return; }
+      mergeEvents(page);
+      // keep the viewport anchored to the same content after prepending
+      requestAnimationFrame(() => {
+        const el = feedEl();
+        if (el) el.scrollTop = prevTop + (el.scrollHeight - prevH);
+      });
+    } catch { /* transient — user can scroll up again */ }
+    finally { setLoadingOlder(false); }
+  }
+
   async function loadEvents(id: string) {
     try {
       const bf = branchFilter();
@@ -366,7 +407,14 @@ export default function App() {
         api(`/api/agents/${id}/branches`),
         api(`/api/agents/${id}/skills`).catch(() => ({ skills: [] })),
       ]);
-      setEvents(stabilize(ev.events));
+      setEvents((prev) => {
+        // tail refresh: union-merge so prepended older pages survive, and
+        // stabilize() keeps unchanged rows reference-identical (no re-mounts)
+        const map = new Map<string, Ev>();
+        for (const e of prev) map.set(e.id, e);
+        for (const e of stabilize(ev.events)) map.set(e.id, e);
+        return [...map.values()].sort((a, b) => a.seq - b.seq);
+      });
       setEventsTotal(ev.total ?? ev.events.length);
       setBranches(br.branches);
       setAgentSkills(sk.skills ?? []);
@@ -390,6 +438,8 @@ export default function App() {
     setSelected(id);
     setLive(null);
     setBranchFilter(null);
+    setOlderDone(false);
+    setLoadingOlder(false);
     setPendingMsgs([]);
     localStorage.setItem("teapot.session", id);
     navigate(id, push);
@@ -705,17 +755,19 @@ export default function App() {
   });
 
   /** post a raw prompt (used by composer AND question-option taps) */
-  const sendText = async (text: string) => {
-    const id = selected();
+  const sendText = async (text: string, targetId?: string) => {
+    const id = targetId ?? selected();
     if (!id) return;
     try {
       await api(`/api/agents/${id}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, start: autoStart() }),
+        body: JSON.stringify({ text, start: true }),
       });
       // optimistic echo — replaced by the logged event once the feed catches up
       setPendingMsgs((l) => [...l, { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now() }]);
+      // scroll to bottom after our message appears
+      requestAnimationFrame(() => scrollBottom(true));
     } catch (ex) {
       setDraft(text); // never eat the user's message on a failed send
       console.error("send failed:", ex);
@@ -750,7 +802,7 @@ export default function App() {
           await api(`/api/agents/${encodeURIComponent(name)}/prompt`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ text: arg, start: autoStart() }),
+            body: JSON.stringify({ text: arg, start: true }),
           });
           flashHint(`→ delivered to @${name}`);
           setDraft("");
@@ -934,7 +986,22 @@ export default function App() {
             </span>
           </header>
 
-          <div class="feed" onscroll={() => { const nb = nearBottom(); if (nb && missed()) setMissed(0); setAtBottom(nb); }}>
+          <div class="feed" onscroll={(e) => {
+            const el = e.currentTarget;
+            const nb = nearBottom();
+            if (nb && missed()) setMissed(0);
+            setAtBottom(nb);
+            // reached the top → pull the next older page (infinite scroll up)
+            if (el.scrollTop <= 4 && selected() && !loadingOlder() && !olderDone() && events().length > 0) {
+              void loadOlder();
+            }
+          }}>
+            <Show when={olderDone() && chatEvents().length > 0}>
+              <div class="divider-msg">── beginning of log ──</div>
+            </Show>
+            <Show when={loadingOlder()}>
+              <div class="divider-msg">loading older events…</div>
+            </Show>
             <Show when={chatEvents().length > 0} fallback={
               <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
             }>
@@ -1088,14 +1155,14 @@ export default function App() {
       {/* ---------- right bar ---------- */}
       <aside class={"rightbar" + (showRight() ? " open" : "")}>
         <Show when={sel()}>
-          <h3>🎛 session</h3>
+          <h3 title="identity + storage locations for this agent">🎛 session</h3>
           <div class="card sesscard">
             <div class="sessrow"><span class="k">agent</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
             <div class="sessrow"><span class="k">workspace</span><span class="mono ellip" title={sel()!.workspace}>{sel()!.workspace}</span></div>
             <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
           </div>
 
-          <h3>🧦 model</h3>
+          <h3 title="switch provider/model live — applies from the agent's next turn; the list shows context window & pricing from the provider">🧦 model</h3>
           <div class="modelbox">
             <select
               value={modelProvider()}
@@ -1198,16 +1265,23 @@ export default function App() {
           </div>
           <div class="ctrlrow">
             <label
-              title="after each round the agent keeps working toward its goal without waiting for input; sending a prompt also starts an idle agent"
+              title="auto-continue fires after a round ONLY when all hold: ① this toggle is on ② a goal is set and its status is 'active' ③ the round ended cleanly (no error / not stopped). It stops when the goal is marked done, or if you press ■ stop. Sending any prompt also starts an idle agent regardless."
             >
               <input
                 type="checkbox"
-                checked={autoStart()}
-                onchange={(e) => setAutoStartPersist(e.currentTarget.checked)}
+                checked={sel()!.autoContinue ?? true}
+                onchange={(e) => {
+                  if (!selected()) return;
+                  api(`/api/agents/${selected()}/auto-continue`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ value: e.currentTarget.checked }),
+                  }).then(refreshAgents);
+                }}
               />
               auto-continue
             </label>
-            <span class="muted">loops while the goal is active</span>
+            <span class="muted">loops while goal is active · stops on done / stop</span>
           </div>
 
           <h3>🎯 goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
@@ -1236,7 +1310,7 @@ export default function App() {
             <Show when={!sel()!.goal.text}> set one and tick ▶ start to begin</Show>
           </div>
 
-          <h3>✅ tasks <span class="muted" style="text-transform:none;letter-spacing:0">· todo.md, editable by you and the agent</span></h3>
+          <h3 title="todo.md — saved to the session dir. With notify on, the agent is told at its next turn boundary and will work through these items">✅ tasks <span class="muted" style="text-transform:none;letter-spacing:0">· todo.md, editable by you and the agent</span></h3>
           <textarea
             id="todo-input"
             class="mono"
@@ -1264,7 +1338,7 @@ export default function App() {
             >✓ save tasks</button>
           </div>
 
-          <h3>📈 progress</h3>
+          <h3 title="latest report_progress snapshot. The harness asks for one after real activity (time AND output gates); errors show under ⚠ problems">📈 progress</h3>
           <Show
             when={sel()!.latestProgress}
             fallback={<div class="muted">none yet — the harness asks for a report after real activity, and the agent can report_progress anytime</div>}
@@ -1281,7 +1355,7 @@ export default function App() {
             )}
           </Show>
 
-          <h3>📊 runtime</h3>
+          <h3 title="tokens in/out are cumulative billed totals · cached % rode the provider prompt cache · context % turns orange ≥70% and red ≥85% of the model window">📊 runtime</h3>
           <div class="card muted">
             turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls} · compacted {sel()!.stats.compactions ?? 0}
             {"\n"}tokens in/out {fmtK(sel()!.stats.inputTokens)}/{fmtK(sel()!.stats.outputTokens)}
@@ -1290,15 +1364,31 @@ export default function App() {
             </Show>
             <Show when={sel()!.ctx}>
               {(c) => {
-                const pct = Math.min(999, Math.round((c().usedTokens / c().window) * 100));
-                const cls =
-                  !c().window ? "" : pct >= 85 ? " ctxcrit" : pct >= 70 ? " ctxwarn" : "";
+                // find model metadata for actual context window
+                const modelMeta = models().find((m) => m.id === sel()!.model);
+                const modelWindow = modelMeta?.contextLength;
+                const effectiveWindow = c().window || modelMeta?.contextLength;
+                const effectivePct = effectiveWindow
+                  ? Math.min(999, Math.round((c().usedTokens / effectiveWindow) * 100))
+                  : null;
+                const pctCls =
+                  !effectiveWindow
+                    ? ""
+                    : effectivePct >= 85
+                    ? " ctxcrit"
+                    : effectivePct >= 70
+                    ? " ctxwarn"
+                    : "";
                 return (
                   <>
                     {"\n"}context ~{fmtK(c().usedTokens)} tok
-                    <Show when={c().window}>
+                    <Show when={c().window || modelMeta?.contextLength}>
                       {" · "}
-                      <span class={cls.trim()}>{pct}% of {fmtK(c().window)}</span>
+                      <span class={pctCls.trim()}>
+                        {effectiveWindow
+                          ? `${pct}% of {fmtK(effectiveWindow)} (model window)`
+                          : `${pct}% of {fmtK(c().window)} (budget)`}
+                      </span>
                     </Show>
                     {"\n"}compaction at ~{fmtK(c().compactAt)} tok (older turns summarized)
                   </>
@@ -1725,7 +1815,25 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
           <div>❓ {String(e.data?.question ?? "")}</div>
           <Show when={opts.length > 0}>
             <div class="qopts">
-              <For each={opts}>{(o) => <button class="qopt" onclick={() => props.onOption?.(o)}>{o}</button>}</For>
+              <For each={opts}>
+                {(o) => (
+                  <button
+                    class="qopt"
+                    onclick={() => {
+                      const actor = e.data?.actor;
+                      if (actor) {
+                        void api(`/api/agents/${encodeURIComponent(String(actor))}/prompt`, {
+                          method: "POST",
+                          headers: { "content-type": "application/json" },
+                          body: JSON.stringify({ text: o, start: true }),
+                        }).then(() => flashHint(`→ answered @${String(e.data.actor)}`)).catch(() => flashHint("answer failed"));
+                      } else {
+                        props.onOption?.(o);
+                      }
+                    }}
+                  >{o}</button>
+                )}
+              </For>
             </div>
           </Show>
           <div class="meta">the agent is waiting for your reply — answer below or tap an option</div>
@@ -1943,7 +2051,7 @@ function SetupWizard(props: { onDone: () => void }) {
             <label>workspace directory
               <input type="text" class="w100 mono" value={workspace()} oninput={(e) => setWorkspace(e.currentTarget.value)} />
             </label>
-            <label style="margin-top:4px">protect the API with a password? <input type="password" class="w100" value={password()} oninput={(e) => setPassword(e.currentTarget.value)} placeholder="(optional — LAN traffic is still plain HTTP)" /></label>
+            <label style="margin-top:4px" title="asks for this password when opening the UI or API from another machine — plain-HTTP LAN traffic is NOT encrypted">protect the API with a password? <input type="password" class="w100" value={password()} oninput={(e) => setPassword(e.currentTarget.value)} placeholder="(optional — LAN traffic is still plain HTTP)" /></label>
           </fieldset>
           <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
           <button type="submit" disabled={busy()} style="background:var(--acc);border:none;border-radius:8px;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer">

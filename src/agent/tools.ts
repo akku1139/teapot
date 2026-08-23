@@ -33,6 +33,12 @@ export interface ToolContext {
     list(): { id: string; status: string; goal: string }[];
     stop(ids?: string[]): Promise<{ stopped: string[] }>;
     message(id: string, text: string): Promise<void>;
+    /**
+     * Suspend until at least one listed sub-agent settles (finish/error/
+     * stop/waiting) or the timeout lapses. Event-driven — costs nothing
+     * while parked.
+     */
+    wait(ids: string[] | undefined, timeoutMs: number): Promise<{ note: string }>;
   };
 }
 
@@ -818,7 +824,7 @@ export const TOOLS: ToolDef[] = [
           context,
           name: str(args.name).trim() || undefined,
         });
-        return { ok: true, result: `spawned sub-agent ${r.id} — it works in parallel; use list_children / message_agent to steer it, stop_children to halt` };
+        return { ok: true, result: `spawned sub-agent ${r.id} — park with wait_children() until it reports (never bash sleep), steer via message_agent, halt via stop_children` };
       } catch (e) {
         return { ok: false, result: `spawn failed: ${(e as Error).message}` };
       }
@@ -860,6 +866,32 @@ export const TOOLS: ToolDef[] = [
         ok: true,
         result: r.stopped.length ? `stopped: ${r.stopped.join(", ")}` : "(nothing running to stop)",
       };
+    },
+  },
+  {
+    name: "wait_children",
+    description:
+      "Park until at least one sub-agent settles (finished, errored, stopped, or asks you a question) — " +
+      "or until the timeout lapses. Costs zero tokens while parked: prefer this over bash sleep when " +
+      "waiting on spawned work. The settling child's report is delivered to you afterwards.",
+    parameters: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "string" }, description: "sub-agent ids; omit for all" },
+        timeout_ms: { type: "number", description: "default 300000 (5 min), max 3600000" },
+      },
+    },
+    async run(args, ctx) {
+      const sa = ctx.subAgents;
+      if (!sa) return { ok: false, result: "sub-agents are not available here" };
+      const ids = Array.isArray(args.ids) ? args.ids.map(String) : undefined;
+      const ms = Math.min(Math.max(num(args.timeout_ms, 300_000), 1_000), 3_600_000);
+      try {
+        const r = await sa.wait(ids, ms);
+        return { ok: true, result: r.note };
+      } catch (e) {
+        return { ok: false, result: `wait failed: ${(e as Error).message}` };
+      }
     },
   },
   {

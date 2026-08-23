@@ -585,6 +585,7 @@ export class Agent {
       todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
       parent: this.opts.parent,
       awaiting: this.awaitingUser,
+      autoContinue: this.opts.autoContinue,
     };
   }
 
@@ -842,6 +843,16 @@ export class Agent {
         if (this.stopRequested) return finished;
         if (call.function.name === "finish") {
           await this.handleFinish(call.function.arguments);
+          // surface still-running children so the operator knows work may
+          // continue after this agent goes idle
+          try {
+            const running = (this.toolCtx.subAgents?.list?.() ?? []).filter((k) => k.status === "running");
+            if (running.length)
+              await this.log.append("system_note", this.currentSession, this.currentBranch, {
+                event: "subs-still-running",
+                detail: running.map((k) => `${k.id} (${k.status})`).join(", "),
+              });
+          } catch { /* best-effort notice */ }
           // answer the tool_call so a follow-up round stays API-valid
           await this.answerMeta(
             call,

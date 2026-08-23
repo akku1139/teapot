@@ -454,6 +454,21 @@ export function buildApp(master: Master): Hono {
     }
   });
 
+  // per-agent auto-continue toggle (loops toward an active goal)
+  app.post("/api/agents/:id/auto-continue", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req.json<{ value?: boolean }>().catch(() => null);
+    if (!body || typeof body.value !== "boolean")
+      return c.json({ error: "boolean value required" }, 400);
+    const ac = master.config.agents.find((x) => x.id === c.req.param("id"));
+    if (ac) ac.autoContinue = body.value;
+    (a as unknown as { opts: { autoContinue: boolean } }).opts.autoContinue = body.value;
+    master.saveConfig();
+    bus.emit("update", { kind: "agent-update", agentId: c.req.param("id") });
+    return c.json({ ok: true, value: body.value });
+  });
+
   // default sub-agent personas for @mentions and spawn_agent
   app.get("/api/personas", (c) =>
     c.json({
@@ -549,6 +564,13 @@ export function buildApp(master: Master): Hono {
     const session = c.req.query("session");
     if (branch) events = events.filter((e) => e.branch === branch);
     if (session) events = events.filter((e) => e.session === session);
+    // cursor pagination for older pages: everything strictly BEFORE this id
+    const before = c.req.query("before");
+    if (before) {
+      const idx = events.findIndex((e) => e.id === before);
+      events = idx === -1 ? [] : events.slice(0, idx);
+      return c.json({ events: events.slice(-limit), total: events.length });
+    }
     return c.json({ events: events.slice(-limit), total: events.length });
   });
 

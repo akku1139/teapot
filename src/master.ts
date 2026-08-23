@@ -89,6 +89,8 @@ export interface AgentConfig {
   chatFn?: ChatFn;
   /** restrict to read-only tools (set automatically for read-only personas) */
   readOnly?: boolean;
+  /** keep looping toward an active goal after each round (default true) */
+  autoContinue?: boolean;
 };
 
 export interface TaskConfig {
@@ -264,6 +266,7 @@ export class Master {
     lastRunMin: number;
     lastRunAt?: number;
   }[] = [];
+  private childWaiters = new Map<string, Set<(note: string) => void>>();
   private startedAt = Date.now();
   readonly config: TeapotConfig;
   readonly configPath: string;
@@ -279,7 +282,7 @@ export class Master {
   }
 
   /** Persist current logical config back to disk (lossless via raw user config). */
-  private saveConfig(): void {
+  saveConfig(): void {
     this.raw.agents = this.config.agents;
     this.raw.providers = this.config.providers;
     this.raw.defaultProvider = this.config.defaultProvider;
@@ -470,7 +473,7 @@ export class Master {
       sessionDir,
       progressIntervalMs: this.config.progressIntervalMs,
       ...(this.config.progressMinChars ? { progressMinChars: this.config.progressMinChars } : {}),
-      autoContinue: true,
+      autoContinue: ac.autoContinue ?? true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
       ...(ac.contextWindowTokens || this.config.contextWindowTokens || inferredWindow
         ? {
@@ -512,6 +515,8 @@ export class Master {
           })),
         stop: (ids?: string[]) => this.stopChildrenFor(ac.id, ids),
         message: (id: string, text: string) => this.messageChild(ac.id, id, text),
+        wait: (ids: string[] | undefined, ms: number) =>
+          this.waitChildren(ac.id, ids, ms),
       };
       (
         agent as unknown as {
@@ -653,6 +658,75 @@ export class Master {
   }
 
   /** Deliver a parent's message into a child's mailbox (and wake it). */
+  /**
+   * Event-driven parking for a parent waiting on sub-agents: resolves as soon
+   * as ANY listed child settles (finish/error/stop/waiting) — zero API cost
+   * while parked. Falls back to a timeout so waits can never hang forever.
+   */
+  waitChildren(
+    parentId: string,
+    ids: string[] | undefined,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<{ note: string }> {
+    const targets = (ids && ids.length
+      ? ids
+      : this.childrenOf(parentId).map((c) => c.id)
+    ).filter((id) => this.agents.has(id));
+    if (targets.length === 0)
+      return Promise.resolve({ note: "no live sub-agents to wait for" });
+
+    const active = () =>
+      targets.filter((id) => {
+        const s = this.agents.get(id)?.status;
+        return s === "running" || s === "waiting";
+      });
+
+    const first = active();
+    if (first.length === 0)
+      return Promise.resolve({ note: `all sub-agents already settled: ${targets.join(", ")}` });
+
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (note: string) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        set.delete(wake);
+        signal?.removeEventListener("abort", onAbort);
+        resolve({ note });
+      };
+      const onAbort = () => finish("aborted while waiting");
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const timer = setTimeout(() => {
+        const left = active();
+        finish(`timeout after ${Math.round(timeoutMs / 1000)}s — still running: ${left.join(", ") || "(none)"}`);
+      }, timeoutMs);
+
+      const wake = (_note?: string) => {
+        const left = active();
+        if (left.length > 0) return; // something is still working — keep parked
+        clearTimeout(timer);
+        finish(`all sub-agents settled: ${targets.join(", ")}`);
+      };
+
+      const set = this.childWaiters.get(parentId) ?? new Set();
+      if (!this.childWaiters.has(parentId)) this.childWaiters.set(parentId, set);
+      set.add(wake);
+      // re-check immediately: children may have settled between snapshot & register
+if (active().length === 0) wake();
+    });
+  }
+
+  /** wake every waiter of a parent (child lifecycle event happened) */
+  private wakeParentWaiters(parentId: string): void {
+    const set = this.childWaiters.get(parentId);
+    if (!set) return;
+    for (const fn of [...set]) {
+      try { fn("child event"); } catch { /* ignore */ }
+    }
+  }
+
   private async messageChild(parentId: string, childId: string, text: string): Promise<void> {
     const cfg = this.config.agents.find((a) => a.id === childId);
     if (!cfg || cfg.parent !== parentId) throw new Error(`not your sub-agent: ${childId}`);
@@ -669,7 +743,10 @@ export class Master {
   private onChildEvent(ac: { parent?: string; id: string }, e: { type: string; data: unknown; agent: string }): void {
     const parentId = ac.parent;
     if (!parentId) return;
-    const parent = this.agents.get(parentId);
+    // any child lifecycle movement wakes a parked wait_children (the waiter
+    // re-checks whether its targets are all settled)
+    if (parentId) this.wakeParentWaiters(parentId);
+    const parent = this.agents.get(parentId!);
     if (!parent) return;
 
     // forward outcomes so the parent hears the result without polling
