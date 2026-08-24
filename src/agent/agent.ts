@@ -117,7 +117,10 @@ Session state is not injected into prompts — fetch it with tools instead:
   save_skill(name, description, content, files=[{name, content}]) so future
   sessions can load_skill them — helper scripts go through files and are made
   executable automatically.
-- When you make meaningful progress, call report_progress.
+- When you make meaningful progress, call report_progress. Its output is
+  shown to the operator directly (rendered as markdown in the progress
+  panel) — do NOT also repeat the same content as a chat message; end the
+  turn right after the call (a short "reported." is fine).
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
 
 export class Agent {

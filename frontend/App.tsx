@@ -387,10 +387,32 @@ export default function App() {
         expanded.push({ ...e, type: kind, data: { ...d?.data, actor: d?.sub } });
       } else expanded.push(e);
     }
+    // DEDUPE: models often end a report_progress turn by repeating the very
+    // same content as an ordinary assistant message. When a message follows
+    // its progress event with essentially identical text, drop the message —
+    // the progress embed already shows it (rendered).
+    const norm = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+    const deduped: Ev[] = [];
+    for (let i = 0; i < expanded.length; i++) {
+      const e = expanded[i]!;
+      if (
+        e.type === "message" &&
+        e.data?.role === "assistant" &&
+        expanded[i - 1]?.type === "progress"
+      ) {
+        const p = expanded[i - 1]!.data;
+        const body = norm(e.data.content);
+        const same =
+          body.includes(norm(p.doing)) ||
+          (!!p.recent && body.includes(norm(p.recent)));
+        if (same && body.length <= Math.max(200, norm(p.doing).length * 3)) continue;
+      }
+      deduped.push(e);
+    }
     // append optimistic echoes not yet present in the log
     const pend = pendingMsgs().filter(
       (p) =>
-        !expanded.some(
+        !deduped.some(
           (e) =>
             e.type === "prompt" &&
             e.data?.source === "user" &&
@@ -410,7 +432,7 @@ export default function App() {
       type: "prompt",
       data: { source: "user", text: p.text, pending: true },
     }));
-    return [...expanded, ...echoes];
+    return [...deduped, ...echoes];
   });
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
   // password auth: any 401 from /api/* flips this on → login overlay
@@ -2526,10 +2548,13 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
     case "progress":
       return (
         <div class="embed" style="border-color: var(--ok)">
-          <div>📈 {String(e.data.doing ?? "")}</div>
-          <Show when={e.data.recent}><div class="meta">{String(e.data.recent)}</div></Show>
-          <Show when={e.data.problems}><div class="meta">⚠ {String(e.data.problems)}</div></Show>
-          <Show when={e.data.next}><div class="meta">→ {String(e.data.next)}</div></Show>
+          {/* progress bodies are model-written markdown — render them, don't
+              dump raw text (structured fields keep their labels) */}
+          <div>📈 <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.doing ?? ""))} /></div>
+          <Show when={e.data.goalStatus}><div class="progrow"><b>goal</b><span>{String(e.data.goalStatus)}</span></div></Show>
+          <Show when={e.data.recent}><div class="progrow"><b>recent</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.recent))} /></div></Show>
+          <Show when={e.data.problems}><div class="progrow warn"><b>⚠ problems</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.problems))} /></div></Show>
+          <Show when={e.data.next}><div class="progrow"><b>next</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.next))} /></div></Show>
         </div>
       );
     case "error":

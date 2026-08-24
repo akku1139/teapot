@@ -47,6 +47,8 @@ export interface ToolContext {
    */
   onIdlePark?: (reason: string) => void;
   onIdleUnpark?: () => void;
+  /** re-arm the progress-report gate (waiting on children is not activity) */
+  onProgressGateReset?: () => void;
 }
 
 export interface ToolResult {
@@ -896,9 +898,13 @@ export const TOOLS: ToolDef[] = [
       // park VISIBLY: the UI shows idle ("waiting on sub-agents") instead of a
       // running spinner, and any user prompt / stop wakes us instantly
       ctx.onIdlePark?.(`waiting on sub-agent${ids?.length === 1 ? ` ${ids[0]}` : "s"}`);
+      // the child's report is about to land in our mailbox — a progress report
+      // right after it would be pure noise, so re-arm the gate here
+      ctx.onProgressGateReset?.();
       try {
         const r = await sa.wait(ids, ms);
         ctx.onIdleUnpark?.();
+        ctx.onProgressGateReset?.(); // also after: waiting itself isn't "activity"
         return { ok: true, result: r.note };
       } catch (e) {
         ctx.onIdleUnpark?.();

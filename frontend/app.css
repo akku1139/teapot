@@ -374,6 +374,17 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
   color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .05em;
   min-width: 62px; padding-top: 2px; flex-shrink: 0;
 }
+/* progress embed rows reuse the .progrow layout with markdown bodies */
+.embed .progrow { display: flex; gap: 8px; margin-bottom: 4px; }
+.embed .progrow b {
+  color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .05em;
+  min-width: 62px; padding-top: 2px; flex-shrink: 0;
+}
+.embed .progrow span { min-width: 0; }
+/* inline markdown inside a labelled row (progress embeds) */
+.inline-md { display: inline; }
+.inline-md > :first-child { margin-top: 0; }
+.inline-md > :last-child { margin-bottom: 0; }
 .prog .progrow.warn span { color: var(--err); }
 /* edit affordance on user prompts */
 .msg-head .editbtn {
