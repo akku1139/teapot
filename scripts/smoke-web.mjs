@@ -156,6 +156,8 @@ async function waitFor(label, predicate, deadlineMs = 8000) {
     await new Promise((r) => setTimeout(r, 50));
   }
   console.error(`DEEP RENDER TIMEOUT: ${label} never became true`);
+  if (process.env.SMOKE_DEBUG)
+    console.error("BODY:", JSON.stringify(bodyText().slice(0, 2500)));
   return false;
 }
 
@@ -166,16 +168,18 @@ if (!(await waitFor("agent list", () => bodyText().includes("alpha")))) process.
 console.log("deep render ok: sidebar shows agent");
 
 // …and the runtime panel must render its ctx gauge (the regression site):
-// used 123456 / window 200000 → exactly "62% of 200k (model window)"
-if (!(await waitFor("runtime gauge", () => bodyText().includes("(model window)")))) process.exit(1);
-if (!/\b62% of 200k \(model window\)/.test(bodyText())) {
-  console.error(
-    "DEEP RENDER MISMATCH: gauge text wrong →",
-    JSON.stringify(bodyText().match(/.{0,40}model window/) ?? []),
-  );
-  process.exit(1);
+// used 123456 / window 200000 → exactly "62% of 200k"
+if (!(await waitFor("runtime gauge", () => bodyText().includes("62% of 200k")))) process.exit(1);
+console.log("deep render ok: context gauge shows '62% of 200k'");
+
+// stats grid + cached pill + compaction line from the redesigned runtime card
+for (const marker of ["turns", "in / 2.0k out", "60% cached"]) {
+  if (!bodyText().includes(marker)) {
+    console.error(`DEEP RENDER MISSING RUNTIME STAT: ${marker}`);
+    process.exit(1);
+  }
 }
-console.log("deep render ok: context gauge shows '62% of 200k (model window)'");
+console.log("deep render ok: runtime stats present");
 
 // feed rows rendered through the markdown/tool-embed pipeline
 const feedText = await waitFor("feed rows", () =>

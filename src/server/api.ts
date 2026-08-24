@@ -14,6 +14,51 @@ import { SUB_PERSONAS } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
 import type { ProviderConfig } from "../master.ts";
 import { providerHeaders } from "../agent/llm.ts";
+import { safeJoin } from "../agent/tools.ts";
+
+interface ModelEntry {
+  id: string;
+  contextLength?: number;
+  pricing?: { prompt: number; completion: number };
+}
+
+/** GET <baseUrl>/models on any OpenAI-compatible endpoint (id + ctx window + pricing). */
+async function listModels(
+  baseUrl: string,
+  apiKey?: string,
+): Promise<ModelEntry[]> {
+  const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
+    headers: {
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      ...providerHeaders(baseUrl), // OpenRouter app attribution
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`upstream ${res.status}`);
+  // OpenRouter-style entries carry context_length + per-token pricing —
+  // surface them so the UI can show what each model offers
+  const j = (await res.json()) as {
+    data?: {
+      id?: string;
+      context_length?: number;
+      pricing?: { prompt?: string | number; completion?: string | number };
+    }[];
+  };
+  return (j.data ?? [])
+    .map((m) => ({
+      id: typeof m.id === "string" ? m.id : "",
+      contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
+      pricing:
+        m.pricing && (m.pricing.prompt !== undefined || m.pricing.completion !== undefined)
+          ? {
+              prompt: Number(m.pricing.prompt ?? 0),
+              completion: Number(m.pricing.completion ?? 0),
+            }
+          : undefined,
+    }))
+    .filter((m) => m.id)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
 import path from "node:path";
 import { bus } from "../bus.ts";
 import { readEvents } from "../log/events.ts";
@@ -225,6 +270,71 @@ export function buildApp(master: Master): Hono {
     }
   });
 
+  // ---- workspace file tree (read-only, powers the 🗂 files panel) ----
+  app.get("/api/agents/:id/tree", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const rel = c.req.query("path") || ".";
+    let abs: string;
+    try {
+      abs = safeJoin(a.workspace, rel);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    let dirents;
+    try {
+      dirents = await fs.readdir(abs, { withFileTypes: true });
+    } catch {
+      return c.json({ error: "cannot read directory" }, 400);
+    }
+    const entries: { name: string; dir: boolean; size?: number }[] = [];
+    for (const d of dirents) {
+      if (d.name.startsWith(".")) continue; // hidden files stay out of the tree
+      const isDir = d.isDirectory();
+      let size: number | undefined;
+      if (!isDir) {
+        try {
+          size = (await fs.stat(path.join(abs, d.name))).size;
+        } catch {
+          /* vanished mid-scan — fine */
+        }
+      }
+      entries.push({ name: d.name, dir: isDir, ...(size !== undefined ? { size } : {}) });
+    }
+    entries.sort((x, y) => (x.dir !== y.dir ? (x.dir ? -1 : 1) : x.name.localeCompare(y.name)));
+    return c.json({
+      path: rel === "." ? "" : rel,
+      workspace: a.workspace,
+      entries,
+    });
+  });
+
+  // small text-file preview for the tree (binary-safe guard, hard cap)
+  app.get("/api/agents/:id/file", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const rel = c.req.query("path") ?? "";
+    if (!rel.trim()) return c.json({ error: "path required" }, 400);
+    let abs: string;
+    try {
+      abs = safeJoin(a.workspace, rel);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    try {
+      const buf = await fs.readFile(abs);
+      if (buf.subarray(0, 8192).includes(0))
+        return c.json({ path: rel, binary: true, content: "" });
+      return c.json({
+        path: rel,
+        truncated: buf.length > 100_000,
+        content: buf.subarray(0, 100_000).toString("utf8"),
+      });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
   // ---- config (view/edit from the web UI) ----
   app.get("/api/config", (c) => {
     const mask = (p: Record<string, { baseUrl: string; apiKey?: string; model?: string }> | undefined) =>
@@ -335,38 +445,23 @@ export function buildApp(master: Master): Hono {
     const prov = master.config.providers?.[provName];
     if (!prov?.baseUrl) return c.json({ error: `unknown provider: ${provName}` }, 400);
     try {
-      const res = await fetch(`${prov.baseUrl.replace(/\/+$/, "")}/models`, {
-        headers: {
-          ...(prov.apiKey ? { authorization: `Bearer ${prov.apiKey}` } : {}),
-          ...providerHeaders(prov.baseUrl), // OpenRouter app attribution
-        },
-        signal: AbortSignal.timeout(15_000),
+      return c.json({ provider: provName, models: await listModels(prov.baseUrl, prov.apiKey) });
+    } catch (err) {
+      return c.json({ error: `model list failed: ${(err as Error).message}` }, 502);
+    }
+  });
+
+  // Model discovery DURING first-run setup — the config file doesn't exist
+  // yet, so there are no named providers to ask for. Takes the raw endpoint
+  // + key the operator is typing in the wizard and proxies GET /models.
+  app.get("/api/setup/models", async (c) => {
+    if (master.configFileExists) return c.json({ error: "setup already completed" }, 409);
+    const baseUrl = c.req.query("baseUrl") ?? "";
+    if (!/^https?:\/\//.test(baseUrl)) return c.json({ error: "valid baseUrl required" }, 400);
+    try {
+      return c.json({
+        models: await listModels(baseUrl, c.req.query("apiKey") || undefined),
       });
-      if (!res.ok) return c.json({ error: `upstream ${res.status}` }, 502);
-      // OpenRouter-style entries carry context_length + per-token pricing —
-      // surface them so the model switcher can show what each model offers
-      const j = (await res.json()) as {
-        data?: {
-          id?: string;
-          context_length?: number;
-          pricing?: { prompt?: string | number; completion?: string | number };
-        }[];
-      };
-      const models = (j.data ?? [])
-        .map((m) => ({
-          id: typeof m.id === "string" ? m.id : "",
-          contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
-          pricing:
-            m.pricing && (m.pricing.prompt !== undefined || m.pricing.completion !== undefined)
-              ? {
-                  prompt: Number(m.pricing.prompt ?? 0),
-                  completion: Number(m.pricing.completion ?? 0),
-                }
-              : undefined,
-        }))
-        .filter((m) => m.id)
-        .sort((a, b) => a.id.localeCompare(b.id));
-      return c.json({ provider: provName, models });
     } catch (err) {
       return c.json({ error: `model list failed: ${(err as Error).message}` }, 502);
     }

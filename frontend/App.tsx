@@ -303,6 +303,19 @@ export default function App() {
     }
   };
 
+  /** count markdown checkboxes ("- [ ]" / "- [x]") in the draft for the progress pill */
+  const todoStats = createMemo(() => {
+    let total = 0;
+    let done = 0;
+    for (const line of todoDraft().split("\n")) {
+      const m = line.match(/^\s*[-*+] \[([ xX])\]/);
+      if (!m) continue;
+      total++;
+      if (m[1]!.toLowerCase() === "x") done++;
+    }
+    return { total, done };
+  });
+
   const refreshAgents = () => api("/api/agents").then((d) => setAgents(d.agents)).catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
 
@@ -1288,8 +1301,47 @@ export default function App() {
             <span class="muted">loops while goal is active · stops on done / stop</span>
           </div>
 
-          <h3>🎯 goal <span class={`badge ${sel()!.goal.status === "done" ? "done" : ""}`}>{sel()!.goal.status}</span></h3>
-          <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px">
+          <h3 title="what the agent is working toward — auto-continue keeps looping while the status is 'active'">🎯 goal
+            <span class={`badge ${sel()!.goal.status === "active" ? "running" : sel()!.goal.status}`}>{sel()!.goal.status}</span>
+          </h3>
+          <div class="statrow" style="margin-bottom:6px">
+            <span class="k">status</span>
+            <For each={["active", "done", "paused"] as const}>
+              {(s) => (
+                <button
+                  class={"goalstate" + (sel()!.goal.status === s ? ` on ${s}` : "")}
+                  disabled={sel()!.goal.status === s}
+                  title={
+                    s === "active"
+                      ? "agent keeps working toward the goal (with auto-continue)"
+                      : s === "done"
+                        ? "mark achieved — auto-continue stops"
+                        : "parked on purpose — resume by setting active again"
+                  }
+                  onclick={() => {
+                    if (!selected()) return;
+                    api(`/api/agents/${selected()}/goal`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ status: s }),
+                    }).then(refreshAgents);
+                  }}
+                >{s === "active" ? "▶ working" : s === "done" ? "✓ done" : "⏸ paused"}</button>
+              )}
+            </For>
+          </div>
+          <Show
+            when={sel()!.goal.text}
+            fallback={<div class="card muted">no goal yet — write one below and press ✓ save. Then ▶ start (or any message) sets it in motion.</div>}
+          >
+            <div class="card">
+              <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.text))} />
+            </div>
+          </Show>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            stored with the session · the agent reads it via get_goal() · auto-continue loops while status is "working" and stops when marked done
+          </div>
+          <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-top:8px;margin-bottom:6px">
             <textarea
               id="goal-input"
               rows={3}
@@ -1304,17 +1356,27 @@ export default function App() {
               >
                 <input id="goal-notify" type="checkbox" checked /> notify agent
               </label>
-              <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer">✓ save</button>
+              <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer">✓ save goal</button>
             </div>
           </form>
-          <div class="card">{sel()!.goal.text || "no goal set — the agent has nothing to auto-continue toward"}</div>
-          <div class="muted" style="font-size:11px;margin-top:4px">
-            stored with the session · the model reads it via get_goal() ·
-            <Show when={sel()!.goal.text && sel()!.goal.status === "active"}> auto-continue keeps it working until this is done</Show>
-            <Show when={!sel()!.goal.text}> set one and tick ▶ start to begin</Show>
-          </div>
 
-          <h3 title="todo.md — saved to the session dir. With notify on, the agent is told at its next turn boundary and will work through these items">✅ tasks <span class="muted" style="text-transform:none;letter-spacing:0">· todo.md, editable by you and the agent</span></h3>
+          <h3 title="todo.md — a shared checklist in the session dir. Write tasks like '- [ ] fix login'; the agent ticks them off via set_todo, you edit here. With notify on, it's told at its next turn boundary.">
+            ✅ tasks
+            <Show when={todoStats().total > 0}>
+              <span class="badge" style={todoStats().done === todoStats().total ? "color:var(--ok)" : "color:var(--warn)"}>
+                {todoStats().done}/{todoStats().total} done
+              </span>
+            </Show>
+            <span class="muted" style="text-transform:none;letter-spacing:0">· shared checklist (you + agent)</span>
+          </h3>
+          <Show when={todoStats().total > 0}>
+            <div class="bartrack" style="margin-bottom:6px">
+              <div
+                class={"barfill " + (todoStats().done === todoStats().total ? "" : "warn")}
+                style={{ width: `${Math.round((todoStats().done / todoStats().total) * 100)}%` }}
+              />
+            </div>
+          </Show>
           <textarea
             id="todo-input"
             class="mono"
@@ -1359,14 +1421,34 @@ export default function App() {
             )}
           </Show>
 
-          <h3 title="tokens in/out are cumulative billed totals · cached % rode the provider prompt cache · context % turns orange ≥70% and red ≥85% of the model window">📊 runtime</h3>
-          <div class="card muted">
-            turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls} · compacted {sel()!.stats.compactions ?? 0}
-            {"\n"}tokens in/out {fmtK(sel()!.stats.inputTokens)}/{fmtK(sel()!.stats.outputTokens)}
-            <Show when={sel()!.stats.cachedInputTokens > 0}>
-              {" · "}cached {Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}% ({fmtK(sel()!.stats.cachedInputTokens)})
-            </Show>
-            <Show when={sel()!.ctx}>
+          <h3 title="cumulative billed totals · the cached pill counts tokens served from the provider's prompt cache (far cheaper) · context bar turns orange ≥70% and red ≥85% of the model window">📊 runtime</h3>
+          <div class="card runcard">
+            <div class="statgrid">
+              <div class="stat" title="LLM turns taken this session"><span>turns</span><b>{sel()!.stats.turns}</b></div>
+              <div class="stat" title="tool calls executed"><span>tools</span><b>{sel()!.stats.toolCalls}</b></div>
+              <div class="stat" title="times old turns were summarized to free context"><span>compacted</span><b>{sel()!.stats.compactions ?? 0}</b></div>
+            </div>
+            <div class="statrow">
+              <span class="k">tokens</span>
+              <b>{fmtK(sel()!.stats.inputTokens)} in / {fmtK(sel()!.stats.outputTokens)} out</b>
+              <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
+                <span
+                  class="pill ok"
+                  title={`${fmtK(sel()!.stats.cachedInputTokens)} tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
+                >
+                  ⚡ {Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}% cached
+                </span>
+              </Show>
+            </div>
+            <Show
+              when={sel()!.ctx}
+              fallback={
+                <div class="statrow">
+                  <span class="k">context</span>
+                  <span class="muted">no window known for this model yet</span>
+                </div>
+              }
+            >
               {(c) => {
                 // find model metadata for actual context window
                 const modelMeta = models().find((m) => m.id === sel()!.model);
@@ -1374,29 +1456,31 @@ export default function App() {
                 const pct = effectiveWindow
                   ? Math.min(999, Math.round((c().usedTokens / effectiveWindow) * 100))
                   : 0;
-                const pctCls =
-                  !effectiveWindow
-                    ? ""
-                    : pct >= 85
-                    ? " ctxcrit"
-                    : pct >= 70
-                    ? " ctxwarn"
-                    : "";
+                const cls =
+                  !effectiveWindow ? "" : pct >= 85 ? "crit" : pct >= 70 ? "warn" : "ok";
                 return (
-                  <>
-                    {"\n"}context ~{fmtK(c().usedTokens)} tok
+                  <div
+                    class="ctxblock"
+                    title="estimated live context vs the model's real window. Past the window, old turns are summarized into notes (compaction); the compact line below shows where that starts."
+                  >
+                    <div class="statrow">
+                      <span class="k">context</span>
+                      <b>~{fmtK(c().usedTokens)} tok</b>
+                      <Show when={effectiveWindow}>
+                        <span class={`pill ${cls}`}>
+                          {pct}% of {fmtK(effectiveWindow)}
+                        </span>
+                      </Show>
+                    </div>
                     <Show when={effectiveWindow}>
-                      {(w) => (
-                        <>
-                          {" · "}
-                          <span class={pctCls.trim()}>
-                            {pct}% of {fmtK(w())} (model window)
-                          </span>
-                        </>
-                      )}
+                      <div class="bartrack">
+                        <div class={`barfill ${cls}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                      </div>
                     </Show>
-                    {"\n"}compaction at ~{fmtK(c().compactAt)} tok (older turns summarized)
-                  </>
+                    <div class="muted" style="font-size:11px;margin-top:4px">
+                      compaction starts around ~{fmtK(c().compactAt)} tok — older turns get summarized, recent ones stay intact
+                    </div>
+                  </div>
                 );
               }}
             </Show>
@@ -1986,12 +2070,21 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
 /* ---------- settings / config editor ---------- */
 /* ---------- first-run setup wizard ---------- */
 
+type ProviderPreset = {
+  key: string;
+  label: string;
+  url: string;
+  /** pre-filled model suggestion — empty means "keep what's typed" */
+  model: string;
+  hint?: string;
+};
+
 /**
  * Known OpenAI-compatible providers, shared by the setup wizard and the
- * settings modal's quick-add. `model` is just the pre-filled suggestion —
- * anything typed by hand always wins.
+ * settings modal's quick-add. "custom" is a wizard-only pseudo preset that
+ * marks the manual path without touching any field.
  */
-const PROVIDER_PRESETS = [
+const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     key: "openrouter",
     label: "OpenRouter",
@@ -2008,32 +2101,85 @@ const PROVIDER_PRESETS = [
   },
   { key: "openai", label: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
   {
-    key: "ollama",
-    label: "Ollama (local)",
-    url: "http://localhost:11434/v1",
-    model: "qwen3-coder",
-    hint: "free & local — pull a coder model first (e.g. ollama pull qwen3-coder)",
+    key: "llamacpp",
+    label: "llama.cpp server",
+    url: "http://localhost:8080/v1",
+    model: "",
+    hint: "free & local — start it with: llama-server -m ./model.gguf  (any model name works)",
   },
 ];
 
+/** the wizard shows this extra option for arbitrary OpenAI-compatible endpoints */
+const CUSTOM_PRESET: ProviderPreset = {
+  key: "custom",
+  label: "Custom",
+  url: "",
+  model: "",
+  hint: "any OpenAI-compatible /v1 endpoint — vLLM, LM Studio, llama.cpp, a company gateway… fill the fields below",
+};
+
 function SetupWizard(props: { onDone: () => void }) {
-  const [preset, setPreset] = createSignal(PROVIDER_PRESETS[0]);
+  const [preset, setPreset] = createSignal<ProviderPreset>(PROVIDER_PRESETS[0]);
   const [baseUrl, setBaseUrl] = createSignal(PROVIDER_PRESETS[0].url);
   const [apiKey, setApiKey] = createSignal("");
   const [model, setModel] = createSignal(PROVIDER_PRESETS[0].model);
+  const [models, setModels] = createSignal<
+    { id: string; contextLength?: number; pricing?: { prompt: number; completion: number } }[]
+  >([]);
   const [workspace, setWorkspace] = createSignal("~/teapot-workspace");
   const [password, setPassword] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal("");
 
-  const pick = (p: (typeof PROVIDER_PRESETS)[number]) => {
+  const pick = (p: ProviderPreset) => {
     setPreset(p);
+    // "custom" only marks the manual path — never clobbers typed values
+    if (p.key === "custom") return;
     if (p.url) {
       setBaseUrl(p.url);
-      // presets without a suggested model keep whatever is typed
       if (p.model) setModel(p.model);
     }
   };
+
+  /** live model discovery from whatever endpoint the operator is typing —
+   *  same data the main UI's model switcher shows, just pre-config */
+  createEffect(() => {
+    const url = baseUrl().trim();
+    const key = apiKey();
+    if (!/^https?:\/\//.test(url)) {
+      setModels([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const r = await api(
+          `/api/setup/models?baseUrl=${encodeURIComponent(url)}${key ? `&apiKey=${encodeURIComponent(key)}` : ""}`,
+        );
+        setModels(r.models ?? []);
+      } catch {
+        setModels([]); // endpoint unreachable / no auth yet — keep typing
+      }
+    }, 600);
+    onCleanup(() => clearTimeout(t));
+  });
+
+  /** "ctx 1m · $3/M in · $15/M out" for a model id from the fetched list */
+  const specOf = (id: string) => {
+    const m = models().find((x) => x.id === id.trim());
+    if (!m) return "";
+    const parts: string[] = [];
+    if (m.contextLength) parts.push(`ctx ${fmtK(m.contextLength)} tok`);
+    const price = (p?: number) =>
+      p === undefined ? "" : `$${p * 1e6 >= 10 ? Math.round(p * 1e6) : +(p * 1e6).toFixed(1)}/M`;
+    if (m.pricing) {
+      const pin = price(m.pricing.prompt);
+      const pout = price(m.pricing.completion);
+      if (pin && pout) parts.push(`${pin} in · ${pout} out`);
+      else if (pin || pout) parts.push(price(m.pricing.prompt ?? m.pricing.completion));
+    }
+    return parts.join(" · ");
+  };
+  const modelSpec = () => specOf(model());
 
   const submit = async (e: Event) => {
     e.preventDefault(); setErr(""); setBusy(true);
@@ -2065,25 +2211,57 @@ function SetupWizard(props: { onDone: () => void }) {
         </p>
         <form onsubmit={submit} style="display:flex;flex-direction:column;gap:12px">
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <For each={PROVIDER_PRESETS}>
-              {(p) => (
-                <button
-                  type="button"
-                  class={"presetbtn" + (preset().key === p.key ? " active" : "")}
-                  title={p.hint || p.url}
-                  onclick={() => pick(p)}
-                >{p.label}</button>
-              )}
-            </For>
+            {[...PROVIDER_PRESETS, CUSTOM_PRESET].map((p) => (
+              <button
+                type="button"
+                class={"presetbtn" + (preset().key === p.key ? " active" : "")}
+                title={p.hint || p.url}
+                onclick={() => pick(p)}
+              >{p.label}</button>
+            ))}
           </div>
           <Show when={preset().hint}>
             <div class="muted" style="font-size:11.5px;margin-top:-6px">{preset().hint}</div>
           </Show>
           <label>base url
-            <input type="text" class="w100 mono" value={baseUrl()} oninput={(e) => setBaseUrl(e.currentTarget.value)} />
+            <input
+              type="text"
+              class="w100 mono"
+              list="wiz-preset-urls"
+              value={baseUrl()}
+              oninput={(e) => setBaseUrl(e.currentTarget.value)}
+            />
+            <datalist id="wiz-preset-urls">
+              {PROVIDER_PRESETS.map((p) => <option value={p.url} />)}
+            </datalist>
           </label>
           <label>api key <input type="password" class="w100" value={apiKey()} oninput={(e) => setApiKey(e.currentTarget.value)} placeholder="(local providers may not need one)" /></label>
-          <label>default model <input type="text" class="w100 mono" value={model()} oninput={(e) => setModel(e.currentTarget.value)} placeholder="(provider default — leave empty if unsure)" /></label>
+          <label>default model
+            <input
+              type="text"
+              class="w100 mono"
+              list="wiz-model-list"
+              value={model()}
+              oninput={(e) => setModel(e.currentTarget.value)}
+              placeholder={preset().key === "llamacpp" ? "(any name — serves whichever gguf is loaded)" : "(type to filter models from the endpoint)"}
+            />
+            <datalist id="wiz-model-list">
+              {models().map((m) => <option value={m.id} />)}
+            </datalist>
+          </label>
+          <Show
+            when={models().length > 0}
+            fallback={
+              <div class="muted" style="font-size:11.5px;margin-top:-8px">
+                models appear here automatically once the endpoint answers GET /models
+              </div>
+            }
+          >
+            <div class="muted" style="font-size:11.5px;margin-top:-8px">
+              {models().length} models found at this endpoint
+              <Show when={modelSpec()}> · <span style="color:var(--fg)">{modelSpec()}</span></Show>
+            </div>
+          </Show>
           <fieldset>
             <legend>first agent</legend>
             <label>workspace directory

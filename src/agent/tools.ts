@@ -66,8 +66,8 @@ async function readText(p: string): Promise<string> {
   return fs.readFile(p, "utf8");
 }
 
-/** Resolve a path inside the workspace; reject escapes. */
-function safeJoin(cwd: string, p: string): string {
+/** Resolve a path inside the workspace; reject escapes (incl. symlink targets). */
+export function safeJoin(cwd: string, p: string): string {
   const abs = path.resolve(cwd, p);
   const rel = path.relative(cwd, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
