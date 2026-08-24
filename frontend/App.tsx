@@ -652,7 +652,14 @@ export default function App() {
   }
 
   async function loadEvents(id: string) {
-    const gen = ++feedGeneration;
+    // DON'T bump the generation here. Bumping made two racing loads for the
+    // SAME session invalidate each other: select() → loadEvents (gen N) and a
+    // WS-triggered refresh (gen N+1) could resolve in either order, and the
+    // loser was dropped — if the WS one landed first, the select's own fetch
+    // was discarded AFTER the session had been cleared, leaving an EMPTY
+    // timeline until some later event happened to trigger another refresh.
+    // The generation only needs to move on actual session SWITCHES.
+    const genAtStart = feedGeneration;
     try {
       const bf = branchFilter();
       const [ev, br, sk] = await Promise.all([
@@ -660,7 +667,9 @@ export default function App() {
         api(`/api/agents/${id}/branches`),
         api(`/api/agents/${id}/skills`).catch(() => ({ skills: [] })),
       ]);
-      if (gen !== feedGeneration || selected() !== id) return; // stale view
+      // stale iff a DIFFERENT session is now selected or a switch happened
+      // while we were in flight — same-session refreshes must not drop us
+      if (genAtStart !== feedGeneration || selected() !== id) return; // stale view
       setEvents((prev) => {
         // tail refresh: union-merge so prepended older pages survive, and
         // stabilize() keeps unchanged rows reference-identical (no re-mounts)
