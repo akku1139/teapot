@@ -2518,7 +2518,7 @@ export default function App() {
 
 /* ---------- one chat message row ---------- */
 /* ---------- live elapsed-time ticker for a still-running bash call ---------- */
-function BashElapsed(props: { startedAt: string }) {
+function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number }) {
   const start = new Date(props.startedAt).getTime();
   const [now, setNow] = createSignal(Date.now());
   onMount(() => {
@@ -2527,11 +2527,18 @@ function BashElapsed(props: { startedAt: string }) {
     onCleanup(() => clearInterval(t));
   });
   const s = () => Math.max(0, (now() - start) / 1000);
-  return (
-    <span class="bashelapsed">
-      {s() < 60 ? `${s().toFixed(1)}s` : `${Math.floor(s() / 60)}m ${Math.round(s() % 60)}s`} elapsed
-    </span>
-  );
+  const txt = () =>
+    s() < 60 ? `${s().toFixed(1)}s` : `${Math.floor(s() / 60)}m ${Math.round(s() % 60)}s`;
+  // inline: compact form for the folded summary ("running… 1m 26s")
+  if (props.inline) {
+    return (
+      <span class="bashelapsed">
+        running… {txt()}
+        {props.timeoutMs ? ` · timeout ${Math.round(props.timeoutMs / 1000)}s` : ""}
+      </span>
+    );
+  }
+  return <span class="bashelapsed">{txt()} elapsed</span>;
 }
 
 /* ---------- per-tool timeline rendering ---------- */
@@ -2551,7 +2558,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
   // per-tool summary line: [icon, label, hint]
   let icon = "⚙";
   let label = name;
-  let hint = "";
+  let hint: string | null = "";
   let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
 
   const argStr = (k: string) => String(d.args?.[k] ?? "");
@@ -2577,16 +2584,13 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
         const cmd = argStr("command");
         label = "$ " + oneLine(cmd, 96);
         const timeoutHint = argStr("timeout_ms") ? ` · timeout ${Math.round(Number(argStr("timeout_ms")) / 1000)}s` : "";
-        // elapsed while running (live), duration once the result landed — a
-        // long bash run used to show just "running…" with no sense of time
         hint = res
           ? `${res.data?.durationMs ?? "?"}ms${timeoutHint}`
-          : `running${timeoutHint}`;
+          : null; // live elapsed renders in the summary (below)
         body = (
           <>
             {cmd !== label.slice(2) ? codeBlock(cmd, 800) : null}
             {resultBlock(6000)}
-            {!res && <BashElapsed startedAt={e.ts} />}
           </>
         );
         break;
@@ -2725,7 +2729,15 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
         </Show>
-        <span class="meta">{res ? hint || "" : staleDone ? "(result missed)" : "running…"}</span>
+        <span class="meta">
+          {res
+            ? hint || ""
+            : staleDone
+              ? "(result missed)"
+              : name === "bash"
+                ? <BashElapsed startedAt={e.ts} inline timeoutMs={Number(e.data?.args?.timeout_ms) || undefined} /> // visible while folded
+                : "running…"}
+        </span>
       </summary>
       {body}
     </details>
