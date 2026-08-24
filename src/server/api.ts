@@ -323,6 +323,52 @@ export function buildApp(master: Master): Hono {
     }
   });
 
+  /**
+   * Batched ignore lookup: runs `git check-ignore --stdin` once per directory
+   * and returns the subset of names that are gitignored. Never throws — a
+   * non-git workspace simply yields an empty set.
+   */
+  async function checkIgnoredBatch(workspace: string, dirAbs: string, dirents: import("node:fs").Dirent[]): Promise<Set<string>> {
+    const out = new Set<string>();
+    try {
+      const relPaths = dirents.filter((d) => !d.name.startsWith(".")).map((d) => path.relative(workspace, path.join(dirAbs, d.name)));
+      if (relPaths.length === 0) return out;
+      const { execFile } = await import("node:child_process");
+      const res = await new Promise<string>((resolve) => {
+        let timer: NodeJS.Timeout | undefined;
+        const p = execFile(
+          "git",
+          // NOTE: no --quiet — it suppresses the stdout we parse
+          ["-C", workspace, "check-ignore", "--stdin", "-z", "--verbose"],
+          { encoding: "utf8", maxBuffer: 1 << 20 },
+          (err, stdout) => {
+            if (timer) clearTimeout(timer);
+            resolve(err || !stdout ? "" : stdout);
+          },
+        );
+        // end stdin only AFTER the write flushes (ending immediately raced
+        // the write and git saw an empty list), and hard-cap in case git
+        // wedges — a tree listing must never hang
+        p.stdin?.write(relPaths.join("\0") + "\0", () => p.stdin?.end());
+        timer = setTimeout(() => {
+          try { p.kill("SIGKILL"); } catch { /* */ }
+          resolve("");
+        }, 5_000);
+      });
+      // -z --verbose emits records as
+      //   "<source> NUL <line> NUL <pattern> NUL <path> NUL"
+      // so the ignored path is every 4th field starting at index 3
+      const fields = res.split("\0");
+      for (let i = 3; i < fields.length; i += 4) {
+        const p = fields[i];
+        if (p) out.add(path.basename(p));
+      }
+    } catch {
+      /* no git, not a repo, or spawn failed → treat all as unignored */
+    }
+    return out;
+  }
+
   // ---- workspace file tree (read-only, powers the 🗂 files panel) ----
   app.get("/api/agents/:id/tree", async (c) => {
     const a = master.agents.get(c.req.param("id"));
@@ -340,9 +386,14 @@ export function buildApp(master: Master): Hono {
     } catch {
       return c.json({ error: "cannot read directory" }, 400);
     }
-    const entries: { name: string; dir: boolean; size?: number }[] = [];
+    const showHidden = c.req.query("hidden") === "1";
+    const entries: { name: string; dir: boolean; size?: number; ignored?: boolean }[] = [];
+    // one batched `git check-ignore` for the whole directory (respects
+    // nested .gitignore files); absent repo / no git → nothing is "ignored"
+    const ignoredNames = await checkIgnoredBatch(a.workspace, abs, dirents);
     for (const d of dirents) {
-      if (d.name.startsWith(".")) continue; // hidden files stay out of the tree
+      if (d.name.startsWith(".") && !(showHidden && d.name !== "." && d.name !== ".."))
+        continue; // hidden files stay out unless the caller opted in
       const isDir = d.isDirectory();
       let size: number | undefined;
       if (!isDir) {
@@ -352,7 +403,12 @@ export function buildApp(master: Master): Hono {
           /* vanished mid-scan — fine */
         }
       }
-      entries.push({ name: d.name, dir: isDir, ...(size !== undefined ? { size } : {}) });
+      entries.push({
+        name: d.name,
+        dir: isDir,
+        ...(size !== undefined ? { size } : {}),
+        ...(ignoredNames.has(d.name) ? { ignored: true } : {}),
+      });
     }
     entries.sort((x, y) => (x.dir !== y.dir ? (x.dir ? -1 : 1) : x.name.localeCompare(y.name)));
     return c.json({

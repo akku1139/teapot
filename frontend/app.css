@@ -628,3 +628,8 @@ body:has(.composer.maximized) .feed { visibility: hidden; }
   resize: none;
 }
 .maxbtn { font-size: 12px; }
+
+/* gitignored entries in the file tree (shown dimmed when the toggle allows) */
+.filerow.gitignored .fname,
+.filerow.gitignored .ficon,
+.filerow.gitignored .fsize { opacity: .38; }

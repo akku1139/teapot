@@ -116,3 +116,35 @@ test("GET /raw serves media bytes with correct mime; rejects non-media", async (
 
   for (const a of m.agents.values()) await a.dispose();
 });
+
+test("tree marks gitignored entries; non-git workspaces don't", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "gi-root-"));
+  const ws = await mkdtemp(path.join(tmpdir(), "ws-"));
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(path.join(ws, "keep.ts"), "export 1");
+  await writeFile(path.join(ws, "skip.log"), "noise");
+  await writeFile(path.join(ws, ".gitignore"), "*.log\n");
+  // check-ignore only works inside a repo — the tmpdir isn't one
+  const { execSync } = await import("node:child_process");
+  // configure a user: some git builds warn without it (slows check-ignore)
+  execSync(`git -C ${JSON.stringify(ws)} init -q`);
+  execSync(`git -C ${JSON.stringify(ws)} config user.email t@t`);
+  execSync(`git -C ${JSON.stringify(ws)} config user.name t`);
+
+  const m = mkMaster(dataDir);
+  const app = buildApp(m);
+  await app.request("/api/agents", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspace: ws, id: "gitw", start: false }),
+  });
+
+  const r = await app.request("/api/agents/gitw/tree");
+  assert.equal(r.status, 200);
+  const j = (await r.json()) as { entries: { name: string; ignored?: boolean }[] };
+  const keep = j.entries.find((e) => e.name === "keep.ts");
+  const skip = j.entries.find((e) => e.name === "skip.log");
+  assert.equal(keep?.ignored, undefined);
+  assert.equal(skip?.ignored, true);
+  for (const a of m.agents.values()) await a.dispose();
+});

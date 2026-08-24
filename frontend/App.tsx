@@ -1746,6 +1746,7 @@ export default function App() {
                     onOption={(t) => void sendText(t)}
                     answeredIds={answeredQuestionIds()}
                     agentActive={sel()?.status === "running" || sel()?.status === "waiting"}
+                    onResize={() => { if (atBottom()) requestAnimationFrame(() => scrollBottom(true)); }}
                     onCancel={
                       e.data?.pending && e.data?.promptId && e.data?.sent !== true
                         ? () => {
@@ -2543,7 +2544,7 @@ function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: n
 
 /* ---------- per-tool timeline rendering ---------- */
 
-function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
+function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const res = props.res;
   // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
@@ -2723,6 +2724,11 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
     <details
       class={"embed" + (res ? (res.data?.ok === false ? " fail" : " done") : staleDone ? " done" : " running")}
       title={`${name}${hint ? " — " + hint : ""}`}
+      onToggle={(ev: ToggleEvent) => {
+        // expanding/collapsing changes the feed height; while following, the
+        // bottom line must stay pinned instead of drifting out of view
+        if ((ev.target as HTMLDetailsElement).open) props.onResize?.();
+      }}
     >
       <summary>
         <b>{icon} {label}</b>
@@ -2758,7 +2764,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   const grouped =
@@ -2830,7 +2836,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
           </div>
         </Show>
 
-        <SwitchContent e={e} res={props.res} onOption={props.onOption} answeredIds={props.answeredIds} agentActive={props.agentActive} />
+        <SwitchContent e={e} res={props.res} onOption={props.onOption} answeredIds={props.answeredIds} agentActive={props.agentActive} onResize={props.onResize} />
       </div>
     </div>
   );
@@ -2866,7 +2872,7 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
   );
 }
 
-function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean }) {
+function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   switch (e.type) {
     case "prompt":
@@ -2890,7 +2896,7 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
         </>
       );
     case "tool_call":
-      return <ToolRow e={e} res={props.res} agentActive={props.agentActive} />;
+      return <ToolRow e={e} res={props.res} agentActive={props.agentActive} onResize={props.onResize} />;
     case "tool_result": {
       // orphan result (its call scrolled past the 300-event window)
       const out = String(e.data.result);
@@ -3119,6 +3125,7 @@ interface TreeNode {
   path: string;
   dir: boolean;
   size?: number;
+  ignored?: boolean;
 }
 
 type MediaKind = "image" | "video" | "audio";
@@ -3126,10 +3133,32 @@ const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "i
 const VIDEO_EXT = new Set(["mp4", "webm", "mov", "mkv", "avi", "m4v"]);
 const AUDIO_EXT = new Set(["mp3", "wav", "ogg", "m4a", "flac", "aac", "opus"]);
 function ficon(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
   const mk = mediaKindOf(name);
   if (mk === "image") return "🖼";
   if (mk === "video") return "🎬";
   if (mk === "audio") return "🎵";
+  if (["ts", "tsx", "mts", "cts"].includes(ext)) return "🟦";
+  if (["js", "mjs", "cjs", "jsx"].includes(ext)) return "🟨";
+  if (ext === "json" || ext === "jsonc") return "🧾";
+  if (ext === "md" || ext === "mdx" || ext === "markdown") return "📝";
+  if (ext === "css" || ext === "scss" || ext === "less") return "🎨";
+  if (ext === "html" || ext === "htm" || ext === "svg") return "🌐";
+  if (["py", "pyi"].includes(ext)) return "🐍";
+  if (ext === "rs") return "🦀";
+  if (ext === "go") return "🐹";
+  if (ext === "java" || ext === "kt" || ext === "kts") return "☕";
+  if (ext === "rb") return "💎";
+  if (ext === "php") return "🐘";
+  if (ext === "c" || ext === "h" || ext === "cpp" || ext === "hpp" || ext === "cc") return "🧩";
+  if (ext === "sh" || ext === "bash" || ext === "zsh" || ext === "fish") return "🐚";
+  if (ext === "sql") return "🗄";
+  if (ext === "yml" || ext === "yaml" || ext === "toml" || ext === "ini" || ext === "conf") return "⚙";
+  if (ext === "lock") return "🔒";
+  if (name === "Dockerfile" || ext === "dockerfile") return "🐳";
+  if (ext === "zip" || ext === "gz" || ext === "tar" || ext === "tgz" || ext === "bz2") return "📦";
+  if (ext === "pdf") return "📕";
+  if (ext === "txt" || ext === "log") return "📄";
   return "·";
 }
 
@@ -3149,6 +3178,26 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     path: string; content: string; binary?: boolean; truncated?: boolean;
   } | null>(null);
   const [err, setErr] = createSignal("");
+  // show/hide gitignored entries — persisted per browser
+  const [hideIgnored, setHideIgnored] = createSignal(
+    localStorage.getItem("teapot.hideIgnored") === "1",
+  );
+  // show dotfiles — also persisted; toggling refetches the open dirs
+  const [showHidden, setShowHidden] = createSignal(
+    localStorage.getItem("teapot.showHidden") === "1",
+  );
+  const toggleHidden = () => {
+    const next = !showHidden();
+    setShowHidden(next);
+    localStorage.setItem("teapot.showHidden", next ? "1" : "0");
+    // re-fetch every expanded directory so the change applies immediately
+    for (const p of expanded()) void fetchDir(p).then((rows) => {
+      if (rows) setKids((prev) => new Map(prev).set(p, rows));
+    });
+    void fetchDir("").then((rows) => {
+      if (rows) setKids((prev) => new Map(prev).set("", rows));
+    });
+  };
 
   const parseEntries = (parentPath: string, list: any[]): TreeNode[] =>
     list.map((e) => ({
@@ -3156,12 +3205,16 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       path: parentPath ? `${parentPath}/${e.name}` : String(e.name),
       dir: !!e.dir,
       ...(typeof e.size === "number" ? { size: e.size } : {}),
+      ...(e.ignored ? { ignored: true } : {}),
     }));
 
   async function fetchDir(path: string): Promise<TreeNode[] | null> {
     try {
+      const qs = new URLSearchParams();
+      if (path) qs.set("path", path);
+      if (showHidden()) qs.set("hidden", "1");
       const r = await api(
-        `/api/agents/${props.agentId}/tree${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+        `/api/agents/${props.agentId}/tree?${qs.toString()}`,
       );
       return parseEntries(path, r.entries ?? []);
     } catch (ex) {
@@ -3283,7 +3336,10 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
   const row = (node: TreeNode, depth: number): any => (
     <>
       <div
-        class={"filerow" + (node.dir ? " isdir" : "")}
+        class={
+          "filerow" + (node.dir ? " isdir" : "") +
+          (node.ignored && !hideIgnored() ? " gitignored" : "")
+        }
         style={`padding-left:${depth * 13 + 8}px`}
         onclick={() => (node.dir ? void toggleDir(node) : void openFileWith(node, "code"))}
         title={node.dir ? `browse ${node.path}` : `preview ${node.path}`}
@@ -3304,15 +3360,33 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
 
   return (
     <>
-      <h3 title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
+      <h3 style="display:flex;align-items:center;gap:6px" title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
         🗂 files <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
+        <button
+          class="iconbtn"
+          style="margin-left:auto;font-size:11px"
+          title={hideIgnored() ? "gitignored files are hidden — click to show them (dimmed)" : "hiding gitignored files — click to show them (dimmed)"}
+          onclick={() => {
+            const next = !hideIgnored();
+            setHideIgnored(next);
+            localStorage.setItem("teapot.hideIgnored", next ? "1" : "0");
+          }}
+        >{hideIgnored() ? "🙈 gitignored" : "👁 all"}</button>
+        <button
+          class="iconbtn"
+          style="font-size:11px"
+          title={showHidden() ? "dotfiles are shown — click to hide them" : "dotfiles are hidden — click to show them"}
+          onclick={toggleHidden}
+        >{showHidden() ? "◉ .*" : "○ .*"}</button>
       </h3>
       <div class="filebox">
         <Show
           when={(kids().get("") ?? []).length > 0}
           fallback={<div class="muted" style="padding:6px">{err() || "empty workspace"}</div>}
         >
-          <For each={kids().get("") ?? []}>{(node) => row(node, 0)}</For>
+          <For each={(kids().get("") ?? []).filter((n) => hideIgnored() ? !(n.ignored && !n.dir) : true)}>
+            {(node) => row(node, 0)}
+          </For>
         </Show>
       </div>
       <Show when={preview()}>
