@@ -646,8 +646,9 @@ export default function App() {
     for (const a of list) {
       const isSub = a.parent && list.some((p) => p.id === a.parent);
       if (isSub) {
+        // newest sub first — freshly spawned agents are what you want to see
         if (!byParent.has(a.parent!)) byParent.set(a.parent!, []);
-        byParent.get(a.parent!)!.push(a);
+        byParent.get(a.parent!)!.unshift(a);
       } else roots.push(a);
     }
     const rows: { a: Agent; depth: number }[] = [];
