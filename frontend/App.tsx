@@ -1315,6 +1315,8 @@ export default function App() {
             <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
           </div>
 
+          <FilesPanel agentId={sel()!.id} workspace={sel()!.workspace} />
+
           <h3 title="switch provider/model live — applies from the agent's next turn; the list shows context window & pricing from the provider">🧦 model</h3>
           <div class="modelbox">
             <select
@@ -2200,6 +2202,130 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
         <button type="submit" style="align-self:flex-end">create & start</button>
       </form>
     </Modal>
+  );
+}
+
+/* ---------- workspace file tree ---------- */
+
+interface TreeNode {
+  name: string;
+  path: string;
+  dir: boolean;
+  size?: number;
+}
+
+function FilesPanel(props: { agentId: string; workspace: string }) {
+  // path → lazily fetched child listing ("" = workspace root)
+  const [kids, setKids] = createSignal<Map<string, TreeNode[]>>(new Map());
+  const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
+  const [preview, setPreview] = createSignal<{
+    path: string; content: string; binary?: boolean; truncated?: boolean;
+  } | null>(null);
+  const [err, setErr] = createSignal("");
+
+  const parseEntries = (parentPath: string, list: any[]): TreeNode[] =>
+    list.map((e) => ({
+      name: String(e.name),
+      path: parentPath ? `${parentPath}/${e.name}` : String(e.name),
+      dir: !!e.dir,
+      ...(typeof e.size === "number" ? { size: e.size } : {}),
+    }));
+
+  async function fetchDir(path: string): Promise<TreeNode[] | null> {
+    try {
+      const r = await api(
+        `/api/agents/${props.agentId}/tree${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      );
+      return parseEntries(path, r.entries ?? []);
+    } catch (ex) {
+      setErr((ex as Error).message);
+      return null;
+    }
+  }
+
+  // reset & load the root whenever a different agent is selected
+  createEffect(() => {
+    void props.agentId;
+    setExpanded(new Set<string>());
+    const map = new Map<string, TreeNode[]>();
+    setKids(map);
+    void fetchDir("").then((rows) => {
+      if (rows) setKids(new Map([[ "", rows ]]));
+    });
+  });
+
+  const toggleDir = async (node: TreeNode) => {
+    const next = new Set<string>(expanded());
+    if (next.has(node.path)) {
+      next.delete(node.path);
+      setExpanded(next);
+      return;
+    }
+    next.add(node.path);
+    setExpanded(next);
+    if (!kids().has(node.path)) {
+      const rows = await fetchDir(node.path);
+      if (rows) setKids((prev) => new Map(prev).set(node.path, rows));
+    }
+  };
+
+  const openFile = async (node: TreeNode) => {
+    try {
+      const r = await api(
+        `/api/agents/${props.agentId}/file?path=${encodeURIComponent(node.path)}`,
+      );
+      setPreview({ path: node.path, content: r.content ?? "", binary: r.binary, truncated: r.truncated });
+    } catch (ex) {
+      flashHint(`open failed: ${(ex as Error).message}`);
+    }
+  };
+
+  const row = (node: TreeNode, depth: number): any => (
+    <>
+      <div
+        class={"filerow" + (node.dir ? " isdir" : "")}
+        style={`padding-left:${depth * 13 + 8}px`}
+        onclick={() => (node.dir ? void toggleDir(node) : void openFile(node))}
+        title={node.dir ? `browse ${node.path}` : `preview ${node.path}`}
+      >
+        <span class="ficon">{node.dir ? (expanded().has(node.path) ? "▾" : "▸") : "·"}</span>
+        <span class="fname">{node.name}</span>
+        <Show when={!node.dir && node.size !== undefined}>
+          <span class="fsize">{fmtK(node.size!)}</span>
+        </Show>
+      </div>
+      <Show when={node.dir && expanded().has(node.path)}>
+        <For each={kids().get(node.path) ?? []}>{(child) => row(child, depth + 1)}</For>
+      </Show>
+    </>
+  );
+
+  const wsName = () => props.workspace.split("/").filter(Boolean).pop() ?? props.workspace;
+
+  return (
+    <>
+      <h3 title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
+        🗂 files <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
+      </h3>
+      <div class="filebox">
+        <Show
+          when={(kids().get("") ?? []).length > 0}
+          fallback={<div class="muted" style="padding:6px">{err() || "empty workspace"}</div>}
+        >
+          <For each={kids().get("") ?? []}>{(node) => row(node, 0)}</For>
+        </Show>
+      </div>
+      <Show when={preview()}>
+        {(pv) => (
+          <Modal title={`🗂 ${pv().path}`} onClose={() => setPreview(null)}>
+            <pre class="mono" style="max-height:62vh;overflow:auto;white-space:pre-wrap;margin:0">
+              {pv().binary ? "(binary file — inspect it from the terminal)" : pv().content}
+              {pv().truncated ? "\n\n… truncated (first 100 KB)" : ""}
+            </pre>
+          </Modal>
+        )}
+      </Show>
+    </>
   );
 }
 

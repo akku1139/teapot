@@ -83,6 +83,15 @@ function apiResponse(url) {
   if (u === `/api/agents/${AGENT.id}/events`) return { events: EVENTS, total: EVENTS.length };
   if (u === `/api/agents/${AGENT.id}/branches`) return { branches: [{ branch: "br0", events: EVENTS.length }] };
   if (u === `/api/agents/${AGENT.id}/skills`) return { skills: [] };
+  if (u === `/api/agents/${AGENT.id}/tree`)
+    return {
+      path: "",
+      workspace: AGENT.workspace,
+      entries: [
+        { name: "src", dir: true },
+        { name: "README.md", dir: false, size: 4200 },
+      ],
+    };
   if (u === "/api/models")
     return { provider: "openrouter", models: [{ id: AGENT.model, contextLength: 200_000 }] };
   if (u === "/api/metrics") return { rssMb: 1, heapUsedMb: 1, loadavg1: 0, uptimeSec: 1, agents: [] };
@@ -180,6 +189,10 @@ for (const marker of ["turns", "in / 2.0k out", "60% cached"]) {
   }
 }
 console.log("deep render ok: runtime stats present");
+
+// workspace file tree renders its lazy listing
+if (!(await waitFor("file tree", () => bodyText().includes("README.md")))) process.exit(1);
+console.log("deep render ok: file tree present");
 
 // feed rows rendered through the markdown/tool-embed pipeline
 const feedText = await waitFor("feed rows", () =>

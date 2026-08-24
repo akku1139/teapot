@@ -347,6 +347,14 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 /* session / model panel */
 .sesscard { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .sessrow { display: flex; align-items: center; gap: 8px; }
+/* workspace file tree */
+.filebox { background: var(--bg-darkest); border-radius: 8px; padding: 4px; max-height: 260px; overflow-y: auto; }
+.filerow { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; font-size: 12.5px; color: var(--fg); border-radius: 4px; }
+.filerow:hover { background: var(--bg-mid); }
+.filerow .ficon { width: 10px; flex-shrink: 0; color: var(--dim); font-size: 9px; text-align: center; }
+.filerow.isdir .fname { font-weight: 600; }
+.fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fsize { margin-left: auto; color: var(--dim); font-size: 10px; flex-shrink: 0; }
 .sessrow .k { color: var(--dim); width: 74px; flex-shrink: 0; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; }
 .ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .modelbox { display: flex; flex-direction: column; gap: 6px; background: var(--bg-darkest); border-radius: 8px; padding: 10px; }
