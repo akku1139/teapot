@@ -2744,6 +2744,20 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
   );
 }
 
+/** The un-rendered source text of a chat row — what "copy raw" should give. */
+function rawOf(e: Ev): string {
+  const d = e.data ?? {};
+  if (e.type === "prompt") return String(d.text ?? "");
+  if (e.type === "message") {
+    // include reasoning when present, separated, so nothing is lost
+    const r = typeof d.reasoning === "string" && d.reasoning.trim()
+      ? `<reasoning>\n${d.reasoning}\n</reasoning>\n\n`
+      : "";
+    return `${r}${String(d.content ?? "")}`;
+  }
+  return "";
+}
+
 function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean }) {
   const e = props.e;
   const a = authorOf(e);
@@ -2805,6 +2819,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
                 onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onCancel!(); }}
               >✕ cancel</button>
             </Show>
+            <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
             <Show when={props.onEdit}>
               <button
                 class="editbtn"
@@ -2998,12 +3013,12 @@ function oneLine(s: string, n: number): string {
 }
 
 /* ---------- copy-to-clipboard button ---------- */
-function CopyBtn(props: { text: string }) {
+function CopyBtn(props: { text: string; label?: string; title?: string }) {
   const [done, setDone] = createSignal(false);
   return (
     <button
       class="copybtn"
-      title="copy to clipboard"
+      title={props.title ?? "copy to clipboard"}
       onclick={(e: MouseEvent) => {
         e.stopPropagation(); // don't toggle the enclosing <details>
         navigator.clipboard.writeText(props.text).then(() => {
@@ -3011,7 +3026,7 @@ function CopyBtn(props: { text: string }) {
           setTimeout(() => setDone(false), 900);
         });
       }}
-    >{done() ? "✓" : "⧉"}</button>
+    >{done() ? "✓" : props.label ?? "⧉"}</button>
   );
 }
 
