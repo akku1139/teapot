@@ -633,3 +633,14 @@ body:has(.composer.maximized) .feed { visibility: hidden; }
 .filerow.gitignored .fname,
 .filerow.gitignored .ficon,
 .filerow.gitignored .fsize { opacity: .38; }
+
+/* compaction embed: distinct hue so it never reads as agent output */
+.embed.compaction { border-left-color: var(--tool); }
+.embed.compaction summary .meta { color: var(--tool); }
+
+/* grouped message rows: tiny hover-only timestamp dot */
+.grouptime {
+  color: var(--dim); opacity: 0; transition: opacity .15s;
+  font-size: 11px; padding-top: 4px; cursor: default; flex-shrink: 0;
+}
+.msg:hover .grouptime { opacity: .8; }

@@ -104,7 +104,7 @@ const authorOf = (e: Ev) => {
 // state/error/fork/goal render as dividers or embeds inside the feed
 const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
-  "state", "error", "fork", "goal", "todo", "question", "decision",
+  "state", "error", "fork", "goal", "todo", "question", "decision", "compaction",
 ]);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
@@ -940,7 +940,12 @@ export default function App() {
             // stale "thinking…"/duplicate bubble outlives an idle agent.
             const stillStreaming = lastDelta?.id === selected() && lastDelta.at >= fetchStartedAt;
             if (!stillStreaming) setLive(null);
-            if (nearBottom()) scrollBottom(true);
+            // trust atBottom() (flipped only by real user scrolling). The old
+            // nearBottom() re-check measured AFTER new rows (state events like
+            // idle→running, tool rows…) had already grown the feed — the
+            // unscrolled gap exceeded the slack, follow was falsely dropped,
+            // and the view jumped away right when a round kicked off.
+            if (atBottom()) scrollBottom(true);
             else setMissed(missed() + Math.max(0, eventsTotal() - beforeTotal));
           }
           // drop optimistic echoes that the log has now caught up with
@@ -2804,6 +2809,13 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
         <div class="avatar" style={{ background: a.color + "33", border: `1px solid ${a.color}66` }}>{a.icon}</div>
       </Show>
       <div class="msg-body">
+        {/* grouped rows drop the full header; a hover marker keeps the time
+            reachable without spending a visible line on every bash in a row */}
+        <Show when={grouped} fallback={
+          <span class="grouptime" title={fmtTs(e.ts) + " · " + e.branch}>·</span>
+        }>
+          <span />
+        </Show>
         <Show when={!grouped}>
           <div class="msg-head">
             <span class="author" style={{ color: a.color }}>{a.name}</span>
@@ -2983,6 +2995,22 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
       );
     case "error":
       return <div class="embed fail"><div class="mono">⚠ {String(e.data.message ?? "")}</div></div>;
+    case "compaction":
+      return (
+        <details class="embed compaction">
+          <summary>
+            <b>🗜 context compacted</b>
+            <span class="meta">
+              {String(e.data.mode ?? "")} · {fmtK(Number(e.data.tokensBefore ?? 0))} → {fmtK(Number(e.data.tokensAfter ?? 0))} tok
+              {" · "}{e.data.summarized ? `${e.data.summarized} summarized` : `${e.data.dropped} dropped`}
+            </span>
+          </summary>
+          <Show when={e.data.summary}>
+            <div class="vtitle" style="margin-top:6px">what the agent kept</div>
+            <div class="content" innerHTML={renderMarkdownCached(String(e.data.summary))} />
+          </Show>
+        </details>
+      );
     default:
       return <div class="content muted">{truncate(JSON.stringify(e.data), 200)}</div>;
   }

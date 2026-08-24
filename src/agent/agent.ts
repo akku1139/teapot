@@ -1617,6 +1617,16 @@ export class Agent {
     const after = this.estimateTokens();
     this.stats.compactions++;
     this.compactedAtLen = this.messages.length;
+    // the operator can inspect WHAT was remembered — a dedicated typed event
+    // (not an agent message) keeps it out of the model's own voice
+    await this.log.append("compaction", this.currentSession, this.currentBranch, {
+      tokensBefore: before,
+      tokensAfter: after,
+      summarized: summarizedCount,
+      dropped: droppedCount,
+      mode,
+      ...(summary ? { summary: String(summary).slice(0, 20_000) } : {}),
+    });
     await this.log.append("system_note", this.currentSession, this.currentBranch, {
       event: "context-compacted",
       tokensBefore: before,

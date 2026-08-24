@@ -34,7 +34,8 @@ export type EventType =
   | "question" // agent asked the operator something: data:{question, options?}
   | "sub_fork" // child session header: data:{parentAgent, parentSession, upToEvent}
   | "sub" // mirrored child activity in the parent feed: data:{sub, type, data}
-  | "decision"; // agent recorded a choice + rationale: data:{decision, rationale, alternatives?}
+  | "decision" // agent recorded a choice + rationale: data:{decision, rationale, alternatives?}
+  | "compaction"; // context compaction happened: data:{summary?, tokensBefore/After, mode}
 
 export interface TeapotEvent {
   v: 1;

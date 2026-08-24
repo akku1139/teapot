@@ -102,6 +102,60 @@ export function safeJoin(cwd: string, p: string): string {
   return abs;
 }
 
+interface BgShell {
+  id: string;
+  cmd: string;
+  child: import("node:child_process").ChildProcess;
+  out: string;
+  truncated: boolean;
+  startedAt: number;
+  exited: boolean;
+  code: number | null;
+}
+/** per-workspace background shells (key: workspace path) */
+const bgShellsByWs = new Map<string, Map<string, BgShell>>();
+let bgSeq = 0;
+/** how much of each job's output has already been handed to the model */
+const bgReadCursors = new Map<string, number>();
+
+function bgMapFor(cwd: string): Map<string, BgShell> {
+  let m = bgShellsByWs.get(cwd);
+  if (!m) {
+    m = new Map();
+    bgShellsByWs.set(cwd, m);
+  }
+  return m;
+}
+
+function startBackgroundShell(cmd: string, ctx: ToolContext): string {
+  const map = bgMapFor(ctx.cwd);
+  // opportunistic cleanup of long-dead jobs so the map can't grow forever
+  for (const [id, sh] of map) {
+    if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000 && !map.delete(id)) void id;
+  }
+  const id = `bg${++bgSeq}`;
+  const child = spawn("/bin/bash", ["-lc", cmd], {
+    cwd: ctx.cwd,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, TERM: "dumb", GIT_PAGER: "cat", PAGER: "cat" },
+  });
+  const sh: BgShell = {
+    id, cmd, child,
+    out: "", truncated: false,
+    startedAt: Date.now(), exited: false, code: null,
+  };
+  const collect = (chunk: Buffer) => {
+    if (sh.out.length < 200_000) sh.out += chunk.toString("utf8");
+    else sh.truncated = true;
+  };
+  child.stdout?.on("data", collect);
+  child.stderr?.on("data", collect);
+  child.on("close", (code) => { sh.exited = true; sh.code = code; });
+  map.set(id, sh);
+  return id;
+}
+
 /** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {
@@ -751,11 +805,82 @@ export const TOOLS: ToolDef[] = [
       properties: {
         command: { type: "string" },
         timeout_ms: { type: "number", description: `default ${DEFAULT_TIMEOUT_MS}` },
+        background: {
+          type: "boolean",
+          description:
+            "true = start the command and return IMMEDIATELY with a job id. Poll its output later via " +
+            "bash_output. Use for dev servers, watchers, long builds — anything you don't need to wait for.",
+        },
       },
       required: ["command"],
     },
     async run(args, ctx) {
+      if (args.background === true) {
+        const id = startBackgroundShell(str(args.command), ctx);
+        return {
+          ok: true,
+          result:
+            `started in background (job ${id}). Continue with other work; read its output with ` +
+            `bash_output(job_id="${id}"). Kill it with bash_output(job_id="${id}", action="kill").`,
+        };
+      }
       return runShell(str(args.command), ctx, Math.min(num(args.timeout_ms, ctx.defaultTimeoutMs), 600_000));
+    },
+  },
+  {
+    name: "bash_output",
+    description:
+      "Read or manage a background shell started via bash(background=true). " +
+      "action 'read' returns new output since the last read (plus exit status when done); " +
+      "'kill' terminates the whole process group. Use this instead of re-running long commands.",
+    parameters: {
+      type: "object",
+      properties: {
+        job_id: { type: "string", description: "the job id returned by bash(background=true)" },
+        action: {
+          type: "string",
+          enum: ["read", "kill"],
+          description: "default 'read'",
+        },
+      },
+      required: ["job_id"],
+    },
+    async run(args, ctx) {
+      const map = bgMapFor(ctx.cwd);
+      const sh = map.get(str(args.job_id));
+      if (!sh)
+        return {
+          ok: false,
+          result:
+            `unknown background job "${str(args.job_id)}" in this workspace — ` +
+            `jobs are per-workspace and forgotten on harness restart`,
+        };
+      if (str(args.action) === "kill") {
+        if (!sh.exited) {
+          try {
+            if (sh.child.pid) process.kill(-sh.child.pid, "SIGKILL");
+          } catch { /* already gone */ }
+        }
+        const note = sh.exited ? "(already exited)" : "killed";
+        map.delete(sh.id);
+        return { ok: true, result: `job ${sh.id} ${note}. Output so far:\n${clip(sh.out, 4000)}` };
+      }
+      // action === read (default): hand back NEW bytes and remember the cursor
+      const fresh = sh.out.slice(bgReadCursors.get(sh.id) ?? 0);
+      bgReadCursors.set(sh.id, sh.out.length);
+      const status = sh.exited
+        ? `\n[exited with code ${sh.code ?? "?"}]`
+        : `\n[still running, ${(Math.round((Date.now() - sh.startedAt) / 100) / 10)}s]`;
+      const body =
+        (fresh.length ? fresh : "(no new output)") +
+        (sh.truncated ? "\n… (output truncated at 200KB)" : "") +
+        status;
+      // finished jobs are removed once fully drained
+      if (sh.exited && bgReadCursors.get(sh.id)! >= sh.out.length) {
+        map.delete(sh.id);
+        bgReadCursors.delete(sh.id);
+      }
+      return { ok: true, result: clip(body, ctx.maxOutputBytes) };
     },
   },
   {
