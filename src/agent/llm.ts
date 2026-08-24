@@ -88,6 +88,36 @@ export type ChatFn = (
  * empty text content in user/assistant messages makes many of them 400.
  * Fill blanks with a harmless placeholder before sending.
  */
+/**
+ * Providers occasionally glue MULTIPLE tool calls into one entry, or leak
+ * their internal framing into the name field (seen live: a name of
+ * `get_goal\uFFFD\uFFFDlist_dir` whose raw bytes were
+ * `get_goal</tool_call><…><tool_call><…>`). Detect the tag boundaries and
+ * split the blob back into individual calls so the round stays usable
+ * instead of failing with "unknown tool".
+ */
+function repairMangledToolName(raw: string): { id?: string; name: string; arguments: string }[] {
+  const calls: { id?: string; name: string; arguments: string }[] = [];
+  // Form 1 — framing tags survived: <name></tool_call>[<id>…]<tool_call><name>
+  const tagRe = /([a-zA-Z_][\w.]*)<\/tool_call>|<tool_call>\s*<?([a-zA-Z_][\w.]*)?/g;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(raw))) {
+    const name = m[1] ?? m[2];
+    if (name && !calls.some((c) => c.name === name)) calls.push({ name, arguments: "{}" });
+  }
+  if (calls.length) return calls;
+  // Form 2 — tags were already destroyed into U+FFFD replacement chars:
+  // "get_goal\uFFFD\uFFFDlist_dir" → split on the replacement runs
+  const parts = raw.split(/[\ufffd]+/).filter((p) => /^[a-zA-Z_][\w.]*$/.test(p));
+  for (const p of parts) calls.push({ name: p, arguments: "{}" });
+  return calls;
+}
+
+/** true when a tool name can't possibly be one of ours (framing leaked in) */
+function looksMangled(name: string): boolean {
+  return !name || /[\ufffd<>]/.test(name) || /<tool_call>|<\/tool/.test(name);
+}
+
 function sanitize(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((m) => {
     if ((m.role === "user" || m.role === "assistant") && !m.content) {
@@ -130,11 +160,26 @@ export async function chat(
       | { id?: string; function?: { name?: string; arguments?: string } }[]
       | undefined;
     if (calls?.length) {
-      message.tool_calls = calls.map((c, i) => ({
-        id: c.id ?? `call_${i}`,
-        type: "function" as const,
-        function: { name: c.function?.name ?? "", arguments: c.function?.arguments ?? "{}" },
-      }));
+      message.tool_calls = calls.flatMap((c, i) => {
+        const name = c.function?.name ?? "";
+        // provider glued several calls together / leaked framing into the
+        // name — split the blob back into real calls so the round survives
+        if (looksMangled(name)) {
+          const repaired = repairMangledToolName(name);
+          if (repaired.length)
+            return repaired.map((r, k) => ({
+              id: `${c.id ?? `call_${i}`}_${k}`,
+              type: "function" as const,
+              function: { name: r.name, arguments: r.arguments },
+            }));
+          return []; // unsalvageable — drop rather than feed "unknown tool"
+        }
+        return [{
+          id: c.id ?? `call_${i}`,
+          type: "function" as const,
+          function: { name, arguments: c.function?.arguments ?? "{}" },
+        }];
+      });
     }
     // some gateways answer 200 with finish_reason "error"; those tool calls /
     // text are often truncated garbage — discard the whole completion so the
@@ -248,11 +293,23 @@ export async function chatStream(
       .sort((a, b) => a - b)
       .map((i) => calls[i]!);
     if (list.length)
-      message.tool_calls = list.map((c, i) => ({
-        id: c.id || `call_${i}`,
-        type: "function" as const,
-        function: { name: c.name, arguments: c.args || "{}" },
-      }));
+      message.tool_calls = list.flatMap((c, i) => {
+        if (looksMangled(c.name)) {
+          const repaired = repairMangledToolName(c.name);
+          if (repaired.length)
+            return repaired.map((r, k) => ({
+              id: `${c.id || `call_${i}`}_${k}`,
+              type: "function" as const,
+              function: { name: r.name, arguments: r.arguments },
+            }));
+          return [];
+        }
+        return [{
+          id: c.id || `call_${i}`,
+          type: "function" as const,
+          function: { name: c.name, arguments: c.args || "{}" },
+        }];
+      });
     if (!message.content && !message.tool_calls)
       throw new Error("LLM API error: empty completion");
     return { message, reasoning: reasoning || undefined, usage };
