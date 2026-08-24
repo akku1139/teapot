@@ -464,9 +464,10 @@ test("compaction summarizes old turns when the budget is exceeded", async () => 
   // kept tail still starts at a valid boundary and contains the exchange
   assert.equal(agent.messages[1]!.role, "assistant");
   const events = await readEvents(agent.log.filePath);
-  const noteEv = events.find((e) => e.type === "system_note")!;
+  const noteEv = events.find(
+    (e) => e.type === "system_note" && (e.data as Record<string, unknown>).event === "context-compacted",
+  )!;
   assert.ok(noteEv);
-  assert.equal((noteEv.data as Record<string, unknown>).event, "context-compacted");
   await agent.dispose();
 });
 

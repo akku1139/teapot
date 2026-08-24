@@ -166,7 +166,7 @@ export class Agent {
    * it would delay both the log entry (UI) and delivery until the round —
    * sometimes the whole goal — finished.
    */
-  private pendingPrompts: { source: string; text: string }[] = [];
+  private pendingPrompts: { source: string; text: string; id?: string }[] = [];
   private stopRequested = false;
   private wake: (() => void) | null = null;
   /** set while a long-parking tool (wait_children) holds the run chain */
@@ -754,7 +754,7 @@ export class Agent {
    * the running loop. The very first prompt on a fresh boot also triggers the
    * lazy session restore (before the mailbox is filled, so no duplicates).
    */
-  enqueuePrompt(text: string, source = "user"): void {
+  enqueuePrompt(text: string, source = "user"): string {
     // a prompt during a tool park (wait_children) takes over instantly
     this.unparkFromTool();
     this.wake?.();
@@ -765,23 +765,77 @@ export class Agent {
       this.activityChars = 0;
       this.turnsSinceProgress = 0;
     }
+    // stable id shared by the log event and the UI's pending echo — the UI
+    // flips its echo to "sent" when prompt-delivered carries this id back
+    const promptId =
+      source === "user" ? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` : "";
     void this.ensureReady()
       .then(() => {
-        this.pendingPrompts.push({ source, text });
-        return this.log.append("prompt", this.currentSession, this.currentBranch, { source, text });
+        this.pendingPrompts.push({ source, text, ...(promptId ? { id: promptId } : {}) });
+        return this.log.append("prompt", this.currentSession, this.currentBranch, {
+          source,
+          text,
+          ...(promptId ? { promptId } : {}),
+        });
       })
       .then(() =>
         bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
       )
       .catch(() => {});
+    return promptId;
   }
 
-  /** Hand queued user prompts to the model at a turn boundary. */
+  /**
+   * Withdraw a still-pending user prompt (before it reaches an LLM call).
+   * Returns the text so the UI can put it back into the composer draft.
+   */
+  cancelPrompt(promptId: string): string | null {
+    const i = this.pendingPrompts.findIndex((p) => p.id === promptId);
+    if (i === -1) return null; // already delivered or unknown
+    const [p] = this.pendingPrompts.splice(i, 1);
+    void this.log
+      .append("system_note", this.currentSession, this.currentBranch, {
+        event: "prompt-cancelled",
+        promptId,
+        preview: p.text.slice(0, 80),
+      })
+      .then(() =>
+        bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
+      )
+      .catch(() => {});
+    return p.text;
+  }
+
+  /**
+   * Hand queued user prompts to the model at a turn boundary. Each consumed
+   * prompt is logged as a system_note (prompt-delivered) so the UI can flip
+   * its pending echo to "sent" at exactly the moment the text enters an LLM
+   * call payload — not merely when it was logged.
+   */
   private drainPendingPrompts(): void {
     for (const p of this.pendingPrompts.splice(0)) {
       this.messages.push({ role: "user", content: p.text });
+      if (p.source === "user") {
+        const id = p.id ?? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        this.deliveredPrompts.push(id);
+        // cap: UI only needs recent confirmations
+        if (this.deliveredPrompts.length > 64) this.deliveredPrompts.shift();
+        void this.log
+          .append("system_note", this.currentSession, this.currentBranch, {
+            event: "prompt-delivered",
+            promptId: id,
+            preview: p.text.slice(0, 80),
+          })
+          .then(() =>
+            bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
+          )
+          .catch(() => {});
+      }
     }
   }
+
+  /** ids of user prompts that have entered an LLM call payload (recent first-capped) */
+  private deliveredPrompts: string[] = [];
 
   /** Resolves when all queued work (including a running loop) has settled. */
   settled(): Promise<void> {

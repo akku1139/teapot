@@ -331,7 +331,9 @@ export default function App() {
     return set;
   });
   // optimistic echoes of prompts we just sent but haven't seen in the log yet
-  const [pendingMsgs, setPendingMsgs] = createSignal<{ id: string; text: string; at: number }[]>([]);
+  const [pendingMsgs, setPendingMsgs] = createSignal<
+    { id: string; text: string; at: number; promptId?: string; sent?: boolean }[]
+  >([]);
 
   // pair tool_call events with their (possibly still missing) results:
   // consumed results are hidden from the feed, calls render as one merged row
@@ -455,7 +457,12 @@ export default function App() {
       branch: sel()?.branch ?? "br0",
       parent: null,
       type: "prompt",
-      data: { source: "user", text: p.text, pending: true },
+      data: {
+        source: "user",
+        text: p.text,
+        pending: !p.sent,
+        ...(p.promptId ? { promptId: p.promptId } : {}),
+      },
     }));
     return [...deduped, ...echoes];
   });
@@ -771,7 +778,44 @@ export default function App() {
         if (msg.agentId === selected()) setLive({ text: msg.text ?? "", reasoning: msg.reasoning ?? "" });
         return;
       }
-      if (msg.kind === "event" && FEED_IRRELEVANT.has(msg.event?.type)) return;
+      // agent-update now carries the fresh snapshot: apply it directly —
+      // no GET /api/agents round-trip per event
+      if (msg.kind === "agent-update" && msg.snapshot) {
+        setAgents((prev) => {
+          const i = prev.findIndex((a) => a.id === msg.snapshot.id);
+          const next = msg.snapshot;
+          if (i === -1) return [...prev, next];
+          // content-equal → keep the OLD object: a new identity for unchanged
+          // data re-ran every expression bound to that agent and was the last
+          // source of the rare right-panel flash
+          const cur = prev[i]!;
+          const same =
+            JSON.stringify(cur) === JSON.stringify(next);
+          if (same) return prev;
+          return prev.map((a, j) => (j === i ? next : a));
+        });
+        return; // snapshot IS the update; no feed refresh needed for it alone
+      }
+      if (msg.kind === "event") {
+        const et = msg.event?.type;
+        const ed = msg.event?.data ?? {};
+        // a prompt-delivered note means the text ENTERED an LLM call payload —
+        // flip the matching pending echo to "sent" at exactly that moment
+        if (et === "system_note" && ed.event === "prompt-delivered" && msg.agentId === selected()) {
+          setPendingMsgs((list) =>
+            list.map((p) => (p.promptId === ed.promptId ? { ...p, sent: true } : p)),
+          );
+          return;
+        }
+        if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
+          setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
+          return;
+        }
+        if (FEED_IRRELEVANT.has(et)) return;
+        // only the affected session's feed needs reloading — other sessions'
+        // timelines are fetched on switch, not eagerly
+        if (msg.event?.agent !== selected()) return;
+      }
       // hidden tab: defer feed work until the tab is visible again — layout
       // is paused anyway, so fetching + re-rendering now is pure waste. The
       // single shared timer collapses the backlog into ONE refresh on return.
@@ -1216,13 +1260,17 @@ export default function App() {
     const id = targetId ?? selected();
     if (!id) return;
     try {
-      await api(`/api/agents/${id}/prompt`, {
+      const r = await api(`/api/agents/${id}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, start: true }),
       });
-      // optimistic echo — replaced by the logged event once the feed catches up
-      setPendingMsgs((l) => [...l, { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now() }]);
+      // optimistic echo — replaced by the logged event once the feed catches up.
+      // promptId links it to the later prompt-delivered note (real LLM payload).
+      setPendingMsgs((l) => [
+        ...l,
+        { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now(), promptId: (r as any).promptId },
+      ]);
       // scroll to bottom after our message appears. The composer is shrinking
       // (autosize) in the same frame — wait two frames so the scroll target is
       // computed against the SETTLED layout, not the still-expanded input.
@@ -1568,6 +1616,27 @@ export default function App() {
                     onOption={(t) => void sendText(t)}
                     answeredIds={answeredQuestionIds()}
                     agentActive={sel()?.status === "running" || sel()?.status === "waiting"}
+                    onCancel={
+                      e.data?.pending && e.data?.promptId && e.data?.sent !== true
+                        ? () => {
+                            const pid = String(e.data.promptId);
+                            api(`/api/agents/${selected()}/prompt/cancel`, {
+                              method: "POST",
+                              headers: { "content-type": "application/json" },
+                              body: JSON.stringify({ promptId: pid }),
+                            })
+                              .then((r: any) => {
+                                // put the text back WITHOUT clobbering what
+                                // the user has typed since sending it
+                                const back = String(r.text ?? "");
+                                saveDraft(draft() ? `${back}\n\n${draft()}` : back);
+                                setPendingMsgs((list) => list.filter((p) => p.promptId !== pid));
+                                flashHint("message withdrawn — draft restored");
+                              })
+                              .catch(() => flashHint("withdraw failed — it may have already been sent"));
+                          }
+                        : undefined
+                    }
                     onEdit={
                       e.type === "prompt" && e.data?.source === "user"
                         ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
@@ -2482,7 +2551,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
   );
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean }) {
   const e = props.e;
   const a = authorOf(e);
   const grouped =
@@ -2528,8 +2597,21 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
             <Show when={e.data?.actor}>
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
-            <span class="ts">{e.data?.pending ? "pending…" : fmtTs(e.ts)}</span>
+            <span class="ts">
+              {e.data?.pending
+                ? e.data?.sent === true
+                  ? "sent to model ✓"
+                  : "pending (queued)…"
+                : fmtTs(e.ts)}
+            </span>
             <span class="ts">{e.branch}</span>
+            <Show when={props.onCancel}>
+              <button
+                class="editbtn"
+                title="withdraw this message — it has not reached the model yet; the text goes back to the input box"
+                onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onCancel!(); }}
+              >✕ cancel</button>
+            </Show>
             <Show when={props.onEdit}>
               <button
                 class="editbtn"

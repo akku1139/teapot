@@ -99,7 +99,17 @@ export function buildApp(master: Master): Hono {
             }
           };
           send({ kind: "hello", agents: [...master.agents.values()].map((a) => a.snapshot()) });
-          onUpdate = (ev) => send(ev);
+          onUpdate = (raw: unknown) => {
+            const ev = raw as { kind?: string; agentId?: string };
+            // attach the fresh snapshot to agent-update events so clients can
+            // update their state WITHOUT a follow-up GET /api/agents poll
+            if (ev?.kind === "agent-update" && ev.agentId) {
+              const a = master.agents.get(ev.agentId);
+              send({ ...ev, snapshot: a?.snapshot() });
+              return;
+            }
+            send(ev);
+          };
           bus.on("update", onUpdate);
           // app-level liveness ping every 30s
           ka = setInterval(() => send({ kind: "ping" }), 30_000);
@@ -470,10 +480,22 @@ export function buildApp(master: Master): Hono {
     const body = await c.req.json<{ text?: string; start?: boolean }>();
     if (!body.text?.trim()) return c.json({ error: "text required" }, 400);
     // returns immediately: the prompt is logged + broadcast now, delivered to
-    // the model at the next turn boundary (never blocks on a running agent)
-    a.enqueuePrompt(body.text, "user");
+    // the model at the next turn boundary (never blocks on a running agent).
+    // promptId ties the UI's pending echo to the later prompt-delivered note.
+    const promptId = a.enqueuePrompt(body.text, "user");
     if (body.start !== false && a.status !== "running") a.start("prompt");
-    return c.json({ ok: true, queued: a.snapshot().pendingPrompts });
+    return c.json({ ok: true, promptId, queued: a.snapshot().pendingPrompts });
+  });
+
+  // Withdraw a still-pending prompt; returns its text for the composer draft.
+  app.post("/api/agents/:id/prompt/cancel", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req.json<{ promptId?: string }>();
+    if (!body.promptId) return c.json({ error: "promptId required" }, 400);
+    const text = a.cancelPrompt(body.promptId);
+    if (text === null) return c.json({ error: "not pending (already delivered?)" }, 409);
+    return c.json({ ok: true, text });
   });
 
   app.post("/api/agents/:id/start", (c) => {
