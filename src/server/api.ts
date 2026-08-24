@@ -582,11 +582,16 @@ export function buildApp(master: Master): Hono {
         await a.setGoalVerify(body.verify.trim());
       // goals live behind get_goal(), so a silent save would go unnoticed —
       // queue a harness prompt unless the caller explicitly declines
-      if (body.notify !== false)
+      if (body.notify !== false) {
         a.enqueuePrompt(
           `[harness] The operator set a new goal:\n\n${body.text}\n\nAlign your work with it.`,
           "harness",
         );
+        // an idle agent must actually START working on the new goal — the
+        // queued prompt alone sat there forever when nothing else started
+        // the loop (reported: goal save left the session idle indefinitely)
+        if (a.status !== "running") a.start("goal set");
+      }
     } else if (body.status) await a.setGoalStatus(body.status);
     else return c.json({ error: "text or status required" }, 400);
     return c.json({ ok: true });

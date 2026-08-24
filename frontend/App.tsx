@@ -335,6 +335,62 @@ export default function App() {
     { id: string; text: string; at: number; promptId?: string; sent?: boolean }[]
   >([]);
 
+  /* ---------- notification center (in-app only; push later) ---------- */
+  type Notif = {
+    id: string;
+    agentId: string;
+    kind: "progress" | "finish" | "question" | "error";
+    title: string;
+    body: string;
+    at: number;
+    read: boolean;
+  };
+  const [notifs, setNotifs] = createSignal<Notif[]>([]);
+  const [showNotifs, setShowNotifs] = createSignal(false);
+  const unreadCount = () => notifs().filter((n) => !n.read).length;
+  let notifSeq = 0;
+  const addNotif = (n: Omit<Notif, "id" | "at" | "read">) => {
+    setNotifs((list) =>
+      [{ ...n, id: `n${++notifSeq}`, at: Date.now(), read: false }, ...list].slice(0, 50),
+    );
+  };
+  /** events worth telling the operator about, even on another session/tab */
+  const maybeNotify = (agentId: string, ev: any) => {
+    const who = agents().find((a) => a.id === agentId)?.id ?? agentId;
+    if (ev.type === "message" && ev.data?.final === true) {
+      addNotif({
+        agentId,
+        kind: "finish",
+        title: `${who} finished`,
+        body: String(ev.data.content ?? "").slice(0, 300),
+      });
+    } else if (ev.type === "question") {
+      addNotif({
+        agentId,
+        kind: "question",
+        title: `${who} asks a question`,
+        body: String(ev.data.question ?? "").slice(0, 300),
+      });
+    } else if (ev.type === "error") {
+      addNotif({
+        agentId,
+        kind: "error",
+        title: `${who} hit an error`,
+        body: String(ev.data.message ?? "").slice(0, 300),
+      });
+    } else if (ev.type === "progress") {
+      addNotif({
+        agentId,
+        kind: "progress",
+        title: `${who}: ${String(ev.data.doing ?? "progress")}`.slice(0, 120),
+        body: [ev.data.recent && `recent: ${ev.data.recent}`, ev.data.next && `next: ${ev.data.next}`]
+          .filter(Boolean)
+          .join(" · ")
+          .slice(0, 300),
+      });
+    }
+  };
+
   // pair tool_call events with their (possibly still missing) results:
   // consumed results are hidden from the feed, calls render as one merged row
   // that shows "running…" until its result lands
@@ -812,6 +868,10 @@ export default function App() {
           return;
         }
         if (FEED_IRRELEVANT.has(et)) return;
+        // notify the operator about notable moments from ANY session — that's
+        // the point of the notification center (progress / finish / question /
+        // error), even when the timeline isn't being watched
+        maybeNotify(msg.agentId, msg.event);
         // only the affected session's feed needs reloading — other sessions'
         // timelines are fetched on switch, not eagerly
         if (msg.event?.agent !== selected()) return;
@@ -888,7 +948,11 @@ export default function App() {
   /* ---------- small UX niceties ---------- */
   createEffect(() => {
     const a = sel();
-    document.title = a ? `${a.status === "running" ? "▶ " : a.status === "error" ? "⚠ " : ""}${a.id} · teapot` : "teapot";
+    const base = a
+      ? `${a.status === "running" ? "▶ " : a.status === "error" ? "⚠ " : ""}${a.id} · teapot`
+      : "teapot";
+    // unread notification count in the tab title — "(2) linux · teapot"
+    document.title = unreadCount() > 0 ? `(${unreadCount()}) ${base}` : base;
   });
   window.addEventListener("keydown", (e) => {
     const t = e.target as HTMLElement | null;
@@ -1462,6 +1526,22 @@ export default function App() {
                 </Show>
                 <span class={`dot ${a.status}`} />
                 <span>{a.id}</span>
+                {/* collapsed tree: surface how many subs are still working so a
+                    busy parent doesn't look idle with its subtree hidden */}
+                <Show when={collapsedSubs().has(a.id)}>
+                  {(() => {
+                    const kids = agents().filter((x) => x.parent === a.id);
+                    const running = kids.filter((k) => k.status === "running" || k.status === "waiting").length;
+                    return kids.length > 0 ? (
+                      <span
+                        class={"subcount" + (running > 0 ? " live" : "")}
+                        title={`${kids.length} sub-agent${kids.length > 1 ? "s" : ""} (${running} active)`}
+                      >
+                        🧩 {kids.length}{running > 0 ? ` · ▶${running}` : ""}
+                      </span>
+                    ) : null;
+                  })()}
+                </Show>
                 <Show when={a.parent}><span class="subtag">🧩</span></Show>
                 <Show when={agentTasks(a.id).length > 0}>
                   <span class="mini-cron" title={agentTasks(a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
@@ -1541,14 +1621,22 @@ export default function App() {
               </Show>
             </div>
           </Show>
-          <div class="footer-row">
+          {/* row 1: buttons (incl. notification bell) — row 2: branding */}
+          <div class="footer-row" style="justify-content:flex-end">
             <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
+            <button
+              class={"iconbtn notifbtn" + (unreadCount() > 0 ? " has-unread" : "")}
+              title={unreadCount() > 0 ? `${unreadCount()} unread notifications` : "notifications"}
+              onclick={() => { setShowNotifs(!showNotifs()); setNotifs((l) => l.map((n) => ({ ...n, read: true }))); }}
+            >
+              🔔<Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
+            </button>
+            <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
+            <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
+            <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
+          </div>
+          <div class="brand-row">
             <div class="brand">🫖 teapot <span class="version">v{__APP_VERSION__}</span></div>
-            <span style="margin-left:auto;display:flex;gap:4px;align-items:center">
-              <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
-              <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
-              <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
-            </span>
           </div>
           <div class="metrics">
             <Show when={metrics()}>
@@ -1567,8 +1655,11 @@ export default function App() {
             <span class="title">{sel()!.id}</span>
             <span class={`badge ${sel()!.status}`}>{sel()!.status}</span>
             <Show when={(sel()!.pendingPrompts ?? 0) > 0}>
-              <span class="badge queued" title={`${sel()!.pendingPrompts} prompt(s) waiting — the agent picks them up at the next turn boundary`}>
-                ⏳ {sel()!.pendingPrompts} queued
+              <span
+                class="badge queued"
+                title={`${sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you waiting in the queue. They will be handed to the model at its next turn boundary — the timeline shows them as "pending (queued)…" until then, and each can be withdrawn with ✕ cancel while it's still queued.`}
+              >
+                ⏳ {sel()!.pendingPrompts} of yours queued
               </span>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>
@@ -2266,6 +2357,45 @@ export default function App() {
         </Show>
       </aside>
     </div>
+    </Show>
+    <Show when={showNotifs()}>
+      {/* notification center — pops from the sidebar footer, bottom-left */}
+      <div class="notifpanel">
+        <div class="notifhead">
+          notifications
+          <Show when={notifs().length > 0}>
+            <button class="editbtn" onclick={() => setNotifs([])}>clear all</button>
+          </Show>
+        </div>
+        <Show
+          when={notifs().length > 0}
+          fallback={<div class="muted" style="padding:10px">nothing yet — progress, finishes, questions and errors will land here</div>}
+        >
+          <div class="notiflist">
+            <For each={notifs()}>
+              {(n) => (
+                <div
+                  class={"notifitem " + n.kind}
+                  title={`from ${n.agentId}`}
+                  onclick={() => {
+                    if (agents().some((a) => a.id === n.agentId)) select(n.agentId);
+                    setShowNotifs(false);
+                  }}
+                >
+                  <div class="nhead">
+                    <span class="nicon">{n.kind === "finish" ? "✅" : n.kind === "question" ? "❓" : n.kind === "error" ? "⚠️" : "📈"}</span>
+                    <span class="ntitle">{n.title}</span>
+                    <span class="meta muted">{relTime(new Date(n.at).toISOString())}</span>
+                  </div>
+                  <Show when={n.body}>
+                    <div class="nbody">{truncate(n.body, 160)}</div>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+      </div>
     </Show>
     <Show when={showNew()}>
       <NewAgentModal

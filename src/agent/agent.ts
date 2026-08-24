@@ -755,7 +755,17 @@ export class Agent {
    * lazy session restore (before the mailbox is filled, so no duplicates).
    */
   enqueuePrompt(text: string, source = "user"): string {
-    // a prompt during a tool park (wait_children) takes over instantly
+    // a prompt during a tool park (wait_children) takes over instantly:
+    // unpark fixes the DISPLAY, aborting the park signal actually ends the
+    // wait — the run chain resumes with this prompt drained at the boundary
+    if (this.parkedByTool) {
+      this.toolAbort.abort();
+      // the abort signal is one-shot — rearm it AND republish on toolCtx
+      // (toolCtx holds a COPY of the signal reference, so replacing only
+      // this.toolAbort left the park listening to the dead controller)
+      this.toolAbort = new AbortController();
+      (this.toolCtx as { signal: AbortSignal }).signal = this.toolAbort.signal;
+    }
     this.unparkFromTool();
     this.wake?.();
     // a user message means the operator JUST checked in — they obviously know
@@ -867,8 +877,10 @@ export class Agent {
   stop(reason = "stopped by user"): void {
     this.stopRequested = true;
     this.parkedByTool = false; // the park display must not outlive a stop
-    // interrupt an in-flight LLM call immediately instead of waiting it out
+    // interrupt an in-flight LLM call AND any parked tool (wait_children):
+    // without aborting toolCtx.signal the park ran to its full timeout
     this.abort?.abort();
+    this.toolAbort.abort();
     this.wake?.();
     void this.enqueue(() => {
       this.setStatus("stopped", reason);

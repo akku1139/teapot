@@ -565,3 +565,40 @@ html[data-appearance="dark"] .filepreview .shiki span { color: var(--shiki-dark)
   overflow-wrap: anywhere;
 }
 html[data-appearance="light"] .filepreview .shiki { background-color: var(--shiki-light-bg); }
+
+/* notification center (pops above the sidebar footer) */
+.notifbtn { position: relative; }
+.notifbtn.has-unread { color: var(--acc); }
+.notifdot {
+  position: absolute; top: -4px; right: -4px;
+  background: var(--err); color: #fff; border-radius: 999px;
+  font-size: 9px; line-height: 1; padding: 2px 4px; font-style: normal; font-weight: 700;
+}
+.brand-row { display: flex; align-items: center; margin-top: 2px; }
+.notifpanel {
+  position: absolute; left: 8px; bottom: 76px; width: min(360px, 88vw); z-index: 8;
+  background: var(--bg-mid); border: 1px solid var(--bg-light); border-radius: 10px;
+  box-shadow: 0 -8px 30px #000a; overflow: hidden;
+}
+.notifhead {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid var(--line);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim);
+}
+.notiflist { max-height: 46vh; overflow-y: auto; }
+.notifitem { padding: 8px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.notifitem:last-child { border-bottom: none; }
+.notifitem:hover { background: var(--bg-light); }
+.notifitem .nhead { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.notifitem .ntitle { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notifitem.error .ntitle { color: var(--err); }
+.notifitem.finish .ntitle { color: var(--ok); }
+.notifitem.question .ntitle { color: var(--acc); }
+.notifitem .nbody { font-size: 12px; color: var(--dim); margin-top: 3px; word-break: break-word; }
+
+/* collapsed-tree sub-agent counter (e.g. "🧩 3 · ▶2") */
+.subcount {
+  font-size: 10px; color: var(--dim); background: var(--bg-light);
+  border-radius: 999px; padding: 1px 7px; white-space: nowrap; flex-shrink: 0;
+}
+.subcount.live { color: var(--ok); }
