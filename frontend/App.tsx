@@ -1057,8 +1057,8 @@ export default function App() {
     const who = agentId ?? selected();
     if (!who) return;
     const perAgent = termTabs().filter((t) => t.agentId === who).length;
-    if (perAgent >= 2) {
-      flashHint(`max 2 shells per agent (${who})`);
+    if (perAgent >= 10) {
+      flashHint(`max 10 shells per agent (${who}) — that's already a lot`);
       return;
     }
     const n = termTabs().length + 1;
@@ -1153,29 +1153,25 @@ export default function App() {
     if (!host) return;
     const tab = termTabs()[idx === 0 ? paneL() : paneR()];
     if (!tab) {
-      host.replaceChildren();
+      // only clear when this pane actually owns a session — replaceChildren()
+      // on every mount pass used to detach a session element the OTHER pass
+      // had just re-attached, which is how tabs went blank
+      const owned = [...liveTerms.values()].some((t) => t.el.parentElement === host);
+      if (owned) host.replaceChildren();
       return;
     }
     const s = ensureSession(tab, host);
-    if (focusedPane() === (idx === 0 ? 0 : 1)) {
-      requestAnimationFrame(() => {
-        try { s.fit(); s.term.focus(); } catch { /* */ }
-      });
-    }
-  }
-
-  // (re)mount both panes whenever layout inputs change
-  createEffect(() => {
-    void termTabs();
-    void splitView();
-    void paneL();
-    void paneR();
-    void termHeight();
+    // make sure the terminal element really lives in THIS pane right now —
+    // switching tabs moved DOM nodes behind Solid's back, so verify instead
+    // of assuming; then refit so xterm re-measures into the (new) box
     requestAnimationFrame(() => {
-      mountPane(0);
-      if (splitView()) mountPane(1);
+      if (s.el.parentElement !== host) host.appendChild(s.el);
+      try { s.fit(); } catch { /* hidden */ }
+      if (focusedPane() === (idx === 0 ? 0 : 1)) {
+        try { s.term.focus(); } catch { /* */ }
+      }
     });
-  });
+  }
 
   // opening the drawer ensures a shell for the selected agent
   createEffect(() => {
@@ -1771,7 +1767,7 @@ export default function App() {
           </div>
 
           <Show when={termOpen()}>
-            <div class="termdrawer" style={{ height: `${termHeight()}px` }}>
+            <div class="termdrawer" style={{ height: `${termHeight()}px`, "--termh": `${termHeight()}px` } as any}>
               <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
               <div class="termbar">
                 <div class="termtabs">
@@ -1787,7 +1783,7 @@ export default function App() {
                       </span>
                     )}
                   </For>
-                  <button class="iconbtn" title="new shell in this workspace (max 2 per agent)" onclick={addFromSelected}>＋</button>
+                  <button class="iconbtn" title="new shell in this workspace" onclick={addFromSelected}>＋</button>
                 </div>
                 <div style="display:flex;gap:4px;align-items:center">
                   <span class="muted mono" style="flex:1;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">

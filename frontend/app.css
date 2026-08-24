@@ -340,6 +340,14 @@ input[type="checkbox"] { accent-color: var(--acc); }
   padding: 6px 14px; cursor: pointer; font-size: 12.5px; font-weight: 600;
   box-shadow: 0 4px 14px #0008; z-index: 2;
 }
+/* terminal drawer open → park the pill just above the drawer instead of
+   over it. The drawer height is dynamic, so the app publishes it as a CSS
+   variable (--termh) and the pill offsets by that amount. */
+body:has(.termdrawer) .jump {
+  top: auto;
+  bottom: calc(var(--termh, 300px) + 44px);
+  left: 50%;
+}
 
 .divider-msg { display: flex; align-items: center; gap: 10px; padding: 4px 18px; color: var(--dim); font-size: 11.5px; }
 .divider-msg::before, .divider-msg::after { content: ""; flex: 1; height: 1px; background: var(--line); }

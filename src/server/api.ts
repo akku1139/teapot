@@ -195,8 +195,9 @@ export function buildApp(master: Master): Hono {
             }
           };
           const cur = termCounts.get(agentId) ?? 0;
-          if (cur >= 2) {
-            send({ kind: "exit", error: "too many terminals for this agent (max 2)" });
+          if (cur >= 10) {
+            // soft safeguard only — the UI allows up to 10 tabs per agent
+            send({ kind: "exit", error: "too many terminals for this agent (max 10)" });
             return;
           }
           termCounts.set(agentId, cur + 1);
