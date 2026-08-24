@@ -281,14 +281,20 @@ export default function App() {
   });
   onCleanup(() => clearTimeout(liveRenderTimer));
 
-  // auto-scroll the feed when live reasoning grows and we're at the bottom
+  // auto-scroll the feed while live output streams and we're at the bottom.
+  // The old version double-checked nearBottom() inside the rAF — but the live
+  // bubble has ALREADY grown by then, so the unscrolled distance exceeded the
+  // threshold, "user scrolled away" was falsely detected, and follow mode
+  // jittered on/off with every chunk (worse with a tall composer eating into
+  // the viewport). atBottom() is only flipped by real user scrolling, so it is
+  // the signal to trust here; nearBottom() would just re-measure mid-growth.
   createEffect(() => {
     const txt = liveText();
     if (!txt) return;
     if (!atBottom()) return;
     // wait for the DOM to paint the new text
     requestAnimationFrame(() => {
-      if (nearBottom()) scrollBottom(true);
+      if (atBottom()) scrollBottom(true);
     });
   });
   // Browsers pause requestAnimationFrame while a tab is hidden, so scroll
@@ -670,9 +676,17 @@ export default function App() {
   }
 
   function feedEl() { return document.querySelector(".feed"); }
+  /** slack for "am I at the bottom" — must cover the composer's own growth:
+   * a multi-line input (up to 160px) shrinks the feed viewport between frames,
+   * and a fixed 80px threshold reads that as "user scrolled away" mid-stream */
+  function bottomSlack() {
+    const c = document.querySelector<HTMLTextAreaElement>(".composer textarea");
+    return 80 + Math.min(Math.max((c?.scrollHeight ?? 0) - (c?.clientHeight ?? 0), 0), 160);
+  }
   function nearBottom() {
     const f = feedEl();
-    return !f || f.scrollHeight - f.scrollTop - f.clientHeight < 80;
+    if (!f) return true;
+    return f.scrollHeight - f.scrollTop - f.clientHeight < bottomSlack();
   }
   function scrollBottom(force = false) {
     const f = feedEl();
@@ -1173,6 +1187,10 @@ export default function App() {
     if (!composerEl) return;
     composerEl.style.height = "auto";
     composerEl.style.height = `${Math.min(composerEl.scrollHeight, 160)}px`;
+    // When the input grows/shrinks the feed viewport resizes under us. In
+    // follow mode the bottom line must stay pinned through that relayout —
+    // otherwise typing a long prompt visually "scrolls away" from the tail.
+    if (atBottom()) requestAnimationFrame(() => scrollBottom(true));
   };
   createEffect(() => {
     draft(); // re-run on typing AND after send() clears the draft
@@ -1191,8 +1209,10 @@ export default function App() {
       });
       // optimistic echo — replaced by the logged event once the feed catches up
       setPendingMsgs((l) => [...l, { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now() }]);
-      // scroll to bottom after our message appears
-      requestAnimationFrame(() => scrollBottom(true));
+      // scroll to bottom after our message appears. The composer is shrinking
+      // (autosize) in the same frame — wait two frames so the scroll target is
+      // computed against the SETTLED layout, not the still-expanded input.
+      requestAnimationFrame(() => requestAnimationFrame(() => scrollBottom(true)));
     } catch (ex) {
       saveDraft(text); // never eat the user's message on a failed send
       console.error("send failed:", ex);
