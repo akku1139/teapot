@@ -3,7 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>teapot</title>
+  <title>teapot</title>
+  <script>
+    // apply the saved theme before first paint (mirrors the App.tsx resolution)
+    (function () {
+      try {
+        var auto = localStorage.getItem("teapot.theme.auto") === "1";
+        var t;
+        if (auto) {
+          var prefersLight = matchMedia("(prefers-color-scheme: light)").matches;
+          t = localStorage.getItem(prefersLight ? "teapot.theme.light" : "teapot.theme.dark");
+        } else {
+          t = localStorage.getItem("teapot.theme");
+        }
+        document.documentElement.dataset.theme = t || "dark";
+      } catch (e) { /* private mode etc — keep defaults */ }
+    })();
+  </script>
 </head>
 <body>
 <div id="root"></div>

@@ -36,6 +36,39 @@ const flashHint = (msg: string) => {
   flashTimer = setTimeout(() => setFlash(""), 3200);
 };
 
+/* ---------- themes ---------- */
+type ThemeMeta = {
+  key: string;
+  label: string;
+  mode: "dark" | "light";
+  /** three preview dots: page bg · raised surface · accent */
+  sw: [string, string, string];
+};
+const THEMES: ThemeMeta[] = [
+  { key: "dark", label: "Dark", mode: "dark", sw: ["#1a1c22", "#2b2e39", "#5865f2"] },
+  { key: "midnight", label: "Midnight", mode: "dark", sw: ["#0d0f18", "#252a42", "#8b7cf7"] },
+  { key: "tea", label: "Milk Tea", mode: "dark", sw: ["#241c16", "#493b2d", "#d98e32"] },
+  { key: "coffee", label: "Coffee", mode: "dark", sw: ["#191410", "#403527", "#c68a4b"] },
+  { key: "matcha", label: "Matcha", mode: "dark", sw: ["#1b2217", "#3c4a33", "#8db64e"] },
+  { key: "matrix", label: "Matrix", mode: "dark", sw: ["#060a06", "#18301d", "#2fd558"] },
+  { key: "sunset", label: "Sunset", mode: "dark", sw: ["#1c1422", "#452f52", "#f2784b"] },
+  { key: "light", label: "Light", mode: "light", sw: ["#eceef4", "#ffffff", "#4757d8"] },
+  { key: "strawberry", label: "Strawberry", mode: "light", sw: ["#fbe4ea", "#fffafb", "#e05575"] },
+  { key: "ramune", label: "Ramune", mode: "light", sw: ["#ddeff7", "#fbfeff", "#1d86ae"] },
+];
+
+/** xterm palette pulled from the active theme's CSS variables (fallback: dark) */
+function themeColors(): { background: string; foreground: string } {
+  let bg = "";
+  let fg = "";
+  try {
+    const cs = getComputedStyle(document.documentElement);
+    bg = cs.getPropertyValue("--term-bg").trim();
+    fg = cs.getPropertyValue("--term-fg").trim();
+  } catch { /* non-DOM context */ }
+  return { background: bg || "#0d0e12", foreground: fg || "#dcdee4" };
+}
+
 /** author for an event — mirrored sub-agent rows act under their own id */
 const authorOf = (e: Ev) => {
   if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
@@ -108,6 +141,37 @@ export default function App() {
     setShowRight(next);
     localStorage.setItem("teapot.panel", next ? "1" : "0");
   };
+
+  /* ---------- theme picker (per-browser, localStorage-backed) ---------- */
+  const [showThemes, setShowThemes] = createSignal(false);
+  // fixed theme…
+  const [fixedTheme, setFixedTheme] = createSignal(localStorage.getItem("teapot.theme") ?? "dark");
+  // …or follow the OS, with an explicit choice per system appearance
+  const [themeAuto, setThemeAuto] = createSignal(localStorage.getItem("teapot.theme.auto") === "1");
+  const [sysLightTheme, setSysLightTheme] = createSignal(
+    localStorage.getItem("teapot.theme.light") ?? "light",
+  );
+  const [sysDarkTheme, setSysDarkTheme] = createSignal(
+    localStorage.getItem("teapot.theme.dark") ?? "dark",
+  );
+  const sysMql =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: light)")
+      : null;
+  const [sysPrefersLight, setSysPrefersLight] = createSignal(sysMql?.matches ?? false);
+  onMount(() => {
+    const onChange = (e: MediaQueryListEvent) => setSysPrefersLight(e.matches);
+    sysMql?.addEventListener("change", onChange);
+    onCleanup(() => sysMql?.removeEventListener("change", onChange));
+  });
+  // single writer: resolves the active theme and slaps it on <html>
+  createEffect(() => {
+    document.documentElement.dataset.theme = themeAuto()
+      ? sysPrefersLight()
+        ? sysLightTheme()
+        : sysDarkTheme()
+      : fixedTheme();
+  });
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
@@ -571,6 +635,7 @@ export default function App() {
       if (showNew()) { setShowNew(false); return; }
       if (showCfg()) { setShowCfg(false); return; }
       if (editing()) { setEditing(null); return; }
+      if (showThemes()) { setShowThemes(false); return; }
       const s = sel();
       if (s?.status === "running") {
         // Claude-Code-style: Esc interrupts the running agent
@@ -632,7 +697,8 @@ export default function App() {
           cursorBlink: true,
           fontSize: 12.5,
           fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
-          theme: { background: "#0d0e12", foreground: "#dcdee4" },
+          // follow the active theme via CSS variables (fallback = dark)
+          theme: themeColors(),
         });
         const f = new FitAddon();
         t.loadAddon(f);
@@ -936,9 +1002,79 @@ export default function App() {
           <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
           <span style="float:right;display:flex;gap:4px">
             <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
+            <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>◐</button>
             <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
           </span>
         </h1>
+        <Show when={showThemes()}>
+          <div class="themepop">
+            <label class="trow" title="switch automatically when the OS switches appearance — pick which theme to use for each">
+              <input
+                type="checkbox"
+                checked={themeAuto()}
+                onchange={(e) => {
+                  const v = e.currentTarget.checked;
+                  setThemeAuto(v);
+                  localStorage.setItem("teapot.theme.auto", v ? "1" : "0");
+                }}
+              />
+              follow system
+            </label>
+            <Show
+              when={!themeAuto()}
+              fallback={
+                <>
+                  <label class="trow">system light →
+                    <select
+                      class="w100"
+                      value={sysLightTheme()}
+                      onchange={(e) => {
+                        setSysLightTheme(e.currentTarget.value);
+                        localStorage.setItem("teapot.theme.light", e.currentTarget.value);
+                      }}
+                    >
+                      <For each={THEMES.filter((t) => t.mode === "light")}>
+                        {(t) => <option value={t.key}>{t.label}</option>}
+                      </For>
+                    </select>
+                  </label>
+                  <label class="trow">system dark →
+                    <select
+                      class="w100"
+                      value={sysDarkTheme()}
+                      onchange={(e) => {
+                        setSysDarkTheme(e.currentTarget.value);
+                        localStorage.setItem("teapot.theme.dark", e.currentTarget.value);
+                      }}
+                    >
+                      <For each={THEMES.filter((t) => t.mode === "dark")}>
+                        {(t) => <option value={t.key}>{t.label}</option>}
+                      </For>
+                    </select>
+                  </label>
+                </>
+              }
+            >
+              <div class="themegrid">
+                <For each={THEMES}>
+                  {(t) => (
+                    <button
+                      class={"themebtn" + (fixedTheme() === t.key ? " on" : "")}
+                      title={`${t.label} (${t.mode})`}
+                      onclick={() => {
+                        setFixedTheme(t.key);
+                        localStorage.setItem("teapot.theme", t.key);
+                      }}
+                    >
+                      <span class="swdots">{t.sw.map((c) => <i style={{ background: c }} />)}</span>
+                      {t.label}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
+        </Show>
         <div class="agent-list">
           <For each={treeRows()}>
             {({ a, depth }) => (
