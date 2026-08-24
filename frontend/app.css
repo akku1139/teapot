@@ -192,6 +192,10 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 /* checkboxes follow the active theme's accent everywhere (goal-notify,
    todo-notify, auto-compact, follow system, fork ctx, cron fork…) */
 input[type="checkbox"] { accent-color: var(--acc); }
+/* links in rendered markdown follow the theme's tool color (readable on both
+   light & dark palettes, distinct from body text and from the accent) */
+.content a { color: var(--tool); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--tool) 45%, transparent); text-underline-offset: 2px; }
+.content a:hover { filter: brightness(1.15); }
 /* settings-panel buttons (theme picker rows, wizard actions…) pick up the
    theme accent instead of a hardcoded color */
 .themebtn.on { background: var(--acc); color: #fff; }
@@ -454,6 +458,11 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .goalstate.on.done { background: var(--acc); color: #fff; font-weight: 600; }
 .goalstate.on.paused { background: var(--warn); color: #fff; font-weight: 600; }
 .goalstate:disabled { cursor: default; filter: none; }
+/* goal verification contract + audit cards (pi-goal-x style) */
+.verifycard { border-left: 3px solid var(--tool); margin-top: 6px; }
+.auditcard { border-left: 3px solid var(--warn); margin-top: 6px; }
+.auditcard.ok { border-left-color: var(--ok); }
+.vtitle { font-weight: 600; font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 
 /* ---- modals & misc ---- */
 .iconbtn { background: var(--bg-light); border: none; color: var(--fg); border-radius: 6px; width: 26px; height: 24px; cursor: pointer; font-size: 13px; }

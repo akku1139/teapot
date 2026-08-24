@@ -355,11 +355,16 @@ export class Master {
       }
     }
     for (const t of this.config.tasks ?? []) {
-      this.tasks.push({
-        task: t,
-        schedule: parseSchedule(t.schedule),
-        lastRunMin: t.lastRunMin ?? -1,
-      });
+      try {
+        this.tasks.push({
+          task: t,
+          schedule: parseSchedule(t.schedule),
+          lastRunMin: t.lastRunMin ?? -1,
+        });
+      } catch (err) {
+        // a hand-edited schedule typo must not stop the server from listening
+        console.error(`[teapot] skipping task "${t.id}": ${(err as Error).message}`);
+      }
     }
     // single low-frequency tick for everything periodic (idle cost ≈ 0)
     setInterval(() => void this.tick(), 15_000).unref();
@@ -526,7 +531,10 @@ export class Master {
         stop: (ids?: string[]) => this.stopChildrenFor(ac.id, ids),
         message: (id: string, text: string) => this.messageChild(ac.id, id, text),
         wait: (ids: string[] | undefined, ms: number) =>
-          this.waitChildren(ac.id, ids, ms),
+          // wire the parent's tool-abort signal: a user stop / dispose must
+          // interrupt the park immediately instead of leaving the run chain
+          // blocked until the full timeout (up to 1h)
+          this.waitChildren(ac.id, ids, ms, self.toolCtx.signal),
       };
       (
         agent as unknown as {

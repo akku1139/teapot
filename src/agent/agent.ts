@@ -20,6 +20,16 @@ export interface GoalState {
   text: string;
   status: "active" | "done" | "paused";
   updatedAt: string;
+  /** pi-goal-x-style verification contract: plain-text completion requirements
+   * the agent must satisfy (e.g. "npm test passes with zero failures") before
+   * finish(goalComplete=true) is honored. Empty/absent = no audit. */
+  verify?: string;
+  /** outcome of the last completion audit */
+  audit?: {
+    verdict: "approved" | "changes-required";
+    feedback: string;
+    at: string;
+  };
 }
 
 export interface ProgressReport {
@@ -573,7 +583,16 @@ export class Agent {
       if (stripped === body) break;
       body = stripped;
     }
-    return { text: body, status, updatedAt: new Date().toISOString() };
+    // verification contract (pi-goal-x style): a `verify:` block at the tail
+    let verify = "";
+    const vm = body.match(/\nverify:\s*\n([\s\S]+)$/i) ?? body.match(/^verify:\s*(.+)$/im);
+    if (vm) {
+      verify = vm[1]!.trim();
+      body = (body.slice(0, vm.index).trimEnd());
+    }
+    const out: GoalState = { text: body, status, updatedAt: new Date().toISOString() };
+    if (verify) out.verify = verify;
+    return out;
   }
 
   private async writeGoalFile(): Promise<void> {
@@ -586,7 +605,8 @@ export class Agent {
     }
     await fs.writeFile(
       this.goalFile,
-      `${body}\n\nstatus: ${this.goal.status}\nupdated: ${this.goal.updatedAt}\n`,
+      `${body}\n\nstatus: ${this.goal.status}\nupdated: ${this.goal.updatedAt}\n` +
+        (this.goal.verify ? `verify:\n${this.goal.verify}\n` : ""),
       "utf8",
     );
   }
@@ -663,6 +683,33 @@ export class Agent {
     await this.log.append("goal", this.currentSession, this.currentBranch, { event: "status", status });
   }
 
+  /** Set the goal's verification contract (completion requirements). */
+  async setGoalVerify(verify: string): Promise<void> {
+    this.goal = { ...this.goal, verify: verify.slice(0, 4000), updatedAt: new Date().toISOString() };
+    await this.writeGoalFile();
+    await this.log.append("goal", this.currentSession, this.currentBranch, {
+      event: "verify-set",
+      verify: verify.slice(0, 2000),
+    });
+  }
+
+  /** Record a verification-contract audit outcome (pi-goal-x style review). */
+  async setGoalAudit(verdict: "approved" | "changes-required", feedback: string): Promise<void> {
+    this.goal = {
+      ...this.goal,
+      updatedAt: new Date().toISOString(),
+      audit: { verdict, feedback: feedback.slice(0, 4000), at: new Date().toISOString() },
+    };
+    if (verdict === "approved") this.goal.status = "done";
+    else if (this.goal.status === "done") this.goal.status = "active"; // reopened
+    await this.writeGoalFile();
+    await this.log.append("goal", this.currentSession, this.currentBranch, {
+      event: "audit",
+      verdict,
+      feedback: feedback.slice(0, 2000),
+    });
+  }
+
   snapshot() {
     return {
       id: this.opts.id,
@@ -671,7 +718,12 @@ export class Agent {
       workspace: this.workspace,
       session: this.currentSession,
       branch: this.currentBranch,
-      goal: { status: this.goal.status, text: this.goal.text.slice(0, 400) },
+      goal: {
+        status: this.goal.status,
+        text: this.goal.text.slice(0, 400),
+        ...(this.goal.verify ? { verify: this.goal.verify.slice(0, 1000) } : {}),
+        ...(this.goal.audit ? { audit: this.goal.audit } : {}),
+      },
       latestProgress: this.latestProgress,
       stats: { ...this.stats },
       model: this.opts.llm.model,
@@ -1000,14 +1052,26 @@ export class Agent {
           const a = safeParse(call.function.arguments);
           const text = String(a.text ?? "").trim();
           if (text) await this.setGoal(text);
-          await this.answerMeta(call, text ? "goal updated" : "empty goal rejected");
+          // pi-goal-x-style verification contract: plain-text completion
+          // requirements audited before finish(goalComplete=true) is honored
+          if (typeof a.verify === "string" && a.verify.trim())
+            await this.setGoalVerify(a.verify.trim().slice(0, 4000));
+          await this.answerMeta(
+            call,
+            text ? "goal updated" : "empty goal rejected",
+          );
           continue;
         }
         if (call.function.name === "get_goal") {
           await this.answerMeta(
             call,
             JSON.stringify(
-              { goal: this.goal.text || "(none set)", status: this.goal.status },
+              {
+                goal: this.goal.text || "(none set)",
+                status: this.goal.status,
+                ...(this.goal.verify ? { verify: this.goal.verify } : {}),
+                ...(this.goal.audit ? { lastAudit: this.goal.audit } : {}),
+              },
               null,
               1,
             ),
@@ -1203,7 +1267,61 @@ export class Agent {
 
   private async handleFinish(argsJson: string): Promise<void> {
     const args = safeParse(argsJson);
-    if (args.goalComplete === true) await this.setGoalStatus("done");
+    if (args.goalComplete === true && this.goal.status !== "done") {
+      if (this.goal.verify?.trim()) {
+        // pi-goal-x-style INDEPENDENT COMPLETION REVIEW: a separate LLM call
+        // checks the verification contract against the conversation + summary
+        // before "done" is honored. changes-required reopens the goal and
+        // queues the auditor's feedback as the next user prompt.
+        await this.log.append("goal", this.currentSession, this.currentBranch, {
+          event: "audit-started",
+          verify: this.goal.verify.slice(0, 2000),
+        });
+        try {
+          const auditPrompt =
+            `You are an independent completion AUDITOR (not the worker). Decide whether the goal is genuinely complete.\n\n` +
+            `GOAL:\n${this.goal.text.slice(0, 4000)}\n\nVERIFICATION CONTRACT (must ALL hold):\n${this.goal.verify.slice(0, 2000)}\n\n` +
+            `WORKER'S FINAL SUMMARY:\n${String(args.summary ?? "").slice(0, 3000)}\n\n` +
+            `Conversation evidence follows. Reply with EXACTLY one line starting either\n` +
+            `"APPROVED: <one-sentence justification>" or\n` +
+            `"CHANGES-REQUIRED: <the specific gaps that must be addressed>".`;
+          const res = await this.callLlm(
+            [
+              ...this.buildMessages(),
+              { role: "user", content: auditPrompt },
+            ],
+            [], // no tools — verdict only
+          );
+          const text = String(res.message.content ?? "");
+          const approved = /^APPROVED\b/i.test(text.trim());
+          const feedback = text.replace(/^(APPROVED|CHANGES-REQUIRED)\s*[:—-]?\s*/i, "").trim();
+          await this.setGoalAudit(approved ? "approved" : "changes-required", feedback || "(no detail)");
+          await this.log.append("message", this.currentSession, this.currentBranch, {
+            role: "assistant",
+            content: approved
+              ? `✅ completion audit: APPROVED — ${feedback}`
+              : `🔍 completion audit: CHANGES REQUIRED — ${feedback}`,
+          });
+          if (!approved) {
+            // hand the gaps back to the worker as its next instruction
+            this.pendingPrompts.push({
+              source: "harness",
+              text: `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${feedback.slice(0, 2000)}`,
+            });
+          }
+        } catch (err) {
+          // auditor unavailable → fail open (record it, honor the finish) so a
+          // flaky provider can't trap work in an unauditable loop
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "audit-failed",
+            detail: String((err as Error).message).slice(0, 300),
+          });
+          await this.setGoalStatus("done");
+        }
+      } else {
+        await this.setGoalStatus("done");
+      }
+    }
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
       final: true,
@@ -1586,10 +1704,20 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
       function: {
         name: "set_goal",
         description:
-          "Replace the harness-managed goal text. Use when the objective itself changes — not for routine updates.",
+          "Replace the harness-managed goal text. Use when the objective itself changes — not for routine updates. " +
+          "Optionally attach a verification contract (plain-text completion requirements); finish(goalComplete=true) " +
+          "is then audited against it by an independent reviewer before the goal counts as done.",
         parameters: {
           type: "object",
-          properties: { text: { type: "string" } },
+          properties: {
+            text: { type: "string" },
+            verify: {
+              type: "string",
+              description:
+                "completion requirements that must verifiably hold, e.g. 'npm test passes with zero failures; " +
+                "the new endpoint appears in README'. Omit for no audit.",
+            },
+          },
           required: ["text"],
         },
       },
@@ -1792,6 +1920,12 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
     "get_feedback", "add_feedback", "record_decision", "get_decisions",
   ]);
   const openCalls = new Map<string, string>(); // real tool_call id -> name
+  // callId -> the tool_call entry on its assistant message (fast arg enrichment)
+  const assistantCalls = new Map<string, { function: { name: string; arguments: string } }>();
+  const rememberAssistantCalls = (m: ChatMessage) => {
+    if (Array.isArray(m.tool_calls))
+      for (const t of m.tool_calls) assistantCalls.set(t.id, t as never);
+  };
   // meta answers are now logged as regular tool_results; the legacy progress
   // synthesizer below must not duplicate them
   const loggedResults = new Set(
@@ -1825,13 +1959,19 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
         for (const t of m.tool_calls)
           if (!META_TOOLS.has(t.function.name)) openCalls.set(t.id, t.function.name);
       }
+      rememberAssistantCalls(m);
       msgs.push(m);
       } else if (e.type === "tool_call") {
         // enrich the preceding assistant tool_calls with real arguments —
         // prefer the provider's raw string so restored requests stay
-        // byte-identical (prefix caches stay warm across restarts)
-        const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
-        const tc = prev?.tool_calls?.find((t) => t.id === d.callId);
+        // byte-identical (prefix caches stay warm across restarts).
+        // Indexed by call id: the old [...msgs].reverse().find() scanned the
+        // whole message list per call — O(n²) on multi-thousand-event logs.
+        let tc = assistantCalls.get(String(d.callId ?? ""));
+        if (!tc) {
+          const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
+          tc = prev?.tool_calls?.find((t) => t.id === d.callId);
+        }
         if (tc) {
           if (typeof d.argsRaw === "string") tc.function.arguments = d.argsRaw;
           else if (d.args !== undefined) tc.function.arguments = JSON.stringify(d.args ?? {});

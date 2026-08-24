@@ -130,7 +130,12 @@ export class EventLog {
     }
     const p = new Promise<TeapotEvent>((resolve, reject) => {
       this.chain = this.chain.then(() => {
-        if (!this.stream) return resolve(evt);
+        if (!this.stream) {
+          // log closed (dispose) — resolve so callers don't await forever,
+          // but say so: silent drops made post-shutdown writes look logged
+          console.error(`[teapot] event dropped after log close (${this.agentId}): ${type}`);
+          return resolve(evt);
+        }
         this.stream.write(JSON.stringify(evt) + "\n", "utf8", (err) =>
           err ? reject(err) : resolve(evt),
         );

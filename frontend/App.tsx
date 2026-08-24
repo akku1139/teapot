@@ -23,7 +23,7 @@ declare const __APP_VERSION__: string;
 /* ---------- types ---------- */
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
-  session: string; branch: string; goal: { status: string; text: string };
+  session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
   latestProgress: any; stats: any; model: string; provider?: string;
   pendingPrompts?: number;
   todo?: string;
@@ -732,6 +732,13 @@ export default function App() {
   let ws: WebSocket | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   onCleanup(() => ws?.close());
+  let pendingRefresh = false;
+  // the visibilitychange listener is registered ONCE below (outside
+  // connectWs) — a reconnect used to add another copy each time, leaking
+  // closures and timers with every reconnect cycle
+  let onTabVisible: (() => void) | null = null;
+  document.addEventListener("visibilitychange", () => onTabVisible?.());
+  onCleanup(() => { onTabVisible = null; });
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     ws = new WebSocket(`${proto}${location.host}/api/ws${wsTokenQuery()}`);
@@ -767,7 +774,7 @@ export default function App() {
       if (timer) return;
       timer = setTimeout(runFeedRefresh, 400);
     };
-    let pendingRefresh = false;
+    pendingRefresh = false;
     const runFeedRefresh = async () => {
         timer = null;
         await refreshAgents();
@@ -805,14 +812,12 @@ export default function App() {
           );
         }
     };
-    const onTabVisible = () => {
+    onTabVisible = () => {
       if (document.visibilityState === "visible" && pendingRefresh) {
         pendingRefresh = false;
         if (!timer) timer = setTimeout(runFeedRefresh, 150);
       }
     };
-    document.addEventListener("visibilitychange", onTabVisible);
-    onCleanup(() => document.removeEventListener("visibilitychange", onTabVisible));
   }
 
   /* ---------- /session/<id> routing ---------- */
@@ -1335,14 +1340,21 @@ export default function App() {
   const setGoal = async (e: Event) => {
     e.preventDefault();
     const input = document.getElementById("goal-input") as HTMLTextAreaElement;
+    const verifyInput = document.getElementById("goal-verify-input") as HTMLTextAreaElement | null;
     const notify = (document.getElementById("goal-notify") as HTMLInputElement)?.checked ?? true;
     if (!selected() || !input.value.trim()) return;
     await api(`/api/agents/${selected()}/goal`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: input.value, notify }),
+      body: JSON.stringify({
+        text: input.value,
+        notify,
+        // only send when non-empty — an empty box must not wipe a contract
+        ...(verifyInput?.value.trim() ? { verify: verifyInput.value } : {}),
+      }),
     });
     input.value = "";
+    if (verifyInput) verifyInput.value = "";
     refreshAgents();
   };
 
@@ -1903,6 +1915,23 @@ export default function App() {
             <div class="card">
               <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.text))} />
             </div>
+            <Show when={sel()!.goal.verify}>
+              <div class="card verifycard" title="verification contract — finish(goalComplete=true) is audited against these requirements by an independent reviewer before the goal counts as done">
+                <div class="vtitle">🔍 verification contract</div>
+                <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.verify))} />
+              </div>
+            </Show>
+            <Show when={sel()!.goal.audit}>
+              {(a) => (
+                <div class={"card auditcard " + (a().verdict === "approved" ? "ok" : "warn")}>
+                  <div class="vtitle">
+                    {a().verdict === "approved" ? "✅ audit: approved" : "⚠ audit: changes required"}
+                    <span class="meta muted" style="margin-left:auto">{relTime(a().at)}</span>
+                  </div>
+                  <div class="content" innerHTML={renderMarkdown(a().feedback)} />
+                </div>
+              )}
+            </Show>
           </Show>
           <div class="muted" style="font-size:11px;margin-top:4px">
             stored with the session · the agent reads it via get_goal() · auto-continue loops while status is "working" and stops when marked done
@@ -1913,6 +1942,13 @@ export default function App() {
               rows={3}
               placeholder="set new goal…"
               style="background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;width:100%;resize:vertical"
+            />
+            <textarea
+              id="goal-verify-input"
+              rows={2}
+              placeholder="verification contract (optional) — e.g. 'npm test passes; endpoint documented'. finish(goalComplete=true) is then audited against this."
+              title="pi-goal-x-style verification contract — an independent reviewer checks the agent's finish against these requirements"
+              style="background:var(--bg-darkest);border:1px solid var(--bg-light);border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;font-size:12.5px;width:100%;resize:vertical"
             />
             <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
               <label

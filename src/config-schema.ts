@@ -41,7 +41,8 @@ export const ConfigPatchSchema = z.object({
   defaultProvider: z.string().optional(),
   progressIntervalMs: z.number().int().min(10_000, "progress interval must be ≥ 10s").optional(),
   progressMinChars: z.number().int().min(100).optional(),
-  contextTokenBudget: z.number().int().min(1_000).optional(),
+  // null clears a previously pinned compact budget → back to per-model derivation
+  contextTokenBudget: z.number().int().min(1_000).nullable().optional(),
   contextWindowTokens: z.number().int().min(1_000).optional(),
   maxSpawnDepth: z.number().int().min(0).max(8).optional(),
   tasks: z.array(TaskSchema).optional(),

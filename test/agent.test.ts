@@ -654,3 +654,75 @@ test("compact budget: derived from window by default, manual only when configure
   assert.equal(fallback.snapshot().ctx.compactAt, 96_000);
   for (const a of [derived, manual, fallback]) await a.dispose();
 });
+
+test("verification contract: finish(goalComplete) is audited before done", async () => {
+  const calls: { messages: ChatMessage[]; n: number }[] = [];
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    calls.push({ messages, n: i });
+    if (i === 0)
+      return reply("attempting to finish", [tc("f1", "finish", { goalComplete: true, summary: "I did it" })]);
+    if (i === 1)
+      // the auditor call: no tools, asks for APPROVED/CHANGES-REQUIRED
+      return reply("CHANGES-REQUIRED: tests were never run and docs are missing");
+    return reply("addressing gaps", [tc("f2", "finish", { goalComplete: false, summary: "still working" })]);
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  await agent.setGoal("add a feature");
+  await agent.setGoalVerify("npm test passes with zero failures");
+  agent.enqueuePrompt("do the work");
+  agent.start("t");
+  await agent.settled();
+
+  // goal must NOT be done — audit rejected it
+  assert.equal(agent.goal.status, "active", "changes-required must reopen the goal");
+  assert.equal(agent.goal.audit?.verdict, "changes-required");
+  assert.match(agent.goal.audit?.feedback ?? "", /tests were never run/);
+  // and the worker got the feedback queued as its next prompt
+  assert.ok(
+    calls[2]!.messages.some((m) => m.role === "user" && m.content.includes("completion audit REJECTED")),
+  );
+  await agent.dispose();
+});
+
+test("verification contract: auditor approval marks the goal done", async () => {
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i === 0) return reply("finishing", [tc("f1", "finish", { goalComplete: true, summary: "all green" })]);
+    if (i === 1) return reply("APPROVED: test output shows zero failures and docs updated");
+    throw new Error("should not be called again");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  await agent.setGoal("ship it");
+  await agent.setGoalVerify("tests pass; docs updated");
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  await agent.settled();
+
+  assert.equal(agent.goal.status, "done");
+  assert.equal(agent.goal.audit?.verdict, "approved");
+  // the audit outcome is visible in the timeline
+  const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+  assert.ok(events.some((e) => e.type === "goal" && (e.data as any).event === "audit"));
+  assert.ok(events.some((e) => e.type === "message" && String((e.data as any).content).includes("APPROVED")));
+  await agent.dispose();
+});
+
+test("no verification contract: finish(goalComplete) marks done without audit", async () => {
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i === 0) return reply("done!", [tc("f1", "finish", { goalComplete: true, summary: "did it" })]);
+    throw new Error("auditor should not run without a verify contract");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  await agent.setGoal("simple task"); // no verify
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  await agent.settled();
+  assert.equal(agent.goal.status, "done");
+  assert.equal(agent.goal.audit, undefined);
+  await agent.dispose();
+});

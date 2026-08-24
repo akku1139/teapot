@@ -155,11 +155,15 @@ function renderEscaped(lines) {
   }
 
   function inline(s) {
-    // protect code spans from further processing
+    // protect code spans from further processing. The placeholder uses a
+    // private-use char + sentinel pair; literal NULs in the source were a
+    // collision (user text containing \u0000<digits>\u0000 swapped in another
+    // span's HTML). escapeHtml keeps them, so strip before placeholdering.
     const codes = [];
+    s = s.replace(/\u0000/g, "");
     s = s.replace(/`([^`]+)`/g, (_, c) => {
       codes.push(`<code>${c}</code>`);
-      return `\u0000${codes.length - 1}\u0000`;
+      return `\ue000${codes.length - 1}\uE001`;
     });
     // images before links
     s = s.replace(
@@ -184,7 +188,7 @@ function renderEscaped(lines) {
     s = s.replace(/(^|[^\w])_(?!\s)([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>");
     s = s.replace(/~~([\s\S]+?)~~/g, "<del>$1</del>");
     // eslint-disable-next-line no-control-regex
-    return s.replace(/\u0000(\d+)\u0000/g, (_, k) => codes[+k]);
+    return s.replace(/\ue000(\d+)\ue001/g, (_, k) => codes[+k] ?? "");
   }
 }
 

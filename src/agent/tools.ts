@@ -75,7 +75,12 @@ async function readText(p: string): Promise<string> {
   return fs.readFile(p, "utf8");
 }
 
-/** Resolve a path inside the workspace; reject escapes (incl. symlink targets). */
+/** Resolve a path inside the workspace; reject escapes (incl. symlink targets).
+ *  KNOWN LIMIT (review finding, accepted): the check-then-open pattern has a
+ *  TOCTOU window — a symlink swapped in between safeJoin() and fs.open() could
+ *  point outside the workspace. Closing it needs openat(2)/O_NOFOLLOW at every
+ *  call site; the operator-facing risk is low (requires workspace write access
+ *  already), so we document rather than rewrite all call sites. */
 export function safeJoin(cwd: string, p: string): string {
   const abs = path.resolve(cwd, p);
   const rel = path.relative(cwd, abs);

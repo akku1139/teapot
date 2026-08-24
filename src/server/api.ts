@@ -227,7 +227,10 @@ export function buildApp(master: Master): Hono {
     // collision, auto-suffix so creating ~/a/proj and ~/b/proj just works
     let id = base;
     let n = 2;
-    while (master.agents.has(id)) id = `${base.slice(0, 38)}-${n++}`;
+    // ids must be unique among RUNNING agents AND persisted config entries —
+    // a config-only agent (not yet loaded) would otherwise collide on addAgent
+    while (master.agents.has(id) || master.config.agents.some((a) => a.id === id))
+      id = `${base.slice(0, 38)}-${n++}`;
     try {
       const agent = await master.addAgent(
         { id, workspace: ws, provider: body.provider, model: body.model },
@@ -545,9 +548,16 @@ export function buildApp(master: Master): Hono {
   app.post("/api/agents/:id/goal", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    const body = await c.req.json<{ text?: string; status?: "active" | "done" | "paused"; notify?: boolean }>();
+    const body = await c.req.json<{
+      text?: string;
+      status?: "active" | "done" | "paused";
+      notify?: boolean;
+      verify?: string; // verification contract (pi-goal-x style completion audit)
+    }>();
     if (body.text) {
       await a.setGoal(body.text);
+      if (typeof body.verify === "string" && body.verify.trim())
+        await a.setGoalVerify(body.verify.trim());
       // goals live behind get_goal(), so a silent save would go unnoticed —
       // queue a harness prompt unless the caller explicitly declines
       if (body.notify !== false)
@@ -723,11 +733,29 @@ export function buildApp(master: Master): Hono {
   });
 
   // ---- event log access (human/inspect friendly) ----
+  // mtime-keyed parse cache: the web UI polls this endpoint every ~400ms and
+  // re-reading + re-parsing the WHOLE chat.jsonl each time dominated CPU on
+  // multi-MB sessions. The file only ever appends, so an unchanged mtime lets
+  // us serve the previous parse verbatim.
+  const eventsCache = new Map<string, { mtimeMs: number; size: number; events: Awaited<ReturnType<typeof readEvents>> }>();
+  async function readEventsCached(filePath: string) {
+    try {
+      const st = await fs.stat(filePath);
+      const hit = eventsCache.get(filePath);
+      if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.events;
+      const events = await readEvents(filePath);
+      if (eventsCache.size > 64) eventsCache.clear();
+      eventsCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, events });
+      return events;
+    } catch {
+      return readEvents(filePath);
+    }
+  }
   app.get("/api/agents/:id/events", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
     const limit = Math.min(Number(c.req.query("limit") ?? 200), 5000);
-    let events = await readEvents(a.log.filePath);
+    let events = await readEventsCached(a.log.filePath);
     const branch = c.req.query("branch");
     const session = c.req.query("session");
     if (branch) events = events.filter((e) => e.branch === branch);
