@@ -9,6 +9,7 @@ import {
   saveSkill,
   isValidSkillName,
 } from "../src/agent/skills.ts";
+import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 
 const REPO_BUNDLED_SKILLS = path.join(new URL("..", import.meta.url).pathname, "skills");
 
@@ -90,4 +91,39 @@ test("saveSkill writes frontmatter file and it is rediscoverable", async () => {
   const skills = await discoverSkills([{ dir: wsRoot, source: "workspace" }]);
   assert.equal(skills.length, 1);
   assert.equal(skills[0].name, "coffee");
+});
+
+test("save_skill stores globally; overwrite-safe; warns on workspace shadow", async () => {
+  const { executeTool } = await import("../src/agent/tools.ts");
+  const ws = await mkdtemp(path.join(tmpdir(), "sk-ws-"));
+  const globalDir = await mkdtemp(path.join(tmpdir(), "sk-gl-"));
+  await mkdir(path.join(ws, "skills"), { recursive: true });
+  const ctx: ToolContext = {
+    cwd: ws,
+    defaultTimeoutMs: 5_000,
+    maxOutputBytes: 10_000,
+    skillRoots: [
+      { dir: path.join(ws, "skills"), source: "workspace" },
+      { dir: globalDir, source: "global" },
+    ],
+  };
+  // lands in the GLOBAL root even though a workspace root is configured
+  const r1 = await executeTool("save_skill", JSON.stringify({ name: "deploy", description: "d1", content: "# v1" }), ctx);
+  assert.equal(r1.ok, true);
+  assert.match(r1.result, /sk-gl-/);
+  const p1 = path.join(globalDir, "deploy", "SKILL.md");
+  assert.match(await readFile(p1, "utf8"), /# v1/);
+
+  // same-name save overwrites cleanly (no corruption, no duplicate dirs)
+  const r2 = await executeTool("save_skill", JSON.stringify({ name: "deploy", description: "d2", content: "# v2" }), ctx);
+  assert.equal(r2.ok, true);
+  assert.match(await readFile(p1, "utf8"), /# v2/);
+
+  // a same-name WORKSPACE skill shadows the global one at load time — the
+  // result must say so instead of silently saving an unused copy
+  await mkdir(path.join(ws, "skills", "deploy"), { recursive: true });
+  await writeFile(path.join(ws, "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: ws\n---\nws version\n");
+  const r3 = await executeTool("save_skill", JSON.stringify({ name: "deploy", description: "d3", content: "# v3" }), ctx);
+  assert.equal(r3.ok, true);
+  assert.match(r3.result, /takes precedence/);
 });

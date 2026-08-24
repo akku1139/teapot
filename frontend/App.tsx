@@ -414,15 +414,31 @@ export default function App() {
     }
     return { resFor, consumed };
   });
-  // ask_user questions that already have their tool_result in the log are
-  // answered — the UI disables their option buttons (no duplicate prompts)
+  // A question is ANSWERED only when a real operator reply arrived AFTER it —
+  // a user prompt logged later than the question event. The tool_result that
+  // pairs with the question is written immediately when the question is SHOWN
+  // (it parks the loop), so its mere existence never means "answered".
   const answeredQuestionIds = createMemo(() => {
-    const answered = new Set<string>();
+    const set = new Set<string>();
+    let lastQuestionAt = -1;
+    let lastUserPromptAt = -1;
     for (const e of events()) {
-      if (e.type === "tool_result" && e.data?.name === "ask_user" && e.data?.callId)
-        answered.add(String(e.data.callId));
+      if (e.type === "question") lastQuestionAt = e.seq;
+      else if (e.type === "prompt" && e.data?.source === "user") lastUserPromptAt = e.seq;
+      else if (
+        e.type === "system_note" &&
+        (e.data as any)?.event === "prompt-delivered"
+      )
+        lastUserPromptAt = Math.max(lastUserPromptAt, e.seq);
     }
-    return answered;
+    // any user reply after the latest open question closes ALL earlier
+    // questions of this session (the loop resumes on the first reply)
+    if (lastQuestionAt >= 0 && lastUserPromptAt > lastQuestionAt) {
+      for (const e of events())
+        if (e.type === "question" && e.seq <= lastUserPromptAt)
+          set.add(String((e.data as any)?.callId ?? ""));
+    }
+    return set;
   });
   const chatEvents = createMemo(() => {
     const { consumed } = pairInfo();
@@ -431,9 +447,14 @@ export default function App() {
       // report_progress calls are fully rendered by the progress embed below
       // (the timeline's 📈 row + the right panel's snapshot) — the tool-call
       // row would just repeat the same content a third time
-      if (e.type === "tool_call" && e.data?.name === "report_progress") return false;
-      // paired tool results live inside their call's merged row
-      if (e.type === "tool_result" && e.data?.name === "report_progress") return false;
+      // report_progress / ask_user calls are fully rendered by their own
+      // embeds (📈 progress / ❓ question) — the tool rows would just repeat
+      // the same content a second time. ask_user also shows "answered"
+      // state via its embed, so the raw rows add nothing.
+      const metaToolName =
+        e.type === "tool_call" || e.type === "tool_result" ? String(e.data?.name ?? "") : "";
+      if (metaToolName === "report_progress") return false;
+      if (metaToolName === "ask_user") return false;
       // paired tool results live inside their call's merged row
       if (e.type === "tool_result") return !consumed.has(e.id);
       // tool-call carrier turns have no visible payload — the ToolRow below

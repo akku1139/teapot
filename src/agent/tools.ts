@@ -1039,7 +1039,24 @@ export const TOOLS: ToolDef[] = [
       if (!description) return { ok: false, result: "description required" };
       const content = str(args.content);
       if (!content.trim()) return { ok: false, result: "content required" };
-      const filePath = await saveSkill(roots[0].dir, name, description, content.slice(0, 64_000));
+      // save GLOBALLY (config dir) so skills survive workspace switches and
+      // are shared by every agent. Same-name handling is safe:
+      //  · overwriting the global copy replaces it atomically (writeFile)
+      //  · a same-name skill in a HIGHER-priority root (workspace) still
+      //    shadows this one at load time — that's the intended override,
+      //    so tell the model when its save would be invisible
+      const globalRoot = roots.find((r) => r.source === "global") ?? roots[0];
+      const filePath = await saveSkill(globalRoot.dir, name, description, content.slice(0, 64_000));
+      let note = "";
+      for (const r of roots) {
+        if (r === globalRoot || r.source === "bundled") continue;
+        if (r.source !== "global" && roots.indexOf(r) < roots.indexOf(globalRoot)) {
+          try {
+            await fs.access(path.join(r.dir, name, SKILL_FILE));
+            note = ` (note: a workspace skill with the same name "${name}" takes precedence at load time)`;
+          } catch { /* no clash in this root */ }
+        }
+      }
 
       // bundled scripts/files next to SKILL.md
       const written: string[] = [];
@@ -1055,7 +1072,10 @@ export const TOOLS: ToolDef[] = [
         written.push(fname);
       }
       const extra = written.length ? `\nbundled files: ${written.join(", ")}` : "";
-      return { ok: true, result: `saved skill "${name}" to ${filePath}${extra} (listed from next turn)` };
+      return {
+        ok: true,
+        result: `saved skill "${name}" globally to ${filePath}${extra}${note} (listed from next turn; overwrite-safe)`,
+      };
     },
   },
 ];

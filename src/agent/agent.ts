@@ -1147,7 +1147,22 @@ export class Agent {
         if (call.function.name === "ask_user") {
           const a = safeParse(call.function.arguments);
           const question = String(a.question ?? "").slice(0, 2000);
-          const options = Array.isArray(a.options) ? a.options.map(String).slice(0, 6) : [];
+          // models sometimes pass objects ({label}, {option}, {value}) —
+          // extract the label instead of rendering "[object Object]" buttons
+          const options = Array.isArray(a.options)
+            ? a.options
+                .slice(0, 6)
+                .map((o: unknown) => {
+                  if (typeof o === "string") return o;
+                  if (o && typeof o === "object") {
+                    const obj = o as Record<string, unknown>;
+                    for (const k of ["label", "option", "choice", "value", "text"])
+                      if (typeof obj[k] === "string" && obj[k]) return obj[k] as string;
+                  }
+                  return "";
+                })
+                .filter((o: string) => o.trim())
+            : [];
           // the callId lets the UI tell "still open" from "already answered"
           // (a settled tool_result for this id exists) and disable re-answering
           await this.log.append("question", this.currentSession, this.currentBranch, {
