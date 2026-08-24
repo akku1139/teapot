@@ -3027,11 +3027,18 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
   const [model, setModel] = createSignal("");
   const [err, setErr] = createSignal("");
 
+  // The server resolves each requested path (absolute + ~ expansion) and
+  // returns the RESOLVED path as d.path plus its parent. Keep those in state:
+  // the old ↑ button sent a bare "..", which the server resolved against ITS
+  // cwd — so going up never worked from the picker.
   async function browse(p?: string) {
-    const d = await api(`/api/fs${p ? `?path=${encodeURIComponent(p)}` : ""}`);
-    setDir(d.path); setEntries(d.entries);
+    const d = await api(`/api/fs?path=${encodeURIComponent(p ?? dir())}`);
+    setDir(d.path);
+    setParent(d.parent ?? "");
+    setEntries(d.entries ?? []);
   }
   onMount(() => browse(dir()));
+  const [parent, setParent] = createSignal("");
 
   const create = async (e: Event) => {
     e.preventDefault(); setErr("");
@@ -3054,7 +3061,7 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
           <div style="display:flex;gap:6px">
             <input type="text" class="w100 mono" value={dir()} oninput={(e) => setDir(e.currentTarget.value)} />
             <button type="button" onclick={() => browse(dir())}>go</button>
-            <button type="button" onclick={() => browse("..")}>↑</button>
+            <button type="button" title="parent directory" onclick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
           </div>
         </label>
         <div class="dirlist">
