@@ -1149,10 +1149,16 @@ export class Agent {
     this.messages.push({ role: "user", content: request });
     const res = await this.llmCall(this.buildMessages(), []); // no tools: pure report
     await this.recordProgress(JSON.stringify({ freeform: res.message.content }));
+    // The report's content is ALREADY shown by the progress embed — logging a
+    // plain assistant message with the same text made the timeline show every
+    // requested report twice. Keep logging it (session restores replay the
+    // exchange faithfully and rebuildMessages needs it) but mark it as an echo;
+    // the web UI filters marked rows out.
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
       content: res.message.content ?? "",
       reasoning: res.reasoning,
+      progressEcho: true,
     });
     this.messages.push(res.message);
   }

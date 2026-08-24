@@ -368,12 +368,16 @@ export default function App() {
       if (e.type === "tool_result") return !consumed.has(e.id);
       // tool-call carrier turns have no visible payload — the ToolRow below
       // already tells that story; an empty agent bubble is just noise
-      if (e.type === "message")
+      if (e.type === "message") {
+        // a requested progress report is already shown by its progress embed —
+        // the log keeps the message (restores need it) but the feed must not
+        if (e.data?.progressEcho) return false;
         return (
           String(e.data?.content ?? "").trim() !== "" ||
           String(e.data?.reasoning ?? "").trim() !== "" ||
           !!e.data?.final
         );
+      }
       return true;
     });
     // expand mirrored child activity ("sub" events) into normal-looking rows
@@ -1273,6 +1277,21 @@ export default function App() {
     }
   };
 
+  // The right panel's scroll position used to reset whenever a control button
+  // (▶ start / ■ stop / goal save…) refreshed the agents: content inside was
+  // rebuilt and the browser clamped scrollTop. Keep the offset and restore it
+  // on every repaint triggered by an agents update.
+  let rightbarEl: HTMLDivElement | undefined;
+  let rightbarTop = 0;
+  createEffect(() => {
+    agents(); // re-arm on every agents update (incl. start/stop refreshes)
+    requestAnimationFrame(() => {
+      if (rightbarEl) {
+        rightbarTop = Math.min(rightbarTop, rightbarEl.scrollHeight);
+        rightbarEl.scrollTop = rightbarTop;
+      }
+    });
+  });
   const act = (path: string) =>
     () => selected() && api(`/api/agents/${selected()}${path}`, { method: "POST" }).then(refreshAgents);
 
@@ -1666,7 +1685,11 @@ export default function App() {
       </section>
 
       {/* ---------- right bar ---------- */}
-      <aside class={"rightbar" + (showRight() ? " open" : "")}>
+      <aside
+        class={"rightbar" + (showRight() ? " open" : "")}
+        ref={rightbarEl}
+        onscroll={(e) => { rightbarTop = (e.currentTarget as HTMLDivElement).scrollTop; }}
+      >
         <Show when={sel()}>
           <h3 title="identity + storage locations for this agent">🎛 session</h3>
           <div class="card sesscard">
