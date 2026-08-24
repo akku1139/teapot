@@ -2783,10 +2783,19 @@ function rawOf(e: Ev): string {
 function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
+  // Group consecutive rows from the same ACTOR — not the same event type.
+  // A bash run renders as call,result,call,result… which the old type-equality
+  // check broke apart; comparing author names keeps the whole run headerless.
+  const family = (ev: Ev) => {
+    if (ev.type === "tool_call" || ev.type === "tool_result") return "tool";
+    return ev.type;
+  };
   const grouped =
-    props.prev && props.prev.type === e.type &&
-    authorOf(props.prev).name === a.name && // don't group you/harness/scheduler together
-    e.session === props.prev.session && e.branch === props.prev.branch;
+    props.prev &&
+    family(props.prev) === family(e) &&
+    authorOf(props.prev).name === a.name &&
+    e.session === props.prev.session &&
+    e.branch === props.prev.branch;
 
   // non-chat-looking events become divider lines
   if (e.type === "fork") {
@@ -2820,12 +2829,10 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
         <div class="avatar" style={{ background: a.color + "33", border: `1px solid ${a.color}66` }}>{a.icon}</div>
       </Show>
       <div class="msg-body">
-        {/* grouped rows drop the full header; a hover marker keeps the time
-            reachable without spending a visible line on every bash in a row */}
-        <Show when={grouped} fallback={
-          <span class="grouptime" title={fmtTs(e.ts) + " · " + e.branch}>·</span>
-        }>
-          <span />
+        {/* grouped rows drop the full header; a hover-only dot keeps the
+            timestamp reachable without a visible line per bash in a run */}
+        <Show when={grouped}>
+          <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`}>·</span>
         </Show>
         <Show when={!grouped}>
           <div class="msg-head">
