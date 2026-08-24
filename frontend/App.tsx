@@ -1664,13 +1664,16 @@ export default function App() {
               </Show>
             </div>
           </Show>
-          {/* row 1: buttons (incl. notification bell) — row 2: branding */}
+          {/* row 1: buttons (incl. notification bell) — row 2: branding + live dot */}
           <div class="footer-row" style="justify-content:flex-end">
-            <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
             <button
               class={"iconbtn notifbtn" + (unreadCount() > 0 ? " has-unread" : "")}
               title={unreadCount() > 0 ? `${unreadCount()} unread notifications` : "notifications"}
-              onclick={() => { setShowNotifs(!showNotifs()); setNotifs((l) => l.map((n) => ({ ...n, read: true }))); }}
+              onclick={(e: MouseEvent) => {
+                e.stopPropagation();
+                setShowNotifs(!showNotifs());
+                if (!showNotifs()) setNotifs((l) => l.map((n) => ({ ...n, read: true })));
+              }}
             >
               🔔<Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
             </button>
@@ -1679,7 +1682,10 @@ export default function App() {
             <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
           </div>
           <div class="brand-row">
-            <div class="brand">🫖 teapot <span class="version">v{__APP_VERSION__}</span></div>
+            <div class="brand">
+              🫖 teapot <span class="version">v{__APP_VERSION__}</span>
+              <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
+            </div>
           </div>
           <div class="metrics">
             <Show when={metrics()}>
@@ -2417,12 +2423,17 @@ export default function App() {
     </Show>
     <Show when={showNotifs()}>
       {/* notification center — pops from the sidebar footer, bottom-left */}
+      {/* click-outside closer: an invisible full-screen layer under the panel */}
+      <div class="notifbackdrop" onclick={() => setShowNotifs(false)} />
       <div class="notifpanel">
         <div class="notifhead">
           notifications
-          <Show when={notifs().length > 0}>
-            <button class="editbtn" onclick={() => setNotifs([])}>clear all</button>
-          </Show>
+          <span style="display:flex;gap:8px;align-items:center">
+            <Show when={notifs().length > 0}>
+              <button class="editbtn" onclick={() => setNotifs([])}>clear all</button>
+            </Show>
+            <button class="iconbtn" title="close notifications" onclick={() => setShowNotifs(false)}>✕</button>
+          </span>
         </div>
         <Show
           when={notifs().length > 0}
