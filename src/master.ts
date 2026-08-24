@@ -91,6 +91,8 @@ export interface AgentConfig {
   readOnly?: boolean;
   /** keep looping toward an active goal after each round (default true) */
   autoContinue?: boolean;
+  /** automatically compact when context exceeds budget (default true) */
+  autoCompact?: boolean;
 };
 
 export interface TaskConfig {

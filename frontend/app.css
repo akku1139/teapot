@@ -126,6 +126,10 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .dot.error { background: var(--err); box-shadow: 0 0 6px var(--err); }
 .sidebar .metrics { margin-top: 12px; padding: 8px 10px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--line); line-height: 1.7; }
 
+.sidebar-footer { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--fg); }
+.version { color: var(--dim); font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
+
 /* ---- channel ---- */
 .channel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
 .chan-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 2px solid var(--line); background: var(--bg-dark); flex-shrink: 0; }
@@ -431,13 +435,17 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .modal fieldset { border: 1px solid var(--bg-light); border-radius: 8px; padding: 10px; margin: 0 0 4px; }
 .modal fieldset legend { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 0 6px; }
 .cfgrow { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
-.cfgrow input { background: var(--bg-darkest); border: none; border-radius: 5px; padding: 5px 8px; color: var(--fg); font-size: 12.5px; min-width: 0; flex: 1; }
+.cfgrow input { background: var(--bg-darkest); border: 1px solid var(--bg-light); border-radius: 5px; padding: 5px 8px; color: var(--fg); font-size: 12.5px; min-width: 0; flex: 1; }
+.cfgrow select { background: var(--bg-darkest); border: 1px solid var(--bg-light); border-radius: 5px; padding: 5px 8px; color: var(--fg); font-size: 12.5px; }
 .cfgrow .cfgname { width: 90px; flex-shrink: 0; flex: none; color: var(--warn); font-weight: 600; }
+.cfgrow button { background: var(--bg-mid); border: 1px solid var(--bg-light); color: var(--fg); border-radius: 5px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+.cfgrow button:hover { background: var(--bg-light); }
+.cfgrow button.danger { background: var(--err); border-color: var(--err); color: #fff; }
 .cfggrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .cfggrid label, .cfgcol label { display: flex; flex-direction: column; gap: 3px; color: var(--dim); font-size: 11px; }
-.cfggrid input { background: var(--bg-darkest); border: none; border-radius: 5px; padding: 5px 8px; color: var(--fg); width: 100%; }
+.cfggrid input { background: var(--bg-darkest); border: 1px solid var(--bg-light); border-radius: 5px; padding: 5px 8px; color: var(--fg); width: 100%; }
 .cfgcol { margin-bottom: 8px; }
-.cfgcol textarea { background: var(--bg-darkest); border: none; border-radius: 5px; padding: 5px 8px; color: var(--fg); font: inherit; font-size: 12.5px; width: 100%; margin-top: 4px; }
+.cfgcol textarea { background: var(--bg-darkest); border: 1px solid var(--bg-light); border-radius: 5px; padding: 5px 8px; color: var(--fg); font: inherit; font-size: 12.5px; width: 100%; margin-top: 4px; }
 
 /* setup wizard */
 .presetbtn {

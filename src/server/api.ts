@@ -568,6 +568,21 @@ export function buildApp(master: Master): Hono {
     return c.json({ ok: true, value: body.value });
   });
 
+  // per-agent auto-compact toggle (auto-summarize when context exceeds budget)
+  app.post("/api/agents/:id/auto-compact", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req.json<{ value?: boolean }>().catch(() => null);
+    if (!body || typeof body.value !== "boolean")
+      return c.json({ error: "boolean value required" }, 400);
+    const ac = master.config.agents.find((x) => x.id === c.req.param("id"));
+    if (ac) ac.autoCompact = body.value;
+    (a as unknown as { opts: { autoCompact: boolean } }).opts.autoCompact = body.value;
+    master.saveConfig();
+    bus.emit("update", { kind: "agent-update", agentId: c.req.param("id") });
+    return c.json({ ok: true, value: body.value });
+  });
+
   // default sub-agent personas for @mentions and spawn_agent
   app.get("/api/personas", (c) =>
     c.json({

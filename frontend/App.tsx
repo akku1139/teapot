@@ -4,6 +4,8 @@ import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 
+declare const __APP_VERSION__: string;
+
 /* ---------- types ---------- */
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
@@ -13,6 +15,7 @@ interface Agent {
   todo?: string;
   parent?: string;
   autoContinue?: boolean;
+  autoCompact?: boolean;
   ctx?: { usedTokens: number; compactAt: number; window: number };
 }
 interface Ev {
@@ -1149,11 +1152,11 @@ export default function App() {
     <div class={"layout" + (showRight() ? "" : " right-hidden")}>
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
-        <h1>🫖 teapot
+        <h1>
           <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
-          <span style="float:right;display:flex;gap:4px">
+          <span style="float:right;display:flex;gap:4px;align-items:center">
             <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
-            <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>◐</button>
+            <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
             <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
           </span>
         </h1>
@@ -1252,6 +1255,9 @@ export default function App() {
               </div>
             )}
           </For>
+        </div>
+        <div class="sidebar-footer">
+          <div class="brand">🫖 teapot <span class="version">v{__APP_VERSION__}</span></div>
         </div>
         <div class="metrics">
           <Show when={metrics()}>
@@ -1782,6 +1788,10 @@ export default function App() {
                   : 0;
                 const cls =
                   !effectiveWindow ? "" : pct >= 85 ? "crit" : pct >= 70 ? "warn" : "ok";
+                // derived compact budget = 75% of context window (unless manually overridden in config)
+                const derivedBudget = effectiveWindow ? Math.round(effectiveWindow * 0.75) : 0;
+                const manualBudget = c().compactAt;
+                const usingDerived = !manualBudget || manualBudget >= effectiveWindow;
                 return (
                   <div
                     class="ctxblock"
@@ -1801,6 +1811,36 @@ export default function App() {
                         <div class={`barfill ${cls}`} style={{ width: `${Math.min(100, pct)}%` }} />
                       </div>
                     </Show>
+                    <div class="statrow" style="margin-top:4px">
+                      <span class="k">compact</span>
+                      <b>{fmtK(usingDerived ? derivedBudget : manualBudget)} tok</b>
+                      <span class="muted" style="font-size:11px;color:var(--dim)">
+                        {usingDerived ? ` (75% of window)` : ` (manual override)`}
+                      </span>
+                    </div>
+                    <Show when={effectiveWindow}>
+                      <div class="bartrack" style="margin-top:4px">
+                        <div class={`barfill ${cls}`} style={{ width: `${Math.min(100, Math.round((c().usedTokens / derivedBudget) * 100))}%` }} />
+                      </div>
+                    </Show>
+                    <div class="ctrlrow" style="margin-top:6px">
+                      <label title="when on, older turns are automatically summarized when context exceeds the budget">
+                        <input
+                          type="checkbox"
+                          checked={sel()!.autoCompact !== false}
+                          onchange={(e) => {
+                            if (!selected()) return;
+                            api(`/api/agents/${selected()}/auto-compact`, {
+                              method: "POST",
+                              headers: { "content-type": "application/json" },
+                              body: JSON.stringify({ value: e.currentTarget.checked }),
+                            }).then(refreshAgents);
+                          }}
+                        />
+                        auto-compact
+                      </label>
+                      <span class="muted" style="font-size:11.5px">summarizes old turns when budget exceeded</span>
+                    </div>
                     <div class="muted" style="font-size:11px;margin-top:4px">
                       compaction starts around ~{fmtK(c().compactAt)} tok — older turns get summarized, recent ones stay intact
                     </div>
@@ -2844,7 +2884,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           <div class="cfggrid">
             {numInput("progress interval (min)", intervalMin(), (v) => setIntervalMin(v), "how often the harness asks for a progress report")}
             {numInput("progress min chars", minChars(), (v) => setMinChars(v), "progress prompts wait for this much real output")}
-            {numInput("compact budget (k tok)", ctxBudgetK(), (v) => setCtxBudgetK(v), "auto-compact when estimated context exceeds this")}
+            {numInput("compact budget (k tok)", ctxBudgetK(), (v) => setCtxBudgetK(v), "auto-compact threshold — defaults to 75% of context window when empty; manual override in k tokens")}
             {numInput("context window (k tok)", ctxWinK(), (v) => setCtxWinK(v), "model's real window — 0/blank hides the % gauge")}
             {numInput("max spawn depth", maxDepth(), (v) => setMaxDepth(v), "sub-agent nesting limit (0 = no spawning)")}
           </div>

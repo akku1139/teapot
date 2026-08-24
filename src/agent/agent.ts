@@ -52,6 +52,8 @@ export interface AgentOptions {
   autoContinue?: boolean;
   /** pause between auto-continue rounds */
   continueDelayMs?: number;
+  /** automatically compact when context exceeds budget (default true) */
+  autoCompact?: boolean;
   maxConsecutiveToolErrors?: number;
   /** estimated-token budget; older history is compacted when exceeded */
   /** estimated-token budget; older history is compacted when exceeded */
@@ -177,6 +179,7 @@ export class Agent {
       progressMaxQuietTurns: 40,
       autoContinue: true,
       continueDelayMs: 15_000,
+      autoCompact: true,
       maxConsecutiveToolErrors: 5,
       contextTokenBudget: 96_000,
       contextWindowTokens: 0,
@@ -586,6 +589,7 @@ export class Agent {
       parent: this.opts.parent,
       awaiting: this.awaitingUser,
       autoContinue: this.opts.autoContinue,
+      autoCompact: this.opts.autoCompact,
     };
   }
 
@@ -1201,6 +1205,7 @@ export class Agent {
     this.maybePrune();
     const before = this.lastUsage?.input ?? this.estimateTokens();
     if (!force && before < this.opts.contextTokenBudget) return;
+    if (!force && this.opts.autoCompact === false) return;
     // a forced pass on an already-tiny history would just summarize the
     // summary — report ran=false instead
     if (force && this.messages.length <= this.compactedAtLen) return;
