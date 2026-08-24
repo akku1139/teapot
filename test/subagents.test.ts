@@ -100,3 +100,41 @@ test("PUT /api/config rejects malformed patches with actionable errors", async (
   });
   assert.equal(ok.status, 200);
 });
+
+test("waitChildren returns as soon as ALL listed children settle — not at timeout", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "wait-root-"));
+  const ws = await tmpWs();
+  const m = mkMaster(dataDir);
+  const parent = await m.addAgent({ id: "p", workspace: ws });
+
+  const spawn = m as unknown as {
+    spawnChildFor(a: unknown, o: unknown): Promise<{ id: string }>;
+  };
+  const a = await (await spawn.spawnChildFor(parent, { task: "task a", context: "none" })).id;
+  const b = await (await spawn.spawnChildFor(parent, { task: "task b", context: "none" })).id;
+
+  // both are spawned running; wait with a generous timeout
+  const wait = m.waitChildren("p", undefined, 60_000);
+  await new Promise((r) => setTimeout(r, 50)); // let the waiter register
+
+  // settle child A → must NOT resolve yet (b still runs)
+  await m.agents.get(a)!.stop("test");
+  let settled = false;
+  void wait.then(() => { settled = true; });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(settled, false, "must stay parked while any target is still active");
+
+  // settle the last one → resolves immediately, well before the timeout
+  await m.agents.get(b)!.stop("test");
+  const r = await Promise.race([
+    wait,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("did not wake on final settle")), 2_000)),
+  ]);
+  assert.match(r.note, /all sub-agents settled/);
+
+  // once everything is settled already, a new wait returns synchronously
+  const again = await m.waitChildren("p", undefined, 60_000);
+  assert.match(again.note, /already settled/);
+
+  await disposeAll(m);
+});

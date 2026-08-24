@@ -718,15 +718,22 @@ export class Agent {
   }
 
   private setStatus(s: AgentStatus, reason = ""): void {
-    if (this.status !== s) {
+    // Update the field FIRST. log.append fires onEvent synchronously, and the
+    // master's child-event hook wakes parked wait_children callers — those
+    // re-check agent.status at that instant. Updating after the append made
+    // every waiter observe the OLD status ("running"), conclude "someone is
+    // still working", and stay parked until timeout even though the child had
+    // just settled.
+    const prev = this.status;
+    this.status = s;
+    this.statusReason = reason;
+    if (prev !== s) {
       void this.log.append("state", this.currentSession, this.currentBranch, {
-        from: this.status,
+        from: prev,
         to: s,
         reason,
       });
     }
-    this.status = s;
-    this.statusReason = reason;
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
   }
 
