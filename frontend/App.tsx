@@ -3250,7 +3250,13 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? "");
   const [intervalMin, setIntervalMin] = createSignal(Math.round((props.cfg.progressIntervalMs ?? 600000) / 60000));
   const [minChars, setMinChars] = createSignal(props.cfg.progressMinChars ?? 4000);
-  const [ctxBudgetK, setCtxBudgetK] = createSignal(Math.round((props.cfg.contextTokenBudget ?? 96000) / 1000));
+  // empty input = DERIVED budget (75% of each model's window) — the old UI
+  // always showed 96 and saved it back on every settings save, silently
+  // turning every agent into "manual override" at a fixed 96k that fit
+  // neither 32k local models nor 1M-context ones. Null means "not set".
+  const [ctxBudgetK, setCtxBudgetK] = createSignal<number | null>(
+    props.cfg.contextTokenBudget != null ? Math.round(props.cfg.contextTokenBudget / 1000) : null,
+  );
   const [ctxWinK, setCtxWinK] = createSignal(props.cfg.contextWindowTokens ? Math.round(props.cfg.contextWindowTokens / 1000) : 0);
   const [maxDepth, setMaxDepth] = createSignal(props.cfg.maxSpawnDepth ?? 3);
   const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
@@ -3288,7 +3294,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           defaultProvider: defaultProvider() || undefined,
           progressIntervalMs: Math.max(1, intervalMin()) * 60000,
           progressMinChars: Math.max(100, minChars()),
-          contextTokenBudget: Math.max(1000, ctxBudgetK()) * 1000,
+          ...(ctxBudgetK() != null ? { contextTokenBudget: Math.max(1, ctxBudgetK()!) * 1000 } : {}),
           ...(ctxWinK() > 0 ? { contextWindowTokens: ctxWinK() * 1000 } : {}),
           maxSpawnDepth: Math.max(0, maxDepth()),
           tasks: cleanTasks,
@@ -3357,7 +3363,16 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           <div class="cfggrid">
             {numInput("progress interval (min)", intervalMin(), (v) => setIntervalMin(v), "how often the harness asks for a progress report")}
             {numInput("progress min chars", minChars(), (v) => setMinChars(v), "progress prompts wait for this much real output")}
-            {numInput("compact budget (k tok)", ctxBudgetK(), (v) => setCtxBudgetK(v), "auto-compact threshold — defaults to 75% of context window when empty; manual override in k tokens")}
+            <label title="auto-compact threshold in k tokens. Leave EMPTY to derive per model (75% of its context window) — recommended, since models differ wildly in window size. Set only to force an absolute cap across all models.">
+              compact budget (k tok)
+              <input
+                type="number"
+                min="0"
+                placeholder="(derive: 75% of window)"
+                value={ctxBudgetK() ?? ""}
+                oninput={(e) => setCtxBudgetK(e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}
+              />
+            </label>
             {numInput("context window (k tok)", ctxWinK(), (v) => setCtxWinK(v), "model's real window — 0/blank hides the % gauge")}
             {numInput("max spawn depth", maxDepth(), (v) => setMaxDepth(v), "sub-agent nesting limit (0 = no spawning)")}
           </div>

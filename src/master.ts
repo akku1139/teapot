@@ -306,7 +306,7 @@ export class Master {
     defaultProvider?: string;
     progressIntervalMs?: number;
     progressMinChars?: number;
-    contextTokenBudget?: number;
+    contextTokenBudget?: number | null;
     maxSpawnDepth?: number;
     tasks?: TaskConfig[];
   }): void {
@@ -324,7 +324,12 @@ export class Master {
         (a as unknown as { opts: { progressMinChars: number } }).opts.progressMinChars =
           patch.progressMinChars;
     }
-    if (patch.contextTokenBudget !== undefined) this.config.contextTokenBudget = patch.contextTokenBudget;
+    // explicit null clears a previously saved budget → back to per-model
+    // derivation (75% of each agent's known window); a positive number pins it
+    if (patch.contextTokenBudget !== undefined) {
+      this.config.contextTokenBudget =
+        (patch.contextTokenBudget ?? 0) > 0 ? patch.contextTokenBudget! : undefined;
+    }
     if (patch.maxSpawnDepth !== undefined) this.config.maxSpawnDepth = patch.maxSpawnDepth;
     if (patch.tasks) {
       this.config.tasks = patch.tasks;

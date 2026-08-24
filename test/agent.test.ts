@@ -614,3 +614,43 @@ test("set_todo updates: surgical checkbox flips without rewriting the list", asy
   assert.match(results[1]!, /1 item\(s\) updated/);
   await agent.dispose();
 });
+
+test("compact budget: derived from window by default, manual only when configured", async () => {
+  const ws = await mkdtemp(path.join(tmpdir(), "teapot-cw-"));
+  // derived: window known, no budget passed
+  const derived = new Agent({
+    id: "d",
+    workspace: ws,
+    llm: LLM,
+    sessionDir: await mkdtemp(path.join(tmpdir(), "td-")),
+    contextWindowTokens: 200_000,
+  });
+  await derived.init();
+  assert.equal(derived.snapshot().ctx.compactAtIsManual, false);
+  assert.equal(derived.snapshot().ctx.compactAt, Math.round(200_000 * 0.75));
+
+  // manual: explicit budget in config wins over derivation
+  const manual = new Agent({
+    id: "m",
+    workspace: ws,
+    llm: LLM,
+    sessionDir: await mkdtemp(path.join(tmpdir(), "tm-")),
+    contextWindowTokens: 200_000,
+    contextTokenBudget: 50_000,
+  });
+  await manual.init();
+  assert.equal(manual.snapshot().ctx.compactAtIsManual, true);
+  assert.equal(manual.snapshot().ctx.compactAt, 50_000);
+
+  // unknown window → default budget, still not "manual"
+  const fallback = new Agent({
+    id: "f",
+    workspace: ws,
+    llm: LLM,
+    sessionDir: await mkdtemp(path.join(tmpdir(), "tf-")),
+  });
+  await fallback.init();
+  assert.equal(fallback.snapshot().ctx.compactAtIsManual, false);
+  assert.equal(fallback.snapshot().ctx.compactAt, 96_000);
+  for (const a of [derived, manual, fallback]) await a.dispose();
+});
