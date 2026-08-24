@@ -1,5 +1,19 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect } from "solid-js";
 import { renderMarkdown } from "./md";
+
+/* Rendered-markdown cache: old messages were re-parsing their whole body on
+ * EVERY prepend/refresh pass (scrolling back through a long session parsed
+ * the same text over and over — visibly heavy). Event content is immutable,
+ * so a small LRU keyed by the source string makes repeat renders free. */
+const mdCache = new Map<string, string>();
+function renderMarkdownCached(src: string): string {
+  const hit = mdCache.get(src);
+  if (hit !== undefined) return hit;
+  const html = renderMarkdown(src);
+  mdCache.set(src, html);
+  if (mdCache.size > 500) mdCache.delete(mdCache.keys().next().value!);
+  return html;
+}
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -225,13 +239,20 @@ export default function App() {
     }
     return parts.join(" · ");
   };
-  // keep the switcher aligned with the selected session
+  // Keep the switcher aligned with the selected session. Keyed on STRINGS,
+  // not on sel() identity: this used to re-run (and re-fetch /api/models!)
+  // on every poll in which the agent's snapshot object changed — visibly
+  // rebuilding the whole 🧦 model section = the "right panel flashes" bug.
   createEffect(() => {
-    const a = sel();
+    const id = selected();
+    const a = agents().find((x) => x.id === id);
+    const prov = a?.provider || cfg().defaultProvider || providerList()[0] || "";
     if (!a) return;
-    setModelProvider(a.provider || cfg().defaultProvider || providerList()[0] || "");
-    setModelDraft("");
-    loadModels(modelProvider());
+    if (modelProvider() !== prov) {
+      setModelProvider(prov);
+      loadModels(prov);
+    }
+    if (modelDraft()) setModelDraft(""); // clear stale draft on switch
   });
   // autoscroll: follow the tail only while the reader is already at the bottom
   const [atBottom, setAtBottom] = createSignal(true);
@@ -2410,7 +2431,7 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
   const e = props.e;
   switch (e.type) {
     case "prompt":
-      return <div class="content" innerHTML={renderMarkdown(String(e.data.text ?? ""))} />;
+      return <div class="content" innerHTML={renderMarkdownCached(String(e.data.text ?? ""))} />;
     case "message":
       return (
         <>
@@ -2420,7 +2441,7 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
               <div class="mono">{String(e.data.reasoning)}</div>
             </details>
           </Show>
-          <div class="content" innerHTML={renderMarkdown(String(e.data.content ?? ""))} />
+          <div class="content" innerHTML={renderMarkdownCached(String(e.data.content ?? ""))} />
           <Show when={e.data.interrupted}>
             <div class="interrupted">⚠ interrupted — partial output kept</div>
           </Show>
