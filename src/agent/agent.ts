@@ -604,6 +604,59 @@ export class Agent {
     await this.log.append("todo", this.currentSession, this.currentBranch, { event: "set", by });
   }
 
+  /**
+   * Update SPECIFIC checkbox items without rewriting the whole list — the
+   * full-replacement path made agents lazy (a mid-task progress tick meant
+   * re-emitting the entire markdown, so they skipped updates) and risky (one
+   * sloppy regeneration mangled unrelated sections). Items are matched by
+   * normalized text; unknown items are reported back instead of silently
+   * dropped. Returns a short human-readable summary for the tool result.
+   */
+  async updateTodoItems(
+    updates: { item: string; done: boolean }[],
+    by = "agent",
+  ): Promise<string> {
+    const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+    const lines = this.todo.split("\n");
+    let matched = 0;
+    const unmatched: string[] = [];
+    for (const u of updates) {
+      const target = norm(u.item);
+      // find the LAST matching checkbox line (later duplicates win)
+      let idx = -1;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const m = lines[i]!.match(/^(\s*[-*+] \[)([ xX])(\].*)$/);
+        if (!m) continue;
+        if (norm(m[3]!.slice(1)) === target) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx === -1) {
+        unmatched.push(u.item);
+        continue;
+      }
+      lines[idx] = lines[idx]!.replace(/^(.* \[)[ xX](\].*)$/, (_s, a, b) => `${a}${u.done ? "x" : " "}${b}`);
+      matched++;
+    }
+    if (matched > 0) {
+      this.todo = lines.join("\n");
+      await fs.writeFile(this.todoFile, this.todo, "utf8");
+      await this.log.append("todo", this.currentSession, this.currentBranch, {
+        event: "items",
+        by,
+        matched,
+        ...(unmatched.length ? { unknown: unmatched } : {}),
+      });
+    }
+    const parts = [`${matched} item(s) updated`];
+    if (unmatched.length)
+      parts.push(
+        `NOT FOUND in todo.md: ${unmatched.map((s) => `"${s}"`).join(", ")} — check get_todo and retry with the exact wording`,
+      );
+    return parts.join(". ");
+  }
+
   async setGoalStatus(status: GoalState["status"]): Promise<void> {
     this.goal = { ...this.goal, status, updatedAt: new Date().toISOString() };
     await this.writeGoalFile();
@@ -991,9 +1044,31 @@ export class Agent {
         }
         if (call.function.name === "set_todo") {
           const a = safeParse(call.function.arguments);
+          // Preferred: surgical checkbox updates — no full rewrite, no risk
+          // of mangling unrelated sections, cheap enough to do mid-task.
+          const updates = Array.isArray(a.updates)
+            ? a.updates
+                .map((u: unknown) => {
+                  const o = (u ?? {}) as { item?: unknown; done?: unknown };
+                  return { item: String(o.item ?? ""), done: o.done !== false };
+                })
+                .filter((u: { item: string }) => u.item.trim())
+            : [];
+          if (updates.length > 0) {
+            const note = await this.updateTodoItems(updates, "agent");
+            await this.answerMeta(call, `${note} (visible to the operator)`);
+            continue;
+          }
           const content = String(a.content ?? "").slice(0, 32_000);
+          if (!content.trim()) {
+            await this.answerMeta(
+              call,
+              "nothing to do: pass updates:[{item,done}] to check items off, or content to replace the whole list",
+            );
+            continue;
+          }
           await this.setTodo(content, "agent");
-          await this.answerMeta(call, "task list updated (visible to the operator)");
+          await this.answerMeta(call, "task list replaced (visible to the operator)");
           continue;
         }
         if (call.function.name === "get_feedback") {
@@ -1615,11 +1690,29 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
       function: {
         name: "set_todo",
         description:
-          "Replace the operator-visible task list (todo.md) — e.g. check off finished items or restate what remains. Keep it terse.",
+          "Update the operator-visible task list (todo.md). PREFERRED: pass updates to check specific " +
+          "items off as you finish them — cheap, surgical, no risk of mangling other sections. Only pass " +
+          "content to rewrite the whole list when restructuring it. Call this promptly on every item you complete.",
         parameters: {
           type: "object",
-          properties: { content: { type: "string" } },
-          required: ["content"],
+          properties: {
+            updates: {
+              type: "array",
+              description: "surgical checkbox flips — match items by their exact text in todo.md",
+              items: {
+                type: "object",
+                properties: {
+                  item: { type: "string", description: "checkbox item text (without the \"- [ ]\" marker)" },
+                  done: { type: "boolean", description: "true = check off, false = reopen (default true)" },
+                },
+                required: ["item"],
+              },
+            },
+            content: {
+              type: "string",
+              description: "full replacement markdown — only for restructures; prefer updates",
+            },
+          },
         },
       },
     },

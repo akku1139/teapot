@@ -353,7 +353,7 @@ test("get_todo/set_todo round-trips the operator task list", async () => {
   await agent.settled();
 
   assert.match(toolResults[0]!, /\[ \] a/); // get_todo returned the list
-  assert.match(toolResults[1]!, /task list updated/);
+  assert.match(toolResults[1]!, /task list replaced/);
   assert.equal(agent.todo, "- [x] a\n- [ ] b"); // agent checked off an item
   const todoPath = path.join(agent.snapshot().sessionDir, "todo.md");
   assert.match(await readFile(todoPath, "utf8"), /\[x\] a/);
@@ -567,5 +567,50 @@ test("agent saves, lists, then loads its own skill via tools", async () => {
   const written = await readFile(path.join(ws, "skills", "coffee-brewing", "SKILL.md"), "utf8");
   assert.match(written, /name: coffee-brewing/);
   assert.match(written, /grind/);
+  await agent.dispose();
+});
+
+test("set_todo updates: surgical checkbox flips without rewriting the list", async () => {
+  let n = 0;
+  const results: string[] = [];
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i > 0) {
+      const t = [...messages].reverse().find((m) => m.role === "tool");
+      results.push(t?.content ?? "");
+    }
+    if (i === 0)
+      return reply("first done", [
+        tc("u1", "set_todo", { updates: [{ item: "write the parser", done: true }] }),
+      ]);
+    if (i === 1)
+      return reply("second done, one typo", [
+        tc("u2", "set_todo", {
+          updates: [
+            { item: "add tests for the parser", done: true },
+            { item: "no such item exists", done: true },
+          ],
+        }),
+      ]);
+    return reply("done");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  await agent.setGoal("work the list");
+  await agent.setTodo(
+    "# plan\n\n## steps\n- [ ] write the parser\n- [ ] add tests for the parser\n- [ ] ship it\n",
+  );
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  await agent.settled();
+
+  // exact section layout survives; both updated items are checked, "ship it" untouched
+  assert.equal(
+    agent.todo,
+    "# plan\n\n## steps\n- [x] write the parser\n- [x] add tests for the parser\n- [ ] ship it\n",
+  );
+  assert.match(results[0]!, /1 item\(s\) updated/);
+  // unknown item is reported back, not silently dropped
+  assert.match(results[1]!, /NOT FOUND in todo\.md: "no such item exists"/);
+  assert.match(results[1]!, /1 item\(s\) updated/);
   await agent.dispose();
 });

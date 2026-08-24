@@ -397,25 +397,34 @@ export default function App() {
         expanded.push({ ...e, type: kind, data: { ...d?.data, actor: d?.sub } });
       } else expanded.push(e);
     }
-    // DEDUPE: models often end a report_progress turn by repeating the very
-    // same content as an ordinary assistant message. When a message follows
-    // its progress event with essentially identical text, drop the message —
-    // the progress embed already shows it (rendered).
+    // DEDUPE: models often end a report_progress / record_decision turn by
+    // repeating the very same content as an ordinary assistant message. When a
+    // message follows its embed event (progress/decision) with essentially
+    // identical text, drop the message — the embed already shows it (rendered).
     const norm = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
     const deduped: Ev[] = [];
     for (let i = 0; i < expanded.length; i++) {
       const e = expanded[i]!;
       if (
         e.type === "message" &&
-        e.data?.role === "assistant" &&
-        expanded[i - 1]?.type === "progress"
+        e.data?.role === "assistant"
       ) {
-        const p = expanded[i - 1]!.data;
+        const prev = expanded[i - 1];
         const body = norm(e.data.content);
-        const same =
-          body.includes(norm(p.doing)) ||
-          (!!p.recent && body.includes(norm(p.recent)));
-        if (same && body.length <= Math.max(200, norm(p.doing).length * 3)) continue;
+        if (prev?.type === "progress") {
+          const p = prev.data;
+          const same =
+            body.includes(norm(p.doing)) ||
+            (!!p.recent && body.includes(norm(p.recent)));
+          if (same && body.length <= Math.max(200, norm(p.doing).length * 3)) continue;
+        }
+        if (prev?.type === "decision") {
+          const d = prev.data;
+          // the decision line is the identity — models echo it verbatim or as
+          // a heading; rationale alone is too weak a signal to dedupe on
+          const dec = norm(d.decision);
+          if (dec && body.includes(dec) && body.length <= Math.max(300, dec.length * 3)) continue;
+        }
       }
       deduped.push(e);
     }
@@ -456,6 +465,8 @@ export default function App() {
   // operator task list draft — seeded per selected agent; while the user
   // hasn't touched it, it follows server updates (the agent edits it too)
   const [todoDraft, setTodoDraft] = createSignal("");
+  // false = rendered checklist (default), true = raw markdown editor
+  const [todoViewMode, setTodoViewMode] = createSignal(false);
   const [todoDirty, setTodoDirty] = createSignal(false);
   let todoSeededFor = "";
   createEffect(() => {
@@ -1912,20 +1923,33 @@ export default function App() {
               />
             </div>
           </Show>
-          <textarea
-            id="todo-input"
-            class="mono"
-            rows={5}
-            placeholder={"- task one\n- task two"}
-            value={todoDraft()}
-            oninput={(e) => {
-              setTodoDraft(e.currentTarget.value);
-              setTodoDirty(true);
-            }}
-            title="shared with the agent — it may check items off via set_todo; your unsaved edits win until you save"
-            style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
-          />
+          <Show
+            when={todoViewMode()}
+            fallback={
+              /* rendered checklist — the default view; markdown + real checkboxes */
+              <div class="content mdpreview" style="max-height:40vh;padding:8px 10px" innerHTML={renderMarkdownCached(todoDraft())} />
+            }
+          >
+            <textarea
+              id="todo-input"
+              class="mono"
+              rows={5}
+              placeholder={"- task one\n- task two"}
+              value={todoDraft()}
+              oninput={(e) => {
+                setTodoDraft(e.currentTarget.value);
+                setTodoDirty(true);
+              }}
+              title="shared with the agent — it may check items off via set_todo; your unsaved edits win until you save"
+              style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
+            />
+          </Show>
           <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px">
+            <button
+              class="iconbtn"
+              title={todoViewMode() ? "rendered checklist" : "edit markdown"}
+              onclick={() => setTodoViewMode(!todoViewMode())}
+            >{todoViewMode() ? "👁" : "✎"}</button>
             <label
               class="muted"
               style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
@@ -1946,10 +1970,10 @@ export default function App() {
           >
             {(p) => (
               <div class="card prog">
-                <div class="progrow"><b>doing</b><span>{p().doing}</span></div>
-                <Show when={p().recent}><div class="progrow"><b>recent</b><span>{p().recent}</span></div></Show>
-                <Show when={p().problems}><div class="progrow warn"><b>⚠ problems</b><span>{p().problems}</span></div></Show>
-                <Show when={p().next}><div class="progrow"><b>next</b><span>{p().next}</span></div></Show>
+                <div class="progrow"><b>doing</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().doing)} /></div>
+                <Show when={p().recent}><div class="progrow"><b>recent</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().recent)} /></div></Show>
+                <Show when={p().problems}><div class="progrow warn"><b>⚠ problems</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().problems)} /></div></Show>
+                <Show when={p().next}><div class="progrow"><b>next</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().next)} /></div></Show>
                 <Show when={p().goalStatus}><div class="progrow"><b>goal</b><span>{p().goalStatus}</span></div></Show>
                 <div class="meta muted">{relTime(p().ts)}</div>
               </div>
@@ -2522,10 +2546,11 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
       return (
         <details class="embed decision">
           <summary>
-            <b>📌 {oneLine(String(e.data?.decision ?? ""), 90)}</b>
+            <b>📌 <span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.decision ?? ""))} /></b>
             <span class="meta">decision logged</span>
           </summary>
-          <div class="content"><b>Why:</b>{String(e.data?.rationale ?? "")}</div>
+          {/* model-written markdown, same as progress bodies */}
+          <div class="content" innerHTML={renderMarkdownCached(String(e.data?.rationale ?? ""))} />
           <Show when={alts.length}>
             <div class="content muted">Rejected: {alts.join(" / ")}</div>
           </Show>
