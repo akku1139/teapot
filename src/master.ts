@@ -784,6 +784,17 @@ if (active().length === 0) wake();
     try {
       dirs = readdirSync(this.sessionsRoot())
         .filter((d) => d === agentId || d.startsWith(`${agentId}-`))
+        .filter((d) => {
+          // an EMPTY chat.jsonl means the session was never used (created via
+          // web, then abandoned). Reusing it would resurrect another agent's
+          // timeline under this id, and two incarnations could even land in
+          // one directory. Never treat empty logs as existing history.
+          try {
+            return statSync(path.join(this.sessionsRoot(), d, "chat.jsonl")).size > 0;
+          } catch {
+            return false;
+          }
+        })
         .sort((a, b) => {
           // newest chat.jsonl wins
           const ma = this.sessionMtime(path.join(this.sessionsRoot(), a));
@@ -807,6 +818,14 @@ if (active().length === 0) wake();
   private resolveSessionDir(agentId: string, fresh: boolean): string {
     const root = this.sessionsRoot();
     mkdirSync(root, { recursive: true });
+
+    // exact-restart match first: <agentId> itself (or a previously generated
+    // <agentId>-<suffix> dir when the bare name was taken). Prefix matching
+    // alone could hand agent "proj-2" agent "proj"'s directory.
+    const selfDir = path.join(root, agentId);
+    if (!fresh && statSync(path.join(selfDir, "chat.jsonl"), { throwIfNoEntry: false })?.size) {
+      return selfDir; // restart → continue where we left off
+    }
 
     // one-time migration from the ≤0.5.0 flat layout (<dataDir>/<id>.jsonl)
     if (!fresh) {

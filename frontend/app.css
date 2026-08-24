@@ -74,14 +74,14 @@
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 
-.layout { display: grid; grid-template-columns: 250px 1fr 300px; height: 100dvh; overflow: hidden; }
+.layout { display: grid; grid-template-columns: 250px 1fr 370px; height: 100dvh; overflow: hidden; }
 .layout.right-hidden { grid-template-columns: 250px 1fr; }
 .layout.right-hidden .rightbar { display: none; }
 @media (max-width: 1100px) {
   .layout, .layout.right-hidden { grid-template-columns: 220px 1fr; }
   .layout.right-hidden .rightbar { display: block; } /* narrow: drawer may still open */
   .rightbar {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(320px, 88vw); z-index: 5;
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw); z-index: 5;
     transform: translateX(100%); transition: transform .18s ease; box-shadow: -8px 0 24px #0007;
   }
   .rightbar.open { transform: none; }
@@ -343,6 +343,10 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .rightbar h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 14px 0 6px; }
 .rightbar h3:first-child { margin-top: 0; }
 .card { background: var(--bg-darkest); border-radius: 8px; padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
+/* the 📊 runtime card must NOT scroll internally: no max-height here — it
+   grows with its content and the PANEL (.rightbar, overflow-y:auto) scrolls
+   around it instead */
+.card.runcard { max-height: none; overflow-y: visible; }
 .muted { color: var(--dim); }
 /* structured progress card */
 .prog .progrow { display: flex; gap: 8px; margin-bottom: 4px; }

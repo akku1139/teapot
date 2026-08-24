@@ -251,6 +251,27 @@ export default function App() {
       if (nearBottom()) scrollBottom(true);
     });
   });
+  // Browsers pause requestAnimationFrame while a tab is hidden, so scroll
+  // follow-ups for updates arriving in a background tab are silently dropped
+  // — coming back showed a stale bottom line even though "follow" mode was
+  // on. Re-sync once on return: jump to the tail iff the reader was still
+  // following when they left. Re-armed on every session switch.
+  createEffect(() => {
+    const id = selected();
+    if (!id) return;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      requestAnimationFrame(() => {
+        if (nearBottom()) {
+          setAtBottom(true);
+          setMissed(0);
+          scrollBottom(true);
+        }
+      });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    onCleanup(() => document.removeEventListener("visibilitychange", onVisible));
+  });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
   // prompt being edited → edit-prompt fork dialog
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
@@ -457,6 +478,11 @@ export default function App() {
   // upward pagination: prepend the page before the oldest loaded id
   const [loadingOlder, setLoadingOlder] = createSignal(false);
   const [olderDone, setOlderDone] = createSignal(false);
+  // Generation token guarding every async timeline fetch. Switching sessions
+  // bumps it; responses that come back after a switch belong to a dead view
+  // and must NOT touch events/scroll (they used to overwrite the freshly
+  // loaded timeline with the PREVIOUS session's rows).
+  let feedGeneration = 0;
 
   /** merge fetched page into state by id, seq-ascending, refs stabilized */
   function mergeEvents(incoming: Ev[]): void {
@@ -483,17 +509,24 @@ export default function App() {
       );
       const page: Ev[] = res.events ?? [];
       if (page.length === 0) { setOlderDone(true); return; }
+      // still the same session AND still anchored on the same oldest row?
+      // (a plain selected() check can't be fooled by same-session tail
+      // refreshes, which never touch the head of the list)
+      if (selected() !== id || events()[0]?.id !== oldest.id) return;
       mergeEvents(page);
       // keep the viewport anchored to the same content after prepending
       requestAnimationFrame(() => {
-        const el = feedEl();
-        if (el) el.scrollTop = prevTop + (el.scrollHeight - prevH);
+        if (selected() === id) {
+          const el = feedEl();
+          if (el) el.scrollTop = prevTop + (el.scrollHeight - prevH);
+        }
       });
     } catch { /* transient — user can scroll up again */ }
     finally { setLoadingOlder(false); }
   }
 
   async function loadEvents(id: string) {
+    const gen = ++feedGeneration;
     try {
       const bf = branchFilter();
       const [ev, br, sk] = await Promise.all([
@@ -501,6 +534,7 @@ export default function App() {
         api(`/api/agents/${id}/branches`),
         api(`/api/agents/${id}/skills`).catch(() => ({ skills: [] })),
       ]);
+      if (gen !== feedGeneration || selected() !== id) return; // stale view
       setEvents((prev) => {
         // tail refresh: union-merge so prepended older pages survive, and
         // stabilize() keeps unchanged rows reference-identical (no re-mounts)
@@ -529,8 +563,20 @@ export default function App() {
   }
 
   async function select(id: string, push = true) {
+    const prevId = selected();
+    // bump FIRST so any in-flight fetch for the previous session lands on a
+    // dead generation and is dropped instead of overwriting this one's rows
+    feedGeneration++;
+    if (prevId !== id) {
+      // drop the previous session's timeline immediately — otherwise it stays
+      // visible (or bleeds into the merge) until this session's fetch lands,
+      // which read as "the old conversation showing up in the new session"
+      setEvents([]);
+      evCache.clear(); // event ids are per-log (e1, e2…) — never share across sessions
+      setLive(null);
+      setMissed(0);
+    }
     setSelected(id);
-    setLive(null);
     setBranchFilter(null);
     setOlderDone(false);
     setLoadingOlder(false);
@@ -540,7 +586,10 @@ export default function App() {
     // lazy sessions sit in "stopped" until touched — clicking loads them
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id);
-    requestAnimationFrame(() => scrollBottom(true));
+    if (selected() !== id) return; // another switch won while we were loading
+    requestAnimationFrame(() => {
+      if (selected() === id) scrollBottom(true);
+    });
   }
 
   /* ---------- realtime over WebSocket (auto-reconnect) ---------- */
@@ -1632,15 +1681,23 @@ export default function App() {
           </div>
 
           <h3 title="what the agent is working toward — auto-continue keeps looping while the status is 'active'">🎯 goal
-            <span class={`badge ${sel()!.goal.status === "active" ? "running" : sel()!.goal.status}`}>{sel()!.goal.status}</span>
+            <Show
+              when={!!sel()!.goal.text.trim()}
+              fallback={<span class="badge" title="no goal set yet">no goal</span>}
+            >
+              <span class={`badge ${sel()!.goal.status === "active" ? "running" : sel()!.goal.status}`}>{sel()!.goal.status}</span>
+            </Show>
           </h3>
           <div class="statrow" style="margin-bottom:6px">
             <span class="k">status</span>
             <For each={["active", "done", "paused"] as const}>
               {(s) => (
                 <button
-                  class={"goalstate" + (sel()!.goal.status === s ? ` on ${s}` : "")}
-                  disabled={sel()!.goal.status === s}
+                  // an EMPTY goal must not light up "▶ working": fresh
+                  // sessions store status:"active" by default, which made a
+                  // brand-new timeline look like the agent was already on it
+                  class={"goalstate" + (!!sel()!.goal.text.trim() && sel()!.goal.status === s ? ` on ${s}` : "")}
+                  disabled={!!sel()!.goal.text.trim() && sel()!.goal.status === s}
                   title={
                     s === "active"
                       ? "agent keeps working toward the goal (with auto-continue)"
@@ -2394,7 +2451,9 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
       const r = await api("/api/agents", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace: dir(), id: name(), provider: provider() || undefined, model: model() || undefined }),
+        // start: false → the agent stays lazy/stopped; the first prompt (or
+        // ▶ start) kicks off the loop, so no API call fires on an empty agent
+        body: JSON.stringify({ workspace: dir(), id: name(), provider: provider() || undefined, model: model() || undefined, start: false }),
       });
       props.onCreated(r.agent.id);
     } catch (ex) { setErr(String((ex as Error).message)); }
@@ -2425,7 +2484,7 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
           <label style="flex:1">model <input type="text" placeholder="(provider default)" value={model()} oninput={(e) => setModel(e.currentTarget.value)} /></label>
         </div>
         <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
-        <button type="submit" style="align-self:flex-end">create & start</button>
+        <button type="submit" style="align-self:flex-end">create</button>
       </form>
     </Modal>
   );

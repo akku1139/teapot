@@ -233,7 +233,10 @@ export function buildApp(master: Master): Hono {
         { id, workspace: ws, provider: body.provider, model: body.model },
         { persist: true, fresh: true }, // new incarnation → never reuse old history
       );
-      if (body.start !== false) agent.start("created via web");
+      // NOTE: creation no longer auto-starts an LLM loop — the agent sits in
+      // "stopped" (a lazy, zero-cost session) until the operator sends the
+      // first prompt or presses ▶ start. The web UI relies on this.
+      if (body.start === true) agent.start("created via web");
       return c.json({ ok: true, agent: agent.snapshot() });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
