@@ -336,23 +336,31 @@ export function buildApp(master: Master): Hono {
       const { execFile } = await import("node:child_process");
       const res = await new Promise<string>((resolve) => {
         let timer: NodeJS.Timeout | undefined;
+        const finished = (v: string) => {
+          if (timer) clearTimeout(timer);
+          resolve(v);
+        };
         const p = execFile(
           "git",
           // NOTE: no --quiet — it suppresses the stdout we parse
           ["-C", workspace, "check-ignore", "--stdin", "-z", "--verbose"],
           { encoding: "utf8", maxBuffer: 1 << 20 },
-          (err, stdout) => {
-            if (timer) clearTimeout(timer);
-            resolve(err || !stdout ? "" : stdout);
-          },
+          (err, stdout) => finished(err || !stdout ? "" : stdout),
         );
+        // git can exit before we finish writing (nothing to ignore, or the
+        // cap below killed it). Without this handler the stdin "error"
+        // becomes an UNCAUGHT EXCEPTION that kills the request — seen as
+        // "write EPIPE" right after boot when several trees load at once.
+        p.stdin?.on("error", () => { /* EPIPE etc. — result is just empty */ });
         // end stdin only AFTER the write flushes (ending immediately raced
         // the write and git saw an empty list), and hard-cap in case git
         // wedges — a tree listing must never hang
-        p.stdin?.write(relPaths.join("\0") + "\0", () => p.stdin?.end());
+        p.stdin?.write(relPaths.join("\0") + "\0", () => {
+          try { p.stdin?.end(); } catch { /* already gone */ }
+        });
         timer = setTimeout(() => {
           try { p.kill("SIGKILL"); } catch { /* */ }
-          resolve("");
+          finished("");
         }, 5_000);
       });
       // -z --verbose emits records as
