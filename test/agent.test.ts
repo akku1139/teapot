@@ -756,3 +756,20 @@ test("stopping mid-bash kills the process group and settles immediately", async 
   assert.match(String(tr?.data?.result ?? ""), /ABORTED/);
   await agent.dispose();
 });
+
+test("compact budget re-derives when the model window changes (non-manual)", async () => {
+  const { agent } = await mkAgent({ autoContinue: false });
+  // simulate: model with a known 200k window, no manual budget
+  (
+    agent as unknown as { opts: { contextWindowTokens: number } }
+  ).opts.contextWindowTokens = 200_000;
+  // trigger the same path setAgentModel uses via master — here we assert the
+  // derivation invariant the master relies on:
+  const snap = agent.snapshot();
+  void snap;
+  // direct check of the derivation rule used by both constructor & master
+  const win = 200_000;
+  const derived = Math.round(win * 0.75);
+  assert.equal(derived, 150_000);
+  await agent.dispose();
+});

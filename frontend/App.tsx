@@ -895,6 +895,17 @@ export default function App() {
           );
           return;
         }
+        // once a turn finishes consuming the delivered prompts (assistant
+        // message logged), drop the "sent ✓" echoes — the real user message
+        // is now part of the persisted timeline
+        if (
+          et === "message" &&
+          ed.role === "assistant" &&
+          msg.agentId === selected()
+        ) {
+          setPendingMsgs((list) => list.filter((p) => !p.sent));
+          // fall through: an assistant message still updates the feed
+        }
         if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
           setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
           return;
@@ -948,18 +959,11 @@ export default function App() {
             if (atBottom()) scrollBottom(true);
             else setMissed(missed() + Math.max(0, eventsTotal() - beforeTotal));
           }
-          // drop optimistic echoes that the log has now caught up with
-          setPendingMsgs((list) =>
-            list.filter(
-              (p) =>
-                !events().some(
-                  (e) =>
-                    e.type === "prompt" &&
-                    e.data?.text === p.text &&
-                    new Date(e.ts).getTime() >= p.at - 1000,
-                ),
-            ),
-          );
+          // NOTE: don't drop pending echoes when the log's prompt event
+          // appears — logging happens at ENQUEUE time, long before the text
+          // reaches an LLM payload. The echo must survive until the matching
+          // prompt-delivered note flips it to "sent ✓" (and it is then
+          // removed only after the turn actually consumed it).
         }
     };
     onTabVisible = () => {
@@ -2315,7 +2319,11 @@ export default function App() {
                 const manualBudget = c().compactAt;
                 // the server now reports whether the budget was pinned in
                 // config; older servers just omit the flag → fall back
-                const usingDerived = c().compactAtIsManual === true ? false : (!manualBudget || manualBudget >= effectiveWindow);
+                // flag absent → assume derived: 75%-of-window is the normal
+                // state, and the old heuristic ("budget >= window means
+                // derived") mislabeled every correctly-derived budget as
+                // manual because 75% is always below the window
+                const usingDerived = c().compactAtIsManual !== true;
                 return (
                   <div
                     class="ctxblock"

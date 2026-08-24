@@ -941,9 +941,19 @@ if (active().length === 0) wake();
     }
     if (win !== undefined) {
       if (ac) ac.contextWindowTokens = win;
-      (
-        agent as unknown as { opts: { contextWindowTokens: number } }
-      ).opts.contextWindowTokens = win;
+      const opts = agent as unknown as {
+        opts: {
+          contextWindowTokens: number;
+          contextTokenBudget: number;
+          manualCompactBudget?: boolean;
+        };
+      };
+      opts.opts.contextWindowTokens = win;
+      // re-derive the compaction budget for the NEW window — unless the
+      // operator pinned one. Without this, a model switch kept the previous
+      // budget and the panel showed "manual override" out of nowhere.
+      if (!agent.compactBudgetIsManual)
+        opts.opts.contextTokenBudget = Math.round(win * 0.75);
     }
     this.saveConfig();
     void agent.log.append("system_note", agent.currentSession, agent.currentBranch, {

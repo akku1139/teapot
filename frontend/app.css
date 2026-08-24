@@ -621,16 +621,33 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
 .mediapreview audio { width: 100%; }
 
 /* maximized composer: input takes over the whole main column */
-.composer.maximized { position: absolute; inset: 0; z-index: 5; background: var(--bg-dark); padding: 16px; }
+/* maximized composer: input takes over the whole main column. The hint line
+   stays FIXED below the form (it used to be pushed offscreen by the grown
+   textarea because .composer had no bottom padding room left). */
+.composer { display: flex; flex-direction: column; }
+.composer .hint { flex-shrink: 0; }
+.composer.maximized { position: absolute; inset: 0; z-index: 5; background: var(--bg-dark); padding: 16px; padding-bottom: 10px; }
 .composer.maximized .feed,
 body:has(.composer.maximized) .feed { visibility: hidden; }
-.composer.maximized form { flex: 1; height: 100%; }
+.composer.maximized form {
+  flex: 1; min-height: 0; align-items: stretch;
+}
 .composer.maximized textarea {
-  height: 100% !important; /* overrides autosize — maximize owns the size */
+  height: auto !important; /* maximize owns the size, autosize stands down */
+  flex: 1;
   max-height: none;
   resize: none;
 }
-.maxbtn { font-size: 12px; }
+.composer.maximized .maxbtn,
+.composer.maximized form > button[type="submit"] {
+  align-self: flex-end;
+}
+/* the ⤢/⤡ glyph centered inside its button (it sat low-right by default) */
+.maxbtn {
+  font-size: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  line-height: 1; padding: 0 !important;
+}
 
 /* gitignored entries in the file tree (shown dimmed when the toggle allows) */
 .filerow.gitignored .fname,
