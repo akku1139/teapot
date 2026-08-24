@@ -146,7 +146,7 @@ process.on("unhandledRejection", (e) => {
   process.exit(1);
 });
 
-let failed = false;
+let _failed = false;
 try {
   await import(pathToFileURL(path.join(pub, asset)).href);
   console.log("bundle imported:", asset);

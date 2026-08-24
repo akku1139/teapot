@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSchedule, matches, nextFireAt } from "../src/scheduler/cron.ts";
 
-const at = (min: number, hour = 10, day = 15, month = 6, dow = 3) =>
+const at = (min: number, hour = 10, day = 15, month = 6, _dow = 3) =>
   new Date(2026, month - 1, day, hour, min, 0);
 
 test("cron: step field", () => {

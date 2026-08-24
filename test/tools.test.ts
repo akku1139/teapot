@@ -20,7 +20,7 @@ async function tmpCtx(): Promise<ToolContext> {
   };
 }
 
-test("write/read/edit roundtrip with offset+limit", async (t) => {
+test("write/read/edit roundtrip with offset+limit", async (_t) => {
   const ctx = await tmpCtx();
   const w = await executeTool("write_file", JSON.stringify({ path: "a/b.txt", content: "l1\nl2\nl3\n" }), ctx);
   assert.ok(w.ok, w.result);

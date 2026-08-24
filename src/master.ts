@@ -722,7 +722,7 @@ if (active().length === 0) wake();
   private wakeParentWaiters(parentId: string): void {
     const set = this.childWaiters.get(parentId);
     if (!set) return;
-    for (const fn of [...set]) {
+    for (const fn of set) {
       try { fn("child event"); } catch { /* ignore */ }
     }
   }

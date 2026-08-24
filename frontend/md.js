@@ -95,7 +95,7 @@ function renderEscaped(lines) {
       i < lines.length &&
       !/^\s*$/.test(lines[i]) &&
       !/^#{1,6}\s/.test(lines[i]) &&
-      !/^```/.test(lines[i]) &&
+      !lines[i].startsWith("```") &&
       !/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
       !/^\s*&gt;/.test(lines[i]) &&
       !LIST_ITEM.test(lines[i]) &&
@@ -131,7 +131,7 @@ function renderEscaped(lines) {
         /\S/.test(lines[i]) &&
         !LIST_ITEM.test(lines[i]) &&
         !/^#{1,6}\s/.test(lines[i]) &&
-        !/^```/.test(lines[i]) &&
+!lines[i].startsWith("```") &&
         !/^\s*&gt;/.test(lines[i])
       ) {
         body += " " + lines[i].trim();
@@ -180,6 +180,7 @@ function renderEscaped(lines) {
     s = s.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)\*(?![\w*])/g, "$1<em>$2</em>");
     s = s.replace(/(^|[^\w])_(?!\s)([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>");
     s = s.replace(/~~([\s\S]+?)~~/g, "<del>$1</del>");
+    // eslint-disable-next-line no-control-regex
     return s.replace(/\u0000(\d+)\u0000/g, (_, k) => codes[+k]);
   }
 }

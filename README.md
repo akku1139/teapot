@@ -74,7 +74,7 @@ Agents are matched to named OpenAI-compatible providers:
   "providers": {
     "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-..." },
     "orcarouter": { "baseUrl": "https://api.orcarouter.ai/v1", "apiKey": "sk-orca-...", "model": "orcarouter/auto" },
-    "local":      { "baseUrl": "http://localhost:11434/v1", "apiKey": "ollama", "model": "qwen3-coder" }
+    "local":      { "baseUrl": "http://localhost:8080/v1", "apiKey": "llama.cpp", "model": "local" }
   },
   "defaultProvider": "openrouter",
   "agents": [
@@ -88,7 +88,7 @@ Agents are matched to named OpenAI-compatible providers:
 
 Per-agent inline `baseUrl`/`apiKey`/`model` override the provider entry. The
 first-run wizard and the settings modal ship quick-add presets for OpenRouter,
-OrcaRouter, OpenAI and Ollama.
+OrcaRouter, OpenAI and a local llama.cpp server.
 
 **OpenRouter app attribution**: requests to `openrouter.ai` endpoints
 automatically carry `HTTP-Referer` / `X-OpenRouter-Title` /
@@ -123,7 +123,7 @@ master (Hono server, src/master.ts + src/server/api.ts)
   mid-task across master restarts instead of starting blank. Restores replay
   byte-identical request payloads, keeping provider prefix caches warm.
 - **LLM** (`src/agent/llm.ts`): official `openai` npm client against any
-  OpenAI-compatible endpoint (OpenRouter, vLLM, Ollama...). Model is config,
+  OpenAI-compatible endpoint (OpenRouter, OrcaRouter, vLLM, llama.cpp server...). Model is config,
   never hard-coded.
 - **Tools** (`src/agent/tools.ts`): provider-agnostic JSON-schema function specs —
   file work via `read_file` (numbered lines, grep-style `pattern` mode, negative

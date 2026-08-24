@@ -17,9 +17,9 @@
       "model": "gpt-4o-mini"
     },
     "local": {
-      "baseUrl": "http://localhost:11434/v1",
-      "apiKey": "ollama",
-      "model": "qwen3-coder"
+      "baseUrl": "http://localhost:8080/v1",
+      "apiKey": "llama.cpp",
+      "model": "local"
     }
   },
   "defaultProvider": "openrouter",
@@ -28,7 +28,7 @@
   "contextWindowTokens": 200000,
   "agents": [
     { "id": "alpha", "workspace": "workspaces/alpha" },
-    { "id": "beta", "workspace": "workspaces/beta", "provider": "local", "model": "llama3.1" },
+    { "id": "beta", "workspace": "workspaces/beta", "provider": "local", "model": "local" },
     { "id": "gamma", "workspace": "workspaces/gamma", "provider": "openai" }
   ],
   "tasks": [

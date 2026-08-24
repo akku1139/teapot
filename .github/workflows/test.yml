@@ -27,6 +27,7 @@ jobs:
       # would otherwise only explode at render time in the browser)
       - run: pnpm typecheck
       - run: pnpm typecheck-web
+      - run: pnpm lint
 
       - run: pnpm build # tsc + vite: catches type and bundling breakage
 

@@ -301,7 +301,7 @@ export default function App() {
         const d = e.data as { sub?: string; type?: string; data?: any };
         const kind = String(d?.type ?? "message");
         if (kind === "state") continue; // child state churn is noise up here
-        expanded.push({ ...e, type: kind, data: { ...(d?.data ?? {}), actor: d?.sub } });
+        expanded.push({ ...e, type: kind, data: { ...d?.data, actor: d?.sub } });
       } else expanded.push(e);
     }
     // append optimistic echoes not yet present in the log
@@ -398,7 +398,8 @@ export default function App() {
   })());
   const toggleCollapse = (id: string) => {
     const next = new Set(collapsedSubs());
-    next.has(id) ? next.delete(id) : next.add(id);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
     setCollapsedSubs(next);
     localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
   };
@@ -434,7 +435,7 @@ export default function App() {
   // long sessions and it collapsed open <details>.
   const evCache = new Map<string, Ev>();
   function stabilize(list: Ev[]): Ev[] {
-    const out = new Array<Ev>(list.length);
+    const out: Ev[] = Array.from({ length: list.length });
     for (let i = 0; i < list.length; i++) {
       const e = list[i]!;
       const known = evCache.get(e.id);
@@ -706,9 +707,13 @@ export default function App() {
     const other = focusedPane() === 0 ? paneR : paneL;
     if (other() === i) {
       // it's in the other pane — swap so both stay visible
-      focusedPane() === 0 ? setPaneR(mine()) : setPaneL(mine());
+      if (focusedPane() === 0) setPaneR(mine());
+      else setPaneL(mine());
     }
-    mine() === i ? void i : (focusedPane() === 0 ? setPaneL(i) : setPaneR(i));
+    if (mine() === i) {
+      // no-op
+    } else if (focusedPane() === 0) setPaneL(i);
+    else setPaneR(i);
   }
 
   const addFromSelected = () => addTab();
@@ -934,6 +939,7 @@ export default function App() {
     return list.filter((x) => x.key.toLowerCase().startsWith(q));
   };
   // popup shows while typing the first token of a command
+  // oxlint-disable-next-line no-unused-vars
   const filteredCmds = () => {
     const d = draft();
     if (!d.startsWith("/") || d.includes(" ") || d.includes("\n")) return [];
@@ -970,6 +976,7 @@ export default function App() {
     }
     return [];
   };
+  // oxlint-disable-next-line no-unassigned-vars
   let composerEl: HTMLTextAreaElement | undefined;
   const autosizeComposer = () => {
     if (!composerEl) return;
