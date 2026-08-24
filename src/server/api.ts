@@ -64,6 +64,42 @@ import { bus } from "../bus.ts";
 import { readEvents } from "../log/events.ts";
 import type { Master } from "../master.ts";
 
+/** media categories the file tree can preview inline */
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
+const VIDEO_EXT = new Set(["mp4", "webm", "mov", "mkv", "avi", "m4v"]);
+const AUDIO_EXT = new Set(["mp3", "wav", "ogg", "m4a", "flac", "aac", "opus"]);
+
+function mediaKind(p: string): "image" | "video" | "audio" | null {
+  const ext = p.split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXT.has(ext)) return "image";
+  if (VIDEO_EXT.has(ext)) return "video";
+  if (AUDIO_EXT.has(ext)) return "audio";
+  return null;
+}
+
+/** extension → MIME (used for the media preview endpoint) */
+export const MEDIA_MIME: Record<string, string> = (() => {
+  const m: Record<string, string> = {};
+  for (const e of IMAGE_EXT) m[e] = `image/${e === "jpg" ? "jpeg" : e}`;
+  Object.assign(m, { svg: "image/svg+xml", ico: "image/x-icon", avif: "image/avif" });
+  for (const e of VIDEO_EXT) m[e] = `video/${e === "mov" ? "quicktime" : e === "mkv" ? "x-matroska" : e}`;
+  for (const e of AUDIO_EXT) m[e] = `audio/${e}`;
+  Object.assign(m, { m4a: "audio/mp4", mp3: "audio/mpeg" });
+  return m;
+})();
+
+/** category → generic fallback when no specific extension match exists */
+const KIND_MIME: Record<"image" | "video" | "audio", string> = {
+  image: "application/octet-stream",
+  video: "application/octet-stream",
+  audio: "application/octet-stream",
+};
+
+function mimeFor(rel: string, kind: "image" | "video" | "audio"): string {
+  const ext = rel.split(".").pop()?.toLowerCase() ?? "";
+  return MEDIA_MIME[ext] ?? KIND_MIME[kind];
+}
+
 export function buildApp(master: Master): Hono {
   const app = new Hono();
 
@@ -345,7 +381,46 @@ export function buildApp(master: Master): Hono {
         path: rel,
         truncated: buf.length > 100_000,
         content: buf.subarray(0, 100_000).toString("utf8"),
+        media: mediaKind(rel),
       });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  // raw bytes for media previews (images / video / audio) — auth-gated like
+  // every other agent route, workspace-confined, served with the right MIME
+  app.get("/api/agents/:id/raw", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const rel = c.req.query("path") ?? "";
+    if (!rel.trim()) return c.json({ error: "path required" }, 400);
+    let abs: string;
+    try {
+      abs = safeJoin(a.workspace, rel);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    try {
+      const buf = await fs.readFile(abs);
+      const kind = mediaKind(rel);
+      if (!kind)
+        return c.json({ error: "not a previewable media file" }, 400);
+      if (buf.length > 200 * 1024 * 1024)
+        return c.json({ error: "file too large to preview (>200MB)" }, 413);
+      // hono-native body API — a raw `new Response(...)` returned here lost
+      // its headers somewhere in the middleware chain (content-type arrived
+      // as undefined), while c.body() passes them through correctly
+      return c.body(
+        new Uint8Array(buf),
+        200,
+        {
+          "content-type": mimeFor(rel, kind),
+          // previews only; the browser shouldn't cache stale workspace files
+          "cache-control": "no-store",
+          "content-disposition": `inline; filename="${encodeURIComponent(path.basename(rel))}"`,
+        },
+      );
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }

@@ -602,3 +602,9 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
   border-radius: 999px; padding: 1px 7px; white-space: nowrap; flex-shrink: 0;
 }
 .subcount.live { color: var(--ok); }
+
+/* media preview modal */
+.mediapreview { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.mediapreview img { max-width: 100%; max-height: 65vh; border-radius: 8px; background: var(--bg-darkest); }
+.mediapreview video { max-width: 100%; max-height: 65vh; border-radius: 8px; background: #000; }
+.mediapreview audio { width: 100%; }

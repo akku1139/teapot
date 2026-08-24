@@ -3044,6 +3044,26 @@ interface TreeNode {
   size?: number;
 }
 
+type MediaKind = "image" | "video" | "audio";
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
+const VIDEO_EXT = new Set(["mp4", "webm", "mov", "mkv", "avi", "m4v"]);
+const AUDIO_EXT = new Set(["mp3", "wav", "ogg", "m4a", "flac", "aac", "opus"]);
+function ficon(name: string): string {
+  const mk = mediaKindOf(name);
+  if (mk === "image") return "🖼";
+  if (mk === "video") return "🎬";
+  if (mk === "audio") return "🎵";
+  return "·";
+}
+
+function mediaKindOf(path: string): MediaKind | null {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXT.has(ext)) return "image";
+  if (VIDEO_EXT.has(ext)) return "video";
+  if (AUDIO_EXT.has(ext)) return "audio";
+  return null;
+}
+
 function FilesPanel(props: { agentId: string; workspace: string }) {
   // path → lazily fetched child listing ("" = workspace root)
   const [kids, setKids] = createSignal<Map<string, TreeNode[]>>(new Map());
@@ -3102,7 +3122,7 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
   const [hlHtml, setHlHtml] = createSignal("");
   const [hlPending, setHlPending] = createSignal(false);
   // view mode: "code" (shiki) · "edit" (textarea + save) · "md" (rendered)
-  const [viewMode, setViewMode] = createSignal<"code" | "edit" | "md">("code");
+  const [viewMode, setViewMode] = createSignal<"code" | "edit" | "md" | "media">("code");
   const [editBuf, setEditBuf] = createSignal("");
   const [saving, setSaving] = createSignal(false);
   const isMd = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
@@ -3125,11 +3145,25 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
   };
   onCleanup(() => { hlRun++; });
 
-  const openFileWith = async (node: TreeNode, mode: "code" | "edit" | "md") => {
+  const [media, setMedia] = createSignal<{ path: string; kind: MediaKind } | null>(null);
+
+  const openFileWith = async (
+    node: TreeNode,
+    mode: "code" | "edit" | "md",
+  ) => {
+    // media files stream from the raw endpoint instead of text preview
+    const mk = mediaKindOf(node.path);
+    if (mk) {
+      setPreview({ path: node.path, content: "", binary: true });
+      setMedia({ path: node.path, kind: mk });
+      setViewMode("media");
+      return;
+    }
     try {
       const r = await api(
         `/api/agents/${props.agentId}/file?path=${encodeURIComponent(node.path)}`,
       );
+      setMedia(null);
       setPreview({ path: node.path, content: r.content ?? "", binary: r.binary, truncated: r.truncated });
       setEditBuf(r.content ?? "");
       setViewMode(r.binary ? "code" : mode);
@@ -3177,7 +3211,7 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
         onclick={() => (node.dir ? void toggleDir(node) : void openFileWith(node, "code"))}
         title={node.dir ? `browse ${node.path}` : `preview ${node.path}`}
       >
-        <span class="ficon">{node.dir ? (expanded().has(node.path) ? "▾" : "▸") : "·"}</span>
+        <span class="ficon">{node.dir ? (expanded().has(node.path) ? "▾" : "▸") : ficon(node.name)}</span>
         <span class="fname">{node.name}</span>
         <Show when={!node.dir && node.size !== undefined}>
           <span class="fsize">{fmtK(node.size!)}</span>
@@ -3206,52 +3240,73 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       </div>
       <Show when={preview()}>
         {(pv) => (
-          <Modal title={`🗂 ${pv().path}`} onClose={() => { hlRun++; setPreview(null); }}>
-            <div class="filetoolbar">
-              <Show when={isMd(pv().path) && !pv().binary}>
-                <button class={viewMode() === "md" ? "on" : ""} onclick={() => setViewMode("md")} title="rendered markdown">👁 preview</button>
-              </Show>
-              <button class={viewMode() === "code" ? "on" : ""} onclick={() => { setViewMode("code"); if (!hlHtml()) startHighlighting({ path: pv().path, content: pv().content, truncated: pv().truncated }); }} title="syntax-highlighted source">{"</>"} code</button>
-              <Show when={isEditable(pv())}>
-                <button class={viewMode() === "edit" ? "on" : ""} onclick={() => setViewMode("edit")} title="edit and save back to the workspace">✎ edit</button>
-              </Show>
-            </div>
+          <Modal title={`🗂 ${pv().path}`} onClose={() => { hlRun++; setPreview(null); setMedia(null); }}>
             <Show
-              when={!pv().binary}
+              when={media()}
               fallback={
-                <div class="mono" style="margin:0;color:var(--dim)">
-                  (binary file — inspect it from the terminal)
-                </div>
+                <>
+                  <div class="filetoolbar">
+                    <Show when={isMd(pv().path) && !pv().binary}>
+                      <button class={viewMode() === "md" ? "on" : ""} onclick={() => setViewMode("md")} title="rendered markdown">👁 preview</button>
+                    </Show>
+                    <button class={viewMode() === "code" ? "on" : ""} onclick={() => { setViewMode("code"); if (!hlHtml()) startHighlighting({ path: pv().path, content: pv().content, truncated: pv().truncated }); }} title="syntax-highlighted source">{"</>"} code</button>
+                    <Show when={isEditable(pv())}>
+                      <button class={viewMode() === "edit" ? "on" : ""} onclick={() => setViewMode("edit")} title="edit and save back to the workspace">✎ edit</button>
+                    </Show>
+                  </div>
+                  <Show
+                    when={!pv().binary}
+                    fallback={
+                      <div class="mono" style="margin:0;color:var(--dim)">
+                        (binary file — inspect it from the terminal)
+                      </div>
+                    }
+                  >
+                    <Show when={viewMode() === "edit"} fallback={
+                      <Show when={viewMode() === "md" && isMd(pv().path)} fallback={
+                        <CodePreview
+                          path={pv().path}
+                          content={pv().content}
+                          html={hlHtml()}
+                          pending={hlPending()}
+                          truncated={!!pv().truncated}
+                        />
+                      }>
+                        <div class="content mdpreview" innerHTML={renderMarkdown(pv().content)} />
+                      </Show>
+                    }>
+                      <div class="fileeditor">
+                        <textarea
+                          class="mono"
+                          value={editBuf()}
+                          oninput={(e) => setEditBuf(e.currentTarget.value)}
+                          spellcheck={false}
+                        />
+                        <div class="filerow-actions">
+                          <span class="muted">{fmtK(editBuf().length)} bytes</span>
+                          <button class="savebtn" disabled={saving() || editBuf() === pv().content} onclick={() => void saveFile()}>
+                            {saving() ? "saving…" : "💾 save"}
+                          </button>
+                        </div>
+                      </div>
+                    </Show>
+                  </Show>
+                </>
               }
             >
-              <Show when={viewMode() === "edit"} fallback={
-                <Show when={viewMode() === "md" && isMd(pv().path)} fallback={
-                  <CodePreview
-                    path={pv().path}
-                    content={pv().content}
-                    html={hlHtml()}
-                    pending={hlPending()}
-                    truncated={!!pv().truncated}
-                  />
+              {/* media preview: stream raw bytes with native controls */}
+              <div class="mediapreview">
+                <Show when={media()!.kind === "image"} fallback={
+                  <Show when={media()!.kind === "video"} fallback={
+                    <audio controls src={`/api/agents/${props.agentId}/raw?path=${encodeURIComponent(media()!.path)}`} />
+                  }>
+                    <video controls src={`/api/agents/${props.agentId}/raw?path=${encodeURIComponent(media()!.path)}`} />
+                  </Show>
                 }>
-                  <div class="content mdpreview" innerHTML={renderMarkdown(pv().content)} />
+                  <img src={`/api/agents/${props.agentId}/raw?path=${encodeURIComponent(media()!.path)}`} alt={media()!.path.split("/").pop()} />
                 </Show>
-              }>
-                <div class="fileeditor">
-                  <textarea
-                    class="mono"
-                    value={editBuf()}
-                    oninput={(e) => setEditBuf(e.currentTarget.value)}
-                    spellcheck={false}
-                  />
-                  <div class="filerow-actions">
-                    <span class="muted">{fmtK(editBuf().length)} bytes</span>
-                    <button class="savebtn" disabled={saving() || editBuf() === pv().content} onclick={() => void saveFile()}>
-                      {saving() ? "saving…" : "💾 save"}
-                    </button>
-                  </div>
-                </div>
-              </Show>
+                <div class="meta muted">{media()!.kind} preview</div>
+              </div>
             </Show>
           </Modal>
         )}

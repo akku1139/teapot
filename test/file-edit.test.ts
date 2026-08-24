@@ -86,3 +86,33 @@ test("PUT /api/agents/:id/file — write, create, conflict, binary, escape", asy
   });
   assert.equal(r404.status, 404);
 });
+
+test("GET /raw serves media bytes with correct mime; rejects non-media", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "raw-root-"));
+  const ws = await mkdtemp(path.join(tmpdir(), "ws-"));
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(path.join(ws, "pic.png"), Buffer.from("89504e470d0a1a0a", "hex"));
+  await writeFile(path.join(ws, "note.txt"), "hello");
+  const m = mkMaster(dataDir);
+  const app = buildApp(m);
+  const mkAgent = await app.request("/api/agents", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspace: ws, id: "med", start: false }),
+  });
+  assert.equal(mkAgent.status, 200);
+
+  const img = await app.request("/api/agents/med/raw?path=pic.png");
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get("content-type"), "image/png");
+  const buf = new Uint8Array(await img.arrayBuffer());
+  assert.equal(buf[0], 0x89); // PNG magic
+
+  const txt = await app.request("/api/agents/med/raw?path=note.txt");
+  assert.equal(txt.status, 400); // not a previewable media kind
+
+  const missing = await app.request("/api/agents/med/raw?path=nope.png");
+  assert.equal(missing.status, 400);
+
+  for (const a of m.agents.values()) await a.dispose();
+});
