@@ -346,6 +346,8 @@ export default function App() {
     body: string;
     at: number;
     read: boolean;
+    /** source event id — clicking the notification scrolls to this row */
+    eventId?: string;
   };
   const [notifs, setNotifs] = createSignal<Notif[]>([]);
   const [showNotifs, setShowNotifs] = createSignal(false);
@@ -359,12 +361,14 @@ export default function App() {
   /** events worth telling the operator about, even on another session/tab */
   const maybeNotify = (agentId: string, ev: any) => {
     const who = agents().find((a) => a.id === agentId)?.id ?? agentId;
+    const eid = typeof ev.id === "string" ? ev.id : undefined;
     if (ev.type === "message" && ev.data?.final === true) {
       addNotif({
         agentId,
         kind: "finish",
         title: `${who} finished`,
         body: String(ev.data.content ?? "").slice(0, 300),
+        eventId: eid,
       });
     } else if (ev.type === "question") {
       addNotif({
@@ -372,6 +376,7 @@ export default function App() {
         kind: "question",
         title: `${who} asks a question`,
         body: String(ev.data.question ?? "").slice(0, 300),
+        eventId: eid,
       });
     } else if (ev.type === "error") {
       addNotif({
@@ -379,6 +384,7 @@ export default function App() {
         kind: "error",
         title: `${who} hit an error`,
         body: String(ev.data.message ?? "").slice(0, 300),
+        eventId: eid,
       });
     } else if (ev.type === "progress") {
       addNotif({
@@ -389,7 +395,17 @@ export default function App() {
           .filter(Boolean)
           .join(" · ")
           .slice(0, 300),
+        eventId: eid,
       });
+    }
+  };
+  /** jump the timeline to a specific event row (used by notification clicks) */
+  const jumpToEvent = (eventId: string) => {
+    const el = document.querySelector<HTMLElement>(`[data-eid="${eventId}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("flash-target");
+      setTimeout(() => el.classList.remove("flash-target"), 1600);
     }
   };
 
@@ -2455,17 +2471,31 @@ export default function App() {
             <For each={notifs()}>
               {(n) => (
                 <div
-                  class={"notifitem " + n.kind}
+                  class={"notifitem " + n.kind + (n.read ? " read" : "")}
                   title={`from ${n.agentId}`}
                   onclick={() => {
-                    if (agents().some((a) => a.id === n.agentId)) select(n.agentId);
+                    // mark THIS one read, jump to its agent and scroll the
+                    // timeline to the exact message that raised it
+                    setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+                    if (selected() !== n.agentId && agents().some((a) => a.id === n.agentId)) select(n.agentId);
                     setShowNotifs(false);
+                    if (n.eventId)
+                      // wait for the timeline swap before scrolling
+                      setTimeout(() => jumpToEvent(n.eventId!), selected() !== n.agentId ? 350 : 60);
                   }}
                 >
                   <div class="nhead">
                     <span class="nicon">{n.kind === "finish" ? "✅" : n.kind === "question" ? "❓" : n.kind === "error" ? "⚠️" : "📈"}</span>
                     <span class="ntitle">{n.title}</span>
                     <span class="meta muted">{relTime(new Date(n.at).toISOString())}</span>
+                    <button
+                      class="iconbtn nreadbtn"
+                      title={n.read ? "already read" : "mark as read"}
+                      onclick={(e: MouseEvent) => {
+                        e.stopPropagation();
+                        setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+                      }}
+                    >{n.read ? "✓" : "○"}</button>
                   </div>
                   <Show when={n.body}>
                     <div class="nbody">{truncate(n.body, 160)}</div>
@@ -2836,7 +2866,10 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
   }
 
   return (
-    <div class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "")}>
+    <div
+      class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "")}
+      data-eid={e.id}
+    >
       <Show when={!grouped} fallback={<span style="width:38px" />}>
         <div class="avatar" style={{ background: a.color + "33", border: `1px solid ${a.color}66` }}>{a.icon}</div>
       </Show>

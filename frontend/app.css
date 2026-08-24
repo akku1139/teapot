@@ -664,3 +664,12 @@ body:has(.composer.maximized) .feed { visibility: hidden; }
   font-size: 11px; padding-top: 4px; cursor: default; flex-shrink: 0;
 }
 .msg:hover .grouptime { opacity: .8; }
+
+/* notification items: unread state + per-item read button */
+.notifitem { opacity: 1; }
+.notifitem.read { opacity: .55; }
+.notifitem.read .ntitle { font-weight: 400; }
+.nreadbtn { font-size: 11px; width: auto; padding: 0 6px; flex-shrink: 0; }
+/* highlight for the row a notification jumped to */
+.flash-target { outline: 2px solid var(--acc); border-radius: 8px; transition: outline-color .6s; }
+.msg.flash-target { background: color-mix(in srgb, var(--acc) 12%, transparent); }
