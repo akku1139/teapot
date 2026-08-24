@@ -482,6 +482,41 @@ export class Agent {
     const last = lineage[lineage.length - 1];
     const msgs = rebuildMessagesFrom(lineage);
 
+    // Rebuild lifetime stats from the log: turns/tools/tokens/compactions are
+    // SESSION totals, so a reload must not reset them to zero. Counted over
+    // the whole file (not just the current branch) to match what the runtime
+    // panel showed before the restart.
+    for (const e of own) {
+      if (e.type === "state") {
+        const d = e.data as { detail?: string };
+        if (d.detail === "llm turn start") this.stats.turns++;
+      } else if (e.type === "tool_result") {
+        this.stats.toolCalls++;
+      } else if (e.type === "usage") {
+        const u = e.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+        this.stats.inputTokens += u.inputTokens ?? 0;
+        this.stats.outputTokens += u.outputTokens ?? 0;
+        this.stats.cachedInputTokens += u.cachedInputTokens ?? 0;
+      } else if (e.type === "system_note") {
+        const d = e.data as { event?: string };
+        if (d.event === "context-compacted") this.stats.compactions++;
+      }
+    }
+    // last usage seeds the context gauge right after reload
+    for (let i = own.length - 1; i >= 0; i--) {
+      if (own[i]!.type === "usage") {
+        const u = own[i]!.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+        if (typeof u.inputTokens === "number") {
+          this.lastUsage = {
+            input: u.inputTokens,
+            output: u.outputTokens ?? 0,
+            ...(u.cachedInputTokens ? { cached: u.cachedInputTokens } : {}),
+          };
+          break;
+        }
+      }
+    }
+
     if (msgs.length > 0) {
       this.messages = msgs;
       this.currentBranch = last.branch;
@@ -1075,9 +1110,13 @@ export class Agent {
       }
 
       const m = res.message;
+      // sanitize() fills empty content with "(tool call)" for providers that
+      // reject blank content — that placeholder is request-only and must NOT
+      // reach the timeline as if the agent had said something
+      const isPlaceholder = m.content === "(tool call)" || m.content === "(no content)";
       await this.log.append("message", this.currentSession, this.currentBranch, {
         role: "assistant",
-        content: m.content ?? "",
+        content: isPlaceholder ? "" : (m.content ?? ""),
         toolCalls: m.tool_calls?.map((c) => ({ id: c.id, name: c.function.name })),
         reasoning: res.reasoning,
       });

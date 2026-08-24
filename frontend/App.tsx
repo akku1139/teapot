@@ -465,8 +465,12 @@ export default function App() {
         // a requested progress report is already shown by its progress embed —
         // the log keeps the message (restores need it) but the feed must not
         if (e.data?.progressEcho) return false;
+        // sanitize()'s request-only placeholder leaked into old logs as an
+        // "assistant said (tool call)" message; the tool rows tell that story
+        const c = String(e.data?.content ?? "");
+        if (!e.data?.final && c.trim() === "(tool call)") return false;
         return (
-          String(e.data?.content ?? "").trim() !== "" ||
+          c.trim() !== "" ||
           String(e.data?.reasoning ?? "").trim() !== "" ||
           !!e.data?.final
         );
