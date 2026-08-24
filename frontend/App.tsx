@@ -2290,10 +2290,14 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
       case "write_file": {
         const content = String(d.args?.content ?? "");
         label = argStr("path") || "(no path)";
-        hint = `${content.length} bytes`;
+        hint = `${fmtK(content.length)} bytes`;
+        // content was rendered UNTRUNCATED — a few big write_file calls (the
+        // 100KB+ ones real sessions accumulate) made those chats take seconds
+        // to open and chew CPU on every prepend while scrolling back
         body = (
           <>
-            {codeBlock(content)}
+            {codeBlock(content, 1500)}
+            {content.length > 1500 ? <div class="meta muted">{fmtK(content.length)} bytes — open it from 🗂 files for the full view</div> : null}
             {res ? <div class="meta">{oneLine(out(), 160)}</div> : <div class="meta">writing…</div>}
           </>
         );
@@ -2323,13 +2327,18 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
           .map((l) => l.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)?.[1])
           .filter(Boolean) as string[];
         label = files.length ? `${files.length} file${files.length > 1 ? "s" : ""}: ${oneLine(files.join(", "), 80)}` : "patch";
+        // huge patches rendered one <div> PER LINE with no cap — multi-thousand-
+        // line patches froze the feed. Show the head; the rest is noise here.
+        const MAX_PATCH_LINES = 60;
+        const shown = patchLines.slice(0, MAX_PATCH_LINES);
         body = (
           <>
             <pre class="mono toolbody patch">
-              {patchLines.map((l) => {
+              {shown.map((l) => {
                 const cls = l.startsWith("+") ? " add" : l.startsWith("-") ? " del" : /^\*\*\*|^@@/.test(l) ? " meta" : "";
                 return <div class={"pline" + cls}>{l.length > 240 ? l.slice(0, 240) + "…" : l}</div>;
               })}
+              {patchLines.length > MAX_PATCH_LINES ? <div class="pline meta">… {patchLines.length - MAX_PATCH_LINES} more lines</div> : null}
             </pre>
             {res ? <div class="meta">{oneLine(out().split("\n")[0] ?? "", 140)}{res.data?.ok === false ? " · FAILED" : ""}</div> : <div class="meta">validating…</div>}
           </>
@@ -2512,8 +2521,8 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
         <>
           <Show when={typeof e.data.reasoning === "string" && e.data.reasoning.trim()}>
             <details class="reasoning">
-              <summary>💭 reasoning</summary>
-              <div class="mono">{String(e.data.reasoning)}</div>
+              <summary>💭 reasoning{String(e.data.reasoning).length > 4000 ? ` (${fmtK(String(e.data.reasoning).length)} — truncated)` : ""}</summary>
+              <div class="mono">{truncate(String(e.data.reasoning), 8000)}</div>
             </details>
           </Show>
           <div class="content" innerHTML={renderMarkdownCached(String(e.data.content ?? ""))} />
