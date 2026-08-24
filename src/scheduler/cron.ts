@@ -19,6 +19,13 @@ const BOUNDS: [number, number][] = [
 
 function parseField(part: string, min: number, max: number): Set<number> {
   const out = new Set<number>();
+  const clampOrThrow = (v: number): number => {
+    // out-of-range values used to slip through silently and produce a set
+    // that NEVER matched (e.g. "99 * * * *" ran never) — reject loudly
+    if (!Number.isInteger(v) || v < min || v > max)
+      throw new Error(`bad cron field: ${part} (${min}-${max} expected)`);
+    return v;
+  };
   for (const piece of part.split(",")) {
     const [range, stepStr] = piece.split("/");
     const step = Math.max(1, Number(stepStr ?? 1) || 1);
@@ -26,11 +33,12 @@ function parseField(part: string, min: number, max: number): Set<number> {
       for (let i = min; i <= max; i += step) out.add(i);
     } else if (range.includes("-")) {
       const [a, b] = range.split("-").map(Number);
-      if (Number.isNaN(a) || Number.isNaN(b)) throw new Error(`bad cron field: ${part}`);
+      clampOrThrow(a);
+      clampOrThrow(b);
+      if (a > b) throw new Error(`bad cron field: ${part} (inverted range)`);
       for (let i = a; i <= b; i += step) out.add(i);
     } else {
-      const v = Number(range);
-      if (Number.isNaN(v)) throw new Error(`bad cron field: ${part}`);
+      const v = clampOrThrow(Number(range));
       if (!stepStr || step === 1) {
         out.add(v);
       } else {

@@ -119,9 +119,13 @@ async function api(path: string, opts?: RequestInit) {
   if (!res.ok) {
     // auth gate: surface once so the login overlay can appear
     if (res.status === 401) window.dispatchEvent(new CustomEvent("teapot:unauthorized"));
-    let detail = "";
-    try { detail = (await res.json())?.error ?? ""; } catch { /* not json */ }
-    throw new Error(detail || `${path}: HTTP ${res.status}`);
+    let body: unknown = null;
+    try { body = await res.json(); } catch { /* not json */ }
+    const detail =
+      (body && typeof body === "object" && "error" in body ? String((body as any).error) : "") ||
+      `${path}: HTTP ${res.status}`;
+    // carry the full payload (e.g. a 409's `current` file content) to callers
+    throw Object.assign(new Error(detail), { payload: body });
   }
   return res.json();
 }
@@ -3435,11 +3439,27 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       setPreview({ ...pv, content: editBuf() }); // new baseline for future conflicts
       flashHint(`saved ${pv.path}`);
     } catch (ex) {
-      const msg = (ex as Error).message;
-      if (msg.includes("409") || msg.includes("changed on disk")) {
-        flashHint("file changed on disk — reopen to see the current version");
+      const raw = (ex as { payload?: unknown }).payload;
+      const conflict =
+        raw && typeof raw === "object" && (raw as any).error === "file changed on disk"
+          ? (raw as { current?: string })
+          : null;
+      if (conflict?.current !== undefined) {
+        // offer the fresh disk content instead of throwing away the save
+        const take = confirm(
+          "This file changed on disk since you opened it.\n" +
+            "OK = load the disk version into the editor (your edits are discarded)\n" +
+            "Cancel = keep editing your copy",
+        );
+        if (take) {
+          setEditBuf(conflict.current!);
+          setPreview({ ...pv, content: conflict.current! });
+          flashHint("loaded the current file from disk");
+        } else {
+          flashHint("kept your edits — use Save As via bash to force-write");
+        }
       } else {
-        flashHint(`save failed: ${msg}`);
+        flashHint(`save failed: ${(ex as Error).message}`);
       }
     } finally {
       setSaving(false);

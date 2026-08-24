@@ -656,10 +656,22 @@ export const TOOLS: ToolDef[] = [
       required: ["path", "content"],
     },
     async run(args, ctx) {
+      // content must be a real string: a non-string (object/array from bad
+      // model output) coerced to "[object Object]" or silently truncated —
+      // worse, an undefined slipped past required and WIPED the file
+      if (typeof args.content !== "string") {
+        return {
+          ok: false,
+          result:
+            "content must be a string (got " +
+            (args.content === null ? "null" : typeof args.content) +
+            ") — nothing was written",
+        };
+      }
       const p = safeJoin(ctx.cwd, str(args.path));
       await fs.mkdir(path.dirname(p), { recursive: true });
-      await fs.writeFile(p, str(args.content), "utf8");
-      return { ok: true, result: `wrote ${p} (${String(args.content).length} bytes)` };
+      await fs.writeFile(p, args.content, "utf8");
+      return { ok: true, result: `wrote ${p} (${args.content.length} bytes)` };
     },
   },
   {

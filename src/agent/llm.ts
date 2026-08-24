@@ -240,6 +240,9 @@ export async function chatStream(
         messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         ...(tools.length ? { tools } : {}),
         stream: true,
+        // ask providers to include the final usage chunk in streaming mode
+        // (OpenAI-compatible; harmless where unsupported)
+        stream_options: { include_usage: true },
       },
       { signal },
     );
