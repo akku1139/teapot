@@ -727,3 +727,32 @@ test("no verification contract: finish(goalComplete) marks done without audit", 
   assert.equal(agent.goal.audit, undefined);
   await agent.dispose();
 });
+
+test("stopping mid-bash kills the process group and settles immediately", async (t) => {
+  t.timeout?.(20_000);
+  let n = 0;
+  const chat: ChatFn = async () => {
+    const i = n++;
+    if (i === 0)
+      return reply("running a long command", [
+        tc("b1", "bash", { command: "sleep 30" }),
+      ]);
+    throw new Error("should not reach a second LLM call after stop");
+  };
+  const { agent } = await mkAgent({ chatFn: chat, autoContinue: false });
+  agent.enqueuePrompt("go");
+  agent.start("t");
+  // wait until the bash child is really running
+  await new Promise((r) => setTimeout(r, 600));
+  const t0 = Date.now();
+  agent.stop("user interrupt");
+  await agent.settled();
+  const settleMs = Date.now() - t0;
+  assert.equal(agent.status, "stopped");
+  assert.ok(settleMs < 3_000, `stop must be prompt — took ${settleMs}ms`);
+  // the abort is recorded as the tool result with partial output preserved
+  const events = await readEvents(agent.log.filePath);
+  const tr = events.filter((e) => e.type === "tool_result").at(-1);
+  assert.match(String(tr?.data?.result ?? ""), /ABORTED/);
+  await agent.dispose();
+});

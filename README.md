@@ -18,14 +18,18 @@ Requires Node.js **24+**.
 npm install -g teapot-coding-agent
 ```
 
-### 2. Write a config file
+### 2. Run it
 
 ```sh
-mkdir -p ~/.config/teapot-coding-agent
-nano ~/.config/teapot-coding-agent/config.json
+teapot
 ```
 
-**Minimal setup** (OpenRouter — other providers below):
+→ Open **http://localhost:7788**. A **setup wizard** walks you through
+provider → API key → model → first agent (it writes the config file for
+you) — no hand-editing required.
+
+<details>
+<summary>Prefer writing the config yourself?</summary>
 
 ```json
 {
@@ -43,28 +47,20 @@ nano ~/.config/teapot-coding-agent/config.json
 }
 ```
 
-Prefer copying a template? Grab [`teapot.config.example.json`](teapot.config.example.json).
+Save it at `~/.config/teapot-coding-agent/config.json` (or pass a path as
+the first CLI arg / `$TEAPOT_CONFIG`). A full template lives in
+[`teapot.config.example.json`](teapot.config.example.json). With a config
+present the wizard is skipped and your agents start immediately.
 
-### 3. Run
+</details>
 
-```sh
-teapot
-```
+### 3. Use it
 
-→ Open **http://localhost:7788**. That's it.
-
-### 4. Use it
-
-- Click `#main` in the left panel
+- Click `#main` in the left panel (created by the wizard)
 - Type an instruction in the composer (e.g. "Fix this bug and make the tests pass")
 - The agent reads/writes files, runs bash, and works on its own
 
-| Action | How |
-|---|---|
-| Terminal | `t` |
-| Right panel (goal/progress/runtime) | `d` |
-| Command list | type `/` in the composer |
-| Interrupt the agent | `Esc` |
+Handy keys: `t` terminal · `d` right panel · `/` commands · `Esc` interrupt
 
 ---
 

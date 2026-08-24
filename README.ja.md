@@ -18,14 +18,18 @@ Node.js **24以上** が必要です。
 npm install -g teapot-coding-agent
 ```
 
-### 2. 設定ファイルを書く
+### 2. 起動
 
 ```sh
-mkdir -p ~/.config/teapot-coding-agent
-nano ~/.config/teapot-coding-agent/config.json
+teapot
 ```
 
-**最小構成**(OpenRouterの例 — 他プロバイダは[リファレンス](#-リファレンス)へ):
+→ **http://localhost:7788** を開くと**セットアップウィザード**が走るので、
+プロバイダ → APIキー → モデル → 最初のエージェントの順に入力するだけ。
+configファイルは自動で書かれます(手編集不要)。
+
+<details>
+<summary>自分でconfigを書きたい場合</summary>
 
 ```json
 {
@@ -43,28 +47,19 @@ nano ~/.config/teapot-coding-agent/config.json
 }
 ```
 
-雛形をコピーしてもOK: [`teapot.config.example.json`](teapot.config.example.json)
+保存先: `~/.config/teapot-coding-agent/config.json`(CLI引数や `$TEAPOT_CONFIG` でも可)。
+雛形: [`teapot.config.example.json`](teapot.config.example.json)
+configが存在するとウィザードはスキップされ、エージェントが即座に始動します。
 
-### 3. 起動
+</details>
 
-```sh
-teapot
-```
+### 3. 使う
 
-→ **http://localhost:7788** を開くだけ。
-
-### 4. 使う
-
-- 左パネルの `#main` をクリック
+- ウィザードが作った `#main` を左パネルからクリック
 - 入力欄に日本語で指示(例: 「このバグを直してテストも通して」)
 - エージェントがファイル読み書き・bash実行・テストを自走します
 
-| 操作 | 方法 |
-|---|---|
-| ターミナル | `t` |
-| 右パネル(ゴール/進捗/runtime) | `d` |
-| コマンド一覧 | 入力欄で `/` |
-| エージェント中断 | `Esc` |
+便利なキー: `t` ターミナル · `d` 右パネル · `/` コマンド · `Esc` 中断
 
 ---
 
