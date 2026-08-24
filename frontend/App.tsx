@@ -1,6 +1,8 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect } from "solid-js";
 import { renderMarkdown } from "./md";
 import "@xterm/xterm/css/xterm.css";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 
 /* ---------- types ---------- */
 interface Agent {
@@ -664,83 +666,225 @@ export default function App() {
     }
   });
 
-  /* ---------- human terminal (bottom drawer, xterm.js over WS) ---------- */
+  /* ---------- human terminal (bottom drawer: resizable, tabs, split) ---------- */
   const [termOpen, setTermOpen] = createSignal(localStorage.getItem("teapot.term") === "1");
   const toggleTerm = () => {
     const next = !termOpen();
     setTermOpen(next);
     localStorage.setItem("teapot.term", next ? "1" : "0");
   };
-  let termHost: HTMLDivElement | null = null;
-  let xterm: any = null;
-  let fitAddon: any = null;
-  let termWs: WebSocket | null = null;
-  let ro: ResizeObserver | null = null;
-  let lastResize = { cols: 0, rows: 0 };
-  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function closeTerm() {
-    ro?.disconnect();
-    ro = null;
-    termWs?.close();
-    termWs = null;
-    xterm?.dispose();
-    xterm = null;
-    fitAddon = null;
+  type TermTab = { key: string; agentId: string; title: string };
+  type TermSession = {
+    el: HTMLDivElement;
+    term: any;
+    fit: any;
+    ws: WebSocket;
+    ro: ResizeObserver | null;
+  };
+  const [termTabs, setTermTabs] = createSignal<TermTab[]>([]);
+  // each pane holds an index into termTabs (-1 = empty slot)
+  const [paneL, setPaneL] = createSignal(0);
+  const [paneR, setPaneR] = createSignal(-1);
+  const [splitView, setSplitView] = createSignal(false);
+  const [focusedPane, setFocusedPane] = createSignal(0);
+  const [termHeight, setTermHeight] = createSignal(
+    Number(localStorage.getItem("teapot.termH")) ||
+      Math.max(220, Math.round(window.innerHeight * 0.35)),
+  );
+  const liveTerms = new Map<string, TermSession>();
+  const paneHosts: (HTMLDivElement | null)[] = [null, null];
+
+  /** the tab currently shown in the focused pane */
+  const activeTab = () =>
+    termTabs()[focusedPane() === 0 ? paneL() : paneR()] ?? null;
+
+  function focusTab(i: number) {
+    const tab = termTabs()[i];
+    if (!tab) return;
+    const mine = focusedPane() === 0 ? paneL : paneR;
+    const other = focusedPane() === 0 ? paneR : paneL;
+    if (other() === i) {
+      // it's in the other pane — swap so both stay visible
+      focusedPane() === 0 ? setPaneR(mine()) : setPaneL(mine());
+    }
+    mine() === i ? void i : (focusedPane() === 0 ? setPaneL(i) : setPaneR(i));
   }
-  function openTerm(agentId: string) {
-    closeTerm();
-    if (!termHost) return;
-    Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]).then(
-      ([{ Terminal }, { FitAddon }]) => {
-        const t = new Terminal({
-          cursorBlink: true,
-          fontSize: 12.5,
-          fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
-          // follow the active theme via CSS variables (fallback = dark)
-          theme: themeColors(),
-        });
-        const f = new FitAddon();
-        t.loadAddon(f);
-        t.open(termHost!);
-        f.fit();
-        xterm = t;
-        fitAddon = f;
-        const proto = location.protocol === "https:" ? "wss://" : "ws://";
-        const w = new WebSocket(`${proto}${location.host}/api/agents/${agentId}/term${wsTokenQuery()}`);
-        termWs = w;
-        w.onmessage = (m) => {
-          const msg = JSON.parse(m.data);
-          if (msg.kind === "data") t.write(msg.data);
-          else if (msg.kind === "exit") t.write(`\r\n\x1b[2m[terminal exited ${msg.code ?? ""}]\x1b[0m\r\n`);
-        };
-        t.onData((d) => {
-          if (w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: d }));
-        });
-        const pushResize = () => {
-          try { f.fit(); } catch { /* host hidden */ }
-          const { cols, rows } = t;
-          if ((cols !== lastResize.cols || rows !== lastResize.rows) && w.readyState === WebSocket.OPEN) {
-            lastResize = { cols, rows };
-            w.send(JSON.stringify({ kind: "resize", cols, rows }));
-          }
-        };
-        ro = new ResizeObserver(() => {
-          if (resizeTimer) clearTimeout(resizeTimer);
-          resizeTimer = setTimeout(pushResize, 300); // debounce: stty injection is visible
-        });
-        ro.observe(termHost!);
-        setTimeout(pushResize, 50);
-      },
-    );
+
+  const addFromSelected = () => addTab();
+
+  function addTab(agentId?: string) {
+    const who = agentId ?? selected();
+    if (!who) return;
+    const perAgent = termTabs().filter((t) => t.agentId === who).length;
+    if (perAgent >= 2) {
+      flashHint(`max 2 shells per agent (${who})`);
+      return;
+    }
+    const n = termTabs().length + 1;
+    const tab: TermTab =
+      perAgent === 0
+        ? { key: `${who}`, agentId: who, title: who }
+        : { key: `${who}#${perAgent + 1}`, agentId: who, title: `${who}·${perAgent + 1}` };
+    setTermTabs((list) => [...list, tab]);
+    // land in the focused pane (swap if the other pane shows it already)
+    if (focusedPane() === 0) setPaneL(termTabs().length); else setPaneR(termTabs().length);
+    void n;
   }
+
+  function closeTab(i: number) {
+    const tab = termTabs()[i];
+    if (!tab) return;
+    const s = liveTerms.get(tab.key);
+    if (s) {
+      s.ro?.disconnect();
+      try { s.ws.close(); } catch { /* gone */ }
+      s.term.dispose();
+      liveTerms.delete(tab.key);
+    }
+    const rest = termTabs().filter((_, j) => j !== i);
+    setTermTabs(rest);
+    const shift = (idx: number) => (idx === i ? -1 : idx > i ? idx - 1 : idx);
+    setPaneL((p) => Math.min(shift(p), rest.length - 1));
+    setPaneR((p) => (p === -1 ? -1 : Math.min(shift(p), rest.length - 1)));
+  }
+
+  function disposeAllTerms() {
+    for (const [, s] of liveTerms) {
+      s.ro?.disconnect();
+      try { s.ws.close(); } catch { /* gone */ }
+      s.term.dispose();
+    }
+    liveTerms.clear();
+  }
+
+  /** create (and mount) a session lazily; moving panes just re-appends its el */
+  function ensureSession(tab: TermTab, host: HTMLElement): TermSession {
+    let s = liveTerms.get(tab.key);
+    if (!s) {
+      const el = document.createElement("div");
+      el.className = "termsession";
+      host.appendChild(el);
+      const t = new Terminal({
+        cursorBlink: true,
+        fontSize: 12.5,
+        fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
+        theme: themeColors(),
+      });
+      const f = new FitAddon();
+      t.loadAddon(f);
+      t.open(el);
+      const proto = location.protocol === "https:" ? "wss://" : "ws://";
+      const w = new WebSocket(`${proto}${location.host}/api/agents/${tab.agentId}/term${wsTokenQuery()}`);
+      w.onmessage = (m) => {
+        const msg = JSON.parse(m.data);
+        if (msg.kind === "data") t.write(msg.data);
+        else if (msg.kind === "exit") t.write(`\r\n\x1b[2m[terminal exited ${msg.code ?? ""}]\x1b[0m\r\n`);
+      };
+      t.onData((d: string) => {
+        if (w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: d }));
+      });
+      let last = { cols: 0, rows: 0 };
+      const resizeTimer: ReturnType<typeof setTimeout>[] = [];
+      const pushResize = () => {
+        try { f.fit(); } catch { /* hidden */ }
+        if ((t.cols !== last.cols || t.rows !== last.rows) && w.readyState === WebSocket.OPEN) {
+          last = { cols: t.cols, rows: t.rows };
+          w.send(JSON.stringify({ kind: "resize", cols: t.cols, rows: t.rows }));
+        }
+      };
+      const ro = new ResizeObserver(() => {
+        if (resizeTimer[0]) clearTimeout(resizeTimer[0]);
+        resizeTimer[0] = setTimeout(pushResize, 250);
+      });
+      ro.observe(el);
+      setTimeout(pushResize, 60);
+      s = { el, term: t, fit: f, ws: w, ro };
+      liveTerms.set(tab.key, s);
+    } else if (s.el.parentElement !== host) {
+      host.appendChild(s.el); // moved between panes — xterm DOM survives the move
+      setTimeout(() => { try { s!.fit(); } catch { /* */ } }, 30);
+    }
+    return s;
+  }
+
+  function mountPane(idx: number) {
+    const host = paneHosts[idx];
+    if (!host) return;
+    const tab = termTabs()[idx === 0 ? paneL() : paneR()];
+    if (!tab) {
+      host.replaceChildren();
+      return;
+    }
+    const s = ensureSession(tab, host);
+    if (focusedPane() === (idx === 0 ? 0 : 1)) {
+      requestAnimationFrame(() => {
+        try { s.fit(); s.term.focus(); } catch { /* */ }
+      });
+    }
+  }
+
+  // (re)mount both panes whenever layout inputs change
   createEffect(() => {
-    const id = selected();
-    const open = termOpen();
-    if (!open || !id) closeTerm();
-    else requestAnimationFrame(() => id && openTerm(id));
+    void termTabs();
+    void splitView();
+    void paneL();
+    void paneR();
+    void termHeight();
+    requestAnimationFrame(() => {
+      mountPane(0);
+      if (splitView()) mountPane(1);
+    });
   });
-  onCleanup(closeTerm);
+
+  // opening the drawer ensures a shell for the selected agent
+  createEffect(() => {
+    if (!termOpen()) return;
+    const id = selected();
+    if (!id) return;
+    if (!termTabs().some((t) => t.agentId === id) && termTabs().length === 0) addTab(id);
+    else if (!termTabs().some((t) => t.agentId === id)) {
+      // another agent — focus its tab in the active pane if present
+      const i = termTabs().findIndex((t) => t.agentId === id);
+      if (i >= 0) focusTab(i);
+    }
+  });
+
+  // drawer height drag (double-click resets)
+  const startGrip = (e: PointerEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = termHeight();
+    const move = (ev: PointerEvent) => {
+      const h = Math.min(Math.max(startH - (ev.clientY - startY), 140), Math.round(window.innerHeight * 0.85));
+      setTermHeight(h);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      localStorage.setItem("teapot.termH", String(termHeight()));
+      requestAnimationFrame(() => { mountPane(0); if (splitView()) mountPane(1); });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const toggleSplit = () => {
+    const next = !splitView();
+    setSplitView(next);
+    if (next && paneR() === -1) {
+      // seed the second pane with any other tab (or leave it as an empty slot)
+      const other = termTabs().findIndex((_, i) => i !== paneL());
+      setPaneR(other >= 0 ? other : -1);
+    }
+  };
+
+  onCleanup(disposeAllTerms);
+
+  // legacy single-host refs kept for pane mounting
+  const setPaneHost = (idx: number) => (el: HTMLDivElement) => {
+    paneHosts[idx] = el;
+  };
 
   onMount(() => {
     loadCfg();
@@ -1205,13 +1349,48 @@ export default function App() {
             </button>
           </Show>
 
-          <Show when={termOpen() && sel()}>
-            <div class="termdrawer">
+          <Show when={termOpen()}>
+            <div class="termdrawer" style={{ height: `${termHeight()}px` }}>
+              <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
               <div class="termbar">
-                <span>⌨ terminal — <span class="mono">{sel()!.workspace}</span></span>
-                <button class="iconbtn" title="close terminal (t)" onclick={toggleTerm}>✕</button>
+                <div class="termtabs">
+                  <For each={termTabs()}>
+                    {(t, i) => (
+                      <span
+                        class={"termtab" + (focusedPane() === 0 && paneL() === i() ? " active" : "") + (splitView() && focusedPane() === 1 && paneR() === i() ? " active" : "")}
+                        onclick={() => focusTab(i())}
+                        title={`${t.title} — click to show in focused pane`}
+                      >
+                        ⌨ {t.title}
+                        <button class="tabx" onclick={(e) => { e.stopPropagation(); closeTab(i()); }} title="close this shell">✕</button>
+                      </span>
+                    )}
+                  </For>
+                  <button class="iconbtn" title="new shell in this workspace (max 2 per agent)" onclick={addFromSelected}>＋</button>
+                </div>
+                <div style="display:flex;gap:4px;align-items:center">
+                  <span class="muted mono" style="flex:1;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                    {activeTab() ? agents().find((a) => a.id === activeTab()!.agentId)?.workspace.split("/").filter(Boolean).pop() : sel()?.workspace}
+                  </span>
+                  <button class="iconbtn" title={splitView() ? "single pane" : "split panes (50/50)"} onclick={toggleSplit}>◫</button>
+                  <button class="iconbtn" title="close terminal (t)" onclick={toggleTerm}>✕</button>
+                </div>
               </div>
-              <div class="termhost" ref={(el) => (termHost = el)} />
+              <div class="termbody" classList={{ split: splitView() }}>
+                <div class="termpane" classList={{ focused: focusedPane() === 0 }} onpointerdown={() => setFocusedPane(0)} ref={setPaneHost(0)}>
+                  <Show when={!activeTab() || (focusedPane() === 0 && paneL() === -1)}>
+                    <div class="termempty muted">no shell here — ＋ opens one, tabs fill the focused pane</div>
+                  </Show>
+                </div>
+                <Show when={splitView()}>
+                  <div class="termsplit" />
+                  <div class="termpane" classList={{ focused: focusedPane() === 1 }} onpointerdown={() => setFocusedPane(1)} ref={setPaneHost(1)}>
+                    <Show when={paneR() === -1 || termTabs().length <= paneR()}>
+                      <div class="termempty muted">no shell here — click a tab or ＋ to add</div>
+                    </Show>
+                  </div>
+                </Show>
+              </div>
             </div>
           </Show>
 
