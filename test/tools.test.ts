@@ -369,3 +369,23 @@ test("read_url extracts readable text from a local page (and caches it)", async 
     server.close();
   }
 });
+
+test("apply_patch rejects \\u0000-mangled patches with actionable guidance", async () => {
+  const ctx: ToolContext = {
+    cwd: await mkdtemp(path.join(tmpdir(), "ap-")),
+    defaultTimeoutMs: 5_000,
+    maxOutputBytes: 10_000,
+  };
+  // real-world failure (study-blog session): the model's LaTeX backslashes
+  // arrived as "\u0000" — applying verbatim writes broken source and the
+  // repair attempts then corrupted unrelated lines
+  const patch =
+    '*** Begin Patch\n*** Add File: t.ts\n+x = "$\\u0000sqrt{12}$";\n*** End Patch';
+  const r = await executeTool("apply_patch", JSON.stringify({ patch }), ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.result, /\\u0000/);
+  assert.match(r.result, /re-emit/); // tells the model what to do instead
+  // nothing was written
+  const { access } = await import("node:fs/promises");
+  await assert.rejects(access(`${ctx.cwd}/t.ts`));
+});

@@ -295,6 +295,22 @@ function parsePatch(patch: string): PatchOp[] | string {
   }
   const lines = text.split("\n").map((l) => l.replace(/\r$/, ""));
   if (lines[0]?.trim() !== "*** Begin Patch") return `invalid patch: The first line must be '*** Begin Patch'`;
+
+  // Backslash-corruption tripwire: models occasionally emit "\u0000" where a
+  // literal backslash belonged (a provider-side JSON escaping failure, seen
+  // live as 90× "\u0000sqrt{12}" in a LaTeX-heavy patch). Applying that
+  // verbatim writes broken source; the model then burns turns repairing the
+  // file (or discards its own work). Reject with an actionable message —
+  // retrying the SAME patch won't help, so say what will.
+  if (text.includes("\\u0000")) {
+    const count = (text.match(/\\u0000/g) ?? []).length;
+    return (
+      `invalid patch: contains ${count} × "\\u0000" — this is mangled backslash output, not real content. ` +
+      `Your escaping was corrupted in transit. Do NOT re-send the same patch and do NOT try to fix the file afterward; ` +
+      `instead re-emit the patch with proper backslashes (e.g. \\sqrt), keeping it otherwise identical. ` +
+      `If \\u0000 persists across retries, use write_file for new content or bash+python for edits instead.`
+    );
+  }
   if (lines[lines.length - 1]?.trim() !== "*** End Patch")
     return `invalid patch: The last line must be '*** End Patch'`;
 
