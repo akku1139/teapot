@@ -1447,12 +1447,6 @@ export default function App() {
             </Show>
           </div>
 
-          <Show when={!atBottom() || missed() > 0}>
-            <button class="jump" onclick={() => scrollBottom(true)}>
-              ↓ {missed() > 0 ? `${missed()} new message${missed() > 1 ? "s" : ""}` : "jump to present"}
-            </button>
-          </Show>
-
           <Show when={termOpen()}>
             <div class="termdrawer" style={{ height: `${termHeight()}px` }}>
               <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
@@ -1499,6 +1493,11 @@ export default function App() {
           </Show>
 
           <div class="composer">
+            <Show when={!atBottom() || missed() > 0}>
+              <button class="jump" onclick={() => scrollBottom(true)}>
+                ↓ {missed() > 0 ? `${missed()} new message${missed() > 1 ? "s" : ""}` : "jump to present"}
+              </button>
+            </Show>
             <Show when={suggestions().length > 0}>
               <div class="cmds">
                 <For each={suggestions()}>

@@ -301,9 +301,9 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 
 /* jump-to-present pill */
 .jump {
-  /* anchored to the composer's top edge — grows UPWARD from it, so an
-     expanded (multi-line) input can never cover the button */
-  position: absolute; bottom: calc(100% - 18px); left: 50%; transform: translateX(-50%);
+  /* lives INSIDE the composer wrapper, pinned to its top edge — grows
+     UPWARD from it, so an expanded (multi-line) input can never cover it */
+  position: absolute; top: -34px; left: 50%; transform: translateX(-50%);
   background: var(--acc); color: #fff; border: none; border-radius: 999px;
   padding: 6px 14px; cursor: pointer; font-size: 12.5px; font-weight: 600;
   box-shadow: 0 4px 14px #0008; z-index: 2;
