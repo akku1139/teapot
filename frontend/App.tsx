@@ -255,6 +255,8 @@ export default function App() {
     if (modelDraft()) setModelDraft(""); // clear stale draft on switch
   });
   // autoscroll: follow the tail only while the reader is already at the bottom
+  const MAX_COMPOSER_H = 360; // ~15 lines expanded (was ~8 lines / 160px)
+  const [composerMaximized, setComposerMaximized] = createSignal(false);
   const [atBottom, setAtBottom] = createSignal(true);
   const [missed, setMissed] = createSignal(0);
   const [live, setLive] = createSignal<{ text: string; reasoning: string } | null>(null);
@@ -1332,13 +1334,23 @@ export default function App() {
   let composerEl: HTMLTextAreaElement | undefined;
   const autosizeComposer = () => {
     if (!composerEl) return;
+    // Suppress scroll-event processing while we resize the input: the
+    // relayout fires a feed onscroll whose nearBottom() result flips with
+    // every keystroke at the boundary, blinking the jump pill per character.
+    // The flag also keeps follow mode pinned through the relayout.
+    suppressScrollEval = true;
+    const wasFollowing = atBottom();
     composerEl.style.height = "auto";
-    composerEl.style.height = `${Math.min(composerEl.scrollHeight, 160)}px`;
-    // When the input grows/shrinks the feed viewport resizes under us. In
-    // follow mode the bottom line must stay pinned through that relayout —
-    // otherwise typing a long prompt visually "scrolls away" from the tail.
-    if (atBottom()) requestAnimationFrame(() => scrollBottom(true));
+    composerEl.style.height = composerMaximized()
+      ? "" // CSS takes over: .composer.maximized textarea fills the column
+      : `${Math.min(composerEl.scrollHeight, MAX_COMPOSER_H)}px`;
+    requestAnimationFrame(() => {
+      const f = feedEl();
+      if (wasFollowing && f) f.scrollTop = f.scrollHeight;
+      suppressScrollEval = false;
+    });
   };
+  let suppressScrollEval = false;
   createEffect(() => {
     draft(); // re-run on typing AND after send() clears the draft
     autosizeComposer();
@@ -1705,6 +1717,7 @@ export default function App() {
           </header>
 
           <div class="feed" onscroll={(e) => {
+            if (suppressScrollEval) return; // programmatic resize, not user
             const el = e.currentTarget;
             const nb = nearBottom();
             if (nb && missed()) setMissed(0);
@@ -1832,7 +1845,7 @@ export default function App() {
             </div>
           </Show>
 
-          <div class="composer">
+          <div class={"composer" + (composerMaximized() ? " maximized" : "")}>
             <Show when={!atBottom() || missed() > 0}>
               <button class="jump" onclick={() => scrollBottom(true)}>
                 ↓ {missed() > 0 ? `${missed()} new message${missed() > 1 ? "s" : ""}` : "jump to present"}
@@ -1917,6 +1930,18 @@ export default function App() {
                   fork ctx
                 </label>
               </Show>
+              <button
+                type="button"
+                class="iconbtn maxbtn"
+                title={composerMaximized() ? "restore composer (hide timeline)" : "maximize composer — hide the timeline and fill the main column"}
+                onclick={() => {
+                  const next = !composerMaximized();
+                  setComposerMaximized(next);
+                  // re-run autosize under the new regime, then keep the feed
+                  // pinned / restored correctly across the relayout
+                  requestAnimationFrame(() => autosizeComposer());
+                }}
+              >{composerMaximized() ? "⤡" : "⤢"}</button>
               <button type="submit">send</button>
             </form>
             <div class="hint">

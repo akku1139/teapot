@@ -616,3 +616,15 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
 .mediapreview img { max-width: 100%; max-height: 65vh; border-radius: 8px; background: var(--bg-darkest); }
 .mediapreview video { max-width: 100%; max-height: 65vh; border-radius: 8px; background: #000; }
 .mediapreview audio { width: 100%; }
+
+/* maximized composer: input takes over the whole main column */
+.composer.maximized { position: absolute; inset: 0; z-index: 5; background: var(--bg-dark); padding: 16px; }
+.composer.maximized .feed,
+body:has(.composer.maximized) .feed { visibility: hidden; }
+.composer.maximized form { flex: 1; height: 100%; }
+.composer.maximized textarea {
+  height: 100% !important; /* overrides autosize — maximize owns the size */
+  max-height: none;
+  resize: none;
+}
+.maxbtn { font-size: 12px; }

@@ -1,301 +1,294 @@
 # teapot 🫖
 
-A lightweight harness for running many AI coding agents continuously — simpler
-and lighter than existing harnesses. No TUI. One small web server, a browser
-tab, and any number of long-running agents.
+**複数のAIコーディングエージェントを、ブラウザから常駐・並列運用する軽量ハーネス**
 
-## Design principles
+> 5分で試す → [クイックスタート](#-クイックスタート) · 詳細は[リファレンス](#-リファレンス)へ
 
-- **TypeScript + Node.js**, small runtime dependency set (`hono`, `openai`,
-  `@hono/node-server`, `ws`, `zod`, `@mozilla/readability` + `happy-dom` for
-  `read_url`). Frontend-only libraries (SolidJS, xterm.js, shiki) are
-  devDependencies — they're compiled into the static bundle under `public/`
-  and never touch the server's runtime install.
-- **Idle cost ≈ 0**: no polling loops; everything is event-driven or driven by
-  one 15-second scheduler tick. Verified: master sits at ~0% CPU when idle.
-- **No TUI** — Discord-style chat UI built with **SolidJS + Vite**
-  (`frontend/`, built to `public/`): agents as channels, events flowing as chat
-  messages, tool calls as compact embeds. Markdown is rendered by a hand-written,
-  XSS-safe renderer (`frontend/md.js`)
-- **Integrated terminal** — humans get an interactive shell (xterm.js over
-  WebSocket) inside the selected agent's workspace: inspect what the agent
-  did, run tests, fix things alongside it. Zero native dependencies — the PTY
-  comes from util-linux `script` when available (colors, line editing,
-  ctrl+c), with a plain-pipe fallback elsewhere.
-- **Human-readable persistence** — append-only JSONL event logs you can read
-  with `cat` / `jq`; goal & memory as plain Markdown files in git
+---
 
-## Quick start
+## 🚀 クイックスタート
 
-Requires Node.js **>= 24** (TypeScript is executed natively in dev mode).
+### 1. インストール
 
-### Install globally from npm
+Node.js **24以上**が必要です。
 
 ```sh
 npm install -g teapot-coding-agent
-teapot
-# open http://localhost:7788 — the first-run wizard walks you through
-# provider → API key → model → first agent (writes config.json for you)
 ```
 
-The global install puts a `teapot` binary on your PATH (it serves the compiled
-server plus the pre-built web UI — no build step, no repo checkout needed).
-Prefer hand-writing the config? Skip the wizard and drop an edited copy of
-[`teapot.config.example.json`](teapot.config.example.json) at the path below.
-Alternatives:
+### 2. 設定ファイルを書く
 
 ```sh
-npx teapot-coding-agent                    # run without installing
-teapot --port 8080                         # CLI flags: --port/-p, --config/-c
-teapot ~/my-config.json                    # explicit config path
-TEAPOT_PORT=8080 teapot                    # env overrides work as usual
-```
-
-### Run from a checkout (development)
-
-```sh
-pnpm install
 mkdir -p ~/.config/teapot-coding-agent
-cp teapot.config.example.json ~/.config/teapot-coding-agent/config.json  # edit it
-pnpm dev            # or: pnpm build && pnpm start
-# open http://localhost:7788
+nano ~/.config/teapot-coding-agent/config.json
 ```
 
-Config lookup order: CLI arg → `$TEAPOT_CONFIG` →
-`~/.config/teapot-coding-agent/config.json` → `./teapot.config.json` (legacy).
-Data (event logs) goes to `~/.local/share/teapot-coding-agent` by default.
-Env overrides: `TEAPOT_PORT`, `TEAPOT_API_KEY`, `TEAPOT_BASE_URL`,
-`TEAPOT_MODEL`, `TEAPOT_CONFIG_DIR`, `TEAPOT_DATA_DIR`.
+**最小構成**(OpenRouterの例 — 他プロバイダは下の表へ):
 
-## Multiple providers
+```json
+{
+  "providers": {
+    "openrouter": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "sk-or-あなたのキー",
+      "model": "anthropic/claude-sonnet-4"
+    }
+  },
+  "defaultProvider": "openrouter",
+  "agents": [
+    { "id": "main", "workspace": "/home/you/my-project" }
+  ]
+}
+```
 
-Agents are matched to named OpenAI-compatible providers:
+雛形をコピーして編集してもOK:
+[`teapot.config.example.json`](teapot.config.example.json)
+
+### 3. 起動
+
+```sh
+teapot
+```
+
+→ **http://localhost:7788** を開くだけ。
+
+### 4. 使う
+
+- 左パネルの `#main` をクリック
+- 下の入力欄に日本語で指示(例: 「このバグを直してテストも通して」)
+- エージェントがファイル読み書き・bash実行・テストを自走します
+
+| 操作 | 方法 |
+|---|---|
+| ターミナル | `t` |
+| 右パネル(ゴール/進捗/runtime) | `d` |
+| コマンド一覧 | 入力欄で `/` |
+| エージェント中断 | `Esc` |
+
+---
+
+## 🤔 これは何?
+
+1行でいうと: **「OpenAI互換APIを使って、複数の自律コーディングAIをブラウザから常駐運用するサーバー」**
+
+```text
+├─ agent: android  ── ~/projects/android-app
+├─ agent: kernel   ── ~/projects/kernel
+└─ agent: web      ── ~/projects/film-sims-web
+```
+
+各エージェントは独立したワークスペースを持ち、Discord風UIのチャンネルとして並列稼働します。Claude CodeやCodex CLIのラッパーではなく、**teapot自身がエージェントループ(read_file / edit_file / apply_patch / bash / read_url / メモリ / スキル)を実装**しています。
+
+### どんな時に使う?
+
+- 「このリポジトリのバグを全部潰してテスト通るまで直して」のような**長時間自走タスク**
+- プロジェクトごとに**別モデル**を使い分け(重い作業はSonnet、レビューはローカルQwen等)
+- 進捗・ゴール・タスクを**ブラウザで監視**しながら別作業をする
+
+### 既存ツールとの違い
+
+| | teapot | Claude Code等のCLI |
+|---|---|---|
+| 形態 | 常駐サーバー+Web UI | 対話型CLI |
+| 複数エージェント | ✅ 同時並列 | 基本1セッション |
+| モデル混在 | ✅ エージェント毎に指定 | 固定 |
+| 長時間継続 | ✅ JSONLログから自動復元 | セッション切替時の手順が必要 |
+| 定期タスク(cron) | ✅ 15秒tick | ❌ |
+
+---
+
+## 🔧 主な機能
+
+<details>
+<summary><b>ゴール & 自律ループ</b>(クリックで展開)</summary>
+
+ゴールを設定すると auto-continue がラウンド終了後も継続判断し、完了報告(`finish`)にはオプションで**検証契約+独立監査**を挟めます:
+
+```text
+ゴール: 「認証モジュールにアカウント削除機能を追加」
+verify: 「npm test が全件通る / READMEにエンドポイント追記」
+         ↓ finish時
+独立監査 → approved なら done / changes-required ならギャップを指摘して再開
+```
+
+</details>
+
+<details>
+<summary><b>サブエージェント</b></summary>
+
+`@persona タスク` のメンションでサブエージェントをspawn。親の会話をfork参照できるのでプレフィックスキャッシュが温かいまま。`wait_children` で子の完了を待機し、完了レポートが親のタイムラインに届きます。ネスト上限は `maxSpawnDepth`(既定3)。
+
+</details>
+
+<details>
+<summary><b>メモリ / タスクリスト / スキル</b></summary>
+
+- **memory.md** — エージェントの永続メモ(set_memory / get_memory)
+- **todo.md** — オペレーターと共有するチェックリスト。項目単位の更新APIあり
+- **skills** — 定型手順のプレイブック。グローバル(`~/.config/teapot-coding-agent/skills/`)またはワークスペース単位で保存され、ワークスペース版が優先
+
+</details>
+
+<details>
+<summary><b>定期タスク(cron)</b></summary>
+
+```json
+{ "tasks": [{ "id": "nightly", "agent": "main",
+              "schedule": "0 3 * * *", "prompt": "git statusとテスト結果を確認して報告" }] }
+```
+
+</details>
+
+<details>
+<summary><b>統合ターミナル</b></summary>
+
+`t` でエージェントのワークスペース内に対話シェル(xterm.js over WebSocket)。PTYはutil-linux `script` 経由(無ければplain pipe)。ネイティブ依存ゼロ。
+
+</details>
+
+<details>
+<summary><b>ファイルツリー & プレビュー/編集</b></summary>
+
+右パネルの 🗂 files からワークスペースを閲覧。コードはshikiシンタックスハイライト、`.md` はレンダープレビュー、画像/動画/音声はインライン再生、テキストはその場で編集して保存(競合時は409で検知)。
+
+</details>
+
+<details>
+<summary><b>コンテキスト管理</b></summary>
+
+トークン予算(既定: ウィンドウの75%、未指定時96k)を超えると古いターンをLLM要約で圧縮。ゴール/メモリ/スキルは別ファイル保持なので、サーバー再起動や翌日の再開でも文脈が生きます。
+
+</details>
+
+---
+
+## ⚠️ セキュリティ(読んでください)
+
+エージェントは `bash` とファイル書き換えを持つため、`rm` や `npm install` も実行できます。
+
+- **専用Linuxユーザーでの運用を想定**しています
+- 渡す前に `git commit` しておくのが安全
+- workspace外へのファイル操作は制限されます(safeJoin)
+- 既定ではlocalhostのみlisten。LAN公開する場合は **必ず** `--host 0.0.0.0` と同時に `TEAPOT_API_TOKEN`(またはconfigの `password`)を設定
+
+```sh
+TEAPOT_API_TOKEN=mysecret teapot --host 0.0.0.0 --port 7788
+```
+
+---
+
+<a id="-リファレンス"></a>
+## 📖 リファレンス
+
+<details>
+<summary><b>設定リファレンス</b></summary>
+
+| キー | 既定 | 説明 |
+|---|---|---|
+| `port` | 7788 | listenポート(env `TEAPOT_PORT`, CLI `--port/-p`) |
+| `host` | 127.0.0.1 | bind アドレス(env `TEAPOT_HOST`, CLI `--host`; `0.0.0.0`=LAN公開) |
+| `dataDir` | `~/.local/share/teapot-coding-agent` | セッションログ等(env `TEAPOT_DATA_DIR`) |
+| `providers.<name>` | — | `{ baseUrl, apiKey, model? }` のOpenAI互換エンドポイント |
+| `defaultProvider` | — | agent未指定時のプロバイダ |
+| `agents[].id` | 必須 | URLキー兼表示名 |
+| `agents[].workspace` | 必須 | 作業ディレクトリ |
+| `agents[].provider` / `model` | 既定値 | エージェント個別の上書き |
+| `agents[].contextWindowTokens` | 自動推定 | モデルのコンテキスト窓(UIゲージ・compact派生に使用) |
+| `agents[].readOnly` | false | trueで書き込み系ツールを封印 |
+| `agents[].autoContinue` | true | ラウンド後にゴールへ継続 |
+| `contextTokenBudget` | 派生 | compact開始閾値(k単位ではない生トークン数). null/未設定=75%派生を推奨 |
+| `maxSpawnDepth` | 3 | サブエージェントのネスト上限 |
+| `password` | — | API認証(env `TEAPOT_API_TOKEN` が優先) |
+| `tasks[]` | — | cronタスク `{ id, agent, schedule, prompt }` |
+
+設定の探索順: CLI引数 → `$TEAPOT_CONFIG` → `~/.config/teapot-coding-agent/config.json` → `./teapot.config.json`
+
+</details>
+
+<details>
+<summary><b>複数プロバイダの併用</b></summary>
 
 ```jsonc
 {
   "providers": {
     "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-..." },
-    "orcarouter": { "baseUrl": "https://api.orcarouter.ai/v1", "apiKey": "sk-orca-...", "model": "orcarouter/auto" },
-    "local":      { "baseUrl": "http://localhost:8080/v1", "apiKey": "llama.cpp", "model": "local" }
+    "local":      { "baseUrl": "http://localhost:8080/v1", "apiKey": "llama.cpp" }
   },
   "defaultProvider": "openrouter",
   "agents": [
-    { "id": "alpha", "workspace": "workspaces/alpha" },                          // default provider
-    { "id": "beta",  "workspace": "workspaces/beta", "provider": "local" },      // local model
-    { "id": "gamma", "workspace": "workspaces/gamma", "provider": "openrouter",
-      "model": "anthropic/claude-sonnet-4" }                                     // per-agent model
+    { "id": "coder",    "workspace": "~/proj", "model": "anthropic/claude-sonnet-4" },
+    { "id": "reviewer", "workspace": "~/proj", "provider": "local" }
   ]
 }
 ```
 
-Per-agent inline `baseUrl`/`apiKey`/`model` override the provider entry. The
-first-run wizard and the settings modal ship quick-add presets for OpenRouter,
-OrcaRouter, OpenAI and a local llama.cpp server.
+OpenAI互換なら何でもOK: OpenRouter / OpenAI / Ollama / vLLM / llama.cpp。
+OpenRouter宛にはアプリ帰属ヘッダ(`HTTP-Referer` 等)を自動付与。
 
-**OpenRouter app attribution**: requests to `openrouter.ai` endpoints
-automatically carry `HTTP-Referer` / `X-OpenRouter-Title` /
-`X-OpenRouter-Categories: programming-app`, so teapot's usage shows up in
-OpenRouter's public rankings & analytics — no config needed. Other providers
-receive no extra headers.
+モデルのコンテキスト窓は起動時に `/v1/models` から自動推定され、runtimeパネルの使用率ゲージとcompact派生に反映されます(手動上書きも可)。
 
-## Architecture
+</details>
+
+<details>
+<summary><b>HTTP API</b></summary>
 
 ```
-master (Hono server, src/master.ts + src/server/api.ts)
-├── Agent alpha  (workspace A)  ── JSONL event log
-├── Agent beta   (workspace B)  ── JSONL event log
-└── scheduler tick (15s) → cron tasks → prompts on forked branches
+GET  /api/agents                        一覧
+POST /api/agents                        作成 { workspace, id?, provider?, model?, start? }
+GET  /api/agents/:id/events?limit=300   イベント( ?before=<id> で上方ページング )
+GET  /api/agents/:id/branches           ブランチ一覧
+GET  /api/agents/:id/file?path=         テキスト取得
+PUT  /api/agents/:id/file?path=         保存 { content, baseContent? } (競合は409)
+GET  /api/agents/:id/raw?path=          メディア生データ
+GET  /api/agents/:id/tree               ファイルツリー
+POST /api/agents/:id/prompt             送信 { text, start? } → { promptId }
+POST /api/agents/:id/prompt/cancel      取り消し { promptId } (送達済みは409)
+POST /api/agents/:id/goal               { text?, status?, verify? }
+POST /api/agents/:id/start|stop|fork|load
+DELETE /api/agents/:id                  削除(ログは保持)
+GET  /api/metrics                       RSS / heap / loadavg
+WS   /api/ws                            全イベントのライブ配信
 ```
 
-- **Agent** (`src/agent/agent.ts`): an async loop that alternates LLM turns and
-  tool executions until the model stops calling tools, then auto-continues
-  toward its goal. `ask_user` parks the loop in a `waiting` status until the
-  operator replies. Stop/resume at any time via API/UI — stop aborts an
-  in-flight LLM call immediately (AbortController). Runaway guards: turn cap
-  per round, consecutive-tool-error cap, per-command timeouts.
-- **Context management (staged)**: each turn prefers the provider's real
-  `prompt_tokens`; past ~60% of budget, old oversized tool outputs are pruned
-  (recent window protected); past the budget (`contextTokenBudget`, default
-  ~96k — auto-derived at 75% when a model's `contextWindowTokens` is known)
-  older turns are summarized into dense continuation notes plus a
-  "## Durable lessons" section harvested into memory.md. Cut points never
-  split a tool_call/tool_result pair.
-- **Session persistence**: conversations are rebuilt from the JSONL log on
-  first interaction (lazy — boot cost stays O(agents)), so agents resume
-  mid-task across master restarts instead of starting blank. Restores replay
-  byte-identical request payloads, keeping provider prefix caches warm.
-- **LLM** (`src/agent/llm.ts`): official `openai` npm client against any
-  OpenAI-compatible endpoint (OpenRouter, OrcaRouter, vLLM, llama.cpp server...). Model is config,
-  never hard-coded.
-- **Tools** (`src/agent/tools.ts`): provider-agnostic JSON-schema function specs —
-  file work via `read_file` (numbered lines, grep-style `pattern` mode, negative
-  offsets), `write_file`, `edit_file` (unique replacement, `replace_all`,
-  whitespace-tolerant fallbacks with recovery hints), `apply_patch`
-  (Codex-style multi-file add/update/rename/delete patches, validated
-  atomically before writing) and `list_dir`; `bash` for git/builds/tests and
-  quick bulk transforms; `read_url` fetches a web page's readable content
-  (Mozilla Readability + happy-dom); plus meta tools `finish` / `ask_user` /
-  `report_progress` / `get_goal` / `set_goal` / `get_todo` / `set_todo` /
-  `read_memory` / `set_memory` / `get_feedback` / `add_feedback` /
-  `record_decision` / `get_decisions` / `list_skills`. Paths are confined to
-  the workspace (symlink-aware); bash runs detached in its own process group
-  and the whole group is SIGKILLed on timeout or shutdown.
-- **Sub-agents** — an agent can `spawn_agent({task, context, persona?})` to
-  delegate work: `context:"fork"` starts the child with a byte-exact copy of
-  the parent's conversation prefix (provider prefix caches stay warm; stored
-  as a reference header in the child's log — parent history is never copied),
-  `"none"` starts fresh. Parents steer children via `message_agent`, check on
-  them with `list_children`, and can bulk-stop them (`stop_children`,
-  descendants included). Children mirror their activity into the parent's
-  timeline tagged `@<id>`, and their finish/error reports are delivered back
-  automatically. Nesting depth is capped by `maxSpawnDepth` (default 3).
-  Default personas: reviewer/tester/researcher/implementer (+ read-only
-  enforcement for researcher/reviewer), plus `@mention` spawning from the
-  composer.
-- **Cache-friendly prompt design** — the system prompt is byte-identical on
-  every turn; session state (goal, memory, skills) is fetched via tools, never
-  injected. Combined with the append-only message history this keeps provider
-  prefix caches hot, so long sessions pay incremental input prices instead of
-  re-sending full context every turn.
-- **Session storage** — everything teapot manages lives under
-  `<dataDir>/sessions/<sid>/` (`chat.jsonl`, `goal.md`, `todo.md`,
-  `memory.md`, `feedback.md`, `decisions.md`), so agent workspaces stay
-  clean. Each incarnation gets a fresh `<agentId>-<uuid>` directory (no
-  history leaks across projects); restarts reuse the latest one. Legacy
-  layouts are migrated automatically.
-- **Goal / knowledge** — goal + memory are harness-managed and read/written
-  through tools (`get_goal` / `set_goal` / `read_memory` / `set_memory`);
-  `AGENTS.md` is optional project knowledge in the workspace root that agents
-  are told to read at session start. Nothing is seeded into your project.
-- **Decisions & feedback** — `record_decision(decision, rationale,
-  alternatives?)` keeps the *why* behind choices in `decisions.md`
-  (compaction forgets reasoning, this file doesn't); corrections become
-  durable rules via `add_feedback(rule)` with repetition counts.
-- **Task list** — `todo.md` in the session dir, editable by BOTH sides:
-  humans write it from the web UI (✅ tasks panel) or
-  `POST /api/agents/:id/todo {text, notify?}`, the agent reads and updates it
-  via `get_todo` / `set_todo`. Saving with notify queues a harness prompt so
-  the agent picks up changes at the next turn boundary.
+全APIは任意のBearer認証対象です。
 
-### Web UI
+</details>
 
-- **Sessions as channels** — chat feed with live-streamed LLM output (💭
-  reasoning collapsible), tool calls/results as expandable embeds, progress
-  reports and state changes as dividers
-- **Deep links** — every session has a URL (`http://localhost:7788/session/<id>`);
-  the last open session is remembered
-- **Details panel** (`d`) — session info, model switcher (provider select +
-  OpenAI-compatible `GET /models` autocomplete; applies to the running
-  session from the next turn), controls, goal editor, progress, runtime stats
-- **Terminal** (`t`) — interactive shell in the agent's workspace for humans,
-  rendered with xterm.js over WebSocket
-- **Keyboard** — `↑`/`↓` switch sessions · `/` focus composer · `t` terminal ·
-  `d` panel · `esc` interrupt a running agent
-- Realtime updates flow over WebSocket (`/api/ws`) with auto-reconnect
+<details>
+<summary><b>セッションログ(JSONL)形式</b></summary>
 
-### Agent Skills
+人間が `cat`/`jq` で読める追記-onlyのJSONLです:
 
-Skills are reusable playbooks the agent loads on demand — and writes itself,
-so hard-won procedure knowledge survives sessions:
-
-```
-<workspace>/skills/<name>/SKILL.md      # project skills (git-friendly)
-~/.config/teapot-coding-agent/skills/<name>/SKILL.md   # shared across agents
+```jsonl
+{"v":1,"id":"e1","type":"prompt","data":{"source":"user","text":"..."}}
+{"v":1,"id":"e2","type":"tool_call","data":{"callId":"…","name":"bash","argsRaw":"…"}}
+{"v":1,"id":"e3","type":"tool_result","data":{"callId":"…","ok":true,"durationMs":117}}
+{"v":1,"id":"e4","type":"message","data":{"role":"assistant","content":"…"}}
 ```
 
-```markdown
+各イベントは `parent` で前イベントに連結され、フォークは分岐点を共有します。
+`sessions/<agent>-<uuid>/goal.md` `memory.md` `todo.md` も同ディレクトリに保存。
+
+</details>
+
+<details>
+<summary><b>開発(リポジトリから)</b></summary>
+
+```sh
+pnpm install
+pnpm dev            # TSをネイティブ実行
+pnpm dev-web        # Vite HMR(別terminal)
+pnpm test           # node --test
+pnpm build          # tsc + vite build → dist/ + public/
+```
+
+構成: `src/master.ts`(起動・cron・config) / `src/agent/`(ループ・ツール) /
+`src/server/api.ts`(Hono REST+WS) / `frontend/`(SolidJS) / `test/`(node:test)
+
+</details>
+
 ---
-name: release-checklist
-description: Steps to cut a release safely
----
-
-1. run pnpm test
-2. bump version ...
-```
-
-- The system prompt lists every discovered skill (name + description);
-  workspace skills override same-named global ones.
-- The agent calls `load_skill(name)` when a task matches and follows it.
-- The agent calls `save_skill(name, description, content, files?)` to distill a
-  reusable procedure — `files` bundles helper scripts next to `SKILL.md`
-  (made executable automatically), and `load_skill` lists them as runnable
-  workspace paths. Available from the next turn, forever.
-- Bundled skill: [`skills/qa-adversarial`](skills/qa-adversarial/SKILL.md) —
-  seven adversarial QA personas. Copy it into
-  `~/.config/teapot-coding-agent/skills/` (global) or a workspace's
-  `skills/` folder to enable it.
-
-### Session log format (JSONL)
-
-One file per session (`<dataDir>/sessions/<sid>/chat.jsonl`, sid =
-`<agentId>-<uuid8>`); every conversation *including forks* lives in the same
-interleaved stream:
-
-```json
-{"v":1,"id":"e27","seq":27,"ts":"…","agent":"alpha","session":"alpha-9f3c21ab",
- "branch":"br032sl","parent":"e26","type":"fork",
- "data":{"fromSession":"alpha-9f3c21ab","fromBranch":"br0","fromEvent":"e26","newBranch":"br032sl"}}
-```
-
-- every event carries `session`, `branch`, `parent` (previous event on the same branch), monotonic `seq`
-- a `fork` event records exactly where the new branch split off
-- reconstruct any conversation: filter `branch === X` (or walk `parent` links
-  backwards across the fork point)
-- event types: `session_start, fork, prompt, system_note, message, tool_call,
-  tool_result, state, progress, error, usage, goal`
-- torn trailing lines are ignored on read → crash-safe append-only log
-
-### Progress reports
-
-Two complementary mechanisms:
-
-1. the agent can call `report_progress` whenever it wants;
-2. the harness injects a progress-report request at the next *turn boundary*
-   after `progressIntervalMs` of activity — never mid-turn, so it never
-   interrupts a tool call. Reports are first-class `progress` events.
-
-### Scheduled tasks
-
-Cron-style specs (`*/10 * * * *` or `every 10m`) checked by the single 15 s
-master tick. Tasks run as prompts on **forked branches** by default so periodic
-chatter never disturbs an agent's main line of work.
-
-## HTTP API
-
-```
-GET  /api/agents                     list snapshots
-GET  /api/agents/:id                 one snapshot
-POST /api/agents/:id/prompt          {text, start?}
-POST /api/agents/:id/start | /stop
-POST /api/agents/:id/load            lazy session restore (stopped → idle)
-POST /api/agents/:id/goal            {text, notify?} or {status}
-POST /api/agents/:id/fork            {} → new branch, same session log
-POST /api/agents/:id/edit-prompt     {eventId, text, tail: "discard"|"summarize"} → fork & resend
-GET  /api/agents/:id/events?limit&branch&session
-GET  /api/agents/:id/branches
-GET  /api/tasks                      scheduled tasks with computed next-fire times
-GET  /api/metrics                    master rss/heap/load + per-agent stats
-GET  /api/events                     SSE updates (push, no polling)
-GET  /brew                           418 I'm a teapot (RFC 2324)
-```
-
-## Security / execution model
-
-Designed for a dedicated agent Linux user; workspaces are path-confined,
-subprocesses run in killable process groups with hard timeouts, and resource
-limits (RLIMIT_* / cgroups) have a natural insertion point in
-`src/agent/tools.ts:runShell`.
-
-**LAN exposure**: the API has no auth by default (localhost-first tool). To
-expose it beyond localhost, set `TEAPOT_API_TOKEN=<secret>` (env wins) or a
-`password` field in the config — every `/api/*`
-route then requires `Authorization: Bearer <secret>` (WebSocket handshakes
-accept `?token=<secret>`). In the web UI, open
-`http://host:7788/#token=<secret>` once; the token is stored locally and
-attached automatically. The master survives agent crashes by
-construction: agent errors never escape their own loop, and global handlers
-keep the process alive.
 
 ## License
 
-AGPL-3.0-or-later
+AGPL-3.0-or-later — [LICENSE](LICENSE)
