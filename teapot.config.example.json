@@ -6,6 +6,11 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "apiKey": "sk-or-..."
     },
+    "orcarouter": {
+      "baseUrl": "https://api.orcarouter.ai/v1",
+      "apiKey": "sk-orca-...",
+      "model": "orcarouter/auto"
+    },
     "openai": {
       "baseUrl": "https://api.openai.com/v1",
       "apiKey": "sk-...",

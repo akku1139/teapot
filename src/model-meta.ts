@@ -4,6 +4,7 @@
  * from the real window instead of the safe default.
  */
 import fs from "node:fs";
+import { providerHeaders } from "./agent/llm.ts";
 
 export interface ModelMeta {
   id: string;
@@ -23,7 +24,10 @@ export async function fetchModelList(
   if (hit && Date.now() - hit.at < TTL) return hit.list;
   try {
     const res = await fetch(`${root}/models`, {
-      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+      headers: {
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        ...providerHeaders(baseUrl), // OpenRouter app attribution
+      },
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

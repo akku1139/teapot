@@ -1,11 +1,17 @@
 /**
- * Guard against load-time crashes in the built web bundle (e.g. the
- * createMemo-declares-before-dependency TDZ regression shipped once).
+ * Guard against web-UI regressions in the built bundle.
  *
- * The bundle is loaded in a CHILD PROCESS (scripts/smoke-web.mjs): the app's
- * reconnect timers would otherwise keep this test's event loop alive forever.
- * Runs only when a built bundle exists — `pnpm build` produces it, so CI
- * always has one; a bare local `pnpm test` simply skips.
+ * scripts/smoke-web.mjs loads the bundle inside happy-dom with /api stubbed:
+ * 1. module init must survive (catches TDZ/order crashes like the
+ *    "xe before initialization" regression);
+ * 2. DEEP RENDER: a selected agent with events/stats/ctx mounts fully, so
+ *    render-time ReferenceErrors on populated panels (the shipped
+ *    "pct is not defined" crash) exit non-zero instead of reaching users.
+ *
+ * The bundle is loaded in a CHILD PROCESS: the app's reconnect timers would
+ * otherwise keep this test's event loop alive forever. Runs only when a built
+ * bundle exists — `pnpm build` produces it, so CI always has one; a bare local
+ * `pnpm test` simply skips.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +21,7 @@ import path from "node:path";
 
 const root = new URL("..", import.meta.url).pathname;
 
-test("web bundle: module init + first render survive", async (t) => {
+test("web bundle: module init + deep render survive", async (t) => {
   const assetsDir = path.join(root, "public", "assets");
   const hasBundle =
     fs.existsSync(assetsDir) &&
@@ -36,8 +42,8 @@ test("web bundle: module init + first render survive", async (t) => {
     new Promise<null>((_, rej) =>
       setTimeout(() => {
         child.kill("SIGKILL");
-        rej(new Error("smoke test timed out after 15s"));
-      }, 15_000),
+        rej(new Error("smoke test timed out after 30s"));
+      }, 30_000),
     ),
   ]);
   assert.equal(code, 0, `bundle smoke test failed:\n${out}`);

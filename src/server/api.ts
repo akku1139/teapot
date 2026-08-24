@@ -13,6 +13,7 @@ import { parseSchedule } from "../scheduler/cron.ts";
 import { SUB_PERSONAS } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
 import type { ProviderConfig } from "../master.ts";
+import { providerHeaders } from "../agent/llm.ts";
 import path from "node:path";
 import { bus } from "../bus.ts";
 import { readEvents } from "../log/events.ts";
@@ -335,7 +336,10 @@ export function buildApp(master: Master): Hono {
     if (!prov?.baseUrl) return c.json({ error: `unknown provider: ${provName}` }, 400);
     try {
       const res = await fetch(`${prov.baseUrl.replace(/\/+$/, "")}/models`, {
-        headers: prov.apiKey ? { authorization: `Bearer ${prov.apiKey}` } : {},
+        headers: {
+          ...(prov.apiKey ? { authorization: `Bearer ${prov.apiKey}` } : {}),
+          ...providerHeaders(prov.baseUrl), // OpenRouter app attribution
+        },
         signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) return c.json({ error: `upstream ${res.status}` }, 502);

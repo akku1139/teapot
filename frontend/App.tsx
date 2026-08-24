@@ -9,6 +9,8 @@ interface Agent {
   latestProgress: any; stats: any; model: string; provider?: string;
   pendingPrompts?: number;
   todo?: string;
+  parent?: string;
+  autoContinue?: boolean;
   ctx?: { usedTokens: number; compactAt: number; window: number };
 }
 interface Ev {
@@ -24,6 +26,15 @@ const AUTHORS: Record<string, { name: string; icon: string; color: string }> = {
   question: { name: "agent", icon: "❓", color: "#5865f2" }, // ask_user comes from the agent too
 };
 const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
+
+/* ---------- transient toast hint (module scope: also used by SwitchContent) ---------- */
+const [flash, setFlash] = createSignal("");
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+const flashHint = (msg: string) => {
+  setFlash(msg);
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => setFlash(""), 3200);
+};
 
 /** author for an event — mirrored sub-agent rows act under their own id */
 const authorOf = (e: Ev) => {
@@ -546,6 +557,7 @@ export default function App() {
     if (e.key === "Escape") {
       if (showNew()) { setShowNew(false); return; }
       if (showCfg()) { setShowCfg(false); return; }
+      if (editing()) { setEditing(null); return; }
       const s = sel();
       if (s?.status === "running") {
         // Claude-Code-style: Esc interrupts the running agent
@@ -669,14 +681,6 @@ export default function App() {
     }, 30_000);
     onCleanup(() => clearInterval(mi));
   });
-
-  const [flash, setFlash] = createSignal("");
-  let flashTimer: ReturnType<typeof setTimeout> | undefined;
-  const flashHint = (msg: string) => {
-    setFlash(msg);
-    clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => setFlash(""), 3200);
-  };
 
   const SLASH_COMMANDS = [
     { cmd: "/start", desc: "start working toward the goal" },
@@ -1108,12 +1112,12 @@ export default function App() {
                   const sugg = suggestions();
                   if (sugg.length > 0 && e.key === "ArrowDown") {
                     e.preventDefault();
-                    setCmdIdx((i) => Math.min(i() + 1, sugg.length - 1));
+                    setCmdIdx((i) => Math.min(i + 1, sugg.length - 1));
                     return;
                   }
                   if (sugg.length > 0 && e.key === "ArrowUp") {
                     e.preventDefault();
-                    setCmdIdx((i) => Math.max(i() - 1, 0));
+                    setCmdIdx((i) => Math.max(i - 1, 0));
                     return;
                   }
                   if (sugg.length > 0 && (e.key === "Tab" || e.key === "Enter") && !e.shiftKey && cmdIdx() >= 0) {
@@ -1366,29 +1370,30 @@ export default function App() {
               {(c) => {
                 // find model metadata for actual context window
                 const modelMeta = models().find((m) => m.id === sel()!.model);
-                const modelWindow = modelMeta?.contextLength;
-                const effectiveWindow = c().window || modelMeta?.contextLength;
-                const effectivePct = effectiveWindow
+                const effectiveWindow = c().window || modelMeta?.contextLength || 0;
+                const pct = effectiveWindow
                   ? Math.min(999, Math.round((c().usedTokens / effectiveWindow) * 100))
-                  : null;
+                  : 0;
                 const pctCls =
                   !effectiveWindow
                     ? ""
-                    : effectivePct >= 85
+                    : pct >= 85
                     ? " ctxcrit"
-                    : effectivePct >= 70
+                    : pct >= 70
                     ? " ctxwarn"
                     : "";
                 return (
                   <>
                     {"\n"}context ~{fmtK(c().usedTokens)} tok
-                    <Show when={c().window || modelMeta?.contextLength}>
-                      {" · "}
-                      <span class={pctCls.trim()}>
-                        {effectiveWindow
-                          ? `${pct}% of {fmtK(effectiveWindow)} (model window)`
-                          : `${pct}% of {fmtK(c().window)} (budget)`}
-                      </span>
+                    <Show when={effectiveWindow}>
+                      {(w) => (
+                        <>
+                          {" · "}
+                          <span class={pctCls.trim()}>
+                            {pct}% of {fmtK(w())} (model window)
+                          </span>
+                        </>
+                      )}
                     </Show>
                     {"\n"}compaction at ~{fmtK(c().compactAt)} tok (older turns summarized)
                   </>
@@ -1473,7 +1478,8 @@ export default function App() {
                   });
                   setEditing(null);
                   refreshAgents();
-                  if (selected()) await select(selected());
+                  const id = selected();
+                  if (id) await select(id);
                 } catch (ex) {
                   alert(`edit failed: ${(ex as Error).message}`);
                 }
@@ -1980,10 +1986,34 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
 /* ---------- settings / config editor ---------- */
 /* ---------- first-run setup wizard ---------- */
 
+/**
+ * Known OpenAI-compatible providers, shared by the setup wizard and the
+ * settings modal's quick-add. `model` is just the pre-filled suggestion —
+ * anything typed by hand always wins.
+ */
 const PROVIDER_PRESETS = [
-  { key: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4" },
+  {
+    key: "openrouter",
+    label: "OpenRouter",
+    url: "https://openrouter.ai/api/v1",
+    model: "anthropic/claude-sonnet-4",
+    hint: "400+ models behind one key — teapot sends app-attribution headers automatically",
+  },
+  {
+    key: "orcarouter",
+    label: "OrcaRouter",
+    url: "https://api.orcarouter.ai/v1",
+    model: "orcarouter/auto",
+    hint: "zero-markup routing gateway — 'orcarouter/auto' grades each prompt and picks the model",
+  },
   { key: "openai", label: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
-  { key: "ollama", label: "Ollama (local)", url: "http://localhost:11434/v1", model: "qwen3-coder" },
+  {
+    key: "ollama",
+    label: "Ollama (local)",
+    url: "http://localhost:11434/v1",
+    model: "qwen3-coder",
+    hint: "free & local — pull a coder model first (e.g. ollama pull qwen3-coder)",
+  },
 ];
 
 function SetupWizard(props: { onDone: () => void }) {
@@ -1998,7 +2028,11 @@ function SetupWizard(props: { onDone: () => void }) {
 
   const pick = (p: (typeof PROVIDER_PRESETS)[number]) => {
     setPreset(p);
-    if (p.url) { setBaseUrl(p.url); setModel(p.model); }
+    if (p.url) {
+      setBaseUrl(p.url);
+      // presets without a suggested model keep whatever is typed
+      if (p.model) setModel(p.model);
+    }
   };
 
   const submit = async (e: Event) => {
@@ -2030,22 +2064,26 @@ function SetupWizard(props: { onDone: () => void }) {
           everything below can be changed later in ⚙ settings.
         </p>
         <form onsubmit={submit} style="display:flex;flex-direction:column;gap:12px">
-          <div style="display:flex;gap:6px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
             <For each={PROVIDER_PRESETS}>
               {(p) => (
                 <button
                   type="button"
                   class={"presetbtn" + (preset().key === p.key ? " active" : "")}
+                  title={p.hint || p.url}
                   onclick={() => pick(p)}
                 >{p.label}</button>
               )}
             </For>
           </div>
+          <Show when={preset().hint}>
+            <div class="muted" style="font-size:11.5px;margin-top:-6px">{preset().hint}</div>
+          </Show>
           <label>base url
             <input type="text" class="w100 mono" value={baseUrl()} oninput={(e) => setBaseUrl(e.currentTarget.value)} />
           </label>
           <label>api key <input type="password" class="w100" value={apiKey()} oninput={(e) => setApiKey(e.currentTarget.value)} placeholder="(local providers may not need one)" /></label>
-          <label>default model <input type="text" class="w100 mono" value={model()} oninput={(e) => setModel(e.currentTarget.value)} /></label>
+          <label>default model <input type="text" class="w100 mono" value={model()} oninput={(e) => setModel(e.currentTarget.value)} placeholder="(provider default — leave empty if unsure)" /></label>
           <fieldset>
             <legend>first agent</legend>
             <label>workspace directory
@@ -2143,9 +2181,35 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
               </div>
             )}
           </For>
-          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKey: "", model: "" }])}>+ add provider</button>
-          <div><label style="display:flex;align-items:center;gap:6px;margin-top:6px">default provider
-            <input type="text" value={defaultProvider()} oninput={(e) => setDefaultProvider(e.currentTarget.value)} />
+          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKey: "", model: "" }])}>+ add custom</button>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+            <span class="muted" style="font-size:11.5px">quick-add:</span>
+            <For each={PROVIDER_PRESETS}>
+              {(p) => (
+                <button
+                  type="button"
+                  title={`fill a ${p.label} row — ${p.url}${p.model ? ` (model: ${p.model})` : ""}`}
+                  onclick={() => {
+                    // re-click = update the existing entry instead of duplicating
+                    const rest = providers().filter((x) => x.name !== p.key);
+                    setProviders([...rest, { name: p.key, baseUrl: p.url, apiKey: "", model: p.model }]);
+                    if (!defaultProvider()) setDefaultProvider(p.key);
+                  }}
+                >+ {p.label}</button>
+              )}
+            </For>
+          </div>
+          <div><label style="display:flex;align-items:center;gap:6px;margin-top:6px" title="agents without an explicit provider use this one">
+            default provider
+            <select
+              value={defaultProvider()}
+              onchange={(e) => setDefaultProvider(e.currentTarget.value)}
+            >
+              <option value="">(none — first provider wins)</option>
+              <For each={[...new Set(providers().map((p) => p.name.trim()).filter(Boolean))]}>
+                {(n) => <option value={n}>{n}</option>}
+              </For>
+            </select>
           </label></div>
         </fieldset>
 

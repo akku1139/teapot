@@ -22,6 +22,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # typecheck both sides explicitly (the frontend has its own tsconfig —
+      # vite/esbuild transpiles TSX without checking, so undefined identifiers
+      # would otherwise only explode at render time in the browser)
+      - run: pnpm typecheck
+      - run: pnpm typecheck-web
+
       - run: pnpm build # tsc + vite: catches type and bundling breakage
 
       - run: pnpm test

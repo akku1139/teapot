@@ -30,9 +30,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && vite build",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.frontend.json && vite build",
     "build-server": "tsc -p tsconfig.json",
     "build-web": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck-web": "tsc -p tsconfig.frontend.json",
     "start": "node dist/index.js",
     "dev": "node src/index.ts",
     "dev-web": "vite",

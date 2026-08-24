@@ -40,6 +40,26 @@ export interface LlmResult {
 
 const clients = new WeakMap<LlmConfig, OpenAI>();
 
+/**
+ * OpenRouter app attribution (https://openrouter.ai/docs/app-attribution):
+ * `HTTP-Referer` is the required identifier that puts teapot's usage on the
+ * public rankings/analytics; the title names it; `programming-app` files it
+ * under coding tools. Empty (harmless no-op) for every other provider.
+ */
+export function providerHeaders(baseUrl: string): Record<string, string> {
+  try {
+    const host = new URL(baseUrl).host;
+    if (!/(^|\.)openrouter\.ai$/i.test(host)) return {};
+    return {
+      "HTTP-Referer": "https://github.com/akku1139/teapot",
+      "X-OpenRouter-Title": "teapot",
+      "X-OpenRouter-Categories": "programming-app",
+    };
+  } catch {
+    return {}; // unparseable baseUrl — never block a request over metadata
+  }
+}
+
 function client(cfg: LlmConfig): OpenAI {
   let c = clients.get(cfg);
   if (!c) {
@@ -48,6 +68,7 @@ function client(cfg: LlmConfig): OpenAI {
       apiKey: cfg.apiKey,
       timeout: cfg.timeoutMs ?? 120_000,
       maxRetries: 4, // SDK handles backoff for 429/5xx/network errors
+      defaultHeaders: providerHeaders(cfg.baseUrl),
     });
     clients.set(cfg, c);
   }
