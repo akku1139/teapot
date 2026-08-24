@@ -338,6 +338,57 @@ export function buildApp(master: Master): Hono {
     }
   });
 
+  // write a file from the web UI's file-tree editor (human action, not an
+  // agent tool — allowed even for read-only personas, never notifies the
+  // agent). Optional baseContent enables optimistic-concurrency checking.
+  app.put("/api/agents/:id/file", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const rel = c.req.query("path") ?? "";
+    if (!rel.trim()) return c.json({ error: "path required" }, 400);
+    const body = await c.req.json<{ content?: string; baseContent?: string }>().catch(() => null);
+    if (body === null || typeof body.content !== "string")
+      return c.json({ error: "content required" }, 400);
+    let abs: string;
+    try {
+      abs = safeJoin(a.workspace, rel);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    try {
+      let existing: Buffer | null = null;
+      try {
+        existing = await fs.readFile(abs);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      // refuse to clobber binary files (same 8KB NUL probe as GET)
+      if (existing && existing.subarray(0, 8192).includes(0))
+        return c.json({ error: "binary file — edit refused" }, 400);
+      // conflict check: the editor sends what it loaded; if disk moved on,
+      // bounce with the fresh content instead of silently overwriting
+      if (
+        typeof body.baseContent === "string" &&
+        existing &&
+        existing.subarray(0, 100_000).toString("utf8") !== body.baseContent
+      ) {
+        return c.json(
+          {
+            error: "file changed on disk",
+            current: existing.subarray(0, 100_000).toString("utf8"),
+          },
+          409,
+        );
+      }
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      const content = Buffer.from(body.content, "utf8");
+      await fs.writeFile(abs, content);
+      return c.json({ ok: true, path: rel, size: content.length });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
   // ---- config (view/edit from the web UI) ----
   app.get("/api/config", (c) => {
     const mask = (p: Record<string, { baseUrl: string; apiKey?: string; model?: string }> | undefined) =>

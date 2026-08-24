@@ -218,6 +218,22 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
   padding: 3px 12px; cursor: pointer; font-size: 12.5px;
 }
 .qopt:hover { filter: brightness(1.15); }
+.qopt:disabled { opacity: .45; cursor: default; filter: none; }
+.embed.question.answered { opacity: .75; }
+/* free-text answer row under an ask_user question */
+.qfree { display: flex; gap: 6px; margin-top: 8px; }
+.qfree input {
+  flex: 1; background: var(--bg-mid); border: 1px solid var(--bg-light);
+  border-radius: 6px; padding: 4px 10px; color: var(--fg); font-size: 13px; outline: none;
+}
+.qfree input:focus { border-color: var(--acc); }
+.qfree button {
+  background: var(--bg-light); border: none; color: var(--fg); border-radius: 6px;
+  padding: 4px 12px; cursor: pointer; font-size: 12.5px;
+}
+.qfree button:disabled { opacity: .45; cursor: default; }
+/* live elapsed counter on a running bash embed */
+.bashelapsed { color: var(--warn); font-size: 11px; margin-left: 8px; }
 .embed.question .meta { margin-top: 6px; }
 .embed.decision { border-color: var(--acc); background: #5865f20f; }
 .embed.decision summary .meta { margin-left: 6px; }
@@ -472,6 +488,29 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 /* ---------- shiki file preview (FilesPanel modal) ---------- */
 /* wrapper scrolls both axes; the <pre> inside fills it */
 .filepreview { max-height: 62vh; overflow: auto; border-radius: 8px; }
+/* preview-modal toolbar: code / edit / markdown-preview switches */
+.filetoolbar { display: flex; gap: 6px; margin-bottom: 8px; }
+.filetoolbar button {
+  background: var(--bg-light); border: none; color: var(--dim); border-radius: 6px;
+  padding: 4px 12px; cursor: pointer; font-size: 12.5px;
+}
+.filetoolbar button:hover { color: var(--fg); filter: brightness(1.15); }
+.filetoolbar button.on { background: var(--acc); color: #fff; font-weight: 600; }
+/* in-place file editor */
+.fileeditor { display: flex; flex-direction: column; gap: 8px; }
+.fileeditor textarea {
+  min-height: 55vh; max-height: 65vh; background: var(--bg-darkest); color: var(--fg);
+  border: 1px solid var(--bg-light); border-radius: 8px; padding: 10px;
+  font-size: 12.5px; line-height: 1.45; white-space: pre; overflow: auto;
+}
+.filerow-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.savebtn {
+  background: var(--ok); border: none; color: #fff; border-radius: 6px;
+  padding: 5px 14px; cursor: pointer; font-weight: 600; font-size: 13px;
+}
+.savebtn:disabled { opacity: .4; cursor: default; }
+/* rendered markdown inside the file preview modal */
+.mdpreview { max-height: 62vh; overflow: auto; background: var(--bg-darkest); border-radius: 8px; padding: 14px 16px; }
 .filepreview .shiki,
 .filepreview .shiki span {
   /* dual-theme mode (defaultColor:false) emits only --shiki-light/-dark

@@ -622,11 +622,26 @@ export class Master {
       child.importMessages(parent.exportMessages());
     }
     await child.setGoal(`${directive}${o.task}`.slice(0, 2000));
+    // SCOPE GUARD: a forked child inherits the parent's whole conversation as
+    // reference context — without an explicit boundary, models have been seen
+    // "continuing" some EARLIER task that appears in that history instead of
+    // the task they were actually spawned for. State the boundary twice
+    // (goal + first prompt) so it survives goal-driven auto-continue.
     await child.enqueuePrompt(
       (o.context === "fork"
-        ? `[harness] You are sub-agent ${id}, spawned by @${parentId} with the conversation above. `
-        : `[harness] You are sub-agent ${id}, spawned by @${parentId}. `) +
-        `Work solely on this task:\n\n${directive}${o.task}`,
+        ? `[harness] You are sub-agent ${id}, spawned by @${parentId}.
+
+The conversation above is REFERENCE CONTEXT ONLY — background on why this work is needed.
+It contains older tasks and discussions that are NOT yours. Do not resume, continue, or
+finish any of them; other agents own those. If you find yourself working on anything other
+than the task below, STOP and return to it.
+
+YOUR ONE AND ONLY TASK — everything else in the inherited context is out of scope:
+
+${directive}${o.task}
+
+When this task is done (or truly blocked), call finish() with a summary for @${parentId}.`
+        : `[harness] You are sub-agent ${id}, spawned by @${parentId}. Work solely on this task:\n\n${directive}${o.task}\n\nWhen it is done (or truly blocked), call finish() with a summary for @${parentId}.`),
       "harness",
     );
     child.start(`spawned by ${parentId}`);

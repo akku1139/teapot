@@ -743,11 +743,17 @@ export class Agent {
           !this.goal.text.trim()
         )
           break;
-        // auto-continue: wait quietly, then nudge with a fresh round
+        // auto-continue: wait quietly, then nudge with a fresh round.
+        // Sub-agents get a SCOPE-ANCHORED nudge instead of a generic one:
+        // "Continue working toward the current goal" made a forked sub-agent
+        // re-read its inherited context and drift into one of the parent's
+        // older tasks — it would keep going forever without ever finish()ing.
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
-        const nudge =
-          "Continue working toward the current goal. If you are blocked, explain why briefly.";
+        const isSub = !!this.opts.parent;
+        const nudge = isSub
+          ? `[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
+          : "Continue working toward the current goal. If you are blocked, explain why briefly.";
         await this.log.append("prompt", this.currentSession, this.currentBranch, {
           source: "harness",
           text: nudge,
@@ -949,13 +955,17 @@ export class Agent {
           const a = safeParse(call.function.arguments);
           const question = String(a.question ?? "").slice(0, 2000);
           const options = Array.isArray(a.options) ? a.options.map(String).slice(0, 6) : [];
+          // the callId lets the UI tell "still open" from "already answered"
+          // (a settled tool_result for this id exists) and disable re-answering
           await this.log.append("question", this.currentSession, this.currentBranch, {
             question,
             options,
+            callId: call.id,
           });
           await this.answerMeta(
             call,
-            "question shown to the operator — the loop is parked until they reply",
+            "question shown to the operator — the loop is parked until they reply. " +
+              "Their reply (possibly free text, not one of the options) arrives as your next user message.",
           );
           this.awaitingUser = true;
           this.setStatus("waiting", question.slice(0, 80));

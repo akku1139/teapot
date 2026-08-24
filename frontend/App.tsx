@@ -132,7 +132,18 @@ export default function App() {
   const [eventsTotal, setEventsTotal] = createSignal(0); // server-side count (window is capped)
   const [branches, setBranches] = createSignal<any[]>([]);
   const [metrics, setMetrics] = createSignal<any>(null);
-  const [draft, setDraft] = createSignal("");
+  // per-session unsent prompt drafts — switching agents preserves what each
+  // one was typing instead of showing the previous session's text
+  const drafts = new Map<string, string>();
+  const [draft, setDraft] = createSignal(drafts.get(selected() ?? "") ?? "");
+  const saveDraft = (v: string) => {
+    setDraft(v);
+    const id = selected();
+    if (id) {
+      if (v) drafts.set(id, v);
+      else drafts.delete(id); // cleared input → nothing to preserve
+    }
+  };
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
   const [showCfg, setShowCfg] = createSignal(false);
@@ -283,6 +294,15 @@ export default function App() {
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
   // prompt being edited → edit-prompt fork dialog
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
+  // ask_user calls that already have their tool_result in the log — used to
+  // disable the option buttons (answering twice sent duplicate prompts)
+  const answeredIds = createMemo(() => {
+    const set = new Set<string>();
+    for (const e of events()) {
+      if (e.type === "tool_result" && e.data?.name === "ask_user") set.add(String(e.data.callId));
+    }
+    return set;
+  });
   // optimistic echoes of prompts we just sent but haven't seen in the log yet
   const [pendingMsgs, setPendingMsgs] = createSignal<{ id: string; text: string; at: number }[]>([]);
 
@@ -308,6 +328,16 @@ export default function App() {
       }
     }
     return { resFor, consumed };
+  });
+  // ask_user questions that already have their tool_result in the log are
+  // answered — the UI disables their option buttons (no duplicate prompts)
+  const answeredQuestionIds = createMemo(() => {
+    const answered = new Set<string>();
+    for (const e of events()) {
+      if (e.type === "tool_result" && e.data?.name === "ask_user" && e.data?.callId)
+        answered.add(String(e.data.callId));
+    }
+    return answered;
   });
   const chatEvents = createMemo(() => {
     const { consumed } = pairInfo();
@@ -349,7 +379,9 @@ export default function App() {
     );
     const echoes: Ev[] = pend.map((p) => ({
       id: p.id,
-      seq: 0,
+      // sort AFTER every logged event so pending echoes always sit at the
+      // timeline's very bottom until the log catches up
+      seq: Number.MAX_SAFE_INTEGER,
       ts: new Date(p.at).toISOString(),
       session: sel()?.session ?? "",
       branch: sel()?.branch ?? "br0",
@@ -601,6 +633,7 @@ export default function App() {
       setMissed(0);
     }
     setSelected(id);
+    saveDraft(drafts.get(id) ?? ""); // restore THIS session's unsent draft
     setBranchFilter(null);
     setOlderDone(false);
     setLoadingOlder(false);
@@ -1097,7 +1130,7 @@ export default function App() {
       // scroll to bottom after our message appears
       requestAnimationFrame(() => scrollBottom(true));
     } catch (ex) {
-      setDraft(text); // never eat the user's message on a failed send
+      saveDraft(text); // never eat the user's message on a failed send
       console.error("send failed:", ex);
     }
   };
@@ -1124,7 +1157,7 @@ export default function App() {
             body: JSON.stringify({ persona: name, task: arg, context: mentionFork() ? "fork" : "none" }),
           });
           flashHint(`🧩 spawned ${(r as any).id}${mentionFork() ? " (forked context)" : ""}`);
-          refreshAgents(); setDraft("");
+          refreshAgents(); saveDraft("");
         } else if (knownAgent) {
           if (!arg) { flashHint(`usage: @${name} <message>`); return; }
           await api(`/api/agents/${encodeURIComponent(name)}/prompt`, {
@@ -1133,7 +1166,7 @@ export default function App() {
             body: JSON.stringify({ text: arg, start: true }),
           });
           flashHint(`→ delivered to @${name}`);
-          setDraft("");
+          saveDraft("");
         } else {
           flashHint(`unknown @${name} — personas: ${personas().map((p) => p.key).join(", ") || "(none)"}`);
           return;
@@ -1149,14 +1182,14 @@ export default function App() {
       const sp = text.indexOf(" ");
       const name = (sp === -1 ? text.slice(1) : text.slice(1, sp)).toLowerCase();
       const arg = sp === -1 ? "" : text.slice(sp + 1).trim();
-      if (name === "goal" && !arg) { setDraft("/goal "); return; } // keep typing
-      if (name === "skill" && !arg) { setDraft("/skill "); return; }
-      setDraft("");
+      if (name === "goal" && !arg) { saveDraft("/goal "); return; } // keep typing
+      if (name === "skill" && !arg) { saveDraft("/skill "); return; }
+      saveDraft("");
       await executeSlash(name, arg);
       return;
     }
 
-    setDraft("");
+    saveDraft("");
     await sendText(text);
   };
 
@@ -1413,6 +1446,8 @@ export default function App() {
                     prev={chatEvents()[i() - 1]}
                     res={pairInfo().resFor.get(e.id)}
                     onOption={(t) => void sendText(t)}
+                    answeredIds={answeredQuestionIds()}
+                    agentActive={sel()?.status === "running" || sel()?.status === "waiting"}
                     onEdit={
                       e.type === "prompt" && e.data?.source === "user"
                         ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
@@ -1505,7 +1540,7 @@ export default function App() {
                     <div
                       class={"cmdrow" + (i() === cmdIdx() ? " active" : "")}
                       title={s.title}
-                      onclick={() => { setDraft(s.insert); setCmdIdx(-1); }}
+                      onclick={() => { saveDraft(s.insert); setCmdIdx(-1); }}
                     >
                       <b class="mono">{s.insert.trim()}</b>
                       <span class="muted">{s.title}</span>
@@ -1518,7 +1553,7 @@ export default function App() {
               <div class="cmds">
                 <For each={mentionMatches()}>
                   {(m) => (
-                    <div class="cmdrow" title={m.label} onclick={() => { setDraft(`@${m.key} `); setCmdIdx(-1); }}>
+                    <div class="cmdrow" title={m.label} onclick={() => { saveDraft(`@${m.key} `); setCmdIdx(-1); }}>
                       <b>@{m.key}</b>
                       <span class="muted">{m.label}</span>
                     </div>
@@ -1533,7 +1568,7 @@ export default function App() {
                 placeholder={`message #${sel()!.id} — / for commands`}
                 value={draft()}
                 oninput={(e) => {
-                  setDraft(e.currentTarget.value);
+                  saveDraft(e.currentTarget.value);
                   setCmdIdx(0); // highlight first suggestion while popup is open
                   autosizeComposer();
                 }}
@@ -1553,7 +1588,7 @@ export default function App() {
                   }
                   if (sugg.length > 0 && (e.key === "Tab" || e.key === "Enter") && !e.shiftKey && cmdIdx() >= 0) {
                     e.preventDefault();
-                    setDraft(sugg[cmdIdx()]!.insert);
+                    saveDraft(sugg[cmdIdx()]!.insert);
                     setCmdIdx(-1);
                     return;
                   }
@@ -2071,11 +2106,33 @@ export default function App() {
 }
 
 /* ---------- one chat message row ---------- */
+/* ---------- live elapsed-time ticker for a still-running bash call ---------- */
+function BashElapsed(props: { startedAt: string }) {
+  const start = new Date(props.startedAt).getTime();
+  const [now, setNow] = createSignal(Date.now());
+  onMount(() => {
+    // 500ms tick is plenty for a seconds readout and stops with the row
+    const t = setInterval(() => setNow(Date.now()), 500);
+    onCleanup(() => clearInterval(t));
+  });
+  const s = () => Math.max(0, (now() - start) / 1000);
+  return (
+    <span class="bashelapsed">
+      {s() < 60 ? `${s().toFixed(1)}s` : `${Math.floor(s() / 60)}m ${Math.round(s() % 60)}s`} elapsed
+    </span>
+  );
+}
+
 /* ---------- per-tool timeline rendering ---------- */
 
-function ToolRow(props: { e: Ev; res?: Ev }) {
+function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean }) {
   const e = props.e;
   const res = props.res;
+  // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
+  // cannot still be in flight (its result event was missed — e.g. logged while
+  // the tab was hidden). Rendering it forever as "running…" was exactly that:
+  // switching sessions and back "fixed" it because that reloaded the log.
+  const staleDone = !props.agentActive && !res;
   const d = e.data ?? {};
   const name = String(d.name ?? "tool");
   const out = () => (res ? String(res.data?.result ?? "") : "");
@@ -2108,11 +2165,17 @@ function ToolRow(props: { e: Ev; res?: Ev }) {
       case "bash": {
         const cmd = argStr("command");
         label = "$ " + oneLine(cmd, 96);
-        hint = argStr("timeout_ms") ? `timeout ${Math.round(Number(argStr("timeout_ms")) / 1000)}s` : "";
+        const timeoutHint = argStr("timeout_ms") ? ` · timeout ${Math.round(Number(argStr("timeout_ms")) / 1000)}s` : "";
+        // elapsed while running (live), duration once the result landed — a
+        // long bash run used to show just "running…" with no sense of time
+        hint = res
+          ? `${res.data?.durationMs ?? "?"}ms${timeoutHint}`
+          : `running${timeoutHint}`;
         body = (
           <>
             {cmd !== label.slice(2) ? codeBlock(cmd, 800) : null}
             {resultBlock(6000)}
+            {!res && <BashElapsed startedAt={e.ts} />}
           </>
         );
         break;
@@ -2234,7 +2297,7 @@ function ToolRow(props: { e: Ev; res?: Ev }) {
 
   return (
     <details
-      class={"embed" + (res ? (res.data?.ok === false ? " fail" : " done") : " running")}
+      class={"embed" + (res ? (res.data?.ok === false ? " fail" : " done") : staleDone ? " done" : " running")}
       title={`${name}${hint ? " — " + hint : ""}`}
     >
       <summary>
@@ -2242,14 +2305,14 @@ function ToolRow(props: { e: Ev; res?: Ev }) {
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
         </Show>
-        <span class="meta">{res ? hint || "" : "running…"}</span>
+        <span class="meta">{res ? hint || "" : staleDone ? "(result missed)" : "running…"}</span>
       </summary>
       {body}
     </details>
   );
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onOption?: (text: string) => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean }) {
   const e = props.e;
   const a = authorOf(e);
   const grouped =
@@ -2307,13 +2370,43 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
           </div>
         </Show>
 
-        <SwitchContent e={e} res={props.res} onOption={props.onOption} />
+        <SwitchContent e={e} res={props.res} onOption={props.onOption} answeredIds={props.answeredIds} agentActive={props.agentActive} />
       </div>
     </div>
   );
 }
 
-function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => void }) {
+/**
+ * Free-text answer row under an ask_user embed. The agent's reply arrives as
+ * a regular user prompt, so this just routes through onOption — but it lets
+ * the operator answer with something that wasn't among the offered options.
+ */
+function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => void }) {
+  const [val, setVal] = createSignal("");
+  const submit = () => {
+    const t = val().trim();
+    if (!t || props.answered) return;
+    setVal("");
+    props.onOption?.(t);
+  };
+  return (
+    <div class="qfree">
+      <input
+        type="text"
+        placeholder={props.answered ? "answered" : "or type your own answer…"}
+        disabled={props.answered}
+        value={val()}
+        oninput={(e) => setVal(e.currentTarget.value)}
+        onkeydown={(e: KeyboardEvent) => {
+          if (e.key === "Enter") { e.preventDefault(); submit(); }
+        }}
+      />
+      <button disabled={props.answered || !val().trim()} onclick={submit}>reply</button>
+    </div>
+  );
+}
+
+function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean }) {
   const e = props.e;
   switch (e.type) {
     case "prompt":
@@ -2337,7 +2430,7 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
         </>
       );
     case "tool_call":
-      return <ToolRow e={e} res={props.res} />;
+      return <ToolRow e={e} res={props.res} agentActive={props.agentActive} />;
     case "tool_result": {
       // orphan result (its call scrolled past the 300-event window)
       const out = String(e.data.result);
@@ -2369,15 +2462,25 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
     }
     case "question": {
       const opts = Array.isArray(e.data?.options) ? (e.data.options as string[]) : [];
+      // a question is ANSWERED once its tool_result exists in the log (ask_user
+      // parks the loop; the reply lands as a user prompt and the tool_result
+      // closes the call). Answered questions keep their options visible but
+      // disabled — tapping them twice used to send duplicate prompts.
+      const callId = e.data?.callId ? String(e.data.callId) : "";
+      const answered = props.answeredIds?.has(callId) ?? false;
       return (
-        <div class="embed question">
+        <div class={"embed question" + (answered ? " answered" : "")}>
           <div>❓ {String(e.data?.question ?? "")}</div>
+          <Show when={answered}>
+            <div class="meta" style="color:var(--ok)">✓ answered — continuing below</div>
+          </Show>
           <Show when={opts.length > 0}>
             <div class="qopts">
               <For each={opts}>
                 {(o) => (
                   <button
                     class="qopt"
+                    disabled={answered}
                     onclick={() => {
                       const actor = e.data?.actor;
                       if (actor) {
@@ -2395,7 +2498,7 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
               </For>
             </div>
           </Show>
-          <div class="meta">the agent is waiting for your reply — answer below or tap an option</div>
+          <FreeTextAnswer answered={answered} onOption={props.onOption} />
         </div>
       );
     }
@@ -2602,23 +2705,13 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     }
   };
 
-  const openFile = async (node: TreeNode) => {
-    try {
-      const r = await api(
-        `/api/agents/${props.agentId}/file?path=${encodeURIComponent(node.path)}`,
-      );
-      setPreview({ path: node.path, content: r.content ?? "", binary: r.binary, truncated: r.truncated });
-      // shiki lives in a lazy chunk — fetched on the first preview only
-      if (!r.binary) {
-        startHighlighting({ path: node.path, content: r.content ?? "", truncated: r.truncated });
-      }
-    } catch (ex) {
-      flashHint(`open failed: ${(ex as Error).message}`);
-    }
-  };
-
   const [hlHtml, setHlHtml] = createSignal("");
   const [hlPending, setHlPending] = createSignal(false);
+  // view mode: "code" (shiki) · "edit" (textarea + save) · "md" (rendered)
+  const [viewMode, setViewMode] = createSignal<"code" | "edit" | "md">("code");
+  const [editBuf, setEditBuf] = createSignal("");
+  const [saving, setSaving] = createSignal(false);
+  const isMd = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
   let hlRun = 0;
   const startHighlighting = async (p: { path: string; content: string; truncated?: boolean }) => {
     const run = ++hlRun;
@@ -2638,12 +2731,56 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
   };
   onCleanup(() => { hlRun++; });
 
+  const openFileWith = async (node: TreeNode, mode: "code" | "edit" | "md") => {
+    try {
+      const r = await api(
+        `/api/agents/${props.agentId}/file?path=${encodeURIComponent(node.path)}`,
+      );
+      setPreview({ path: node.path, content: r.content ?? "", binary: r.binary, truncated: r.truncated });
+      setEditBuf(r.content ?? "");
+      setViewMode(r.binary ? "code" : mode);
+      if (!r.binary && mode !== "md") {
+        startHighlighting({ path: node.path, content: r.content ?? "", truncated: r.truncated });
+      }
+    } catch (ex) {
+      flashHint(`open failed: ${(ex as Error).message}`);
+    }
+  };
+
+  /** PUT the edited buffer back; on conflict offer to load the disk version */
+  const saveFile = async () => {
+    const pv = preview();
+    if (!pv || saving()) return;
+    setSaving(true);
+    try {
+      await api(`/api/agents/${props.agentId}/file?path=${encodeURIComponent(pv.path)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: editBuf(), baseContent: pv.content }),
+      });
+      setPreview({ ...pv, content: editBuf() }); // new baseline for future conflicts
+      flashHint(`saved ${pv.path}`);
+    } catch (ex) {
+      const msg = (ex as Error).message;
+      if (msg.includes("409") || msg.includes("changed on disk")) {
+        flashHint("file changed on disk — reopen to see the current version");
+      } else {
+        flashHint(`save failed: ${msg}`);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const isEditable = (pv: { binary?: boolean; truncated?: boolean }) =>
+    !pv.binary && !pv.truncated;
+
   const row = (node: TreeNode, depth: number): any => (
     <>
       <div
         class={"filerow" + (node.dir ? " isdir" : "")}
         style={`padding-left:${depth * 13 + 8}px`}
-        onclick={() => (node.dir ? void toggleDir(node) : void openFile(node))}
+        onclick={() => (node.dir ? void toggleDir(node) : void openFileWith(node, "code"))}
         title={node.dir ? `browse ${node.path}` : `preview ${node.path}`}
       >
         <span class="ficon">{node.dir ? (expanded().has(node.path) ? "▾" : "▸") : "·"}</span>
@@ -2676,6 +2813,15 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       <Show when={preview()}>
         {(pv) => (
           <Modal title={`🗂 ${pv().path}`} onClose={() => { hlRun++; setPreview(null); }}>
+            <div class="filetoolbar">
+              <Show when={isMd(pv().path) && !pv().binary}>
+                <button class={viewMode() === "md" ? "on" : ""} onclick={() => setViewMode("md")} title="rendered markdown">👁 preview</button>
+              </Show>
+              <button class={viewMode() === "code" ? "on" : ""} onclick={() => { setViewMode("code"); if (!hlHtml()) startHighlighting({ path: pv().path, content: pv().content, truncated: pv().truncated }); }} title="syntax-highlighted source">{"</>"} code</button>
+              <Show when={isEditable(pv())}>
+                <button class={viewMode() === "edit" ? "on" : ""} onclick={() => setViewMode("edit")} title="edit and save back to the workspace">✎ edit</button>
+              </Show>
+            </div>
             <Show
               when={!pv().binary}
               fallback={
@@ -2684,13 +2830,34 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
                 </div>
               }
             >
-              <CodePreview
-                path={pv().path}
-                content={pv().content}
-                html={hlHtml()}
-                pending={hlPending()}
-                truncated={!!pv().truncated}
-              />
+              <Show when={viewMode() === "edit"} fallback={
+                <Show when={viewMode() === "md" && isMd(pv().path)} fallback={
+                  <CodePreview
+                    path={pv().path}
+                    content={pv().content}
+                    html={hlHtml()}
+                    pending={hlPending()}
+                    truncated={!!pv().truncated}
+                  />
+                }>
+                  <div class="content mdpreview" innerHTML={renderMarkdown(pv().content)} />
+                </Show>
+              }>
+                <div class="fileeditor">
+                  <textarea
+                    class="mono"
+                    value={editBuf()}
+                    oninput={(e) => setEditBuf(e.currentTarget.value)}
+                    spellcheck={false}
+                  />
+                  <div class="filerow-actions">
+                    <span class="muted">{fmtK(editBuf().length)} bytes</span>
+                    <button class="savebtn" disabled={saving() || editBuf() === pv().content} onclick={() => void saveFile()}>
+                      {saving() ? "saving…" : "💾 save"}
+                    </button>
+                  </div>
+                </div>
+              </Show>
             </Show>
           </Modal>
         )}
