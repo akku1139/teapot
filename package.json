@@ -1,6 +1,6 @@
 {
   "name": "teapot-coding-agent",
-  "version": "0.17.0",
+  "version": "0.17.1",
   "description": "A lightweight, always-on multi-agent harness for AI coding agents",
   "type": "module",
   "license": "AGPL-3.0-or-later",
