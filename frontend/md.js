@@ -26,12 +26,15 @@ function renderEscaped(lines) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    // fenced code block
-    if (/^```\w*\s*$/.test(line)) {
+    // fenced code block. The info string may be any non-whitespace run
+    // (`js`, `/subject/why-qa`, `text .txt`…) — the old /\w*/ pattern rejected
+    // slash-y pseudo-paths, which made the line fall through to paragraph
+    // handling and HANGED the renderer on such chats.
+    if (/^```[^\n]*$/.test(line) && !/^```.+\`\`\`/.test(line)) {
       const buf = [];
       i++;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) buf.push(lines[i++]);
-      i++; // closing fence
+      i++; // closing fence (may be missing — unclosed fence just runs to EOF)
       out.push(`<pre><code>${buf.join("\n")}</code></pre>`);
       continue;
     }

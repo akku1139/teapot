@@ -86,3 +86,68 @@ test("md: XSS safety holds for the new constructs", () => {
   assert.match(out, /&lt;script&gt;/);
   assert.match(out, /&lt;b&gt;x&lt;b?\/?&gt;|&lt;b&gt;x&lt;\/b&gt;/);
 });
+
+/* ---------- robustness: malformed / hostile input must never hang or throw ----------
+ * These run every case under a watchdog: a regression back to an infinite loop
+ * (e.g. the fenced-code bug where ```` ```/path/to/thing ```` wasn't recognized
+ * as an opening fence and wedged the parser) fails fast instead of freezing
+ * the whole web UI.
+ */
+
+const CASES: [string, string][] = [
+  // fences with unusual info strings (the original hang)
+  ["fence with slash-lang", "```/subject/why-qa/trivia-qa-space\n**Q.** text\n```"],
+  ["fence with dash-lang", "```my-lang\nx\n```"],
+  ["fence with spaces in info", "```text file.txt\nx\n```"],
+  ["fence with only lang dots", "```.json\n{}\n```"],
+  ["unclosed fence", "text\n```\nnever closed"],
+  ["unclosed fence with lang", "```js\nconst x = 1;"],
+  ["empty fence", "```\n```"],
+  ["lone fence line", "```"],
+  ["four-backtick fence", "````\nx\n```"],
+  ["indented fence", "  ```\n  x\n  ```"],
+  // broken emphasis / links
+  ["unclosed bold", "**never closed"],
+  ["unclosed italic", "*never closed _also open"],
+  ["unclosed code span", "`never closed"],
+  ["unclosed link", "[text](http://x"],
+  ["link with no url", "[text]()"],
+  ["nested emphasis soup", "***__~~[[[[((("],
+  ["stray brackets", "] ][ [[ ]] (] )("],
+  // tables gone wrong
+  ["table without separator", "| a | b |\n| no separator here |"],
+  ["table one cell", "| lone |"],
+  ["ragged table", "| a | b |\n|---|---|\n| only |\n| x | y | z | extra |"],
+  // lists gone wrong
+  ["list marker chaos", "- * - + 1. 2) ] ."],
+  ["deep indent jump", "- a\n              - b\n                        - c"],
+  ["negative-ish list", "-1. not a list\n-2. also not"],
+  // blockquotes & hr chaos
+  ["quote flood", "> > > > > deep"],
+  ["hr soup", "---\n***\n___\n- - -\n* * *"],
+  // unicode / control chars
+  ["cjk + emoji mix", "# 日本語 🫖 テスト\n- 箇条書き ✅ **太字**"],
+  ["rtl text", "مرحبا שלום hello"],
+  ["null-ish escapes", "backslash \\\\ sequences \\\\ everywhere"],
+  ["very long single word", "x".repeat(5000)],
+  ["long line no spaces", "#".repeat(3000)],
+  ["many newlines", "\n".repeat(2000) + "end"],
+]
+
+for (const [name, src] of CASES) {
+  test(`md survives: ${name}`, () => {
+    assert.doesNotThrow(() => renderMarkdown(src));
+  });
+}
+
+test("md: slash-lang fence actually renders as code (regression for the UI freeze)", () => {
+  const out = renderMarkdown("```/subject/why-qa/trivia-qa-space\n**Q.** text\n```");
+  assert.match(out, /<pre><code>/);
+  assert.match(out, /\*\*Q\.\*\* text/); // inner markdown NOT processed inside code
+});
+
+test("md: unclosed fence runs to EOF instead of hanging", () => {
+  const out = renderMarkdown("before\n```js\nconst x = 1;");
+  assert.match(out, /<pre><code>/);
+  assert.match(out, /const x = 1;/);
+});
