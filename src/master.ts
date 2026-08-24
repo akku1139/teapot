@@ -108,6 +108,8 @@ export interface TaskConfig {
 
 export interface TeapotConfig {
   port: number;
+  /** listen address — "127.0.0.1" (default), "0.0.0.0" for LAN, … */
+  host?: string;
   dataDir: string;
   llm: Partial<LlmConfig>;
   /** named OpenAI-compatible providers */
@@ -140,6 +142,7 @@ const DATA_DIR =
 
 const DEFAULT_CONFIG: TeapotConfig = {
   port: Number(process.env.TEAPOT_PORT ?? 7788),
+  host: process.env.TEAPOT_HOST,
   dataDir: DATA_DIR,
   llm: {
     baseUrl: process.env.TEAPOT_BASE_URL ?? "https://openrouter.ai/api/v1",

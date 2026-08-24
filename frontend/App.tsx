@@ -16,7 +16,7 @@ interface Agent {
   parent?: string;
   autoContinue?: boolean;
   autoCompact?: boolean;
-  ctx?: { usedTokens: number; compactAt: number; window: number };
+  ctx?: { usedTokens: number; compactAt: number; window: number; compactAtIsManual?: boolean };
 }
 interface Ev {
   id: string; seq: number; ts: string; session: string; branch: string;
@@ -171,11 +171,16 @@ export default function App() {
   });
   // single writer: resolves the active theme and slaps it on <html>
   createEffect(() => {
-    document.documentElement.dataset.theme = themeAuto()
+    const active = themeAuto()
       ? sysPrefersLight()
         ? sysLightTheme()
         : sysDarkTheme()
       : fixedTheme();
+    document.documentElement.dataset.theme = active;
+    // light/dark appearance for components that ship their own palettes
+    // (e.g. shiki dual-theme code blocks)
+    document.documentElement.dataset.appearance =
+      THEMES.find((t) => t.key === active)?.mode ?? "dark";
   });
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
@@ -237,7 +242,10 @@ export default function App() {
     liveRenderTimer = setTimeout(() => {
       liveRenderTimer = undefined;
       setLiveText(live()?.text ?? "");
-    }, 60);
+      // adaptive throttle: the WHOLE text re-parses each tick, so stretch the
+      // interval as it grows — long streams were re-rendering every 60ms and
+      // bogging Firefox down
+    }, (live()?.text.length ?? 0) > 20_000 ? 250 : (live()?.text.length ?? 0) > 6_000 ? 120 : 60);
   });
   onCleanup(() => clearTimeout(liveRenderTimer));
 
@@ -406,7 +414,23 @@ export default function App() {
     return { total, done };
   });
 
-  const refreshAgents = () => api("/api/agents").then((d) => setAgents(d.agents)).catch(() => {});
+  const refreshAgents = () =>
+    api("/api/agents")
+      .then((d) =>
+        setAgents((prev) => {
+          // Reference-stabilize snapshots: the server re-serializes every
+          // agent on each poll, and new object identities made Solid re-run
+          // EVERY expression bound to sel()*.x (the "whole panel flashes"
+          // effect). Reuse the previous object when the snapshot is equal,
+          // so unchanged panels skip their fine-grained updates entirely.
+          const prevById = new Map(prev.map((a) => [a.id, a]));
+          return (d.agents ?? []).map((a: Agent) => {
+            const p = prevById.get(a.id);
+            return p && JSON.stringify(p) === JSON.stringify(a) ? p : a;
+          });
+        }),
+      )
+      .catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
 
   // scheduled (cron) tasks — shown in the right panel so "what runs when" is legible
@@ -621,8 +645,19 @@ export default function App() {
         return;
       }
       if (msg.kind === "event" && FEED_IRRELEVANT.has(msg.event?.type)) return;
+      // hidden tab: defer feed work until the tab is visible again — layout
+      // is paused anyway, so fetching + re-rendering now is pure waste. The
+      // single shared timer collapses the backlog into ONE refresh on return.
+      if (document.visibilityState === "hidden") {
+        pendingRefresh = true;
+        if (!timer) timer = setTimeout(runFeedRefresh, 2_000);
+        return;
+      }
       if (timer) return;
-      timer = setTimeout(async () => {
+      timer = setTimeout(runFeedRefresh, 400);
+    };
+    let pendingRefresh = false;
+    const runFeedRefresh = async () => {
         timer = null;
         await refreshAgents();
         await refreshMetrics();
@@ -658,8 +693,15 @@ export default function App() {
             ),
           );
         }
-      }, 400);
     };
+    const onTabVisible = () => {
+      if (document.visibilityState === "visible" && pendingRefresh) {
+        pendingRefresh = false;
+        if (!timer) timer = setTimeout(runFeedRefresh, 150);
+      }
+    };
+    document.addEventListener("visibilitychange", onTabVisible);
+    onCleanup(() => document.removeEventListener("visibilitychange", onTabVisible));
   }
 
   /* ---------- /session/<id> routing ---------- */
@@ -1201,83 +1243,6 @@ export default function App() {
     <div class={"layout" + (showRight() ? "" : " right-hidden")}>
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
-        <h1>
-          <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
-          <span style="float:right;display:flex;gap:4px;align-items:center">
-            <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
-            <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
-            <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
-          </span>
-        </h1>
-        <Show when={showThemes()}>
-          <div class="themepop">
-            <label class="trow" title="switch automatically when the OS switches appearance — pick which theme to use for each">
-              <input
-                type="checkbox"
-                checked={themeAuto()}
-                onchange={(e) => {
-                  const v = e.currentTarget.checked;
-                  setThemeAuto(v);
-                  localStorage.setItem("teapot.theme.auto", v ? "1" : "0");
-                }}
-              />
-              follow system
-            </label>
-            <Show
-              when={!themeAuto()}
-              fallback={
-                <>
-                  <label class="trow">system light →
-                    <select
-                      class="w100"
-                      value={sysLightTheme()}
-                      onchange={(e) => {
-                        setSysLightTheme(e.currentTarget.value);
-                        localStorage.setItem("teapot.theme.light", e.currentTarget.value);
-                      }}
-                    >
-                      <For each={THEMES.filter((t) => t.mode === "light")}>
-                        {(t) => <option value={t.key}>{t.label}</option>}
-                      </For>
-                    </select>
-                  </label>
-                  <label class="trow">system dark →
-                    <select
-                      class="w100"
-                      value={sysDarkTheme()}
-                      onchange={(e) => {
-                        setSysDarkTheme(e.currentTarget.value);
-                        localStorage.setItem("teapot.theme.dark", e.currentTarget.value);
-                      }}
-                    >
-                      <For each={THEMES.filter((t) => t.mode === "dark")}>
-                        {(t) => <option value={t.key}>{t.label}</option>}
-                      </For>
-                    </select>
-                  </label>
-                </>
-              }
-            >
-              <div class="themegrid">
-                <For each={THEMES}>
-                  {(t) => (
-                    <button
-                      class={"themebtn" + (fixedTheme() === t.key ? " on" : "")}
-                      title={`${t.label} (${t.mode})`}
-                      onclick={() => {
-                        setFixedTheme(t.key);
-                        localStorage.setItem("teapot.theme", t.key);
-                      }}
-                    >
-                      <span class="swdots">{t.sw.map((c) => <i style={{ background: c }} />)}</span>
-                      {t.label}
-                    </button>
-                  )}
-                </For>
-              </div>
-            </Show>
-          </div>
-        </Show>
         <div class="agent-list">
           <For each={treeRows()}>
             {({ a, depth }) => (
@@ -1306,13 +1271,90 @@ export default function App() {
           </For>
         </div>
         <div class="sidebar-footer">
-          <div class="brand">🫖 teapot <span class="version">v{__APP_VERSION__}</span></div>
-        </div>
-        <div class="metrics">
-          <Show when={metrics()}>
-            master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB<br />
-            load1 {metrics().loadavg1} · up {Math.floor(metrics().uptimeSec / 60)}m
+          <Show when={showThemes()}>
+            <div class="themepop">
+              <label class="trow" title="switch automatically when the OS switches appearance — pick which theme to use for each">
+                <input
+                  type="checkbox"
+                  checked={themeAuto()}
+                  onchange={(e) => {
+                    const v = e.currentTarget.checked;
+                    setThemeAuto(v);
+                    localStorage.setItem("teapot.theme.auto", v ? "1" : "0");
+                  }}
+                />
+                follow system
+              </label>
+              <Show
+                when={!themeAuto()}
+                fallback={
+                  <>
+                    <label class="trow">system light →
+                      <select
+                        class="w100"
+                        value={sysLightTheme()}
+                        onchange={(e) => {
+                          setSysLightTheme(e.currentTarget.value);
+                          localStorage.setItem("teapot.theme.light", e.currentTarget.value);
+                        }}
+                      >
+                        <For each={THEMES.filter((t) => t.mode === "light")}>
+                          {(t) => <option value={t.key}>{t.label}</option>}
+                        </For>
+                      </select>
+                    </label>
+                    <label class="trow">system dark →
+                      <select
+                        class="w100"
+                        value={sysDarkTheme()}
+                        onchange={(e) => {
+                          setSysDarkTheme(e.currentTarget.value);
+                          localStorage.setItem("teapot.theme.dark", e.currentTarget.value);
+                        }}
+                      >
+                        <For each={THEMES.filter((t) => t.mode === "dark")}>
+                          {(t) => <option value={t.key}>{t.label}</option>}
+                        </For>
+                      </select>
+                    </label>
+                  </>
+                }
+              >
+                <div class="themegrid">
+                  <For each={THEMES}>
+                    {(t) => (
+                      <button
+                        class={"themebtn" + (fixedTheme() === t.key ? " on" : "")}
+                        title={`${t.label} (${t.mode})`}
+                        onclick={() => {
+                          setFixedTheme(t.key);
+                          localStorage.setItem("teapot.theme", t.key);
+                        }}
+                      >
+                        <span class="swdots">{t.sw.map((c) => <i style={{ background: c }} />)}</span>
+                        {t.label}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </div>
           </Show>
+          <div class="footer-row">
+            <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
+            <div class="brand">🫖 teapot <span class="version">v{__APP_VERSION__}</span></div>
+            <span style="margin-left:auto;display:flex;gap:4px;align-items:center">
+              <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
+              <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
+              <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
+            </span>
+          </div>
+          <div class="metrics">
+            <Show when={metrics()}>
+              master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB<br />
+              load1 {metrics().loadavg1} · up {Math.floor(metrics().uptimeSec / 60)}m
+            </Show>
+          </div>
         </div>
       </nav>
 
@@ -1823,7 +1865,7 @@ export default function App() {
                   class="pill ok"
                   title={`${fmtK(sel()!.stats.cachedInputTokens)} tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
                 >
-                  ⚡ {Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}% cached
+                  ⚡ {(Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 1000) / 10)}% cached
                 </span>
               </Show>
             </div>
@@ -1840,15 +1882,22 @@ export default function App() {
                 // find model metadata for actual context window
                 const modelMeta = models().find((m) => m.id === sel()!.model);
                 const effectiveWindow = c().window || modelMeta?.contextLength || 0;
+                // one decimal place — 0.4% vs 0% matters on million-token windows
                 const pct = effectiveWindow
-                  ? Math.min(999, Math.round((c().usedTokens / effectiveWindow) * 100))
+                  ? Math.min(999, (c().usedTokens / effectiveWindow) * 100)
                   : 0;
                 const cls =
                   !effectiveWindow ? "" : pct >= 85 ? "crit" : pct >= 70 ? "warn" : "ok";
+                const fmtPct = (v: number) => {
+                  const r = Math.round(v * 10) / 10;
+                  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+                };
                 // derived compact budget = 75% of context window (unless manually overridden in config)
                 const derivedBudget = effectiveWindow ? Math.round(effectiveWindow * 0.75) : 0;
                 const manualBudget = c().compactAt;
-                const usingDerived = !manualBudget || manualBudget >= effectiveWindow;
+                // the server now reports whether the budget was pinned in
+                // config; older servers just omit the flag → fall back
+                const usingDerived = c().compactAtIsManual === true ? false : (!manualBudget || manualBudget >= effectiveWindow);
                 return (
                   <div
                     class="ctxblock"
@@ -1859,7 +1908,7 @@ export default function App() {
                       <b>~{fmtK(c().usedTokens)} tok</b>
                       <Show when={effectiveWindow}>
                         <span class={`pill ${cls}`}>
-                          {pct}% of {fmtK(effectiveWindow)}
+                          {fmtPct(pct)}% of {fmtK(effectiveWindow)}
                         </span>
                       </Show>
                     </div>
@@ -2560,10 +2609,35 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
         `/api/agents/${props.agentId}/file?path=${encodeURIComponent(node.path)}`,
       );
       setPreview({ path: node.path, content: r.content ?? "", binary: r.binary, truncated: r.truncated });
+      // shiki lives in a lazy chunk — fetched on the first preview only
+      if (!r.binary) {
+        startHighlighting({ path: node.path, content: r.content ?? "", truncated: r.truncated });
+      }
     } catch (ex) {
       flashHint(`open failed: ${(ex as Error).message}`);
     }
   };
+
+  const [hlHtml, setHlHtml] = createSignal("");
+  const [hlPending, setHlPending] = createSignal(false);
+  let hlRun = 0;
+  const startHighlighting = async (p: { path: string; content: string; truncated?: boolean }) => {
+    const run = ++hlRun;
+    setHlHtml("");
+    setHlPending(true);
+    try {
+      const { highlightChunks } = await import("./shiki");
+      for await (const chunk of highlightChunks(p.path, p.content)) {
+        if (hlRun !== run) return;
+        setHlHtml((prev) => prev + chunk);
+      }
+    } catch {
+      if (hlRun === run) setHlHtml(""); // give up → plain fallback
+    } finally {
+      if (hlRun === run) setHlPending(false);
+    }
+  };
+  onCleanup(() => { hlRun++; });
 
   const row = (node: TreeNode, depth: number): any => (
     <>
@@ -2602,13 +2676,58 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       </div>
       <Show when={preview()}>
         {(pv) => (
-          <Modal title={`🗂 ${pv().path}`} onClose={() => setPreview(null)}>
-            <pre class="mono" style="max-height:62vh;overflow:auto;white-space:pre-wrap;margin:0">
-              {pv().binary ? "(binary file — inspect it from the terminal)" : pv().content}
-              {pv().truncated ? "\n\n… truncated (first 100 KB)" : ""}
-            </pre>
+          <Modal title={`🗂 ${pv().path}`} onClose={() => { hlRun++; setPreview(null); }}>
+            <Show
+              when={!pv().binary}
+              fallback={
+                <div class="mono" style="margin:0;color:var(--dim)">
+                  (binary file — inspect it from the terminal)
+                </div>
+              }
+            >
+              <CodePreview
+                path={pv().path}
+                content={pv().content}
+                html={hlHtml()}
+                pending={hlPending()}
+                truncated={!!pv().truncated}
+              />
+            </Show>
           </Modal>
         )}
+      </Show>
+    </>
+  );
+}
+
+/* ---------- highlighted file preview body ---------- */
+
+/**
+ * Receives rendered shiki chunks as they stream in (`html` grows per chunk);
+ * shows a lightweight loading hint until the first chunk lands.
+ */
+function CodePreview(props: { path: string; content: string; html: string; pending: boolean; truncated: boolean }) {
+  return (
+    <>
+      <Show
+        when={props.html}
+        fallback={
+          props.pending ? (
+            <div class="muted" style="padding:8px;font-size:12px">
+              ✨ highlighting {props.path.split("/").pop()}…
+            </div>
+          ) : (
+            <pre class="mono" style="max-height:62vh;overflow:auto;white-space:pre-wrap;margin:0">
+              {props.content}
+            </pre>
+          )
+        }
+      >
+        {/* shiki emits its own <pre class="shiki"><code>…</code></pre>; content is shiki-generated HTML */}
+        <div class="filepreview" innerHTML={props.html} />
+      </Show>
+      <Show when={props.truncated}>
+        <div class="muted" style="padding-top:6px;font-size:11.5px">… truncated (first 100 KB)</div>
       </Show>
     </>
   );

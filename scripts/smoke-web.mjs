@@ -177,9 +177,9 @@ if (!(await waitFor("agent list", () => bodyText().includes("alpha")))) process.
 console.log("deep render ok: sidebar shows agent");
 
 // …and the runtime panel must render its ctx gauge (the regression site):
-// used 123456 / window 200000 → exactly "62% of 200k"
-if (!(await waitFor("runtime gauge", () => bodyText().includes("62% of 200k")))) process.exit(1);
-console.log("deep render ok: context gauge shows '62% of 200k'");
+// used 123456 / window 200000 → "61.7% of 200k" (one-decimal percentages)
+if (!(await waitFor("runtime gauge", () => bodyText().includes("61.7% of 200k")))) process.exit(1);
+console.log("deep render ok: context gauge shows '61.7% of 200k'");
 
 // stats grid + cached pill + compaction line from the redesigned runtime card
 for (const marker of ["turns", "in / 2.0k out", "60% cached"]) {

@@ -156,10 +156,16 @@ export class Agent {
   private pendingPrompts: { source: string; text: string }[] = [];
   private stopRequested = false;
   private wake: (() => void) | null = null;
+  /** set while a long-parking tool (wait_children) holds the run chain */
+  private parkedByTool = false;
+  /** status before parking, restored on unpark */
+  private preParkedStatus: { status: AgentStatus; reason: string } | null = null;
   private abort: AbortController | null = null;
   /** aborted only by dispose(): kills in-flight subprocess groups instantly */
   private toolAbort = new AbortController();
   private runChain: Promise<void> = Promise.resolve();
+  /** whether contextTokenBudget came from config (manual) or was derived */
+  private manualCompactBudget = false;
   private lastProgressAt = Date.now();
   /** the provider's own prompt_tokens from the last completed turn */
   private lastUsage?: { input: number; output: number; cached?: number };
@@ -192,6 +198,9 @@ export class Agent {
       provider: "",
       ...opts,
     };
+    // remember WHERE the budget came from: config = manual, anything else is
+    // derived from a known context window (or stays at the default)
+    this.manualCompactBudget = opts.contextTokenBudget !== undefined;
     // a declared window implies its own budget: compact at ~75% of the
     // model's real context unless the config set an explicit one (the 96k
     // default only makes sense for unknown-window models)
@@ -212,6 +221,8 @@ export class Agent {
       skillRoots: this.skillRoots,
       signal: this.toolAbort.signal,
       readOnly: this.opts.readOnlyTools,
+      onIdlePark: (reason) => this.parkForTool(reason),
+      onIdleUnpark: () => this.unparkFromTool(),
     };
     // the session id IS the directory name — one directory per incarnation
     this.mainSession = path.basename(opts.sessionDir);
@@ -257,6 +268,37 @@ export class Agent {
 
   get workspace(): string {
     return this.opts.workspace;
+  }
+
+  /** true when the operator pinned contextTokenBudget in the config */
+  get compactBudgetIsManual(): boolean {
+    return this.manualCompactBudget;
+  }
+
+  /**
+   * Long-parking tools (wait_children) flip the visible status to idle so the
+   * operator isn't staring at a running spinner for minutes. The run chain is
+   * still parked inside the tool — but any prompt/stop wakes it immediately.
+   */
+  private parkForTool(reason: string): void {
+    if (this.parkedByTool || this.status !== "running") return;
+    this.parkedByTool = true;
+    this.preParkedStatus = { status: this.status, reason: this.statusReason };
+    this.status = "idle";
+    this.statusReason = `${reason} (idle — send a message to take over; resumes automatically when a sub-agent settles)`;
+    bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+  }
+
+  private unparkFromTool(): void {
+    if (!this.parkedByTool) return;
+    this.parkedByTool = false;
+    const prev = this.preParkedStatus;
+    this.preParkedStatus = null;
+    if (!this.stopRequested) {
+      // restore the pre-park display state (running again)
+      this.status = prev?.status ?? "running";
+      bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+    }
   }
 
   /** current LLM settings (read-only view) */
@@ -582,6 +624,10 @@ export class Agent {
       ctx: {
         usedTokens: this.lastUsage?.input ?? this.estimateTokens(),
         compactAt: this.opts.contextTokenBudget,
+        // false when the budget was derived (75% of a known window) instead of
+        // being pinned in config — lets the UI say "75% of window" rather than
+        // mislabeling every inferred-window model "manual override"
+        compactAtIsManual: this.compactBudgetIsManual,
         window: this.opts.contextWindowTokens || 0,
       },
       pendingPrompts: this.pendingPrompts.length,
@@ -601,6 +647,16 @@ export class Agent {
    * lazy session restore (before the mailbox is filled, so no duplicates).
    */
   enqueuePrompt(text: string, source = "user"): void {
+    // a prompt during a tool park (wait_children) takes over instantly
+    this.unparkFromTool();
+    this.wake?.();
+    // a user message means the operator JUST checked in — they obviously know
+    // the state, so don't nag with a progress report right after
+    if (source === "user") {
+      this.lastProgressAt = Date.now();
+      this.activityChars = 0;
+      this.turnsSinceProgress = 0;
+    }
     void this.ensureReady()
       .then(() => {
         this.pendingPrompts.push({ source, text });
@@ -648,6 +704,7 @@ export class Agent {
 
   stop(reason = "stopped by user"): void {
     this.stopRequested = true;
+    this.parkedByTool = false; // the park display must not outlive a stop
     // interrupt an in-flight LLM call immediately instead of waiting it out
     this.abort?.abort();
     this.wake?.();

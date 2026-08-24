@@ -797,9 +797,10 @@ export function buildApp(master: Master): Hono {
   return app;
 }
 
-export function serveApp(app: Hono, port: number): void {
+export function serveApp(app: Hono, port: number, host?: string): void {
   const wss = new WebSocketServer({ noServer: true });
-  serve({ fetch: app.fetch, port, websocket: { server: wss } }, (info) => {
-    console.log(`[teapot] master listening on http://localhost:${info.port}`);
+  serve({ fetch: app.fetch, port, hostname: host, websocket: { server: wss } }, (info) => {
+    const shown = host && host !== "0.0.0.0" && host !== "::" ? `http://${host}:${info.port}` : `http://localhost:${info.port} (all interfaces)`;
+    console.log(`[teapot] master listening on ${shown}`);
   });
 }

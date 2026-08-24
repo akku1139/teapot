@@ -40,6 +40,13 @@ export interface ToolContext {
      */
     wait(ids: string[] | undefined, timeoutMs: number): Promise<{ note: string }>;
   };
+  /**
+   * Park/unpark the agent UI while a tool blocks for a long time
+   * (wait_children). While parked the agent displays as idle-with-reason,
+   * and any user prompt/stop wakes it immediately.
+   */
+  onIdlePark?: (reason: string) => void;
+  onIdleUnpark?: () => void;
 }
 
 export interface ToolResult {
@@ -886,10 +893,15 @@ export const TOOLS: ToolDef[] = [
       if (!sa) return { ok: false, result: "sub-agents are not available here" };
       const ids = Array.isArray(args.ids) ? args.ids.map(String) : undefined;
       const ms = Math.min(Math.max(num(args.timeout_ms, 300_000), 1_000), 3_600_000);
+      // park VISIBLY: the UI shows idle ("waiting on sub-agents") instead of a
+      // running spinner, and any user prompt / stop wakes us instantly
+      ctx.onIdlePark?.(`waiting on sub-agent${ids?.length === 1 ? ` ${ids[0]}` : "s"}`);
       try {
         const r = await sa.wait(ids, ms);
+        ctx.onIdleUnpark?.();
         return { ok: true, result: r.note };
       } catch (e) {
+        ctx.onIdleUnpark?.();
         return { ok: false, result: `wait failed: ${(e as Error).message}` };
       }
     },

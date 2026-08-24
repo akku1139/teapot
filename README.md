@@ -6,9 +6,11 @@ tab, and any number of long-running agents.
 
 ## Design principles
 
-- **TypeScript + Node.js**, small dependency set (`hono`, `openai`,
+- **TypeScript + Node.js**, small runtime dependency set (`hono`, `openai`,
   `@hono/node-server`, `ws`, `zod`, `@mozilla/readability` + `happy-dom` for
-  `read_url`)
+  `read_url`). Frontend-only libraries (SolidJS, xterm.js, shiki) are
+  devDependencies — they're compiled into the static bundle under `public/`
+  and never touch the server's runtime install.
 - **Idle cost ≈ 0**: no polling loops; everything is event-driven or driven by
   one 15-second scheduler tick. Verified: master sits at ~0% CPU when idle.
 - **No TUI** — Discord-style chat UI built with **SolidJS + Vite**
