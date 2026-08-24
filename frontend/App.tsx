@@ -364,6 +364,12 @@ export default function App() {
     const { consumed } = pairInfo();
     const real = events().filter((e) => {
       if (!FEED_TYPES.has(e.type)) return false;
+      // report_progress calls are fully rendered by the progress embed below
+      // (the timeline's 📈 row + the right panel's snapshot) — the tool-call
+      // row would just repeat the same content a third time
+      if (e.type === "tool_call" && e.data?.name === "report_progress") return false;
+      // paired tool results live inside their call's merged row
+      if (e.type === "tool_result" && e.data?.name === "report_progress") return false;
       // paired tool results live inside their call's merged row
       if (e.type === "tool_result") return !consumed.has(e.id);
       // tool-call carrier turns have no visible payload — the ToolRow below
