@@ -1226,6 +1226,22 @@ export default function App() {
     });
   }
 
+  // (re)mount both panes whenever any layout input changes — tabs, pane
+  // assignment, split mode, drawer height. This effect was accidentally lost
+  // in an earlier refactor, so after reopening the drawer (or switching
+  // tabs) nothing re-attached live sessions and the pane stayed "no shell".
+  createEffect(() => {
+    void termTabs();
+    void splitView();
+    void paneL();
+    void paneR();
+    void termHeight();
+    requestAnimationFrame(() => {
+      mountPane(0);
+      if (splitView()) mountPane(1);
+    });
+  });
+
   // opening the drawer ensures a shell for the selected agent
   createEffect(() => {
     if (!termOpen()) return;
@@ -1273,6 +1289,15 @@ export default function App() {
   // legacy single-host refs kept for pane mounting
   const setPaneHost = (idx: number) => (el: HTMLDivElement) => {
     paneHosts[idx] = el;
+    // The drawer is conditionally mounted (<Show when={termOpen()}>). On
+    // reopen the refs arrive fresh, but nothing re-ran mountPane — so live
+    // sessions stayed detached and the pane showed "no shell here". Mount
+    // right here; also refit after the drawer finishes animating in.
+    if (el) requestAnimationFrame(() => {
+      mountPane(idx);
+      if (splitView()) mountPane(1);
+      setTimeout(() => mountPane(idx), 200);
+    });
   };
 
   onMount(() => {
