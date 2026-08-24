@@ -672,6 +672,8 @@ export default function App() {
   // and must NOT touch events/scroll (they used to overwrite the freshly
   // loaded timeline with the PREVIOUS session's rows).
   let feedGeneration = 0;
+  // /branches is fork-only data: skip refetching within one generation
+  let lastBranchesGen = -1;
 
   /** merge fetched page into state by id, seq-ascending, refs stabilized */
   function mergeEvents(incoming: Ev[]): void {
@@ -725,11 +727,17 @@ export default function App() {
     const genAtStart = feedGeneration;
     try {
       const bf = branchFilter();
+      // /branches only changes on fork — fetch it on session switch, not on
+      // every tail refresh (each call re-reads the log server-side otherwise)
+      const needsBranches = genAtStart !== lastBranchesGen || !branches().length;
       const [ev, br, sk] = await Promise.all([
         api(`/api/agents/${id}/events?limit=300${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`),
-        api(`/api/agents/${id}/branches`),
+        needsBranches
+          ? api(`/api/agents/${id}/branches`)
+          : Promise.resolve({ branches: branches() }),
         api(`/api/agents/${id}/skills`).catch(() => ({ skills: [] })),
       ]);
+      if (needsBranches) lastBranchesGen = genAtStart;
       // stale iff a DIFFERENT session is now selected or a switch happened
       // while we were in flight — same-session refreshes must not drop us
       if (genAtStart !== feedGeneration || selected() !== id) return; // stale view

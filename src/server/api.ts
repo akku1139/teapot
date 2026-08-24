@@ -800,7 +800,8 @@ export function buildApp(master: Master): Hono {
   app.get("/api/agents/:id/branches", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    const events = await readEvents(a.log.filePath);
+    // cached like /events — this used to bypass it and re-read the whole log
+    const events = await readEventsCached(a.log.filePath);
     const branches = new Map<string, { branch: string; events: number; forkedFrom?: unknown }>();
     for (const e of events) {
       const b = branches.get(e.branch) ?? { branch: e.branch, events: 0 };
