@@ -107,6 +107,7 @@ const authorOf = (e: Ev) => {
 const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
   "state", "error", "fork", "goal", "todo", "question", "decision", "compaction",
+  "system_note",
 ]);
 // system_note rows never RENDER, but two of them drive pending-echo state:
 // prompt-delivered flips the echo to "sent" and must ALSO refresh the feed so
@@ -1762,25 +1763,49 @@ export default function App() {
   const act = (path: string) =>
     () => selected() && api(`/api/agents/${selected()}${path}`, { method: "POST" }).then(refreshAgents);
 
+  // Goal input as SIGNALS (not uncontrolled DOM): the right panel re-renders
+  // on every agent snapshot, and status flips / <Show> boundary crossings
+  // rebuilt the form subtree — silently wiping half-typed goals mid-input.
+  const [goalDraft, setGoalDraft] = createSignal("");
+  const [goalVerifyDraft, setGoalVerifyDraft] = createSignal("");
+  const [goalDirty, setGoalDirty] = createSignal(false);
+  const [goalNotify, setGoalNotify] = createSignal(true);
+  let goalSeededFor = "";
+  createEffect(() => {
+    const id = selected();
+    if (!id) return;
+    const g = sel()?.goal;
+    if (id !== goalSeededFor) {
+      goalSeededFor = id; // session switch → seed from the server copy
+      setGoalDirty(false);
+      setGoalDraft("");
+      setGoalVerifyDraft("");
+      void g; // goal text itself stays in the read-only card above the form
+    }
+  });
   const setGoal = async (e: Event) => {
     e.preventDefault();
-    const input = document.getElementById("goal-input") as HTMLTextAreaElement;
-    const verifyInput = document.getElementById("goal-verify-input") as HTMLTextAreaElement | null;
-    const notify = (document.getElementById("goal-notify") as HTMLInputElement)?.checked ?? true;
-    if (!selected() || !input.value.trim()) return;
-    await api(`/api/agents/${selected()}/goal`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        text: input.value,
-        notify,
-        // only send when non-empty — an empty box must not wipe a contract
-        ...(verifyInput?.value.trim() ? { verify: verifyInput.value } : {}),
-      }),
-    });
-    input.value = "";
-    if (verifyInput) verifyInput.value = "";
-    refreshAgents();
+    if (!selected() || !goalDraft().trim()) return;
+    try {
+      await api(`/api/agents/${selected()}/goal`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: goalDraft(),
+          notify: goalNotify(),
+          // only send when non-empty — an empty box must not wipe a contract
+          ...(goalVerifyDraft().trim() ? { verify: goalVerifyDraft() } : {}),
+        }),
+      });
+      setGoalDraft("");
+      setGoalVerifyDraft("");
+      setGoalDirty(false);
+      refreshAgents();
+    } catch (ex) {
+      // keep the draft on failure — a wiped form AND an error hint was the
+      // worst possible outcome for a long goal text
+      flashHint(`goal save failed: ${(ex as Error).message}`);
+    }
   };
 
   return (
@@ -2465,6 +2490,8 @@ export default function App() {
               id="goal-input"
               rows={3}
               placeholder="set new goal…"
+              value={goalDraft()}
+              oninput={(e) => { setGoalDraft(e.currentTarget.value); setGoalDirty(true); }}
               style="background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;width:100%;resize:vertical"
             />
             <textarea
@@ -2472,6 +2499,8 @@ export default function App() {
               rows={2}
               placeholder="verification contract (optional) — e.g. 'npm test passes; endpoint documented'. finish(goalComplete=true) is then audited against this."
               title="pi-goal-x-style verification contract — an independent reviewer checks the agent's finish against these requirements"
+              value={goalVerifyDraft()}
+              oninput={(e) => { setGoalVerifyDraft(e.currentTarget.value); setGoalDirty(true); }}
               style="background:var(--bg-darkest);border:1px solid var(--bg-light);border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;font-size:12.5px;width:100%;resize:vertical"
             />
             <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
@@ -2480,7 +2509,7 @@ export default function App() {
                 style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
                 title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
               >
-                <input id="goal-notify" type="checkbox" checked /> notify agent
+                <input id="goal-notify" type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} /> notify agent
               </label>
               <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer">✓ save goal</button>
             </div>
@@ -3387,6 +3416,27 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
       );
     case "error":
       return <div class="embed fail"><div class="mono">⚠ {String(e.data.message ?? "")}</div></div>;
+    case "system_note": {
+      // two lifecycle notes deserve VISIBLE rows (everything else stays in
+      // the log): the runaway trip and the error-retry heartbeat
+      const ev = String(e.data?.event ?? "");
+      if (ev === "runaway-detected") {
+        return (
+          <div class="embed fail" title={`${e.data?.failures} consecutive tool failures hit the configured limit (${e.data?.limit})`}>
+            <div class="mono">🛑 runaway: {String(e.data?.failures)} tool failures in a row (limit {String(e.data?.limit)})</div>
+            <div class="meta">last: {String(e.data?.lastTool)} — {String(e.data?.lastError ?? "").slice(0, 200)}</div>
+          </div>
+        );
+      }
+      if (ev === "error-retry") {
+        return (
+          <div class="embed warn-embed" title="a round-fatal API error occurred; auto-retry is waiting, then a fresh round starts (onError: retry)">
+            <div class="mono">↻ API error — retrying (attempt {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…</div>
+          </div>
+        );
+      }
+      return null;
+    }
     case "compaction":
       return (
         <details class="embed compaction">

@@ -209,6 +209,9 @@ input[type="checkbox"] { accent-color: var(--acc); }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
 .embed.fail { border-color: var(--err); }
+/* error-retry heartbeat — warning tone, distinct from hard failures */
+.embed.warn-embed { border-color: var(--warn); }
+.embed.warn-embed .mono { color: var(--warn); }
 .embed.done { border-color: var(--ok); }
 .embed.running { border-color: var(--warn); }
 .embed.running summary .meta::after { content: "⋯"; display: inline-block; margin-left: 6px; animation: blink 1s step-end infinite; color: var(--warn); }

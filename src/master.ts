@@ -129,6 +129,9 @@ export interface TeapotConfig {
   maxSpawnDepth?: number;
   /** soft cap on LLM turns per round (0 disables); reaching it is not an error */
   maxTurnsPerRound?: number;
+  /** round-fatal API errors: "stop" (default) or "retry" (backoff + fresh round) */
+  onError?: "stop" | "retry";
+  retryDelayMs?: number;
   /** optional shared secret protecting /api/* (env TEAPOT_API_TOKEN wins) */
   password?: string;
 }
@@ -249,6 +252,10 @@ function printAgentEvent(e: TeapotEvent): void {
       line = `${c("31", "⚠ error")} ${clip1(d.message, 160)}`;
       break;
     case "system_note": {
+      if (d.event === "runaway-detected")
+        line = `${c("31", "🛑 runaway")} ${d.failures} consecutive tool failures (limit ${d.limit}) — last: ${clip1(String(d.lastTool), 24)}: ${clip1(String(d.lastError), 90)}`;
+      else if (d.event === "error-retry")
+        line = `${c("33", "↻ error-retry")} attempt ${d.attempt} — next round in ${Math.round(Number(d.waitMs) / 1000)}s`;
       if (d.event === "llm-retry")
         line = `${c("33", "↻ retry")} attempt ${d.attempt} in ${Math.round(Number(d.waitMs) / 1000)}s — ${clip1(d.error, 100)}`;
       else if (d.event === "context-compacted")
@@ -313,6 +320,8 @@ export class Master {
     contextTokenBudget?: number | null;
     maxSpawnDepth?: number;
     maxTurnsPerRound?: number;
+    onError?: "stop" | "retry";
+    retryDelayMs?: number;
     tasks?: TaskConfig[];
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
@@ -337,6 +346,8 @@ export class Master {
     }
     if (patch.maxSpawnDepth !== undefined) this.config.maxSpawnDepth = patch.maxSpawnDepth;
     if (patch.maxTurnsPerRound !== undefined) this.config.maxTurnsPerRound = patch.maxTurnsPerRound;
+    if (patch.onError !== undefined) this.config.onError = patch.onError;
+    if (patch.retryDelayMs !== undefined) this.config.retryDelayMs = patch.retryDelayMs;
     if (patch.tasks) {
       this.config.tasks = patch.tasks;
       // rebuild schedule table live
@@ -501,6 +512,8 @@ export class Master {
       progressIntervalMs: this.config.progressIntervalMs,
       ...(this.config.progressMinChars ? { progressMinChars: this.config.progressMinChars } : {}),
       ...(this.config.maxTurnsPerRound !== undefined ? { maxTurnsPerRound: this.config.maxTurnsPerRound } : {}),
+      ...(this.config.onError ? { onError: this.config.onError } : {}),
+      ...(this.config.retryDelayMs ? { retryDelayMs: this.config.retryDelayMs } : {}),
       autoContinue: ac.autoContinue ?? true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
       ...(ac.contextWindowTokens || this.config.contextWindowTokens || inferredWindow

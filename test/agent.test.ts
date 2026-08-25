@@ -769,6 +769,44 @@ test("failure counter resets between rounds (start works after an error)", async
   );
 });
 
+test("onError:retry rides out runaway tool failures and recovers", async () => {
+  // default behavior stays "stop". With onError:"retry" a round-fatal error —
+  // INCLUDING the runaway trip (a tool that keeps failing) — surfaces, waits
+  // (doubled per attempt), and starts a fresh round AUTOMATICALLY. The runaway
+  // path is deterministic here: no LLM retry inside, so the test is fast.
+  let calls = 0;
+  let failing = true;
+  const chatFn = (): LlmResult => {
+    calls++;
+    if (failing) return reply("try", [tc(`bad${calls}`, "read_file", { path: "missing.txt" })]);
+    return calls % 2 === 0
+      ? reply("recovered, all done") // plain answer ends the recovering round
+      : reply("recovering", [tc(`ok${calls}`, "list_dir", {})]);
+  };
+  await withAgent(
+    { chatFn, autoContinue: false, maxConsecutiveToolErrors: 2, onError: "retry", retryDelayMs: 50 },
+    async (agent) => {
+      agent.enqueuePrompt("break it");
+      agent.start("r1");
+      // flip to healthy once runaway has tripped (2 failures logged); the
+      // outer retry then starts a fresh round that succeeds on its own
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && calls < 3) await new Promise((r) => setTimeout(r, 20));
+      assert.ok(calls >= 3, `runaway must trip after ${"the"} limit — calls=${calls}`);
+      failing = false;
+      await agent.settled();
+      assert.equal(agent.status, "idle", "auto-retry must recover without operator help");
+      const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+      const trip = events.find((e) => e.type === "system_note" && (e.data as any).event === "runaway-detected");
+      assert.ok(trip, "a runaway-detected note must be logged for the UI");
+      assert.equal((trip!.data as any).lastTool, "read_file");
+      const retries = events.filter((e) => e.type === "system_note" && (e.data as any).event === "error-retry");
+      assert.ok(retries.length >= 1, "at least one error-retry note expected");
+      await agent.dispose();
+    },
+  );
+});
+
 test("per-round turn cap is a soft checkpoint, not an error", async () => {
   // a model that never finishes: each round it burns exactly the cap in
   // tool turns, then keeps going — the harness must nudge + continue, and

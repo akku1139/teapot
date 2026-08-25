@@ -48,6 +48,10 @@ export const ConfigPatchSchema = z.object({
   // soft cap on LLM turns in one round; reaching it nudges the model to wrap
   // up (not an error) — 0 disables the cap
   maxTurnsPerRound: z.number().int().min(0).optional(),
+  // round-fatal API errors: "stop" (default) or "retry" (back off + fresh
+  // round — for unattended agents that should ride out outages)
+  onError: z.enum(["stop", "retry"]).optional(),
+  retryDelayMs: z.number().int().min(1_000).optional(),
   tasks: z.array(TaskSchema).optional(),
 });
 

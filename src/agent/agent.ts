@@ -88,6 +88,15 @@ export interface AgentOptions {
    * round begins. 0 disables the cap entirely.
    */
   maxTurnsPerRound?: number;
+  /**
+   * Retry policy for round-fatal API errors (rate limits, 5xx, provider
+   * hiccups). "stop" (default) ends the loop with status=error. "retry"
+   * keeps the goal alive: wait retryDelayMs, then start a fresh round —
+   * for long-running unattended agents that should ride out outages.
+   */
+  onError?: "stop" | "retry";
+  /** backoff between error retries (ms); doubles each attempt, capped at 10 min */
+  retryDelayMs?: number;
   /** set when spawned by another agent (sub-agent lineage) */
   parent?: string;
   /** injectable LLM call for tests (defaults to the real one) */
@@ -205,6 +214,8 @@ export class Agent {
   private activityChars = 0;
   private turnsSinceProgress = 0;
   private consecutiveToolErrors = 0;
+  /** consecutive round-fatal API errors (drives the retry backoff) */
+  private consecutiveApiErrors = 0;
 
   constructor(opts: AgentOptions) {
     this.opts = {
@@ -216,6 +227,8 @@ export class Agent {
       autoCompact: true,
       maxConsecutiveToolErrors: 5,
       maxTurnsPerRound: 200,
+      onError: "stop",
+      retryDelayMs: 60_000,
       contextTokenBudget: 96_000,
       contextWindowTokens: 0,
       restoreSession: true,
@@ -1040,6 +1053,9 @@ export class Agent {
         // counter only ever reset on success, so a tripped limit re-tripped
         // on the first failure after restart ("6 consecutive" right after start)
         this.consecutiveToolErrors = 0;
+        // a round that got as far as an LLM call means the API is reachable
+        // again — reset the error-retry backoff to its base delay
+        this.consecutiveApiErrors = 0;
         const turnsAtStart = this.stats.turns;
         let finished = await this.runTurnsUntilIdle();
         // the round ended on the per-round turn cap (not finish/stop): tell
@@ -1110,6 +1126,29 @@ export class Agent {
         if (this.stopRequested || name === "AbortError" || name === "StopRequested" || name === "WaitForUser") break;
         const msg = (err as Error).message ?? String(err);
         await this.log.append("error", this.currentSession, this.currentBranch, { message: msg });
+        // onError:"retry" keeps an unattended agent alive across failures —
+        // BOTH provider outages (API errors) and runaway trips (a tool that
+        // keeps failing). Back off, then start a fresh round; the delay
+        // doubles per consecutive failure so a hard failure doesn't spin,
+        // and any stop/prompt still interrupts the sleep instantly.
+        const isRunaway = /runaway detection/.test(msg);
+        if (this.opts.onError === "retry" && !this.awaitingUser && !this.pendingPrompts.length) {
+          this.consecutiveApiErrors++;
+          const wait = Math.min(
+            (this.opts.retryDelayMs || 60_000) * 2 ** Math.min(this.consecutiveApiErrors - 1, 6),
+            600_000,
+          );
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "error-retry",
+            attempt: this.consecutiveApiErrors,
+            waitMs: wait,
+            kind: isRunaway ? "runaway" : "api",
+          });
+          this.setStatus("error", `${msg.slice(0, 220)} — retrying in ${Math.round(wait / 1000)}s`);
+          await this.sleepInterruptible(wait);
+          if (this.stopRequested) break;
+          continue; // fresh round; the loop re-arms the tool signal itself
+        }
         this.setStatus("error", msg.slice(0, 300));
         return;
       }
@@ -1517,8 +1556,19 @@ export class Agent {
         this.messages.push({ role: "tool", tool_call_id: call.id, content: result.result });
         this.consecutiveToolErrors = result.ok ? 0 : this.consecutiveToolErrors + 1;
         if (this.consecutiveToolErrors >= this.opts.maxConsecutiveToolErrors) {
+          // structured, greppable AND visible: the note carries what failed so
+          // the operator (and the UI) can show "WHICH tool, with what error"
+          // instead of a bare counter
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "runaway-detected",
+            failures: this.consecutiveToolErrors,
+            limit: this.opts.maxConsecutiveToolErrors,
+            lastTool: call.function.name,
+            lastError: result.result.slice(0, 300),
+          });
           throw new Error(
-            `runaway detection: ${this.consecutiveToolErrors} consecutive tool failures`,
+            `runaway detection: ${this.consecutiveToolErrors} consecutive tool failures ` +
+              `(last: ${call.function.name})`,
           );
         }
       }
