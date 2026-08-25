@@ -281,10 +281,32 @@ export default function App() {
   createEffect(() => {
     if (!compacting()) setLive((l) => (l?.text.startsWith("[compact] ") ? null : l));
   });
-  const [live, setLive] = createSignal<{ text: string; reasoning: string } | null>(null);
+  // ONE live buffer PER AGENT. The old single slot was clobbered by every
+  // session switch (setLive(null) on select) and by the feed refresh's
+  // stillStreaming heuristic — a streaming reply visibly blinked out and
+  // came back, or vanished entirely after visiting another session.
+  const [liveByAgent, setLiveByAgent] = createSignal<Map<string, { text: string; reasoning: string; at: number }>>(new Map());
+  const live = () => {
+    const id = selected();
+    return id ? liveByAgent().get(id) ?? null : null;
+  };
+  const setLive = (patch: { text: string; reasoning: string } | null | ((cur: { text: string; reasoning: string } | null) => { text: string; reasoning: string } | null)) => {
+    const id = selected();
+    if (!id) return;
+    setLiveByAgent((prev) => {
+      const m = new Map(prev);
+      const next = typeof patch === "function" ? patch(prev.get(id) ?? null) : patch;
+      if (next) m.set(id, { ...next, at: Date.now() });
+      else m.delete(id);
+      return m;
+    });
+  };
   // markdown-rendered live body, throttled so per-chunk deltas don't re-parse
   // the whole (growing) text on every single WS message
   const [liveText, setLiveText] = createSignal("");
+  // reasoning renders from the SAME throttle tick — binding it raw re-painted
+  // the (often huge) thinking block on every single chunk
+  const [liveReasoning, setLiveReasoning] = createSignal("");
   let liveRenderTimer: ReturnType<typeof setTimeout> | undefined;
   createEffect(() => {
     const l = live();
@@ -292,12 +314,14 @@ export default function App() {
       clearTimeout(liveRenderTimer);
       liveRenderTimer = undefined;
       setLiveText("");
+      setLiveReasoning("");
       return;
     }
     if (liveRenderTimer) return; // a render is already scheduled
     liveRenderTimer = setTimeout(() => {
       liveRenderTimer = undefined;
       setLiveText(live()?.text ?? "");
+      setLiveReasoning(live()?.reasoning ?? "");
       // adaptive throttle: the WHOLE text re-parses each tick, so stretch the
       // interval as it grows — long streams were re-rendering every 60ms and
       // bogging Firefox down
@@ -313,8 +337,12 @@ export default function App() {
   // the viewport). atBottom() is only flipped by real user scrolling, so it is
   // the signal to trust here; nearBottom() would just re-measure mid-growth.
   createEffect(() => {
+    // reasoning-only streams (💭 thinking, no text yet) must follow too —
+    // keying the effect on liveText() alone left the feed parked while the
+    // reasoning details block kept growing
     const txt = liveText();
-    if (!txt) return;
+    const rsn = live()?.reasoning ?? "";
+    if (!txt && !rsn) return;
     if (!atBottom()) return;
     // wait for the DOM to paint the new text
     requestAnimationFrame(() => {
@@ -939,7 +967,9 @@ export default function App() {
       // which read as "the old conversation showing up in the new session"
       setEvents([]);
       evCache.clear(); // event ids are per-log (e1, e2…) — never share across sessions
-      setLive(null);
+      // NOTE: live buffers are per-agent now — leaving a session must NOT
+      // drop its streaming bubble (coming back showed nothing until the next
+      // delta). The map keeps every session's stream alive independently.
       setCompacting(null);
       setMissed(0);
       // follow mode must NOT leak across sessions: leaving it false showed
@@ -997,15 +1027,18 @@ export default function App() {
     // event types that don't change the feed — refreshing on every one of
     // these would hammer /events several times per turn for nothing
     const FEED_IRRELEVANT = new Set(["state", "usage", "session_start"]);
-    // last streaming delta per agent — decides whether the live bubble is
-    // still generating or already fully persisted
-    let lastDelta: { id: string; at: number } | null = null;
+    // (live buffers are keyed per agent in liveByAgent — see the App body)
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.kind === "ping" || msg.kind === "pong") return;
       if (msg.kind === "llm-delta") {
-        lastDelta = { id: msg.agentId, at: Date.now() };
-        if (msg.agentId === selected()) setLive({ text: msg.text ?? "", reasoning: msg.reasoning ?? "" });
+        // update THIS agent's buffer only — other sessions keep streaming in
+        // the background and their bubble must survive session switches
+        setLiveByAgent((prev) => {
+          const m = new Map(prev);
+          m.set(msg.agentId, { text: msg.text ?? "", reasoning: msg.reasoning ?? "", at: Date.now() });
+          return m;
+        });
         return;
       }
       if (msg.kind === "compaction-progress") {
@@ -1086,12 +1119,22 @@ export default function App() {
           const fetchStartedAt = Date.now();
           await loadEvents(selected()!);
           if (events().at(-1)?.id !== beforeId) {
-            // keep the bubble only if THIS agent streamed a delta after the
-            // fetch started (i.e. the bubble shows something newer than
-            // everything persisted). Otherwise it must go — otherwise a
-            // stale "thinking…"/duplicate bubble outlives an idle agent.
-            const stillStreaming = lastDelta?.id === selected() && lastDelta.at >= fetchStartedAt;
-            if (!stillStreaming) setLive(null);
+            // The bubble is stale ONLY when a persisted assistant message now
+            // covers what it was showing. Time-based heuristics (delta after
+            // fetch start) raced the stream's natural pauses and cleared a
+            // LIVE bubble mid-reply — the "output flashes, then disappears"
+            // bug. Compare content instead: drop the buffer only when the
+            // log caught up with it (or the agent went idle with nothing new).
+            const buf = live();
+            if (buf) {
+              const lastMsg = [...events()].reverse().find((e) => e.type === "message" && e.data?.role === "assistant");
+              const covered =
+                (lastMsg &&
+                  (String(lastMsg.data.content ?? "") === buf.text ||
+                   String(lastMsg.data.reasoning ?? "") === buf.reasoning)) ||
+                sel()?.status === "idle";
+              if (covered) setLive(null);
+            }
             // trust atBottom() (flipped only by real user scrolling). The old
             // nearBottom() re-check measured AFTER new rows (state events like
             // idle→running, tool rows…) had already grown the feed — the
@@ -2014,10 +2057,10 @@ export default function App() {
                       <span class="author" style="color:var(--acc)">agent</span>
                       <span class="ts">streaming…</span>
                     </div>
-                    <Show when={live()!.reasoning}>
+                    <Show when={liveReasoning()}>
                       <details class="reasoning">
                         <summary>💭 reasoning</summary>
-                        <div class="mono">{live()!.reasoning}</div>
+                        <div class="mono">{liveReasoning()}</div>
                       </details>
                     </Show>
                     <Show
