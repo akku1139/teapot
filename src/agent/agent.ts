@@ -1027,6 +1027,19 @@ export class Agent {
   private async loop(): Promise<void> {
     while (!this.stopRequested) {
       try {
+        // stop() aborted the tool signal and nothing re-armed it (only the
+        // parkedByTool path ever did), so EVERY tool after a stop returned
+        // "aborted (harness shutdown)" until process restart. A new round is
+        // new work: give it a live signal (re-arm AND republish — toolCtx
+        // holds a copy of the reference).
+        if (this.toolAbort.signal.aborted) {
+          this.toolAbort = new AbortController();
+          (this.toolCtx as { signal: AbortSignal }).signal = this.toolAbort.signal;
+        }
+        // failures from the previous round must not poison this one — the
+        // counter only ever reset on success, so a tripped limit re-tripped
+        // on the first failure after restart ("6 consecutive" right after start)
+        this.consecutiveToolErrors = 0;
         const turnsAtStart = this.stats.turns;
         let finished = await this.runTurnsUntilIdle();
         // the round ended on the per-round turn cap (not finish/stop): tell
@@ -1057,7 +1070,11 @@ export class Agent {
           });
           // the wrap-up nudge IS this round's continuation prompt — starting
           // another round on top of it would stack a generic auto-continue
-          // nudge too, so go straight to the next round instead
+          // nudge too. BUT this must respect autoContinue: with the toggle
+          // off the round simply ENDS here (the old code continued
+          // unconditionally and spun an infinite loop on models that never
+          // call finish() — turns=16000+ in a mock test).
+          if (!this.opts.autoContinue || this.goal.status !== "active" || !this.goal.text.trim()) break;
           continue;
         }
         if (this.stopRequested) break;

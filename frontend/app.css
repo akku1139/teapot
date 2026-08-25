@@ -484,6 +484,9 @@ body:has(.termdrawer) .jump {
 /* ---- modals & misc ---- */
 .iconbtn { background: var(--bg-light); border: none; color: var(--fg); border-radius: 6px; width: 26px; height: 24px; cursor: pointer; font-size: 13px; }
 .iconbtn:hover { filter: brightness(1.3); }
+/* toggled-on state (👻 ghost-hide etc.) — a quiet "pressed" look, NOT the
+   red notifdot badge (that rendered as a huge red ✕ circle in the corner) */
+.iconbtn.active { background: var(--acc); color: #fff; }
 .overlay { position: fixed; inset: 0; background: #0009; display: grid; place-items: center; z-index: 10; }
 .modal { background: var(--bg-mid); border-radius: 10px; padding: 16px 18px; width: min(620px, 92vw); max-height: 88vh; overflow-y: auto; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 16px; }

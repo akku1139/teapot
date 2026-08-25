@@ -643,10 +643,24 @@ export default function App() {
           );
         }),
     );
-    const echoes: Ev[] = pend.map((p) => ({
+    const echoes: Ev[] = pend.map((p) => echoEv(p));
+    return [...deduped, ...echoes];
+  });
+  // Reference-stable echo rows: chatEvents re-runs on EVERY event burst, and
+  // rebuilding the echo objects each time handed Solid's <For> a brand-new
+  // reference — remounting the pending row (and, with the tail-anchor race,
+  // letting it flash to the top of the viewport). Cache by id; only the
+  // pending→sent flip builds a new object.
+  const echoCache = new Map<string, Ev>();
+  function echoEv(p: { id: string; text: string; at: number; promptId?: string; sent?: boolean }): Ev {
+    const key = `${p.id}:${p.sent ? "s" : "p"}`;
+    const hit = echoCache.get(key);
+    if (hit) return hit;
+    if (echoCache.size > 64) echoCache.clear();
+    const ev: Ev = {
       id: p.id,
-      // sort AFTER every logged event so pending echoes always sit at the
-      // timeline's very bottom until the log catches up
+      // sort AFTER every logged event so the echo sits at the timeline's very
+      // bottom until the log catches up (same sentinel as before)
       seq: Number.MAX_SAFE_INTEGER,
       ts: new Date(p.at).toISOString(),
       session: sel()?.session ?? "",
@@ -659,9 +673,10 @@ export default function App() {
         pending: !p.sent,
         ...(p.promptId ? { promptId: p.promptId } : {}),
       },
-    }));
-    return [...deduped, ...echoes];
-  });
+    };
+    echoCache.set(key, ev);
+    return ev;
+  }
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
   // password auth: any 401 from /api/* flips this on → login overlay
   const [authLocked, setAuthLocked] = createSignal(false);
@@ -862,6 +877,10 @@ export default function App() {
       // empty page (or fully deduped) means history is exhausted — loadOlder
       // has set olderDone itself in the empty-page case
       if (events().length === before) return;
+      // prepending grows the content ABOVE the viewport; keep the reader
+      // pinned to the tail while we backfill, or follow mode silently died
+      // here and "new messages appear at the top of my view" was the result
+      if (atBottom() && selected() === id) scrollBottom(true);
     }
   }
 
@@ -1931,7 +1950,7 @@ export default function App() {
                   if (firstVisible) select(firstVisible.id);
                 }
               }}
-            >👻{hideGhosts() ? <i class="notifdot">✕</i> : null}</button>
+            >👻</button>
             <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
             <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
             <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>

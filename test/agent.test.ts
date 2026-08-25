@@ -709,6 +709,66 @@ test("consecutive tool failures trip the runaway guard", async () => {
   });
 });
 
+test("tools recover after stop(): the abort signal is re-armed per round", async () => {
+  // regression: stop() aborted the shared tool signal and only the
+  // parkedByTool path ever re-armed it, so every tool in the NEXT round
+  // returned "aborted (harness shutdown)" until a full process restart
+  let n = 0;
+  const mock = mkMock(() =>
+    n++ === 0 ? reply("working", [tc("t1", "list_dir", {})]) : reply("done"),
+  );
+  await withAgent({ chatFn: mock.chat, autoContinue: false }, async (agent) => {
+    // poison the signal exactly like a previous stop() would have
+    (agent as unknown as { toolAbort: AbortController }).toolAbort.abort();
+    agent.enqueuePrompt("go");
+    agent.start("t");
+    await agent.settled();
+    const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+    const results = events.filter((e) => e.type === "tool_result");
+    assert.equal(results.length, 1);
+    assert.equal(
+      (results[0]!.data as Record<string, unknown>).ok,
+      true,
+      "tool must NOT inherit the aborted signal from the previous round",
+    );
+    await agent.dispose();
+  });
+});
+
+test("failure counter resets between rounds (start works after an error)", async () => {
+  // regression: the counter only reset on tool SUCCESS, so an agent that hit
+  // the runaway limit stayed poisoned — the next start tripped "N consecutive
+  // failures" again on its very first failure and could never recover
+  let failing = true;
+  let calls = 0;
+  await withAgent(
+    {
+      maxConsecutiveToolErrors: 2,
+      autoContinue: false,
+      chatFn: () => {
+        calls++;
+        return failing
+          ? reply("try", [tc(`bad${calls}`, "read_file", { path: "missing.txt" })])
+          : calls % 2 === 0
+            ? reply("recovered, all done") // plain answer ends the round
+            : reply("recovering", [tc(`ok${calls}`, "list_dir", {})]);
+      },
+    },
+    async (agent) => {
+      agent.enqueuePrompt("break it");
+      agent.start("r1");
+      await agent.settled();
+      assert.equal(agent.status, "error");
+      failing = false;
+      agent.enqueuePrompt("now recover");
+      agent.start("r2");
+      await agent.settled();
+      assert.equal(agent.status, "idle", "fresh round must not inherit the stale counter");
+      await agent.dispose();
+    },
+  );
+});
+
 test("per-round turn cap is a soft checkpoint, not an error", async () => {
   // a model that never finishes: each round it burns exactly the cap in
   // tool turns, then keeps going — the harness must nudge + continue, and
