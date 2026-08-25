@@ -28,7 +28,9 @@ export async function fetchModelList(
         ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
         ...providerHeaders(baseUrl), // OpenRouter app attribution
       },
-      signal: AbortSignal.timeout(15_000),
+      // boot-time calls happen per agent; a slow/unroutable endpoint used to
+      // stall startup for up to 15s PER AGENT before this was tightened
+      signal: AbortSignal.timeout(3_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = (await res.json()) as {

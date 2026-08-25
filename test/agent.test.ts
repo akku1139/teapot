@@ -773,3 +773,58 @@ test("compact budget re-derives when the model window changes (non-manual)", asy
   assert.equal(derived, 150_000);
   await agent.dispose();
 });
+
+test("reload restores session stats and seeds the context gauge", async () => {
+  let n = 0;
+  const usage = { inputTokens: 546_000, outputTokens: 155, cachedInputTokens: 545_000 };
+  const chat: ChatFn = async () => {
+    const i = n++;
+    if (i === 0)
+      return { message: { role: "assistant", content: "", tool_calls: [tc("b1", "bash", {})] }, usage };
+    return { message: { role: "assistant", content: `turn ${i}` }, usage };
+  };
+  const ws = await mkdtemp(path.join(tmpdir(), "teapot-ur-ws-"));
+  const sd = await mkdtemp(path.join(tmpdir(), "teapot-ur-sd-"));
+  const a = new Agent({ id: "t", workspace: ws, llm: LLM, sessionDir: sd, chatFn: chat, autoContinue: false });
+  await a.init();
+  a.enqueuePrompt("go");
+  a.start("t");
+  await a.settled();
+  const before = a.stats;
+
+  // fresh instance on the SAME session dir = what happens on teapot restart
+  const b = new Agent({ id: "t2", workspace: ws, llm: LLM, sessionDir: sd });
+  await b.init();
+  await b.load();
+
+  assert.equal(b.stats.turns, before.turns);
+  assert.equal(b.stats.toolCalls, before.toolCalls);
+  assert.equal(b.stats.inputTokens, before.inputTokens);
+  assert.equal(b.stats.cachedInputTokens, before.cachedInputTokens);
+  // the gauge seeds from real usage — not estimateTokens() (which would be
+  // ~0 right after restore and rendered as "0% of 1m")
+  assert.equal(b.snapshot().ctx.usedTokens, usage.inputTokens);
+  await b.dispose();
+});
+
+test("boot no longer creates a missing workspace; first tool run does", async () => {
+  const { existsSync } = await import("node:fs");
+  const missing = path.join(tmpdir(), `teapot-ghost-${Date.now()}`);
+  const agent = new Agent({
+    id: "g",
+    workspace: missing, // deliberately nonexistent
+    llm: LLM,
+    sessionDir: await mkdtemp(path.join(tmpdir(), "teapot-ghost-sd-")),
+    chatFn: async () => {
+      const i = n++;
+      return reply(`turn ${i}`);
+    },
+    autoContinue: false,
+  });
+  await agent.init();
+  await agent.load(); // what clicking the session in the UI does
+  // boot/load must NOT resurrect deleted project directories
+  assert.equal(existsSync(missing), false, "workspace must not be created at boot");
+  assert.equal(agent.snapshot().workspaceMissing, true);
+  await agent.dispose();
+});

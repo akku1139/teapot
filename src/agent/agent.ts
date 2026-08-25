@@ -179,6 +179,8 @@ export class Agent {
   private runChain: Promise<void> = Promise.resolve();
   /** whether contextTokenBudget came from config (manual) or was derived */
   private manualCompactBudget = false;
+  /** workspace dir absent at boot — session runs "as ghost" until created */
+  private workspaceMissing = false;
   private lastProgressAt = Date.now();
   /** the provider's own prompt_tokens from the last completed turn */
   private lastUsage?: { input: number; output: number; cached?: number };
@@ -283,6 +285,20 @@ export class Agent {
     return this.opts.workspace;
   }
 
+  /** true while the workspace directory does not exist on disk yet */
+  get isGhost(): boolean {
+    return this.workspaceMissing;
+  }
+
+  /** Create the workspace on demand — before any tool touches the fs. */
+  private async ensureWorkspace(): Promise<void> {
+    if (!this.workspaceMissing) return;
+    await fs.mkdir(this.opts.workspace, { recursive: true });
+    this.workspaceMissing = false;
+    bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+  }
+
+
   /** true when the operator pinned contextTokenBudget in the config */
   get compactBudgetIsManual(): boolean {
     return this.manualCompactBudget;
@@ -326,7 +342,15 @@ export class Agent {
 
   async init(): Promise<void> {
     await this.log.load();
-    await fs.mkdir(this.workspace, { recursive: true });
+    // NOTE: the workspace is NOT created here. Boot-time mkdir resurrected
+    // deleted project directories on every restart, which operators hated.
+    // It is created lazily in ensureWorkspace() when the agent first needs
+    // to touch the filesystem. Until then a missing workspace marks the
+    // session as "ghost" (visible-but-flagged in the UI).
+    this.workspaceMissing = !(await fs
+      .stat(this.workspace)
+      .then(() => true)
+      .catch(() => false));
     // goal lives next to the session log (dataDir), NOT in the workspace —
     // migrate a legacy workspace GOAL.md once, then never touch the workspace
     await this.migrateGoalFromWorkspace();
@@ -502,7 +526,9 @@ export class Agent {
         if (d.event === "context-compacted") this.stats.compactions++;
       }
     }
-    // last usage seeds the context gauge right after reload
+    // newest usage event seeds the context gauge right after reload —
+    // inputTokens from the LAST turn is the live context size, and cached
+    // must ride along or the "⚡ N% cached" pill disappears after a restart
     for (let i = own.length - 1; i >= 0; i--) {
       if (own[i]!.type === "usage") {
         const u = own[i]!.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
@@ -751,6 +777,7 @@ export class Agent {
       status: this.status,
       statusReason: this.statusReason,
       workspace: this.workspace,
+      workspaceMissing: this.workspaceMissing,
       session: this.currentSession,
       branch: this.currentBranch,
       goal: {
@@ -1356,6 +1383,8 @@ export class Agent {
           argsRaw: call.function.arguments, // byte-exact for cache-safe restore
         });
         const t0 = Date.now();
+        // first filesystem touch creates a missing workspace (never at boot)
+        await this.ensureWorkspace();
         const result = await executeTool(call.function.name, call.function.arguments, this.toolCtx);
         this.stats.toolCalls++;
         await this.log.append("tool_result", this.currentSession, this.currentBranch, {

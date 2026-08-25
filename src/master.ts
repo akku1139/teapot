@@ -476,8 +476,14 @@ export class Master {
     // endpoint, cached) unless the config already pins one explicitly
     let inferredWindow: number | undefined;
     if (!ac.contextWindowTokens && !this.config.contextWindowTokens) {
-      const list = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => []);
-      inferredWindow = contextLengthFor(list, llm.model);
+      // don't block the event loop on provider metadata: fire the lookup but
+      // keep boot moving. The agent's gauge fills in when it resolves.
+      const listPromise = fetchModelList(llm.baseUrl, llm.apiKey);
+      inferredWindow = await Promise.race([
+        listPromise.then((l) => contextLengthFor(l, llm.model)),
+        new Promise<undefined>((r) => setTimeout(() => r(undefined), 1_500)),
+      ]);
+      void listPromise.catch(() => []);
     }
     const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
     await mkdirSync(sessionDir, { recursive: true });

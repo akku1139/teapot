@@ -24,6 +24,7 @@ declare const __APP_VERSION__: string;
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
   session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
+  workspaceMissing?: boolean;
   latestProgress: any; stats: any; model: string; provider?: string;
   pendingPrompts?: number;
   todo?: string;
@@ -1621,7 +1622,11 @@ export default function App() {
                   >{collapsedSubs().has(a.id) ? "▸" : "▾"}</span>
                 </Show>
                 <span class={`dot ${a.status}`} />
-                <span>{a.id}</span>
+                <span
+                  class={a.workspaceMissing ? " ghost" : ""}
+                  title={a.workspaceMissing ? `workspace not found on disk (${a.workspace}) — it will be created when this session runs` : undefined}
+                >{a.id}</span>
+                {a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
                 {/* collapsed tree: surface how many subs are still working so a
                     busy parent doesn't look idle with its subtree hidden */}
                 <Show when={collapsedSubs().has(a.id)}>

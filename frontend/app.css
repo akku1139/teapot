@@ -673,3 +673,8 @@ body:has(.composer.maximized) .feed { visibility: hidden; }
 /* highlight for the row a notification jumped to */
 .flash-target { outline: 2px solid var(--acc); border-radius: 8px; transition: outline-color .6s; }
 .msg.flash-target { background: color-mix(in srgb, var(--acc) 12%, transparent); }
+
+/* sessions whose workspace directory is missing on disk (created lazily on
+   first run instead of resurrected at every boot) */
+.agent-item .ghost { opacity: .55; }
+.ghosttag { font-size: 10px; flex-shrink: 0; }
