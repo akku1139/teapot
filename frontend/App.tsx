@@ -1056,11 +1056,13 @@ export default function App() {
       // single shared timer collapses the backlog into ONE refresh on return.
       if (document.visibilityState === "hidden") {
         pendingRefresh = true;
-        if (!timer) timer = setTimeout(runFeedRefresh, 2_000);
         return;
       }
       if (timer) return;
-      timer = setTimeout(runFeedRefresh, 400);
+      // tool results land here one by one; a 400ms debounce made each bash
+      // completion feel lost ("switch away and back shows it") — the fetch
+      // itself is mtime-cached and cheap, so tighten the cadence instead
+      timer = setTimeout(runFeedRefresh, 120);
     };
     pendingRefresh = false;
     const runFeedRefresh = async () => {
@@ -1101,7 +1103,9 @@ export default function App() {
     onTabVisible = () => {
       if (document.visibilityState === "visible" && pendingRefresh) {
         pendingRefresh = false;
-        if (!timer) timer = setTimeout(runFeedRefresh, 150);
+        // refresh IMMEDIATELY on return — the old 150ms delay made every
+        // homecoming show a stale tail until the next beat
+        void runFeedRefresh();
       }
     };
   }
@@ -2482,6 +2486,7 @@ export default function App() {
             </div>
             <Show
               when={sel()!.ctx}
+              keyed
               fallback={
                 <div class="statrow">
                   <span class="k">context</span>
@@ -2490,29 +2495,37 @@ export default function App() {
               }
             >
               {(c) => {
-                // find model metadata for actual context window
-                const modelMeta = models().find((m) => m.id === sel()!.model);
-                const effectiveWindow = c().window || modelMeta?.contextLength || 0;
-                // one decimal place — 0.4% vs 0% matters on million-token windows
-                const pct = effectiveWindow
-                  ? Math.min(999, (c().usedTokens / effectiveWindow) * 100)
-                  : 0;
-                const cls =
-                  !effectiveWindow ? "" : pct >= 85 ? "crit" : pct >= 70 ? "warn" : "ok";
-                const fmtPct = (v: number) => {
-                  const r = Math.round(v * 10) / 10;
+                // ALL derived values are memos: this callback used to run ONCE
+                // (unkeyed <Show> builds its children a single time), freezing
+                // pct/bar/labels at the first snapshot — the gauge then showed
+                // "0% of 1m" forever while the token count itself kept updating
+                // (that count is a JSX expression, so it stayed reactive).
+                const ctxVals = createMemo(() => {
+                  const cv = c;
+                  const modelMeta = models().find((m) => m.id === sel()!.model);
+                  const effectiveWindow = cv.window || modelMeta?.contextLength || 0;
+                  // one decimal place — 0.4% vs 0% matters on million-token windows
+                  const pct = effectiveWindow
+                    ? Math.min(999, (cv.usedTokens / effectiveWindow) * 100)
+                    : 0;
+                  return {
+                    usedTokens: cv.usedTokens,
+                    compactAt: cv.compactAt,
+                    compacting: cv.compacting,
+                    window: cv.window,
+                    effectiveWindow,
+                    pct,
+                    cls:
+                      !effectiveWindow ? "" : pct >= 85 ? "crit" : pct >= 70 ? "warn" : "ok",
+                    derivedBudget: effectiveWindow ? Math.round(effectiveWindow * 0.75) : 0,
+                    usingDerived: cv.compactAtIsManual !== true,
+                  };
+                });
+                const v = () => ctxVals();
+                const fmtPct = (x: number) => {
+                  const r = Math.round(x * 10) / 10;
                   return Number.isInteger(r) ? String(r) : r.toFixed(1);
                 };
-                // derived compact budget = 75% of context window (unless manually overridden in config)
-                const derivedBudget = effectiveWindow ? Math.round(effectiveWindow * 0.75) : 0;
-                const manualBudget = c().compactAt;
-                // the server now reports whether the budget was pinned in
-                // config; older servers just omit the flag → fall back
-                // flag absent → assume derived: 75%-of-window is the normal
-                // state, and the old heuristic ("budget >= window means
-                // derived") mislabeled every correctly-derived budget as
-                // manual because 75% is always below the window
-                const usingDerived = c().compactAtIsManual !== true;
                 return (
                   <div
                     class="ctxblock"
@@ -2520,36 +2533,36 @@ export default function App() {
                   >
                     <div class="statrow">
                       <span class="k">context</span>
-                      <b>~{fmtK(c().usedTokens)} tok</b>
-                      <Show when={effectiveWindow}>
-                        <span class={`pill ${cls}`}>
-                          {fmtPct(pct)}% of {fmtK(effectiveWindow)}
+                      <b>~{fmtK(v().usedTokens)} tok</b>
+                      <Show when={v().effectiveWindow}>
+                        <span class={`pill ${v().cls}`}>
+                          {fmtPct(v().pct)}% of {fmtK(v().effectiveWindow)}
                         </span>
                       </Show>
                     </div>
-                    <Show when={effectiveWindow}>
+                    <Show when={v().effectiveWindow}>
                       <div class="bartrack">
-                        <div class={`barfill ${cls}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                        <div class={`barfill ${v().cls}`} style={{ width: `${Math.min(100, v().pct)}%` }} />
                       </div>
                     </Show>
                     <div class="statrow" style="margin-top:4px">
                       <span class="k">compact</span>
-                      <b>{fmtK(usingDerived ? derivedBudget : manualBudget)} tok</b>
+                      <b>{fmtK(v().usingDerived ? v().derivedBudget : v().compactAt)} tok</b>
                       <span class="muted" style="font-size:11px;color:var(--dim)">
-                        {usingDerived ? ` (75% of window)` : ` (manual override)`}
+                        {v().usingDerived ? ` (75% of window)` : ` (manual override)`}
                       </span>
                     </div>
-                    <Show when={effectiveWindow}>
+                    <Show when={v().effectiveWindow}>
                       <div class="bartrack" style="margin-top:4px">
-                        <div class={`barfill ${cls}`} style={{ width: `${Math.min(100, Math.round((c().usedTokens / derivedBudget) * 100))}%` }} />
+                        <div class={`barfill ${v().cls}`} style={{ width: `${Math.min(100, Math.round((v().usedTokens / v().derivedBudget) * 100))}%` }} />
                       </div>
                     </Show>
-                    <Show when={compacting() || c().compacting}>
+                    <Show when={compacting() || v().compacting}>
                       <div class="statrow" title="a compaction pass is running right now — the summarizer's output streams in the timeline">
                         <span class="k">🗜</span>
                         <b>compacting…</b>
                         <span class="muted" style="font-size:11px;color:var(--acc)">
-                          {compacting()?.phase ?? String(c().compacting)}
+                          {compacting()?.phase ?? String(v().compacting)}
                         </span>
                       </div>
                     </Show>
@@ -2572,7 +2585,7 @@ export default function App() {
                       <span class="muted" style="font-size:11.5px">summarizes old turns when budget exceeded</span>
                     </div>
                     <div class="muted" style="font-size:11px;margin-top:4px">
-                      compaction starts around ~{fmtK(c().compactAt)} tok — older turns get summarized, recent ones stay intact
+                      compaction starts around ~{fmtK(v().compactAt)} tok — older turns get summarized, recent ones stay intact
                     </div>
                   </div>
                 );
