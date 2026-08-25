@@ -223,7 +223,7 @@ export default function App() {
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
   const [models, setModels] = createSignal<
-    { id: string; contextLength?: number; pricing?: { prompt: number; completion: number } }[]
+    { id: string; contextLength?: number; pricing?: { prompt: number; completion: number }; modalities?: { input: string[]; output: string[] } }[]
   >([]);
   const providerList = () => Object.keys(cfg().providers ?? {});
   async function loadModels(prov: string) {
@@ -234,15 +234,27 @@ export default function App() {
     } catch { setModels([]); }
   }
   /** "ctx 1m · $3/M in · $15/M out" for the draft (or current) model */
+  /** 📄🖼️→📄 style badge for a model's input/output modalities */
+  const modalityBadge = (m?: { modalities?: { input: string[]; output: string[] } }): string => {
+    const icon: Record<string, string> = {
+      text: "📄", image: "🖼️", audio: "🔊", video: "🎬", file: "📎",
+    };
+    const side = (list?: string[]) =>
+      (list ?? ["text"]).map((k) => icon[k] ?? k).join("");
+    if (!m?.modalities) return "";
+    return `${side(m.modalities.input)} → ${side(m.modalities.output)}`;
+  };
   const modelSpec = () => {
     const id = modelDraft().trim() || sel()?.model || "";
     if (!id) return "";
     const m = models().find((x) => x.id === id);
     if (!m) return "";
     const parts: string[] = [];
+    const badge = modalityBadge(m);
+    if (badge && badge !== "📄 → 📄") parts.push(badge); // text-only is the default — no noise
     if (m.contextLength) parts.push(`ctx ${fmtK(m.contextLength)} tok`);
     const price = (p?: number) =>
-      p === undefined ? "" : `$${p * 1e6 >= 10 ? Math.round(p * 1e6) : +(p * 1e6).toFixed(1)}/M`;
+      p === undefined ? "" : `${p * 1e6 >= 10 ? Math.round(p * 1e6) : +(p * 1e6).toFixed(1)}/M`;
     if (m.pricing) {
       const pin = price(m.pricing.prompt);
       const pout = price(m.pricing.completion);
@@ -385,7 +397,7 @@ export default function App() {
   });
   // optimistic echoes of prompts we just sent but haven't seen in the log yet
   const [pendingMsgs, setPendingMsgs] = createSignal<
-    { id: string; text: string; at: number; promptId?: string; sent?: boolean }[]
+    { id: string; text: string; at: number; promptId?: string; sent?: boolean; images?: string[] }[]
   >([]);
 
   /* ---------- notification center (in-app only; push later) ---------- */
@@ -653,7 +665,7 @@ export default function App() {
   // letting it flash to the top of the viewport). Cache by id; only the
   // pending→sent flip builds a new object.
   const echoCache = new Map<string, Ev>();
-  function echoEv(p: { id: string; text: string; at: number; promptId?: string; sent?: boolean }): Ev {
+  function echoEv(p: { id: string; text: string; at: number; promptId?: string; sent?: boolean; images?: string[] }): Ev {
     const key = `${p.id}:${p.sent ? "s" : "p"}`;
     const hit = echoCache.get(key);
     if (hit) return hit;
@@ -672,6 +684,7 @@ export default function App() {
         source: "user",
         text: p.text,
         pending: !p.sent,
+        ...(p.images?.length ? { images: p.images } : {}),
         ...(p.promptId ? { promptId: p.promptId } : {}),
       },
     };
@@ -1614,21 +1627,47 @@ export default function App() {
   });
 
   /** post a raw prompt (used by composer AND question-option taps) */
+  // image attachments staged for the next prompt (data URLs; capped count)
+  const [pendingImages, setPendingImages] = createSignal<{ url: string; name: string }[]>([]);
+  const addImages = (files: FileList | File[]) => {
+    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    for (const f of list) {
+      if (f.size > 8_000_000) {
+        flashHint(`"${f.name}" is over 8 MB — skipped`);
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        setPendingImages((prev) =>
+          [...prev, { url: String(reader.result), name: f.name }].slice(0, 4),
+        );
+      };
+      reader.readAsDataURL(f);
+    }
+  };
   const sendText = async (text: string, targetId?: string) => {
     const id = targetId ?? selected();
     if (!id) return;
+    const images = pendingImages();
     try {
       const r = await api(`/api/agents/${id}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, start: true }),
+        body: JSON.stringify({ text, start: true, ...(images.length ? { images } : {}) }),
       });
       // optimistic echo — replaced by the logged event once the feed catches up.
       // promptId links it to the later prompt-delivered note (real LLM payload).
       setPendingMsgs((l) => [
         ...l,
-        { id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`, text, at: Date.now(), promptId: (r as any).promptId },
+        {
+          id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+          text,
+          at: Date.now(),
+          promptId: (r as any).promptId,
+          ...(images.length ? { images: images.map((i) => i.url) } : {}),
+        },
       ]);
+      setPendingImages([]);
       // scroll to bottom after our message appears. The composer is shrinking
       // (autosize) in the same frame — wait two frames so the scroll target is
       // computed against the SETTLED layout, not the still-expanded input.
@@ -2213,11 +2252,40 @@ export default function App() {
               </div>
             </Show>
             <form onsubmit={send}>
+              {/* staged image chips — clicking ✕ unstages before send */}
+              <Show when={pendingImages().length > 0}>
+                <div class="imgstage">
+                  <For each={pendingImages()}>
+                    {(im, i) => (
+                      <span class="imgchip" title={im.name}>
+                        <img src={im.url} alt={im.name} />
+                        <button
+                          type="button"
+                          class="imgx"
+                          title="remove"
+                          onclick={() => setPendingImages((l) => l.filter((_, j) => j !== i()))}
+                        >✕</button>
+                      </span>
+                    )}
+                  </For>
+                  <span class="muted" style="font-size:11px;align-self:center">
+                    {pendingImages().length} image{pendingImages().length > 1 ? "s" : ""} attached
+                  </span>
+                </div>
+              </Show>
               <textarea
                 ref={composerEl}
                 rows={1}
-                placeholder={`message #${sel()!.id} — / for commands`}
+                placeholder={`message #${sel()!.id} — / for commands · paste or 📎 to attach images`}
                 value={draft()}
+                onpaste={(e) => {
+                  // screenshots land on the clipboard as files — stage them
+                  const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+                  if (imgs.length) {
+                    e.preventDefault();
+                    addImages(imgs);
+                  }
+                }}
                 oninput={(e) => {
                   saveDraft(e.currentTarget.value);
                   setCmdIdx(0); // highlight first suggestion while popup is open
@@ -2275,7 +2343,28 @@ export default function App() {
                   requestAnimationFrame(() => autosizeComposer());
                 }}
               >{composerMaximized() ? "⤡" : "⤢"}</button>
+              <button
+                type="button"
+                class="iconbtn"
+                title="attach images (or paste them straight into the box)"
+                onclick={() => document.getElementById("composer-file")?.click()}
+              >📎</button>
+              <Show when={pendingImages().length}>
+                <span class="muted" style="font-size:11.5px;white-space:nowrap">🖼 {pendingImages().length}</span>
+              </Show>
               <button type="submit">send</button>
+              {/* hidden input lives here so the 📎 button can trigger it */}
+              <input
+                id="composer-file"
+                type="file"
+                accept="image/*"
+                multiple
+                style="display:none"
+                onchange={(e) => {
+                  if (e.currentTarget.files?.length) addImages(e.currentTarget.files);
+                  e.currentTarget.value = ""; // allow re-selecting the same file
+                }}
+              />
             </form>
             <div class="hint">
               {flash() ||
@@ -3308,8 +3397,21 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
 function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   switch (e.type) {
-    case "prompt":
-      return <div class="content" innerHTML={renderMarkdownCached(String(e.data.text ?? ""))} />;
+    case "prompt": {
+      // image attachments render as thumbnails under the text (logged events
+      // carry data.images; optimistic echoes carry data.pending images array)
+      const imgs: string[] = e.data?.images ?? [];
+      return (
+        <>
+          <div class="content" innerHTML={renderMarkdownCached(String(e.data.text ?? ""))} />
+          <Show when={imgs.length}>
+            <div class="promptimgs">
+              <For each={imgs}>{(src) => <img src={src} class="promptimg" alt="attachment" />}</For>
+            </div>
+          </Show>
+        </>
+      );
+    }
     case "message":
       return (
         <>
@@ -4066,7 +4168,7 @@ function SetupWizard(props: { onDone: () => void }) {
   const [apiKey, setApiKey] = createSignal("");
   const [model, setModel] = createSignal(PROVIDER_PRESETS[0].model);
   const [models, setModels] = createSignal<
-    { id: string; contextLength?: number; pricing?: { prompt: number; completion: number } }[]
+    { id: string; contextLength?: number; pricing?: { prompt: number; completion: number }; modalities?: { input: string[]; output: string[] } }[]
   >([]);
   const [workspace, setWorkspace] = createSignal("~/teapot-workspace");
   const [password, setPassword] = createSignal("");

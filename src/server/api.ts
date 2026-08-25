@@ -17,9 +17,10 @@ import { providerHeaders } from "../agent/llm.ts";
 import { safeJoin } from "../agent/tools.ts";
 
 interface ModelEntry {
-  id: string;
+id: string;
   contextLength?: number;
   pricing?: { prompt: number; completion: number };
+  modalities?: { input: string[]; output: string[] };
 }
 
 /** GET <baseUrl>/models on any OpenAI-compatible endpoint (id + ctx window + pricing). */
@@ -37,14 +38,19 @@ async function listModels(
   if (!res.ok) throw new Error(`upstream ${res.status}`);
   // OpenRouter-style entries carry context_length + per-token pricing —
   // surface them so the UI can show what each model offers
-  const j = (await res.json()) as {
-    data?: {
-      id?: string;
-      context_length?: number;
-      pricing?: { prompt?: string | number; completion?: string | number };
-    }[];
-  };
-  return (j.data ?? [])
+    const j = (await res.json()) as {
+      data?: {
+        id?: string;
+        context_length?: number;
+        pricing?: { prompt?: string | number; completion?: string | number };
+        architecture?: {
+          modality?: string;
+          input_modalities?: string[];
+          output_modalities?: string[];
+        };
+      }[];
+    };
+    return (j.data ?? [])
     .map((m) => ({
       id: typeof m.id === "string" ? m.id : "",
       contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
@@ -53,6 +59,13 @@ async function listModels(
           ? {
               prompt: Number(m.pricing.prompt ?? 0),
               completion: Number(m.pricing.completion ?? 0),
+            }
+          : undefined,
+      modalities:
+        Array.isArray(m.architecture?.input_modalities) && m.architecture!.input_modalities!.length
+          ? {
+              input: m.architecture!.input_modalities!,
+              output: m.architecture!.output_modalities ?? ["text"],
             }
           : undefined,
     }))
@@ -620,12 +633,21 @@ export function buildApp(master: Master): Hono {
   app.post("/api/agents/:id/prompt", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    const body = await c.req.json<{ text?: string; start?: boolean }>();
-    if (!body.text?.trim()) return c.json({ error: "text required" }, 400);
+    const body = await c.req.json<{ text?: string; start?: boolean; images?: { url: string; name?: string }[] }>();
+    if (!body.text?.trim() && !body.images?.length)
+      return c.json({ error: "text or images required" }, 400);
+    // validate images: data URLs or http(s), size-capped (a 20MB base64 blob
+    // in the log would hurt every future replay of this session)
+    const images = (body.images ?? []).filter((im) => {
+      const u = String(im?.url ?? "");
+      if (u.startsWith("data:image/")) return u.length < 12_000_000; // ~9MB binary
+      return /^https?:\/\//.test(u);
+    });
+    const text = body.text ?? "";
     // returns immediately: the prompt is logged + broadcast now, delivered to
     // the model at the next turn boundary (never blocks on a running agent).
     // promptId ties the UI's pending echo to the later prompt-delivered note.
-    const promptId = a.enqueuePrompt(body.text, "user");
+    const promptId = a.enqueuePrompt(text || "(see attached image)", "user", images.length ? images : undefined);
     if (body.start !== false && a.status !== "running") a.start("prompt");
     return c.json({ ok: true, promptId, queued: a.snapshot().pendingPrompts });
   });

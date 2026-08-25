@@ -238,7 +238,7 @@ GET  /api/agents/:id/file?path=         fetch text file
 PUT  /api/agents/:id/file?path=         save { content, baseContent? } (409 on conflict)
 GET  /api/agents/:id/raw?path=          raw media bytes
 GET  /api/agents/:id/tree               file tree
-POST /api/agents/:id/prompt             send { text, start? } → { promptId }
+POST /api/agents/:id/prompt             send { text, start?, images?: [{url}] } → { promptId }
 POST /api/agents/:id/prompt/cancel      withdraw { promptId } (409 once delivered)
 POST /api/agents/:id/goal               { text?, status?, verify? }
 POST /api/agents/:id/start|stop|fork|load

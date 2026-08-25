@@ -12,9 +12,19 @@ export interface ToolSpec {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 
+/** One content part of a multimodal message (OpenAI chat format). */
+export interface ContentPart {
+  type: "text" | "image_url";
+  text?: string;
+  image_url?: { url: string }; // http(s) or data: URL
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
+  /** string for plain messages; content-parts array for multimodal user turns */
   content: string | null;
+  /** present on multimodal user messages — parts render as text + images */
+  content_parts?: ContentPart[];
   tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
 }
@@ -118,15 +128,25 @@ function looksMangled(name: string): boolean {
   return !name || /[\ufffd<>]/.test(name) || /<tool_call>|<\/tool/.test(name);
 }
 
-function sanitize(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map((m) => {
+function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
+  return messages.map((m): Record<string, unknown> => {
+    // multimodal user message → OpenAI content-parts array (text + images);
+    // providers without vision reject it, but those models were never a fit
+    if (m.content_parts?.length) {
+      const parts = m.content_parts.map((p) =>
+        p.type === "image_url"
+          ? { type: "image_url" as const, image_url: { url: p.image_url!.url } }
+          : { type: "text" as const, text: p.text ?? "" },
+      );
+      return { role: m.role, content: parts };
+    }
     if ((m.role === "user" || m.role === "assistant") && !m.content) {
       return { ...m, content: m.tool_calls?.length ? "(tool call)" : "(no content)" };
     }
     if (m.role === "tool" && typeof m.content !== "string") {
       return { ...m, content: String(m.content ?? "(no output)") };
     }
-    return m;
+    return { ...m };
   });
 }
 

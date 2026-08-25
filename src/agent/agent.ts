@@ -183,7 +183,7 @@ export class Agent {
    * it would delay both the log entry (UI) and delivery until the round —
    * sometimes the whole goal — finished.
    */
-  private pendingPrompts: { source: string; text: string; id?: string }[] = [];
+  private pendingPrompts: { source: string; text: string; images?: { url: string; name?: string }[]; id?: string }[] = [];
   private stopRequested = false;
   private wake: (() => void) | null = null;
   /** set while a long-parking tool (wait_children) holds the run chain */
@@ -882,7 +882,11 @@ export class Agent {
    * the running loop. The very first prompt on a fresh boot also triggers the
    * lazy session restore (before the mailbox is filled, so no duplicates).
    */
-  enqueuePrompt(text: string, source = "user"): string {
+  enqueuePrompt(
+    text: string,
+    source = "user",
+    images?: { url: string; name?: string }[],
+  ): string {
     // a prompt during a tool park (wait_children) takes over instantly:
     // unpark fixes the DISPLAY, aborting the park signal actually ends the
     // wait — the run chain resumes with this prompt drained at the boundary
@@ -909,10 +913,11 @@ export class Agent {
       source === "user" ? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` : "";
     void this.ensureReady()
       .then(() => {
-        this.pendingPrompts.push({ source, text, ...(promptId ? { id: promptId } : {}) });
+        this.pendingPrompts.push({ source, text, images, ...(promptId ? { id: promptId } : {}) });
         return this.log.append("prompt", this.currentSession, this.currentBranch, {
           source,
           text,
+          ...(images?.length ? { images: images.map((i) => ({ url: i.url, name: i.name })) } : {}),
           ...(promptId ? { promptId } : {}),
         });
       })
@@ -952,7 +957,20 @@ export class Agent {
    */
   private drainPendingPrompts(): void {
     for (const p of this.pendingPrompts.splice(0)) {
-      this.messages.push({ role: "user", content: p.text });
+      // multimodal: images ride as OpenAI content parts (text first, then
+      // images); plain prompts keep the string form for cache friendliness
+      if (p.images?.length) {
+        this.messages.push({
+          role: "user",
+          content: p.text,
+          content_parts: [
+            { type: "text", text: p.text },
+            ...p.images.map((i) => ({ type: "image_url" as const, image_url: { url: i.url } })),
+          ],
+        });
+      } else {
+        this.messages.push({ role: "user", content: p.text });
+      }
       if (p.source === "user") {
         const id = p.id ?? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
         this.deliveredPrompts.push(id);
@@ -2319,16 +2337,49 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
     list.filter((e) => e.type === "tool_result").map((e) => String((e.data as Record<string, unknown>).callId ?? "")),
   );
   const bufferedUsers: string[] = [];
+  // image attachments paired with buffered prompts (multimodal replay)
+  const bufferedParts: { url: string }[][] = [];
   const flushUsers = () => {
     if (openCalls.size === 0) {
-      for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
+      const texts = bufferedUsers.splice(0);
+      const parts = bufferedParts.splice(0);
+      texts.forEach((text, i) => {
+        const imgs = parts[i] ?? [];
+        msgs.push(
+          imgs.length
+            ? {
+                role: "user",
+                content: text,
+                content_parts: [
+                  { type: "text", text },
+                  ...imgs.map((im) => ({ type: "image_url" as const, image_url: { url: im.url } })),
+                ],
+              }
+            : { role: "user", content: text },
+        );
+      });
     }
   };
   for (const e of list) {
     const d = e.data as Record<string, unknown>;
     if (e.type === "prompt" && typeof d.text === "string") {
-      if (openCalls.size > 0) bufferedUsers.push(d.text);
-      else msgs.push({ role: "user", content: d.text });
+      // restore image attachments so replays stay byte-identical with the
+      // original request (prefix caches stay warm across restarts)
+      const text: string = d.text;
+      const imgs = Array.isArray(d.images) ? (d.images as { url: string }[]) : [];
+      const mk = (): ChatMessage =>
+        imgs.length
+          ? {
+              role: "user",
+              content: text,
+              content_parts: [
+                { type: "text", text },
+                ...imgs.map((i) => ({ type: "image_url" as const, image_url: { url: i.url } })),
+              ],
+            }
+          : { role: "user", content: text };
+      if (openCalls.size > 0) bufferedUsers.push(text), bufferedParts.push(imgs);
+      else msgs.push(mk());
     } else if (e.type === "message") {
       // final summaries are operator-facing only — the live loop never puts
       // them in model history, so restores must skip them too
@@ -2432,6 +2483,24 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
     }
   }
   // prompts that were still waiting on a hole-filled tail land here
-  for (const text of bufferedUsers.splice(0)) msgs.push({ role: "user", content: text });
+  {
+    const texts = bufferedUsers.splice(0);
+    const parts = bufferedParts.splice(0);
+    texts.forEach((text, i) => {
+      const imgs = parts[i] ?? [];
+      msgs.push(
+        imgs.length
+          ? {
+              role: "user",
+              content: text,
+              content_parts: [
+                { type: "text", text },
+                ...imgs.map((im) => ({ type: "image_url" as const, image_url: { url: im.url } })),
+              ],
+            }
+          : { role: "user", content: text },
+      );
+    });
+  }
   return msgs;
 }

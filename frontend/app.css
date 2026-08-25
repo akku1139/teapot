@@ -299,6 +299,17 @@ input[type="checkbox"] { accent-color: var(--acc); }
 /* per-tool copy cluster pushed to the row's right edge */
 .toolcopy { margin-left: auto; display: flex; gap: 4px; flex-shrink: 0; }
 .msgfoot { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--dim); font-size: 11px; }
+/* composer image staging + timeline thumbnails */
+.imgstage { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.imgchip { position: relative; display: inline-flex; }
+.imgchip img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.imgchip .imgx {
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px;
+  border-radius: 50%; border: none; background: var(--err); color: #fff;
+  font-size: 9px; line-height: 1; cursor: pointer;
+}
+.promptimgs { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+img.promptimg { max-width: 180px; max-height: 120px; border-radius: 6px; border: 1px solid var(--line); }
 
 /* terminal drawer */
 .termdrawer {

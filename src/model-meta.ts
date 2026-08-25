@@ -11,6 +11,8 @@ export interface ModelMeta {
   contextLength?: number;
   /** USD per token (OpenRouter-style) — powers the runtime cost estimate */
   pricing?: { prompt: number; completion: number };
+  /** what the model can accept and produce — drives the 📄🖼️→📄 badge */
+  modalities?: { input: string[]; output: string[] };
 }
 
 const cache = new Map<string, { at: number; list: ModelMeta[] }>();
@@ -40,6 +42,11 @@ export async function fetchModelList(
         id?: string;
         context_length?: number;
         pricing?: { prompt?: string | number; completion?: string | number };
+        architecture?: {
+          modality?: string;
+          input_modalities?: string[];
+          output_modalities?: string[];
+        };
       }[];
     };
     const list = (j.data ?? [])
@@ -53,6 +60,13 @@ export async function fetchModelList(
             ? {
                 prompt: Number(m.pricing.prompt ?? 0),
                 completion: Number(m.pricing.completion ?? 0),
+              }
+            : undefined,
+        modalities:
+          Array.isArray(m.architecture?.input_modalities) && m.architecture!.input_modalities!.length
+            ? {
+                input: m.architecture!.input_modalities!,
+                output: m.architecture!.output_modalities ?? ["text"],
               }
             : undefined,
       }))

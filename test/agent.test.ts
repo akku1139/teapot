@@ -212,6 +212,54 @@ test("prompts sent mid-run are logged instantly and delivered at the next turn b
   });
 });
 
+test("image attachments flow into multimodal content parts and survive replay", async () => {
+  // the model must receive OpenAI-style content parts (text + image_url), and
+  // a restart's log replay must rebuild the exact same request
+  const seen: any[] = [];
+  const chatFn = async (_cfg: unknown, messages: any) => {
+    seen.push(JSON.parse(JSON.stringify(messages)));
+    return reply("got it");
+  };
+  await withAgent({ chatFn, autoContinue: false }, async (agent) => {
+    agent.enqueuePrompt("what is in this picture?", "user", [
+      { url: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" },
+    ]);
+    agent.start("t");
+    await agent.settled();
+    assert.equal(agent.status, "idle");
+    // find the user turn in what the LLM actually received
+    const lastReq = seen[seen.length - 1]!;
+    const userMsg = [...lastReq].reverse().find((m: any) => m.role === "user");
+    assert.ok(Array.isArray(userMsg.content_parts), "multimodal message carries content parts");
+    assert.equal(userMsg.content_parts[0].type, "text");
+    assert.equal(userMsg.content_parts[0].text, "what is in this picture?");
+    assert.equal(userMsg.content_parts[1].type, "image_url");
+    assert.match(userMsg.content_parts[1].image_url.url, /^data:image\/png/);
+
+    // replay: a fresh agent over the same session dir rebuilds the same shape
+    const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+    const promptEv = events.find((e) => e.type === "prompt");
+    assert.ok(promptEv && Array.isArray((promptEv.data as any).images), "images persisted to the log");
+    await agent.dispose();
+
+    const b = new Agent({
+      id: "t2",
+      workspace: (agent as unknown as { opts: { workspace: string } }).opts.workspace,
+      llm: LLM,
+      sessionDir: agent.snapshot().sessionDir, // same session → restore path
+      continueDelayMs: 10,
+      chatFn,
+      autoContinue: false,
+    });
+    await b.init();
+    await b.load();
+    const restored = b.messages.find((m) => m.content_parts?.length);
+    assert.ok(restored, "replay restores the multimodal message");
+    assert.equal(restored!.content_parts![1]!.type, "image_url");
+    await b.dispose();
+  });
+});
+
 test("delivered prompt emits a prompt-delivered note carrying its promptId", async () => {
   // the web UI flips a pending echo to "sent" and swaps it for the logged row
   // based on THIS note — without it the "sent ✓" echo lingered indefinitely
