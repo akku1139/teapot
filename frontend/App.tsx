@@ -2858,16 +2858,19 @@ function rawOf(e: Ev): string {
 function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
-  // Group consecutive rows from the same ACTOR — not the same event type.
-  // A bash run renders as call,result,call,result… which the old type-equality
-  // check broke apart; comparing author names keeps the whole run headerless.
-  const family = (ev: Ev) => {
-    if (ev.type === "tool_call" || ev.type === "tool_result") return "tool";
-    return ev.type;
+  // Group consecutive rows from the same ACTOR. The actor for tool events is
+  // THE AGENT (they are its actions) — keying by tool name broke grouping as
+  // soon as two different tools ran back to back (bash→read_file→bash).
+  const actorKey = (ev: Ev): string => {
+    const d = ev.data ?? {};
+    if (ev.data?.actor) return `sub:${String(ev.data.actor)}`;
+    if (ev.type === "tool_call" || ev.type === "tool_result") return "agent-tools";
+    if (ev.type === "prompt") return `src:${String(d.source ?? "user")}`;
+    return `type:${ev.type}`;
   };
   const grouped =
     props.prev &&
-    family(props.prev) === family(e) &&
+    actorKey(props.prev) === actorKey(e) &&
     authorOf(props.prev).name === a.name &&
     e.session === props.prev.session &&
     e.branch === props.prev.branch;
@@ -2903,15 +2906,18 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
       class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "")}
       data-eid={e.id}
     >
-      <Show when={!grouped} fallback={<span style="width:38px" />}>
-        <div class="avatar" style={{ background: a.color + "33", border: `1px solid ${a.color}66` }}>{a.icon}</div>
-      </Show>
+      {/* grouped rows keep the same geometry as the row that started the
+          run — same avatar slot, but the avatar renders as a faded ghost.
+          Hovering it reveals the exact time+branch for THIS message. */}
+      <div
+        class={"avatar avghost" + (grouped ? " ghosted" : "")}
+        style={{ background: a.color + "33", border: `1px solid ${a.color}66` }}
+        title={grouped ? `${fmtTs(e.ts)} · ${e.branch}` : undefined}
+      >
+        {a.icon}
+      </div>
       <div class="msg-body">
-        {/* grouped rows drop the full header; a hover-only dot keeps the
-            timestamp reachable without a visible line per bash in a run */}
-        <Show when={grouped}>
-          <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`}>·</span>
-        </Show>
+        {grouped && <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`} />}
         <Show when={!grouped}>
           <div class="msg-head">
             <span class="author" style={{ color: a.color }}>{a.name}</span>

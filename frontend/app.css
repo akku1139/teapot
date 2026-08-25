@@ -659,11 +659,11 @@ body:has(.composer.maximized) .feed { visibility: hidden; }
 .embed.compaction summary .meta { color: var(--tool); }
 
 /* grouped message rows: tiny hover-only timestamp dot */
-.grouptime {
-  color: var(--dim); opacity: 0; transition: opacity .15s;
-  font-size: 11px; padding-top: 4px; cursor: default; flex-shrink: 0;
-}
-.msg:hover .grouptime { opacity: .8; }
+/* grouped (continuation) rows: avatar is faded, full opacity on hover with
+   the exact time shown in its tooltip — layout matches the run's first row */
+.avatar.ghosted { opacity: .35; transition: opacity .15s; }
+.msg:hover .avatar.ghosted { opacity: 1; }
+.grouptime { display: none; }
 
 /* notification items: unread state + per-item read button */
 .notifitem { opacity: 1; }
