@@ -491,6 +491,23 @@ export default function App() {
   });
   const chatEvents = createMemo(() => {
     const { consumed } = pairInfo();
+    // Reasoning-only assistant turns (content empty, only 💭 reasoning) used
+    // to render as their own agent bubble between every pair of tool rows,
+    // which also broke "consecutive bash" grouping. They now ride along with
+    // the tool run: a reasoning-only turn is dropped when the nearest visible
+    // row before it is a tool event — its thinking belongs to that action.
+    const lastVisibleBefore = new Map<string, string>();
+    let lastKind = "";
+    for (const e of events()) {
+      (e as Ev & { _prevKind?: string })._prevKind = lastKind;
+      if (!FEED_TYPES.has(e.type)) continue;
+      const d = e.data ?? {};
+      const isCarrier =
+        e.type === "message" &&
+        String(d.content ?? "").trim() === "" &&
+        String(d.reasoning ?? "").trim() !== "";
+      if (!isCarrier) lastKind = e.type === "tool_result" ? "tool" : e.type;
+    }
     const real = events().filter((e) => {
       if (!FEED_TYPES.has(e.type)) return false;
       // report_progress calls are fully rendered by the progress embed below
@@ -509,15 +526,24 @@ export default function App() {
       // tool-call carrier turns have no visible payload — the ToolRow below
       // already tells that story; an empty agent bubble is just noise
       if (e.type === "message") {
+        const content = String(e.data?.content ?? "");
+        // reasoning-only turn right after a tool result: the next tool row's
+        // collapsible reasoning covers that thinking; a standalone bubble here
+        // broke "consecutive bash" grouping (prismrv-root-7fb7533b)
+        if (
+          content.trim() === "" &&
+          String(e.data?.reasoning ?? "").trim() !== "" &&
+          (e as Ev & { _prevKind?: string })._prevKind === "tool"
+        )
+          return false;
         // a requested progress report is already shown by its progress embed —
         // the log keeps the message (restores need it) but the feed must not
         if (e.data?.progressEcho) return false;
         // sanitize()'s request-only placeholder leaked into old logs as an
         // "assistant said (tool call)" message; the tool rows tell that story
-        const c = String(e.data?.content ?? "");
-        if (!e.data?.final && c.trim() === "(tool call)") return false;
+        if (!e.data?.final && content.trim() === "(tool call)") return false;
         return (
-          c.trim() !== "" ||
+          content.trim() !== "" ||
           String(e.data?.reasoning ?? "").trim() !== "" ||
           !!e.data?.final
         );
@@ -767,6 +793,43 @@ export default function App() {
     });
   }
 
+  // After the initial page lands, the feed may not even fill the viewport
+  // (a fresh session shows only the last ~dozen rows). scrollTop can never
+  // reach the "at top" trigger then, so older pages were unreachable. Keep
+  // pulling until the feed overflows or history is exhausted.
+  async function backfillUntilScrollable(): Promise<void> {
+    const id = selected();
+    if (!id || olderDone() || loadingOlder()) return;
+    // EVERYTHING is already loaded → no older history exists at all. Exit
+    // before touching the server (a fresh session with a short log lands
+    // here immediately — no probing, no loop).
+    if (events().length >= eventsTotal()) {
+      setOlderDone(true);
+      return;
+    }
+    // Only trust measurements from a LAID-OUT feed. Hidden/unmounted feeds
+    // report scrollHeight 0 and would look "never full", causing pointless
+    // page pulls; if we cannot measure, we do not guess.
+    const measurable = () => {
+      const f = feedEl();
+      return f && f.clientHeight > 0 ? f : null;
+    };
+    let guard = 0;
+    while (guard++ < 20 && !olderDone() && selected() === id) {
+      const f = measurable();
+      if (f && f.scrollHeight > f.clientHeight + 40) return; // scrollable now
+      if (events().length >= eventsTotal()) {
+        setOlderDone(true);
+        return;
+      }
+      const before = events().length;
+      await loadOlder();
+      // empty page (or fully deduped) means history is exhausted — loadOlder
+      // has set olderDone itself in the empty-page case
+      if (events().length === before) return;
+    }
+  }
+
   async function loadOlder(): Promise<void> {
     const id = selected();
     const oldest = events()[0];
@@ -898,6 +961,9 @@ export default function App() {
     requestAnimationFrame(() => {
       if (selected() === id) scrollBottom(true);
     });
+    // the first page may not fill the viewport — pull older pages until it
+    // does (or history runs out), so infinite scroll is always reachable
+    void backfillUntilScrollable();
   }
 
   /* ---------- realtime over WebSocket (auto-reconnect) ---------- */
@@ -1260,6 +1326,13 @@ export default function App() {
       return;
     }
     const s = ensureSession(tab, host);
+    // Each session element must live in EXACTLY one pane. Session elements
+    // are absolutely positioned, so a previous tab's terminal stayed stacked
+    // underneath and showed through a freshly opened (empty) shell — the
+    // "switching tabs kept showing the old tab's content" bug.
+    for (const [key, other] of liveTerms) {
+      if (key !== tab.key && other.el.parentElement === host) other.el.remove();
+    }
     // make sure the terminal element really lives in THIS pane right now —
     // switching tabs moved DOM nodes behind Solid's back, so verify instead
     // of assuming; then refit so xterm re-measures into the (new) box
@@ -1267,7 +1340,7 @@ export default function App() {
       if (s.el.parentElement !== host) host.appendChild(s.el);
       try { s.fit(); } catch { /* hidden */ }
       if (focusedPane() === (idx === 0 ? 0 : 1)) {
-        try { s.term.focus(); } catch { /* */ }
+        try { s.term.focus(); } catch { /* hidden */ }
       }
     });
   }
@@ -1295,7 +1368,12 @@ export default function App() {
     if (!id) return;
     if (!termTabs().some((t) => t.agentId === id) && termTabs().length === 0) addTab(id);
     else if (!termTabs().some((t) => t.agentId === id)) {
-      // another agent — focus its tab in the active pane if present
+      // the selected agent has no tab YET (other agents own all tabs).
+      // The old code tried focusTab(findIndex→-1) and silently did nothing,
+      // leaving the pane stuck on "no shell here" or another agent's shell.
+      addTab(id);
+    } else {
+      // its tab exists — focus it in the active pane
       const i = termTabs().findIndex((t) => t.agentId === id);
       if (i >= 0) focusTab(i);
     }
@@ -1539,6 +1617,10 @@ export default function App() {
 
     saveDraft("");
     await sendText(text);
+    // sending from a maximized composer restores the normal view — the whole
+    // point of maximize is composing long text, and staying maximized after
+    // send hid the timeline for no reason
+    if (composerMaximized()) setComposerMaximized(false);
   };
 
   const executeSlash = async (name: string, arg: string): Promise<void> => {
@@ -1956,14 +2038,14 @@ export default function App() {
               </div>
               <div class="termbody" classList={{ split: splitView() }}>
                 <div class="termpane" classList={{ focused: focusedPane() === 0 }} onpointerdown={() => setFocusedPane(0)} ref={setPaneHost(0)}>
-                  <Show when={!activeTab() || (focusedPane() === 0 && paneL() === -1)}>
+                  <Show when={paneL() < 0 || paneL() >= termTabs().length}>
                     <div class="termempty muted">no shell here — ＋ opens one, tabs fill the focused pane</div>
                   </Show>
                 </div>
                 <Show when={splitView()}>
                   <div class="termsplit" />
                   <div class="termpane" classList={{ focused: focusedPane() === 1 }} onpointerdown={() => setFocusedPane(1)} ref={setPaneHost(1)}>
-                    <Show when={paneR() === -1 || termTabs().length <= paneR()}>
+                    <Show when={paneR() < 0 || paneR() >= termTabs().length}>
                       <div class="termempty muted">no shell here — click a tab or ＋ to add</div>
                     </Show>
                   </div>
@@ -2970,14 +3052,15 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
       data-eid={e.id}
     >
       {/* grouped rows keep the same geometry as the row that started the
-          run — same avatar slot, but the avatar renders as a faded ghost.
-          Hovering it reveals the exact time+branch for THIS message. */}
+          run — same avatar slot, but EMPTY (no faded ghost icon): a column of
+          faint 🧩s read as separate "sub messages" instead of continuation
+          lines. Hover still shows time+branch via the title. */}
       <div
         class={"avatar avghost" + (grouped ? " ghosted" : "")}
-        style={{ background: a.color + "33", border: `1px solid ${a.color}66` }}
+        style={{ background: grouped ? "transparent" : a.color + "33", border: grouped ? "1px solid transparent" : `1px solid ${a.color}66` }}
         title={grouped ? `${fmtTs(e.ts)} · ${e.branch}` : undefined}
       >
-        {a.icon}
+        {grouped ? "" : a.icon}
       </div>
       <div class="msg-body">
         {grouped && <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`} />}
