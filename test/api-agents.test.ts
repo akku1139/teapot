@@ -1,8 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
 
@@ -16,41 +14,41 @@ function mkMaster(dataDir: string): Master {
 }
 
 test("POST /api/agents auto-suffixes colliding ids", async () => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "ids-root-"));
-  const wsA = await mkdtemp(path.join(tmpdir(), "proj-a-"));
-  const wsB = await mkdtemp(path.join(tmpdir(), "proj-b-"));
-  const m = mkMaster(dataDir);
-  const app = buildApp(m);
+  await useTempDirs(["ids-root-", "proj-a-", "proj-b-"], async ([dataDir, wsA, wsB]) => {
+    const m = mkMaster(dataDir);
+    const app = buildApp(m);
 
-  // both workspaces basename to a distinct temp name; force the SAME id via
-  // body.id twice → second creation must be auto-suffixed, not rejected
-  const r1 = await app.request("/api/agents", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspace: wsA, id: "proj", start: false }),
+    // both workspaces basename to a distinct temp name; force the SAME id via
+    // body.id twice → second creation must be auto-suffixed, not rejected
+    const r1 = await app.request("/api/agents", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspace: wsA, id: "proj", start: false }),
+    });
+    assert.equal(r1.status, 200);
+    const j1 = (await r1.json()) as { agent: { id: string } };
+    assert.equal(j1.agent.id, "proj");
+
+    const r2 = await app.request("/api/agents", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspace: wsB, id: "proj", start: false }),
+    });
+    assert.equal(r2.status, 200);
+    const j2 = (await r2.json()) as { agent: { id: string } };
+    assert.equal(j2.agent.id, "proj-2"); // unique URL key, no error
+
+    // duplicate ids in config are skipped at boot instead of killing master
+    const bad = new Master(
+      { port: 0, dataDir, llm: LLM, providers: {}, agents: [
+        { id: "dup", workspace: wsA },
+        { id: "dup", workspace: wsB },
+      ] },
+      "/dev/null",
+    );
+    await bad.start(); // must not throw
+    assert.equal([...bad.agents.keys()].filter((k) => k === "dup").length, 1);
+    for (const a of [...m.agents.values(), ...bad.agents.values()]) await a.dispose();
   });
-  assert.equal(r1.status, 200);
-  const j1 = (await r1.json()) as { agent: { id: string } };
-  assert.equal(j1.agent.id, "proj");
-
-  const r2 = await app.request("/api/agents", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspace: wsB, id: "proj", start: false }),
-  });
-  assert.equal(r2.status, 200);
-  const j2 = (await r2.json()) as { agent: { id: string } };
-  assert.equal(j2.agent.id, "proj-2"); // unique URL key, no error
-
-  // duplicate ids in config are skipped at boot instead of killing master
-  const bad = new Master(
-    { port: 0, dataDir, llm: LLM, providers: {}, agents: [
-      { id: "dup", workspace: wsA },
-      { id: "dup", workspace: wsB },
-    ] },
-    "/dev/null",
-  );
-  await bad.start(); // must not throw
-  assert.equal([...bad.agents.keys()].filter((k) => k === "dup").length, 1);
-  for (const a of [...m.agents.values(), ...bad.agents.values()]) await a.dispose();
 });
+

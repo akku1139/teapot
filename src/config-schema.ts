@@ -45,6 +45,9 @@ export const ConfigPatchSchema = z.object({
   contextTokenBudget: z.number().int().min(1_000).nullable().optional(),
   contextWindowTokens: z.number().int().min(1_000).optional(),
   maxSpawnDepth: z.number().int().min(0).max(8).optional(),
+  // soft cap on LLM turns in one round; reaching it nudges the model to wrap
+  // up (not an error) — 0 disables the cap
+  maxTurnsPerRound: z.number().int().min(0).optional(),
   tasks: z.array(TaskSchema).optional(),
 });
 

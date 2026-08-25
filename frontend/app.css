@@ -352,6 +352,8 @@ body:has(.termdrawer) .jump {
 .divider-msg { display: flex; align-items: center; gap: 10px; padding: 4px 18px; color: var(--dim); font-size: 11.5px; }
 .divider-msg::before, .divider-msg::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .divider-msg.err { color: var(--err); }
+/* live compaction banner — animated so it reads as work in progress */
+.divider-msg.compacting { color: var(--acc); animation: pulse 1.6s ease-in-out infinite; }
 
 .day-divider { display: flex; align-items: center; gap: 10px; padding: 14px 18px 6px; }
 .day-divider::before, .day-divider::after { content: ""; flex: 1; height: 1px; background: var(--bg-light); }

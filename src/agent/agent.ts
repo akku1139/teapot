@@ -82,6 +82,12 @@ export interface AgentOptions {
   spawnDepth?: number;
   /** restrict this agent to read-only tools (sub-agent personas) */
   readOnlyTools?: boolean;
+  /**
+   * Soft cap on LLM turns in ONE round. Reaching it is not an error: the
+   * harness nudges the model to report progress and wrap up, then a fresh
+   * round begins. 0 disables the cap entirely.
+   */
+  maxTurnsPerRound?: number;
   /** set when spawned by another agent (sub-agent lineage) */
   parent?: string;
   /** injectable LLM call for tests (defaults to the real one) */
@@ -186,6 +192,8 @@ export class Agent {
   private lastUsage?: { input: number; output: number; cached?: number };
   /** messages.length right after the last successful compaction */
   private compactedAtLen = 0;
+  /** live compaction phase for UI progress ("summarizing"/"harvesting") */
+  private compactPhase = "";
   /** set by ask_user: the loop is parked until the operator replies */
   private awaitingUser = false;
   /** real assistant output since the last progress report (chars / turns) */
@@ -202,6 +210,7 @@ export class Agent {
       continueDelayMs: 15_000,
       autoCompact: true,
       maxConsecutiveToolErrors: 5,
+      maxTurnsPerRound: 200,
       contextTokenBudget: 96_000,
       contextWindowTokens: 0,
       restoreSession: true,
@@ -799,6 +808,9 @@ export class Agent {
         // mislabeling every inferred-window model "manual override"
         compactAtIsManual: this.compactBudgetIsManual,
         window: this.opts.contextWindowTokens || 0,
+        // live compaction phase ("summarizing"/"harvesting"/"done") — lets any
+        // client show progress even if it missed the bus event
+        ...(this.compactPhase ? { compacting: this.compactPhase } : {}),
       },
       pendingPrompts: this.pendingPrompts.length,
       todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
@@ -974,7 +986,39 @@ export class Agent {
   private async loop(): Promise<void> {
     while (!this.stopRequested) {
       try {
-        const finished = await this.runTurnsUntilIdle();
+        const turnsAtStart = this.stats.turns;
+        let finished = await this.runTurnsUntilIdle();
+        // the round ended on the per-round turn cap (not finish/stop): tell
+        // the model to report and wrap up, then fall through to auto-continue
+        // — a soft checkpoint instead of the old hard runaway error
+        const cap = Math.max(0, this.opts.maxTurnsPerRound ?? 200);
+        if (
+          !finished &&
+          cap > 0 &&
+          this.stats.turns - turnsAtStart >= cap &&
+          !this.stopRequested &&
+          !this.awaitingUser &&
+          !this.pendingPrompts.length // real user input outranks the wrap-up nudge
+        ) {
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "round-turn-cap",
+            turns: cap,
+          });
+          await this.maybeRequestProgress();
+          const nudge =
+            `[harness] This round ran ${cap} turns, so it ends here. ` +
+            "Report progress via report_progress now; then either call finish() if the goal is met, " +
+            "or state exactly where you will resume. Work CONTINUES in the next round automatically.";
+          this.messages.push({ role: "user", content: nudge });
+          await this.log.append("prompt", this.currentSession, this.currentBranch, {
+            source: "harness",
+            text: nudge,
+          });
+          // the wrap-up nudge IS this round's continuation prompt — starting
+          // another round on top of it would stack a generic auto-continue
+          // nudge too, so go straight to the next round instead
+          continue;
+        }
         if (this.stopRequested) break;
         // fresh user input arrived while we were finishing up — another round now
         if (this.pendingPrompts.length) continue;
@@ -1074,7 +1118,12 @@ export class Agent {
    */
   private async runTurnsUntilIdle(): Promise<boolean> {
     let finished = false;
-    for (let guard = 0; guard < 200; guard++) {
+    // maxTurnsPerRound is a SOFT cap (0 disables): reaching it nudges the
+    // model to wrap up instead of hard-failing the round — long autonomous
+    // stretches are normal here, and a throw used to leave status=error with
+    // no auto-recovery even though autoContinue would happily keep going.
+    const cap = Math.max(0, this.opts.maxTurnsPerRound ?? 200);
+    for (let guard = 0; cap === 0 || guard < cap; guard++) {
       if (this.stopRequested) return finished;
       // deliver prompts queued while the previous turn was running
       this.drainPendingPrompts();
@@ -1404,7 +1453,9 @@ export class Agent {
       }
       if (finished) return true;
     }
-    throw new Error("runaway detection: too many turns in one round (>200)");
+    // cap reached — loop() logs the note, asks for a progress report and
+    // nudges the model; this round simply ends (no hard error)
+    return finished;
   }
 
   private buildMessages(): ChatMessage[] {
@@ -1496,20 +1547,46 @@ export class Agent {
       text: request,
     });
     this.messages.push({ role: "user", content: request });
-    const res = await this.llmCall(this.buildMessages(), []); // no tools: pure report
-    await this.recordProgress(JSON.stringify({ freeform: res.message.content }));
-    // The report's content is ALREADY shown by the progress embed — logging a
-    // plain assistant message with the same text made the timeline show every
-    // requested report twice. Keep logging it (session restores replay the
-    // exchange faithfully and rebuildMessages needs it) but mark it as an echo;
-    // the web UI filters marked rows out.
-    await this.log.append("message", this.currentSession, this.currentBranch, {
-      role: "assistant",
-      content: res.message.content ?? "",
-      reasoning: res.reasoning,
-      progressEcho: true,
-    });
-    this.messages.push(res.message);
+    // Give the model the report_progress TOOL here. The old no-tools call
+    // made the model answer in plain text while its own mental "did I report?"
+    // ledger stayed unsolved — it then re-sent a voluntary report_progress
+    // right after, and the timeline showed every requested report TWICE.
+    const res = await this.llmCall(this.buildMessages(), allToolSpecs());
+    let reported = false;
+    for (const call of res.message.tool_calls ?? []) {
+      if (call.function.name !== "report_progress") continue;
+      await this.recordProgress(call.function.arguments);
+      this.messages.push({ role: "tool", tool_call_id: call.id, content: "progress recorded" });
+      // log both sides so restores replay the exact exchange (meta-style)
+      await this.log.append("tool_call", this.currentSession, this.currentBranch, {
+        callId: call.id,
+        name: call.function.name,
+        args: safeParse(call.function.arguments),
+        argsRaw: call.function.arguments,
+      });
+      await this.log.append("tool_result", this.currentSession, this.currentBranch, {
+        callId: call.id,
+        name: call.function.name,
+        ok: true,
+        durationMs: 0,
+        result: "progress recorded",
+      });
+      reported = true;
+    }
+    if (!reported && (res.message.content ?? "").trim()) {
+      // fallback: the model answered in prose anyway — record it as before.
+      // Its content is ALREADY shown by the progress embed; logging the plain
+      // message too used to duplicate rows, so mark it as an echo (the feed
+      // filters marked rows out).
+      await this.recordProgress(JSON.stringify({ freeform: res.message.content }));
+      await this.log.append("message", this.currentSession, this.currentBranch, {
+        role: "assistant",
+        content: res.message.content ?? "",
+        reasoning: res.reasoning,
+        progressEcho: true,
+      });
+      this.messages.push(res.message);
+    }
   }
 
   /* ---------- context compaction ---------- */
@@ -1646,7 +1723,7 @@ export class Agent {
       cut = i;
     }
     cut = this.safeCut(cut);
-    if (cut <= 0) return; // nothing safely compactable (should not happen)
+    if (cut <= 0) return; // nothing safely compactable (phase never armed yet)
 
     const old = this.messages.slice(0, cut);
     const oldCount = old.length;
@@ -1654,8 +1731,27 @@ export class Agent {
     let mode: "summarize" | "truncate" = "summarize";
     let summarizedCount = oldCount;
     let droppedCount = 0;
+    // progress is visible: announce the phase up front, then stream the
+    // summarizer's output as it generates (a long summarize used to look like
+    // the agent silently hung — hundreds of thousands of tokens take a while)
+    bus.emit("update", {
+      kind: "compaction-progress",
+      agentId: this.opts.id,
+      phase: "summarizing",
+      summarized: oldCount,
+    } satisfies BusEvent);
+    this.compactPhase = "summarizing";
     try {
-      summary = await this.summarize(old);
+      summary = await this.summarize(old, (text) => {
+        bus.emit("update", {
+          kind: "llm-delta",
+          agentId: this.opts.id,
+          text: `[compact] ${text}`,
+          reasoning: "",
+        } satisfies BusEvent);
+      });
+      this.compactPhase = "harvesting";
+      bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "harvesting" } satisfies BusEvent);
       if (summary) await this.harvestLessons(summary); // durable knowledge → memory.md
     } catch (err) {
       await this.log.append("error", this.currentSession, this.currentBranch, {
@@ -1667,7 +1763,11 @@ export class Agent {
       mode = "truncate";
       summarizedCount = 0;
       const halfCut = this.safeCut(Math.floor(oldCount / 2));
-      if (halfCut <= 0) return;
+      if (halfCut <= 0) {
+        this.compactPhase = "";
+        bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
+        return;
+      }
       droppedCount = halfCut;
       this.messages = this.messages.slice(halfCut);
     } else {
@@ -1703,10 +1803,12 @@ export class Agent {
       dropped: droppedCount,
       mode,
     });
+    this.compactPhase = "";
+    bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
   }
 
   /** Ask the model for dense continuation notes over the compacted range. */
-  private async summarize(old: ChatMessage[]): Promise<string> {
+  private async summarize(old: ChatMessage[], onDelta?: (text: string) => void): Promise<string> {
     const transcript = old
       .map((m) => {
         const who = m.role === "tool" ? "tool" : m.role;
@@ -1732,6 +1834,9 @@ export class Agent {
       ],
       [],
       undefined, // never abortable by stop(): losing the summary would lose history
+      onDelta
+        ? (s: { text: string; reasoning: string }) => onDelta(s.text)
+        : undefined,
     );
     return res.message.content ?? "";
   }
@@ -2143,6 +2248,33 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       });
       openCalls.delete(String(d.callId ?? ""));
       flushUsers();
+    } else if (e.type === "compaction") {
+      // A compaction REPLACED everything before this point with a summary.
+      // Replaying the raw prefix as well resurrected the full pre-compact
+      // history after every restart/fork (one live session came back at
+      // ~580k tokens after a 580k→207k compaction): the model re-read weeks
+      // of settled work it was told had been summarized, and its behavior
+      // fell apart. Mirror the runtime transform instead — the summary note
+      // becomes the history's head. Compactions only run at turn boundaries
+      // (serialized on the run chain), so no tool batch can be split here.
+      if (d.mode === "truncate") {
+        // `dropped` IS the number of leading messages the live pass removed
+        msgs.splice(0, Math.min(msgs.length, Number(d.dropped ?? 0)));
+      } else {
+        const summarized = Math.min(msgs.length, Number(d.summarized ?? 0) || msgs.length);
+        const sum = typeof d.summary === "string" ? d.summary : "";
+        msgs.splice(
+          0,
+          summarized,
+          {
+            role: "user",
+            content:
+              `[harness] Context was compacted: ${summarized} earlier messages were summarized. ` +
+              "Goal and notes are managed by the harness (AGENTS.md / memory.md are injected into your prompt when present).\n\n" +
+              `## Summary of earlier conversation\n${sum || "(summary unavailable)"}`,
+          },
+        );
+      }
     } else if (e.type === "progress") {
       // progress events may follow an assistant report_progress call that
       // has no logged tool result — patch it in when present

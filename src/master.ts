@@ -127,6 +127,8 @@ export interface TeapotConfig {
   contextWindowTokens?: number;
   /** how deep agents may nest sub-agent spawning (default 3) */
   maxSpawnDepth?: number;
+  /** soft cap on LLM turns per round (0 disables); reaching it is not an error */
+  maxTurnsPerRound?: number;
   /** optional shared secret protecting /api/* (env TEAPOT_API_TOKEN wins) */
   password?: string;
 }
@@ -255,6 +257,8 @@ function printAgentEvent(e: TeapotEvent): void {
         line = `${c("33", "⟲ restore")} branch ${d.branch}, ${d.messages} messages`;
       else if (d.event === "model-changed")
         line = `${c("33", "🧦 model")} → ${d.model} (${d.provider})`;
+      else if (d.event === "round-turn-cap")
+        line = `${c("33", "⏸ round cap")} ${d.turns} turns — nudging report + wrap-up, next round continues`;
       break;
     }
     default:
@@ -308,6 +312,7 @@ export class Master {
     progressMinChars?: number;
     contextTokenBudget?: number | null;
     maxSpawnDepth?: number;
+    maxTurnsPerRound?: number;
     tasks?: TaskConfig[];
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
@@ -331,6 +336,7 @@ export class Master {
         (patch.contextTokenBudget ?? 0) > 0 ? patch.contextTokenBudget! : undefined;
     }
     if (patch.maxSpawnDepth !== undefined) this.config.maxSpawnDepth = patch.maxSpawnDepth;
+    if (patch.maxTurnsPerRound !== undefined) this.config.maxTurnsPerRound = patch.maxTurnsPerRound;
     if (patch.tasks) {
       this.config.tasks = patch.tasks;
       // rebuild schedule table live
@@ -494,6 +500,7 @@ export class Master {
       sessionDir,
       progressIntervalMs: this.config.progressIntervalMs,
       ...(this.config.progressMinChars ? { progressMinChars: this.config.progressMinChars } : {}),
+      ...(this.config.maxTurnsPerRound !== undefined ? { maxTurnsPerRound: this.config.maxTurnsPerRound } : {}),
       autoContinue: ac.autoContinue ?? true,
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
       ...(ac.contextWindowTokens || this.config.contextWindowTokens || inferredWindow

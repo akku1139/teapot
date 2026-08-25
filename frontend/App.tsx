@@ -31,8 +31,9 @@ interface Agent {
   parent?: string;
   autoContinue?: boolean;
   autoCompact?: boolean;
-  ctx?: { usedTokens: number; compactAt: number; window: number; compactAtIsManual?: boolean };
+  ctx?: { usedTokens: number; compactAt: number; window: number; compactAtIsManual?: boolean; compacting?: string };
 }
+
 interface Ev {
   id: string; seq: number; ts: string; session: string; branch: string;
   type: string; parent: string | null; data: any;
@@ -264,6 +265,17 @@ export default function App() {
   const [composerMaximized, setComposerMaximized] = createSignal(false);
   const [atBottom, setAtBottom] = createSignal(true);
   const [missed, setMissed] = createSignal(0);
+  // live compaction progress for the selected session ("summarizing 2138…")
+  const [compacting, setCompacting] = createSignal<{ phase: string; summarized?: number } | null>(null);
+  // the live bubble is carrying a compaction summarizer stream (prefixed by
+  // the harness) rather than a normal assistant reply — render it differently
+  const liveIsCompact = () => liveText().startsWith("[compact] ");
+  const liveBody = () => (liveIsCompact() ? liveText().slice("[compact] ".length) : liveText());
+  // a summarizer's streamed output is shown in the live bubble; clear it when
+  // the pass ends so a stale "[compact] …" bubble can't outlive it
+  createEffect(() => {
+    if (!compacting()) setLive((l) => (l?.text.startsWith("[compact] ") ? null : l));
+  });
   const [live, setLive] = createSignal<{ text: string; reasoning: string } | null>(null);
   // markdown-rendered live body, throttled so per-chunk deltas don't re-parse
   // the whole (growing) text on every single WS message
@@ -853,7 +865,12 @@ export default function App() {
       setEvents([]);
       evCache.clear(); // event ids are per-log (e1, e2…) — never share across sessions
       setLive(null);
+      setCompacting(null);
       setMissed(0);
+      // follow mode must NOT leak across sessions: leaving it false showed
+      // "jump to present" on a brand-new/empty timeline whose feed had never
+      // been scrolled (the pill only disappears once a real scroll lands)
+      setAtBottom(true);
     }
     setSelected(id);
     saveDraft(drafts.get(id) ?? ""); // restore THIS session's unsent draft
@@ -867,6 +884,12 @@ export default function App() {
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id);
     if (selected() !== id) return; // another switch won while we were loading
+    // the freshly fetched snapshot is authoritative: a compaction may be
+    // mid-flight on this session (missed bus events while another tab/agent
+    // was selected) — seed the banner from ctx.compacting
+    setCompacting(
+      sel()?.ctx?.compacting ? { phase: String(sel()!.ctx!.compacting) } : null,
+    );
     requestAnimationFrame(() => {
       if (selected() === id) scrollBottom(true);
     });
@@ -905,6 +928,14 @@ export default function App() {
       if (msg.kind === "llm-delta") {
         lastDelta = { id: msg.agentId, at: Date.now() };
         if (msg.agentId === selected()) setLive({ text: msg.text ?? "", reasoning: msg.reasoning ?? "" });
+        return;
+      }
+      if (msg.kind === "compaction-progress") {
+        if (msg.agentId !== selected()) return;
+        if (msg.phase === "done") setCompacting(null);
+        else setCompacting({ phase: msg.phase, summarized: msg.summarized });
+        // the phase banner rides on top of the feed — no refresh needed until
+        // the compaction event itself lands
         return;
       }
       // agent-update now carries the fresh snapshot: apply it directly —
@@ -1810,6 +1841,13 @@ export default function App() {
               void loadOlder();
             }
           }}>
+            <Show when={compacting()}>
+              {(c) => (
+                <div class="divider-msg compacting" title="the harness is compressing old turns into notes so work can continue within the context window">
+                  🗜 {c().phase === "harvesting" ? "saving durable lessons…" : `summarizing ${c().summarized ? fmtK(c().summarized!) + " " : ""}older messages…`}
+                </div>
+              )}
+            </Show>
             <Show when={olderDone() && chatEvents().length > 0}>
               <div class="divider-msg">── beginning of log ──</div>
             </Show>
@@ -1876,7 +1914,10 @@ export default function App() {
                       when={liveText()}
                       fallback={<div class="content muted">thinking…</div>}
                     >
-                      <div class="content" innerHTML={renderMarkdown(liveText() + "▍")} />
+                      <Show when={liveIsCompact()} fallback={<div class="content" innerHTML={renderMarkdown(liveText() + "▍")} />}>
+                        <div class="muted" style="font-size:11.5px;margin-bottom:4px">🗜 summarizing older context…</div>
+                        <div class="content" innerHTML={renderMarkdown(liveBody() + "▍")} />
+                      </Show>
                     </Show>
                   </div>
                 </div>
@@ -2420,6 +2461,15 @@ export default function App() {
                     <Show when={effectiveWindow}>
                       <div class="bartrack" style="margin-top:4px">
                         <div class={`barfill ${cls}`} style={{ width: `${Math.min(100, Math.round((c().usedTokens / derivedBudget) * 100))}%` }} />
+                      </div>
+                    </Show>
+                    <Show when={compacting() || c().compacting}>
+                      <div class="statrow" title="a compaction pass is running right now — the summarizer's output streams in the timeline">
+                        <span class="k">🗜</span>
+                        <b>compacting…</b>
+                        <span class="muted" style="font-size:11px;color:var(--acc)">
+                          {compacting()?.phase ?? String(c().compacting)}
+                        </span>
                       </div>
                     </Show>
                     <div class="ctrlrow" style="margin-top:6px">
