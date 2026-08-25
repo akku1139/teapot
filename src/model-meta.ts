@@ -9,6 +9,8 @@ import { providerHeaders } from "./agent/llm.ts";
 export interface ModelMeta {
   id: string;
   contextLength?: number;
+  /** USD per token (OpenRouter-style) — powers the runtime cost estimate */
+  pricing?: { prompt: number; completion: number };
 }
 
 const cache = new Map<string, { at: number; list: ModelMeta[] }>();
@@ -34,12 +36,25 @@ export async function fetchModelList(
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = (await res.json()) as {
-      data?: { id?: string; context_length?: number }[];
+      data?: {
+        id?: string;
+        context_length?: number;
+        pricing?: { prompt?: string | number; completion?: string | number };
+      }[];
     };
     const list = (j.data ?? [])
       .map((m) => ({
         id: typeof m.id === "string" ? m.id : "",
         contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
+        // OpenRouter-style USD per token (e.g. "0.000003") — powers the
+        // runtime cost estimate. Providers without pricing stay undefined.
+        pricing:
+          m.pricing && (m.pricing.prompt !== undefined || m.pricing.completion !== undefined)
+            ? {
+                prompt: Number(m.pricing.prompt ?? 0),
+                completion: Number(m.pricing.completion ?? 0),
+              }
+            : undefined,
       }))
       .filter((m) => m.id);
     cache.set(root, { at: Date.now(), list });

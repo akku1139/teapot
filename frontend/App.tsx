@@ -2549,6 +2549,17 @@ export default function App() {
                 </span>
               </Show>
             </div>
+            {/* session cost estimate — only when the provider publishes pricing
+                (OpenRouter does; local endpoints usually don't) */}
+            <Show when={(sel()!.stats.costUsd ?? 0) > 0}>
+              <div
+                class="statrow"
+                title={`≈ ${(sel()!.stats.costUsd ?? 0).toFixed(4)} this session, from the model's USD/token pricing and per-turn usage. Cached input is estimated at ~10% of the prompt rate; treat as an approximation, not an invoice.`}
+              >
+                <span class="k">cost</span>
+                <b>${costFmt(sel()!.stats.costUsd ?? 0)}</b>
+              </div>
+            </Show>
             <Show
               when={sel()!.ctx}
               keyed
@@ -3389,6 +3400,15 @@ function fmtK(n: number): string {
   if (n >= 10_000) return `${Math.round(n / 1000)}k`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
+}
+
+/** session cost in USD: cents below $1, whole dollars above — no noise */
+function costFmt(usd: number): string {
+  if (usd >= 100) return Math.round(usd).toLocaleString();
+  if (usd >= 10) return usd.toFixed(1);
+  if (usd >= 1) return usd.toFixed(2);
+  if (usd >= 0.01) return usd.toFixed(3);
+  return usd.toFixed(4);
 }
 
 /** single-line preview with collapsed whitespace */

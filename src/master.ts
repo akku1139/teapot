@@ -520,6 +520,11 @@ export class Master {
       ...(ac.parent ? { parent: ac.parent } : {}),
       ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
     });
+    // pricing metadata (USD/token) for the runtime cost estimate — best
+    // effort: providers without pricing in /models simply show no cost
+    void fetchModelList(llm.baseUrl, llm.apiKey)
+      .then((list) => agent.setModelPricing(list.find((m) => m.id === llm.model)?.pricing))
+      .catch(() => {});
     // console line + broadcast: the web UI only refreshes on bus traffic, so
     // every appended event must reach it (otherwise messages sit invisible
     // until an unrelated status change happens to fire)
@@ -968,6 +973,11 @@ if (active().length === 0) wake();
       if (!agent.compactBudgetIsManual)
         opts.opts.contextTokenBudget = Math.round(win * 0.75);
     }
+    // re-price for the NEW model (cost estimate follows the model switch)
+    try {
+      const list = await fetchModelList(llm.baseUrl, llm.apiKey);
+      await agent.setModelPricing(list.find((m) => m.id === llm.model)?.pricing);
+    } catch { /* pricing stays stale — cosmetic only */ }
     this.saveConfig();
     void agent.log.append("system_note", agent.currentSession, agent.currentBranch, {
       event: "model-changed",

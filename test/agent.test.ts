@@ -535,6 +535,41 @@ test("ask_user waits for the operator and resumes with their answer", async (t) 
 
 /* ---------- compaction driven by real usage ---------- */
 
+test("session cost accumulates from usage when pricing is set", async () => {
+  // $3/M prompt, $15/M completion — a typical Sonnet-class price sheet
+  const seen: { input?: number; output?: number; cachedInputTokens?: number }[] = [];
+  const mock: ChatFn = (_cfg, _messages, _tools, _signal, onDelta) => {
+    onDelta?.({ text: "working", reasoning: "" });
+    return Promise.resolve({
+      message: { role: "assistant", content: "step done" },
+      usage: { inputTokens: 1_000_000, outputTokens: 100_000, cachedInputTokens: 800_000 },
+    });
+  };
+  void seen;
+  await withAgent({ chatFn: mock, autoContinue: false }, async (agent) => {
+    // pricing arrives AFTER boot (metadata races it) — the late-attach path
+    // must recompute the session cost from the log, not start from zero
+    agent.enqueuePrompt("go");
+    agent.start("t");
+    await agent.settled();
+    assert.equal(agent.stats.costUsd ?? 0, 0, "no pricing → no estimate");
+    await agent.setModelPricing({ prompt: 0.000003, completion: 0.000015 });
+    // expected: (1M - 800k) * $3/M + 100k * $15/M + 800k * $3/M * 0.1
+    //         = 0.6 + 1.5 + 0.24 = $2.34
+    const events = await readEvents(agent.log.filePath);
+    const usages = events.filter((e) => e.type === "usage").length;
+    assert.ok(usages >= 1, "usage event logged");
+    const oneTurn = 0.6 + 1.5 + 0.24;
+    assert.ok(
+      Math.abs((agent.stats.costUsd ?? 0) - oneTurn) < 0.0001,
+      `recomputed cost should be ~${oneTurn.toFixed(2)}, got ${agent.stats.costUsd}`,
+    );
+    // snapshot hides cost entirely when pricing is unknown
+    assert.equal(typeof agent.snapshot().stats.costUsd, "number");
+    await agent.dispose();
+  });
+});
+
 test("compaction keys off the API's prompt_tokens, not the char estimate", async () => {
   const mock = mkMock((req): LlmResult => {
     const sys = String(req.messages[0]?.content ?? "");

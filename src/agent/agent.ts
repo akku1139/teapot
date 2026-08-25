@@ -162,6 +162,8 @@ export class Agent {
     outputTokens: 0,
     compactions: 0,
     startedAt: null as string | null,
+    /** running cost estimate in USD (pricing known only) */
+    costUsd: 0 as number | undefined,
   };
 
   private opts: Required<Omit<AgentOptions, "chatFn">> & { chatFn?: ChatFn };
@@ -190,6 +192,9 @@ export class Agent {
   private lastProgressAt = Date.now();
   /** the provider's own prompt_tokens from the last completed turn */
   private lastUsage?: { input: number; output: number; cached?: number };
+  /** USD per token for the CURRENT model (from provider /models metadata);
+      undefined = pricing unknown → cost estimate stays 0 and hidden */
+  modelPricing?: { prompt: number; completion: number };
   /** messages.length right after the last successful compaction */
   private compactedAtLen = 0;
   /** live compaction phase for UI progress ("summarizing"/"harvesting") */
@@ -288,6 +293,33 @@ export class Agent {
   importMessages(msgs: ChatMessage[]): void {
     this.messages = msgs;
     this.compactedAtLen = 0;
+  }
+
+  /**
+   * Attach USD-per-token pricing for the CURRENT model (provider /models
+   * metadata). Late resolution is normal: the metadata lookup races boot.
+   * Recomputes the session cost from the log so a restart with pricing now
+   * known still shows the full number instead of starting from zero.
+   */
+  async setModelPricing(p?: { prompt: number; completion: number }): Promise<void> {
+    const wasUndefined = !this.modelPricing;
+    this.modelPricing = p;
+    if (!p || !wasUndefined) return; // already priced, or nothing to price
+    // recompute from the usage events (cheap: file is mtime-cached)
+    try {
+      const events = await readEvents(this.log.filePath);
+      let cost = 0;
+      for (const e of events) {
+        if (e.type !== "usage") continue;
+        const u = e.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+        const inTok = u.inputTokens ?? 0;
+        const cached = Math.min(u.cachedInputTokens ?? 0, inTok);
+        cost += (inTok - cached) * p.prompt + (u.outputTokens ?? 0) * p.completion + cached * p.prompt * 0.1;
+      }
+      this.stats.costUsd = cost;
+    } catch {
+      /* no log yet — live accumulation takes over */
+    }
   }
 
   get workspace(): string {
@@ -530,6 +562,15 @@ export class Agent {
         this.stats.inputTokens += u.inputTokens ?? 0;
         this.stats.outputTokens += u.outputTokens ?? 0;
         this.stats.cachedInputTokens += u.cachedInputTokens ?? 0;
+        if (this.modelPricing) {
+          const p = this.modelPricing;
+          const inTok = u.inputTokens ?? 0;
+          const cached = Math.min(u.cachedInputTokens ?? 0, inTok);
+          // same blended-cache model as the live path (cached ≈ 10% of prompt)
+          this.stats.costUsd =
+            (this.stats.costUsd ?? 0) +
+            ((inTok - cached) * p.prompt + (u.outputTokens ?? 0) * p.completion + cached * p.prompt * 0.1);
+        }
       } else if (e.type === "system_note") {
         const d = e.data as { event?: string };
         if (d.event === "context-compacted") this.stats.compactions++;
@@ -796,7 +837,7 @@ export class Agent {
         ...(this.goal.audit ? { audit: this.goal.audit } : {}),
       },
       latestProgress: this.latestProgress,
-      stats: { ...this.stats },
+      stats: { ...this.stats, costUsd: this.modelPricing ? this.stats.costUsd : undefined },
       model: this.opts.llm.model,
       provider: this.opts.provider,
       sessionDir: this.opts.sessionDir,
@@ -1174,9 +1215,22 @@ export class Agent {
         throw err;
       }
       if (res.usage) {
-        this.stats.inputTokens += res.usage.inputTokens ?? 0;
-        this.stats.cachedInputTokens += res.usage.cachedInputTokens ?? 0;
+        const inTok = res.usage.inputTokens ?? 0;
+        const cached = res.usage.cachedInputTokens ?? 0;
+        this.stats.inputTokens += inTok;
+        this.stats.cachedInputTokens += cached;
         this.stats.outputTokens += res.usage.outputTokens ?? 0;
+        // cost estimate: uncached input at prompt rate, cache hits usually
+        // bill at a fraction (OpenRouter reports the blended prompt price, so
+        // cached tokens are charged separately at ~10% — a common provider
+        // convention; without per-provider detail this is the honest guess)
+        if (this.modelPricing) {
+          const p = this.modelPricing;
+          const uncached = Math.max(0, inTok - cached);
+          this.stats.costUsd =
+            (this.stats.costUsd ?? 0) +
+            (uncached * p.prompt + (res.usage.outputTokens ?? 0) * p.completion + cached * p.prompt * 0.1);
+        }
         this.lastUsage = {
           input: res.usage.inputTokens ?? 0,
           output: res.usage.outputTokens ?? 0,
