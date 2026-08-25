@@ -389,3 +389,33 @@ test("apply_patch rejects \\u0000-mangled patches with actionable guidance", asy
   const { access } = await import("node:fs/promises");
   await assert.rejects(access(`${ctx.cwd}/t.ts`));
 });
+
+test("save_skill bundles helper scripts next to SKILL.md (regression)", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "sk-bundle-"));
+  const ctx: ToolContext = {
+    cwd,
+    defaultTimeoutMs: 5_000,
+    maxOutputBytes: 10_000,
+    skillRoots: [{ dir: path.join(cwd, "skills"), source: "global" }],
+  };
+  const r = await executeTool(
+    "save_skill",
+    JSON.stringify({
+      name: "helper-check",
+      description: "bundled files regression",
+      content: "# body",
+      files: [
+        { name: "tool.py", content: "print('hi')" },
+        { name: "../escape.sh", content: "nope" }, // must be skipped
+      ],
+    }),
+    ctx,
+  );
+  assert.equal(r.ok, true);
+  assert.match(r.result, /tool\.py/);
+  // helper exists, is executable, and the traversal attempt never landed
+  const { stat } = await import("node:fs/promises");
+  const st = await stat(path.join(ctx.skillRoots[0]!.dir, "helper-check", "tool.py"));
+  assert.equal(st.mode & 0o111 ? true : false, true); // executable bit set
+  await assert.rejects(stat(path.join(ctx.skillRoots[0]!.dir, "escape.sh")));
+});

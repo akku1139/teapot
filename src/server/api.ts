@@ -402,6 +402,8 @@ export function buildApp(master: Master): Hono {
     for (const d of dirents) {
       if (d.name.startsWith(".") && !(showHidden && d.name !== "." && d.name !== ".."))
         continue; // hidden files stay out unless the caller opted in
+      // .git behaves like an ignored entry (dimmed/hidden with the rest)
+      const forceIgnored = !d.isDirectory() ? false : d.name === ".git";
       const isDir = d.isDirectory();
       let size: number | undefined;
       if (!isDir) {
@@ -411,11 +413,12 @@ export function buildApp(master: Master): Hono {
           /* vanished mid-scan — fine */
         }
       }
+      const gitIg = ignoredNames.has(d.name);
       entries.push({
         name: d.name,
         dir: isDir,
         ...(size !== undefined ? { size } : {}),
-        ...(ignoredNames.has(d.name) ? { ignored: true } : {}),
+        ...(gitIg || forceIgnored ? { ignored: true } : {}),
       });
     }
     entries.sort((x, y) => (x.dir !== y.dir ? (x.dir ? -1 : 1) : x.name.localeCompare(y.name)));

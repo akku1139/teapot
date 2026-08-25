@@ -540,16 +540,23 @@ export default function App() {
       }
       deduped.push(e);
     }
-    // append optimistic echoes not yet present in the log
+    // append optimistic echoes. An echo is dropped ONLY when its
+    // prompt-delivered note has flipped it to "sent" (the logged prompt row
+    // then represents it) or when it was cancelled. Logging alone (which
+    // happens at enqueue time, before any LLM call) must NOT remove it —
+    // that was the "pending disappears instantly" bug.
     const pend = pendingMsgs().filter(
       (p) =>
-        !deduped.some(
-          (e) =>
+        p.sent ||
+        !deduped.some((e) => {
+          const pid = (e.data as any)?.promptId;
+          return (
             e.type === "prompt" &&
             e.data?.source === "user" &&
-            e.data?.text === p.text &&
-            new Date(e.ts).getTime() >= p.at - 1000,
-        ),
+            pid &&
+            p.promptId === pid
+          );
+        }),
     );
     const echoes: Ev[] = pend.map((p) => ({
       id: p.id,
@@ -920,17 +927,9 @@ export default function App() {
           );
           return;
         }
-        // once a turn finishes consuming the delivered prompts (assistant
-        // message logged), drop the "sent ✓" echoes — the real user message
-        // is now part of the persisted timeline
-        if (
-          et === "message" &&
-          ed.role === "assistant" &&
-          msg.agentId === selected()
-        ) {
-          setPendingMsgs((list) => list.filter((p) => !p.sent));
-          // fall through: an assistant message still updates the feed
-        }
+        // delivered prompts keep their "sent ✓" echo until the next feed
+        // refresh logs them; the chatEvents filter above removes the echo as
+        // soon as its delivered state is reflected, so nothing to do here.
         if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
           setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
           return;
@@ -3303,10 +3302,19 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     path: string; content: string; binary?: boolean; truncated?: boolean;
   } | null>(null);
   const [err, setErr] = createSignal("");
-  // show/hide gitignored entries — persisted per browser
-  const [hideIgnored, setHideIgnored] = createSignal(
-    localStorage.getItem("teapot.hideIgnored") === "1",
+  // gitignored files: "dim" (default) | "hide" | "show"
+  const [ignoreMode, setIgnoreMode] = createSignal(
+    localStorage.getItem("teapot.ignoreMode") ?? "dim",
   );
+  const cycleIgnoreMode = () => {
+    const order = ["dim", "hide", "show"] as const;
+    const next = order[(order.indexOf(ignoreMode() as any) + 1) % 3];
+    setIgnoreMode(next);
+    localStorage.setItem("teapot.ignoreMode", next);
+  };
+  /** filter helper per current mode */
+  const ignoreFilter = (n: TreeNode) =>
+    ignoreMode() === "hide" ? !(n.ignored && !n.dir) : true;
   // show dotfiles — also persisted; toggling refetches the open dirs
   const [showHidden, setShowHidden] = createSignal(
     localStorage.getItem("teapot.showHidden") === "1",
@@ -3479,7 +3487,7 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       <div
         class={
           "filerow" + (node.dir ? " isdir" : "") +
-          (node.ignored && !hideIgnored() ? " gitignored" : "")
+          (node.ignored && ignoreMode() === "dim" ? " gitignored" : "")
         }
         style={`padding-left:${depth * 13 + 8}px`}
         onclick={() => (node.dir ? void toggleDir(node) : void openFileWith(node, "code"))}
@@ -3504,28 +3512,23 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       <h3 style="display:flex;align-items:center;gap:6px" title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
         🗂 files <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
         <button
-          class="iconbtn"
-          style="margin-left:auto;font-size:11px"
-          title={hideIgnored() ? "gitignored files are hidden — click to show them (dimmed)" : "hiding gitignored files — click to show them (dimmed)"}
-          onclick={() => {
-            const next = !hideIgnored();
-            setHideIgnored(next);
-            localStorage.setItem("teapot.hideIgnored", next ? "1" : "0");
-          }}
-        >{hideIgnored() ? "🙈 gitignored" : "👁 all"}</button>
+          class="iconbtn filetoggle"
+          style="margin-left:auto"
+          title={`gitignored files: ${ignoreMode()} — click to cycle (dim → hidden → shown)`}
+          onclick={cycleIgnoreMode}
+        >{ignoreMode() === "hide" ? "🙈" : ignoreMode() === "dim" ? "👁" : "✨"}</button>
         <button
-          class="iconbtn"
-          style="font-size:11px"
-          title={showHidden() ? "dotfiles are shown — click to hide them" : "dotfiles are hidden — click to show them"}
+          class="iconbtn filetoggle"
+          title={showHidden() ? "dotfiles shown — click to hide" : "dotfiles hidden — click to show"}
           onclick={toggleHidden}
-        >{showHidden() ? "◉ .*" : "○ .*"}</button>
+        >{showHidden() ? "◉." : "○."}</button>
       </h3>
       <div class="filebox">
         <Show
           when={(kids().get("") ?? []).length > 0}
           fallback={<div class="muted" style="padding:6px">{err() || "empty workspace"}</div>}
         >
-          <For each={(kids().get("") ?? []).filter((n) => hideIgnored() ? !(n.ignored && !n.dir) : true)}>
+          <For each={(kids().get("") ?? []).filter(ignoreFilter)}>
             {(node) => row(node, 0)}
           </For>
         </Show>

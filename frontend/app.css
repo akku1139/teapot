@@ -678,3 +678,7 @@ body:has(.composer.maximized) .feed { visibility: hidden; }
    first run instead of resurrected at every boot) */
 .agent-item .ghost { opacity: .55; }
 .ghosttag { font-size: 10px; flex-shrink: 0; }
+
+/* file tree header toggles: icon-only, fixed width so they never overflow */
+.filetoggle { width: 26px; padding: 0; text-align: center; flex-shrink: 0; }
+h3 .filetoggle { margin-left: 0; }
