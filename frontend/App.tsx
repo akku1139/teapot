@@ -108,6 +108,11 @@ const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
   "state", "error", "fork", "goal", "todo", "question", "decision", "compaction",
 ]);
+// system_note rows never RENDER, but two of them drive pending-echo state:
+// prompt-delivered flips the echo to "sent" and must ALSO refresh the feed so
+// the logged prompt row replaces the echo right away (otherwise the "sent ✓"
+// echo lingered until some unrelated event happened to refresh the timeline)
+const NOTE_FEED_TYPES = new Set(["system_note"]);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -960,21 +965,18 @@ export default function App() {
         const et = msg.event?.type;
         const ed = msg.event?.data ?? {};
         // a prompt-delivered note means the text ENTERED an LLM call payload —
-        // flip the matching pending echo to "sent" at exactly that moment
+        // flip the matching pending echo to "sent"; a prompt-cancelled note
+        // drops the echo. BOTH fall through so the feed refresh below picks up
+        // the logged prompt row in the same pass (the old early-returns made
+        // the "sent ✓" echo linger until some unrelated event refreshed).
         if (et === "system_note" && ed.event === "prompt-delivered" && msg.agentId === selected()) {
           setPendingMsgs((list) =>
             list.map((p) => (p.promptId === ed.promptId ? { ...p, sent: true } : p)),
           );
-          return;
-        }
-        // delivered prompts keep their "sent ✓" echo until the next feed
-        // refresh logs them; the chatEvents filter above removes the echo as
-        // soon as its delivered state is reflected, so nothing to do here.
-        if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
+        } else if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
           setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
-          return;
         }
-        if (FEED_IRRELEVANT.has(et)) return;
+        if (FEED_IRRELEVANT.has(et) && !NOTE_FEED_TYPES.has(et)) return;
         // notify the operator about notable moments from ANY session — that's
         // the point of the notification center (progress / finish / question /
         // error), even when the timeline isn't being watched
@@ -2153,22 +2155,19 @@ export default function App() {
 
           <h3>⏯ controls</h3>
           <div class="btnrow">
-            <Show
-              when={sel()!.status === "running"}
-              fallback={
-                <button class="runbtn" onclick={act("/start")} title="run toward the goal (starts the loop)">
-                  ▶ start
-                </button>
+            {/* ONE persistent button: swapping ▶ start / ■ stop via <Show> destroyed
+                and recreated the node on every idle→running transition, which
+                visibly reflowed the panel (width jump + row wrap). Toggling
+                class/text keeps the same element, so layout never moves. */}
+            <button
+              class={sel()!.status === "running" ? "danger" : "runbtn"}
+              title={
+                sel()!.status === "running"
+                  ? "interrupt: aborts the current LLM call; the running tool finishes first"
+                  : "run toward the goal (starts the loop)"
               }
-            >
-              <button
-                class="danger"
-                onclick={act("/stop")}
-                title="interrupt: aborts the current LLM call; the running tool finishes first"
-              >
-                ■ stop
-              </button>
-            </Show>
+              onclick={sel()!.status === "running" ? act("/stop") : act("/start")}
+            >{sel()!.status === "running" ? "■ stop" : "▶ start"}</button>
             <button
               title="branch off the conversation here — try things without disturbing the main line"
               onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}

@@ -1552,10 +1552,22 @@ export class Agent {
     // ledger stayed unsolved — it then re-sent a voluntary report_progress
     // right after, and the timeline showed every requested report TWICE.
     const res = await this.llmCall(this.buildMessages(), allToolSpecs());
-    let reported = false;
-    for (const call of res.message.tool_calls ?? []) {
-      if (call.function.name !== "report_progress") continue;
-      await this.recordProgress(call.function.arguments);
+    const calls = res.message.tool_calls ?? [];
+    // the assistant turn MUST enter history before its tool answers, or the
+    // sequence [user, tool] is invalid and every later request 400s
+    this.messages.push(res.message);
+    await this.log.append("message", this.currentSession, this.currentBranch, {
+      role: "assistant",
+      content: res.message.content ?? "",
+      reasoning: res.reasoning,
+      ...(calls.length ? { toolCalls: calls.map((c) => ({ id: c.id, name: c.function.name })) } : {}),
+      progressEcho: true,
+    });
+    let reported = calls.some((c) => c.function.name === "report_progress");
+    for (const call of calls) {
+      if (call.function.name === "report_progress") {
+        await this.recordProgress(call.function.arguments);
+      }
       this.messages.push({ role: "tool", tool_call_id: call.id, content: "progress recorded" });
       // log both sides so restores replay the exact exchange (meta-style)
       await this.log.append("tool_call", this.currentSession, this.currentBranch, {
@@ -1571,21 +1583,11 @@ export class Agent {
         durationMs: 0,
         result: "progress recorded",
       });
-      reported = true;
     }
-    if (!reported && (res.message.content ?? "").trim()) {
-      // fallback: the model answered in prose anyway — record it as before.
-      // Its content is ALREADY shown by the progress embed; logging the plain
-      // message too used to duplicate rows, so mark it as an echo (the feed
-      // filters marked rows out).
-      await this.recordProgress(JSON.stringify({ freeform: res.message.content }));
-      await this.log.append("message", this.currentSession, this.currentBranch, {
-        role: "assistant",
-        content: res.message.content ?? "",
-        reasoning: res.reasoning,
-        progressEcho: true,
-      });
-      this.messages.push(res.message);
+    if (!reported && !(res.message.content ?? "").trim()) {
+      // degenerate: neither a tool call nor prose — record a stub so the
+      // operator sees SOMETHING at the requested moment
+      await this.recordProgress(JSON.stringify({ freeform: "(no report produced)" }));
     }
   }
 

@@ -460,6 +460,9 @@ body:has(.termdrawer) .jump {
 .btnrow button { background: var(--bg-light); color: var(--fg); border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
 .btnrow button:hover { filter: brightness(1.2); }
 .btnrow .runbtn { background: var(--ok); color: #fff; font-weight: 600; }
+/* start/stop is ONE persistent button (no <Show> swap): fixing its width keeps
+   the row from reflowing when the label flips between idle and running */
+.btnrow .runbtn, .btnrow .danger { min-width: 74px; }
 .btnrow .danger { background: var(--err); color: #fff; font-weight: 600; }
 .ctrlrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12.5px; }
 .ctrlrow label { display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--fg); white-space: nowrap; }

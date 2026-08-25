@@ -212,6 +212,39 @@ test("prompts sent mid-run are logged instantly and delivered at the next turn b
   });
 });
 
+test("delivered prompt emits a prompt-delivered note carrying its promptId", async () => {
+  // the web UI flips a pending echo to "sent" and swaps it for the logged row
+  // based on THIS note — without it the "sent ✓" echo lingered indefinitely
+  let round = 0;
+  const mock = mkMock((req): LlmResult => {
+    if (round === 0) {
+      round++;
+      return reply("working", [tc("b1", "bash", { command: "sleep 0.2" })]);
+    }
+    void req;
+    return reply("done");
+  });
+  await withAgent({ chatFn: mock.chat, autoContinue: false }, async (agent) => {
+    const pid = agent.enqueuePrompt("mid-run message");
+    assert.ok(pid, "enqueuePrompt must return a promptId for user prompts");
+    agent.start("test");
+    await new Promise((r) => setTimeout(r, 50));
+    agent.enqueuePrompt("queued while busy").length; // second one also gets an id
+    await agent.settled();
+    const events = await readEvents(agent.log.filePath);
+    const notes = events.filter(
+      (e) => e.type === "system_note" && (e.data as Record<string, unknown>).event === "prompt-delivered",
+    );
+    const pids = notes.map((n) => String((n.data as Record<string, unknown>).promptId));
+    assert.equal(notes.length, 2, `both prompts must be delivered exactly once — got ${notes.length}`);
+    assert.ok(pids.includes(pid), "the first prompt's id must appear on a delivered note");
+    // and every logged user prompt carries the same id the UI echoed with
+    const logged = events.filter((e) => e.type === "prompt" && (e.data as any)?.source === "user");
+    for (const l of logged) assert.ok(l.data.promptId, "logged user prompts carry their echo id");
+    await agent.dispose();
+  });
+});
+
 test("an agent without a goal text does not auto-continue forever", async (t) => {
   t.timeout?.(15_000);
   let calls = 0;
@@ -300,6 +333,87 @@ test("progress prompts wait for real output, not just elapsed time", async (t) =
     assert.equal(asks.length, 1);
     await agent.dispose();
   });
+});
+
+test("requested progress report appears exactly ONCE (no voluntary re-report)", async () => {
+  // regression: the old no-tools ask left the model's "did I report?" ledger
+  // unsolved — it answered in prose AND called report_progress on its next
+  // turn, so the timeline showed every requested report twice (one row was
+  // even the junk "(tool call)" placeholder)
+  let reportedVoluntarily = false;
+  let askedOnce = false;
+  const mock: ChatFn = (_cfg, messages) => {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    if (/Please give a brief progress report/.test(String(lastUser?.content ?? ""))) {
+      askedOnce = true;
+      return reply("reporting now", [tc("rp", "report_progress", { doing: "asked report" })]);
+    }
+    // after the ask, a model that "helpfully" reports again would produce a
+    // SECOND progress card — the harness must not leave room for one
+    if (!askedOnce && !reportedVoluntarily) {
+      reportedVoluntarily = true;
+      return reply("working on it", [tc("w1", "list_dir", {})]);
+    }
+    if (askedOnce)
+      return reply("wrapping up", [tc("fin", "finish", { goalComplete: true })]);
+    return reply("all done"); // plain answer ends the round
+  };
+  await withAgent(
+    // user enqueue resets lastProgressAt, so the ask can only fire in a LATER
+    // round — auto-continue keeps the loop alive past the interval
+    { chatFn: mock, progressIntervalMs: 50, progressMinChars: 1, autoContinue: true, continueDelayMs: 5 },
+    async (agent) => {
+      await agent.setGoal("exercise single-shot reporting");
+      agent.enqueuePrompt("go");
+      agent.start("t");
+      await agent.settled();
+      const events = await readEvents(agent.log.filePath);
+      const cards = events.filter((e) => e.type === "progress");
+      assert.ok(cards.length >= 1, "a progress card must exist once the interval elapsed");
+      assert.equal(
+        new Set(cards.map((c) => c.seq)).size,
+        cards.length,
+        "no duplicate progress cards at the same moment",
+      );
+      // and the model history stays API-valid: no [user, tool] hole
+      const roles = agent.messages.map((m) => m.role);
+      for (let i = 0; i < roles.length; i++) {
+        if (roles[i] === "tool") assert.equal(roles[i - 1], "assistant", `tool result at ${i} must follow an assistant turn`);
+      }
+      await agent.dispose();
+    },
+  );
+});
+
+test("requested report keeps a valid sequence even when the model calls other tools", async () => {
+  // the assistant carrier message (with tool_calls) must be pushed BEFORE any
+  // tool answer; skipping it produced [user, tool] which 400s on the next call
+  const mock: ChatFn = (_cfg, messages) => {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    if (/Please give a brief progress report/.test(String(lastUser?.content ?? ""))) {
+      // model ignores the ask and calls something else entirely
+      return reply("", [tc("x1", "get_goal", {})] as never);
+    }
+    // any non-tool answer ends the round — the sequence check below is what
+    // matters (the assistant carrier must precede every tool result)
+    return reply("round over");
+  };
+  await withAgent(
+    { chatFn: mock, progressIntervalMs: 50, progressMinChars: 1, autoContinue: false },
+    async (agent) => {
+      await agent.setGoal("sequence integrity");
+      agent.enqueuePrompt("go");
+      agent.start("t");
+      await agent.settled();
+      const roles = agent.messages.map((m) => m.role);
+      for (let i = 0; i < roles.length; i++) {
+        if (roles[i] === "tool") {
+          assert.ok(i > 0 && roles[i - 1] === "assistant", `[user, tool] hole at ${i}`);
+        }
+      }
+      await agent.dispose();
+    },
+  );
 });
 
 /* ---------- prompt-edit forks ---------- */
