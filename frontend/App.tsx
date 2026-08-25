@@ -372,6 +372,11 @@ export default function App() {
     eventId?: string;
   };
   const [notifs, setNotifs] = createSignal<Notif[]>([]);
+  // hide 👻 ghost sessions (workspace directory missing on disk) — a toggle,
+  // because they still hold history the operator may need
+  const [hideGhosts, setHideGhosts] = createSignal(
+    localStorage.getItem("teapot.hideGhosts") === "1",
+  );
   const [showNotifs, setShowNotifs] = createSignal(false);
   const unreadCount = () => notifs().filter((n) => !n.read).length;
   /** unread for one agent INCLUDING its whole sub-tree (subs, sub-subs…) */
@@ -724,7 +729,9 @@ export default function App() {
     localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
   };
   const treeRows = createMemo(() => {
-    const list = agents();
+    // 👻 toggle: drop ghost sessions (workspace missing on disk) from the
+    // sidebar tree entirely — they are noise once you know about them
+    const list = hideGhosts() ? agents().filter((a) => !a.workspaceMissing) : agents();
     const byParent = new Map<string, Agent[]>();
     const roots: Agent[] = [];
     for (const a of list) {
@@ -1867,6 +1874,21 @@ export default function App() {
             >
               🔔<Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
             </button>
+            <button
+              class={"iconbtn" + (hideGhosts() ? " active" : "")}
+              title={hideGhosts() ? "show ghost sessions again (👻 workspace missing on disk)" : "hide ghost sessions (👻 — their workspace directory no longer exists)"}
+              onclick={(e: MouseEvent) => {
+                e.stopPropagation();
+                const next = !hideGhosts();
+                setHideGhosts(next);
+                localStorage.setItem("teapot.hideGhosts", next ? "1" : "0");
+                // keep the selection valid when the current session gets hidden
+                if (next && selected() && sel()?.workspaceMissing) {
+                  const firstVisible = agents().find((a) => !a.workspaceMissing);
+                  if (firstVisible) select(firstVisible.id);
+                }
+              }}
+            >👻{hideGhosts() ? <i class="notifdot">✕</i> : null}</button>
             <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
             <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
             <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
@@ -2812,6 +2834,11 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
   let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
 
   const argStr = (k: string) => String(d.args?.[k] ?? "");
+  // best-effort "what was run" text per tool: bash→the command, others→path/args
+  const cmdText = () => {
+    if (name === "bash") return argStr("command");
+    return argStr("path") || JSON.stringify(d.args ?? {}, null, 1);
+  };
   const codeBlock = (text: string, max = 1500) => (
     <pre class="mono toolbody">{truncate(text, max)}</pre>
   );
@@ -2993,6 +3020,15 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
                 ? <BashElapsed startedAt={e.ts} inline timeoutMs={Number(e.data?.args?.timeout_ms) || undefined} /> // visible while folded
                 : "running…"}
         </span>
+        {/* dedicated copy buttons: the generic header "copy" copied "" on tool
+            rows (rawOf only knows prompts/messages) — now the command that ran
+            and its output each have their own button */}
+        <span class="toolcopy">
+          <CopyBtn text={cmdText()} label="⧉ cmd" title={`copy the ${name} arguments`} />
+          <Show when={res}>
+            <CopyBtn text={out()} label="⧉ out" title="copy this tool's full output" />
+          </Show>
+        </span>
       </summary>
       {body}
     </details>
@@ -3009,6 +3045,12 @@ function rawOf(e: Ev): string {
       ? `<reasoning>\n${d.reasoning}\n</reasoning>\n\n`
       : "";
     return `${r}${String(d.content ?? "")}`;
+  }
+  if (e.type === "tool_call") {
+    // the header copy button used to sit on tool rows too and copied ""
+    // (rawOf only knew prompts/messages) — tool rows get dedicated
+    // command/output buttons inside ToolRow instead, so nothing here
+    return "";
   }
   return "";
 }
@@ -3098,7 +3140,12 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
                 onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onCancel!(); }}
               >✕ cancel</button>
             </Show>
-            <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
+            {/* tool rows have no copyable message body — their command/output
+                buttons live inside ToolRow; rendering the header button anyway
+                produced a "copy" that silently copied the empty string */}
+            <Show when={e.type !== "tool_call"}>
+              <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
+            </Show>
             <Show when={props.onEdit}>
               <button
                 class="editbtn"
@@ -3486,15 +3533,21 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
   );
   const toggleHidden = () => {
     const next = !showHidden();
-    setShowHidden(next);
-    localStorage.setItem("teapot.showHidden", next ? "1" : "0");
-    // re-fetch every expanded directory so the change applies immediately
-    for (const p of expanded()) void fetchDir(p).then((rows) => {
-      if (rows) setKids((prev) => new Map(prev).set(p, rows));
-    });
-    void fetchDir("").then((rows) => {
-      if (rows) setKids((prev) => new Map(prev).set("", rows));
-    });
+    // Fetch FIRST with the new flag, then flip the signal and patch the map
+    // in place — flipping before the fetch landed left the tree showing its
+    // old rows under a new filter (or nothing at all while in flight), which
+    // collapsed .filebox and visibly reflowed the whole right panel.
+    const targets = ["", ...expanded()];
+    void Promise.all(targets.map(async (p) => ({ p, rows: await fetchDirWith(p, next) })))
+      .then((results) => {
+        setShowHidden(next);
+        localStorage.setItem("teapot.showHidden", next ? "1" : "0");
+        setKids((prev) => {
+          const m = new Map(prev);
+          for (const { p, rows } of results) if (rows) m.set(p, rows);
+          return m;
+        });
+      });
   };
 
   const parseEntries = (parentPath: string, list: any[]): TreeNode[] =>
@@ -3507,10 +3560,15 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     }));
 
   async function fetchDir(path: string): Promise<TreeNode[] | null> {
+    return fetchDirWith(path, showHidden());
+  }
+
+  /** same, but with an explicit dotfiles flag (used by the toggle's pre-fetch) */
+  async function fetchDirWith(path: string, hidden: boolean): Promise<TreeNode[] | null> {
     try {
       const qs = new URLSearchParams();
       if (path) qs.set("path", path);
-      if (showHidden()) qs.set("hidden", "1");
+      if (hidden) qs.set("hidden", "1");
       const r = await api(
         `/api/agents/${props.agentId}/tree?${qs.toString()}`,
       );
@@ -3665,7 +3723,7 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
         </Show>
       </div>
       <Show when={node.dir && expanded().has(node.path)}>
-        <For each={kids().get(node.path) ?? []}>{(child) => row(child, depth + 1)}</For>
+        <For each={(kids().get(node.path) ?? []).filter(ignoreFilter)}>{(child) => row(child, depth + 1)}</For>
       </Show>
     </>
   );
