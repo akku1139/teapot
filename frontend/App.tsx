@@ -1564,7 +1564,11 @@ export default function App() {
     const m = d.match(/^\/([a-z]*)(?:\s+(.*))?$/i);
     if (!m) return [];
     const cmdName = m[1]!.toLowerCase();
-    const argPart = (m[3] ?? "").trim();
+    // NOTE: the arg is capture group TWO — group numbering was misread as [3]
+    // before, so argPart was ALWAYS empty. Every "/goal <text>" then looked
+    // like a bare command: the completion popup stayed open and Enter (with
+    // cmdIdx set) replaced the draft with "/goal ", silently eating the text.
+    const argPart = (m[2] ?? "").trim();
     if (!argPart && cmdName !== "skill") {
       const rows = SLASH_COMMANDS.filter((c) => c.cmd.slice(1).startsWith(cmdName));
       // an exact, argument-less command must EXECUTE on Enter — don't keep a
@@ -1684,7 +1688,14 @@ export default function App() {
       if (name === "goal" && !arg) { saveDraft("/goal "); return; } // keep typing
       if (name === "skill" && !arg) { saveDraft("/skill "); return; }
       saveDraft("");
-      await executeSlash(name, arg);
+      try {
+        await executeSlash(name, arg);
+      } catch (ex) {
+        // a failed command must not eat the operator's input — sendText
+        // already restores its draft on failure; commands now do too
+        saveDraft(draft() ? `${text}\n${draft()}` : text);
+        throw ex;
+      }
       return;
     }
 
