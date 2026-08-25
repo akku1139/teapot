@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
+import { trackTemp, cleanupTemp } from "./helpers/cleanup.ts";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Agent } from "../src/agent/agent.ts";
@@ -47,9 +48,11 @@ const reply = (content: string, toolCalls?: ReturnType<typeof tc>[]): LlmResult 
   },
 });
 
+
 async function mkAgent(more: Partial<ConstructorParameters<typeof Agent>[0]> = {}) {
   const ws = await mkdtemp(path.join(tmpdir(), "teapot-agent-ws-"));
   const sessionDir = await mkdtemp(path.join(tmpdir(), "teapot-agent-sess-"));
+  trackTemp(ws, sessionDir);
   const agent = new Agent({
     id: "t",
     workspace: ws,
@@ -827,4 +830,10 @@ test("boot no longer creates a missing workspace; first tool run does", async ()
   assert.equal(existsSync(missing), false, "workspace must not be created at boot");
   assert.equal(agent.snapshot().workspaceMissing, true);
   await agent.dispose();
+});
+
+
+test("cleanup: remove temp dirs created by this file", async () => {
+  const { cleanupTemp } = await import("./helpers/cleanup.ts");
+  await cleanupTemp();
 });

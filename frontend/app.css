@@ -627,8 +627,12 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
 .composer { display: flex; flex-direction: column; }
 .composer .hint { flex-shrink: 0; }
 .composer.maximized { position: absolute; inset: 0; z-index: 5; background: var(--bg-dark); padding: 16px; padding-bottom: 10px; }
-.composer.maximized .feed,
-body:has(.composer.maximized) .feed { visibility: hidden; }
+/* hide the timeline by painting OVER it (visibility:hidden kept the feed's
+   own scroll handler alive and it could steal the composer's clicks) */
+.composer.maximized::before {
+  content: ""; position: absolute; inset: 0 0 0 0;
+  background: var(--bg-dark); z-index: -1;
+}
 .composer.maximized form {
   flex: 1; min-height: 0; align-items: stretch;
 }
@@ -682,3 +686,11 @@ body:has(.composer.maximized) .feed { visibility: hidden; }
 /* file tree header toggles: icon-only, fixed width so they never overflow */
 .filetoggle { width: 26px; padding: 0; text-align: center; flex-shrink: 0; }
 h3 .filetoggle { margin-left: 0; }
+
+/* per-session notification badge in the sidebar tree */
+.notifbadge {
+  margin-left: auto; font-size: 10px; color: var(--acc);
+  background: var(--bg-light); border-radius: 999px; padding: 1px 6px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.agent-item.sel .notifbadge { background: var(--bg-darkest); }

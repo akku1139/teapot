@@ -357,6 +357,15 @@ export default function App() {
   const [notifs, setNotifs] = createSignal<Notif[]>([]);
   const [showNotifs, setShowNotifs] = createSignal(false);
   const unreadCount = () => notifs().filter((n) => !n.read).length;
+  /** unread for one agent INCLUDING its whole sub-tree (subs, sub-subs…) */
+  const subtreeUnread = (agentId: string): number => {
+    let total = notifs().filter((n) => !n.read && n.agentId === agentId).length;
+    for (const child of agents()) {
+      if (child.parent === agentId)
+        total += subtreeUnread(child.id);
+    }
+    return total;
+  };
   let notifSeq = 0;
   const addNotif = (n: Omit<Notif, "id" | "at" | "read">) => {
     setNotifs((list) =>
@@ -1626,6 +1635,11 @@ export default function App() {
                   title={a.workspaceMissing ? `workspace not found on disk (${a.workspace}) — it will be created when this session runs` : undefined}
                 >{a.id}</span>
                 {a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
+                <Show when={subtreeUnread(a.id) > 0}>
+                  <span class="notifbadge" title={`${subtreeUnread(a.id)} unread notification${subtreeUnread(a.id) > 1 ? "s" : ""} (including sub-agents)`}>
+                    🔔{subtreeUnread(a.id)}
+                  </span>
+                </Show>
                 {/* collapsed tree: surface how many subs are still working so a
                     busy parent doesn't look idle with its subtree hidden */}
                 <Show when={collapsedSubs().has(a.id)}>
