@@ -49,6 +49,13 @@ export interface ToolContext {
   onIdleUnpark?: () => void;
   /** re-arm the progress-report gate (waiting on children is not activity) */
   onProgressGateReset?: () => void;
+  /**
+   * A background shell (bash background=true) exited. The harness uses this
+   * to notify the agent at its next turn boundary + log a timeline row —
+   * without it the agent had to poll bash_output blindly to learn whether
+   * (and how) a job finished.
+   */
+  onBackgroundExit?: (info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }) => void;
 }
 
 export interface ToolResult {
@@ -151,7 +158,22 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   };
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
-  child.on("close", (code) => { sh.exited = true; sh.code = code; });
+  child.on("close", (code) => {
+    sh.exited = true;
+    sh.code = code;
+    // tell the harness so the agent learns the outcome WITHOUT polling
+    try {
+      ctx.onBackgroundExit?.({
+        id,
+        code,
+        cmd,
+        durationMs: Date.now() - sh.startedAt,
+        outputTail: sh.out.slice(-2000),
+      });
+    } catch {
+      /* notification is best-effort */
+    }
+  });
   map.set(id, sh);
   return id;
 }
@@ -820,8 +842,9 @@ export const TOOLS: ToolDef[] = [
         background: {
           type: "boolean",
           description:
-            "true = start the command and return IMMEDIATELY with a job id. Poll its output later via " +
-            "bash_output. Use for dev servers, watchers, long builds — anything you don't need to wait for.",
+            "true = start the command and return IMMEDIATELY with a job id. You are NOTIFIED at your " +
+            "next turn boundary when it exits (exit code + output tail) — no polling needed. " +
+            "Use bash_output only to fetch FULL output mid-run or after. Use for dev servers, watchers, long builds.",
         },
       },
       required: ["command"],
@@ -832,8 +855,9 @@ export const TOOLS: ToolDef[] = [
         return {
           ok: true,
           result:
-            `started in background (job ${id}). Continue with other work; read its output with ` +
-            `bash_output(job_id="${id}"). Kill it with bash_output(job_id="${id}", action="kill").`,
+            `started in background (job ${id}). It runs while you work — you'll be notified here ` +
+            `when it exits (exit code + output tail). Full output: bash_output(job_id="${id}"). ` +
+            `Kill: bash_output(job_id="${id}", action="kill").`,
         };
       }
       return runShell(str(args.command), ctx, Math.min(num(args.timeout_ms, ctx.defaultTimeoutMs), 600_000));

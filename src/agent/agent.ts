@@ -265,6 +265,7 @@ export class Agent {
       readOnly: this.opts.readOnlyTools,
       onIdlePark: (reason) => this.parkForTool(reason),
       onIdleUnpark: () => this.unparkFromTool(),
+      onBackgroundExit: (info) => void this.onBackgroundJobExit(info),
     };
     // the session id IS the directory name — one directory per incarnation
     this.mainSession = path.basename(opts.sessionDir);
@@ -363,6 +364,29 @@ export class Agent {
    * operator isn't staring at a running spinner for minutes. The run chain is
    * still parked inside the tool — but any prompt/stop wakes it immediately.
    */
+  /**
+   * A background shell (bash background=true) finished. Two channels:
+   * 1. a system_note row in the timeline — the operator sees the outcome
+   *    without opening anything;
+   * 2. a queued harness prompt, delivered at the next turn boundary — the
+   *    agent learns exit code + output tail WITHOUT having to poll
+   *    bash_output blindly. Failed jobs say so loudly so the model reacts.
+   */
+  private onBackgroundJobExit(info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }): void {
+    const ok = info.code === 0;
+    const one = info.cmd.replace(/\s+/g, " ").slice(0, 80);
+    void this.log.append("system_note", this.currentSession, this.currentBranch, {
+      event: "background-exit",
+      jobId: info.id,
+      code: info.code,
+      durationMs: info.durationMs,
+      cmd: one,
+      failed: !ok,
+    });
+    // queue the report for the next turn boundary (agent-visible channel)
+    this.onBackgroundJobExitQueued(info);
+  }
+
   private parkForTool(reason: string): void {
     if (this.parkedByTool || this.status !== "running") return;
     this.parkedByTool = true;
@@ -956,6 +980,7 @@ export class Agent {
    * call payload — not merely when it was logged.
    */
   private drainPendingPrompts(): void {
+    this.drainBackgroundExits();
     for (const p of this.pendingPrompts.splice(0)) {
       // multimodal: images ride as OpenAI content parts (text first, then
       // images); plain prompts keep the string form for cache friendliness
@@ -992,6 +1017,38 @@ export class Agent {
 
   /** ids of user prompts that have entered an LLM call payload (recent first-capped) */
   private deliveredPrompts: string[] = [];
+
+  /**
+   * Background jobs that exited since the last LLM call. Their outcomes are
+   * folded into ONE harness message at the turn boundary — the agent learns
+   * exit codes and output tails without polling bash_output.
+   */
+  private bgExits: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }[] = [];
+
+  private onBackgroundJobExitQueued(info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }): void {
+    this.bgExits.push(info);
+    if (this.bgExits.length > 32) this.bgExits.shift(); // cap runaway spam
+    bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+  }
+
+  /** fold queued background-exit reports into the next LLM call (once each) */
+  private drainBackgroundExits(): void {
+    if (!this.bgExits.length) return;
+    const exits = this.bgExits.splice(0);
+    const lines = exits.map((e) => {
+      const status = e.code === 0 ? "finished OK" : `FAILED with exit code ${e.code ?? "?"}`;
+      const tail = e.outputTail.trim();
+      return (
+        `- job ${e.id}: ${status} after ${(e.durationMs / 1000).toFixed(1)}s — ${e.cmd.slice(0, 100)}` +
+        (tail ? `\n  output tail:\n${tail.split("\n").slice(-8).map((l) => "  | " + l).join("\n")}` : "")
+      );
+    });
+    const text =
+      `[harness] Background job report:\n${lines.join("\n")}\n\n` +
+      "React to failures now if needed. Full output stays available via bash_output(job_id).";
+    this.messages.push({ role: "user", content: text });
+    void this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text }).catch(() => {});
+  }
 
   /** Resolves when all queued work (including a running loop) has settled. */
   settled(): Promise<void> {

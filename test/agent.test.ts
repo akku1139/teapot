@@ -260,6 +260,40 @@ test("image attachments flow into multimodal content parts and survive replay", 
   });
 });
 
+test("background bash exit notifies the agent at the next turn boundary", async () => {
+  // regression: background jobs were pure polling — the agent had no idea a
+  // job finished (or failed) until it happened to call bash_output. Now the
+  // exit folds into a later LLM call as a harness report with the exit code.
+  let sawReport: string | null = null;
+  let calls = 0;
+  const chatFn = async (_cfg: unknown, messages: any): Promise<LlmResult> => {
+    calls++;
+    if (calls === 1) return reply("starting job", [tc("b1", "bash", { command: "echo hi; exit 3", background: true })]);
+    // the report stays in history — scan ALL user turns, not just the last
+    // (an auto-continue nudge lands after it and would hide it otherwise)
+    if (!sawReport && messages.some((m: any) => m.role === "user" && /Background job report/.test(String(m.content)))) {
+      sawReport = "reported";
+      // finish the goal so auto-continue stops instead of spinning forever
+      return reply("noted, done", [tc("fin", "finish", { goalComplete: true })]);
+    }
+    return reply("working");
+  };
+  await withAgent({ chatFn, autoContinue: true, continueDelayMs: 20 }, async (agent) => {
+    await agent.setGoal("watch background jobs");
+    agent.enqueuePrompt("run something");
+    agent.start("t");
+    await agent.settled();
+    assert.ok(sawReport, "a later LLM call must contain the Background job report");
+    const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+    const report = events.find((e) => e.type === "prompt" && /Background job report/.test(String(e.data?.text ?? "")));
+    assert.ok(report, "the report must be logged as a prompt");
+    assert.match(String(report!.data.text), /bg\d+: FAILED with exit code 3/);
+    assert.match(String(report!.data.text), /\|\s*hi/); // output tail carried along
+    const note = events.find((e) => e.type === "system_note" && (e.data as any).event === "background-exit");
+    assert.ok(note, "a background-exit timeline row must be logged");
+    await agent.dispose();
+  });
+});
 test("delivered prompt emits a prompt-delivered note carrying its promptId", async () => {
   // the web UI flips a pending echo to "sent" and swaps it for the logged row
   // based on THIS note — without it the "sent ✓" echo lingered indefinitely
