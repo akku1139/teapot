@@ -4146,13 +4146,42 @@ function mediaKindOf(path: string): MediaKind | null {
   return null;
 }
 
+/* ---------- per-agent file-panel UI state (remount-proof) ----------
+ * Preview popups / expanded dirs used to live INSIDE FilesPanel. Any parent
+ * re-render that remounted the panel (agent snapshot churn re-evaluating the
+ * keyed <Show>) wiped them: an open file popup vanished mid-read and the
+ * tree collapsed. Keeping the state in a module-level store keyed by agent
+ * makes it survive remounts; only a REAL agent switch starts fresh. */
+type FileUiState = {
+  expanded: Set<string>;
+  preview: { path: string; content: string; binary?: boolean; truncated?: boolean } | null;
+  media: { path: string; kind: MediaKind } | null;
+  viewMode: "code" | "edit" | "md" | "media";
+};
+const fileUi = new Map<string, FileUiState>();
+const fileUiFor = (agentId: string): FileUiState => {
+  let s = fileUi.get(agentId);
+  if (!s) {
+    s = { expanded: new Set(), preview: null, media: null, viewMode: "code" };
+    fileUi.set(agentId, s);
+  }
+  return s;
+};
+
 function FilesPanel(props: { agentId: string; workspace: string }) {
+  const ui = fileUiFor(props.agentId);
   // path → lazily fetched child listing ("" = workspace root)
   const [kids, setKids] = createSignal<Map<string, TreeNode[]>>(new Map());
-  const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
-  const [preview, setPreview] = createSignal<{
-    path: string; content: string; binary?: boolean; truncated?: boolean;
-  } | null>(null);
+  const [expanded, setExpandedRaw] = createSignal<Set<string>>(ui.expanded);
+  // every preview/media/mode write mirrors into `ui` so a remount of this
+  // panel (parent re-render churn) restores the open popup instead of losing it
+  const [preview, setPreviewRaw] = createSignal(ui.preview);
+  const setPreview = (v: FileUiState["preview"]) => { ui.preview = v; setPreviewRaw(v); };
+  const setExpanded = (v: Set<string>) => { ui.expanded = v; setExpandedRaw(v); };
+  const [media, setMediaRaw] = createSignal(ui.media);
+  const setMedia = (v: FileUiState["media"]) => { ui.media = v; setMediaRaw(v); };
+  const [viewMode, setViewModeRaw] = createSignal(ui.viewMode);
+  const setViewMode = (v: FileUiState["viewMode"]) => { ui.viewMode = v; setViewModeRaw(v); };
   const [err, setErr] = createSignal("");
   // gitignored files: "dim" (default) | "hide" | "show"
   const [ignoreMode, setIgnoreMode] = createSignal(
@@ -4185,11 +4214,9 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       .then((results) => {
         setShowHidden(next);
         localStorage.setItem("teapot.showHidden", next ? "1" : "0");
-        setKids((prev) => {
-          const m = new Map(prev);
-          for (const { p, rows } of results) if (rows) m.set(p, rows);
-          return m;
-        });
+        // merge (not replace): unchanged rows keep their object identity, so
+        // the toggle no longer rebuilds every visible row
+        for (const { p, rows } of results) if (rows) mergeKids(p, rows);
       });
   };
 
@@ -4226,14 +4253,42 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
   // matters: agent snapshots update on every poll/event burst, and without it
   // each update cleared + re-fetched the whole tree (visible flicker and a
   // pointless /tree request per snapshot).
+  // Merge fetched rows into the cache WITHOUT replacing row objects that are
+  // unchanged (same path+dir+size). Solid's <For> diffs by reference: handing
+  // it brand-new TreeNode objects on every refresh tore down and rebuilt the
+  // whole visible list — the "tree flickers on refresh" bug.
+  const mergeKids = (path: string, rows: TreeNode[]) =>
+    setKids((prev) => {
+      const old = prev.get(path);
+      if (!old) return new Map(prev).set(path, rows);
+      const merged = old.map((o) => {
+        const fresh = rows.find((r) => r.path === o.path);
+        // keep the previous object when nothing changed → no remount
+        return fresh && fresh.dir === o.dir && fresh.size === o.size &&
+               fresh.ignored === o.ignored && fresh.name === o.name
+          ? o
+          : (fresh ?? o);
+      });
+      // append genuinely new entries (created since the last fetch)
+      for (const r of rows) if (!old.some((o) => o.path === r.path)) merged.push(r);
+      // drop entries that vanished from disk — but never the one being previewed
+      const kept = merged.filter((m) => rows.some((r) => r.path === m.path) || ui.preview?.path === m.path);
+      const next = new Map(prev);
+      next.set(path, kept);
+      return next;
+    });
+
   let kidsFor = "";
   createEffect(() => {
     const id = props.agentId;
     if (id === kidsFor) return; // same agent — keep the loaded tree as-is
     kidsFor = id;
+    // a REAL agent switch starts a fresh view; a mere panel remount keeps
+    // everything (state lives in `ui`, see fileUiFor above)
     setExpanded(new Set<string>());
-    const map = new Map<string, TreeNode[]>();
-    setKids(map);
+    setPreview(null);
+    setMedia(null);
+    setKids(new Map());
     void fetchDir("").then((rows) => {
       if (rows && kidsFor === id) setKids(new Map([[ "", rows ]]));
     });
@@ -4250,14 +4305,13 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     setExpanded(next);
     if (!kids().has(node.path)) {
       const rows = await fetchDir(node.path);
-      if (rows) setKids((prev) => new Map(prev).set(node.path, rows));
+      if (rows) mergeKids(node.path, rows);
     }
   };
 
   const [hlHtml, setHlHtml] = createSignal("");
   const [hlPending, setHlPending] = createSignal(false);
-  // view mode: "code" (shiki) · "edit" (textarea + save) · "md" (rendered)
-  const [viewMode, setViewMode] = createSignal<"code" | "edit" | "md" | "media">("code");
+  // editBuf stays local — it is transient typing state tied to one popup
   const [editBuf, setEditBuf] = createSignal("");
   const [saving, setSaving] = createSignal(false);
   const isMd = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
@@ -4279,8 +4333,6 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     }
   };
   onCleanup(() => { hlRun++; });
-
-  const [media, setMedia] = createSignal<{ path: string; kind: MediaKind } | null>(null);
 
   const openFileWith = async (
     node: TreeNode,
@@ -4379,10 +4431,34 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
 
   const wsName = () => props.workspace.split("/").filter(Boolean).pop() ?? props.workspace;
 
+  /** refresh root + every expanded dir IN PLACE — mergeKids keeps unchanged
+   * row objects, so the tree updates without flicker and an open file popup
+   * is never touched (its state lives outside the row list entirely). */
+  const [refreshing, setRefreshing] = createSignal(false);
+  const refreshTree = async () => {
+    if (refreshing()) return;
+    setRefreshing(true);
+    try {
+      const targets = ["", ...expanded()];
+      const results = await Promise.all(
+        targets.map(async (p) => ({ p, rows: await fetchDirWith(p, showHidden()) })),
+      );
+      for (const { p, rows } of results) if (rows) mergeKids(p, rows);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <>
       <h3 style="display:flex;align-items:center;gap:6px" title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
         🗂 files <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
+        <IconBtn
+          class="filetoggle"
+          icon={refreshing() ? "…" : "⟳"}
+          title="refresh the tree (root + expanded folders) — open popups are kept"
+          onClick={() => void refreshTree()}
+        />
         <IconBtn
           class="filetoggle"
           style="margin-left:auto"
