@@ -429,6 +429,10 @@ export default function App() {
     onCleanup(() => document.removeEventListener("visibilitychange", onVisible));
   });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
+  // prompt being edited → edit-prompt fork dialog. SETTLED user prompts only:
+  // a pending (queued, not yet delivered) message offers ✕ cancel instead —
+  // editing implies the model may have seen it, which is false while queued.
+  const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
   // ask_user calls that already have their tool_result in the log — used to
   // disable the option buttons (answering twice sent duplicate prompts)
   const answeredIds = createMemo(() => {
@@ -1421,6 +1425,7 @@ export default function App() {
       if (showNew()) { setShowNew(false); return; }
       if (showCfg()) { setShowCfg(false); return; }
       if (showThemes()) { setShowThemes(false); return; }
+      if (editing()) { setEditing(null); return; }
       const s = sel();
       if (s?.status === "running") {
         // Claude-Code-style: Esc interrupts the running agent
@@ -2377,6 +2382,16 @@ export default function App() {
                           }
                         : undefined
                     }
+                    onEdit={
+                      // settled user prompts only: a pending message has not
+                      // reached the model, so there is nothing to fork from —
+                      // cancel (✕) returns its text to the composer instead.
+                      e.type === "prompt" &&
+                      e.data?.source === "user" &&
+                      !(e.data?.pending && e.data?.sent !== true)
+                        ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
+                        : undefined
+                    }
                   />
                 )}
               </For>
@@ -3199,6 +3214,61 @@ export default function App() {
     <Show when={showCfg()}>
       <ConfigModal cfg={cfg()} onClose={() => setShowCfg(false)} onSaved={() => { loadCfg(); loadTasks(); }} />
     </Show>
+    <Show when={editing()} fallback={null}>
+      {(ed) => {
+        const idx = () => events().findIndex((e) => e.id === ed().eventId);
+        const afterCount = () => Math.max(0, events().length - idx() - 1);
+        const [tail, setTail] = createSignal<"summarize" | "discard">(afterCount() > 0 ? "summarize" : "discard");
+        return (
+          <Modal title="edit prompt — forks the conversation" onClose={() => setEditing(null)}>
+            <form
+              onsubmit={async (ev) => {
+                ev.preventDefault();
+                const ta = document.getElementById("edit-text") as HTMLTextAreaElement;
+                try {
+                  await api(`/api/agents/${selected()}/edit-prompt`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ eventId: ed().eventId, text: ta.value, tail: tail() }),
+                  });
+                  setEditing(null);
+                  refreshAgents();
+                  const id = selected();
+                  if (id) await select(id);
+                } catch (ex) {
+                  alert(`edit failed: ${(ex as Error).message}`);
+                }
+              }}
+              style="display:flex;flex-direction:column;gap:10px"
+            >
+              <textarea id="edit-text" class="mono w100" rows={6} value={ed().text} />
+              <Show when={afterCount() > 0}>
+                <div>
+                  <div style="font-size:12.5px;margin-bottom:4px">
+                    {afterCount()} event(s) came after this prompt — what should happen to them on the new branch?
+                  </div>
+                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
+                    <input type="radio" name="tail" checked={tail() === "summarize"} onchange={() => setTail("summarize")} />
+                    summarize them into a note the agent can still read
+                  </label>
+                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
+                    <input type="radio" name="tail" checked={tail() === "discard"} onchange={() => setTail("discard")} />
+                    discard them entirely (clean timeline)
+                  </label>
+                </div>
+              </Show>
+              <div style="display:flex;justify-content:flex-end;gap:8px">
+                <button type="button" onclick={() => setEditing(null)}>cancel</button>
+                <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 12px;cursor:pointer">
+                  ⑂ fork & resend
+                </button>
+              </div>
+            </form>
+          </Modal>
+        );
+      }}
+    </Show>
+
     </>
   );
 }
@@ -3514,7 +3584,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Group consecutive rows from the same ACTOR. The actor for tool events is
@@ -3639,6 +3709,13 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onCancel?: () => void; 
                 produced a "copy" that silently copied the empty string */}
             <Show when={e.type !== "tool_call"}>
               <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
+            </Show>
+            <Show when={props.onEdit}>
+              <button
+                class="editbtn"
+                title="edit this prompt — forks the conversation here (later events are dropped or summarized)"
+                onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onEdit!(); }}
+              >✎ edit</button>
             </Show>
           </div>
         </Show>
