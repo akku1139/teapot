@@ -3011,8 +3011,7 @@ function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: n
         {props.timeoutMs ? ` · timeout ${Math.round(props.timeoutMs / 1000)}s` : ""}
       </span>
     );
-  }
-  return <span class="bashelapsed">{txt()} elapsed</span>;
+  }  return <span class="bashelapsed">{txt()} elapsed</span>;
 }
 
 /* ---------- per-tool timeline rendering ---------- */
@@ -3040,6 +3039,13 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
   const cmdText = () => {
     if (name === "bash") return argStr("command");
     return argStr("path") || JSON.stringify(d.args ?? {}, null, 1);
+  };
+  // effective timeout for live elapsed display — tools with defaults that the
+  // model omitted (wait_children: 5 min) still show their real cap
+  const effTimeout = () => {
+    if (name === "bash") return Number(argStr("timeout_ms")) || undefined;
+    if (name === "wait_children") return Number(argStr("timeout_ms")) || 300_000;
+    return Number(argStr("timeout_ms")) || undefined;
   };
   const codeBlock = (text: string, max = 1500) => (
     <pre class="mono toolbody">{truncate(text, max)}</pre>
@@ -3218,8 +3224,9 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
             ? hint || ""
             : staleDone
               ? "(result missed)"
-              : name === "bash"
-                ? <BashElapsed startedAt={e.ts} inline timeoutMs={Number(e.data?.args?.timeout_ms) || undefined} /> // visible while folded
+              : name === "bash" || effTimeout()
+                ? // any tool with a timeout shows live elapsed + its cap
+                  <BashElapsed startedAt={e.ts} inline timeoutMs={effTimeout()} /> // visible while folded
                 : "running…"}
         </span>
         {/* dedicated copy buttons: the generic header "copy" copied "" on tool
@@ -3611,18 +3618,48 @@ function oneLine(s: string, n: number): string {
 /* ---------- copy-to-clipboard button ---------- */
 function CopyBtn(props: { text: string; label?: string; title?: string }) {
   const [done, setDone] = createSignal(false);
+  const [failed, setFailed] = createSignal(false);
+  const copy = (e: MouseEvent) => {
+    e.preventDefault(); // <summary> buttons must not toggle the details row
+    e.stopPropagation();
+    const text = props.text ?? "";
+    if (!text) {
+      setFailed(true); // nothing to copy — say so instead of a silent no-op
+      setTimeout(() => setFailed(false), 1200);
+      return;
+    }
+    // clipboard API needs focus + secure context; fall back to the ancient
+    // execCommand path when it rejects (background tab, permission denial)
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setDone(true);
+        setTimeout(() => setDone(false), 900);
+      })
+      .catch(() => {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+          setDone(true);
+          setTimeout(() => setDone(false), 900);
+        } catch {
+          setFailed(true);
+          setTimeout(() => setFailed(false), 1200);
+        }
+      });
+  };
   return (
     <button
       class="copybtn"
       title={props.title ?? "copy to clipboard"}
-      onclick={(e: MouseEvent) => {
-        e.stopPropagation(); // don't toggle the enclosing <details>
-        navigator.clipboard.writeText(props.text).then(() => {
-          setDone(true);
-          setTimeout(() => setDone(false), 900);
-        });
-      }}
-    >{done() ? "✓" : props.label ?? "⧉"}</button>
+      onclick={copy}
+    >{done() ? "✓" : failed() ? "✗" : props.label ?? "⧉"}</button>
   );
 }
 
