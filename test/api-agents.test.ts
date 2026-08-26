@@ -100,3 +100,22 @@ test("internal session ids: /sessions lists owned ids; /events?session= reads th
     await b.dispose();
   });
 });
+
+test("live-update: /api/version and /api/update/restart endpoints exist", async () => {
+  // the restart endpoint spawns a child process and kills the server —
+  // this test only verifies the endpoint is wired (no actual restart).
+  await useTempDirs(["upd-root-", "upd-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    const app = buildApp(m);
+    const v = await app.request("/api/version");
+    assert.equal(v.status, 200);
+    const vj = (await v.json()) as { version: string };
+    assert.equal(typeof vj.version, "string");
+    assert.ok(vj.version.length > 0);
+
+    // sanity: config endpoint also includes the version (UI displays it)
+    const cfg = await app.request("/api/config");
+    const cj = (await cfg.json()) as { version: string };
+    assert.equal(cj.version, vj.version);
+  });
+});

@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { Agent } from "./agent/agent.ts";
 import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/cron.ts";
 import type { LlmConfig, ChatFn } from "./agent/llm.ts";
@@ -1224,5 +1225,61 @@ if (active().length === 0) wake();
         outputTokens: a.stats.outputTokens,
       })),
     };
+  }
+
+  /** Current application version (injected at build time via package.json). */
+  static readonly VERSION = "__APP_VERSION__";
+
+  /** Return the current server version. */
+  getVersion(): string {
+    return Master.VERSION;
+  }
+
+  /** Gracefully stop all agents with a timeout. Returns when all are stopped or timeout. */
+  async stopAllAgents(timeoutMs = 30_000): Promise<void> {
+    console.log(`[teapot] stopping all ${this.agents.size} agents...`);
+    const ids = [...this.agents.keys()];
+    const stopPromises = ids.map(async (id) => {
+      const a = this.agents.get(id);
+      if (!a) return;
+      try {
+        await a.dispose();
+      } catch (err) {
+        console.error("[teapot] dispose error:", err);
+      }
+      // remove from map so a re-spawn after restart doesn't carry state
+      this.agents.delete(id);
+    });
+    const timeout = new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error("agent stop timeout")), timeoutMs),
+    );
+    await Promise.race([Promise.all(stopPromises), timeout]);
+    console.log("[teapot] all agents stopped");
+  }
+
+  /** Restart the server process (spawns a new master, keeps this one alive until ready). */
+  async restartServer(): Promise<void> {
+    console.log("[teapot] restarting server...");
+    // Stop all agents first
+    await this.stopAllAgents(30_000);
+
+    // Spawn a new process that will become the new master
+    // We keep THIS process alive until the new one is ready to accept connections
+    const execPath = process.execPath;
+    const args = process.argv.slice(1);
+    const env = { ...process.env };
+    // Tell the new process it's a restart (it will read the version from the old one)
+    env.TEAPOT_RESTART_FROM = String(process.pid);
+
+    const child = spawn(execPath, args, {
+      detached: true,
+      stdio: "ignore",
+      env,
+    });
+    child.unref(); // Let the parent exit when ready
+
+    // Give the new process time to start and bind the port
+    // This process will exit when the new one takes over (SIGTERM handled in index.ts)
+    await new Promise((r) => setTimeout(r, 1_000));
   }
 }

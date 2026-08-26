@@ -29,6 +29,32 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Handle restart-from-old-process: if we're the new process spawned by a
+  // live update, wait for the old process to release the port and exit.
+  const restartFromPid = process.env.TEAPOT_RESTART_FROM
+    ? parseInt(process.env.TEAPOT_RESTART_FROM, 10)
+    : null;
+  if (restartFromPid && !Number.isNaN(restartFromPid)) {
+    // Give the old process time to gracefully shut down and release the port
+    console.log(`[teapot] restart: waiting for old process ${restartFromPid} to exit...`);
+    try {
+      // Send SIGTERM to old process (it handles graceful shutdown)
+      process.kill(restartFromPid, "SIGTERM");
+      // Wait for it to exit (max 5 seconds)
+      for (let i = 0; i < 50; i++) {
+        try {
+          process.kill(restartFromPid, 0); // check if alive
+          await new Promise((r) => setTimeout(r, 100));
+        } catch {
+          // Process no longer exists
+          break;
+        }
+      }
+    } catch {
+      // Old process might already be gone
+    }
+  }
+
   const configPath = resolveConfigPath(cfgArg);
   const configExisted = existsSync(configPath);
   const config = loadConfig(configPath);
@@ -56,13 +82,16 @@ async function main(): Promise<void> {
     console.error("[teapot] unhandled rejection (master survived):", err);
   });
 
-  const shutdown = async () => {
-    console.log("\n[teapot] shutting down...");
+  let shuttingDown = false;
+  const shutdown = async (signal?: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[teapot] shutting down${signal ? ` (${signal})` : ""}...`);
     await Promise.allSettled([...master.agents.values()].map((a) => a.dispose()));
     process.exit(0);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 void main();

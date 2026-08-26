@@ -579,6 +579,7 @@ export function buildApp(master: Master): Hono {
       maxSpawnDepth: master.config.maxSpawnDepth,
       tasks: master.config.tasks,
       agents: master.config.agents.map((a) => ({ id: a.id, workspace: a.workspace, provider: a.provider, model: a.model })),
+      version: master.getVersion(),
     });
   });
 
@@ -984,6 +985,19 @@ export function buildApp(master: Master): Hono {
 
   // ---- metrics / SSE ----
   app.get("/api/metrics", (c) => c.json(master.metrics()));
+
+  // current server version (for live-update polling)
+  app.get("/api/version", (c) => c.json({ version: master.getVersion() }));
+
+  // trigger a full server restart (agents stopped gracefully, new process spawned)
+  app.post("/api/update/restart", async (c) => {
+    try {
+      await master.restartServer();
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
 
   // scheduled tasks with computed next-fire times (cron visibility for the UI)
   app.get("/api/tasks", (c) => c.json({ tasks: master.tasksView() }));

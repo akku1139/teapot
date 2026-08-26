@@ -5000,6 +5000,50 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           </For>
         </fieldset>
 
+        <fieldset>
+          <legend>live update</legend>
+          <div class="cfgrow">
+            <span class="muted">current version: {props.cfg.version ?? "unknown"}</span>
+            <button
+              type="button"
+              onclick={async (e) => {
+                try {
+                  setErr("");
+                  const btn = e.currentTarget as HTMLButtonElement;
+                  btn.disabled = true;
+                  btn.textContent = "updating…";
+                  const res = await api("/api/update/restart", { method: "POST" });
+                  if (!res.ok) throw new Error((await res.json()).error ?? "restart failed");
+                  // Success — the server will restart. Wait for new version then reload.
+                  btn.textContent = "restarting…";
+                  // Poll for new version
+                  for (let i = 0; i < 60; i++) {
+                    await new Promise((r) => setTimeout(r, 1000));
+                    try {
+                      const v = await api("/api/version");
+                      if (v.version && v.version !== __APP_VERSION__) {
+                        // New version is up — reload the page
+                        window.location.reload();
+                        return;
+                      }
+                    } catch {}
+                  }
+                  throw new Error("restart timeout — new server did not come up");
+                } catch (ex) {
+                  setErr((ex as Error).message);
+                } finally {
+                  (e.currentTarget as HTMLButtonElement).disabled = false;
+                  (e.currentTarget as HTMLButtonElement).textContent = "update & restart";
+                }
+              }}
+              style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer"
+            >
+              update & restart
+            </button>
+            <span class="muted" style="margin-left:8px;font-size:12px">gracefully stops all agents, spawns new process, then reloads this page</span>
+          </div>
+        </fieldset>
+
         <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
         <button type="submit" style="align-self:flex-end;background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer">save settings</button>
       </form>
