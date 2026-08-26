@@ -330,6 +330,44 @@ console.log("deep render ok: feed rows present");
     process.exit(1);
   }
   console.log("deep render ok: delivered prompt flips to its settled row");
+
+  // CONTEXT ORDER: the delivered prompt's log row was written at ENQUEUE
+  // time (seq 5), but the model consumed it at the delivery point (note e6).
+  // The settled row must render AFTER everything the agent produced between
+  // those two moments — simulated here by a later assistant message (e7).
+  PENDING_EVENTS.push({ id: "e7", seq: 7, ts: "2026-01-01T10:00:30Z", session: "alpha-s1",
+    branch: "br0", parent: null, type: "message",
+    data: { content: "answering the queued question", final: true } });
+  pushEvent(PENDING_EVENTS[PENDING_EVENTS.length - 1]);
+  flushRefreshes();
+  const orderOk = await waitFor("context-order rows", () => {
+    flushRefreshes();
+    return bodyText().includes("answering the queued question");
+  });
+  if (!orderOk) {
+    console.error(
+      "CONTEXT ORDER: reply row never rendered" +
+        `\nrows: ${[...w.document.querySelectorAll(".msg")].map((r) => r.textContent.slice(0, 30)).join(" | ")}`,
+    );
+    process.exit(1);
+  }
+  {
+    const feed = [...w.document.querySelectorAll(".msg")];
+    const idxOf = (needle) => feed.findIndex((r) => r.textContent.includes(needle));
+    const userRow = idxOf("queued while running");
+    const replyRow = idxOf("answering the queued question");
+    // user row must NOT sit above a reply that came after the delivery note;
+    // it belongs right below the pre-delivery output (bash) and above the reply
+    if (userRow === -1 || replyRow === -1) {
+      console.error(`CONTEXT ORDER: rows missing (user=${userRow}, reply=${replyRow})`);
+      process.exit(1);
+    }
+    if (userRow > replyRow) {
+      console.error("CONTEXT ORDER: delivered prompt renders BELOW the agent's post-delivery reply");
+      process.exit(1);
+    }
+    console.log("deep render ok: delivered prompt sits in true context order");
+  }
 }
 
 // give deferred Solid effects a final tick before declaring victory

@@ -158,25 +158,28 @@ export default function App() {
   // handle behind /session/<id> URLs and every events fetch (?session=…)
   const [timelineId, setTimelineId] = createSignal<string>("");
   // internal session id → owning agent id, and agent id → its session ids
-  // (newest first) — rebuilt on each agent poll; used by popstate/deep-link
-  // routing and by select() to resolve an agent's current timeline handle
+  // (newest first) — ONE /api/sessions call serves every agent, refetched
+  // only when the agent SET changes (not on every poll: the fan-out of one
+  // request per agent per switch hammered the server for identical data)
   const [masterSessionIndex, setMasterSessionIndex] = createSignal<Map<string, string>>(new Map());
   const [sessionsByAgent, setSessionsByAgent] = createSignal<Map<string, string[]>>(new Map());
+  let sessionIndexFetched = false;
   async function refreshSessionIndex(): Promise<void> {
-    const byId = new Map<string, string>();
-    const byAgent = new Map<string, string[]>();
-    await Promise.all(
-      agents().map(async (a) => {
-        try {
-          const r = await api(`/api/agents/${a.id}/sessions`);
-          const ids = (r.sessions ?? []).map((s: { id: string }) => s.id);
-          byAgent.set(a.id, ids);
-          for (const sid of ids) byId.set(sid, a.id);
-        } catch { /* agent gone */ }
-      }),
-    );
-    setMasterSessionIndex(byId);
-    setSessionsByAgent(byAgent);
+    if (sessionIndexFetched) return; // one fetch is enough — sessions rarely change
+    sessionIndexFetched = true;
+    try {
+      const r = await api("/api/sessions");
+      const byId = new Map<string, string>();
+      const byAgent = new Map<string, string[]>();
+      for (const s of r.sessions ?? []) {
+        byId.set(s.id, s.agentId);
+        const list = byAgent.get(s.agentId) ?? [];
+        list.push(s.id); // server returns newest first
+        byAgent.set(s.agentId, list);
+      }
+      setMasterSessionIndex(byId);
+      setSessionsByAgent(byAgent);
+    } catch { /* transient — retried on next agent-set change */ }
   }
   const [events, setEvents] = createSignal<Ev[]>([]);
   const [eventsTotal, setEventsTotal] = createSignal(0); // server-side count (window is capped)
@@ -395,6 +398,20 @@ export default function App() {
   // — coming back showed a stale bottom line even though "follow" mode was
   // on. Re-sync once on return: jump to the tail iff the reader was still
   // following when they left. Re-armed on every session switch.
+
+  // Pending echoes must clear at EXACTLY the moment the ⏳ queue badge clears:
+  // both mean "the model has consumed the message". The badge counts
+  // snapshot().pendingPrompts, which drops the instant drainPendingPrompts()
+  // moves the queue into this.messages — so reconcile against that count
+  // instead of waiting for every prompt-delivered note to arrive over WS (the
+  // badge and the echo visibly disagreed during that gap).
+  createEffect(() => {
+    const queued = sel()?.pendingPrompts ?? 0;
+    setPendingMsgs((list) => {
+      if (queued >= list.length) return list;
+      return list.slice(0, queued); // newest entries were consumed by the model
+    });
+  });
   createEffect(() => {
     const id = selected();
     if (!id) return;
@@ -412,8 +429,6 @@ export default function App() {
     onCleanup(() => document.removeEventListener("visibilitychange", onVisible));
   });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
-  // prompt being edited → edit-prompt fork dialog
-  const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
   // ask_user calls that already have their tool_result in the log — used to
   // disable the option buttons (answering twice sent duplicate prompts)
   const answeredIds = createMemo(() => {
@@ -693,13 +708,17 @@ export default function App() {
     // hidden and the pending echo alone represents the message.
     const deliveredIds = new Set<string>();
     const loggedUserPrompts = new Set<string>();
+    const deliveredNotes = new Map<string, number>(); // promptId → seq of its prompt-delivered note
     for (const e of deduped) {
       const pid = (e.data as any)?.promptId;
       if (!pid) continue;
       if (e.type === "prompt" && e.data?.source === "user") loggedUserPrompts.add(String(pid));
-      if (e.type === "system_note" && (e.data as any)?.event === "prompt-delivered")
+      if (e.type === "system_note" && (e.data as any)?.event === "prompt-delivered") {
         deliveredIds.add(String(pid));
+        deliveredNotes.set(String(pid), e.seq);
+      }
     }
+    const deliveredSeq = new Map<string, number>();
     const stillPendingIds = new Set<string>();
     for (const p of pendingMsgs()) {
       if (p.promptId && !deliveredIds.has(p.promptId)) stillPendingIds.add(p.promptId);
@@ -709,6 +728,17 @@ export default function App() {
       const pid = String((e.data as any)?.promptId ?? "");
       return pid === "" || !stillPendingIds.has(pid); // hide undelivered log rows
     });
+    // A delivered user prompt's log row was written at ENQUEUE time — its seq
+    // sits wherever the operator typed it, NOT where the model actually
+    // consumed it. Re-sequence it to its prompt-delivered note's position so
+    // the timeline reads in true context order: the message lands between the
+    // agent output that came before the delivery and the reply after it.
+    for (const e of visible) {
+      if (e.type !== "prompt" || e.data?.source !== "user") continue;
+      const pid = String((e.data as any)?.promptId ?? "");
+      const note = deliveredNotes.get(pid);
+      if (note && note > e.seq) e.seq = note;
+    }
     const pend = pendingMsgs().filter((p) => {
       if (!p.promptId) return true;
       // delivered AND its log row exists → the log row owns the display now
@@ -817,7 +847,8 @@ export default function App() {
 
   const refreshAgents = () =>
     api("/api/agents")
-      .then((d) =>
+      .then((d) => {
+        let agentSetChanged = false;
         setAgents((prev) => {
           // Reference-stabilize snapshots: the server re-serializes every
           // agent on each poll, and new object identities made Solid re-run
@@ -825,13 +856,17 @@ export default function App() {
           // effect). Reuse the previous object when the snapshot is equal,
           // so unchanged panels skip their fine-grained updates entirely.
           const prevById = new Map(prev.map((a) => [a.id, a]));
+          if (prev.length !== (d.agents ?? []).length) agentSetChanged = true;
           return (d.agents ?? []).map((a: Agent) => {
             const p = prevById.get(a.id);
+            if (!p) agentSetChanged = true;
             return p && JSON.stringify(p) === JSON.stringify(a) ? p : a;
           });
-        }),
-      )
-      .then(() => void refreshSessionIndex())
+        });
+        // the session index is ONE request for ALL agents — only needed when
+        // the agent set actually changes, not on every poll
+        if (agentSetChanged) void refreshSessionIndex();
+      })
       .catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
   // scheduled (cron) tasks — shown in the right panel so "what runs when" is legible
@@ -1095,6 +1130,7 @@ export default function App() {
     // resolve the agent's CURRENT internal session id — the timeline handle.
     // Falls back to the agent id for brand-new agents whose first session dir
     // isn't listed yet (the events fetch still works: same log).
+    if (!sessionsByAgent().size) void refreshSessionIndex(); // first select before index landed
     let tid = latestSessionOf(id) ?? id;
     if (prevId !== id || tid !== prevTid) {
       // remember what the outgoing session looked like so returning is instant
@@ -1384,7 +1420,6 @@ export default function App() {
     if (e.key === "Escape") {
       if (showNew()) { setShowNew(false); return; }
       if (showCfg()) { setShowCfg(false); return; }
-      if (editing()) { setEditing(null); return; }
       if (showThemes()) { setShowThemes(false); return; }
       const s = sel();
       if (s?.status === "running") {
@@ -2280,16 +2315,20 @@ export default function App() {
               userScrolledUp = false;
             }
             lastScrollGap = gap;
+            // reached the top → pull the next older page (infinite scroll up).
+            // MUST run before the follow-lock return: the lock exists to stop
+            // follow mode from fighting the reader, and a reader at the very
+            // top is by definition not at the bottom — returning here silently
+            // swallowed every loadOlder trigger ("past logs never loaded").
+            if (el.scrollTop <= 4 && selected() && !loadingOlder() && !olderDone() && events().length > 0) {
+              void loadOlder();
+            }
             if (userScrolledUp && !nb) {
               setAtBottom(false);
               return; // locked: don't re-evaluate follow mode until back at tail
             }
             if (nb && missed()) setMissed(0);
             setAtBottom(nb);
-            // reached the top → pull the next older page (infinite scroll up)
-            if (el.scrollTop <= 4 && selected() && !loadingOlder() && !olderDone() && events().length > 0) {
-              void loadOlder();
-            }
           }}>
             <Show when={compacting()}>
               {(c) => (
@@ -2336,11 +2375,6 @@ export default function App() {
                               })
                               .catch(() => flashHint("withdraw failed — it may have already been sent"));
                           }
-                        : undefined
-                    }
-                    onEdit={
-                      e.type === "prompt" && e.data?.source === "user"
-                        ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
                         : undefined
                     }
                   />
@@ -3165,60 +3199,6 @@ export default function App() {
     <Show when={showCfg()}>
       <ConfigModal cfg={cfg()} onClose={() => setShowCfg(false)} onSaved={() => { loadCfg(); loadTasks(); }} />
     </Show>
-    <Show when={editing()} fallback={null}>
-      {(ed) => {
-        const idx = () => events().findIndex((e) => e.id === ed().eventId);
-        const afterCount = () => Math.max(0, events().length - idx() - 1);
-        const [tail, setTail] = createSignal<"summarize" | "discard">(afterCount() > 0 ? "summarize" : "discard");
-        return (
-          <Modal title="edit prompt — forks the conversation" onClose={() => setEditing(null)}>
-            <form
-              onsubmit={async (ev) => {
-                ev.preventDefault();
-                const ta = document.getElementById("edit-text") as HTMLTextAreaElement;
-                try {
-                  await api(`/api/agents/${selected()}/edit-prompt`, {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ eventId: ed().eventId, text: ta.value, tail: tail() }),
-                  });
-                  setEditing(null);
-                  refreshAgents();
-                  const id = selected();
-                  if (id) await select(id);
-                } catch (ex) {
-                  alert(`edit failed: ${(ex as Error).message}`);
-                }
-              }}
-              style="display:flex;flex-direction:column;gap:10px"
-            >
-              <textarea id="edit-text" class="mono w100" rows={6} value={ed().text} />
-              <Show when={afterCount() > 0}>
-                <div>
-                  <div style="font-size:12.5px;margin-bottom:4px">
-                    {afterCount()} event(s) came after this prompt — what should happen to them on the new branch?
-                  </div>
-                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
-                    <input type="radio" name="tail" checked={tail() === "summarize"} onchange={() => setTail("summarize")} />
-                    summarize them into a note the agent can still read
-                  </label>
-                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
-                    <input type="radio" name="tail" checked={tail() === "discard"} onchange={() => setTail("discard")} />
-                    discard them entirely (clean timeline)
-                  </label>
-                </div>
-              </Show>
-              <div style="display:flex;justify-content:flex-end;gap:8px">
-                <button type="button" onclick={() => setEditing(null)}>cancel</button>
-                <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 12px;cursor:pointer">
-                  ⑂ fork & resend
-                </button>
-              </div>
-            </form>
-          </Modal>
-        );
-      }}
-    </Show>
     </>
   );
 }
@@ -3534,7 +3514,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Group consecutive rows from the same ACTOR. The actor for tool events is
@@ -3659,13 +3639,6 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
                 produced a "copy" that silently copied the empty string */}
             <Show when={e.type !== "tool_call"}>
               <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
-            </Show>
-            <Show when={props.onEdit}>
-              <button
-                class="editbtn"
-                title="edit this prompt — forks the conversation here (later events are dropped or summarized)"
-                onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onEdit!(); }}
-              >✎ edit</button>
             </Show>
           </div>
         </Show>

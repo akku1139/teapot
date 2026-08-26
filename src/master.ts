@@ -871,8 +871,9 @@ if (active().length === 0) wake();
    * prefix of the other ("prismrv-root-sub-review" vs
    * "…-review-kernel") excluded each other's own dirs — every restart then
    * generated a fresh empty session and history read as zero. The owner is
-   * now recorded explicitly at creation time; prefix matching only remains
-   * as a fallback for legacy dirs without a manifest.
+   * now recorded explicitly at creation time; legacy dirs without a manifest
+   * fall back to longest-prefix inference and get one backfilled on first
+   * touch.
    */
   private readSessionOwner(dirName: string): string | null {
     try {
@@ -883,6 +884,26 @@ if (active().length === 0) wake();
     } catch {
       return null; // legacy dir or unreadable manifest → fall back to names
     }
+  }
+
+  /**
+   * Owner of a session dir — manifest first; legacy dirs are inferred from
+   * the LONGEST configured/live id whose "<id>" or "<id>-<rest>" shape the
+   * name matches. Returns {owner, hadManifest} so callers can backfill.
+   */
+  private inferSessionOwner(
+    dirName: string,
+    candidateIds: Iterable<string>,
+  ): { owner: string | null; hadManifest: boolean } {
+    const fromManifest = this.readSessionOwner(dirName);
+    if (fromManifest) return { owner: fromManifest, hadManifest: true };
+    let best: { id: string; len: number } | null = null;
+    for (const id of candidateIds) {
+      if (!id) continue;
+      if ((id === dirName || dirName.startsWith(`${id}-`)) && (!best || id.length > best.len))
+        best = { id, len: id.length };
+    }
+    return { owner: best?.id ?? null, hadManifest: false };
   }
 
   private writeSessionManifest(dirPath: string, agentId: string): void {
@@ -899,54 +920,35 @@ if (active().length === 0) wake();
     // Directory names alone are ambiguous: agent "teapot" prefix-matches
     // "teapot-3-<hash>", and sibling ids where one is a prefix of the other
     // ("prismrv-root-sub-review" vs "…-review-kernel") used to exclude each
-    // other's own dirs — every restart then generated a fresh empty session
-    // and history read as zero. The manifest written at creation time
-    // decides; only legacy dirs without one fall back to name matching.
-    const otherIds = new Set<string>();
-    for (const a of this.config.agents) {
-      if (a.id && a.id !== agentId) otherIds.add(a.id);
-    }
-    for (const [liveId] of this.agents) {
-      if (liveId !== agentId) otherIds.add(liveId);
-    }
-    // legacy fallback: ownership goes to the LONGEST id matching the name
-    const belongsToOther = (dir: string): boolean => {
-      const matchedLen = (id: string): number =>
-        id === dir || dir.startsWith(`${id}-`) ? id.length : 0;
-      const own = matchedLen(agentId); // always > 0: caller pre-filtered by id
-      let bestOther = 0;
-      for (const other of otherIds) {
-        const len = matchedLen(other);
-        if (len > bestOther) bestOther = len;
-      }
-      return bestOther > own; // equal-length ids cannot both match one dir
-    };
+    // other's own dirs. Ownership comes from the manifest; legacy dirs are
+    // inferred by longest matching id.
+    const candidateIds = new Set<string>([agentId]); // the agent itself owns its bare-name dir
+    for (const a of this.config.agents) if (a.id) candidateIds.add(a.id);
+    for (const [liveId] of this.agents) candidateIds.add(liveId);
     let dirs: string[] = [];
     try {
-      dirs = readdirSync(this.sessionsRoot())
-        .filter((d) => {
-          const owner = this.readSessionOwner(d);
-          if (owner) return owner === agentId; // manifest decides
-          // legacy dir without a manifest: name-prefix + longest-match rule
-          return (d === agentId || d.startsWith(`${agentId}-`)) && !belongsToOther(d);
-        })
-        .filter((d) => {
-          // an EMPTY chat.jsonl means the session was never used (created via
-          // web, then abandoned). Reusing it would resurrect another agent's
-          // timeline under this id, and two incarnations could even land in
-          // one directory. Never treat empty logs as existing history.
-          try {
-            return statSync(path.join(this.sessionsRoot(), d, "chat.jsonl")).size > 0;
-          } catch {
-            return false;
-          }
-        })
-        .sort((a, b) => {
-          // newest chat.jsonl wins
-          const ma = this.sessionMtime(path.join(this.sessionsRoot(), a));
-          const mb = this.sessionMtime(path.join(this.sessionsRoot(), b));
-          return mb - ma;
-        });
+      const withHistory: { d: string; m: number }[] = [];
+      const empty: { d: string; m: number }[] = [];
+      for (const d of readdirSync(this.sessionsRoot())) {
+        const { owner } = this.inferSessionOwner(d, candidateIds);
+        if (owner !== agentId) continue;
+        const dirPath = path.join(this.sessionsRoot(), d);
+        const m = this.sessionMtime(dirPath);
+        // an EMPTY chat.jsonl means the session was never really used — but it
+        // must not SHADOW a real history dir: an incarnation's state events
+        // keep refreshing the empty log's mtime, and newest-wins would then
+        // pick the empty one forever ("timeline of zero" on every restart).
+        let size = 0;
+        try {
+          size = statSync(path.join(dirPath, "chat.jsonl")).size;
+        } catch { /* no log yet */ }
+        (size > 0 ? withHistory : empty).push({ d, m });
+      }
+      const pick = (list: { d: string; m: number }[]) =>
+        list.sort((a, b) => b.m - a.m)[0]?.d;
+      // prefer a dir that actually carries history; fall back to the newest
+      // empty one ONLY when no history exists under this id at all
+      dirs = [pick(withHistory) ?? pick(empty)].filter((x): x is string => !!x);
     } catch {
       return null;
     }
@@ -966,14 +968,17 @@ if (active().length === 0) wake();
     mkdirSync(root, { recursive: true });
 
     // exact-restart match first: <agentId> itself (or a previously generated
-    // <agentId>-<suffix> dir when the bare name was taken). Prefix matching
-    // alone could hand agent "proj-2" agent "proj"'s directory.
+    // <agentId>-<suffix> dir when the bare name was taken) — but only when it
+    // actually carries history. An empty log here must not shadow the real
+    // one found by findLatestSessionDir below.
     const selfDir = path.join(root, agentId);
-    // the manifest on the bare-name dir wins: another agent may own it now
-    // (ids are recycled across incarnations). No manifest → legacy behavior.
     const selfOwner = this.readSessionOwner(agentId);
     const selfUsable = selfOwner === null || selfOwner === agentId;
-    if (!fresh && selfUsable && statSync(path.join(selfDir, "chat.jsonl"), { throwIfNoEntry: false })?.size) {
+    if (
+      !fresh &&
+      selfUsable &&
+      statSync(path.join(selfDir, "chat.jsonl"), { throwIfNoEntry: false })?.size
+    ) {
       return selfDir; // restart → continue where we left off
     }
 
@@ -1004,31 +1009,60 @@ if (active().length === 0) wake();
   }
 
   /**
-   * Internal session ids (= directory names) owned by an agent, newest log
-   * first. These are the stable handles the web UI routes by — agent ids can
-   * be recycled across incarnations, internal session ids cannot.
+   * All session dirs on disk with their inferred/manifested owner, newest
+   * log first. One readdir powers every "list sessions" need — the UI calls
+   * the aggregated endpoint instead of fanning out one request per agent.
    */
-  sessionsOf(agentId: string): { id: string; mtimeMs: number }[] {
+  allSessions(): { id: string; agentId: string; mtimeMs: number; sizeBytes: number }[] {
+    const candidateIds = new Set<string>(this.config.agents.map((a) => a.id).filter(Boolean) as string[]);
+    for (const [liveId] of this.agents) candidateIds.add(liveId);
+    // dir names themselves are candidate owners too: "s" owns legacy "s",
+    // "teapot-3-3c0048d7" is best matched by the longest configured id —
+    // inference needs the id set only, so nothing extra to add here.
     let names: string[] = [];
     try {
       names = readdirSync(this.sessionsRoot());
     } catch {
       return [];
     }
-    return names
-      .filter((d) => this.readSessionOwner(d) === agentId)
-      .map((d) => ({ id: d, mtimeMs: this.sessionMtime(path.join(this.sessionsRoot(), d)) }))
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const out: { id: string; agentId: string; mtimeMs: number; sizeBytes: number }[] = [];
+    for (const d of names) {
+      const dirPath = path.join(this.sessionsRoot(), d);
+      const { owner, hadManifest } = this.inferSessionOwner(d, candidateIds);
+      if (!owner) continue; // orphan dir (unknown owner) — not addressable
+      // backfill legacy dirs so the inference result becomes durable
+      if (!hadManifest) this.writeSessionManifest(dirPath, owner);
+      let m = 0;
+      let size = 0;
+      try {
+        const st = statSync(path.join(dirPath, "chat.jsonl"));
+        m = st.mtimeMs;
+        size = st.size;
+      } catch { /* no log yet — still listable */ }
+      out.push({ id: d, agentId: owner, mtimeMs: m, sizeBytes: size });
+    }
+    return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  }
+
+  /**
+   * Internal session ids (= directory names) owned by an agent, newest log
+   * first. These are the stable handles the web UI routes by — agent ids can
+   * be recycled across incarnations, internal session ids cannot.
+   */
+  sessionsOf(agentId: string): { id: string; mtimeMs: number; sizeBytes: number }[] {
+    return this.allSessions()
+      .filter((s) => s.agentId === agentId)
+      .map(({ id, mtimeMs, sizeBytes }) => ({ id, mtimeMs, sizeBytes }));
   }
 
   /** resolve an internal session id to (ownerAgentId, absolute dir) — null when it doesn't exist */
-  sessionById(
-    sessionId: string,
-  ): { agentId: string; dir: string } | null {
+  sessionById(sessionId: string): { agentId: string; dir: string } | null {
     // internal ids are directory names: refuse anything path-like up front
     if (!sessionId || sessionId.includes("/") || sessionId.includes("\\") || sessionId.startsWith(".")) return null;
     const root = this.sessionsRoot();
-    const owner = this.readSessionOwner(sessionId);
+    const candidateIds = new Set<string>(this.config.agents.map((a) => a.id).filter(Boolean) as string[]);
+    for (const [liveId] of this.agents) candidateIds.add(liveId);
+    const { owner } = this.inferSessionOwner(sessionId, candidateIds);
     if (!owner) return null;
     try {
       const st = statSync(path.join(root, sessionId));

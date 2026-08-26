@@ -896,26 +896,6 @@ export function buildApp(master: Master): Hono {
   });
 
   // edit a previously-sent prompt: forks there, optionally summarizes the tail
-  app.post("/api/agents/:id/edit-prompt", async (c) => {
-    const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
-    const body = await c.req
-      .json<{ eventId?: string; text?: string; tail?: string }>()
-      .catch(() => null);
-    if (!body?.eventId || !body.text?.trim())
-      return c.json({ error: "eventId and text required" }, 400);
-    try {
-      const r = await a.editPromptAt(
-        body.eventId,
-        body.text,
-        body.tail === "summarize" ? "summarize" : "discard",
-      );
-      return c.json({ ok: true, ...r });
-    } catch (err) {
-      return c.json({ error: (err as Error).message }, 409);
-    }
-  });
-
   app.post("/api/agents/:id/fork", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
@@ -970,6 +950,11 @@ export function buildApp(master: Master): Hono {
     return c.json({ events: events.slice(-limit), total: events.length });
   });
 
+  // ONE readdir-backed snapshot of every session on disk, owner included.
+  // The UI fetches this once per agent-set change instead of fanning out one
+  // request per agent — /api/agents/:id/sessions stays for compatibility.
+  app.get("/api/sessions", (c) => c.json({ sessions: master.allSessions() }));
+
   // list the internal session ids (= stable timeline handles) an agent owns,
   // newest first — the web UI routes /session/<internalId> by these
   app.get("/api/agents/:id/sessions", (c) => {
@@ -977,8 +962,9 @@ export function buildApp(master: Master): Hono {
     // resolvable when live, configured, OR still owning sessions on disk
     // (a stopped/lazy agent must keep its timeline reachable)
     const known = master.agents.has(id) || master.config.agents.some((a) => a.id === id);
-    if (!known && master.sessionsOf(id).length === 0) return c.json({ error: "not found" }, 404);
-    return c.json({ sessions: master.sessionsOf(id) });
+    const owned = master.sessionsOf(id);
+    if (!known && owned.length === 0) return c.json({ error: "not found" }, 404);
+    return c.json({ sessions: owned });
   });
 
   app.get("/api/agents/:id/branches", async (c) => {
