@@ -1181,9 +1181,10 @@ export default function App() {
         // the logged prompt row in the same pass (the old early-returns made
         // the "sent ✓" echo linger until some unrelated event refreshed).
         if (et === "system_note" && ed.event === "prompt-delivered" && msg.agentId === selected()) {
-          // no echo state change needed: the echo disappears when its logged
-          // row appears in chatEvents (promptId match) — delivery itself has
-          // no separate visual state anymore
+          // delivery = the message now belongs to the log row. REMOVE the echo
+          // from the list (the display filter alone kept it forever, and any
+          // filter regression resurfaced it as a duplicate row).
+          setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
         } else if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
           setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
         }
