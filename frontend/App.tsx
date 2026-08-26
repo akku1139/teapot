@@ -842,15 +842,22 @@ export default function App() {
   // and rebuilt EVERY timeline row (markdown re-parse included) — heavy on
   // long sessions and it collapsed open <details>.
   const evCache = new Map<string, Ev>();
+  // evCache keys are scoped per session: raw ids (e1, e2…) are only unique
+  // WITHIN one log, so a cross-session key collision made stabilize() return
+  // another session's row — the "teapot-b3c520e0 shows teapot-3's timeline" bug.
+  function cacheKey(ev: { id: string }): string {
+    return `${selected() ?? "?"}:${ev.id}`;
+  }
   function stabilize(list: Ev[]): Ev[] {
     const out: Ev[] = Array.from({ length: list.length });
     for (let i = 0; i < list.length; i++) {
       const e = list[i]!;
-      const known = evCache.get(e.id);
+      const k = cacheKey(e);
+      const known = evCache.get(k);
       out[i] = known ?? e;
       if (!known) {
-        evCache.set(e.id, e);
-        if (evCache.size > 3000) {
+        evCache.set(k, e);
+        if (evCache.size > 6000) {
           const oldest = evCache.keys().next().value;
           if (oldest !== undefined) evCache.delete(oldest);
         }
@@ -1064,8 +1071,9 @@ export default function App() {
     // re-stabilized into evCache so reference identity survives the switch.
     const cached = timelineCache.get(id);
     if (cached?.events.length) {
-      for (const e of stabilize(cached.events)) evCache.set(e.id, e);
-      setEvents(cached.events);
+      // stabilize() re-registers every row under THIS session's scoped keys
+      stabilize(cached.events);
+      setEvents(stabilize(cached.events));
       setEventsTotal(cached.total);
       requestAnimationFrame(() => {
         if (selected() === id) scrollBottom(true);
