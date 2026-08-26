@@ -1003,8 +1003,10 @@ export default function App() {
    * a multi-line input (up to 160px) shrinks the feed viewport between frames,
    * and a fixed 80px threshold reads that as "user scrolled away" mid-stream */
   function bottomSlack() {
+    // tight: the old 80px+ made "at the bottom" true while the reader was
+    // still ~20-80px above it, so follow mode tugged on manual scrolling.
     const c = document.querySelector<HTMLTextAreaElement>(".composer textarea");
-    return 80 + Math.min(Math.max((c?.scrollHeight ?? 0) - (c?.clientHeight ?? 0), 0), 160);
+    return 24 + Math.min(Math.max((c?.scrollHeight ?? 0) - (c?.clientHeight ?? 0), 0), 160);
   }
   function nearBottom() {
     const f = feedEl();
@@ -1232,14 +1234,25 @@ export default function App() {
             // bug. Compare content instead: drop the buffer only when the
             // log caught up with it (or the agent went idle with nothing new).
             const buf = live();
-            if (buf) {
-              const lastMsg = [...events()].reverse().find((e) => e.type === "message" && e.data?.role === "assistant");
+            if (buf && buf.text) {
+              // covered = ANY persisted assistant message already carries this
+              // text. Checking only the LAST message missed the common case
+              // where tool turns landed after it — the bubble then lingered
+              // forever as a duplicate "streaming…" row above its own copy.
+              const body = buf.text.trim();
               const covered =
-                (lastMsg &&
-                  (String(lastMsg.data.content ?? "") === buf.text ||
-                   String(lastMsg.data.reasoning ?? "") === buf.reasoning)) ||
-                sel()?.status === "idle";
+                sel()?.status !== "running" ||
+                events().some(
+                  (e) =>
+                    e.type === "message" &&
+                    e.data?.role === "assistant" &&
+                    String(e.data.content ?? "").trim() === body,
+                );
               if (covered) setLive(null);
+            } else if (buf && !buf.text) {
+              // reasoning-only buffer with no text: drop as soon as the agent
+              // stops streaming (no text will ever persist for it)
+              if (sel()?.status !== "running") setLive(null);
             }
             // trust atBottom() (flipped only by real user scrolling). The old
             // nearBottom() re-check measured AFTER new rows (state events like
@@ -2278,9 +2291,17 @@ export default function App() {
                         <div
                           class="mono thinkscroll"
                           ref={(el) => {
+                            // follow the thinking tail ONLY while the reader
+                            // is at the block's own bottom — scrolling up
+                            // inside it must pause follow (and returning to
+                            // the tail resumes), independent of feed position
+                            let stick = true;
+                            el.addEventListener("scroll", () => {
+                              stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+                            });
                             createEffect(() => {
                               liveReasoning(); // re-run on every throttled tick
-                              if (atBottom()) el.scrollTop = el.scrollHeight;
+                              if (stick) el.scrollTop = el.scrollHeight;
                             });
                           }}
                         >
