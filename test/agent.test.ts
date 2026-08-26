@@ -283,6 +283,18 @@ test("background bash exit notifies the agent at the next turn boundary", async 
     agent.enqueuePrompt("run something");
     agent.start("t");
     await agent.settled();
+    // the wake-up round runs on a NEW runChain (the job exits AFTER the first
+    // round settled) — wait for it to actually consume the report
+    // the report lands as a LOGGED prompt regardless of LLM timing — poll
+    // the log itself instead of racing agent status transitions
+    let reportLogged = false;
+    for (let i = 0; i < 100 && !reportLogged; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      const evts = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+      reportLogged = evts.some((e) => e.type === "prompt" && /Background job report/.test(String(e.data?.text ?? "")));
+    }
+    assert.ok(reportLogged, "the background report must reach the conversation");
+    assert.ok(sawReport, "a later LLM call must contain the Background job report");
     assert.ok(sawReport, "a later LLM call must contain the Background job report");
     const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
     const report = events.find((e) => e.type === "prompt" && /Background job report/.test(String(e.data?.text ?? "")));
@@ -1229,3 +1241,47 @@ test("boot no longer creates a missing workspace; first tool run does", async ()
   });
 });
 
+
+test("auto-continue is suppressed while a background bash runs; its exit wakes the agent", async () => {
+  // regression: an agent that parked work on `bash background=true` (dev
+  // server, watcher) got nagged with "Continue working toward the current
+  // goal" — it spun up duplicate work while it meant to WAIT. The job's exit
+  // notification is the wake-up; the nudge must not fire while it runs.
+  const mock = mkMock((req): LlmResult => {
+    if (req.n === 0)
+      return reply("starting server", [tc("c1", "bash", { command: "sleep 0.3", background: true })]);
+    if (req.n === 1)
+      return reply("done for now", [tc("c2", "finish", { goalComplete: false, summary: "waiting on server" })]);
+    // after wake-up: the background report should be in context now
+    if (req.n === 2) {
+      const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+      assert.ok(
+        String(lastUser?.content ?? "").includes("Background job report"),
+        `expected bg report as last user message, got: ${String(lastUser?.content).slice(0, 200)}`,
+      );
+      return reply("server finished, all good", [tc("c3", "finish", { goalComplete: true, summary: "ok" })]);
+    }
+    throw new Error(`too many llm calls (n=${req.n})`);
+  });
+  await withAgent({ chatFn: mock.chat }, async (agent, ws) => {
+    await agent.setGoal("keep the dev server alive");
+    agent.enqueuePrompt("start it and wait");
+    agent.start("test");
+    // round 1 ends with the bg job running → auto-continue suppressed.
+    // Wait past the continue delay: no nudge may appear while the job runs…
+    await agent.settled();
+    await new Promise((r) => setTimeout(r, 60));
+    const events = await readEvents(agent.log.filePath);
+    const nudges = events.filter(
+      (e) => e.type === "prompt" && String((e.data as any)?.text ?? "").includes("Continue working toward"),
+    );
+    assert.equal(nudges.length, 0, "no auto-continue nudge while a background job is alive");
+    const sup = events.find((e) => (e.data as any)?.event === "auto-continue-suppressed");
+    assert.ok(sup, "suppression is visible in the log");
+
+    // …then the job exits → the agent resumes ON ITS OWN and consumes the report
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(agent.snapshot().goal.status, "done");
+    await agent.dispose();
+  });
+});

@@ -195,6 +195,25 @@ export function isContextOverflow(err: unknown): boolean {
   );
 }
 
+/** Any background shell still running for this workspace? The auto-continue
+ *  loop consults this before nudging a finished round: an agent that parked
+ *  its work on `bash(background=true)` — dev server, watcher, long build —
+ *  must NOT be nagged with "Continue working toward the current goal". The
+ *  job's exit notification will wake the agent on its own. */
+export function hasRunningBgShells(cwd: string): boolean {
+  const m = bgShellsByWs.get(cwd);
+  if (!m) return false;
+  for (const sh of m.values()) {
+    // opportunistic cleanup mirrors startBackgroundShell's
+    if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000) {
+      m.delete(sh.id);
+      continue;
+    }
+    if (!sh.exited) return true;
+  }
+  return false;
+}
+
 /** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {

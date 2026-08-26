@@ -373,6 +373,26 @@ export default function App() {
   });
   onCleanup(() => clearTimeout(liveRenderTimer));
 
+  // A finish() turn often streams REASONING-ONLY (empty text) — the live
+  // buffer then shows a 💭 thinking bubble that outlives the run: nothing
+  // else arrives to overwrite it, and the refresh-path cleanup only runs on
+  // unrelated events. The agent's status is the ground truth: the moment it
+  // leaves running/waiting, any leftover live buffer is dead and must go.
+  // (Reload "fixes" it today only because the buffer is memory-only.)
+  createEffect(() => {
+    const st = sel()?.status;
+    if (st === "running" || st === "waiting") return;
+    const id = selected();
+    if (!id) return;
+    setLiveByAgent((prev) => {
+      if (!prev.has(id)) return prev;
+      const m = new Map(prev);
+      m.delete(id);
+      return m; // new identity only when something was actually dropped
+    });
+    setThinkStartedAt(0);
+  });
+
   // auto-scroll the feed while live output streams and we're at the bottom.
   // The old version double-checked nearBottom() inside the rAF — but the live
   // bubble has ALREADY grown by then, so the unscrolled distance exceeded the
@@ -3834,7 +3854,9 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
       const answered = props.answeredIds?.has(callId) ?? false;
       return (
         <div class={"embed question" + (answered ? " answered" : "")}>
-          <div>❓ {String(e.data?.question ?? "")}</div>
+          {/* questions are model-written and often carry markdown (code refs,
+              lists) — render them like progress embeds instead of dumping raw */}
+          <div>❓ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
           <Show when={answered}>
             <div class="meta" style="color:var(--ok)">✓ answered — continuing below</div>
           </Show>

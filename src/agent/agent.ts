@@ -10,7 +10,7 @@ import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from 
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
-import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, type ToolContext } from "./tools.ts";
+import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, type ToolContext } from "./tools.ts";
 import type { SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
@@ -1036,6 +1036,13 @@ export class Agent {
     this.bgExits.push(info);
     if (this.bgExits.length > 32) this.bgExits.shift(); // cap runaway spam
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+    // the round ended BECAUSE this job was running (auto-continue is
+    // suppressed while bg jobs are alive) — its exit IS the wake-up call.
+    // Without this the report would sit unread until the operator poked
+    // the agent. Stopped agents stay stopped (a deliberate human stop).
+    if (this.status === "idle" && !this.stopRequested) {
+      this.start(`background job ${info.id} finished`);
+    }
   }
 
   /** fold queued background-exit reports into the next LLM call (once each) */
@@ -1155,6 +1162,19 @@ export class Agent {
         if (this.stopRequested) break;
         // fresh user input arrived while we were finishing up — another round now
         if (this.pendingPrompts.length) continue;
+        // A round that parked its work on a background bash (dev server,
+        // watcher, long build) ENDED ON PURPOSE — the job's exit notification
+        // is the wake-up. Nagging with "continue working" here just made the
+        // agent spin up duplicate work while it meant to wait. Checked BEFORE
+        // the finished/goal gates: a finish(goalComplete=false) round that
+        // leaves a bg job running is exactly the "wait for it" pattern.
+        if (hasRunningBgShells(this.toolCtx.cwd)) {
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "auto-continue-suppressed",
+            reason: "background job still running — the agent resumes when it exits",
+          });
+          break;
+        }
         // auto-continue only makes sense with an active goal to continue toward
         if (
           finished ||
