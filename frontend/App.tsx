@@ -638,24 +638,24 @@ export default function App() {
       }
       deduped.push(e);
     }
-    // append optimistic echoes. An echo is dropped ONLY when its
-    // prompt-delivered note has flipped it to "sent" (the logged prompt row
-    // then represents it) or when it was cancelled. Logging alone (which
-    // happens at enqueue time, before any LLM call) must NOT remove it —
-    // that was the "pending disappears instantly" bug.
-    const pend = pendingMsgs().filter(
-      (p) =>
-        p.sent ||
-        !deduped.some((e) => {
-          const pid = (e.data as any)?.promptId;
-          return (
-            e.type === "prompt" &&
-            e.data?.source === "user" &&
-            pid &&
-            p.promptId === pid
-          );
-        }),
-    );
+    // append optimistic echoes. An echo lives from SEND until its logged
+    // prompt row appears in the feed — the log row then represents it alone.
+    // (The old rule kept a "sent ✓" echo until the next refresh even after
+    // the log row existed, so the message showed up TWICE; worse, in long
+    // sessions where the row had scrolled past the 300-event window, the
+    // echo never went away at all.)
+    const loggedPromptIds = new Set<string>();
+    for (const e of deduped) {
+      const pid = (e.data as any)?.promptId;
+      if (e.type === "prompt" && e.data?.source === "user" && pid) loggedPromptIds.add(String(pid));
+    }
+    // delivered-but-not-yet-in-the-log prompts still count as pending for
+    // display purposes: the model hasn't consumed them visibly yet
+    const pend = pendingMsgs().filter((p) => {
+      if (!p.promptId) return true;
+      if (loggedPromptIds.has(p.promptId)) return false; // log row owns it now
+      return true;
+    });
     const echoes: Ev[] = pend.map((p) => echoEv(p));
     return [...deduped, ...echoes];
   });
@@ -3305,7 +3305,16 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
 
   return (
     <div
-      class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "")}
+      class={
+        "msg" +
+        (grouped ? " grouped" : "") +
+        (e.data?.pending
+          ? e.data?.sent === true
+            ? " pending sent"
+            : " pending"
+          : "")
+      }
+      data-sent={e.data?.pending && e.data?.sent === true ? "1" : undefined}
       data-eid={e.id}
     >
       {/* grouped rows keep the same geometry as the row that started the
