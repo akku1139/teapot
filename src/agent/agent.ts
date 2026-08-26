@@ -6,7 +6,7 @@
  * periodic behaviour (progress reports, scheduled tasks) is driven by the
  * master's single low-frequency scheduler tick or by turn boundaries.
  */
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
@@ -1655,10 +1655,92 @@ export class Agent {
   }
 
   private buildMessages(): ChatMessage[] {
-    // deliberately static: [system] + append-only history keeps prefix caches hot
+    // deliberately static: [system] + append-only history keeps prefix caches hot.
+    // The workspace context block (AGENTS.md + ls snapshot) is appended to the
+    // system message ONCE per session — changing it mid-session would re-price
+    // the whole prefix cache, so it is captured at first use and frozen.
+    const sys = this.systemPrompt();
     const hasSystem = this.messages[0]?.role === "system";
-    const head: ChatMessage[] = [{ role: "system", content: SYSTEM_TEMPLATE }];
+    const head: ChatMessage[] = [{ role: "system", content: sys }];
     return hasSystem ? [...head, ...this.messages.slice(1)] : [...head, ...this.messages];
+  }
+
+  /** AGENTS.md content cached for the session (empty string = none/read-failed) */
+  private agentsMd = "";
+  private agentsMdLoaded = false;
+  /** one-time workspace listing injected with the system prompt */
+  private wsSnapshot = "";
+
+  private systemPrompt(): string {
+    if (!this.agentsMdLoaded) {
+      this.agentsMdLoaded = true;
+      // AGENTS.md + workspace listing are captured ONCE and PERSISTED to the
+      // session dir, so a restart re-issues the identical system prompt (the
+      // prefix cache survives; the snapshot is a session artifact, not live
+      // truth — list_dir shows current state).
+      const snapPath = path.join(this.opts.sessionDir, "workspace-snapshot.txt");
+      try {
+        // a previous incarnation already froze a snapshot → reuse it verbatim.
+        // The sentinel covers EMPTY workspaces too ("" would look like "no
+        // file" and make the restart re-list, breaking prefix-cache identity).
+        this.wsSnapshot = readFileSync(snapPath, "utf8");
+      } catch {
+        this.wsSnapshot = "";
+      }
+      if (this.wsSnapshot === "" && existsSync(snapPath)) {
+        this.wsSnapshot = "(empty workspace)"; // the file exists but was empty
+      }
+      if (!this.wsSnapshot) {
+        try {
+          this.agentsMd = existsSync(path.join(this.opts.workspace, "AGENTS.md"))
+            ? readFileSync(path.join(this.opts.workspace, "AGENTS.md"), "utf8").slice(0, 12_000)
+            : "";
+        } catch {
+          this.agentsMd = "";
+        }
+        try {
+          const entries = readdirSync(this.opts.workspace, { withFileTypes: true });
+          const lines: string[] = [];
+          for (const e of entries.slice(0, 60)) {
+            if (e.name.startsWith(".")) continue;
+            let size = "";
+            if (!e.isDirectory()) {
+              try {
+                size = `${(statSync(path.join(this.opts.workspace, e.name)).size / 1024).toFixed(1)}K`;
+              } catch {
+                /* vanished */
+              }
+            }
+            lines.push(e.isDirectory() ? `${e.name}/` : `${e.name} (${size})`);
+          }
+          this.wsSnapshot = lines.join("\n");
+          if (!this.wsSnapshot) this.wsSnapshot = "(empty workspace)";
+          try {
+            void fs.writeFile(snapPath, this.wsSnapshot, "utf8");
+          } catch {
+            /* best-effort persistence */
+          }
+        } catch {
+          this.wsSnapshot = "(workspace not readable)";
+        }
+      } else {
+        try {
+          this.agentsMd = existsSync(path.join(this.opts.workspace, "AGENTS.md"))
+            ? readFileSync(path.join(this.opts.workspace, "AGENTS.md"), "utf8").slice(0, 12_000)
+            : "";
+        } catch {
+          this.agentsMd = "";
+        }
+      }
+    }
+    let sys = SYSTEM_TEMPLATE;
+    if (this.agentsMd.trim()) {
+      sys += `\n\n## Project instructions (AGENTS.md)\n\n${this.agentsMd}`;
+    }
+    if (this.wsSnapshot) {
+      sys += `\n\n## Workspace snapshot (top level)\n${this.wsSnapshot}\nUse list_dir/read_file for anything deeper — do NOT list again what is already here.`;
+    }
+    return sys;
   }
 
   private async handleFinish(argsJson: string): Promise<void> {

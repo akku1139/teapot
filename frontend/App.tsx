@@ -1290,17 +1290,22 @@ export default function App() {
   function focusTab(i: number) {
     const tab = termTabs()[i];
     if (!tab) return;
-    const mine = focusedPane() === 0 ? paneL : paneR;
-    const other = focusedPane() === 0 ? paneR : paneL;
-    if (other() === i) {
+    const focused = focusedPane();
+    // snapshot BEFORE any setter runs — the setters below are plain signals,
+    // so reading through the accessor after a partial update gave the swap
+    // logic stale values and the click landed on the wrong pane (v0.19.6
+    // "tab switching doesn't work" regression)
+    const mineIdx = focused === 0 ? paneL() : paneR();
+    const otherIdx = focused === 0 ? paneR() : paneL();
+    const setMine = (v: number) => (focused === 0 ? setPaneL(v) : setPaneR(v));
+    const setOther = (v: number) => (focused === 0 ? setPaneR(v) : setPaneL(v));
+    if (otherIdx === i) {
       // it's in the other pane — swap so both stay visible
-      if (focusedPane() === 0) setPaneR(mine());
-      else setPaneL(mine());
+      setOther(mineIdx);
+      setMine(i);
+      return;
     }
-    if (mine() === i) {
-      // no-op
-    } else if (focusedPane() === 0) setPaneL(i);
-    else setPaneR(i);
+    if (mineIdx !== i) setMine(i);
   }
 
   const addFromSelected = () => addTab();
@@ -1488,11 +1493,17 @@ export default function App() {
   const toggleSplit = () => {
     const next = !splitView();
     setSplitView(next);
-    if (next && paneR() === -1) {
-      // seed the second pane with any other tab (or leave it as an empty slot)
-      const other = termTabs().findIndex((_, i) => i !== paneL());
-      setPaneR(other >= 0 ? other : -1);
+    if (next) {
+      // seed the second pane with a DIFFERENT tab than the left pane shows —
+      // the old findIndex picked index 0 whenever paneL() wasn't 0 (or -1
+      // when it was), so split often opened with BOTH panes on one shell or
+      // an empty right side despite other tabs existing
+      const candidates = termTabs().map((_, i) => i).filter((i) => i !== paneL());
+      if (paneR() < 0 || paneR() === paneL() || paneR() >= termTabs().length) {
+        setPaneR(candidates[0] ?? -1);
+      }
     }
+    requestAnimationFrame(() => { mountPane(0); if (splitView()) mountPane(1); });
   };
 
   onCleanup(disposeAllTerms);
@@ -2196,7 +2207,7 @@ export default function App() {
                     {activeTab() ? agents().find((a) => a.id === activeTab()!.agentId)?.workspace.split("/").filter(Boolean).pop() : sel()?.workspace}
                   </span>
                   <button class="iconbtn" title={splitView() ? "single pane" : "split panes (50/50)"} onclick={toggleSplit}>◫</button>
-                  <button class="iconbtn" title="close terminal (t)" onclick={toggleTerm}>✕</button>
+                  <button class="iconbtn" title="hide the terminal (shells keep running; reopen with t) — close individual shells with their ✕ tab buttons" onclick={toggleTerm}>▾</button>
                 </div>
               </div>
               <div class="termbody" classList={{ split: splitView() }}>

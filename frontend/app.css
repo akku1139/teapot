@@ -365,10 +365,12 @@ img.promptimg { max-width: 180px; max-height: 120px; border-radius: 6px; border:
 }
 /* terminal drawer open → park the pill just above the drawer instead of
    over it. The drawer height is dynamic, so the app publishes it as a CSS
-   variable (--termh) and the pill offsets by that amount. */
+   variable (--termh) and the pill offsets by that amount. The extra 56px
+   covers the composer's own chrome so a taller input never slides the pill
+   back under the drawer. */
 body:has(.termdrawer) .jump {
   top: auto;
-  bottom: calc(var(--termh, 300px) + 44px);
+  bottom: calc(var(--termh, 300px) + 56px);
   left: 50%;
 }
 
