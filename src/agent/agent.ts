@@ -1140,40 +1140,17 @@ export class Agent {
         this.consecutiveApiErrors = 0;
         const turnsAtStart = this.stats.turns;
         let finished = await this.runTurnsUntilIdle();
-        // the round ended on the per-round turn cap (not finish/stop): tell
-        // the model to report and wrap up, then fall through to auto-continue
-        // — a soft checkpoint instead of the old hard runaway error
+        // Round ended on the per-round turn cap. NO model-facing nudge: telling
+        // the model "the round ended, consider finish()" invited premature
+        // finishes that conflicted with the goal. The cap is harness-side only
+        // (logged for observability); continuation goes through the normal
+        // auto-continue path below.
         const cap = Math.max(0, this.opts.maxTurnsPerRound ?? 200);
-        if (
-          !finished &&
-          cap > 0 &&
-          this.stats.turns - turnsAtStart >= cap &&
-          !this.stopRequested &&
-          !this.awaitingUser &&
-          !this.pendingPrompts.length // real user input outranks the wrap-up nudge
-        ) {
+        if (!finished && cap > 0 && this.stats.turns - turnsAtStart >= cap && !this.stopRequested) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "round-turn-cap",
             turns: cap,
           });
-          await this.maybeRequestProgress();
-          const nudge =
-            `[harness] This round ran ${cap} turns, so it ends here. ` +
-            "Report progress via report_progress now; then either call finish() if the goal is met, " +
-            "or state exactly where you will resume. Work CONTINUES in the next round automatically.";
-          this.messages.push({ role: "user", content: nudge });
-          await this.log.append("prompt", this.currentSession, this.currentBranch, {
-            source: "harness",
-            text: nudge,
-          });
-          // the wrap-up nudge IS this round's continuation prompt — starting
-          // another round on top of it would stack a generic auto-continue
-          // nudge too. BUT this must respect autoContinue: with the toggle
-          // off the round simply ENDS here (the old code continued
-          // unconditionally and spun an infinite loop on models that never
-          // call finish() — turns=16000+ in a mock test).
-          if (!this.opts.autoContinue || this.goal.status !== "active" || !this.goal.text.trim()) break;
-          continue;
         }
         if (this.stopRequested) break;
         // fresh user input arrived while we were finishing up — another round now

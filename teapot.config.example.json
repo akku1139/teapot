@@ -23,6 +23,9 @@
     }
   },
   "defaultProvider": "openrouter",
+  "//onError": "\"stop\" (default) or \"retry\" — retry backs off exponentially (retryDelayMs, doubling, max 10 min) and starts a fresh round after round-fatal API errors / runaway trips, so unattended agents ride out outages",
+  "onError": "retry",
+  "retryDelayMs": 60000,
   "progressIntervalMs": 600000,
   "//contextWindowTokens": "optional: model context window size — powers the usage gauge in the web UI",
   "contextWindowTokens": 200000,

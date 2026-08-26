@@ -656,22 +656,27 @@ export default function App() {
       }
       deduped.push(e);
     }
-    // append optimistic echoes. An echo lives from SEND until its logged
-    // prompt row appears in the feed — the log row then represents it alone.
-    // (The old rule kept a "sent ✓" echo until the next refresh even after
-    // the log row existed, so the message showed up TWICE; worse, in long
-    // sessions where the row had scrolled past the 300-event window, the
-    // echo never went away at all.)
-    const loggedPromptIds = new Set<string>();
+    // append optimistic echoes. An echo lives from SEND until its text enters
+    // an LLM call payload — signalled by the prompt-delivered system_note
+    // (same promptId). The LOGGED prompt row appears much earlier (at enqueue
+    // time), so "drop when logged" made the pending indicator flash for ~120ms
+    // and vanish while the message was still queued for the model.
+    //
+    // When delivery happens, the logged prompt row represents the message and
+    // the echo is dropped — matched by promptId so nothing duplicates.
+    const deliveredIds = new Set<string>();
+    const loggedUserPrompts = new Set<string>();
     for (const e of deduped) {
       const pid = (e.data as any)?.promptId;
-      if (e.type === "prompt" && e.data?.source === "user" && pid) loggedPromptIds.add(String(pid));
+      if (!pid) continue;
+      if (e.type === "prompt" && e.data?.source === "user") loggedUserPrompts.add(String(pid));
+      if (e.type === "system_note" && (e.data as any)?.event === "prompt-delivered")
+        deliveredIds.add(String(pid));
     }
-    // delivered-but-not-yet-in-the-log prompts still count as pending for
-    // display purposes: the model hasn't consumed them visibly yet
     const pend = pendingMsgs().filter((p) => {
       if (!p.promptId) return true;
-      if (loggedPromptIds.has(p.promptId)) return false; // log row owns it now
+      // delivered AND its log row exists → the log row owns the display now
+      if (deliveredIds.has(p.promptId) && loggedUserPrompts.has(p.promptId)) return false;
       return true;
     });
     const echoes: Ev[] = pend.map((p) => echoEv(p));
@@ -1043,6 +1048,8 @@ export default function App() {
       // "jump to present" on a brand-new/empty timeline whose feed had never
       // been scrolled (the pill only disappears once a real scroll lands)
       setAtBottom(true);
+      userScrolledUp = false;
+      lastScrollGap = undefined;
     }
     setSelected(id);
     saveDraft(drafts.get(id) ?? ""); // restore THIS session's unsent draft
@@ -1166,9 +1173,9 @@ export default function App() {
         // the logged prompt row in the same pass (the old early-returns made
         // the "sent ✓" echo linger until some unrelated event refreshed).
         if (et === "system_note" && ed.event === "prompt-delivered" && msg.agentId === selected()) {
-          setPendingMsgs((list) =>
-            list.map((p) => (p.promptId === ed.promptId ? { ...p, sent: true } : p)),
-          );
+          // no echo state change needed: the echo disappears when its logged
+          // row appears in chatEvents (promptId match) — delivery itself has
+          // no separate visual state anymore
         } else if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
           setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
         }
@@ -1695,6 +1702,9 @@ export default function App() {
     });
   };
   let suppressScrollEval = false;
+  // user-scroll lock state (see the feed onscroll handler)
+  let userScrolledUp = false;
+  let lastScrollGap: number | undefined;
   createEffect(() => {
     draft(); // re-run on typing AND after send() clears the draft
     autosizeComposer();
@@ -2089,10 +2099,11 @@ export default function App() {
             >
               🔔<Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
             </button>
-            <button
-              class={"iconbtn" + (hideGhosts() ? " active" : "")}
+            <IconBtn
+              icon="👻"
+              active={hideGhosts()}
               title={hideGhosts() ? "show ghost sessions again (👻 workspace missing on disk)" : "hide ghost sessions (👻 — their workspace directory no longer exists)"}
-              onclick={(e: MouseEvent) => {
+              onClick={(e) => {
                 e.stopPropagation();
                 const next = !hideGhosts();
                 setHideGhosts(next);
@@ -2103,10 +2114,10 @@ export default function App() {
                   if (firstVisible) select(firstVisible.id);
                 }
               }}
-            >👻</button>
-            <button class="iconbtn" title="new agent" onclick={() => { loadCfg(); setShowNew(true); }}>＋</button>
-            <button class="iconbtn" title="themes" onclick={() => setShowThemes(!showThemes())}>🎨</button>
-            <button class="iconbtn" title="settings" onclick={() => { loadCfg(); setShowCfg(true); }}>⚙</button>
+            />
+            <IconBtn icon="＋" title="new agent" onClick={() => { loadCfg(); setShowNew(true); }} />
+            <IconBtn icon="🎨" title="themes" onClick={() => setShowThemes(!showThemes())} />
+            <IconBtn icon="⚙" title="settings" onClick={() => { loadCfg(); setShowCfg(true); }} />
           </div>
           <div class="brand-row">
             <div class="brand">
@@ -2150,8 +2161,8 @@ export default function App() {
               <Show when={sel()!.statusReason}>
                 <span class="sub" title={sel()!.statusReason}>ℹ</span>
               </Show>
-              <button class="iconbtn" title="terminal (t)" onclick={toggleTerm}>⌨</button>
-              <button class="iconbtn" title="toggle details panel (d)" onclick={toggleRight}>▤</button>
+              <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
+              <IconBtn icon="▤" title="toggle details panel (d)" onClick={toggleRight} />
             </span>
           </header>
 
@@ -2159,6 +2170,23 @@ export default function App() {
             if (suppressScrollEval) return; // programmatic resize, not user
             const el = e.currentTarget;
             const nb = nearBottom();
+            // USER-SCROLL LOCK: while streaming, new content grows the feed and
+            // fires scroll events whose nearBottom() still reads true (the
+            // growth hasn't been laid out yet) — atBottom flipped back on, the
+            // follow effect yanked the reader down mid-scroll, and the view
+            // fought the user ("ガタガタ"). An upward scroll of >24px from the
+            // bottom locks follow off until the reader returns to the tail.
+            const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (!nb && lastScrollGap !== undefined && gap > lastScrollGap + 8 && gap > 24) {
+              userScrolledUp = true;
+            } else if (nb) {
+              userScrolledUp = false;
+            }
+            lastScrollGap = gap;
+            if (userScrolledUp && !nb) {
+              setAtBottom(false);
+              return; // locked: don't re-evaluate follow mode until back at tail
+            }
             if (nb && missed()) setMissed(0);
             setAtBottom(nb);
             // reached the top → pull the next older page (infinite scroll up)
@@ -2283,14 +2311,14 @@ export default function App() {
                       </span>
                     )}
                   </For>
-                  <button class="iconbtn" title="new shell in this workspace" onclick={addFromSelected}>＋</button>
+                  <IconBtn icon="＋" title="new shell in this workspace" onClick={addFromSelected} />
                 </div>
                 <div style="display:flex;gap:4px;align-items:center">
                   <span class="muted mono" style="flex:1;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                     {activeTab() ? agents().find((a) => a.id === activeTab()!.agentId)?.workspace.split("/").filter(Boolean).pop() : sel()?.workspace}
                   </span>
-                  <button class="iconbtn" title={splitView() ? "single pane" : "split panes (50/50)"} onclick={toggleSplit}>◫</button>
-                  <button class="iconbtn" title="hide the terminal (shells keep running; reopen with t) — close individual shells with their ✕ tab buttons" onclick={toggleTerm}>▾</button>
+                  <IconBtn icon="◫" title={splitView() ? "single pane" : "split panes (50/50)"} onClick={toggleSplit} />
+                  <IconBtn icon="▾" title="hide the terminal (shells keep running; reopen with t) — close individual shells with their ✕ tab buttons" onClick={toggleTerm} />
                 </div>
               </div>
               <div class="termbody" classList={{ split: splitView() }}>
@@ -2437,12 +2465,11 @@ export default function App() {
                   requestAnimationFrame(() => autosizeComposer());
                 }}
               >{composerMaximized() ? "⤡" : "⤢"}</button>
-              <button
-                type="button"
-                class="iconbtn"
+              <IconBtn
+                icon="📎"
                 title="attach images (or paste them straight into the box)"
-                onclick={() => document.getElementById("composer-file")?.click()}
-              >📎</button>
+                onClick={() => document.getElementById("composer-file")?.click()}
+              />
               <Show when={pendingImages().length}>
                 <span class="muted" style="font-size:11.5px;white-space:nowrap">🖼 {pendingImages().length}</span>
               </Show>
@@ -2482,7 +2509,14 @@ export default function App() {
             <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
           </div>
 
-          <FilesPanel agentId={sel()!.id} workspace={sel()!.workspace} />
+          {/* keyed by agent id: Solid re-runs the JSX expression on every
+              snapshot update, but <Show keyed> + primitive props keep the
+              FilesPanel subtree from re-rendering unless the agent changes */}
+          <Show when={sel()!.id} keyed fallback={null}>
+            {(aid) => (
+              <FilesPanel agentId={aid} workspace={sel()!.workspace} />
+            )}
+          </Show>
 
           <h3 title="switch provider/model live — applies from the agent's next turn; the list shows context window & pricing from the provider">🧦 model</h3>
           <div class="modelbox">
@@ -2737,11 +2771,11 @@ export default function App() {
             />
           </Show>
           <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px">
-            <button
-              class="iconbtn"
+            <IconBtn
+              icon={todoViewMode() ? "👁" : "✎"}
               title={todoViewMode() ? "rendered checklist" : "edit markdown"}
-              onclick={() => setTodoViewMode(!todoViewMode())}
-            >{todoViewMode() ? "👁" : "✎"}</button>
+              onClick={() => setTodoViewMode(!todoViewMode())}
+            />
             <label
               class="muted"
               style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
@@ -3440,19 +3474,51 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
       </div>
     );
   }
+  // system_note MUST resolve here (before the .msg wrapper): the wrapper
+  // always renders an avatar + empty body, so notes handled only inside
+  // SwitchContent appeared as mysterious EMPTY rows on the timeline.
+  // Most notes are log-only; these few earn a visible divider/embed row.
+  if (e.type === "system_note") {
+    const ev = String(e.data?.event ?? "");
+    if (ev === "runaway-detected") {
+      return (
+        <div class="embed fail" title={`${e.data?.failures} consecutive tool failures hit the configured limit (${e.data?.limit})`}>
+          <div class="mono">🛑 runaway: {String(e.data?.failures)} tool failures in a row (limit {String(e.data?.limit)})</div>
+          <div class="meta">last: {String(e.data?.lastTool)} — {String(e.data?.lastError ?? "").slice(0, 200)}</div>
+        </div>
+      );
+    }
+    if (ev === "error-retry") {
+      return (
+        <div class="embed warn-embed" title="a round-fatal API error occurred; auto-retry is waiting, then a fresh round starts (onError: retry)">
+          <div class="mono">↻ API error — retrying (attempt {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…</div>
+        </div>
+      );
+    }
+    if (ev === "background-exit") {
+      const failed = e.data?.failed === true;
+      const secs = Math.round(Number(e.data?.durationMs ?? 0) / 1000);
+      return (
+        <div class={"divider-msg" + (failed ? " err" : "")} title={String(e.data?.cmd ?? "")}>
+          {(failed ? "⚠ background job " : "✓ background job ") +
+            String(e.data?.jobId ?? "?") + " " +
+            (failed ? `FAILED (exit ${String(e.data?.code ?? "?")})` : `finished (${secs}s)`)}
+        </div>
+      );
+    }
+    if (ev === "context-compacted") {
+      return (
+        <div class="divider-msg">
+          🗜 compacted: {String(e.data?.tokensBefore ?? "?")} → {String(e.data?.tokensAfter ?? "?")} tok ({String(e.data?.mode ?? "")})
+        </div>
+      );
+    }
+    return null; // log-only notes (prompt-delivered, llm-retry, …)
+  }
 
   return (
     <div
-      class={
-        "msg" +
-        (grouped ? " grouped" : "") +
-        (e.data?.pending
-          ? e.data?.sent === true
-            ? " pending sent"
-            : " pending"
-          : "")
-      }
-      data-sent={e.data?.pending && e.data?.sent === true ? "1" : undefined}
+      class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "")}
       data-eid={e.id}
     >
       {/* grouped rows keep the same geometry as the row that started the
@@ -3474,13 +3540,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
             <Show when={e.data?.actor}>
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
-            <span class="ts">
-              {e.data?.pending
-                ? e.data?.sent === true
-                  ? "sent to model ✓"
-                  : "pending (queued)…"
-                : fmtTs(e.ts)}
-            </span>
+            <span class="ts">{e.data?.pending ? "queued…" : fmtTs(e.ts)}</span>
             <span class="ts">{e.branch}</span>
             <Show when={props.onCancel}>
               <button
@@ -3665,27 +3725,6 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
       );
     case "error":
       return <div class="embed fail"><div class="mono">⚠ {String(e.data.message ?? "")}</div></div>;
-    case "system_note": {
-      // two lifecycle notes deserve VISIBLE rows (everything else stays in
-      // the log): the runaway trip and the error-retry heartbeat
-      const ev = String(e.data?.event ?? "");
-      if (ev === "runaway-detected") {
-        return (
-          <div class="embed fail" title={`${e.data?.failures} consecutive tool failures hit the configured limit (${e.data?.limit})`}>
-            <div class="mono">🛑 runaway: {String(e.data?.failures)} tool failures in a row (limit {String(e.data?.limit)})</div>
-            <div class="meta">last: {String(e.data?.lastTool)} — {String(e.data?.lastError ?? "").slice(0, 200)}</div>
-          </div>
-        );
-      }
-      if (ev === "error-retry") {
-        return (
-          <div class="embed warn-embed" title="a round-fatal API error occurred; auto-retry is waiting, then a fresh round starts (onError: retry)">
-            <div class="mono">↻ API error — retrying (attempt {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…</div>
-          </div>
-        );
-      }
-      return null;
-    }
     case "compaction":
       return (
         <details class="embed compaction">
@@ -3747,6 +3786,30 @@ function oneLine(s: string, n: number): string {
 }
 
 /* ---------- copy-to-clipboard button ---------- */
+/** Centered icon button — the shared home for emoji-glyph buttons. Emoji
+ *  baselines sit off-center in plain text buttons, so every icon button
+ *  should render through this (inline-flex centers the glyph properly). */
+function IconBtn(props: {
+  icon: string;
+  title: string;
+  onClick?: (e: MouseEvent) => void;
+  active?: boolean;
+  class?: string;
+  style?: string;
+}) {
+  return (
+    <button
+      type="button"
+      class={"iconbtn" + (props.active ? " active" : "") + (props.class ? " " + props.class : "")}
+      title={props.title}
+      onclick={props.onClick}
+      style={props.style}
+    >
+      <span class="iconbtn-glyph">{props.icon}</span>
+    </button>
+  );
+}
+
 function CopyBtn(props: { text: string; label?: string; title?: string }) {
   const [done, setDone] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
@@ -4165,17 +4228,19 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     <>
       <h3 style="display:flex;align-items:center;gap:6px" title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
         🗂 files <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
-        <button
-          class="iconbtn filetoggle"
+        <IconBtn
+          class="filetoggle"
           style="margin-left:auto"
+          icon={ignoreMode() === "hide" ? "🙈" : ignoreMode() === "dim" ? "👁" : "✨"}
           title={`gitignored files: ${ignoreMode()} — click to cycle (dim → hidden → shown)`}
-          onclick={cycleIgnoreMode}
-        >{ignoreMode() === "hide" ? "🙈" : ignoreMode() === "dim" ? "👁" : "✨"}</button>
-        <button
-          class="iconbtn filetoggle"
+          onClick={cycleIgnoreMode}
+        />
+        <IconBtn
+          class="filetoggle"
+          icon={showHidden() ? "◉." : "○."}
           title={showHidden() ? "dotfiles shown — click to hide" : "dotfiles hidden — click to show"}
-          onclick={toggleHidden}
-        >{showHidden() ? "◉." : "○."}</button>
+          onClick={toggleHidden}
+        />
       </h3>
       <div class="filebox">
         <Show

@@ -889,35 +889,35 @@ test("onError:retry rides out runaway tool failures and recovers", async () => {
   );
 });
 
-test("per-round turn cap is a soft checkpoint, not an error", async () => {
-  // a model that never finishes: each round it burns exactly the cap in
-  // tool turns, then keeps going — the harness must nudge + continue, and
-  // the old hard error (status=error, no recovery) must stay gone
+test("per-round turn cap ends the round silently and logs a note (no model nudge)", async () => {
+  // The cap is a HARNESS-side checkpoint: it logs round-turn-cap for the
+  // operator, but sends NO model-facing nudge — "the round ended, consider
+  // finish()" invited premature finishes that conflicted with the goal.
   let n = 0;
   await withAgent(
     {
       maxTurnsPerRound: 3,
-      autoContinue: true,
-      continueDelayMs: 10,
-      chatFn: (_cfg, messages): LlmResult => {
-        const last = [...messages].reverse().find((m) => m.role === "user");
-        if (last && /round ran 3 turns/.test(String(last.content))) {
-          return reply("wrapping up", [tc("fin", "finish", { goalComplete: true })]);
-        }
-        return reply(`step ${n++}`, [tc(`t${n}`, "list_dir", {})] as never);
+      autoContinue: false, // round simply ENDS at the cap; nothing nudges the model
+      chatFn: (): LlmResult => {
+        n++;
+        return reply(`step ${n}`, [tc(`t${n}`, "list_dir", {})] as never);
       },
     },
     async (agent) => {
-      await agent.setGoal("grind forever until capped");
       agent.enqueuePrompt("go");
       agent.start("test");
       await agent.settled();
-      assert.equal(agent.status, "idle");
-      assert.equal(agent.goal.status, "done"); // the wrap-up round reached finish()
-      assert.ok(agent.stats.turns >= 4, "cap must not have aborted the round early");
+      assert.equal(agent.status, "idle"); // soft checkpoint — not an error
+      assert.equal(agent.stats.turns, 3); // exactly the cap, then the round ended
       const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
-      const capNote = events.find((e) => e.type === "system_note" && (e.data as any).event === "round-turn-cap");
-      assert.ok(capNote, "a round-turn-cap note must be logged");
+      assert.ok(
+        events.find((e) => e.type === "system_note" && (e.data as any).event === "round-turn-cap"),
+        "a round-turn-cap note must be logged",
+      );
+      const nudges = events.filter(
+        (e) => e.type === "prompt" && /This round ran/.test(String(e.data?.text ?? "")),
+      );
+      assert.equal(nudges.length, 0, "no wrap-up nudge may reach the model");
       await agent.dispose();
     },
   );

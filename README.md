@@ -197,6 +197,8 @@ TEAPOT_API_TOKEN=mysecret teapot --host 0.0.0.0 --port 7788
 | `maxSpawnDepth` | 3 | sub-agent nesting limit |
 | `password` | — | API auth (env `TEAPOT_API_TOKEN` wins) |
 | `tasks[]` | — | cron tasks `{ id, agent, schedule, prompt }` |
+| `onError` | `retry` | round-fatal errors (API outages, runaway trips): `retry` waits `retryDelayMs` (doubling, ≤10 min) then starts a fresh round; `stop` ends with status=error |
+| `retryDelayMs` | 60000 | base backoff for `onError: retry` |
 
 Lookup order: CLI arg → `$TEAPOT_CONFIG` → `~/.config/teapot-coding-agent/config.json` → `./teapot.config.json`
 
