@@ -827,7 +827,11 @@ if (active().length === 0) wake();
           d.recentContext.map((r) => r).join("\n\n");
       }
       parent.enqueuePrompt(
-        `[harness] Sub-agent ${ac.id} finished. Final report:\n${report.slice(0, 6000) || "(no summary)"}`,
+        // NO truncation: the sub's report is the parent's primary input for
+        // deciding what to do next. Clipping it (the old 2000/6000 caps)
+        // silently dropped exactly the details the operator spawned the sub
+        // to gather. Context management is compaction's job, not the pipe's.
+        `[harness] Sub-agent ${ac.id} finished. Final report:\n${report || "(no summary)"}`,
         "harness",
       );
     } else if (e.type === "error") {
