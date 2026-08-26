@@ -364,6 +364,10 @@ function mkMaster(dataDir: string): Master {
   );
 }
 
+async function disposeAll(m: Master): Promise<void> {
+  await Promise.allSettled([...m.agents.values()].map((a) => a.dispose()));
+}
+
 test("every appended event is broadcast on the bus (web UI freshness)", async () => {
   await useTempDirs(["bus-root-", "bus-ws-"], async ([dataDir, ws]) => {
     const m = mkMaster(dataDir);
@@ -412,6 +416,38 @@ test("fresh incarnation gets a clean session dir; restart reuses the latest", as
     assert.equal(c.snapshot().sessionDir, dirB);
     assert.equal(c.goal.text, "incarnation #2"); // continuity within one incarnation
     await c.dispose();
+  });
+});
+
+test("prefix-collision: agent teapot must NOT inherit agent teapot-3's session", async () => {
+  // regression: findLatestSessionDir matched "<id>-<suffix>" by PREFIX, so
+  // agent "teapot" also matched "teapot-3-<hash>" and — newest-wins —
+  // attached itself to agent teapot-3's LIVE timeline (two agents writing
+  // one chat.jsonl, each UI tab showing the other's messages).
+  await useTempDirs(["sess-root-", "sess-ws-", "sess-ws2-"], async ([dataDir, ws, ws2]) => {
+    const m = mkMaster(dataDir);
+
+    // agent "teapot-3" exists first and owns a used session dir
+    const t3 = await m.addAgent({ id: "teapot-3", workspace: ws, provider: "p" });
+    const dirT3 = t3.snapshot().sessionDir;
+    assert.match(path.basename(dirT3), /^teapot-3-[0-9a-f]{8}$/);
+    await t3.setGoal("t3 history"); // make the log non-empty
+
+    // agent "teapot" starts LATER — its exact dir doesn't exist, and every
+    // "teapot-*" candidate belongs to teapot-3 → it must get a FRESH dir
+    const tp = await m.addAgent({ id: "teapot", workspace: ws2, provider: "p" });
+    const dirTp = tp.snapshot().sessionDir;
+    assert.notEqual(
+      path.basename(dirTp),
+      path.basename(dirT3),
+      "teapot must not attach to teapot-3's live session",
+    );
+    assert.ok(!path.basename(dirTp).startsWith("teapot-3-"));
+    // and the two agents keep separate logs even after both are touched
+    await tp.setGoal("tp history");
+    assert.equal(tp.snapshot().session, path.basename(dirTp));
+    assert.equal(t3.snapshot().session, path.basename(dirT3));
+    await disposeAll(m);
   });
 });
 

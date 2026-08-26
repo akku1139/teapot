@@ -852,10 +852,29 @@ if (active().length === 0) wake();
   }
 
   private findLatestSessionDir(agentId: string): string | null {
+    // Directory names are prefix-matched (exact, then "<id>-<suffix>"), which
+    // is ambiguous across ids: agent "teapot" also matches "teapot-3-<hash>",
+    // and newest-wins then handed agent teapot agent teapot-3's live session
+    // — two agents writing one timeline. Exclude directories that belong to
+    // ANOTHER configured agent id (or another live agent) before picking.
+    const otherIds = new Set<string>();
+    for (const a of this.config.agents) {
+      if (a.id && a.id !== agentId) otherIds.add(a.id);
+    }
+    for (const [liveId] of this.agents) {
+      if (liveId !== agentId) otherIds.add(liveId);
+    }
+    const belongsToOther = (dir: string): boolean => {
+      for (const other of otherIds) {
+        if (other === dir || dir.startsWith(`${other}-`)) return true;
+      }
+      return false;
+    };
     let dirs: string[] = [];
     try {
       dirs = readdirSync(this.sessionsRoot())
         .filter((d) => d === agentId || d.startsWith(`${agentId}-`))
+        .filter((d) => !belongsToOther(d))
         .filter((d) => {
           // an EMPTY chat.jsonl means the session was never used (created via
           // web, then abandoned). Reusing it would resurrect another agent's
