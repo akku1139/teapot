@@ -314,6 +314,9 @@ input[type="checkbox"] { accent-color: var(--acc); }
 }
 .promptimgs { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 img.promptimg { max-width: 180px; max-height: 120px; border-radius: 6px; border: 1px solid var(--line); }
+/* background bash jobs — visually distinct from finished commands */
+.bgjob-note { color: var(--warn); }
+.bgjob-note b { color: var(--fg); font-family: ui-monospace, Menlo, monospace; }
 
 /* terminal drawer */
 .termdrawer {

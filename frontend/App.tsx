@@ -3067,14 +3067,27 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
     switch (name) {
       case "bash": {
         const cmd = argStr("command");
-        label = "$ " + oneLine(cmd, 96);
+        const isBg = d.args?.background === true;
+        // background jobs return INSTANTLY (the shell keeps running) — a plain
+        // "$ cmd · 12ms" row read as "finished immediately" and the job was
+        // forgotten. Give them their own identity + the job id for bash_output.
+        const bgJob = isBg ? (String(out()).match(/job (bg\d+)/)?.[1] ?? "") : "";
+        label = (isBg ? "⏳ " : "$ ") + oneLine(cmd, 96);
         const timeoutHint = argStr("timeout_ms") ? ` · timeout ${Math.round(Number(argStr("timeout_ms")) / 1000)}s` : "";
         hint = res
-          ? `${res.data?.durationMs ?? "?"}ms${timeoutHint}`
+          ? isBg
+            ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutHint}`
+            : `${res.data?.durationMs ?? "?"}ms${timeoutHint}`
           : null; // live elapsed renders in the summary (below)
         body = (
           <>
-            {cmd !== label.slice(2) ? codeBlock(cmd, 800) : null}
+            {isBg ? (
+              <div class="meta bgjob-note">
+                runs in background — poll with <b>bash_output(job_id=&quot;{bgJob || "?"}&quot;)</b>
+                {bgJob ? <> · kill with <b>action="kill"</b></> : null}
+              </div>
+            ) : null}
+            {cmd !== label.slice(isBg ? 2 : 2) ? codeBlock(cmd, 800) : null}
             {resultBlock(6000)}
           </>
         );
@@ -3172,6 +3185,15 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
             {resultBlock(3000)}
           </>
         );
+        break;
+      }
+      case "bash_output": {
+        // reading vs killing reads differently at a glance
+        const action = argStr("action") || "read";
+        const jobId = argStr("job_id") || "(?)";
+        label = `bash_output ${jobId}`;
+        hint = action;
+        body = resultBlock(4000);
         break;
       }
       case "load_skill": {
