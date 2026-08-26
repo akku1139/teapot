@@ -10,7 +10,7 @@ import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from 
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
-import { executeTool, toolSpecs, currentSkills, type ToolContext } from "./tools.ts";
+import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, type ToolContext } from "./tools.ts";
 import type { SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
@@ -266,6 +266,7 @@ export class Agent {
       onIdlePark: (reason) => this.parkForTool(reason),
       onIdleUnpark: () => this.unparkFromTool(),
       onBackgroundExit: (info) => void this.onBackgroundJobExit(info),
+      onFileRead: (p) => this.trackFileRead(p),
     };
     // the session id IS the directory name — one directory per incarnation
     this.mainSession = path.basename(opts.sessionDir);
@@ -372,6 +373,12 @@ export class Agent {
    *    agent learns exit code + output tail WITHOUT having to poll
    *    bash_output blindly. Failed jobs say so loudly so the model reacts.
    */
+  /** recently read workspace files (most recent first) — post-compact restore */
+  private recentReads: string[] = [];
+  private trackFileRead(p: string): void {
+    this.recentReads = [p, ...this.recentReads.filter((x) => x !== p)].slice(0, 5);
+  }
+
   private onBackgroundJobExit(info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }): void {
     const ok = info.code === 0;
     const one = info.cmd.replace(/\s+/g, " ").slice(0, 80);
@@ -1343,6 +1350,25 @@ export class Agent {
             detail: "stopped before any output arrived",
           });
         }
+        // Provider context overflow → compact ONCE and retry the turn
+        // (OpenCode-style overflow recovery). even with autoCompact off, an
+        // actual overflow is proof the estimate missed; a second overflow is
+        // returned as a real error instead of looping.
+        if (isContextOverflow(err) && !this.stopRequested) {
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "overflow-recovery",
+            detail: String((err as Error).message).slice(0, 200),
+          });
+          const before = this.stats.compactions;
+          await this.maybeCompact(true);
+          if (this.stats.compactions > before) {
+            await this.log.append("system_note", this.currentSession, this.currentBranch, {
+              event: "overflow-recovered",
+            });
+            guard--; // the retry does not count against this round's cap
+            continue;
+          }
+        }
         throw err;
       }
       if (res.usage) {
@@ -1976,14 +2002,34 @@ export class Agent {
       if (seen >= protectChars) break;
     }
     const PRUNE_MIN = 3_000;
+    // Tool-kind aware pruning (Claude Code MicroCompact style): high-volume,
+    // REPRODUCIBLE results (file reads, shell, grep) are safe to clip because
+    // the model can re-issue them; one-shot results (spawned agent reports,
+    // web fetches) are kept — re-fetching is impossible or expensive.
+    const PRUNABLE_TOOLS = new Set([
+      "bash", "read_file", "list_dir", "grep", "glob", "write_file", "edit_file", "apply_patch",
+      "bash_output",
+    ]);
     let saved = 0;
     let count = 0;
+    // callId → tool name, from the assistant turn that issued each call
+    // (a tool result's PREVIOUS message is not reliably its caller when
+    // parallel calls interleave)
+    const callerTool = new Map<string, string>();
+    for (const m of this.messages) {
+      for (const t of m.tool_calls ?? []) callerTool.set(t.id, t.function.name);
+    }
     for (let i = 0; i < boundary; i++) {
       const m = this.messages[i]!;
-      if (m.role === "tool" && (m.content?.length ?? 0) > PRUNE_MIN) {
+      const toolName = m.tool_call_id ? callerTool.get(m.tool_call_id) ?? "" : "";
+      if (
+        m.role === "tool" &&
+        PRUNABLE_TOOLS.has(toolName) &&
+        (m.content?.length ?? 0) > PRUNE_MIN
+      ) {
         const len = m.content!.length;
         saved += len - 400;
-        m.content = m.content!.slice(0, 400) + `\n…[pruned ${len} bytes of tool output]`;
+        m.content = m.content!.slice(0, 400) + `\n…[pruned ${len} bytes of ${toolName || "tool"} output]`;
         count++;
       }
     }
@@ -2083,6 +2129,31 @@ export class Agent {
     const after = this.estimateTokens();
     this.stats.compactions++;
     this.compactedAtLen = this.messages.length;
+    // Post-compact file restore (Claude Code style): re-attach the most
+    // recently read files so the model doesn't burn its first turns re-reading
+    // exactly what it had in context a moment ago. Budget: 3 files × 400 lines.
+    if (this.recentReads.length && mode === "summarize") {
+      const restored: string[] = [];
+      for (const rel of this.recentReads.slice(0, 3)) {
+        try {
+          const abs = safeJoin(this.opts.workspace, rel);
+          const text = await fs.readFile(abs, "utf8");
+          const head = text.split("\n").slice(0, 400).join("\n");
+          restored.push(`--- ${rel}${text.length > head.length ? " (first 400 lines)" : ""} ---\n${head}`);
+        } catch {
+          /* file vanished since the read — skip */
+        }
+      }
+      if (restored.length) {
+        this.messages.splice(1, 0, {
+          role: "user",
+          content:
+            `[harness] These files were recently read and are re-attached for continuity ` +
+            `(they may have changed — re-read if precision matters):\n\n${restored.join("\n\n")}`,
+        });
+        this.recentReads = this.recentReads.slice(0, restored.length); // keep order, drop misses
+      }
+    }
     // the operator can inspect WHAT was remembered — a dedicated typed event
     // (not an agent message) keeps it out of the model's own voice
     await this.log.append("compaction", this.currentSession, this.currentBranch, {
@@ -2116,17 +2187,34 @@ export class Agent {
       .join("\n\n")
       .slice(-120_000);
     const fn = this.opts.chatFn ?? chat;
+    // Structured sections (Claude Code style): fixed headings survive MULTIPLE
+    // successive compactions far better than free-form prose — each pass knows
+    // where "pending tasks" vs "user messages" live, so nothing silently
+    // merges away. The <analysis> scratchpad gives the model a thinking space;
+    // it is stripped from the stored summary (formatCompactSummary).
     const res = await fn(
       this.opts.llm,
       [
         {
           role: "system",
           content:
-            "You compress a coding agent's conversation into dense notes for it to continue working. " +
-            "Preserve: current goal state, key decisions AND the reasoning behind them, files created/changed, " +
-            "important command results, open problems, and the next step. Be terse bullet points, no prose flourishes. " +
-            'Finish with a section "## Durable lessons" listing reusable insights worth keeping forever ' +
-            "(gotchas, user preferences, what worked) — or omit the section if there are none.",
+            "You compress a coding agent's conversation into dense notes for it to continue working.\n\n" +
+            "First think inside an <analysis> block: what mattered, what changed, what is unresolved.\n" +
+            "Then output ONLY the following sections, each starting with its exact heading:\n\n" +
+            "## Primary request and intent\n" +
+            "## Key technical concepts\n" +
+            "## Files and code sections\n" +
+            "## Errors and fixes\n" +
+            "## Problem solving\n" +
+            "## All user messages\n" + // verbatim-ish: intent survives repeated compaction
+            "## Pending tasks\n" +
+            "## Current work\n" +
+            "## Next step\n" +
+            "## Durable lessons\n\n" +
+            "Rules: be terse bullet points, no prose flourishes. Quote file paths and key numbers exactly. " +
+            "All user messages are listed nearly verbatim — they carry intent that must survive every future compaction. " +
+            'Durable lessons lists reusable insights worth keeping forever (gotchas, preferences, what worked); omit the section if empty. ' +
+            "The <analysis> block is discarded before your notes are stored, so think freely there.",
         },
         { role: "user", content: `Conversation:\n\n${transcript}\n\nWrite the continuation notes now.` },
       ],
@@ -2136,7 +2224,14 @@ export class Agent {
         ? (s: { text: string; reasoning: string }) => onDelta(s.text)
         : undefined,
     );
-    return res.message.content ?? "";
+    return this.formatCompactSummary(res.message.content ?? "");
+  }
+
+  /** strip the <analysis> scratchpad — it improves thinking but must not
+      consume post-compact context tokens */
+  private formatCompactSummary(raw: string): string {
+    const m = raw.match(/<analysis>[\s\S]*?<\/analysis>\s*/);
+    return m ? raw.slice(m[0].length).trim() : raw.trim();
   }
 
   /**

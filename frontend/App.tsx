@@ -317,6 +317,10 @@ export default function App() {
   // markdown-rendered live body, throttled so per-chunk deltas don't re-parse
   // the whole (growing) text on every single WS message
   const [liveText, setLiveText] = createSignal("");
+  // when the CURRENT thinking stretch started (reasoning arriving while text
+  // is still empty) — powers the 💭 thinking elapsed-time readout
+  const [thinkStartedAt, setThinkStartedAt] = createSignal(0);
+  const liveStartedAt = () => thinkStartedAt();
   // reasoning renders from the SAME throttle tick — binding it raw re-painted
   // the (often huge) thinking block on every single chunk
   const [liveReasoning, setLiveReasoning] = createSignal("");
@@ -420,6 +424,20 @@ export default function App() {
   );
   const [showNotifs, setShowNotifs] = createSignal(false);
   const unreadCount = () => notifs().filter((n) => !n.read).length;
+  /** mark all notifications from ONE session read — fired when the operator
+   *  is following the timeline tail (they are, by definition, looking at the
+   *  newest content those notifications point to) */
+  const markSessionRead = (agentId: string) => {
+    setNotifs((list) => {
+      let changed = false;
+      const next = list.map((n) => {
+        if (n.read || n.agentId !== agentId) return n;
+        changed = true;
+        return { ...n, read: true };
+      });
+      return changed ? next : list; // avoid identity churn on no-op runs
+    });
+  };
   /** unread for one agent INCLUDING its whole sub-tree (subs, sub-subs…) */
   const subtreeUnread = (agentId: string): number => {
     let total = notifs().filter((n) => !n.read && n.agentId === agentId).length;
@@ -1100,6 +1118,17 @@ export default function App() {
           m.set(msg.agentId, { text: msg.text ?? "", reasoning: msg.reasoning ?? "", at: Date.now() });
           return m;
         });
+        // thinking-timer bookkeeping (selected session only): start the clock
+        // when reasoning arrives with no text yet; reset once real text flows
+        if (msg.agentId === selected()) {
+          const r = String(msg.reasoning ?? "");
+          const t = String(msg.text ?? "");
+          if (r && !t) {
+            if (!thinkStartedAt()) setThinkStartedAt(Date.now());
+          } else if (t || (!r && thinkStartedAt())) {
+            setThinkStartedAt(0);
+          }
+        }
         return;
       }
       if (msg.kind === "compaction-progress") {
@@ -1201,8 +1230,14 @@ export default function App() {
             // idle→running, tool rows…) had already grown the feed — the
             // unscrolled gap exceeded the slack, follow was falsely dropped,
             // and the view jumped away right when a round kicked off.
-            if (atBottom()) scrollBottom(true);
-            else setMissed(missed() + Math.max(0, eventsTotal() - beforeTotal));
+            if (atBottom()) {
+              scrollBottom(true);
+              // following the tail means the operator has seen this session's
+              // newest content — its notifications count as read
+              markSessionRead(selected()!);
+            } else {
+              setMissed(missed() + Math.max(0, eventsTotal() - beforeTotal));
+            }
           }
           // NOTE: don't drop pending echoes when the log's prompt event
           // appears — logging happens at ENQUEUE time, long before the text
@@ -2195,9 +2230,25 @@ export default function App() {
                       <span class="ts">streaming…</span>
                     </div>
                     <Show when={liveReasoning()}>
-                      <details class="reasoning">
-                        <summary>💭 reasoning</summary>
-                        <div class="mono">{liveReasoning()}</div>
+                      <details class="reasoning" open>
+                        <summary>
+                          💭 thinking <ThinkingTimer startedAt={liveStartedAt()} />
+                        </summary>
+                        {/* ref + scroll-follow: the thinking block grows from the
+                            bottom; keep its tail visible while it streams. The
+                            effect only scrolls THIS div — never the feed itself —
+                            so the two follow loops can't fight each other. */}
+                        <div
+                          class="mono thinkscroll"
+                          ref={(el) => {
+                            createEffect(() => {
+                              liveReasoning(); // re-run on every throttled tick
+                              if (atBottom()) el.scrollTop = el.scrollHeight;
+                            });
+                          }}
+                        >
+                          {liveReasoning()}
+                        </div>
                       </details>
                     </Show>
                     <Show
@@ -3057,6 +3108,21 @@ function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: n
   }  return <span class="bashelapsed">{txt()} elapsed</span>;
 }
 
+/** Live elapsed-seconds readout for the current thinking stretch. */
+function ThinkingTimer(props: { startedAt: number }) {
+  const [now, setNow] = createSignal(Date.now());
+  onMount(() => {
+    const t = setInterval(() => setNow(Date.now()), 500);
+    onCleanup(() => clearInterval(t));
+  });
+  const s = () => Math.max(0, (now() - props.startedAt) / 1000);
+  return (
+    <span class="thinktimer">
+      {s() < 60 ? `${s().toFixed(0)}s` : `${Math.floor(s() / 60)}m ${Math.round(s() % 60)}s`}
+    </span>
+  );
+}
+
 /* ---------- per-tool timeline rendering ---------- */
 
 function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () => void }) {
@@ -3881,8 +3947,11 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     localStorage.setItem("teapot.ignoreMode", next);
   };
   /** filter helper per current mode */
-  const ignoreFilter = (n: TreeNode) =>
-    ignoreMode() === "hide" ? !(n.ignored && !n.dir) : true;
+  // "hide" removes ignored entries entirely — INCLUDING ignored directories
+  // (node_modules/, dist/…). The old `!n.dir` exception kept ignored dirs
+  // visible, which read as the toggle being broken. Expanding a hidden dir is
+  // still possible via 🙈→👁 if ever needed.
+  const ignoreFilter = (n: TreeNode) => (ignoreMode() === "hide" ? !n.ignored : true);
   // show dotfiles — also persisted; toggling refetches the open dirs
   const [showHidden, setShowHidden] = createSignal(
     localStorage.getItem("teapot.showHidden") === "1",
@@ -3935,14 +4004,20 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     }
   }
 
-  // reset & load the root whenever a different agent is selected
+  // reset & load the root whenever a DIFFERENT agent is selected. The guard
+  // matters: agent snapshots update on every poll/event burst, and without it
+  // each update cleared + re-fetched the whole tree (visible flicker and a
+  // pointless /tree request per snapshot).
+  let kidsFor = "";
   createEffect(() => {
-    void props.agentId;
+    const id = props.agentId;
+    if (id === kidsFor) return; // same agent — keep the loaded tree as-is
+    kidsFor = id;
     setExpanded(new Set<string>());
     const map = new Map<string, TreeNode[]>();
     setKids(map);
     void fetchDir("").then((rows) => {
-      if (rows) setKids(new Map([[ "", rows ]]));
+      if (rows && kidsFor === id) setKids(new Map([[ "", rows ]]));
     });
   });
 

@@ -50,6 +50,12 @@ export interface ToolContext {
   /** re-arm the progress-report gate (waiting on children is not activity) */
   onProgressGateReset?: () => void;
   /**
+   * The agent read a workspace file (read_file). The harness tracks the most
+   * recently read files so it can re-inject them right after a compaction —
+   * otherwise the model immediately re-reads the same files and burns turns.
+   */
+  onFileRead?: (path: string) => void;
+  /**
    * A background shell (bash background=true) exited. The harness uses this
    * to notify the agent at its next turn boundary + log a timeline row —
    * without it the agent had to poll bash_output blindly to learn whether
@@ -176,6 +182,17 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   });
   map.set(id, sh);
   return id;
+}
+
+/** Heuristic: did this provider error mean "prompt exceeded the context window"?
+ *  Wording varies by provider (OpenRouter/OpenAI/Anthropic/local servers). */
+export function isContextOverflow(err: unknown): boolean {
+  const msg = String((err as Error)?.message ?? "").toLowerCase();
+  return (
+    /context (length|window|limit)|too many tokens|prompt is too long|max.{0,12}tokens.{0,20}(exceed|surpass)|request too large|payload too large|exceeds.{0,20}limit/.test(
+      msg,
+    ) || /\b(400|413)\b.*token/.test(msg)
+  );
 }
 
 /** Run a command in its own process group; kill the whole group on timeout. */
@@ -621,6 +638,7 @@ export const TOOLS: ToolDef[] = [
     async run(args, ctx) {
       const p = safeJoin(ctx.cwd, str(args.path));
       const text = await readText(p);
+      ctx.onFileRead?.(str(args.path));
       const lines = text.split("\n");
 
       // grep mode

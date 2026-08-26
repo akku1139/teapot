@@ -317,6 +317,14 @@ img.promptimg { max-width: 180px; max-height: 120px; border-radius: 6px; border:
 /* background bash jobs — visually distinct from finished commands */
 .bgjob-note { color: var(--warn); }
 .bgjob-note b { color: var(--fg); font-family: ui-monospace, Menlo, monospace; }
+/* live thinking block: bounded height so a long stream doesn't push the
+   whole feed; scrolls internally while follow mode is on */
+details.reasoning .thinkscroll {
+  max-height: 220px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word;
+  scrollbar-gutter: stable;
+}
+.thinktimer { color: var(--dim); font-size: 11px; font-weight: 400; margin-left: 6px; }
 
 /* terminal drawer */
 .termdrawer {
