@@ -947,11 +947,19 @@ export function buildApp(master: Master): Hono {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
     const limit = Math.min(Number(c.req.query("limit") ?? 200), 5000);
-    let events = await readEventsCached(a.log.filePath);
+    let filePath = a.log.filePath;
+    // ?session=<internalId> reads ANY session owned by this agent (past
+    // incarnations too) — the internal id, not the agent id, is the stable
+    // timeline handle. Ownership is enforced via the manifest.
+    const sessionId = c.req.query("session");
+    if (sessionId) {
+      const rec = master.sessionById(sessionId);
+      if (!rec || rec.agentId !== c.req.param("id")) return c.json({ error: "not found" }, 404);
+      filePath = path.join(rec.dir, "chat.jsonl");
+    }
+    let events = await readEventsCached(filePath);
     const branch = c.req.query("branch");
-    const session = c.req.query("session");
     if (branch) events = events.filter((e) => e.branch === branch);
-    if (session) events = events.filter((e) => e.session === session);
     // cursor pagination for older pages: everything strictly BEFORE this id
     const before = c.req.query("before");
     if (before) {
@@ -960,6 +968,17 @@ export function buildApp(master: Master): Hono {
       return c.json({ events: events.slice(-limit), total: events.length });
     }
     return c.json({ events: events.slice(-limit), total: events.length });
+  });
+
+  // list the internal session ids (= stable timeline handles) an agent owns,
+  // newest first — the web UI routes /session/<internalId> by these
+  app.get("/api/agents/:id/sessions", (c) => {
+    const id = c.req.param("id");
+    // resolvable when live, configured, OR still owning sessions on disk
+    // (a stopped/lazy agent must keep its timeline reachable)
+    const known = master.agents.has(id) || master.config.agents.some((a) => a.id === id);
+    if (!known && master.sessionsOf(id).length === 0) return c.json({ error: "not found" }, 404);
+    return c.json({ sessions: master.sessionsOf(id) });
   });
 
   app.get("/api/agents/:id/branches", async (c) => {

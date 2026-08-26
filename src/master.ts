@@ -504,6 +504,9 @@ export class Master {
     }
     const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
     await mkdirSync(sessionDir, { recursive: true });
+    // every session dir this master hands out carries an ownership manifest —
+    // legacy dirs get backfilled on their first restart under the new code
+    this.writeSessionManifest(sessionDir, ac.id);
     const agent = new Agent({
       id: ac.id,
       workspace: path.resolve(ac.workspace),
@@ -792,10 +795,16 @@ if (active().length === 0) wake();
   }
 
   private async messageChild(parentId: string, childId: string, text: string): Promise<void> {
-    const cfg = this.config.agents.find((a) => a.id === childId);
+    // childId is normally the live agent id — but an internal session id
+    // (sessions/<id>, the stable timeline handle) also resolves, so callers
+    // holding only a session reference can still reach the owning agent.
+    let targetId = childId;
+    const owned = this.sessionById(childId);
+    if (owned) targetId = owned.agentId;
+    const cfg = this.config.agents.find((a) => a.id === targetId);
     if (!cfg || cfg.parent !== parentId) throw new Error(`not your sub-agent: ${childId}`);
-    const child = this.agents.get(childId);
-    if (!child) throw new Error(`sub-agent not running: ${childId}`);
+    const child = this.agents.get(targetId);
+    if (!child) throw new Error(`sub-agent not running: ${targetId}`);
     child.enqueuePrompt(`[harness] Message from @${parentId}:\n\n${text}`, "harness");
     if (child.status !== "running") child.start(`message from ${parentId}`);
   }
@@ -855,12 +864,44 @@ if (active().length === 0) wake();
     return path.join(this.config.dataDir, "sessions");
   }
 
+  /**
+   * Session-dir ownership manifest (sessions/<dir>/session.json). Ownership
+   * used to be GUESSED from the directory name's prefix, which is ambiguous:
+   * agent "teapot" matches "teapot-3-<hash>", and sibling ids where one is a
+   * prefix of the other ("prismrv-root-sub-review" vs
+   * "…-review-kernel") excluded each other's own dirs — every restart then
+   * generated a fresh empty session and history read as zero. The owner is
+   * now recorded explicitly at creation time; prefix matching only remains
+   * as a fallback for legacy dirs without a manifest.
+   */
+  private readSessionOwner(dirName: string): string | null {
+    try {
+      const raw = JSON.parse(readFileSync(path.join(this.sessionsRoot(), dirName, "session.json"), "utf8")) as {
+        agentId?: unknown;
+      };
+      return typeof raw.agentId === "string" ? raw.agentId : null;
+    } catch {
+      return null; // legacy dir or unreadable manifest → fall back to names
+    }
+  }
+
+  private writeSessionManifest(dirPath: string, agentId: string): void {
+    try {
+      const file = path.join(dirPath, "session.json");
+      if (existsSync(file)) return; // never clobber an existing manifest
+      writeFileSync(file, `${JSON.stringify({ v: 1, agentId }, null, 2)}\n`);
+    } catch {
+      /* best-effort metadata */
+    }
+  }
+
   private findLatestSessionDir(agentId: string): string | null {
-    // Directory names are prefix-matched (exact, then "<id>-<suffix>"), which
-    // is ambiguous across ids: agent "teapot" also matches "teapot-3-<hash>",
-    // and newest-wins then handed agent teapot agent teapot-3's live session
-    // — two agents writing one timeline. Exclude directories that belong to
-    // ANOTHER configured agent id (or another live agent) before picking.
+    // Directory names alone are ambiguous: agent "teapot" prefix-matches
+    // "teapot-3-<hash>", and sibling ids where one is a prefix of the other
+    // ("prismrv-root-sub-review" vs "…-review-kernel") used to exclude each
+    // other's own dirs — every restart then generated a fresh empty session
+    // and history read as zero. The manifest written at creation time
+    // decides; only legacy dirs without one fall back to name matching.
     const otherIds = new Set<string>();
     for (const a of this.config.agents) {
       if (a.id && a.id !== agentId) otherIds.add(a.id);
@@ -868,17 +909,27 @@ if (active().length === 0) wake();
     for (const [liveId] of this.agents) {
       if (liveId !== agentId) otherIds.add(liveId);
     }
+    // legacy fallback: ownership goes to the LONGEST id matching the name
     const belongsToOther = (dir: string): boolean => {
+      const matchedLen = (id: string): number =>
+        id === dir || dir.startsWith(`${id}-`) ? id.length : 0;
+      const own = matchedLen(agentId); // always > 0: caller pre-filtered by id
+      let bestOther = 0;
       for (const other of otherIds) {
-        if (other === dir || dir.startsWith(`${other}-`)) return true;
+        const len = matchedLen(other);
+        if (len > bestOther) bestOther = len;
       }
-      return false;
+      return bestOther > own; // equal-length ids cannot both match one dir
     };
     let dirs: string[] = [];
     try {
       dirs = readdirSync(this.sessionsRoot())
-        .filter((d) => d === agentId || d.startsWith(`${agentId}-`))
-        .filter((d) => !belongsToOther(d))
+        .filter((d) => {
+          const owner = this.readSessionOwner(d);
+          if (owner) return owner === agentId; // manifest decides
+          // legacy dir without a manifest: name-prefix + longest-match rule
+          return (d === agentId || d.startsWith(`${agentId}-`)) && !belongsToOther(d);
+        })
         .filter((d) => {
           // an EMPTY chat.jsonl means the session was never used (created via
           // web, then abandoned). Reusing it would resurrect another agent's
@@ -918,7 +969,11 @@ if (active().length === 0) wake();
     // <agentId>-<suffix> dir when the bare name was taken). Prefix matching
     // alone could hand agent "proj-2" agent "proj"'s directory.
     const selfDir = path.join(root, agentId);
-    if (!fresh && statSync(path.join(selfDir, "chat.jsonl"), { throwIfNoEntry: false })?.size) {
+    // the manifest on the bare-name dir wins: another agent may own it now
+    // (ids are recycled across incarnations). No manifest → legacy behavior.
+    const selfOwner = this.readSessionOwner(agentId);
+    const selfUsable = selfOwner === null || selfOwner === agentId;
+    if (!fresh && selfUsable && statSync(path.join(selfDir, "chat.jsonl"), { throwIfNoEntry: false })?.size) {
       return selfDir; // restart → continue where we left off
     }
 
@@ -944,7 +999,44 @@ if (active().length === 0) wake();
     do {
       sid = `${agentId}-${randomUUID().slice(0, 8)}`;
     } while (existsSync(path.join(root, sid)));
+    this.writeSessionManifest(path.join(root, sid), agentId);
     return path.join(root, sid);
+  }
+
+  /**
+   * Internal session ids (= directory names) owned by an agent, newest log
+   * first. These are the stable handles the web UI routes by — agent ids can
+   * be recycled across incarnations, internal session ids cannot.
+   */
+  sessionsOf(agentId: string): { id: string; mtimeMs: number }[] {
+    let names: string[] = [];
+    try {
+      names = readdirSync(this.sessionsRoot());
+    } catch {
+      return [];
+    }
+    return names
+      .filter((d) => this.readSessionOwner(d) === agentId)
+      .map((d) => ({ id: d, mtimeMs: this.sessionMtime(path.join(this.sessionsRoot(), d)) }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  }
+
+  /** resolve an internal session id to (ownerAgentId, absolute dir) — null when it doesn't exist */
+  sessionById(
+    sessionId: string,
+  ): { agentId: string; dir: string } | null {
+    // internal ids are directory names: refuse anything path-like up front
+    if (!sessionId || sessionId.includes("/") || sessionId.includes("\\") || sessionId.startsWith(".")) return null;
+    const root = this.sessionsRoot();
+    const owner = this.readSessionOwner(sessionId);
+    if (!owner) return null;
+    try {
+      const st = statSync(path.join(root, sessionId));
+      if (!st.isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    return { agentId: owner, dir: path.join(root, sessionId) };
   }
 
   async removeAgent(id: string): Promise<void> {

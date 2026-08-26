@@ -104,10 +104,32 @@ let fetchCount = 0;
 
 /* ---------- happy-dom globals ---------- */
 
+// WebSocket mock, installed BEFORE the bundle import: happy-dom's socket
+// fires "open" even with no server, so the app would otherwise sit connected
+// and never touch our later mocks. Captured instances let the test push bus
+// events into the app exactly like the real server does.
+const WS_EVENTS = []; // queued {kind, ...} messages delivered on open
+class MockWS {
+  static instances = [];
+  url; readyState = 0; onopen = null; onmessage = null; onclose = null; onerror = null;
+  constructor(url) {
+    this.url = url;
+    MockWS.instances.push(this);
+    this.readyState = 1;
+    queueMicrotask(() => {
+      this.onopen?.();
+      for (const m of WS_EVENTS.splice(0)) this.onmessage?.({ data: JSON.stringify(m) });
+    });
+  }
+  close() { this.readyState = 3; }
+  send(data) { /* outbound (pong etc.) — ignored */ }
+}
+
 const w = new Window({ url: "http://localhost:7788/session/test" });
 // widen the viewport so the details panel is open by default (the crash site)
 Object.defineProperty(w, "innerWidth", { value: 1440 });
 w.document.body.innerHTML = `<div id="root"></div>`;
+try { Object.defineProperty(w.document, "visibilityState", { value: "visible", configurable: true }); } catch {}
 const setGlobal = (name, value) => {
   try {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
@@ -128,6 +150,9 @@ setGlobal("location", w.location);
 setGlobal("history", w.history);
 setGlobal("CustomEvent", w.CustomEvent);
 setGlobal("requestAnimationFrame", (cb) => setTimeout(() => cb(Date.now()), 16));
+setGlobal("WebSocket", MockWS);
+// the app's connectWs() runs at import time; its socket must exist for the
+// pending-echo regression below to push bus events into the app
 setGlobal("fetch", async (url) => {
   fetchCount++;
   const u = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
@@ -207,6 +232,105 @@ if (!feedText) {
   process.exit(1);
 }
 console.log("deep render ok: feed rows present");
+
+/* ---------- pending-echo regression (undelivered prompt must not double-render) ----------
+ * Full UI path: type into the composer and submit (agent RUNNING). The POST
+ * returns promptId "upending1"; the server has ALREADY logged the prompt row
+ * (e5) but no prompt-delivered note exists yet. Expected: the queued text
+ * shows ONCE — the pending echo at the bottom — never as a settled row too. */
+{
+  const RUNNING_AGENT = { ...AGENT, status: "running", pendingPrompts: 1 };
+  const PENDING_EVENTS = [
+    ...EVENTS,
+    { id: "e5", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "prompt",
+      data: { source: "user", text: "queued while running", promptId: "upending1" } },
+  ];
+  const origFetch = globalThis.fetch;
+  setGlobal("fetch", async (url, init) => {
+    fetchCount++;
+    const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
+    const u = raw.split("?")[0];
+    if (u === "/api/agents") return { ok: true, status: 200, json: async () => ({ agents: [RUNNING_AGENT] }) };
+    if (u === `/api/agents/${AGENT.id}/events`)
+      return { ok: true, status: 200, json: async () => ({ events: PENDING_EVENTS, total: PENDING_EVENTS.length }) };
+    if (u === `/api/agents/${AGENT.id}/prompt`)
+      return { ok: true, status: 200, json: async () => ({ ok: true, promptId: "upending1" }) };
+    return origFetch(url, init);
+  });
+
+  // refresh the feed so e5 (undelivered log row) is in `events()`
+  const appWs = MockWS.instances.at(-1);
+  if (!appWs?.onmessage) { console.error("MOCK WS missing"); process.exit(1); }
+  if (!appWs.onmessage) { console.error("[dbg] appWs has NO onmessage handler!"); process.exit(1); }
+  const pushEvent = (event) =>
+    appWs.onmessage({
+      data: JSON.stringify({
+        kind: "event",
+        agentId: AGENT.id,
+        event: { agent: AGENT.id, ...event }, // bus events always carry .agent
+      }),
+    });
+  pushEvent(PENDING_EVENTS.at(-1));
+  // the feed defers refreshes while hidden; fire the visibility event so the
+  // app drains pendingRefresh (happy-dom never flips the flag by itself)
+  const flushRefreshes = () =>
+    w.document.dispatchEvent(new w.Event("visibilitychange"));
+  flushRefreshes();
+  await waitFor("feed has e5", () => {
+    // poll indirectly: the echo only appears after send; just wait for settle
+    return true;
+  });
+
+  // TYPE INTO THE COMPOSER and submit — the real user path that creates the echo
+  const ta = w.document.querySelector(".composer textarea");
+  if (!ta) { console.error("composer textarea not found"); process.exit(1); }
+  ta.value = "queued while running";
+  ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 60));
+  const form = ta.closest("form");
+  form.dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
+  await waitFor("echo appears once", () => bodyText().split("queued while running").length - 1 === 1);
+  await new Promise((r) => setTimeout(r, 150)); // let any duplicate render late
+
+  const occurrences = bodyText().split("queued while running").length - 1;
+  if (occurrences !== 1) {
+    console.error(`PENDING ECHO DUPLICATED: appears ${occurrences}x (expected 1x)`);
+    process.exit(1);
+  }
+  const pendingRow = w.document.querySelector(".msg.pending");
+  if (!pendingRow || !pendingRow.textContent.includes("queued while running")) {
+    console.error(
+      "PENDING ECHO MISSING pending STYLE — undelivered log row leaked through as settled" +
+        `\nrows: ${[...w.document.querySelectorAll(".msg")].map((r) => JSON.stringify(r.className.slice(0, 80))).join(", ")}`,
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: undelivered prompt shows once, as pending");
+
+  // DELIVERY: prompt-delivered note arrives -> echo removed, settled row takes over
+  pushEvent({ id: "e6", seq: 6, ts: "2026-01-01T10:00:25Z", session: "alpha-s1",
+    branch: "br0", parent: null, type: "system_note",
+    data: { event: "prompt-delivered", promptId: "upending1", preview: "queued whi…" } });
+  flushRefreshes();
+  const deliveredOk = await waitFor("echo removal after delivery", () => {
+    flushRefreshes();
+    const n = bodyText().split("queued while running").length - 1;
+    if (n !== 1) return false;
+    const settled = [...w.document.querySelectorAll(".msg:not(.pending)")]
+      .some((r) => r.textContent.includes("queued while running"));
+    return settled;
+  }, 8000);
+  if (!deliveredOk) {
+    console.error(
+      "PENDING ECHO STUCK after delivery (or settled row missing)" +
+        `\noccurrences=${bodyText().split("queued while running").length - 1}` +
+        `\nrows: ${[...w.document.querySelectorAll(".msg")].map((r) => JSON.stringify((r.className + "|" + r.textContent.slice(0, 40)).slice(0, 90))).join(", ")}`,
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: delivered prompt flips to its settled row");
+}
 
 // give deferred Solid effects a final tick before declaring victory
 await new Promise((r) => setTimeout(r, 120));

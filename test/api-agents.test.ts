@@ -52,3 +52,51 @@ test("POST /api/agents auto-suffixes colliding ids", async () => {
   });
 });
 
+
+test("internal session ids: /sessions lists owned ids; /events?session= reads them", async () => {
+  await useTempDirs(["sessid-root-", "sessid-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    // provider "p" is needed by addAgent's resolution in this suite
+    (m as unknown as { config: { providers: Record<string, unknown> } }).config.providers.p = {
+      baseUrl: "http://x", apiKey: "k", model: "m",
+    };
+    (m as unknown as { config: { defaultProvider?: string } }).config.defaultProvider = "p";
+    const app = buildApp(m);
+
+    const a = await m.addAgent({ id: "alpha", workspace: ws }, { fresh: true });
+    await a.setGoal("incarnation 1");
+    const sid1 = a.snapshot().session; // internal id = dir basename
+    await a.dispose();
+    m.agents.delete("alpha");
+
+    // second incarnation → a NEW internal id; the old one must stay readable.
+    // b stays LIVE — /api/agents/:id/events resolves through the running agent
+    const b = await m.addAgent({ id: "alpha", workspace: ws }, { fresh: true });
+    await b.setGoal("incarnation 2");
+    const sid2 = b.snapshot().session;
+    assert.notEqual(sid1, sid2);
+
+    // list: both incarnations, newest first
+    const lr = await app.request("/api/agents/alpha/sessions");
+    assert.equal(lr.status, 200);
+    const lj = (await lr.json()) as { sessions: { id: string }[] };
+    assert.deepEqual(lj.sessions.map((s) => s.id), [sid2, sid1]);
+
+    // read an OLD incarnation's timeline through its internal id
+    const er = await app.request(`/api/agents/alpha/events?session=${encodeURIComponent(sid1)}`);
+    assert.equal(er.status, 200);
+    const ej = (await er.json()) as { events: { type: string; data?: { event?: string; text?: string } }[] };
+    assert.ok(ej.events.some((e) => e.data?.text === "incarnation 1"));
+
+    // ownership enforcement: another agent id cannot read alpha's session,
+    // and path-traversal-ish session values are rejected
+    const forbidden = await app.request(`/api/agents/beta/events?session=${encodeURIComponent(sid1)}`);
+    assert.equal(forbidden.status, 404);
+    for (const bad of ["../escape", "..\\escape"]) {
+      const r = await app.request(`/api/agents/alpha/events?session=${encodeURIComponent(bad)}`);
+      assert.equal(r.status, 404, `must reject ${bad}`);
+    }
+    // cleanup
+    await b.dispose();
+  });
+});

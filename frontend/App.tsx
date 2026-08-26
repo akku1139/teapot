@@ -154,6 +154,30 @@ const wsTokenQuery = () => {
 export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [selected, setSelected] = createSignal<string | null>(null);
+  // internal session id backing the currently viewed timeline — the stable
+  // handle behind /session/<id> URLs and every events fetch (?session=…)
+  const [timelineId, setTimelineId] = createSignal<string>("");
+  // internal session id → owning agent id, and agent id → its session ids
+  // (newest first) — rebuilt on each agent poll; used by popstate/deep-link
+  // routing and by select() to resolve an agent's current timeline handle
+  const [masterSessionIndex, setMasterSessionIndex] = createSignal<Map<string, string>>(new Map());
+  const [sessionsByAgent, setSessionsByAgent] = createSignal<Map<string, string[]>>(new Map());
+  async function refreshSessionIndex(): Promise<void> {
+    const byId = new Map<string, string>();
+    const byAgent = new Map<string, string[]>();
+    await Promise.all(
+      agents().map(async (a) => {
+        try {
+          const r = await api(`/api/agents/${a.id}/sessions`);
+          const ids = (r.sessions ?? []).map((s: { id: string }) => s.id);
+          byAgent.set(a.id, ids);
+          for (const sid of ids) byId.set(sid, a.id);
+        } catch { /* agent gone */ }
+      }),
+    );
+    setMasterSessionIndex(byId);
+    setSessionsByAgent(byAgent);
+  }
   const [events, setEvents] = createSignal<Ev[]>([]);
   const [eventsTotal, setEventsTotal] = createSignal(0); // server-side count (window is capped)
   const [branches, setBranches] = createSignal<any[]>([]);
@@ -662,8 +686,11 @@ export default function App() {
     // time), so "drop when logged" made the pending indicator flash for ~120ms
     // and vanish while the message was still queued for the model.
     //
-    // When delivery happens, the logged prompt row represents the message and
-    // the echo is dropped — matched by promptId so nothing duplicates.
+    // The logged prompt row of a NOT-YET-DELIVERED message must NOT render as
+    // a settled timeline row: it would show the queued text twice (a "sent"
+    // row at its log position AND the pending echo at the bottom) and imply
+    // the model already saw it. Until prompt-delivered arrives, the log row is
+    // hidden and the pending echo alone represents the message.
     const deliveredIds = new Set<string>();
     const loggedUserPrompts = new Set<string>();
     for (const e of deduped) {
@@ -673,6 +700,15 @@ export default function App() {
       if (e.type === "system_note" && (e.data as any)?.event === "prompt-delivered")
         deliveredIds.add(String(pid));
     }
+    const stillPendingIds = new Set<string>();
+    for (const p of pendingMsgs()) {
+      if (p.promptId && !deliveredIds.has(p.promptId)) stillPendingIds.add(p.promptId);
+    }
+    const visible = deduped.filter((e) => {
+      if (e.type !== "prompt" || e.data?.source !== "user") return true;
+      const pid = String((e.data as any)?.promptId ?? "");
+      return pid === "" || !stillPendingIds.has(pid); // hide undelivered log rows
+    });
     const pend = pendingMsgs().filter((p) => {
       if (!p.promptId) return true;
       // delivered AND its log row exists → the log row owns the display now
@@ -680,7 +716,15 @@ export default function App() {
       return true;
     });
     const echoes: Ev[] = pend.map((p) => echoEv(p));
-    return [...deduped, ...echoes];
+    // Echo ordering: all echoes sort BELOW every settled row (their seq sits
+    // above the log's max seq), and multiple pending messages keep their own
+    // send order — first-sent highest, so the block reads top-down in the
+    // order the operator typed them.
+    const maxSeq = visible.reduce((m, e) => Math.max(m, e.seq), 0);
+    echoes.forEach((e, i) => {
+      e.seq = maxSeq + 1 + i;
+    });
+    return [...visible, ...echoes];
   });
   // Reference-stable echo rows: chatEvents re-runs on EVERY event burst, and
   // rebuilding the echo objects each time handed Solid's <For> a brand-new
@@ -695,8 +739,8 @@ export default function App() {
     if (echoCache.size > 64) echoCache.clear();
     const ev: Ev = {
       id: p.id,
-      // sort AFTER every logged event so the echo sits at the timeline's very
-      // bottom until the log catches up (same sentinel as before)
+      // seq is assigned per-render in chatEvents (below every settled row,
+      // in send order) — the sentinel here is just a stable placeholder
       seq: Number.MAX_SAFE_INTEGER,
       ts: new Date(p.at).toISOString(),
       session: sel()?.session ?? "",
@@ -787,9 +831,9 @@ export default function App() {
           });
         }),
       )
+      .then(() => void refreshSessionIndex())
       .catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
-
   // scheduled (cron) tasks — shown in the right panel so "what runs when" is legible
   const [tasks, setTasks] = createSignal<any[]>([]);
   const loadTasks = () => api("/api/tasks").then((d) => setTasks(d.tasks)).catch(() => {});
@@ -846,7 +890,10 @@ export default function App() {
   // WITHIN one log, so a cross-session key collision made stabilize() return
   // another session's row — the "teapot-b3c520e0 shows teapot-3's timeline" bug.
   function cacheKey(ev: { id: string }): string {
-    return `${selected() ?? "?"}:${ev.id}`;
+    // scoped by the internal session id (the log), NOT the agent id — agent
+    // ids are recycled across incarnations, so two incarnations of one agent
+    // must not share cache entries either
+    return `${timelineId() || (selected() ?? "?")}:${ev.id}`;
   }
   function stabilize(list: Ev[]): Ev[] {
     const out: Ev[] = Array.from({ length: list.length });
@@ -938,8 +985,10 @@ export default function App() {
       const prevH = f?.scrollHeight ?? 0;
       const prevTop = f?.scrollTop ?? 0;
       const bf = branchFilter();
+      const tid = timelineId();
+      const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
       const res = await api(
-        `/api/agents/${id}/events?limit=300&before=${encodeURIComponent(oldest.id)}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`,
+        `/api/agents/${id}/events?limit=300&before=${encodeURIComponent(oldest.id)}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`,
       );
       const page: Ev[] = res.events ?? [];
       if (page.length === 0) { setOlderDone(true); return; }
@@ -959,7 +1008,7 @@ export default function App() {
     finally { setLoadingOlder(false); }
   }
 
-  async function loadEvents(id: string) {
+  async function loadEvents(id: string, sessionId?: string) {
     // DON'T bump the generation here. Bumping made two racing loads for the
     // SAME session invalidate each other: select() → loadEvents (gen N) and a
     // WS-triggered refresh (gen N+1) could resolve in either order, and the
@@ -968,13 +1017,15 @@ export default function App() {
     // timeline until some later event happened to trigger another refresh.
     // The generation only needs to move on actual session SWITCHES.
     const genAtStart = feedGeneration;
+    const tid = sessionId ?? timelineId() ?? "";
     try {
       const bf = branchFilter();
       // /branches only changes on fork — fetch it on session switch, not on
       // every tail refresh (each call re-reads the log server-side otherwise)
       const needsBranches = genAtStart !== lastBranchesGen || !branches().length;
+      const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
       const [ev, br, sk] = await Promise.all([
-        api(`/api/agents/${id}/events?limit=300${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`),
+        api(`/api/agents/${id}/events?limit=300${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`),
         needsBranches
           ? api(`/api/agents/${id}/branches`)
           : Promise.resolve({ branches: branches() }),
@@ -1028,17 +1079,27 @@ export default function App() {
   const timelineCache = new Map<string, { events: Ev[]; total: number; at: number }>();
   const TIMELINE_CACHE_MAX = 6;
 
+  /** newest internal session id owned by an agent (server returns newest first) */
+  function latestSessionOf(agentId: string): string | null {
+    return sessionsByAgent().get(agentId)?.[0] ?? null;
+  }
+
   async function select(id: string, push = true) {
     const prevId = selected();
+    const prevTid = timelineId();
     const prevEvents = events();
     const prevTotal = eventsTotal();
     // bump FIRST so any in-flight fetch for the previous session lands on a
     // dead generation and is dropped instead of overwriting this one's rows
     feedGeneration++;
-    if (prevId !== id) {
+    // resolve the agent's CURRENT internal session id — the timeline handle.
+    // Falls back to the agent id for brand-new agents whose first session dir
+    // isn't listed yet (the events fetch still works: same log).
+    let tid = latestSessionOf(id) ?? id;
+    if (prevId !== id || tid !== prevTid) {
       // remember what the outgoing session looked like so returning is instant
-      if (prevId && prevEvents.length) {
-        timelineCache.set(prevId, { events: prevEvents, total: prevTotal, at: Date.now() });
+      if (prevTid && prevEvents.length) {
+        timelineCache.set(prevTid, { events: prevEvents, total: prevTotal, at: Date.now() });
         if (timelineCache.size > TIMELINE_CACHE_MAX) {
           const oldest = [...timelineCache.entries()].sort((x, y) => x[1].at - y[1].at)[0];
           if (oldest) timelineCache.delete(oldest[0]);
@@ -1061,17 +1122,18 @@ export default function App() {
       lastScrollGap = undefined;
     }
     setSelected(id);
+    setTimelineId(tid);
     saveDraft(drafts.get(id) ?? ""); // restore THIS session's unsent draft
     setBranchFilter(null);
     setOlderDone(false);
     setLoadingOlder(false);
     setPendingMsgs([]);
     localStorage.setItem("teapot.session", id);
-    navigate(id, push);
+    navigate(tid, push); // URL carries the internal session id, not the agent id
     // HYDRATE from cache first: rows paint immediately (no blank flash), and
     // loadEvents below merges in whatever happened since. Cached events are
     // re-stabilized into evCache so reference identity survives the switch.
-    const cached = timelineCache.get(id);
+    const cached = timelineCache.get(tid);
     if (cached?.events.length) {
       // stabilize() re-registers every row under THIS session's scoped keys
       stabilize(cached.events);
@@ -1083,7 +1145,7 @@ export default function App() {
     }
     // lazy sessions sit in "stopped" until touched — clicking loads them
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
-    await loadEvents(id);
+    await loadEvents(id, tid);
     if (selected() !== id) return; // another switch won while we were loading
     // the freshly fetched snapshot is authoritative: a compaction may be
     // mid-flight on this session (missed bus events while another tab/agent
@@ -1285,16 +1347,22 @@ export default function App() {
     };
   }
 
-  /* ---------- /session/<id> routing ---------- */
+  /* ---------- /session/<internalId> routing ---------- */
+  // The URL carries the INTERNAL session id (the chat.jsonl's directory
+  // name), not the agent id: agent ids are recycled across incarnations,
+  // internal session ids never are — deep links stay valid forever.
   const pathId = () => decodeURIComponent(location.pathname.split("/")[2] ?? "");
-  function navigate(id: string, push = true) {
-    const url = `/session/${encodeURIComponent(id)}`;
+  function navigate(sessionId: string, push = true) {
+    const url = `/session/${encodeURIComponent(sessionId)}`;
     if (push) history.pushState(null, "", url);
     else history.replaceState(null, "", url);
   }
   window.addEventListener("popstate", () => {
-    const id = pathId();
-    if (id && agents().some((a) => a.id === id) && id !== selected()) select(id, false);
+    const sid = pathId();
+    // resolve the internal id to its owning agent and open THAT agent's tab;
+    // the timeline itself is fetched by ?session=<internalId> in loadEvents
+    const owner = masterSessionIndex().get(sid);
+    if (owner && owner !== selected()) select(owner, false);
   });
 
   /* ---------- small UX niceties ---------- */
@@ -1616,10 +1684,17 @@ export default function App() {
 
   onMount(() => {
     loadCfg();
-    refreshAgents().then(() => {
-      // deep link → last session → first agent
-      const want = pathId() || localStorage.getItem("teapot.session") || "";
-      const initial = agents().find((a) => a.id === want) ?? agents()[0];
+    refreshAgents().then(async () => {
+      // deep link: /session/<internalId> routes to its owning agent —
+      // fall back to a raw agent id (old bookmarks) → last session → first
+      await refreshSessionIndex();
+      const want = pathId();
+      const owner = want ? masterSessionIndex().get(want) : undefined;
+      const initial =
+        (owner ? agents().find((a) => a.id === owner) : undefined) ??
+        agents().find((a) => a.id === want && !masterSessionIndex().has(want)) ??
+        agents().find((a) => a.id === localStorage.getItem("teapot.session")) ??
+        agents()[0];
       if (initial) select(initial.id, false);
     });
     refreshMetrics();

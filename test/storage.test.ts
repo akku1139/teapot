@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
@@ -447,6 +447,71 @@ test("prefix-collision: agent teapot must NOT inherit agent teapot-3's session",
     await tp.setGoal("tp history");
     assert.equal(tp.snapshot().session, path.basename(dirTp));
     assert.equal(t3.snapshot().session, path.basename(dirT3));
+    await disposeAll(m);
+  });
+});
+
+test("sibling-prefix ids: sub-review-kernel keeps its OWN history (no empty-session churn)", async () => {
+  // regression: belongsToOther used a naive prefix test, so agent
+  // "prismrv-root-sub-review-kernel"'s own session dirs matched sibling
+  // "prismrv-root-sub-review" + "-" and were excluded — every restart found
+  // no candidate, generated a FRESH dir, and the timeline read as zero.
+  await useTempDirs(["sib-root-", "sib-ws-", "sib-ws2-"], async ([dataDir, ws, ws2]) => {
+    const m = mkMaster(dataDir);
+
+    const review = await m.addAgent({ id: "prismrv-root-sub-review", workspace: ws, provider: "p" });
+    await review.setGoal("review history"); // non-empty log → reusable session
+    const dirReview = review.snapshot().sessionDir;
+
+    // kernel id STARTS WITH review id + "-": the old code claimed kernel's
+    // dirs for review; now both must keep separate, persistent sessions
+    const kernel = await m.addAgent({ id: "prismrv-root-sub-review-kernel", workspace: ws2, provider: "p" });
+    const dirKernel1 = kernel.snapshot().sessionDir;
+    assert.match(path.basename(dirKernel1), /^prismrv-root-sub-review-kernel-[0-9a-f]{8}$/);
+    assert.notEqual(path.basename(dirKernel1), path.basename(dirReview));
+    await kernel.setGoal("kernel history");
+
+    await disposeAll(m);
+
+    // RESTART: kernel must reattach to ITS OWN session (history intact),
+    // not spawn yet another empty incarnation
+    const m2 = mkMaster(dataDir);
+    const kernel2 = await m2.addAgent({ id: "prismrv-root-sub-review-kernel", workspace: ws2, provider: "p" });
+    assert.equal(kernel2.snapshot().sessionDir, dirKernel1);
+    assert.equal(kernel2.goal.text, "kernel history"); // continuity, NOT a blank slate
+
+    // and review must not have been disturbed either
+    const review2 = await m2.addAgent({ id: "prismrv-root-sub-review", workspace: ws, provider: "p" });
+    assert.equal(review2.snapshot().sessionDir, dirReview);
+    assert.equal(review2.goal.text, "review history");
+    await disposeAll(m2);
+  });
+});
+
+test("manifest ownership: an impostor manifest on the bare-name dir cannot hijack a restart", async () => {
+  // session.json records the owning agentId at creation time — a dir whose
+  // manifest names ANOTHER owner must never be adopted, even when its name
+  // matches <agentId> exactly and its chat.jsonl is non-empty
+  await useTempDirs(["man-root-", "man-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    const a = await m.addAgent({ id: "worker", workspace: ws, provider: "p" }, { fresh: true });
+    await a.setGoal("first incarnation");
+    const ownDir = a.snapshot().sessionDir;
+    await disposeAll(m);
+    await m.removeAgent("worker"); // forget the id, keep the logs
+
+    // impostor dir: bare name + non-empty log + manifest owned by someone else
+    const impostor = path.join(m.sessionsRoot(), "worker");
+    mkdirSync(impostor, { recursive: true });
+    writeFileSync(path.join(impostor, "chat.jsonl"), '{"v":1,"id":"e1","seq":1,"ts":"t","agent":"x","session":"worker","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"not yours"}}\n');
+    writeFileSync(path.join(impostor, "session.json"), JSON.stringify({ v: 1, agentId: "impostor" }));
+
+    // restart: the guarded selfDir check must skip the impostor and find the
+    // manifest-backed original incarnation instead
+    const b = await m.addAgent({ id: "worker", workspace: ws, provider: "p" });
+    assert.notEqual(b.snapshot().sessionDir, impostor);
+    assert.equal(b.snapshot().sessionDir, ownDir);
+    assert.equal(b.goal.text, "first incarnation");
     await disposeAll(m);
   });
 });
