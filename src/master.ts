@@ -815,9 +815,19 @@ if (active().length === 0) wake();
 
     // forward outcomes so the parent hears the result without polling
     if (e.type === "message" && (e.data as { final?: boolean; content?: string }).final) {
-      const summary = String((e.data as { content?: string }).content ?? "").trim();
+      const d = e.data as { content?: string; recentContext?: string[] };
+      const summary = String(d.content ?? "").trim();
+      // the finish() summary alone is often thin — the agent's last few real
+      // conversation turns (findings, paths, numbers) carry the substance.
+      // Include them so the parent can act without re-reading the child log.
+      let report = summary;
+      if (Array.isArray(d.recentContext) && d.recentContext.length) {
+        report +=
+          "\n\n[Last conversation turns before finishing]\n" +
+          d.recentContext.map((r) => r).join("\n\n");
+      }
       parent.enqueuePrompt(
-        `[harness] Sub-agent ${ac.id} finished. Final report:\n${summary.slice(0, 2000) || "(no summary)"}`,
+        `[harness] Sub-agent ${ac.id} finished. Final report:\n${report.slice(0, 6000) || "(no summary)"}`,
         "harness",
       );
     } else if (e.type === "error") {

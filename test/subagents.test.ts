@@ -4,6 +4,7 @@ import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
+import path from "node:path";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
@@ -132,6 +133,87 @@ test("waitChildren returns as soon as ALL listed children settle — not at time
     const again = await m.waitChildren("p", undefined, 60_000);
     assert.match(again.note, /already settled/);
 
+    await disposeAll(m);
+  });
+});
+
+test("sub-agent finish forwards the summary PLUS recent conversation context", async () => {
+  await useTempDirs(["fin-root-", "fin-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    const parent = await m.addAgent({ id: "p", workspace: ws });
+    // spawn the child but STOP it immediately, then install the chat mock —
+    // this avoids racing the child's own first LLM call (which would hit the
+    // fake endpoint and error out)
+    let child: string;
+    {
+      const spawn = m as unknown as {
+        spawnChildFor(a: unknown, o: unknown): Promise<{ id: string }>;
+      };
+      child = (await spawn.spawnChildFor(parent, { task: "review things", context: "none" })).id;
+      await m.agents.get(child)!.stop("installing mock");
+    }
+    const cAgent = m.agents.get(child)!;
+    let n = 0;
+    (cAgent as unknown as { opts: { chatFn?: unknown } }).opts.chatFn = async () => {
+      n++;
+      if (n === 1)
+        return {
+          message: {
+            role: "assistant",
+            content:
+              "DETAILED FINDINGS: file src/auth.ts line 42 uses unsalted hash; config/default.json leaks the staging DSN; retry budget is 3 not 5 as documented.",
+          },
+        };
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "f1",
+              type: "function" as const,
+              function: {
+                name: "finish",
+                arguments: JSON.stringify({ goalComplete: true, summary: "review done, see above" }),
+              },
+            },
+          ],
+        },
+      };
+    };
+    await cAgent.setGoal("review");
+    cAgent.enqueuePrompt("go");
+    if (cAgent.status !== "running") cAgent.start("t");
+
+    // wait for the parent to receive the forwarded report. The harness prompt
+    // is logged in the PARENT's own chat.jsonl (prompt events), which readEvents
+    // sees regardless of whether the parent ever runs a turn on it.
+    const { readEvents } = await import("../src/log/events.ts");
+    const pAgent = m.agents.get("p")!;
+    // generous: the child's first LLM call races the mock install and can
+    // burn llmCall's own retry ladder (5s+5s+30s) before the finish lands
+    const deadline = Date.now() + 45_000;
+    let reportText = "";
+    let lastErr = "";
+    while (Date.now() < deadline) {
+      try {
+        const events = await readEvents(pAgent.log.filePath);
+        const found = events.find(
+          (e: any) => e.type === "prompt" && /finished\. Final report/.test(String(e.data?.text ?? "")),
+        );
+        if (found) {
+          reportText = String(found.data.text);
+          break;
+        }
+      } catch (err) {
+        lastErr = String((err as Error).message);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(reportText, "parent must receive the finish report");
+    assert.match(reportText, /review done, see above/); // the summary…
+    assert.match(reportText, /DETAILED FINDINGS/); // …PLUS the last real turn
+    assert.match(reportText, /unsalted hash/);
     await disposeAll(m);
   });
 });

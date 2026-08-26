@@ -1800,10 +1800,28 @@ export class Agent {
         await this.setGoalStatus("done");
       }
     }
+    // Capture the last few conversation turns BEFORE the final marker so the
+    // parent gets real substance (findings, file paths, numbers), not just
+    // whatever the model typed into the finish() summary argument.
+    const recent: string[] = [];
+    for (let i = this.messages.length - 1; i >= 0 && recent.length < 6; i--) {
+      const m = this.messages[i]!;
+      if (m.role === "user") continue; // prompts/noise — keep agent output only
+      if (m.role === "assistant" && !(m.content ?? "").trim()) continue;
+      const who = m.role === "tool" ? "tool" : m.role;
+      let line = `[${who}] ${(m.content ?? "").trim()}`;
+      if (m.role === "tool") {
+        // tool results are prefixed "(failed)" by the logger when they fail —
+        // the raw content is what matters here, and cap hard: these can be huge
+        line = `[${who}] ${(m.content ?? "").trim().slice(0, 1200)}`;
+      }
+      recent.unshift(line.slice(0, 1500));
+    }
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
       final: true,
       content: String(args.summary ?? ""),
+      ...(recent.length ? { recentContext: recent } : {}),
     });
   }
 
