@@ -989,20 +989,36 @@ export default function App() {
     }
   }
 
+  // Per-session timeline snapshots: switching back to a recently viewed
+  // session restores its last-known rows INSTANTLY, then loadEvents refreshes
+  // in the background. Without this, every switch cleared the feed and
+  // re-fetched (a visible blank flash + full round trip).
+  const timelineCache = new Map<string, { events: Ev[]; total: number; at: number }>();
+  const TIMELINE_CACHE_MAX = 6;
+
   async function select(id: string, push = true) {
     const prevId = selected();
+    const prevEvents = events();
+    const prevTotal = eventsTotal();
     // bump FIRST so any in-flight fetch for the previous session lands on a
     // dead generation and is dropped instead of overwriting this one's rows
     feedGeneration++;
     if (prevId !== id) {
+      // remember what the outgoing session looked like so returning is instant
+      if (prevId && prevEvents.length) {
+        timelineCache.set(prevId, { events: prevEvents, total: prevTotal, at: Date.now() });
+        if (timelineCache.size > TIMELINE_CACHE_MAX) {
+          const oldest = [...timelineCache.entries()].sort((x, y) => x[1].at - y[1].at)[0];
+          if (oldest) timelineCache.delete(oldest[0]);
+        }
+      }
       // drop the previous session's timeline immediately — otherwise it stays
       // visible (or bleeds into the merge) until this session's fetch lands,
       // which read as "the old conversation showing up in the new session"
       setEvents([]);
       evCache.clear(); // event ids are per-log (e1, e2…) — never share across sessions
-      // NOTE: live buffers are per-agent now — leaving a session must NOT
-      // drop its streaming bubble (coming back showed nothing until the next
-      // delta). The map keeps every session's stream alive independently.
+      // NOTE: live buffers are per-agent — leaving a session must NOT drop its
+      // streaming bubble; the map keeps every session's stream independently.
       setCompacting(null);
       setMissed(0);
       // follow mode must NOT leak across sessions: leaving it false showed
@@ -1018,6 +1034,18 @@ export default function App() {
     setPendingMsgs([]);
     localStorage.setItem("teapot.session", id);
     navigate(id, push);
+    // HYDRATE from cache first: rows paint immediately (no blank flash), and
+    // loadEvents below merges in whatever happened since. Cached events are
+    // re-stabilized into evCache so reference identity survives the switch.
+    const cached = timelineCache.get(id);
+    if (cached?.events.length) {
+      for (const e of stabilize(cached.events)) evCache.set(e.id, e);
+      setEvents(cached.events);
+      setEventsTotal(cached.total);
+      requestAnimationFrame(() => {
+        if (selected() === id) scrollBottom(true);
+      });
+    }
     // lazy sessions sit in "stopped" until touched — clicking loads them
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id);
@@ -1803,11 +1831,15 @@ export default function App() {
   let rightbarTop = 0;
   createEffect(() => {
     agents(); // re-arm on every agents update (incl. start/stop refreshes)
+    // double rAF: the first frame applies Solid's DOM writes, the second
+    // measures/restores AFTER layout settles — restoring too early let the
+    // browser clamp scrollTop to the OLD height and the panel visibly jumped
     requestAnimationFrame(() => {
-      if (rightbarEl) {
-        rightbarTop = Math.min(rightbarTop, rightbarEl.scrollHeight);
-        rightbarEl.scrollTop = rightbarTop;
-      }
+      requestAnimationFrame(() => {
+        if (!rightbarEl) return;
+        const target = Math.min(rightbarTop, rightbarEl.scrollHeight);
+        if (Math.abs(rightbarEl.scrollTop - target) > 1) rightbarEl.scrollTop = target;
+      });
     });
   });
   const act = (path: string) =>
