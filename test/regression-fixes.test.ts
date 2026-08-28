@@ -156,3 +156,64 @@ test("regression: edit-prompt frontend integration calls correct endpoint", asyn
   // ensure the MessageRow onEdit is gated to settled prompts only (not pending)
   assert.ok(src.includes("!(e.data?.pending && e.data?.sent !== true)"), "onEdit should be gated to settled prompts");
 });
+
+test("regression: prefix collision — example-session-2 timeline not empty when example-session exists", async () => {
+  await useTempDirs(["prefix-bug-root-", "prefix-ws-", "prefix-ws2-"], async ([dataDir, ws, ws2]) => {
+    const m = mkMaster(dataDir);
+    m.config.providers = { p: { baseUrl: "http://x", apiKey: "k", model: "m" } };
+    m.config.defaultProvider = "p";
+
+    // create first agent (prefix of second)
+    const a1 = await m.addAgent({ id: "example-session", workspace: ws, provider: "p" }, { fresh: true });
+    await a1.setGoal("goal1");
+    a1.enqueuePrompt("hello from 1");
+    await new Promise(r => setTimeout(r, 100));
+
+    // create second agent (has first as prefix + numeric suffix)
+    const a2 = await m.addAgent({ id: "example-session-2", workspace: ws2, provider: "p" }, { fresh: true });
+    await a2.setGoal("goal2");
+    a2.enqueuePrompt("hello from 2");
+    await new Promise(r => setTimeout(r, 100));
+
+    // verify both have non-empty logs in their own directories
+    const dir1 = a1.snapshot().sessionDir;
+    const dir2 = a2.snapshot().sessionDir;
+    assert.notEqual(dir1, dir2, "agents must have different session dirs");
+
+    // simulate restart: new Master, same dataDir, add agents non-fresh
+    await a1.dispose(); await a2.dispose();
+    m.agents.clear();
+
+    const m2 = new Master({ port: 0, dataDir, llm: LLM, providers: { p: { baseUrl: "http://x", apiKey: "k", model: "m" } }, agents: [
+      { id: "example-session", workspace: ws, provider: "p" },
+      { id: "example-session-2", workspace: ws2, provider: "p" },
+    ], defaultProvider: "p" }, "/dev/null");
+    m2.config.providers = { p: { baseUrl: "http://x", apiKey: "k", model: "m" } };
+    m2.config.defaultProvider = "p";
+
+    const b1 = await m2.addAgent({ id: "example-session", workspace: ws, provider: "p" });
+    const b2 = await m2.addAgent({ id: "example-session-2", workspace: ws2, provider: "p" });
+
+    // both must reattach to their OWN session dirs (not cross-pollute)
+    assert.equal(b1.snapshot().sessionDir, dir1, "example-session must reattach to its own session dir");
+    assert.equal(b2.snapshot().sessionDir, dir2, "example-session-2 must reattach to its own session dir");
+
+    // API must return events for both
+    const { buildApp } = await import("../src/server/api.ts");
+    const app = buildApp(m2);
+
+    let res = await app.request(`/api/agents/example-session/events`);
+    let j = await res.json();
+    assert.ok(j.events.length >= 2, `example-session must have events, got ${j.events.length}`);
+
+    res = await app.request(`/api/agents/example-session-2/events`);
+    j = await res.json();
+    assert.ok(j.events.length >= 2, `example-session-2 must have events (not empty), got ${j.events.length}`);
+
+    // events must be from the CORRECT agent's history
+    const events1 = j.events.map((e: any) => e.type + ":" + JSON.stringify(e.data).slice(0, 50));
+    console.log("example-session-2 events:", events1);
+
+    await b1.dispose(); await b2.dispose();
+  });
+});

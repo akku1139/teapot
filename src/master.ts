@@ -968,22 +968,8 @@ if (active().length === 0) wake();
     const root = this.sessionsRoot();
     mkdirSync(root, { recursive: true });
 
-    // exact-restart match first: <agentId> itself (or a previously generated
-    // <agentId>-<suffix> dir when the bare name was taken) — but only when it
-    // actually carries history. An empty log here must not shadow the real
-    // one found by findLatestSessionDir below.
-    const selfDir = path.join(root, agentId);
-    const selfOwner = this.readSessionOwner(agentId);
-    const selfUsable = selfOwner === null || selfOwner === agentId;
-    if (
-      !fresh &&
-      selfUsable &&
-      statSync(path.join(selfDir, "chat.jsonl"), { throwIfNoEntry: false })?.size
-    ) {
-      return selfDir; // restart → continue where we left off
-    }
-
     // one-time migration from the ≤0.5.0 flat layout (<dataDir>/<id>.jsonl)
+    // MUST run first so the bare-name directory exists for subsequent checks
     if (!fresh) {
       const legacy = path.join(this.config.dataDir, `${agentId}.jsonl`);
       if (existsSync(legacy)) {
@@ -996,10 +982,29 @@ if (active().length === 0) wake();
       }
     }
 
+    // Prefer the LATEST session directory that actually carries history.
+    // This handles the case where a bare-name directory (e.g. from legacy
+    // migration) would otherwise shadow a newer UUID-suffixed incarnation
+    // (the "example-session-2 timeline empty" bug).
     if (!fresh) {
       const existing = this.findLatestSessionDir(agentId);
       if (existing) return existing; // restart → continue where we left off
     }
+
+    // exact-restart match: bare <agentId> directory — only if no history-carrying
+    // UUID-suffixed directory was found above. This covers the very first run
+    // before any UUID-suffixed dir exists, and legacy flat migrations.
+    const selfDir = path.join(root, agentId);
+    const selfOwner = this.readSessionOwner(agentId);
+    const selfUsable = selfOwner === null || selfOwner === agentId;
+    if (
+      !fresh &&
+      selfUsable &&
+      statSync(path.join(selfDir, "chat.jsonl"), { throwIfNoEntry: false })?.size
+    ) {
+      return selfDir; // restart → continue where we left off
+    }
+
     // fresh incarnation: guaranteed-unique directory
     let sid = "";
     do {
