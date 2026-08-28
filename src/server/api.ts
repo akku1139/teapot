@@ -897,6 +897,26 @@ export function buildApp(master: Master): Hono {
   });
 
   // edit a previously-sent prompt: forks there, optionally summarizes the tail
+  app.post("/api/agents/:id/edit-prompt", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const body = await c.req
+      .json<{ eventId?: string; text?: string; tail?: string }>()
+      .catch(() => null);
+    if (!body?.eventId || !body.text?.trim())
+      return c.json({ error: "eventId and text required" }, 400);
+    try {
+      const r = await a.editPromptAt(
+        body.eventId,
+        body.text,
+        body.tail === "summarize" ? "summarize" : "discard",
+      );
+      return c.json({ ok: true, ...r });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 409);
+    }
+  });
+
   app.post("/api/agents/:id/fork", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);

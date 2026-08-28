@@ -1,4 +1,4 @@
-import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect } from "solid-js";
+import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
@@ -294,16 +294,38 @@ export default function App() {
   // not on sel() identity: this used to re-run (and re-fetch /api/models!)
   // on every poll in which the agent's snapshot object changed — visibly
   // rebuilding the whole 🧦 model section = the "right panel flashes" bug.
+  // FIX: the draft/provider signals are NOT dependencies — reading them
+  // reactively cleared the draft on every keystroke and reverted the
+  // provider dropdown on manual change (the "right panel model switching
+  // doesn't work" bug). Clear draft / sync provider only when the selected
+  // agent actually changes.
+  let _prevModelAgent: string | null = null;
   createEffect(() => {
     const id = selected();
+    if (!id) return;
     const a = agents().find((x) => x.id === id);
     const prov = a?.provider || cfg().defaultProvider || providerList()[0] || "";
     if (!a) return;
-    if (modelProvider() !== prov) {
-      setModelProvider(prov);
-      loadModels(prov);
+    if (id !== _prevModelAgent) {
+      _prevModelAgent = id;
+      // sync provider to the newly selected agent's provider
+      if (untrack(() => modelProvider()) !== prov) {
+        setModelProvider(prov);
+        loadModels(prov);
+      }
+      // clear stale draft only on session switch, not on every poll
+      if (untrack(() => modelDraft())) setModelDraft("");
+    } else {
+      // same agent — keep user's draft/provider edits intact; only
+      // re-sync if the server's provider changed externally and the user
+      // isn't actively editing (draft empty means not mid-type)
+      const curProv = untrack(() => modelProvider());
+      const curDraft = untrack(() => modelDraft());
+      if (!curDraft && curProv !== prov) {
+        setModelProvider(prov);
+        loadModels(prov);
+      }
     }
-    if (modelDraft()) setModelDraft(""); // clear stale draft on switch
   });
   // autoscroll: follow the tail only while the reader is already at the bottom
   const MAX_COMPOSER_H = 360; // ~15 lines expanded (was ~8 lines / 160px)
@@ -4902,17 +4924,22 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
       <form onsubmit={save} style="display:flex;flex-direction:column;gap:14px">
         <fieldset>
           <legend>providers</legend>
-          <For each={providers()}>
+          {/* Index keyed by position — editing a row must not recreate its
+              input DOM and steal focus. For (keyed by identity) recreated
+              the edited row on every keystroke (new object → new identity
+              → unmount/remount → focus lost). Index keeps the same input
+              element for the same index, preserving focus and cursor. */}
+          <Index each={providers()}>
             {(p, i) => (
               <div class="cfgrow">
-                <input class="cfgname" placeholder="name" value={p.name} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, name: e.currentTarget.value } : x)))} />
-                <input placeholder="https://…/v1" value={p.baseUrl} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
-                <input placeholder="api key" type="password" value={p.apiKey} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, apiKey: e.currentTarget.value } : x)))} />
-                <input placeholder="default model" value={p.model} oninput={(e) => setProviders(providers().map((x, j) => (j === i() ? { ...x, model: e.currentTarget.value } : x)))} />
-                <button type="button" class="danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i()))}>✕</button>
+                <input class="cfgname" placeholder="name" value={p().name} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, name: e.currentTarget.value } : x)))} />
+                <input placeholder="https://…/v1" value={p().baseUrl} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
+                <input placeholder="api key" type="password" value={p().apiKey} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, apiKey: e.currentTarget.value } : x)))} />
+                <input placeholder="default model" value={p().model} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, model: e.currentTarget.value } : x)))} />
+                <button type="button" class="danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i))}>✕</button>
               </div>
             )}
-          </For>
+          </Index>
           <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKey: "", model: "" }])}>+ add custom</button>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             <span class="muted" style="font-size:11.5px">quick-add:</span>
@@ -4968,22 +4995,22 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
         <fieldset>
           <legend>scheduled tasks</legend>
           <Show when={tasks().length > 0}>
-            <For each={tasks()}>
+            <Index each={tasks()}>
               {(t, i) => (
                 <div class="cfgcol">
                   <div class="cfgrow">
-                    <input placeholder="id" value={t.id} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, id: e.currentTarget.value } : x)))} />
-                    <input placeholder="agent id" value={t.agent} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, agent: e.currentTarget.value } : x)))} />
-                    <input placeholder="every 30m / cron" value={t.schedule} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, schedule: e.currentTarget.value } : x)))} />
+                    <input placeholder="id" value={t().id} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, id: e.currentTarget.value } : x)))} />
+                    <input placeholder="agent id" value={t().agent} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, agent: e.currentTarget.value } : x)))} />
+                    <input placeholder="every 30m / cron" value={t().schedule} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, schedule: e.currentTarget.value } : x)))} />
                     <label style="display:flex;gap:3px;align-items:center;white-space:nowrap;color:var(--dim);font-size:11px">
-                      <input type="checkbox" checked={!!t.forked} onchange={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, forked: e.currentTarget.checked } : x)))} />fork
+                      <input type="checkbox" checked={!!t().forked} onchange={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, forked: e.currentTarget.checked } : x)))} />fork
                     </label>
-                    <button type="button" class="danger" onclick={() => setTasks(tasks().filter((_, j) => j !== i()))}>✕</button>
+                    <button type="button" class="danger" onclick={() => setTasks(tasks().filter((_, j) => j !== i))}>✕</button>
                   </div>
-                  <textarea rows={2} placeholder="prompt to send" value={t.prompt} oninput={(e) => setTasks(tasks().map((x, j) => (j === i() ? { ...x, prompt: e.currentTarget.value } : x)))} />
+                  <textarea rows={2} placeholder="prompt to send" value={t().prompt} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, prompt: e.currentTarget.value } : x)))} />
                 </div>
               )}
-            </For>
+            </Index>
           </Show>
           <button type="button" onclick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ add task</button>
         </fieldset>

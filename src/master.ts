@@ -1117,6 +1117,11 @@ if (active().length === 0) wake();
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
     if (!llm.baseUrl) throw new Error("no baseUrl resolved");
     agent.setLlmConfig(llm);
+    // keep the snapshot's provider in sync — the UI's model switcher reads
+    // sel().provider, and the old code only updated the config entry (ac)
+    // so the live snapshot kept the stale provider (the "right panel model
+    // switching doesn't work" backend half).
+    (agent as unknown as { opts: { provider: string } }).opts.provider = effectiveProvider;
     const ac = this.config.agents.find((a) => a.id === id);
     if (ac && providerName) ac.provider = providerName;
     if (ac) ac.model = llm.model;
