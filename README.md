@@ -4,6 +4,8 @@
 
 > Try it in 5 minutes → [Quick start](#-quick-start) · Details live in the [Reference](#-reference) section
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/akku1139/teapot)
+
 [日本語版はこちら](README.ja.md)
 
 ---
