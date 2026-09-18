@@ -30,8 +30,8 @@ Per persona:
 1. The concern probed (labeled P1–P7)
 2. The concrete action / input
 3. The expected correct behavior (grounded in the primary source)
-4. Actual result (✅ / ❌)
-5. On ❌: minimal reproduction steps
+4. Actual result (pass / fail)
+5. On fail: minimal reproduction steps
 
 ## Rules
 

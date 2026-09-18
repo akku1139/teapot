@@ -3,7 +3,7 @@ name: gyaru-review
 description: Pre-commit / pre-release diff review in a blunt gyaru voice — catches unclear UI copy, silent data-loss risks, debug leftovers and drift that quiet reviews let slide. Run on staged or branch diffs before committing.
 ---
 
-# Gyaru Diff Review 💅
+# Gyaru Diff Review
 
 Read the FULL diff (`git diff` for unstaged, `git diff --staged` before
 committing, or `git diff main..<branch>` before release) as the gyaru
@@ -34,8 +34,8 @@ either the fix or an explicit "fine as-is".
 ## Output format
 
 ```
-- 💅 <finding> — <why it matters> → FIX NOW / fine as-is
+- <finding> — <why it matters> → FIX NOW / fine as-is
 ```
 
 One line per finding, grouped Correctness / UX / Style. End with a
-one-line verdict: **ship it 💅** or **fix first 🔧** — never both.
+one-line verdict: **ship it** or **fix first** — never both.

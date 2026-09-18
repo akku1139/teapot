@@ -92,7 +92,13 @@ export function matches(schedule: Schedule, d: Date): boolean {
  */
 export function nextFireAt(schedule: Schedule, from = new Date()): string | null {
   const startMinute = Math.floor(from.getTime() / 60_000) + 1; // next whole minute
-  const horizon = 60 * 24 * 31;
+  // Extend horizon for monthly/yearly schedules: if day-of-month or month fields
+  // are specific (not "*"), we need up to 12 months to catch the next match.
+  const dom = schedule.fields[2];
+  const month = schedule.fields[3];
+  const isMonthly = dom.size < 31; // specific day(s) of month
+  const isYearly = month.size < 12; // specific month(s)
+  const horizon = (isMonthly || isYearly) ? 60 * 24 * 366 : 60 * 24 * 31;
   for (let i = 0; i < horizon; i++) {
     const d = new Date((startMinute + i) * 60_000);
     if (matches(schedule, d)) return d.toISOString();

@@ -938,6 +938,12 @@ export class Agent {
       this.activityChars = 0;
       this.turnsSinceProgress = 0;
     }
+    // deduplicate harness prompts if another harness prompt is already pending
+    if (source === "harness" || source.startsWith("harness")) {
+      if (this.pendingPrompts.some((p) => p.source === "harness" || p.source.startsWith("harness"))) {
+        return ""; // skip queuing duplicate harness prompt
+      }
+    }
     // stable id shared by the log event and the UI's pending echo — the UI
     // flips its echo to "sent" when prompt-delivered carries this id back
     const promptId =
@@ -1194,11 +1200,20 @@ export class Agent {
         const nudge = isSub
           ? `[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
           : "Continue working toward the current goal. If you are blocked, explain why briefly.";
-        await this.log.append("prompt", this.currentSession, this.currentBranch, {
-          source: "harness",
-          text: nudge,
-        });
-        this.messages.push({ role: "user", content: nudge });
+        // Guard against stacking duplicate harness prompts in conversation history
+        const lastMsg = this.messages.length ? this.messages[this.messages.length - 1] : null;
+        const isDuplicateNudge =
+          lastMsg &&
+          lastMsg.role === "user" &&
+          typeof lastMsg.content === "string" &&
+          (lastMsg.content === nudge || lastMsg.content.startsWith("Continue working toward the current goal"));
+        if (!isDuplicateNudge) {
+          await this.log.append("prompt", this.currentSession, this.currentBranch, {
+            source: "harness",
+            text: nudge,
+          });
+          this.messages.push({ role: "user", content: nudge });
+        }
       } catch (err) {
         const name = (err as Error).name;
         // a stop (user abort or pre-call guard) is control flow, not a failure
@@ -1800,7 +1815,7 @@ export class Agent {
           await this.log.append("message", this.currentSession, this.currentBranch, {
             role: "assistant",
             content: approved
-              ? `✅ completion audit: APPROVED — ${feedback}`
+              ? `completion audit: APPROVED — ${feedback}`
               : `🔍 completion audit: CHANGES REQUIRED — ${feedback}`,
           });
           if (!approved) {

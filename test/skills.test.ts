@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
+import { fileURLToPath } from "node:url";
 import {
   parseSkillMd,
   discoverSkills,
@@ -11,7 +12,7 @@ import {
 } from "../src/agent/skills.ts";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 
-const REPO_BUNDLED_SKILLS = path.join(new URL("..", import.meta.url).pathname, "skills");
+const REPO_BUNDLED_SKILLS = fileURLToPath(new URL("../skills", import.meta.url));
 
 test("bundled repo skills are discoverable via the bundled root", async () => {
   const skills = await discoverSkills([{ dir: REPO_BUNDLED_SKILLS, source: "bundled" }]);
@@ -87,7 +88,7 @@ test("saveSkill writes frontmatter file and it is rediscoverable", async () => {
   await useTempDir("teapot-skills-save-", async (base) => {
       const wsRoot = path.join(base, "skills");
     const filePath = await saveSkill(wsRoot, "coffee", "how to brew", "# Brew\nboil water");
-    assert.match(filePath, /skills\/coffee\/SKILL\.md$/);
+    assert.match(filePath, /[/\\]skills[/\\]coffee[/\\]SKILL\.md$/);
     const text = await readFile(filePath, "utf8");
     assert.match(text, /^---\nname: coffee\ndescription: how to brew\n---/);
     const skills = await discoverSkills([{ dir: wsRoot, source: "workspace" }]);

@@ -57,3 +57,23 @@ test("cron: nextFireAt finds the next matching minute", () => {
   const every2h = nextFireAt(parseSchedule("every 2h"), new Date(2026, 5, 15, 10, 1, 0));
   assert.equal(every2h, new Date(2026, 5, 15, 12, 0, 0).toISOString());
 });
+
+test("cron: nextFireAt extends horizon for monthly schedules", () => {
+  // day 31 fires only once a month — within 31 days from June 15
+  const june = nextFireAt(parseSchedule("0 9 31 * *"), new Date(2026, 5, 15, 0, 0, 0));
+  assert.equal(june, new Date(2026, 6, 31, 9, 0, 0).toISOString()); // July 31
+
+  // from Aug 1, the next day-31 is Oct 31 — more than 31 days out
+  const aug = nextFireAt(parseSchedule("0 9 31 * *"), new Date(2026, 7, 1, 0, 0, 0));
+  assert.equal(aug, new Date(2026, 9, 31, 9, 0, 0).toISOString()); // Oct 31
+});
+
+test("cron: nextFireAt extends horizon for yearly schedules", () => {
+  // Dec 25 fires once a year — within 31 days from Dec 1
+  const dec = nextFireAt(parseSchedule("0 9 25 12 *"), new Date(2026, 11, 1, 0, 0, 0));
+  assert.equal(dec, new Date(2026, 11, 25, 9, 0, 0).toISOString()); // Dec 25 2026
+
+  // from Jan 2, the next Dec 25 is > 31 days — needs the 366-day horizon
+  const jan = nextFireAt(parseSchedule("0 9 25 12 *"), new Date(2026, 0, 2, 0, 0, 0));
+  assert.equal(jan, new Date(2026, 11, 25, 9, 0, 0).toISOString()); // Dec 25 2026
+});

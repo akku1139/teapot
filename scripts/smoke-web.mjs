@@ -202,12 +202,12 @@ if (!(await waitFor("agent list", () => bodyText().includes("alpha")))) process.
 console.log("deep render ok: sidebar shows agent");
 
 // …and the runtime panel must render its ctx gauge (the regression site):
-// used 123456 / window 200000 → "61.7% of 200k" (one-decimal percentages)
-if (!(await waitFor("runtime gauge", () => bodyText().includes("61.7% of 200k")))) process.exit(1);
-console.log("deep render ok: context gauge shows '61.7% of 200k'");
+// used 123456 / window 200000 → "200k中61.7%" (one-decimal percentages)
+if (!(await waitFor("runtime gauge", () => bodyText().includes("200k中61.7%")))) process.exit(1);
+console.log("deep render ok: context gauge shows '200k中61.7%'");
 
 // stats grid + cached pill + compaction line from the redesigned runtime card
-for (const marker of ["turns", "in / 2.0k out", "60% cached"]) {
+for (const marker of ["ターン", "入力150k / 出力2.0k", "60% キャッシュ"]) {
   if (!bodyText().includes(marker)) {
     console.error(`DEEP RENDER MISSING RUNTIME STAT: ${marker}`);
     process.exit(1);

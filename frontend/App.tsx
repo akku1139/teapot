@@ -40,13 +40,13 @@ interface Ev {
 }
 
 const AUTHORS: Record<string, { name: string; icon: string; color: string }> = {
-  prompt: { name: "you", icon: "🟧", color: "#faa81a" },
-  user: { name: "you", icon: "🟧", color: "#faa81a" },
-  message: { name: "agent", icon: "🫖", color: "#5865f2" },
-  progress: { name: "progress", icon: "📈", color: "#3ba55d" },
-  question: { name: "agent", icon: "❓", color: "#5865f2" }, // ask_user comes from the agent too
+  prompt: { name: "you", icon: "person", color: "#faa81a" },
+  user: { name: "you", icon: "person", color: "#faa81a" },
+  message: { name: "エージェント", icon: "chat_bubble", color: "#5865f2" },
+  progress: { name: "progress", icon: "trending_up", color: "#3ba55d" },
+  question: { name: "エージェント", icon: "help", color: "#5865f2" }, // ask_user comes from the agent too
 };
-const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
+const HARNESS_AUTH = { name: "harness", icon: "megaphone", color: "#3ba55d" };
 
 /* ---------- transient toast hint (module scope: also used by SwitchContent) ---------- */
 const [flash, setFlash] = createSignal("");
@@ -56,6 +56,20 @@ const flashHint = (msg: string) => {
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => setFlash(""), 3200);
 };
+
+/* ---------- IME composition tracking for Safari ---------- */
+let imeInProgress = false;
+const [imeComposing, setImeComposing] = createSignal(false);
+onMount(() => {
+  const onStart = () => setImeComposing(true);
+  const onEnd = () => setImeComposing(false);
+  document.addEventListener("compositionstart", onStart);
+  document.addEventListener("compositionend", onEnd);
+  onCleanup(() => {
+    document.removeEventListener("compositionstart", onStart);
+    document.removeEventListener("compositionend", onEnd);
+  });
+});
 
 /* ---------- themes ---------- */
 type ThemeMeta = {
@@ -92,15 +106,15 @@ function themeColors(): { background: string; foreground: string } {
 
 /** author for an event — mirrored sub-agent rows act under their own id */
 const authorOf = (e: Ev) => {
-  if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
+  if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "jigsaw", color: "#3ba0c9" };
   if (e.type === "tool_call" || e.type === "tool_result")
-    return { name: String(e.data?.name ?? "tool"), icon: "⚙", color: "#3ba0c9" };
+    return { name: String(e.data?.name ?? "tool"), icon: "settings", color: "#3ba0c9" };
   if (e.type === "prompt") {
     const src = String(e.data?.source ?? "user");
     if (src === "user") return AUTHORS.prompt;
-    return src.startsWith("scheduler:") ? { name: src.slice(10), icon: "📣", color: "#3ba55d" } : HARNESS_AUTH;
+    return src.startsWith("scheduler:") ? { name: src.slice(10), icon: "megaphone", color: "#3ba55d" } : HARNESS_AUTH;
   }
-  return AUTHORS[e.type] ?? { name: e.type, icon: "•", color: "#9298a5" };
+  return AUTHORS[e.type] ?? { name: e.type, icon: "circle", color: "#9298a5" };
 };
 
 // state/error/fork/goal render as dividers or embeds inside the feed
@@ -261,13 +275,13 @@ export default function App() {
     } catch { setModels([]); }
   }
   /** "ctx 1m · $3/M in · $15/M out" for the draft (or current) model */
-  /** 📄🖼️→📄 style badge for a model's input/output modalities */
+  /** Modality badge for a model's input/output (plain text — shown in .meta) */
   const modalityBadge = (m?: { modalities?: { input: string[]; output: string[] } }): string => {
-    const icon: Record<string, string> = {
-      text: "📄", image: "🖼️", audio: "🔊", video: "🎬", file: "📎",
+    const label: Record<string, string> = {
+      text: "テキスト", image: "画像", audio: "音声", video: "動画", file: "ファイル",
     };
     const side = (list?: string[]) =>
-      (list ?? ["text"]).map((k) => icon[k] ?? k).join("");
+      (list ?? ["text"]).map((k) => label[k] ?? k).join("・");
     if (!m?.modalities) return "";
     return `${side(m.modalities.input)} → ${side(m.modalities.output)}`;
   };
@@ -278,7 +292,7 @@ export default function App() {
     if (!m) return "";
     const parts: string[] = [];
     const badge = modalityBadge(m);
-    if (badge && badge !== "📄 → 📄") parts.push(badge); // text-only is the default — no noise
+    if (badge && badge !== "テキスト → テキスト") parts.push(badge); // text-only is the default — no noise
     if (m.contextLength) parts.push(`ctx ${fmtK(m.contextLength)} tok`);
     const price = (p?: number) =>
       p === undefined ? "" : `${p * 1e6 >= 10 ? Math.round(p * 1e6) : +(p * 1e6).toFixed(1)}/M`;
@@ -502,7 +516,7 @@ export default function App() {
     eventId?: string;
   };
   const [notifs, setNotifs] = createSignal<Notif[]>([]);
-  // hide 👻 ghost sessions (workspace directory missing on disk) — a toggle,
+  // hide ghost sessions (workspace missing on disk) — a toggle,
   // because they still hold history the operator may need
   const [hideGhosts, setHideGhosts] = createSignal(
     localStorage.getItem("teapot.hideGhosts") === "1",
@@ -660,10 +674,10 @@ export default function App() {
     const real = events().filter((e) => {
       if (!FEED_TYPES.has(e.type)) return false;
       // report_progress calls are fully rendered by the progress embed below
-      // (the timeline's 📈 row + the right panel's snapshot) — the tool-call
+      // (the timeline's progress row + the right panel's snapshot) — the tool-call
       // row would just repeat the same content a third time
       // report_progress / ask_user calls are fully rendered by their own
-      // embeds (📈 progress / ❓ question) — the tool rows would just repeat
+      // embeds (progress / question) — the tool rows would just repeat
       // the same content a second time. ask_user also shows "answered"
       // state via its embed, so the raw rows add nothing.
       const metaToolName =
@@ -1451,7 +1465,7 @@ export default function App() {
   createEffect(() => {
     const a = sel();
     const base = a
-      ? `${a.status === "running" ? "▶ " : a.status === "error" ? "⚠ " : ""}${a.id} · teapot`
+      ? `${a.status === "running" ? "▶ " : a.status === "error" ? "! " : ""}${a.id} · teapot`
       : "teapot";
     // unread notification count in the tab title — "(2) linux · teapot"
     document.title = unreadCount() > 0 ? `(${unreadCount()}) ${base}` : base;
@@ -1557,7 +1571,7 @@ export default function App() {
     if (!who) return;
     const perAgent = termTabs().filter((t) => t.agentId === who).length;
     if (perAgent >= 10) {
-      flashHint(`max 10 shells per agent (${who}) — that's already a lot`);
+      flashHint(`エージェントあたり最大10シェル (${who}) — 十分多いはず`);
       return;
     }
     const n = termTabs().length + 1;
@@ -1794,7 +1808,7 @@ export default function App() {
     { cmd: "/start", desc: "start working toward the goal" },
     { cmd: "/stop", desc: "interrupt the running agent" },
     { cmd: "/fork", desc: "branch the conversation here" },
-    { cmd: "/goal", desc: "/goal <text> — set goal & notify the agent" },
+    { cmd: "/goal", desc: "/goal <テキスト> — 目標を設定しエージェントに通知" },
     { cmd: "/compact", desc: "force a context compaction now" },
     { cmd: "/skill", desc: "/skill <name> — force-load a skill and follow it" },
   ];
@@ -1962,7 +1976,7 @@ export default function App() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ persona: name, task: arg, context: mentionFork() ? "fork" : "none" }),
           });
-          flashHint(`🧩 spawned ${(r as any).id}${mentionFork() ? " (forked context)" : ""}`);
+          flashHint(`spawned ${(r as any).id}${mentionFork() ? " (forked context)" : ""}`);
           refreshAgents(); saveDraft("");
         } else if (knownAgent) {
           if (!arg) { flashHint(`usage: @${name} <message>`); return; }
@@ -1974,7 +1988,7 @@ export default function App() {
           flashHint(`→ delivered to @${name}`);
           saveDraft("");
         } else {
-          flashHint(`unknown @${name} — personas: ${personas().map((p) => p.key).join(", ") || "(none)"}`);
+          flashHint(`unknown @${name} — personas: ${personas().map((p) => p.key).join(", ") || "(なし)"}`);
           return;
         }
       } catch (ex) {
@@ -2025,12 +2039,12 @@ export default function App() {
       else if (name === "fork") { await post("/fork", {}); await select(id); }
       else if (name === "compact") {
         const r: any = await post("/compact");
-        flashHint(r?.ran ? "context compacted" : "nothing to compact yet");
+        flashHint(r?.ran ? "コンテキストを圧縮しました" : "圧縮するものがまだありません");
       }
       else if (name === "goal") {
-        if (!arg) { flashHint("usage: /goal <text>"); return; }
+        if (!arg) { flashHint("使い方: /goal <テキスト>"); return; }
         await post("/goal", { text: arg, notify: true });
-        flashHint("goal saved & notification queued");
+        flashHint("目標を保存し通知をキューに追加しました");
       }
       else if (name === "skill") {
         if (!arg) { flashHint("usage: /skill <name>"); return; }
@@ -2040,7 +2054,7 @@ export default function App() {
         flashHint(`skill "${arg}" dispatched`);
       }
       else {
-        flashHint(`unknown command "${name}" — /start /stop /fork /goal /skill /compact`);
+        flashHint(`不明なコマンド "${name}" — /start /stop /fork /goal /skill /compact`);
       }
     } catch (ex) {
       flashHint(`/${name} failed: ${(ex as Error).message}`);
@@ -2122,7 +2136,7 @@ export default function App() {
     <Show when={authLocked()}>
       <div class="overlay">
         <div class="modal" style="max-width:360px">
-          <div class="modal-head"><b>🔒 sign in</b><span /></div>
+          <div class="modal-head"><b><span class="mi">lock</span> サインイン</b><span /></div>
           <form
             onsubmit={(e) => {
               e.preventDefault();
@@ -2132,9 +2146,9 @@ export default function App() {
             }}
             style="display:flex;flex-direction:column;gap:10px"
           >
-            <input id="pw-input" type="password" placeholder="password" autofocus />
-            <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:7px 12px;cursor:pointer">unlock</button>
-            <span class="muted" style="font-size:11px">the token is stored locally and sent as Bearer to this server only</span>
+            <input id="pw-input" type="password" placeholder="パスワード" autofocus />
+            <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:7px 12px;cursor:pointer">ロック解除</button>
+            <span class="muted" style="font-size:11px">トークンはローカルに保存され、このサーバーへのBearer送信にのみ使われます</span>
           </form>
         </div>
       </div>
@@ -2150,24 +2164,24 @@ export default function App() {
                 class={"agent-item" + (a.id === selected() ? " sel" : "") + (depth > 0 ? " sub-row" : "")}
                 style={depth > 0 ? `padding-left:${10 + depth * 14}px` : ""}
                 onclick={() => select(a.id)}
-                title={a.parent ? `sub-agent of @${a.parent}` : undefined}
+                title={a.parent ? `@${a.parent} のサブエージェント` : undefined}
               >
                 <Show when={agents().some((x) => x.parent === a.id)} fallback={<span class="caret-spacer" />}>
                   <span
                     class="caret"
                     title={collapsedSubs().has(a.id) ? "expand sub-agents" : "collapse sub-agents"}
                     onclick={(e: MouseEvent) => { e.stopPropagation(); toggleCollapse(a.id); }}
-                  >{collapsedSubs().has(a.id) ? "▸" : "▾"}</span>
+                  ><span class="mi">{collapsedSubs().has(a.id) ? "chevron_right" : "expand_more"}</span></span>
                 </Show>
                 <span class={`dot ${a.status}`} />
                 <span
                   class={a.workspaceMissing ? " ghost" : ""}
-                  title={a.workspaceMissing ? `workspace not found on disk (${a.workspace}) — it will be created when this session runs` : undefined}
+                  title={a.workspaceMissing ? `ワークスペースがディスクにありません (${a.workspace}) — このセッションの実行時に作成されます` : undefined}
                 >{a.id}</span>
-                {a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
+                {a.workspaceMissing ? <span class="ghosttag" title="ワークスペースなし">cloud_off</span> : null}
                 <Show when={subtreeUnread(a.id) > 0}>
-                  <span class="notifbadge" title={`${subtreeUnread(a.id)} unread notification${subtreeUnread(a.id) > 1 ? "s" : ""} (including sub-agents)`}>
-                    🔔{subtreeUnread(a.id)}
+                  <span class="notifbadge" title={`${subtreeUnread(a.id)}件の未読通知（サブエージェント含む）`}>
+                    <span class="mi">notifications</span>{subtreeUnread(a.id)}
                   </span>
                 </Show>
                 {/* collapsed tree: surface how many subs are still working so a
@@ -2181,16 +2195,16 @@ export default function App() {
                         class={"subcount" + (running > 0 ? " live" : "")}
                         title={`${kids.length} sub-agent${kids.length > 1 ? "s" : ""} (${running} active)`}
                       >
-                        🧩 {kids.length}{running > 0 ? ` · ▶${running}` : ""}
+                        jigsaw {kids.length}{running > 0 ? ` · ▶${running}` : ""}
                       </span>
                     ) : null;
                   })()}
                 </Show>
-                <Show when={a.parent}><span class="subtag">🧩</span></Show>
+                <Show when={a.parent}><span class="subtag">jigsaw</span></Show>
                 <Show when={agentTasks(a.id).length > 0}>
-                  <span class="mini-cron" title={agentTasks(a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
+                  <span class="mini-cron" title={agentTasks(a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>schedule</span>
                 </Show>
-                <Show when={a.goal.status === "done"}><span title="goal done">✓</span></Show>
+                <Show when={a.goal.status === "done"}><span title="目標完了">✓</span></Show>
               </div>
             )}
           </For>
@@ -2198,7 +2212,7 @@ export default function App() {
         <div class="sidebar-footer">
           <Show when={showThemes()}>
             <div class="themepop">
-              <label class="trow" title="switch automatically when the OS switches appearance — pick which theme to use for each">
+              <label class="trow" title="OSの外観切替に自動連動 — pick which theme to use for each">
                 <input
                   type="checkbox"
                   checked={themeAuto()}
@@ -2208,7 +2222,7 @@ export default function App() {
                     localStorage.setItem("teapot.theme.auto", v ? "1" : "0");
                   }}
                 />
-                follow system
+                システムに連動
               </label>
               <Show
                 when={!themeAuto()}
@@ -2276,12 +2290,12 @@ export default function App() {
                 if (!showNotifs()) setNotifs((l) => l.map((n) => ({ ...n, read: true })));
               }}
             >
-              🔔<Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
+              <span class="mi">notifications</span><Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
             </button>
             <IconBtn
-              icon="👻"
+              icon="visibility_off"
               active={hideGhosts()}
-              title={hideGhosts() ? "show ghost sessions again (👻 workspace missing on disk)" : "hide ghost sessions (👻 — their workspace directory no longer exists)"}
+              title={hideGhosts() ? "ゴーストセッションを再表示（ワークスペースがディスクにありません）" : "ゴーストセッションを隠す（ワークスペースのディレクトリが存在しません）"}
               onClick={(e) => {
                 e.stopPropagation();
                 const next = !hideGhosts();
@@ -2294,20 +2308,20 @@ export default function App() {
                 }
               }}
             />
-            <IconBtn icon="＋" title="new agent" onClick={() => { loadCfg(); setShowNew(true); }} />
-            <IconBtn icon="🎨" title="themes" onClick={() => setShowThemes(!showThemes())} />
-            <IconBtn icon="⚙" title="settings" onClick={() => { loadCfg(); setShowCfg(true); }} />
+            <IconBtn icon="add" title="新規エージェント" onClick={() => { loadCfg(); setShowNew(true); }} />
+            <IconBtn icon="palette" title="テーマ" onClick={() => setShowThemes(!showThemes())} />
+            <IconBtn icon="settings" title="設定" onClick={() => { loadCfg(); setShowCfg(true); }} />
           </div>
           <div class="brand-row">
             <div class="brand">
-              🫖 teapot <span class="version">v{__APP_VERSION__}</span>
-              <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "live (websocket)" : "reconnecting…"} />
+              chat_bubble teapot <span class="version">v{__APP_VERSION__}</span>
+              <span class={"conn" + (connected() ? " ok" : "")} title={connected() ? "接続中 (websocket)" : "再接続中…"} />
             </div>
           </div>
           <div class="metrics">
             <Show when={metrics()}>
-              master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB<br />
-              load1 {metrics().loadavg1} · up {Math.floor(metrics().uptimeSec / 60)}m
+              メモリ {metrics().rssMb}MB · ヒープ {metrics().heapUsedMb}MB<br />
+              平均負荷 {metrics().loadavg1} · 稼働 {Math.floor(metrics().uptimeSec / 60)}分
             </Show>
           </div>
         </div>
@@ -2315,7 +2329,7 @@ export default function App() {
 
       {/* ---------- channel ---------- */}
       <section class="channel">
-        <Show when={sel()} fallback={<div style="display:grid;place-items:center;height:100%" class="muted">select an agent</div>}>
+        <Show when={sel()} fallback={<div style="display:grid;place-items:center;height:100%" class="muted">エージェントを選択</div>}>
           <header class="chan-head">
             <span class="hash">#</span>
             <span class="title">{sel()!.id}</span>
@@ -2323,25 +2337,25 @@ export default function App() {
             <Show when={(sel()!.pendingPrompts ?? 0) > 0}>
               <span
                 class="badge queued"
-                title={`${sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you waiting in the queue. They will be handed to the model at its next turn boundary — the timeline shows them as "pending (queued)…" until then, and each can be withdrawn with ✕ cancel while it's still queued.`}
+                title={`${sel()!.pendingPrompts ?? 0}件のメッセージがキュー待ちです。次のターンの区切りでモデルに渡されます — それまではタイムラインに「送信待ち…」と表示され、キューにある間はキャンセルで取り下げられます。`}
               >
-                ⏳ {sel()!.pendingPrompts} of yours queued
+                <span class="mi">hourglass</span> {sel()!.pendingPrompts}件がキュー待ち
               </span>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>
-              <span class="badge cron" title={`scheduled tasks:\n${agentTasks(sel()!.id).map((t) => `${t.schedule} · ${t.id}${t.forked ? " (forked)" : ""}`).join("\n")}`}>
-                ⏰ {agentTasks(sel()!.id).length}
+              <span class="badge cron" title={`定期タスク:\n${agentTasks(sel()!.id).map((t) => `${t.schedule} · ${t.id}${t.forked ? " (フォーク)" : ""}`).join("\n")}`}>
+                <span class="mi">schedule</span> {agentTasks(sel()!.id).length}
               </span>
             </Show>
             <span class="sub">
-              {sel()!.model} · {sel()!.session}/{sel()!.branch} · turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls}
+              {sel()!.model} · {sel()!.session}/{sel()!.branch} · {sel()!.stats.turns}ターン · ツール{sel()!.stats.toolCalls}回
             </span>
             <span style="margin-left:auto;display:flex;gap:4px">
               <Show when={sel()!.statusReason}>
-                <span class="sub" title={sel()!.statusReason}>ℹ</span>
+                <span class="sub" title={sel()!.statusReason}><span class="mi">info</span></span>
               </Show>
-              <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
-              <IconBtn icon="▤" title="toggle details panel (d)" onClick={toggleRight} />
+              <IconBtn icon="keyboard" title="ターミナル (t)" onClick={toggleTerm} />
+              <IconBtn icon="view_sidebar" title="詳細パネル切替 (d)" onClick={toggleRight} />
             </span>
           </header>
 
@@ -2379,8 +2393,8 @@ export default function App() {
           }}>
             <Show when={compacting()}>
               {(c) => (
-                <div class="divider-msg compacting" title="the harness is compressing old turns into notes so work can continue within the context window">
-                  🗜 {c().phase === "harvesting" ? "saving durable lessons…" : `summarizing ${c().summarized ? fmtK(c().summarized!) + " " : ""}older messages…`}
+                <div class="divider-msg compacting" title="ハーネスが古いターンをメモに圧縮中 — コンテキスト窓内で作業継続のため">
+                  <span class="mi">summarize</span> {c().phase === "harvesting" ? "教訓を保存中…" : `古いメッセージを要約中${c().summarized ? " (" + fmtK(c().summarized!) + ") " : ""}…`}
                 </div>
               )}
             </Show>
@@ -2388,10 +2402,10 @@ export default function App() {
               <div class="divider-msg">── beginning of log ──</div>
             </Show>
             <Show when={loadingOlder()}>
-              <div class="divider-msg">loading older events…</div>
+              <div class="divider-msg">古いイベントを読み込み中…</div>
             </Show>
             <Show when={chatEvents().length > 0} fallback={
-              <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
+              <div style="display:grid;place-items:center;height:100%" class="muted">まだイベントがありません — メッセージを送るか ▶ 開始を押してください</div>
             }>
               <For each={chatEvents()}>
                 {(e, i) => (
@@ -2439,16 +2453,16 @@ export default function App() {
               </For>
               <Show when={live()}>
                 <div class="msg live">
-                  <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">🫖</div>
+                  <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">chat_bubble</div>
                   <div class="msg-body">
                     <div class="msg-head">
-                      <span class="author" style="color:var(--acc)">agent</span>
-                      <span class="ts">streaming…</span>
+                      <span class="author" style="color:var(--acc)">エージェント</span>
+                      <span class="ts">受信中…</span>
                     </div>
                     <Show when={liveReasoning()}>
                       <details class="reasoning" open>
                         <summary>
-                          💭 thinking <ThinkingTimer startedAt={liveStartedAt()} />
+                          <span class="mi">psychology</span> 考え中 <ThinkingTimer startedAt={liveStartedAt()} />
                         </summary>
                         {/* ref + scroll-follow: the thinking block grows from the
                             bottom; keep its tail visible while it streams. The
@@ -2477,10 +2491,10 @@ export default function App() {
                     </Show>
                     <Show
                       when={liveText()}
-                      fallback={<div class="content muted">thinking…</div>}
+                      fallback={<div class="content muted">考え中…</div>}
                     >
                       <Show when={liveIsCompact()} fallback={<div class="content" innerHTML={renderMarkdown(liveText() + "▍")} />}>
-                        <div class="muted" style="font-size:11.5px;margin-bottom:4px">🗜 summarizing older context…</div>
+                        <div class="muted" style="font-size:11.5px;margin-bottom:4px"><span class="mi">summarize</span> 古いコンテキストを要約中…</div>
                         <div class="content" innerHTML={renderMarkdown(liveBody() + "▍")} />
                       </Show>
                     </Show>
@@ -2492,7 +2506,7 @@ export default function App() {
 
           <Show when={termOpen()}>
             <div class="termdrawer" style={{ height: `${termHeight()}px`, "--termh": `${termHeight()}px` } as any}>
-              <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
+              <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="ドラッグでリサイズ · ダブルクリックでリセット" />
               <div class="termbar">
                 <div class="termtabs">
                   <For each={termTabs()}>
@@ -2500,34 +2514,34 @@ export default function App() {
                       <span
                         class={"termtab" + (focusedPane() === 0 && paneL() === i() ? " active" : "") + (splitView() && focusedPane() === 1 && paneR() === i() ? " active" : "")}
                         onclick={() => focusTab(i())}
-                        title={`${t.title} — click to show in focused pane`}
+                        title={`${t.title} — クリックでフォーカス中のペインに表示`}
                       >
-                        ⌨ {t.title}
-                        <button class="tabx" onclick={(e) => { e.stopPropagation(); closeTab(i()); }} title="close this shell">✕</button>
+                        <span class="mi">keyboard</span> {t.title}
+                        <button class="tabx" onclick={(e) => { e.stopPropagation(); closeTab(i()); }} title="このシェルを閉じる">✕</button>
                       </span>
                     )}
                   </For>
-                  <IconBtn icon="＋" title="new shell in this workspace" onClick={addFromSelected} />
+                  <IconBtn icon="add" title="このワークスペースで新しいシェル" onClick={addFromSelected} />
                 </div>
                 <div style="display:flex;gap:4px;align-items:center">
                   <span class="muted mono" style="flex:1;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                     {activeTab() ? agents().find((a) => a.id === activeTab()!.agentId)?.workspace.split("/").filter(Boolean).pop() : sel()?.workspace}
                   </span>
-                  <IconBtn icon="◫" title={splitView() ? "single pane" : "split panes (50/50)"} onClick={toggleSplit} />
-                  <IconBtn icon="▾" title="hide the terminal (shells keep running; reopen with t) — close individual shells with their ✕ tab buttons" onClick={toggleTerm} />
+                  <IconBtn icon="swap" title={splitView() ? "単一ペイン" : "ペイン分割 (50/50)"} onClick={toggleSplit} />
+                  <IconBtn icon="arrow_down" title="ターミナルを非表示（シェルは動作継続。tで再表示）— 各シェルは✕タブボタンで閉じます" onClick={toggleTerm} />
                 </div>
               </div>
               <div class="termbody" classList={{ split: splitView() }}>
                 <div class="termpane" classList={{ focused: focusedPane() === 0 }} onpointerdown={() => setFocusedPane(0)} ref={setPaneHost(0)}>
                   <Show when={paneL() < 0 || paneL() >= termTabs().length}>
-                    <div class="termempty muted">no shell here — ＋ opens one, tabs fill the focused pane</div>
+                    <div class="termempty muted">シェルがありません — 新規ボタンで作成、タブで切り替え</div>
                   </Show>
                 </div>
                 <Show when={splitView()}>
                   <div class="termsplit" />
                   <div class="termpane" classList={{ focused: focusedPane() === 1 }} onpointerdown={() => setFocusedPane(1)} ref={setPaneHost(1)}>
                     <Show when={paneR() < 0 || paneR() >= termTabs().length}>
-                      <div class="termempty muted">no shell here — click a tab or ＋ to add</div>
+                      <div class="termempty muted">シェルがありません — タブ選択か新規ボタンで追加</div>
                     </Show>
                   </div>
                 </Show>
@@ -2580,21 +2594,21 @@ export default function App() {
                         <button
                           type="button"
                           class="imgx"
-                          title="remove"
+                          title="取り除く"
                           onclick={() => setPendingImages((l) => l.filter((_, j) => j !== i()))}
-                        >✕</button>
+                        ><span class="mi">close</span></button>
                       </span>
                     )}
                   </For>
                   <span class="muted" style="font-size:11px;align-self:center">
-                    {pendingImages().length} image{pendingImages().length > 1 ? "s" : ""} attached
+                    画像{pendingImages().length}枚を添付
                   </span>
                 </div>
               </Show>
               <textarea
                 ref={composerEl}
                 rows={1}
-                placeholder={`message #${sel()!.id} — / for commands · paste or 📎 to attach images`}
+                placeholder={`#${sel()!.id} へのメッセージ — / でコマンド · 画像の貼り付け・添付可`}
                 value={draft()}
                 onpaste={(e) => {
                   // screenshots land on the clipboard as files — stage them
@@ -2603,6 +2617,18 @@ export default function App() {
                     e.preventDefault();
                     addImages(imgs);
                   }
+                }}
+                oncompositionstart={(e) => {
+                  imeInProgress = true;
+                  setImeComposing(true);
+                }}
+                oncompositionend={(e) => {
+                  // Safari fires compositionend BEFORE the final keydown for Enter,
+                  // so we defer the reset to let the keydown handler check our flag
+                  requestAnimationFrame(() => {
+                    imeInProgress = false;
+                    setImeComposing(false);
+                  });
                 }}
                 oninput={(e) => {
                   saveDraft(e.currentTarget.value);
@@ -2633,8 +2659,10 @@ export default function App() {
                     setCmdIdx(-1); // close popup only
                     return;
                   }
-                  // IME composition: Enter confirms the conversion, never sends
-                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                  // IME composition: Enter confirms the conversion, never sends.
+                  // Safari fires compositionend BEFORE the final keydown, so
+                  // e.isComposing is already false — track via our own flag instead.
+                  if (e.key === "Enter" && !e.shiftKey && !imeInProgress) {
                     e.preventDefault();
                     void send(e);
                   }
@@ -2643,10 +2671,10 @@ export default function App() {
               <Show when={draft().startsWith("@") && draft().includes(" ")}>
                 <label
                   class="forkchip"
-                  title="inherit the conversation prefix byte-exactly — the sub-agent's provider prefix cache starts warm"
+                  title="会話の前文をバイト完全一致で継承 — サブエージェント's プロバイダープレフィックスキャッシュが温かいまま始まる"
                 >
                   <input type="checkbox" checked={mentionFork()} onchange={(e) => setMentionFork(e.currentTarget.checked)} />
-                  fork ctx
+                  フォーク継承
                 </label>
               </Show>
               <button
@@ -2660,17 +2688,17 @@ export default function App() {
                   // pinned / restored correctly across the relayout
                   requestAnimationFrame(() => autosizeComposer());
                 }}
-              >{composerMaximized() ? "⤡" : "⤢"}</button>
+              ><span class="mi">{composerMaximized() ? "fullscreen_exit" : "fullscreen"}</span></button>
               <IconBtn
-                icon="📎"
-                title="attach images (or paste them straight into the box)"
+                icon="attach_file"
+                title="画像を追加（直接貼り付けも可）"
                 onClick={() => document.getElementById("composer-file")?.click()}
               />
               <Show when={pendingImages().length}>
-                <span class="muted" style="font-size:11.5px;white-space:nowrap">🖼 {pendingImages().length}</span>
+                <span class="muted" style="font-size:11.5px;white-space:nowrap"><span class="mi">image</span> {pendingImages().length}</span>
               </Show>
-              <button type="submit">send</button>
-              {/* hidden input lives here so the 📎 button can trigger it */}
+              <button type="submit">送信</button>
+              {/* hidden input lives here so the attach button can trigger it */}
               <input
                 id="composer-file"
                 type="file"
@@ -2685,7 +2713,7 @@ export default function App() {
             </form>
             <div class="hint">
               {flash() ||
-                "enter send · shift+enter newline · ↑↓ sessions · / commands & focus · t terminal · d panel · esc interrupt · messages sent while the agent works queue up and land at the next turn boundary"}
+                "Enterで送信 · Shift+Enterで改行 · ↑↓で履歴 · /でコマンド · tでターミナル · dでパネル · escで中断 · エージェント作業中の送信はキューに入り次のターンで届きます"}
             </div>
           </div>
         </Show>
@@ -2698,10 +2726,10 @@ export default function App() {
         onscroll={(e) => { rightbarTop = (e.currentTarget as HTMLDivElement).scrollTop; }}
       >
         <Show when={sel()}>
-          <h3 title="identity + storage locations for this agent">🎛 session</h3>
+          <h3 title="このエージェントの識別情報と保存場所"><span class="mi">fingerprint</span> セッション</h3>
           <div class="card sesscard">
-            <div class="sessrow"><span class="k">agent</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
-            <div class="sessrow"><span class="k">workspace</span><span class="mono ellip" title={sel()!.workspace}>{sel()!.workspace}</span></div>
+            <div class="sessrow"><span class="k">エージェント</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
+            <div class="sessrow"><span class="k">ワークスペース</span><span class="mono ellip" title={sel()!.workspace}>{sel()!.workspace}</span></div>
             <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
           </div>
 
@@ -2714,12 +2742,12 @@ export default function App() {
             )}
           </Show>
 
-          <h3 title="switch provider/model live — applies from the agent's next turn; the list shows context window & pricing from the provider">🧦 model</h3>
+          <h3 title="プロバイダー/モデルを live で切替 — 次のターンから適用。一覧にコンテキスト窓と料金を表示"><span class="mi">smart_toy</span> モデル</h3>
           <div class="modelbox">
             <select
               value={modelProvider()}
               onchange={(e) => { setModelProvider(e.currentTarget.value); loadModels(e.currentTarget.value); }}
-              title="provider (OpenAI-compatible endpoint)"
+              title="プロバイダー (OpenAI互換エンドポイント)"
             >
               <For each={providerList()}>{(p) => <option value={p}>{p}{p === cfg().defaultProvider ? " ★" : ""}</option>}</For>
             </select>
@@ -2736,7 +2764,7 @@ export default function App() {
                 <For each={models()}>{(m) => <option value={m.id} />}</For>
               </datalist>
               <button
-                title="apply to this session — takes effect from the agent's next turn"
+                title="このセッションに適用 — エージェントの次のターンから有効"
                 onclick={async (e) => {
                   if (!selected()) return;
                   const btn = e.currentTarget as HTMLButtonElement;
@@ -2754,7 +2782,7 @@ export default function App() {
                           models().find((m) => m.id === (modelDraft().trim() || undefined))?.contextLength,
                       }),
                     });
-                    btn.textContent = "✓ applied";
+                    btn.textContent = "適用済み";
                     refreshAgents();
                   } catch (ex) {
                     alert(`model switch failed: ${(ex as Error).message}`);
@@ -2762,7 +2790,7 @@ export default function App() {
                     setTimeout(() => { btn.textContent = "apply"; btn.disabled = false; }, 1200);
                   }
                 }}
-              >apply</button>
+              >適用</button>
             </div>
             <div class="meta">
               current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show>
@@ -2772,7 +2800,7 @@ export default function App() {
             </Show>
           </div>
 
-          <h3>⏯ controls</h3>
+          <h3><span class="mi">play_circle</span> 操作</h3>
           <div class="btnrow">
             {/* ONE persistent button: swapping ▶ start / ■ stop via <Show> destroyed
                 and recreated the node on every idle→running transition, which
@@ -2782,39 +2810,39 @@ export default function App() {
               class={sel()!.status === "running" ? "danger" : "runbtn"}
               title={
                 sel()!.status === "running"
-                  ? "interrupt: aborts the current LLM call; the running tool finishes first"
-                  : "run toward the goal (starts the loop)"
+                  ? "中断: 現在のLLM呼び出しを中止します（実行中のツールは先に終了）"
+                  : "目標に向けて実行（ループを開始）"
               }
               onclick={sel()!.status === "running" ? act("/stop") : act("/start")}
-            >{sel()!.status === "running" ? "■ stop" : "▶ start"}</button>
+            >{sel()!.status === "running" ? "■ 停止" : "▶ 開始"}</button>
             <button
-              title="branch off the conversation here — try things without disturbing the main line"
+              title="ここから会話を分岐 — 本線に影響なく試せます"
               onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}
-            >⑂ fork</button>
+            ><span class="mi">call_split</span> フォーク</button>
             <button onclick={async () => {
               const id = selected();
-              if (!id || !confirm(`remove agent ${id}? (log is kept)`)) return;
+              if (!id || !confirm(`エージェント ${id} を削除しますか?（ログは残ります）`)) return;
               await api(`/api/agents/${id}`, { method: "DELETE" }).catch(() => {});
               const rest = agents().filter((a) => a.id !== id);
               setAgents(rest);
               if (rest[0]) select(rest[0].id);
               else { setSelected(null); setEvents([]); }
-              }} title="remove agent from teapot (session log stays on disk)">🗑 remove</button>
+              }} title="teapotからエージェントを削除（セッションログはディスクに残ります）">削除</button>
               <Show when={agents().some((a) => a.parent === selected())}>
                 <button
                   onclick={async () => {
                     if (!selected()) return;
                     const r = await api(`/api/agents/${selected()}/stop-children`, { method: "POST" });
-                    flashHint(`stopped: ${((r as any).stopped ?? []).join(", ") || "(none)"}`);
+                    flashHint(`停止済み: ${((r as any).stopped ?? []).join(", ") || "(なし)"}`);
                     refreshAgents();
                   }}
-                  title="stop every sub-agent this agent spawned (descendants included)"
-                >⏹ subs</button>
+                  title="このエージェントが生んだサブエージェントをすべて停止（子孫含む）"
+                ><span class="mi">stop_circle</span> サブ停止</button>
               </Show>
           </div>
           <div class="ctrlrow">
             <label
-              title="auto-continue fires after a round ONLY when all hold: ① this toggle is on ② a goal is set and its status is 'active' ③ the round ended cleanly (no error / not stopped). It stops when the goal is marked done, or if you press ■ stop. Sending any prompt also starts an idle agent regardless."
+              title="自動継続はラウンド後に次の条件をすべて満たす場合のみ動作します: ①このトグルがON ②目標が設定されステータスが active ③ラウンドが正常終了（エラーなし・停止なし）。目標が done になるか ■ 停止で止まります。プロンプト送信でも待機中エージェントは起動します。"
             >
               <input
                 type="checkbox"
@@ -2828,15 +2856,15 @@ export default function App() {
                   }).then(refreshAgents);
                 }}
               />
-              auto-continue
+              自動継続
             </label>
-            <span class="muted">loops while goal is active · stops on done / stop</span>
+            <span class="muted">目標が active の間ループ · done/停止で終了</span>
           </div>
 
-          <h3 title="what the agent is working toward — auto-continue keeps looping while the status is 'active'">🎯 goal
+          <h3 title="エージェントの作業目標 — ステータスが active の間、自動継続がループします"><span class="mi">flag</span> 目標
             <Show
               when={!!sel()!.goal.text.trim()}
-              fallback={<span class="badge" title="no goal set yet">no goal</span>}
+              fallback={<span class="badge" title="目標は未設定です">目標なし</span>}
             >
               <span class={`badge ${sel()!.goal.status === "active" ? "running" : sel()!.goal.status}`}>{sel()!.goal.status}</span>
             </Show>
@@ -2853,10 +2881,10 @@ export default function App() {
                   disabled={!!sel()!.goal.text.trim() && sel()!.goal.status === s}
                   title={
                     s === "active"
-                      ? "agent keeps working toward the goal (with auto-continue)"
+                      ? "目標に向けて作業を継続します（自動継続）"
                       : s === "done"
-                        ? "mark achieved — auto-continue stops"
-                        : "parked on purpose — resume by setting active again"
+                        ? "達成済みにする — 自動継続が止まります"
+                        : "意図的に一時停止中 — active に戻すと再開します"
                   }
                   onclick={() => {
                     if (!selected()) return;
@@ -2866,20 +2894,20 @@ export default function App() {
                       body: JSON.stringify({ status: s }),
                     }).then(refreshAgents);
                   }}
-                >{s === "active" ? "▶ working" : s === "done" ? "✓ done" : "⏸ paused"}</button>
+                >{s === "active" ? "▶ 作業中" : s === "done" ? "完了" : "一時停止"}</button>
               )}
             </For>
           </div>
           <Show
             when={sel()!.goal.text}
-            fallback={<div class="card muted">no goal yet — write one below and press ✓ save. Then ▶ start (or any message) sets it in motion.</div>}
+            fallback={<div class="card muted">目標が未設定 — 下のフォームに入力して保存してください。その後 ▶ 開始（またはメッセージ送信）で動き出します。</div>}
           >
             <div class="card">
               <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.text))} />
             </div>
             <Show when={sel()!.goal.verify}>
-              <div class="card verifycard" title="verification contract — finish(goalComplete=true) is audited against these requirements by an independent reviewer before the goal counts as done">
-                <div class="vtitle">🔍 verification contract</div>
+              <div class="card verifycard" title="検証コントラクト — finish(goalComplete=true) は独立したレビューアーによりこの要件と照合審査されます">
+                <div class="vtitle"><span class="mi">fact_check</span> 検証コントラクト</div>
                 <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.verify))} />
               </div>
             </Show>
@@ -2887,7 +2915,7 @@ export default function App() {
               {(a) => (
                 <div class={"card auditcard " + (a().verdict === "approved" ? "ok" : "warn")}>
                   <div class="vtitle">
-                    {a().verdict === "approved" ? "✅ audit: approved" : "⚠ audit: changes required"}
+                    {a().verdict === "approved" ? <><span class="mi">check_circle</span> 監査: 承認</> : <><span class="mi">error</span> 監査: 要修正</>}
                     <span class="meta muted" style="margin-left:auto">{relTime(a().at)}</span>
                   </div>
                   <div class="content" innerHTML={renderMarkdown(a().feedback)} />
@@ -2896,13 +2924,13 @@ export default function App() {
             </Show>
           </Show>
           <div class="muted" style="font-size:11px;margin-top:4px">
-            stored with the session · the agent reads it via get_goal() · auto-continue loops while status is "working" and stops when marked done
+            セッションに保存 · エージェントは get_goal() で読みます · ステータス working の間は自動継続し done で停止します
           </div>
           <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-top:8px;margin-bottom:6px">
             <textarea
               id="goal-input"
               rows={3}
-              placeholder="set new goal…"
+              placeholder="新しい目標を入力…"
               value={goalDraft()}
               oninput={(e) => { setGoalDraft(e.currentTarget.value); setGoalDirty(true); }}
               style="background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;width:100%;resize:vertical"
@@ -2910,8 +2938,8 @@ export default function App() {
             <textarea
               id="goal-verify-input"
               rows={2}
-              placeholder="verification contract (optional) — e.g. 'npm test passes; endpoint documented'. finish(goalComplete=true) is then audited against this."
-              title="pi-goal-x-style verification contract — an independent reviewer checks the agent's finish against these requirements"
+              placeholder="検証コントラクト (任意) — 例: 'npm test が通ること; エンドポイントを文書化'. finish(goalComplete=true) はこれと照合されます。"
+              title="検証コントラクト — 独立したレビューアーがエージェントの finish をこの要件と照合します"
               value={goalVerifyDraft()}
               oninput={(e) => { setGoalVerifyDraft(e.currentTarget.value); setGoalDirty(true); }}
               style="background:var(--bg-darkest);border:1px solid var(--bg-light);border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;font-size:12.5px;width:100%;resize:vertical"
@@ -2920,22 +2948,22 @@ export default function App() {
               <label
                 class="muted"
                 style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
-                title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
+                title="次のターンの区切りで新しい目標をエージェントに伝えるハーネスプロンプトをキューに入れる"
               >
-                <input id="goal-notify" type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} /> notify agent
+                <input id="goal-notify" type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} /> エージェントに通知
               </label>
-              <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer">✓ save goal</button>
+              <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer">目標を保存</button>
             </div>
           </form>
 
-          <h3 title="todo.md — a shared checklist in the session dir. Write tasks like '- [ ] fix login'; the agent ticks them off via set_todo, you edit here. With notify on, it's told at its next turn boundary.">
-            ✅ tasks
+          <h3 title="todo.md — セッションディレクトリの共有チェックリスト。「- [ ] ログイン修正」のように書くと、エージェントが set_todo でチェックします。ここでも編集可。通知ONなら次のターンで伝わります。">
+            タスク
             <Show when={todoStats().total > 0}>
               <span class="badge" style={todoStats().done === todoStats().total ? "color:var(--ok)" : "color:var(--warn)"}>
                 {todoStats().done}/{todoStats().total} done
               </span>
             </Show>
-            <span class="muted" style="text-transform:none;letter-spacing:0">· shared checklist (you + agent)</span>
+            <span class="muted" style="text-transform:none;letter-spacing:0">· 共有チェックリスト（あなた + エージェント）</span>
           </h3>
           <Show when={todoStats().total > 0}>
             <div class="bartrack" style="margin-bottom:6px">
@@ -2962,62 +2990,62 @@ export default function App() {
                 setTodoDraft(e.currentTarget.value);
                 setTodoDirty(true);
               }}
-              title="shared with the agent — it may check items off via set_todo; your unsaved edits win until you save"
+              title="エージェントと共有 — set_todo でチェックされることがあります。保存するまではあなたの未保存編集が優先されます"
               style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
             />
           </Show>
           <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px">
             <IconBtn
-              icon={todoViewMode() ? "👁" : "✎"}
+              icon={todoViewMode() ? "visibility" : "edit"}
               title={todoViewMode() ? "rendered checklist" : "edit markdown"}
               onClick={() => setTodoViewMode(!todoViewMode())}
             />
             <label
               class="muted"
               style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
-              title="queue a harness prompt telling the agent the task list changed"
+              title="タスク一覧の変更をエージェントに伝えるハーネスプロンプトをキューに入れる"
             >
-              <input id="todo-notify" type="checkbox" checked /> notify agent
+              <input id="todo-notify" type="checkbox" checked /> エージェントに通知
             </label>
             <button
               onclick={saveTodo}
               style="background:var(--ok);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer"
-            >✓ save tasks</button>
+            >タスクを保存</button>
           </div>
 
-          <h3 title="latest report_progress snapshot. The harness asks for one after real activity (time AND output gates); errors show under ⚠ problems">📈 progress</h3>
+          <h3 title="report_progress の最新スナップショット。ハーネスは実際の活動の後に要求します。エラーは「問題」に表示">進捗</h3>
           <Show
             when={sel()!.latestProgress}
-            fallback={<div class="muted">none yet — the harness asks for a report after real activity, and the agent can report_progress anytime</div>}
+            fallback={<div class="muted">まだありません — ハーネスは実際の活動の後にレポートを要求します。エージェントはいつでも report_progress できます。</div>}
           >
             {(p) => (
               <div class="card prog">
                 <div class="progrow"><b>doing</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().doing)} /></div>
                 <Show when={p().recent}><div class="progrow"><b>recent</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().recent)} /></div></Show>
-                <Show when={p().problems}><div class="progrow warn"><b>⚠ problems</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().problems)} /></div></Show>
-                <Show when={p().next}><div class="progrow"><b>next</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().next)} /></div></Show>
+                <Show when={p().problems}><div class="progrow warn"><b>問題</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().problems)} /></div></Show>
+                <Show when={p().next}><div class="progrow"><b>次へ</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().next)} /></div></Show>
                 <Show when={p().goalStatus}><div class="progrow"><b>goal</b><span>{p().goalStatus}</span></div></Show>
                 <div class="meta muted">{relTime(p().ts)}</div>
               </div>
             )}
           </Show>
 
-          <h3 title="cumulative billed totals · the cached pill counts tokens served from the provider's prompt cache (far cheaper) · context bar turns orange ≥70% and red ≥85% of the model window">📊 runtime</h3>
+          <h3 title="課金の累計 · キャッシュ表示はプロバイダーのプロンプトキャッシュ由来トークン（大幅に安価） · コンテキストバーはモデル窓の70%以上で橙・85%以上で赤"><span class="mi">monitoring</span> 実行状況</h3>
           <div class="card runcard">
             <div class="statgrid">
-              <div class="stat" title="LLM turns taken this session"><span>turns</span><b>{sel()!.stats.turns}</b></div>
-              <div class="stat" title="tool calls executed"><span>tools</span><b>{sel()!.stats.toolCalls}</b></div>
-              <div class="stat" title="times old turns were summarized to free context"><span>compacted</span><b>{sel()!.stats.compactions ?? 0}</b></div>
+              <div class="stat" title="このセッションのLLMターン数"><span>ターン</span><b>{sel()!.stats.turns}</b></div>
+              <div class="stat" title="実行したツール呼び出し"><span>ツール</span><b>{sel()!.stats.toolCalls}</b></div>
+              <div class="stat" title="コンテキスト解放のため古いターンを要約した回数"><span>圧縮</span><b>{sel()!.stats.compactions ?? 0}</b></div>
             </div>
             <div class="statrow">
-              <span class="k">tokens</span>
-              <b>{fmtK(sel()!.stats.inputTokens)} in / {fmtK(sel()!.stats.outputTokens)} out</b>
+              <span class="k">トークン</span>
+              <b>入力{fmtK(sel()!.stats.inputTokens)} / 出力{fmtK(sel()!.stats.outputTokens)}</b>
               <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
                 <span
                   class="pill ok"
-                  title={`${fmtK(sel()!.stats.cachedInputTokens)} tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
+                  title={`${fmtK(sel()!.stats.cachedInputTokens)}トークンはプロバイダーのプロンプトキャッシュ由来 — 新規入力より大幅に安価`}
                 >
-                  ⚡ {(Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 1000) / 10)}% cached
+                  <span class="mi">bolt</span> {(Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 1000) / 10)}% キャッシュ
                 </span>
               </Show>
             </div>
@@ -3028,7 +3056,7 @@ export default function App() {
                 class="statrow"
                 title={`≈ ${(sel()!.stats.costUsd ?? 0).toFixed(4)} this session, from the model's USD/token pricing and per-turn usage. Cached input is estimated at ~10% of the prompt rate; treat as an approximation, not an invoice.`}
               >
-                <span class="k">cost</span>
+                <span class="k">費用</span>
                 <b>${costFmt(sel()!.stats.costUsd ?? 0)}</b>
               </div>
             </Show>
@@ -3037,8 +3065,8 @@ export default function App() {
               keyed
               fallback={
                 <div class="statrow">
-                  <span class="k">context</span>
-                  <span class="muted">no window known for this model yet</span>
+                  <span class="k">コンテキスト</span>
+                  <span class="muted">このモデルの窓はまだ不明です</span>
                 </div>
               }
             >
@@ -3077,14 +3105,14 @@ export default function App() {
                 return (
                   <div
                     class="ctxblock"
-                    title="estimated live context vs the model's real window. Past the window, old turns are summarized into notes (compaction); the compact line below shows where that starts."
+                    title="予測ライブコンテキスト対モデル実窓's real window. Past the window, old turns are summarized into notes (compaction); the compact line below shows where that starts."
                   >
                     <div class="statrow">
-                      <span class="k">context</span>
-                      <b>~{fmtK(v().usedTokens)} tok</b>
+                      <span class="k">コンテキスト</span>
+                      <b>約{fmtK(v().usedTokens)}トークン</b>
                       <Show when={v().effectiveWindow}>
                         <span class={`pill ${v().cls}`}>
-                          {fmtPct(v().pct)}% of {fmtK(v().effectiveWindow)}
+                          {fmtK(v().effectiveWindow)}中{fmtPct(v().pct)}%
                         </span>
                       </Show>
                     </div>
@@ -3106,16 +3134,16 @@ export default function App() {
                       </div>
                     </Show>
                     <Show when={compacting() || v().compacting}>
-                      <div class="statrow" title="a compaction pass is running right now — the summarizer's output streams in the timeline">
-                        <span class="k">🗜</span>
-                        <b>compacting…</b>
+                      <div class="statrow" title="圧縮パスが現在実行中 — the summarizer's output streams in the timeline">
+                        <span class="k"><span class="mi">summarize</span></span>
+                        <b>圧縮中…</b>
                         <span class="muted" style="font-size:11px;color:var(--acc)">
                           {compacting()?.phase ?? String(v().compacting)}
                         </span>
                       </div>
                     </Show>
                     <div class="ctrlrow" style="margin-top:6px">
-                      <label title="when on, older turns are automatically summarized when context exceeds the budget">
+                      <label title="ONのとき、コンテキストが予算を超えると古いターンを自動要約します">
                         <input
                           type="checkbox"
                           checked={sel()!.autoCompact !== false}
@@ -3128,12 +3156,12 @@ export default function App() {
                             }).then(refreshAgents);
                           }}
                         />
-                        auto-compact
+                        自動圧縮
                       </label>
-                      <span class="muted" style="font-size:11.5px">summarizes old turns when budget exceeded</span>
+                      <span class="muted" style="font-size:11.5px">予算超過時に古いターンを要約</span>
                     </div>
                     <div class="muted" style="font-size:11px;margin-top:4px">
-                      compaction starts around ~{fmtK(v().compactAt)} tok — older turns get summarized, recent ones stay intact
+                      圧縮は次の付近で開始 ~{fmtK(v().compactAt)} tok — 古いターンは要約、直近は保持
                     </div>
                   </div>
                 );
@@ -3141,7 +3169,7 @@ export default function App() {
             </Show>
           </div>
 
-          <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span></h3>
+          <h3><span class="mi">account_tree</span> ブランチ <span class="muted" style="text-transform:none;letter-spacing:0">· クリックでフィードを絞込</span></h3>
           <For each={branches()}>
             {(b) => (
               <div
@@ -3159,25 +3187,25 @@ export default function App() {
             )}
           </For>
 
-          <h3>⏰ schedule <span class="muted" style="text-transform:none;letter-spacing:0">· cron tasks, all agents · edit in settings</span></h3>
+          <h3><span class="mi">schedule</span> スケジュール <span class="muted" style="text-transform:none;letter-spacing:0">· cronタスク（全エージェント）· 設定から編集</span></h3>
           <Show
             when={tasks().length > 0}
-            fallback={<div class="muted">no scheduled tasks — add them in ⚙ settings ("scheduled tasks")</div>}
+            fallback={<div class="muted">定期タスクがありません — 設定から追加してください</div>}
           >
             <For each={tasks()}>
               {(t) => (
                 <div
                   class={"sched-row" + (t.agent === selected() ? " cur" : "")}
-                  title={`${oneLine(t.prompt, 200)}\nclick to open #${t.agent}`}
+                  title={`${oneLine(t.prompt, 200)}\nクリックで #${t.agent} を開く`}
                   onclick={() => select(t.agent)}
                 >
                   <div class="sched-top">
                     <b>{t.id}</b>
                     <span class="muted">@{t.agent}</span>
-                    <Show when={t.forked}><span title="runs on a forked branch so chatter stays off the main line">⑂</span></Show>
+                    <Show when={t.forked}><span title="フォークしたブランチで実行中（本線に雑談が混ざりません）"><span class="mi">call_split</span></span></Show>
                   </div>
                   <div class="sched-meta mono">
-                    {t.schedule} → next {t.next ? relTime(t.next) : "—"}{t.last ? ` · last ${relTime(t.last)}` : " · never ran"}
+                    {t.schedule} → 次回 {t.next ? relTime(t.next) : "—"}{t.last ? ` · 前回 ${relTime(t.last)}` : " · 未実行"}
                   </div>
                   <div class="sched-prompt muted">{oneLine(t.prompt, 90)}</div>
                 </div>
@@ -3194,24 +3222,24 @@ export default function App() {
       <div class="notifbackdrop" onclick={() => setShowNotifs(false)} />
       <div class="notifpanel">
         <div class="notifhead">
-          notifications
+          通知
           <span style="display:flex;gap:8px;align-items:center">
             <Show when={notifs().length > 0}>
-              <button class="editbtn" onclick={() => setNotifs([])}>clear all</button>
+              <button class="editbtn" onclick={() => setNotifs([])}>すべてクリア</button>
             </Show>
-            <button class="iconbtn" title="close notifications" onclick={() => setShowNotifs(false)}>✕</button>
+            <button class="iconbtn" title="通知を閉じる" onclick={() => setShowNotifs(false)}>✕</button>
           </span>
         </div>
         <Show
           when={notifs().length > 0}
-          fallback={<div class="muted" style="padding:10px">nothing yet — progress, finishes, questions and errors will land here</div>}
+          fallback={<div class="muted" style="padding:10px">まだありません — 進捗、完了、質問、エラーがここに表示されます</div>}
         >
           <div class="notiflist">
             <For each={notifs()}>
               {(n) => (
                 <div
                   class={"notifitem " + n.kind + (n.read ? " read" : "")}
-                  title={`from ${n.agentId}`}
+                  title={`主: ${n.agentId}`}
                   onclick={() => {
                     // mark THIS one read, jump to its agent and scroll the
                     // timeline to the exact message that raised it
@@ -3223,18 +3251,19 @@ export default function App() {
                       setTimeout(() => jumpToEvent(n.eventId!), selected() !== n.agentId ? 350 : 60);
                   }}
                 >
+                  
                   <div class="nhead">
-                    <span class="nicon">{n.kind === "finish" ? "✅" : n.kind === "question" ? "❓" : n.kind === "error" ? "⚠️" : "📈"}</span>
+                    <span class="nicon material-icon">{n.kind === "finish" ? "check_circle" : n.kind === "question" ? "help" : n.kind === "error" ? "error" : "trending_up"}</span>
                     <span class="ntitle">{n.title}</span>
                     <span class="meta muted">{relTime(new Date(n.at).toISOString())}</span>
                     <button
                       class="iconbtn nreadbtn"
-                      title={n.read ? "already read" : "mark as read"}
+                      title={n.read ? "既読" : "既読にする"}
                       onclick={(e: MouseEvent) => {
                         e.stopPropagation();
                         setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
                       }}
-                    >{n.read ? "✓" : "○"}</button>
+                    >{n.read ? "check" : "circle"}</button>
                   </div>
                   <Show when={n.body}>
                     <div class="nbody">{truncate(n.body, 160)}</div>
@@ -3262,7 +3291,7 @@ export default function App() {
         const afterCount = () => Math.max(0, events().length - idx() - 1);
         const [tail, setTail] = createSignal<"summarize" | "discard">(afterCount() > 0 ? "summarize" : "discard");
         return (
-          <Modal title="edit prompt — forks the conversation" onClose={() => setEditing(null)}>
+          <Modal title="プロンプトを編集 — 会話をフォークします" onClose={() => setEditing(null)}>
             <form
               onsubmit={async (ev) => {
                 ev.preventDefault();
@@ -3278,7 +3307,7 @@ export default function App() {
                   const id = selected();
                   if (id) await select(id);
                 } catch (ex) {
-                  alert(`edit failed: ${(ex as Error).message}`);
+                  alert(`編集に失敗: ${(ex as Error).message}`);
                 }
               }}
               style="display:flex;flex-direction:column;gap:10px"
@@ -3287,22 +3316,22 @@ export default function App() {
               <Show when={afterCount() > 0}>
                 <div>
                   <div style="font-size:12.5px;margin-bottom:4px">
-                    {afterCount()} event(s) came after this prompt — what should happen to them on the new branch?
+                    このプロンプトの後に{afterCount()}件のイベントがあります — 新しいブランチでどう扱いますか?
                   </div>
                   <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
                     <input type="radio" name="tail" checked={tail() === "summarize"} onchange={() => setTail("summarize")} />
-                    summarize them into a note the agent can still read
+                    エージェントが読めるメモに要約する
                   </label>
                   <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
                     <input type="radio" name="tail" checked={tail() === "discard"} onchange={() => setTail("discard")} />
-                    discard them entirely (clean timeline)
+                    全部破棄する（きれいなタイムライン）
                   </label>
                 </div>
               </Show>
               <div style="display:flex;justify-content:flex-end;gap:8px">
-                <button type="button" onclick={() => setEditing(null)}>cancel</button>
+                <button type="button" onclick={() => setEditing(null)}>キャンセル</button>
                 <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 12px;cursor:pointer">
-                  ⑂ fork & resend
+                  <span class="mi">call_split</span> フォークして再送
                 </button>
               </div>
             </form>
@@ -3369,7 +3398,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
   const out = () => (res ? String(res.data?.result ?? "") : "");
 
   // per-tool summary line: [icon, label, hint]
-  let icon = "⚙";
+  let icon = "settings";
   let label = name;
   let hint: string | null = "";
   let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
@@ -3412,11 +3441,11 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
         // "$ cmd · 12ms" row read as "finished immediately" and the job was
         // forgotten. Give them their own identity + the job id for bash_output.
         const bgJob = isBg ? (String(out()).match(/job (bg\d+)/)?.[1] ?? "") : "";
-        label = (isBg ? "⏳ " : "$ ") + oneLine(cmd, 96);
-        const timeoutHint = argStr("timeout_ms") ? ` · timeout ${Math.round(Number(argStr("timeout_ms")) / 1000)}s` : "";
+        label = (isBg ? "BG " : "$ ") + oneLine(cmd, 96);
+        const timeoutHint = argStr("timeout_ms") ? ` · 制限時間${Math.round(Number(argStr("timeout_ms")) / 1000)}秒` : "";
         hint = res
           ? isBg
-            ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutHint}`
+            ? `バックグラウンドジョブ${bgJob ? ` ${bgJob}` : ""}${timeoutHint}`
             : `${res.data?.durationMs ?? "?"}ms${timeoutHint}`
           : null; // live elapsed renders in the summary (below)
         body = (
@@ -3454,7 +3483,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
         body = (
           <>
             {codeBlock(content, 1500)}
-            {content.length > 1500 ? <div class="meta muted">{fmtK(content.length)} bytes — open it from 🗂 files for the full view</div> : null}
+            {content.length > 1500 ? <div class="meta muted">{fmtK(content.length)} bytes — ファイル一覧から開くと全体を見られます</div> : null}
             {res ? <div class="meta">{oneLine(out(), 160)}</div> : <div class="meta">writing…</div>}
           </>
         );
@@ -3556,7 +3585,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
         body = (
           <>
             {files.length ? <div class="meta">bundled: {files.join(", ")}</div> : null}
-            {res ? <div class="meta">{oneLine(out(), 160)} · {res.data?.durationMs}ms</div> : <div class="meta">saving…</div>}
+            {res ? <div class="meta">{oneLine(out(), 160)} · {res.data?.durationMs}ms</div> : <div class="meta">保存中…</div>}
           </>
         );
         break;
@@ -3577,7 +3606,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
       }}
     >
       <summary>
-        <b>{icon} {label}</b>
+        <b><span class="mi">{icon}</span> {label}</b>
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
         </Show>
@@ -3595,9 +3624,9 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
             rows (rawOf only knows prompts/messages) — now the command that ran
             and its output each have their own button */}
         <span class="toolcopy">
-          <CopyBtn text={cmdText()} label="⧉ cmd" title={`copy the ${name} arguments`} />
+          <CopyBtn text={cmdText()} label="コマンド" title={`${name} の引数をコピー`} />
           <Show when={res}>
-            <CopyBtn text={out()} label="⧉ out" title="copy this tool's full output" />
+            <CopyBtn text={out()} label="出力" title="このツールの全出力をコピー" />
           </Show>
         </span>
       </summary>
@@ -3651,17 +3680,17 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
     const d = e.data ?? {};
     return (
       <div class="divider-msg">
-        ⑂ forked from {String(d.fromBranch ?? "?")} → {String(d.newBranch ?? e.branch)}
+        <span class="mi">call_split</span> {String(d.fromBranch ?? "?")} からフォーク → {String(d.newBranch ?? e.branch)}
       </div>
     );
   }
   if (e.type === "goal") {
     const d = e.data ?? {};
     const what = d.event === "status" ? `marked ${String(d.status ?? "")}` : oneLine(String(d.text ?? ""), 80);
-    return <div class="divider-msg">🎯 goal {String(d.event ?? "")}: {what}</div>;
+    return <div class="divider-msg"><span class="mi">flag</span> 目標 {String(d.event ?? "")}: {what}</div>;
   }
   if (e.type === "todo") {
-    return <div class="divider-msg">✅ tasks updated ({String(e.data?.by ?? "human")})</div>;
+    return <div class="divider-msg">タスクを更新しました ({String(e.data?.by ?? "human")})</div>;
   }
   if (e.type === "state") {
     if (e.data.from === e.data.to) return null;
@@ -3687,8 +3716,8 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
     }
     if (ev === "error-retry") {
       return (
-        <div class="embed warn-embed" title="a round-fatal API error occurred; auto-retry is waiting, then a fresh round starts (onError: retry)">
-          <div class="mono">↻ API error — retrying (attempt {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…</div>
+        <div class="embed warn-embed" title="ラウンド致命的なAPIエラーが発生。自動リトライ待機中、次に新しいラウンド開始 (onError: retry)">
+          <div class="mono">↻ APIエラー — リトライ中 (試行 {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…</div>
         </div>
       );
     }
@@ -3697,7 +3726,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
       const secs = Math.round(Number(e.data?.durationMs ?? 0) / 1000);
       return (
         <div class={"divider-msg" + (failed ? " err" : "")} title={String(e.data?.cmd ?? "")}>
-          {(failed ? "⚠ background job " : "✓ background job ") +
+          {(failed ? "バックグラウンドジョブ " : "バックグラウンドジョブ完了 ") +
             String(e.data?.jobId ?? "?") + " " +
             (failed ? `FAILED (exit ${String(e.data?.code ?? "?")})` : `finished (${secs}s)`)}
         </div>
@@ -3706,7 +3735,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
     if (ev === "context-compacted") {
       return (
         <div class="divider-msg">
-          🗜 compacted: {String(e.data?.tokensBefore ?? "?")} → {String(e.data?.tokensAfter ?? "?")} tok ({String(e.data?.mode ?? "")})
+          <span class="mi">summarize</span> 圧縮: {String(e.data?.tokensBefore ?? "?")} → {String(e.data?.tokensAfter ?? "?")} tok ({String(e.data?.mode ?? "")})
         </div>
       );
     }
@@ -3720,7 +3749,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
     >
       {/* grouped rows keep the same geometry as the row that started the
           run — same avatar slot, but EMPTY (no faded ghost icon): a column of
-          faint 🧩s read as separate "sub messages" instead of continuation
+          faint subs read as separate "sub messages" instead of continuation
           lines. Hover still shows time+branch via the title. */}
       <div
         class={"avatar avghost" + (grouped ? " ghosted" : "")}
@@ -3737,27 +3766,27 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
             <Show when={e.data?.actor}>
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
-            <span class="ts">{e.data?.pending ? "queued…" : fmtTs(e.ts)}</span>
+            <span class="ts">{e.data?.pending ? "送信待ち…" : fmtTs(e.ts)}</span>
             <span class="ts">{e.branch}</span>
             <Show when={props.onCancel}>
               <button
                 class="editbtn"
-                title="withdraw this message — it has not reached the model yet; the text goes back to the input box"
+                title="このメッセージを取り下げ — まだモデルに届いていません。テキストは入力欄に戻ります"
                 onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onCancel!(); }}
-              >✕ cancel</button>
+              >キャンセル</button>
             </Show>
             {/* tool rows have no copyable message body — their command/output
                 buttons live inside ToolRow; rendering the header button anyway
                 produced a "copy" that silently copied the empty string */}
             <Show when={e.type !== "tool_call"}>
-              <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
+              <CopyBtn text={rawOf(e)} label="コピー" title="このメッセージの原文をコピー（markdownレンダリングなし）" />
             </Show>
             <Show when={props.onEdit}>
               <button
                 class="editbtn"
-                title="edit this prompt — forks the conversation here (later events are dropped or summarized)"
+                title="このプロンプトを編集 — ここから会話をフォーク（後続イベントは破棄か要約）"
                 onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onEdit!(); }}
-              >✎ edit</button>
+              >編集</button>
             </Show>
           </div>
         </Show>
@@ -3785,7 +3814,7 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
     <div class="qfree">
       <input
         type="text"
-        placeholder={props.answered ? "answered" : "or type your own answer…"}
+        placeholder={props.answered ? "回答済み" : "または独自の回答を入力…"}
         disabled={props.answered}
         value={val()}
         oninput={(e) => setVal(e.currentTarget.value)}
@@ -3793,7 +3822,7 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
           if (e.key === "Enter") { e.preventDefault(); submit(); }
         }}
       />
-      <button disabled={props.answered || !val().trim()} onclick={submit}>reply</button>
+      <button disabled={props.answered || !val().trim()} onclick={submit}>返信</button>
     </div>
   );
 }
@@ -3821,16 +3850,16 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
         <>
           <Show when={typeof e.data.reasoning === "string" && e.data.reasoning.trim()}>
             <details class="reasoning">
-              <summary>💭 reasoning{String(e.data.reasoning).length > 4000 ? ` (${fmtK(String(e.data.reasoning).length)} — truncated)` : ""}</summary>
+              <summary><span class="mi">psychology</span> 思考過程{String(e.data.reasoning).length > 4000 ? ` (${fmtK(String(e.data.reasoning).length)} — 省略表示)` : ""}</summary>
               <div class="mono">{truncate(String(e.data.reasoning), 8000)}</div>
             </details>
           </Show>
           <div class="content" innerHTML={renderMarkdownCached(String(e.data.content ?? ""))} />
           <Show when={e.data.interrupted}>
-            <div class="interrupted">⚠ interrupted — partial output kept</div>
+            <div class="interrupted">中断 — 部分的出力を保持</div>
           </Show>
           <Show when={e.data.final}>
-            <div class="msgfoot"><CopyBtn text={String(e.data.content ?? "")} /><span>copy summary</span></div>
+            <div class="msgfoot"><CopyBtn text={String(e.data.content ?? "")} /><span>要約をコピー</span></div>
           </Show>
         </>
       );
@@ -3878,9 +3907,9 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
         <div class={"embed question" + (answered ? " answered" : "")}>
           {/* questions are model-written and often carry markdown (code refs,
               lists) — render them like progress embeds instead of dumping raw */}
-          <div>❓ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
+          <div><span class="mi">help</span> <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
           <Show when={answered}>
-            <div class="meta" style="color:var(--ok)">✓ answered — continuing below</div>
+            <div class="meta" style="color:var(--ok)">✓ 回答済み — 下で続行</div>
           </Show>
           <Show when={opts.length > 0}>
             <div class="qopts">
@@ -3915,20 +3944,20 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
         <div class="embed" style="border-color: var(--ok)">
           {/* progress bodies are model-written markdown — render them, don't
               dump raw text (structured fields keep their labels) */}
-          <div>📈 <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.doing ?? ""))} /></div>
+          <div><span class="mi">trending_up</span> <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.doing ?? ""))} /></div>
           <Show when={e.data.goalStatus}><div class="progrow"><b>goal</b><span>{String(e.data.goalStatus)}</span></div></Show>
           <Show when={e.data.recent}><div class="progrow"><b>recent</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.recent))} /></div></Show>
-          <Show when={e.data.problems}><div class="progrow warn"><b>⚠ problems</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.problems))} /></div></Show>
-          <Show when={e.data.next}><div class="progrow"><b>next</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.next))} /></div></Show>
+          <Show when={e.data.problems}><div class="progrow warn"><b>問題</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.problems))} /></div></Show>
+          <Show when={e.data.next}><div class="progrow"><b>次へ</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.next))} /></div></Show>
         </div>
       );
     case "error":
-      return <div class="embed fail"><div class="mono">⚠ {String(e.data.message ?? "")}</div></div>;
+      return <div class="embed fail"><div class="mono">{String(e.data.message ?? "")}</div></div>;
     case "compaction":
       return (
         <details class="embed compaction">
           <summary>
-            <b>🗜 context compacted</b>
+            <b><span class="mi">summarize</span> コンテキストを圧縮しました</b>
             <span class="meta">
               {String(e.data.mode ?? "")} · {fmtK(Number(e.data.tokensBefore ?? 0))} → {fmtK(Number(e.data.tokensAfter ?? 0))} tok
               {" · "}{e.data.summarized ? `${e.data.summarized} summarized` : `${e.data.dropped} dropped`}
@@ -4050,9 +4079,9 @@ function CopyBtn(props: { text: string; label?: string; title?: string }) {
   return (
     <button
       class="copybtn"
-      title={props.title ?? "copy to clipboard"}
+      title={props.title ?? "クリップボードにコピー"}
       onclick={copy}
-    >{done() ? "✓" : failed() ? "✗" : props.label ?? "⧉"}</button>
+    >{done() ? "✓" : failed() ? "✗" : <><span class="mi">content_copy</span>{props.label ? ` ${props.label}` : ""}</>}</button>
   );
 }
 
@@ -4108,31 +4137,31 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
   };
 
   return (
-    <Modal title="new agent" onClose={props.onClose}>
+    <Modal title="新規エージェント" onClose={props.onClose}>
       <form onsubmit={create} style="display:flex;flex-direction:column;gap:10px">
-        <label>workspace directory
+        <label>ワークスペースのディレクトリ
           <div style="display:flex;gap:6px">
             <input type="text" class="w100 mono" value={dir()} oninput={(e) => setDir(e.currentTarget.value)} />
-            <button type="button" onclick={() => browse(dir())}>go</button>
-            <button type="button" title="parent directory" onclick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
+            <button type="button" onclick={() => browse(dir())}>開く</button>
+            <button type="button" title="親ディレクトリ" onclick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
           </div>
         </label>
         <div class="dirlist">
           <For each={entries()}>{(n) =>
-            <div class="direntry" onclick={() => browse(`${dir()}/${n}`.replace(/\/+/g, "/"))}>📁 {n}</div>
+            <div class="direntry" onclick={() => browse(`${dir()}/${n}`.replace(/\/+/g, "/"))}><span class="mi">folder</span> {n}</div>
           }</For>
         </div>
         <div style="display:flex;gap:10px">
-          <label style="flex:1">agent name <input type="text" placeholder="(directory name)" value={name()} oninput={(e) => setName(e.currentTarget.value)} /></label>
-          <label>provider
+          <label style="flex:1">エージェント名 <input type="text" placeholder="(ディレクトリ名)" value={name()} oninput={(e) => setName(e.currentTarget.value)} /></label>
+          <label>プロバイダー
             <select value={provider()} onchange={(e) => setProvider(e.currentTarget.value)}>
               <For each={props.providers}>{(p) => <option>{p}</option>}</For>
             </select>
           </label>
-          <label style="flex:1">model <input type="text" placeholder="(provider default)" value={model()} oninput={(e) => setModel(e.currentTarget.value)} /></label>
+          <label style="flex:1">モデル <input type="text" placeholder="(プロバイダー既定)" value={model()} oninput={(e) => setModel(e.currentTarget.value)} /></label>
         </div>
         <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
-        <button type="submit" style="align-self:flex-end">create</button>
+        <button type="submit" style="align-self:flex-end">作成</button>
       </form>
     </Modal>
   );
@@ -4155,31 +4184,30 @@ const AUDIO_EXT = new Set(["mp3", "wav", "ogg", "m4a", "flac", "aac", "opus"]);
 function ficon(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   const mk = mediaKindOf(name);
-  if (mk === "image") return "🖼";
-  if (mk === "video") return "🎬";
-  if (mk === "audio") return "🎵";
-  if (["ts", "tsx", "mts", "cts"].includes(ext)) return "🟦";
-  if (["js", "mjs", "cjs", "jsx"].includes(ext)) return "🟨";
-  if (ext === "json" || ext === "jsonc") return "🧾";
-  if (ext === "md" || ext === "mdx" || ext === "markdown") return "📝";
-  if (ext === "css" || ext === "scss" || ext === "less") return "🎨";
-  if (ext === "html" || ext === "htm" || ext === "svg") return "🌐";
-  if (["py", "pyi"].includes(ext)) return "🐍";
-  if (ext === "rs") return "🦀";
-  if (ext === "go") return "🐹";
-  if (ext === "java" || ext === "kt" || ext === "kts") return "☕";
-  if (ext === "rb") return "💎";
-  if (ext === "php") return "🐘";
-  if (ext === "c" || ext === "h" || ext === "cpp" || ext === "hpp" || ext === "cc") return "🧩";
-  if (ext === "sh" || ext === "bash" || ext === "zsh" || ext === "fish") return "🐚";
-  if (ext === "sql") return "🗄";
-  if (ext === "yml" || ext === "yaml" || ext === "toml" || ext === "ini" || ext === "conf") return "⚙";
-  if (ext === "lock") return "🔒";
-  if (name === "Dockerfile" || ext === "dockerfile") return "🐳";
-  if (ext === "zip" || ext === "gz" || ext === "tar" || ext === "tgz" || ext === "bz2") return "📦";
-  if (ext === "pdf") return "📕";
-  if (ext === "txt" || ext === "log") return "📄";
-  return "·";
+  if (mk === "image") return "image";
+  if (mk === "video") return "video";
+  if (mk === "audio") return "audio_file";
+  if (["ts", "tsx", "mts", "cts", "js", "mjs", "cjs", "jsx"].includes(ext)) return "code";
+  if (ext === "json" || ext === "jsonc") return "data_object";
+  if (ext === "md" || ext === "mdx" || ext === "markdown") return "description";
+  if (ext === "css" || ext === "scss" || ext === "less") return "palette";
+  if (ext === "html" || ext === "htm" || ext === "svg") return "language";
+  if (["py", "pyi"].includes(ext)) return "code";
+  if (ext === "rs") return "code";
+  if (ext === "go") return "code";
+  if (ext === "java" || ext === "kt" || ext === "kts") return "code";
+  if (ext === "rb") return "code";
+  if (ext === "php") return "code";
+  if (ext === "c" || ext === "h" || ext === "cpp" || ext === "hpp" || ext === "cc") return "jigsaw";
+  if (ext === "sh" || ext === "bash" || ext === "zsh" || ext === "fish") return "terminal";
+  if (ext === "sql") return "database";
+  if (ext === "yml" || ext === "yaml" || ext === "toml" || ext === "ini" || ext === "conf") return "settings";
+  if (ext === "lock") return "lock";
+  if (name === "Dockerfile" || ext === "dockerfile") return "dns";
+  if (ext === "zip" || ext === "gz" || ext === "tar" || ext === "tgz" || ext === "bz2") return "archive";
+  if (ext === "pdf") return "picture_as_pdf";
+  if (ext === "txt" || ext === "log") return "article";
+  return "draft";
 }
 
 function mediaKindOf(path: string): MediaKind | null {
@@ -4428,16 +4456,16 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       if (conflict?.current !== undefined) {
         // offer the fresh disk content instead of throwing away the save
         const take = confirm(
-          "This file changed on disk since you opened it.\n" +
-            "OK = load the disk version into the editor (your edits are discarded)\n" +
-            "Cancel = keep editing your copy",
+          "開いてからディスク上で変更されました。\n" +
+            "OK = ディスク版をエディタに読込（編集中の内容は破棄）\n" +
+            "キャンセル = 編集中のコピーを保持",
         );
         if (take) {
           setEditBuf(conflict.current!);
           setPreview({ ...pv, content: conflict.current! });
-          flashHint("loaded the current file from disk");
+          flashHint("ディスクの最新ファイルを読み込みました");
         } else {
-          flashHint("kept your edits — use Save As via bash to force-write");
+          flashHint("編集内容を保持しました — 強制上書きは bash 経由で");
         }
       } else {
         flashHint(`save failed: ${(ex as Error).message}`);
@@ -4461,7 +4489,7 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
         onclick={() => (node.dir ? void toggleDir(node) : void openFileWith(node, "code"))}
         title={node.dir ? `browse ${node.path}` : `preview ${node.path}`}
       >
-        <span class="ficon">{node.dir ? (expanded().has(node.path) ? "▾" : "▸") : ficon(node.name)}</span>
+        <span class="ficon">{node.dir ? (expanded().has(node.path) ? "expand_more" : "chevron_right") : ficon(node.name)}</span>
         <span class="fname">{node.name}</span>
         <Show when={!node.dir && node.size !== undefined}>
           <span class="fsize">{fmtK(node.size!)}</span>
@@ -4495,32 +4523,47 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
 
   return (
     <>
-      <h3 style="display:flex;align-items:center;gap:6px" title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
-        🗂 files <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
+      <h3 style="display:flex;align-items:center;gap:6px" title="エージェントのワークスペース — 遅延読み込み、ドットファイルは非表示。フォルダで展開、ファイルでプレビュー">
+        <span class="mi">folder</span> ファイル <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
         <IconBtn
           class="filetoggle"
-          icon={refreshing() ? "…" : "⟳"}
-          title="refresh the tree (root + expanded folders) — open popups are kept"
+          icon={refreshing() ? "more" : "refresh"}
+          title="ツリーを更新（ルート + 展開中フォルダ） — 開いているポップアップは保持"
           onClick={() => void refreshTree()}
         />
         <IconBtn
           class="filetoggle"
           style="margin-left:auto"
-          icon={ignoreMode() === "hide" ? "🙈" : ignoreMode() === "dim" ? "👁" : "✨"}
+          icon={ignoreMode() === "hide" ? "visibility_off" : ignoreMode() === "dim" ? "visibility" : "sparkles"}
           title={`gitignored files: ${ignoreMode()} — click to cycle (dim → hidden → shown)`}
           onClick={cycleIgnoreMode}
         />
         <IconBtn
           class="filetoggle"
-          icon={showHidden() ? "◉." : "○."}
+          icon={showHidden() ? "visibility" : "visibility_off"}
           title={showHidden() ? "dotfiles shown — click to hide" : "dotfiles hidden — click to show"}
           onClick={toggleHidden}
+        />
+        <IconBtn
+          class="filetoggle"
+          icon="add"
+          title="新規ファイルを作成"
+          onClick={() => {
+            const name = prompt("New file name (relative to workspace):");
+            if (!name) return;
+            const p = "/" + name.replace(/^\//, "");
+            api(`/api/agents/${props.agentId}/file?path=${encodeURIComponent(p)}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ content: "", baseContent: null }),
+            }).then(() => void refreshTree()).catch((e: Error) => flashHint(`create failed: ${e.message}`));
+          }}
         />
       </h3>
       <div class="filebox">
         <Show
           when={(kids().get("") ?? []).length > 0}
-          fallback={<div class="muted" style="padding:6px">{err() || "empty workspace"}</div>}
+          fallback={<div class="muted" style="padding:6px">{err() || "空のワークスペース"}</div>}
         >
           <For each={(kids().get("") ?? []).filter(ignoreFilter)}>
             {(node) => row(node, 0)}
@@ -4529,18 +4572,18 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
       </div>
       <Show when={preview()}>
         {(pv) => (
-          <Modal title={`🗂 ${pv().path}`} onClose={() => { hlRun++; setPreview(null); setMedia(null); }}>
+          <Modal title={pv().path} onClose={() => { hlRun++; setPreview(null); setMedia(null); }}>
             <Show
               when={media()}
               fallback={
                 <>
                   <div class="filetoolbar">
                     <Show when={isMd(pv().path) && !pv().binary}>
-                      <button class={viewMode() === "md" ? "on" : ""} onclick={() => setViewMode("md")} title="rendered markdown">👁 preview</button>
+                      <button class={viewMode() === "md" ? "on" : ""} onclick={() => setViewMode("md")} title="レンダリング表示"><span class="mi">visibility</span> プレビュー</button>
                     </Show>
-                    <button class={viewMode() === "code" ? "on" : ""} onclick={() => { setViewMode("code"); if (!hlHtml()) startHighlighting({ path: pv().path, content: pv().content, truncated: pv().truncated }); }} title="syntax-highlighted source">{"</>"} code</button>
+                    <button class={viewMode() === "code" ? "on" : ""} onclick={() => { setViewMode("code"); if (!hlHtml()) startHighlighting({ path: pv().path, content: pv().content, truncated: pv().truncated }); }} title="構文ハイライト表示">{"</>"} コード</button>
                     <Show when={isEditable(pv())}>
-                      <button class={viewMode() === "edit" ? "on" : ""} onclick={() => setViewMode("edit")} title="edit and save back to the workspace">✎ edit</button>
+                      <button class={viewMode() === "edit" ? "on" : ""} onclick={() => setViewMode("edit")} title="ワークスペースに編集保存">編集</button>
                     </Show>
                   </div>
                   <Show
@@ -4572,9 +4615,9 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
                           spellcheck={false}
                         />
                         <div class="filerow-actions">
-                          <span class="muted">{fmtK(editBuf().length)} bytes</span>
+                          <span class="muted">{fmtK(editBuf().length)} バイト</span>
                           <button class="savebtn" disabled={saving() || editBuf() === pv().content} onclick={() => void saveFile()}>
-                            {saving() ? "saving…" : "💾 save"}
+                            {saving() ? "保存中…" : "保存"}
                           </button>
                         </div>
                       </div>
@@ -4618,7 +4661,7 @@ function CodePreview(props: { path: string; content: string; html: string; pendi
         fallback={
           props.pending ? (
             <div class="muted" style="padding:8px;font-size:12px">
-              ✨ highlighting {props.path.split("/").pop()}…
+              ハイライト中 {props.path.split("/").pop()}…
             </div>
           ) : (
             <pre class="mono" style="max-height:62vh;overflow:auto;white-space:pre-wrap;margin:0">
@@ -4774,10 +4817,10 @@ function SetupWizard(props: { onDone: () => void }) {
   return (
     <div class="overlay" style={{ background: "var(--bg-darkest)" }}>
       <div class="modal" style="max-width:560px">
-        <div class="modal-head"><b>🫖 welcome to teapot</b></div>
+        <div class="modal-head"><b>teapotへようこそ</b></div>
         <p class="muted" style="margin:0 0 10px;font-size:13px">
           first run — pick an OpenAI-compatible provider and you're done.
-          everything below can be changed later in ⚙ settings.
+          以下の設定は後から変更できます.
         </p>
         <form onsubmit={submit} style="display:flex;flex-direction:column;gap:12px">
           <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -4793,7 +4836,7 @@ function SetupWizard(props: { onDone: () => void }) {
           <Show when={preset().hint}>
             <div class="muted" style="font-size:11.5px;margin-top:-6px">{preset().hint}</div>
           </Show>
-          <label>base url
+          <label>ベースURL
             <input
               type="text"
               class="w100 mono"
@@ -4805,15 +4848,15 @@ function SetupWizard(props: { onDone: () => void }) {
               {PROVIDER_PRESETS.map((p) => <option value={p.url} />)}
             </datalist>
           </label>
-          <label>api key <input type="password" class="w100" value={apiKey()} oninput={(e) => setApiKey(e.currentTarget.value)} placeholder="(local providers may not need one)" /></label>
-          <label>default model
+          <label>APIキー <input type="password" class="w100" value={apiKey()} oninput={(e) => setApiKey(e.currentTarget.value)} placeholder="(ローカルなら不要なことも)" /></label>
+          <label>既定モデル
             <input
               type="text"
               class="w100 mono"
               list="wiz-model-list"
               value={model()}
               oninput={(e) => setModel(e.currentTarget.value)}
-              placeholder={preset().key === "llamacpp" ? "(any name — serves whichever gguf is loaded)" : "(type to filter models from the endpoint)"}
+              placeholder={preset().key === "llamacpp" ? "(任意の名前 — 読み込み中ggufを提供)" : "(エンドポイントからモデルを絞り込むには入力)"}
             />
             <datalist id="wiz-model-list">
               {models().map((m) => <option value={m.id} />)}
@@ -4823,25 +4866,25 @@ function SetupWizard(props: { onDone: () => void }) {
             when={models().length > 0}
             fallback={
               <div class="muted" style="font-size:11.5px;margin-top:-8px">
-                models appear here automatically once the endpoint answers GET /models
+                エンドポイントが GET /models に応答すれば自動でここに表示されます
               </div>
             }
           >
             <div class="muted" style="font-size:11.5px;margin-top:-8px">
-              {models().length} models found at this endpoint
+              このエンドポイントで{models().length}モデル検出
               <Show when={modelSpec()}> · <span style="color:var(--fg)">{modelSpec()}</span></Show>
             </div>
           </Show>
           <fieldset>
-            <legend>first agent</legend>
-            <label>workspace directory
+            <legend>最初のエージェント</legend>
+            <label>ワークスペースのディレクトリ
               <input type="text" class="w100 mono" value={workspace()} oninput={(e) => setWorkspace(e.currentTarget.value)} />
             </label>
-            <label style="margin-top:4px" title="asks for this password when opening the UI or API from another machine — plain-HTTP LAN traffic is NOT encrypted">protect the API with a password? <input type="password" class="w100" value={password()} oninput={(e) => setPassword(e.currentTarget.value)} placeholder="(optional — LAN traffic is still plain HTTP)" /></label>
+            <label style="margin-top:4px" title="別マシンからUI/APIを開く際にこのパスワードを要求します — LAN内の平文HTTP通信は暗号化されません">APIをパスワードで保護しますか? <input type="password" class="w100" value={password()} oninput={(e) => setPassword(e.currentTarget.value)} placeholder="(任意 — LAN通信は平文HTTPのままです)" /></label>
           </fieldset>
           <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
           <button type="submit" disabled={busy()} style="background:var(--acc);border:none;border-radius:8px;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer">
-            {busy() ? "saving…" : "finish setup"}
+            {busy() ? "保存中…" : "セットアップを完了"}
           </button>
         </form>
       </div>
@@ -4920,10 +4963,10 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   );
 
   return (
-    <Modal title="settings" onClose={props.onClose}>
+    <Modal title="設定" onClose={props.onClose}>
       <form onsubmit={save} style="display:flex;flex-direction:column;gap:14px">
         <fieldset>
-          <legend>providers</legend>
+          <legend>プロバイダー</legend>
           {/* Index keyed by position — editing a row must not recreate its
               input DOM and steal focus. For (keyed by identity) recreated
               the edited row on every keystroke (new object → new identity
@@ -4932,15 +4975,15 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           <Index each={providers()}>
             {(p, i) => (
               <div class="cfgrow">
-                <input class="cfgname" placeholder="name" value={p().name} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, name: e.currentTarget.value } : x)))} />
+                <input class="cfgname" placeholder="名前" value={p().name} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, name: e.currentTarget.value } : x)))} />
                 <input placeholder="https://…/v1" value={p().baseUrl} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
-                <input placeholder="api key" type="password" value={p().apiKey} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, apiKey: e.currentTarget.value } : x)))} />
-                <input placeholder="default model" value={p().model} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, model: e.currentTarget.value } : x)))} />
-                <button type="button" class="danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i))}>✕</button>
+                <input placeholder="APIキー" type="password" value={p().apiKey} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, apiKey: e.currentTarget.value } : x)))} />
+                <input placeholder="既定モデル" value={p().model} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, model: e.currentTarget.value } : x)))} />
+                <button type="button" class="danger" title="プロバイダを削除" onclick={() => setProviders(providers().filter((_, j) => j !== i))}><span class="mi">close</span></button>
               </div>
             )}
           </Index>
-          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKey: "", model: "" }])}>+ add custom</button>
+          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKey: "", model: "" }])}>+ カスタムを追加</button>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             <span class="muted" style="font-size:11.5px">quick-add:</span>
             <For each={PROVIDER_PRESETS}>
@@ -4958,13 +5001,13 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
               )}
             </For>
           </div>
-          <div><label style="display:flex;align-items:center;gap:6px;margin-top:6px" title="agents without an explicit provider use this one">
-            default provider
+          <div><label style="display:flex;align-items:center;gap:6px;margin-top:6px" title="明示的なプロバイダー指定のないエージェントはこれを使います">
+            既定のプロバイダー
             <select
               value={defaultProvider()}
               onchange={(e) => setDefaultProvider(e.currentTarget.value)}
             >
-              <option value="">(none — first provider wins)</option>
+              <option value="">（なし — 最初のプロバイダーを使用）</option>
               <For each={[...new Set(providers().map((p) => p.name.trim()).filter(Boolean))]}>
                 {(n) => <option value={n}>{n}</option>}
               </For>
@@ -4973,64 +5016,64 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
         </fieldset>
 
         <fieldset>
-          <legend>agent runtime</legend>
+          <legend>エージェントのランタイム</legend>
           <div class="cfggrid">
-            {numInput("progress interval (min)", intervalMin(), (v) => setIntervalMin(v), "how often the harness asks for a progress report")}
-            {numInput("progress min chars", minChars(), (v) => setMinChars(v), "progress prompts wait for this much real output")}
-            <label title="auto-compact threshold in k tokens. Leave EMPTY to derive per model (75% of its context window) — recommended, since models differ wildly in window size. Set only to force an absolute cap across all models.">
-              compact budget (k tok)
+            {numInput("進捗の間隔 (分)", intervalMin(), (v) => setIntervalMin(v), "ハーネスが進捗報告を求める間隔")}
+            {numInput("進捗の最小文字数", minChars(), (v) => setMinChars(v), "この実出力文字数に達するまで進捗プロンプトは待ちます")}
+            <label title="kトークン単位の自動圧縮しきい値。空欄でモデル毎に自動算出（コンテキスト窓の75%）— 推奨。全部のモデルに絶対上限を強制したい場合のみ設定。">
+              圧縮予算 (kトークン)
               <input
                 type="number"
                 min="0"
-                placeholder="(derive: 75% of window)"
+                placeholder="(自動: 窓の75%)"
                 value={ctxBudgetK() ?? ""}
                 oninput={(e) => setCtxBudgetK(e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}
               />
             </label>
-            {numInput("context window (k tok)", ctxWinK(), (v) => setCtxWinK(v), "model's real window — 0/blank hides the % gauge")}
-            {numInput("max spawn depth", maxDepth(), (v) => setMaxDepth(v), "sub-agent nesting limit (0 = no spawning)")}
+            {numInput("コンテキスト窓 (kトークン)", ctxWinK(), (v) => setCtxWinK(v), "モデルの実際の窓 — 0/空欄で%ゲージを非表示")}
+            {numInput("最大スポーン深度", maxDepth(), (v) => setMaxDepth(v), "サブエージェントの入れ子上限 (0 = スポーンなし)")}
           </div>
         </fieldset>
 
         <fieldset>
-          <legend>scheduled tasks</legend>
+          <legend>定期タスク</legend>
           <Show when={tasks().length > 0}>
             <Index each={tasks()}>
               {(t, i) => (
                 <div class="cfgcol">
                   <div class="cfgrow">
-                    <input placeholder="id" value={t().id} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, id: e.currentTarget.value } : x)))} />
-                    <input placeholder="agent id" value={t().agent} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, agent: e.currentTarget.value } : x)))} />
+                    <input placeholder="ID" value={t().id} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, id: e.currentTarget.value } : x)))} />
+                    <input placeholder="エージェントID" value={t().agent} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, agent: e.currentTarget.value } : x)))} />
                     <input placeholder="every 30m / cron" value={t().schedule} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, schedule: e.currentTarget.value } : x)))} />
                     <label style="display:flex;gap:3px;align-items:center;white-space:nowrap;color:var(--dim);font-size:11px">
                       <input type="checkbox" checked={!!t().forked} onchange={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, forked: e.currentTarget.checked } : x)))} />fork
                     </label>
-                    <button type="button" class="danger" onclick={() => setTasks(tasks().filter((_, j) => j !== i))}>✕</button>
+                    <button type="button" class="danger" title="タスクを削除" onclick={() => setTasks(tasks().filter((_, j) => j !== i))}><span class="mi">close</span></button>
                   </div>
-                  <textarea rows={2} placeholder="prompt to send" value={t().prompt} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, prompt: e.currentTarget.value } : x)))} />
+                  <textarea rows={2} placeholder="送信するプロンプト" value={t().prompt} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, prompt: e.currentTarget.value } : x)))} />
                 </div>
               )}
             </Index>
           </Show>
-          <button type="button" onclick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ add task</button>
+          <button type="button" onclick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ タスクを追加</button>
         </fieldset>
 
         <fieldset>
-          <legend>agents (read-only — edit config file or use +)</legend>
+          <legend>エージェント一覧（読取専用 — configファイル編集か+ボタンで）</legend>
           <For each={props.cfg.agents ?? []}>
             {(a: any) => (
               <div class="cfgrow">
                 <b>{a.id}</b><span class="muted">{a.workspace}</span>
-                <Show when={a.parent}><span class="muted">🧩 sub of @{a.parent}</span></Show>
+                <Show when={a.parent}><span class="muted">のサブ @{a.parent}</span></Show>
               </div>
             )}
           </For>
         </fieldset>
 
         <fieldset>
-          <legend>live update</legend>
+          <legend>ライブ更新</legend>
           <div class="cfgrow">
-            <span class="muted">current version: {props.cfg.version ?? "unknown"}</span>
+            <span class="muted">現行バージョン: {props.cfg.version ?? "不明"}</span>
             <button
               type="button"
               onclick={async (e) => {
@@ -5038,11 +5081,11 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
                   setErr("");
                   const btn = e.currentTarget as HTMLButtonElement;
                   btn.disabled = true;
-                  btn.textContent = "updating…";
+                  btn.textContent = "更新中…";
                   const res = await api("/api/update/restart", { method: "POST" });
                   if (!res.ok) throw new Error((await res.json()).error ?? "restart failed");
                   // Success — the server will restart. Wait for new version then reload.
-                  btn.textContent = "restarting…";
+                  btn.textContent = "再起動中…";
                   // Poll for new version
                   for (let i = 0; i < 60; i++) {
                     await new Promise((r) => setTimeout(r, 1000));
@@ -5067,12 +5110,12 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
             >
               update & restart
             </button>
-            <span class="muted" style="margin-left:8px;font-size:12px">gracefully stops all agents, spawns new process, then reloads this page</span>
+            <span class="muted" style="margin-left:8px;font-size:12px">全エージェントを丁寧に停止し、新プロセスを起動してこのページをリロードします</span>
           </div>
         </fieldset>
 
         <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
-        <button type="submit" style="align-self:flex-end;background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer">save settings</button>
+        <button type="submit" style="align-self:flex-end;background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer">設定を保存</button>
       </form>
     </Modal>
   );

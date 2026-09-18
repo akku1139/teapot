@@ -1,4 +1,4 @@
-# teapot 🫖
+# teapot
 
 **A lightweight harness for running multiple autonomous AI coding agents in parallel, from your browser.**
 
@@ -10,7 +10,7 @@
 
 ---
 
-## 🚀 Quick start
+## Quick start
 
 ### 1. Install
 
@@ -66,7 +66,7 @@ Handy keys: `t` terminal · `d` right panel · `/` commands · `Esc` interrupt
 
 ---
 
-## 🤔 What is this?
+## What is this?
 
 One line: **a server that hosts several autonomous coding agents over any OpenAI-compatible API, operated from a browser.**
 
@@ -89,14 +89,14 @@ Each agent owns its own workspace and runs in parallel as a channel in a Discord
 | | teapot | Claude Code & similar CLIs |
 |---|---|---|
 | Form | resident server + web UI | interactive terminal |
-| Multiple agents | ✅ parallel | usually one session |
-| Mixed models | ✅ per agent | fixed |
-| Long-running work | ✅ auto-restores from JSONL logs | manual session juggling |
-| Scheduled tasks (cron) | ✅ 15-second tick | ❌ |
+| Multiple agents | parallel | usually one session |
+| Mixed models | per agent | fixed |
+| Long-running work | auto-restores from JSONL logs | manual session juggling |
+| Scheduled tasks (cron) | 15-second tick | — |
 
 ---
 
-## 🔧 Features
+## Features
 
 <details>
 <summary><b>Goals &amp; autonomous loop</b></summary>
@@ -161,7 +161,7 @@ Past a token budget (default: 75% of the model's window, or 96k if unknown), old
 
 ---
 
-## ⚠️ Security (please read)
+## Security (please read)
 
 Agents can run `bash` and rewrite files — including `rm` and `npm install`.
 
@@ -177,7 +177,7 @@ TEAPOT_API_TOKEN=mysecret teapot --host 0.0.0.0 --port 7788
 ---
 
 <a id="-reference"></a>
-## 📖 Reference
+## Reference
 
 <details>
 <summary><b>Config reference</b></summary>

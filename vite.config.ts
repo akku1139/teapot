@@ -10,6 +10,7 @@ export default defineConfig({
     outDir: "../public",
     emptyOutDir: true,
     sourcemap: true,
+    chunkSizeWarningLimit: 1000,
   },
   server: { proxy: { "/api": "http://localhost:7788" } },
 });

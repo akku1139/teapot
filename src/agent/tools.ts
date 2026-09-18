@@ -14,6 +14,11 @@ import {
   type SkillDef,
 } from "./skills.ts";
 
+/** Node platform detection (win32 | darwin | linux | ...).  Used for
+shell selection so that Windows agents get a Windows-compatible shell
+(powershell / cmd) instead of the Unix-style bash. */
+const IS_WIN = process.platform === "win32";
+
 export interface ToolContext {
   cwd: string;
   /** hard cap per command */
@@ -147,7 +152,10 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000 && !map.delete(id)) void id;
   }
   const id = `bg${++bgSeq}`;
-  const child = spawn("/bin/bash", ["-lc", cmd], {
+  // On Windows, use powershell (or cmd.exe) instead of bash
+  const shell = IS_WIN ? (process.env.SHELL || "powershell.exe") : "/bin/bash";
+  const args = IS_WIN ? ["-Command", cmd] : ["-lc", cmd];
+  const child = spawn(shell, args, {
     cwd: ctx.cwd,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -179,6 +187,8 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     } catch {
       /* notification is best-effort */
     }
+    // proactive cleanup of exited shells so bgShellsByWs doesn't grow forever
+    if (sh.exited && map.delete(id)) void id;
   });
   map.set(id, sh);
   return id;
@@ -217,9 +227,11 @@ export function hasRunningBgShells(cwd: string): boolean {
 /** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-lc", cmd], {
+    const shell = IS_WIN ? (process.env.SHELL || "powershell.exe") : "/bin/bash";
+    const args = IS_WIN ? ["-Command", cmd] : ["-lc", cmd];
+    const child = spawn(shell, args, {
       cwd: ctx.cwd,
-      detached: true, // own process group
+      detached: !IS_WIN, // own process group on POSIX
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, TERM: "dumb", GIT_PAGER: "cat", PAGER: "cat" },
     });
@@ -234,7 +246,13 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
 
     const killGroup = () => {
       try {
-        if (child.pid) process.kill(-child.pid, "SIGKILL"); // whole group
+        if (child.pid) {
+          if (IS_WIN) {
+            child.kill();
+          } else {
+            process.kill(-child.pid, "SIGKILL"); // whole group
+          }
+        }
       } catch {
         /* already gone */
       }
