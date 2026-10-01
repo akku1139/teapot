@@ -11,7 +11,7 @@ import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, type ToolContext } from "./tools.ts";
-import { skillRootsFingerprint, type SkillDef } from "./skills.ts";
+import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
 /**
@@ -303,6 +303,13 @@ export class Agent {
     this.skillRoots = [
       { dir: path.join(opts.workspace, "skills"), source: "workspace" },
       ...(opts.globalSkillsDir ? [{ dir: opts.globalSkillsDir, source: "global" }] : []),
+      // OTHER HARNESSES' skill directories (#28). The SKILL.md format is shared,
+      // so these are readable as-is — verified against real third-party skills
+      // (terminalskills/skills, trailofbits/skills, …). They sit below the
+      // workspace and teapot's own global dir so a project always wins, and
+      // missing directories are skipped silently. Paths are the documented
+      // native locations plus the cross-tool ones several tools also read.
+      ...foreignSkillRoots(opts.workspace),
       // shipped-with-package skills: lowest priority, always discoverable
       ...(opts.bundledSkillsDir ? [{ dir: opts.bundledSkillsDir, source: "bundled" }] : []),
     ];

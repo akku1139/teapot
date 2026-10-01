@@ -89,19 +89,114 @@ export function isValidSkillName(name: string): boolean {
 /**
  * Minimal frontmatter parser for the subset we need: a leading `---` block of
  * `key: value` lines. No YAML dependency by design.
+ *
+ * It does understand the two YAML shapes that are common in REAL third-party
+ * skills (#28), because without them those files are unreadable:
+ *  - FOLDED/LITERAL BLOCK SCALARS (`description: >-` … or `|` …), which is how
+ *    most skill authors write a long description. Reading them naively yields
+ *    the literal ">-" as the description, which silently destroys the one field
+ *    the model matches its task against.
+ *  - QUOTED values, whose surrounding quotes are stripped so a description
+ *    containing a colon survives.
+ * A key whose value is empty (e.g. a nested `metadata:` block) is left out rather
+ * than recorded as an empty string.
  */
 export function parseSkillMd(text: string): ParsedSkill {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return { meta: {}, body: text.trim() };
+  const lines = m[1].split(/\r?\n/);
   const meta: Record<string, string> = {};
-  for (const line of m[1].split(/\r?\n/)) {
-    const kv = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
-    if (kv) meta[kv[1].toLowerCase()] = kv[2].trim();
+  for (let i = 0; i < lines.length; i++) {
+    const kv = lines[i]!.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (!kv) continue;
+    const key = kv[1]!.toLowerCase();
+    const raw = kv[2]!.trim();
+    // folded (>-, >, |-, |) or literal (|, |-) block scalar: the value is the
+    // following, more-indented lines
+    if (/^[>|][-+]?$/.test(raw)) {
+      const parts: string[] = [];
+      let j = i + 1;
+      for (; j < lines.length; j++) {
+        const l = lines[j]!;
+        if (l.trim() === "") {
+          parts.push("");
+          continue;
+        }
+        if (!/^\s/.test(l)) break; // dedented → block ended
+        parts.push(l.trim());
+      }
+      i = j - 1;
+      const joined = parts.join(/^[>|][-+]?$/.test(raw) && raw.startsWith("|") ? "\n" : " ").trim();
+      if (joined) meta[key] = joined;
+      continue;
+    }
+    if (raw === "") continue; // `metadata:` with a nested block below
+    meta[key] = unquote(raw);
   }
   return { meta, body: m[2].trim() };
 }
 
+/** Strip one layer of matching quotes; a quoted value may itself contain `:`. */
+function unquote(v: string): string {
+  const s = v.trim();
+  if (s.length >= 2 && ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")))) {
+    return s
+      .slice(1, -1)
+      .replace(/\\"/g, '"')
+      .replace(/''/g, "'");
+  }
+  return s;
+}
+
 /** Root dirs in priority order: [0] overrides later ones on name clash. */
+/**
+ * Skill directories owned by OTHER coding harnesses (#28).
+ *
+ * SKILL.md is a shared convention, so these are readable as-is — the only
+ * thing that ever blocked them was our frontmatter parser (folded scalars and
+ * quoted values), now handled. Paths are the documented native locations,
+ * plus the cross-tool directories several tools also read.
+ *
+ * Priority is deliberately the LOWEST of the user-supplied roots: a project
+ * should never be shadowed by another tool's copy of the same skill. Missing
+ * directories are skipped silently, and nothing is read unless it exists.
+ */
+export function foreignSkillRoots(workspace?: string): { dir: string; source: string }[] {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const out: { dir: string; source: string }[] = [];
+  const add = (dir: string) => {
+    if (dir && !out.some((r) => r.dir === dir)) out.push({ dir, source: "foreign" });
+  };
+  if (workspace) {
+    // project-local locations other tools read
+    for (const rel of [
+      path.join(".agents", "skills"), // cross-tool convention
+      path.join(".claude", "skills"),
+      path.join(".codex", "skills"),
+      path.join(".cursor", "skills"),
+      path.join(".gemini", "skills"),
+      path.join(".github", "skills"), // Copilot CLI + VS Code
+      path.join(".opencode", "skills"),
+    ]) {
+      add(path.join(workspace, rel));
+    }
+  }
+  if (home) {
+    add(path.join(home, ".agents", "skills")); // cross-tool, personal
+    for (const rel of [
+      [".claude", "skills"],
+      [".codex", "skills"],
+      [".cursor", "skills"],
+      [".gemini", "skills"],
+      [".copilot", "skills"], // GitHub Copilot CLI + VS Code share this
+      [".config", "opencode", "skills"],
+    ]) {
+      add(path.join(home, ...rel));
+    }
+  }
+  return out;
+}
+
 /**
  * How deep to look for nested skills (#27).
  *
