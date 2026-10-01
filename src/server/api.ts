@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
+import { TermSizeTracker } from "./term-size.ts";
 import { SUB_PERSONAS } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
 import type { ProviderConfig } from "../master.ts";
@@ -132,6 +133,16 @@ export function buildApp(master: Master): Hono {
   // per-agent terminal spawn guard
   const termCounts = new Map<string, number>();
 
+  // keyed by CHILD, not agent: one agent may have up to 10 concurrent
+  // terminals, each with its own size and its own foreground program
+  const termSizes = new TermSizeTracker();
+  const setTermSize = (child: ChildProcess, rows: number, cols: number): void =>
+    termSizes.request(child, rows, cols, (r, c) => {
+      if (!child.stdin?.writable) return;
+      child.stdin.write(`stty rows ${r} cols ${c} >/dev/null 2>&1\n`);
+    });
+
+
   // ---- realtime events over WebSocket (replaces SSE for the web UI) ----
   app.get(
     "/api/ws",
@@ -228,8 +239,14 @@ export function buildApp(master: Master): Hono {
           console.log(
             `[teapot] ⌨ terminal open: ${agentId} @ ${agent.workspace} (${hasScript ? "pty" : "pipe"})`,
           );
-          child.stdout?.on("data", (b: Buffer) => send({ kind: "data", data: b.toString("utf8") }));
-          child.stderr?.on("data", (b: Buffer) => send({ kind: "data", data: b.toString("utf8") }));
+          child.stdout?.on("data", (b: Buffer) => {
+            termSizes.markBusy(child!);
+            send({ kind: "data", data: b.toString("utf8") });
+          });
+          child.stderr?.on("data", (b: Buffer) => {
+            termSizes.markBusy(child!);
+            send({ kind: "data", data: b.toString("utf8") });
+          });
           child.on("close", (code) => {
             send({ kind: "exit", code });
             console.log(`[teapot] ⌨ terminal exit: ${agentId} (${code ?? "signal"})`);
@@ -248,11 +265,14 @@ export function buildApp(master: Master): Hono {
           else if (m.kind === "resize") {
             const r = Number(m.rows) | 0;
             const cl = Number(m.cols) | 0;
-            if (r > 0 && cl > 0)
-              child.stdin.write(`stty rows ${r} cols ${cl} >/dev/null 2>&1\n`);
+            if (r > 0 && cl > 0) setTermSize(child, r, cl);
           }
         },
         onClose() {
+          // capture BEFORE cleanup() nulls the child out
+          const dead = child;
+          // drop the pending resize timer so we can't write into a dead child
+          if (dead) termSizes.forget(dead);
           cleanup();
           const n = (termCounts.get(agentId) ?? 1) - 1;
           if (n <= 0) termCounts.delete(agentId);
