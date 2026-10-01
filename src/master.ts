@@ -803,7 +803,18 @@ if (active().length === 0) wake();
     const owned = this.sessionById(childId);
     if (owned) targetId = owned.agentId;
     const cfg = this.config.agents.find((a) => a.id === targetId);
-    if (!cfg || cfg.parent !== parentId) throw new Error(`not your sub-agent: ${childId}`);
+    if (!cfg || cfg.parent !== parentId) {
+      // Scoping is correct — only the DIRECT parent may message a child, so a
+      // grandchild is rightly refused. But "not your sub-agent: <id>" reads
+      // like a bug when the agent simply guessed the wrong level of the tree.
+      // Name the real owner so the model can re-address the message (#11).
+      const actual = cfg?.parent;
+      const live = actual ? this.agents.get(actual) : undefined;
+      const detail = actual
+        ? ` its parent is @${actual}${live ? ` (message @${actual} instead, or spawn your own sub-agent for it)` : ""}.`
+        : " no such sub-agent exists.";
+      throw new Error(`not your sub-agent: ${childId}.${detail}`);
+    }
     const child = this.agents.get(targetId);
     if (!child) throw new Error(`sub-agent not running: ${targetId}`);
     child.enqueuePrompt(`[harness] Message from @${parentId}:\n\n${text}`, "harness");

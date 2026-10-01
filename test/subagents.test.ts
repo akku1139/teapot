@@ -217,3 +217,79 @@ test("sub-agent finish forwards the summary PLUS recent conversation context", a
     await disposeAll(m);
   });
 });
+
+/* ---------- nested sub-agent messaging (#11) ---------- */
+
+test("a sub-agent can message its own child, but not a grandchild (#11)", async () => {
+  await useTempDirs(["nest-root-", "nest-ws-"], async ([dataDir, ws]) => {
+    const m = new Master(
+      {
+        port: 0,
+        dataDir,
+        llm: LLM,
+        providers: { p: { baseUrl: "http://x", apiKey: "k", model: "m" } },
+        agents: [],
+        maxSpawnDepth: 3,
+      },
+      "/dev/null",
+    );
+    (m as any).config.defaultProvider = "p";
+    const chat = async () => ({ message: { role: "assistant", content: "ok" } });
+    const root = await m.addAgent(
+      { id: "root", workspace: ws, provider: "p", model: "m", chatFn: chat },
+      { fresh: true, persist: false },
+    );
+    await root.load();
+    const b = await m.spawnChildFor(root, { task: "B work", context: "none" });
+    const childB = m.agents.get(b.id)!;
+    const c = await m.spawnChildFor(childB, { task: "C work", context: "none" });
+    const grandchild = m.agents.get(c.id)!;
+
+    const msg = (m as any).messageChild.bind(m);
+
+    // direct parent → its own child: allowed
+    await msg(b.id, c.id, "hi from B");
+    assert.equal(grandchild.snapshot().pendingPrompts >= 0, true);
+
+    // root → its direct child: allowed
+    await msg("root", b.id, "hi from root");
+
+    // root → GRANDchild: refused. Scoping is correct (only the direct parent
+    // owns a child), but the error must name the real owner so the model can
+    // re-address the message instead of concluding the tree is broken.
+    await assert.rejects(
+      () => msg("root", c.id, "hi from root"),
+      (err: Error) => {
+        assert.match(err.message, /not your sub-agent/);
+        assert.match(err.message, new RegExp(`its parent is @${b.id}`));
+        assert.match(err.message, /message @/); // tells it what to do instead
+        return true;
+      },
+    );
+
+    await disposeAll(m);
+  });
+});
+
+test("messaging an unknown id explains that no such sub-agent exists (#11)", async () => {
+  await useTempDirs(["nx-root-", "nx-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    (m as any).config.defaultProvider = "p";
+    (m as any).config.providers.p = { baseUrl: "http://x", apiKey: "k", model: "m" };
+    const root = await m.addAgent(
+      { id: "root", workspace: ws, provider: "p", model: "m" },
+      { fresh: true, persist: false },
+    );
+    await root.load();
+    const msg = (m as any).messageChild.bind(m);
+    await assert.rejects(
+      () => msg("root", "ghost-agent", "hi"),
+      (err: Error) => {
+        assert.match(err.message, /not your sub-agent: ghost-agent/);
+        assert.match(err.message, /no such sub-agent exists/);
+        return true;
+      },
+    );
+    await disposeAll(m);
+  });
+});
