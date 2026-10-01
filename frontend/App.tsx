@@ -1549,6 +1549,8 @@ export default function App() {
       Math.max(220, Math.round(window.innerHeight * 0.35)),
   );
   const liveTerms = new Map<string, TermSession>();
+  // monotonic tab-id source — see addTab() for why keys must never be reused
+  let termSeq = 0;
   const paneHosts: (HTMLDivElement | null)[] = [null, null];
 
   /** the tab currently shown in the focused pane */
@@ -1586,15 +1588,24 @@ export default function App() {
       flashHint(`max 10 shells per agent (${who}) — that's already a lot`);
       return;
     }
-    const n = termTabs().length + 1;
-    const tab: TermTab =
-      perAgent === 0
-        ? { key: `${who}`, agentId: who, title: who }
-        : { key: `${who}#${perAgent + 1}`, agentId: who, title: `${who}·${perAgent + 1}` };
+    const tab: TermTab = {
+      // UNIQUE per tab for its whole life, never reused. The key used to be
+      // derived from the agent's CURRENT tab count ("" / "#2" / "#3"), so
+      // closing a tab freed its key and the next addTab regenerated it —
+      // liveTerms is keyed by this, and ensureSession() reuses any session it
+      // finds there. A reopened tab therefore adopted the closed tab's
+      // (disposed) xterm/websocket, or two live terminals collided on one
+      // entry (#10). A monotonic counter cannot collide.
+      key: `${who}#${++termSeq}`,
+      agentId: who,
+      title: perAgent === 0 ? who : `${who}·${perAgent + 1}`,
+    };
     setTermTabs((list) => [...list, tab]);
-    // land in the focused pane (swap if the other pane shows it already)
-    if (focusedPane() === 0) setPaneL(termTabs().length); else setPaneR(termTabs().length);
-    void n;
+    // land in the focused pane. The new tab's index is the OLD length —
+    // read it before the setter runs.
+    const at = termTabs().length;
+    if (focusedPane() === 0) setPaneL(at);
+    else setPaneR(at);
   }
 
   function closeTab(i: number) {
@@ -1721,21 +1732,32 @@ export default function App() {
     });
   });
 
-  // opening the drawer ensures a shell for the selected agent
+  // opening the drawer ensures a shell for the selected agent.
+  //
+  // This tracks the SELECTED AGENT only. It used to read termTabs() as well,
+  // so every tab change re-ran the body and focusTab() yanked the pane off
+  // whatever the operator was looking at — opening a shell for agent A while
+  // watching agent B swapped B's terminal away (#10).
+  let _termFollowAgent: string | null = null;
   createEffect(() => {
     if (!termOpen()) return;
     const id = selected();
     if (!id) return;
-    if (!termTabs().some((t) => t.agentId === id) && termTabs().length === 0) addTab(id);
-    else if (!termTabs().some((t) => t.agentId === id)) {
-      // the selected agent has no tab YET (other agents own all tabs).
+    if (id === _termFollowAgent) return;
+    _termFollowAgent = id;
+    if (!termTabs().some((t) => t.agentId === id)) {
+      // the selected agent has no tab yet (other agents own all tabs).
       // The old code tried focusTab(findIndex→-1) and silently did nothing,
       // leaving the pane stuck on "no shell here" or another agent's shell.
       addTab(id);
     } else {
-      // its tab exists — focus it in the active pane
-      const i = termTabs().findIndex((t) => t.agentId === id);
-      if (i >= 0) focusTab(i);
+      // its tab exists — focus the LAST one for it, so returning to an agent
+      // lands on the shell you most recently opened rather than its first.
+      let last = -1;
+      termTabs().forEach((t, i) => {
+        if (t.agentId === id) last = i;
+      });
+      if (last >= 0) focusTab(last);
     }
   });
 

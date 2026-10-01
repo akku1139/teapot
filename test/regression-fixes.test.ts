@@ -438,3 +438,21 @@ test("regression: the default-provider select renders an orphaned configured def
   assert.match(src, /staleDefaultProvider/);
   assert.match(src, /has no provider row here/);
 });
+
+/* ---------- #10: terminal tabs must not collide or steal focus ---------- */
+
+test("regression: terminal tab keys are unique and never reused (#10)", async () => {
+  const src = await readFile("frontend/App.tsx", "utf8");
+  // keys must come from a monotonic counter, not from the agent's current
+  // tab count (which frees a key as soon as a tab is closed)
+  assert.match(src, /key: `\$\{who\}#\$\{\+\+termSeq\}`/);
+  assert.doesNotMatch(src, /key: `\$\{who\}#\$\{perAgent \+ 1\}`/);
+});
+
+test("regression: the selected-agent effect no longer re-runs on tab churn (#10)", async () => {
+  const src = await readFile("frontend/App.tsx", "utf8");
+  // it must be gated on the selected agent changing, not on termTabs()
+  assert.match(src, /_termFollowAgent/);
+  const eff = src.slice(src.indexOf("_termFollowAgent"));
+  assert.match(eff.slice(0, 600), /if \(id === _termFollowAgent\) return;/);
+});
