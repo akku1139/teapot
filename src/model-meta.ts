@@ -22,6 +22,7 @@ export interface ModelMeta {
 }
 
 const cache = new Map<string, { at: number; list: ModelMeta[] }>();
+const inFlight = new Map<string, Promise<ModelMeta[]>>();
 const TTL = 10 * 60_000;
 
 /** Fetch GET /models from an OpenAI-compatible endpoint (cached ~10 min). */
@@ -32,6 +33,12 @@ export async function fetchModelList(
   const root = baseUrl.replace(/\/+$/, "");
   const hit = cache.get(root);
   if (hit && Date.now() - hit.at < TTL) return hit.list;
+  // An in-flight lookup is SHARED: without this, two callers racing for the
+  // same endpoint each paid the full timeout, and `newSession` in ACP mode
+  // blocked on it before it could even reply to the editor (#15).
+  const inflight = inFlight.get(root);
+  if (inflight) return inflight;
+  const p = (async () => {
   try {
     const res = await fetch(`${root}/models`, {
       headers: {
@@ -87,6 +94,13 @@ export async function fetchModelList(
     return list;
   } catch {
     return []; // unreachable provider — caller treats as "unknown"
+  }
+  })();
+  inFlight.set(root, p);
+  try {
+    return await p;
+  } finally {
+    inFlight.delete(root);
   }
 }
 

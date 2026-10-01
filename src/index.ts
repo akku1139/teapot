@@ -56,6 +56,7 @@ async function main(): Promise<void> {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     console.log("teapot [--port N] [--host addr] [--config file.json] [config.json]");
     console.log("  --host 127.0.0.1 (default) · 0.0.0.0 exposes the UI to your network");
+    console.log("  --acp  speak the Agent Client Protocol on stdio instead of serving HTTP (#15)");
     console.log("  env: TEAPOT_PORT, TEAPOT_HOST, TEAPOT_CONFIG_DIR, TEAPOT_DATA_DIR, TEAPOT_API_TOKEN");
     return;
   }
@@ -104,6 +105,18 @@ async function main(): Promise<void> {
   const master = new Master(config, configPath);
   master.configFileExists = configExisted;
   await master.start();
+
+  // ACP mode (#15): JSON-RPC over stdio, no HTTP server. Deliberately placed
+  // AFTER the master is up (so config is resolved and agents work) but BEFORE
+  // serveApp, so an editor launching `teapot --acp` never binds a port.
+  if (process.argv.includes("--acp")) {
+    const { AcpAdapter } = await import("./acp/adapter.ts");
+    const acp = new AcpAdapter({ master });
+    // nothing else may write to stdout — it carries the protocol
+    console.error("[teapot] ACP mode: JSON-RPC over stdio");
+    await acp.listen();
+    return;
+  }
 
   const app = buildApp(master);
   serveApp(app, config.port, config.host);
