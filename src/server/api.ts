@@ -735,11 +735,22 @@ export function buildApp(master: Master): Hono {
   // switch a running session's model/provider
   app.post("/api/agents/:id/model", async (c) => {
     const body = await c.req
-      .json<{ provider?: string; model?: string; contextWindowTokens?: number }>()
+      .json<{
+        provider?: string;
+        model?: string;
+        contextWindowTokens?: number;
+        reasoningEffort?: string; // "" clears back to the provider default (#47)
+      }>()
       .catch(() => null);
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     try {
-      const r = await master.setAgentModel(c.req.param("id"), body.provider, body.model, body.contextWindowTokens);
+      const r = await master.setAgentModel(
+        c.req.param("id"),
+        body.provider,
+        body.model,
+        body.contextWindowTokens,
+        body.reasoningEffort,
+      );
       return c.json({ ok: true, ...r });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);

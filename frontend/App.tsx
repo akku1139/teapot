@@ -25,12 +25,17 @@ import { FitAddon } from "@xterm/addon-fit";
 
 declare const __APP_VERSION__: string;
 
+/** Reasoning-effort levels OpenRouter documents for `reasoning_effort` (#47). */
+const REASONING_EFFORT_OPTIONS = ["minimal", "low", "medium", "high"] as const;
+
 /* ---------- types ---------- */
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
   session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
   workspaceMissing?: boolean;
   latestProgress: any; stats: any; model: string; provider?: string;
+  /** reasoning effort in force, and whether this model accepts one (#47) */
+  reasoningEffort?: string; effortSupported?: boolean;
   pendingPrompts?: number;
   todo?: string;
   parent?: string;
@@ -268,6 +273,14 @@ export default function App() {
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
+  // #47: reasoning effort draft ("" = provider default). Seeded from the
+  // agent snapshot and re-seeded whenever the selected agent changes, mirroring
+  // modelDraft's pattern.
+  const [effortDraft, setEffortDraft] = createSignal("");
+  createEffect(() => {
+    const id = selected();
+    setEffortDraft(untrack(() => agents().find((a) => a.id === id)?.reasoningEffort ?? ""));
+  });
   const [models, setModels] = createSignal<
     { id: string; contextLength?: number; pricing?: { prompt: number; completion: number }; modalities?: { input: string[]; output: string[] } }[]
   >([]);
@@ -2864,6 +2877,47 @@ export default function App() {
                 }}
               >apply</button>
             </div>
+            {/* #47: reasoning effort. Shown ONLY when the endpoint's catalogue
+                says this model advertises `reasoning_effort` — support is 196/462
+                on OpenRouter and absent elsewhere, so offering it everywhere
+                would be a control that silently does nothing. */}
+            <Show when={sel()!.effortSupported}>
+              <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+                <label class="muted" style="font-size:11.5px;white-space:nowrap">effort</label>
+                <select
+                  style="flex:1;min-width:0"
+                  value={effortDraft()}
+                  onchange={(e) => setEffortDraft(e.currentTarget.value)}
+                >
+                  <option value="">provider default</option>
+                  <For each={REASONING_EFFORT_OPTIONS}>
+                    {(v) => <option value={v}>{v}</option>}
+                  </For>
+                </select>
+                <button
+                  title="apply to this session — takes effect from the agent's next turn"
+                  onclick={async (e) => {
+                    if (!selected()) return;
+                    const btn = e.currentTarget as HTMLButtonElement;
+                    btn.disabled = true;
+                    try {
+                      await api(`/api/agents/${selected()}/model`, {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        // "" clears it back to the provider default
+                        body: JSON.stringify({ reasoningEffort: effortDraft() }),
+                      });
+                      btn.textContent = "✓ applied";
+                      refreshAgents();
+                    } catch (ex) {
+                      alert(`effort change failed: ${(ex as Error).message}`);
+                    } finally {
+                      setTimeout(() => { btn.textContent = "apply"; btn.disabled = false; }, 1200);
+                    }
+                  }}
+                >apply</button>
+              </div>
+            </Show>
             <div class="meta">
               current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show>
             </div>

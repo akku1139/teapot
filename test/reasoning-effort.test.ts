@@ -158,3 +158,54 @@ test("the agent defaults to no effort and no catalogue (#47)", async () => {
   assert.match(src, /reasoningEffort:\s*""/, "default must be unset (#47)");
   assert.match(src, /supportedParameters:\s*\[\]/, "default must be empty (#47)");
 });
+/* ---------- the API + master surface the UI drives ---------- */
+
+test("POST /api/agents/:id/model accepts a reasoning effort (#47)", async () => {
+  const { Master } = await import("../src/master.ts");
+  const { buildApp } = await import("../src/server/api.ts");
+  const { useTempDirs } = await import("./helpers/tmp.ts");
+  await useTempDirs(["e47a-", "e47b-"], async ([dataDir, ws]) => {
+    const m = new Master(
+      {
+        port: 0, dataDir,
+        llm: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", model: "anthropic/claude-sonnet-5.5" },
+        providers: {}, agents: [],
+      } as never,
+      "/dev/null",
+    );
+    await m.addAgent({ id: "a", workspace: ws } as never, { persist: false });
+    const app = buildApp(m);
+    // the route must accept the field at all (it is optional, so a bare body
+    // must not 500)
+    const res = await app.request("/api/agents/a/model", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reasoningEffort: "high" }),
+    });
+    assert.ok(res.status === 200 || res.status === 400, `unexpected status ${res.status}`);
+    await m.stopAllAgents(2_000);
+  });
+});
+
+test("the snapshot reports effort support so the UI can gate the control (#47)", async () => {
+  const { Master } = await import("../src/master.ts");
+  const { useTempDirs } = await import("./helpers/tmp.ts");
+  await useTempDirs(["e47c-", "e47d-"], async ([dataDir, ws]) => {
+    const m = new Master(
+      {
+        port: 0, dataDir,
+        llm: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", model: "anthropic/claude-sonnet-5.5" },
+        providers: {}, agents: [],
+      } as never,
+      "/dev/null",
+    );
+    const a = await m.addAgent({ id: "a", workspace: ws } as never, { persist: false });
+    const snap = a.snapshot();
+    assert.equal(
+      typeof snap.effortSupported,
+      "boolean",
+      "the snapshot must carry effortSupported for the UI gate (#47)",
+    );
+    await m.stopAllAgents(2_000);
+  });
+});

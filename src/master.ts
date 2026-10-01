@@ -14,7 +14,7 @@ import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/c
 import type { LlmConfig, ChatFn } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
-import { fetchModelList, contextLengthFor } from "./model-meta.ts";
+import { fetchModelList, contextLengthFor, isReasoningEffort, type ModelMeta } from "./model-meta.ts";
 
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 const MAX_SPAWN_DEPTH = 3;
@@ -1209,7 +1209,8 @@ if (active().length === 0) wake();
     providerName?: string,
     model?: string,
     contextWindowTokens?: number,
-  ): Promise<{ provider: string; model: string }> {
+    reasoningEffort?: string, // "" clears it back to the provider default (#47)
+  ): Promise<{ provider: string; model: string; reasoningEffort?: string }> {
     const agent = this.agents.get(id);
     if (!agent) throw new Error(`no such agent: ${id}`);
     let llm: LlmConfig;
@@ -1229,6 +1230,21 @@ if (active().length === 0) wake();
       const ac = this.config.agents.find((a) => a.id === id);
       effectiveProvider = ac?.provider ?? this.config.defaultProvider ?? "";
     }
+    // #47: re-resolve the catalogue for the (possibly new) model so the
+    // effort gate reflects THIS model's advertised capabilities
+    const effortList = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => [] as ModelMeta[]);
+    const meta = effortList.find((m) => m.id === (model || llm.model));
+    const opts = agent as unknown as {
+      opts: { reasoningEffort: string; supportedParameters: string[] };
+    };
+    if (reasoningEffort !== undefined) {
+      // validated here so an unsupported value never reaches the request body;
+      // "" or an unrecognised level clears it (provider default)
+      opts.opts.reasoningEffort = isReasoningEffort(reasoningEffort) ? reasoningEffort : "";
+      const cfgEntry = this.config.agents.find((a) => a.id === id);
+      if (cfgEntry) cfgEntry.reasoningEffort = opts.opts.reasoningEffort || undefined;
+    }
+    opts.opts.supportedParameters = meta?.supportedParameters ?? [];
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
     if (!llm.baseUrl) throw new Error("no baseUrl resolved");
     agent.setLlmConfig(llm);

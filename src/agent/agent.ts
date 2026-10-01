@@ -1015,6 +1015,9 @@ export class Agent {
       stats: { ...this.stats, costUsd: this.modelPricing ? this.stats.costUsd : undefined },
       model: this.opts.llm.model,
       provider: this.opts.provider,
+      // #47: the effort in force, and whether this model can take one at all
+      ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
+      effortSupported: (this.opts.supportedParameters ?? []).includes("reasoning_effort"),
       sessionDir: this.opts.sessionDir,
       ctx: {
         usedTokens: this.lastUsage?.input ?? this.estimateTokens(),
