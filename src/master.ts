@@ -56,6 +56,25 @@ function readAppVersion(): string {
   return "0.0.0";
 }
 
+/**
+ * Turn a user-supplied workspace path into an absolute one.
+ *
+ * A relative path used to be resolved against `process.cwd()`, so a config
+ * entry like `"workspace": "workspaces/alpha"` (the form shipped in
+ * teapot.config.example.json) silently pointed at whatever directory the
+ * daemon happened to be started from — and the agent's bash tool then ran in
+ * the wrong directory (#34). Relative workspaces are now anchored to the
+ * config file's own directory, which is what "the workspace" means inside a
+ * config file.
+ *
+ * `~` is expanded for both forms; absolute paths pass through untouched.
+ */
+export function resolveWorkspace(input: string, base: string): string {
+  const expanded = input.trim().replace(/^~(?=$|\/|\\)/, process.env.HOME ?? "~");
+  if (path.isAbsolute(expanded)) return path.normalize(expanded);
+  return path.resolve(base, expanded);
+}
+
 /** default sub-agent personas — mentionable from the composer (@name) and
  *  usable by agents via spawn_agent({persona}) */
 export const SUB_PERSONAS: Record<
@@ -470,7 +489,7 @@ export class Master {
 
     let agentId: string | undefined;
     if (body.workspace?.trim()) {
-      const ws = path.resolve(body.workspace.replace(/^~/, process.env.HOME ?? "~"));
+      const ws = resolveWorkspace(body.workspace, path.dirname(this.configPath));
       await mkdirSync(ws, { recursive: true });
       const name =
         (body.agentName?.trim() || path.basename(ws))
@@ -537,7 +556,7 @@ export class Master {
     this.writeSessionManifest(sessionDir, ac.id);
     const agent = new Agent({
       id: ac.id,
-      workspace: path.resolve(ac.workspace),
+      workspace: resolveWorkspace(ac.workspace, path.dirname(this.configPath)),
       llm,
       sessionDir,
       progressIntervalMs: this.config.progressIntervalMs,

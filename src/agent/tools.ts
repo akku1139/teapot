@@ -173,6 +173,18 @@ function bgMapFor(cwd: string): Map<string, BgShell> {
   return m;
 }
 
+/**
+ * Environment for every shell the agent runs.
+ *
+ * `PWD` is deliberately removed: the server's own PWD would contradict the
+ * `cwd` we spawn with, so a command trusting `$PWD` would act on the wrong
+ * directory (#34). `bash` re-creates PWD from its actual cwd.
+ */
+function shellEnv(): NodeJS.ProcessEnv {
+  const { PWD: _pwd, ...rest } = process.env;
+  return { ...rest, TERM: "dumb", GIT_PAGER: "cat", PAGER: "cat" };
+}
+
 function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   const map = bgMapFor(ctx.cwd);
   // opportunistic cleanup of long-dead jobs so the map can't grow forever
@@ -180,11 +192,13 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000 && !map.delete(id)) void id;
   }
   const id = `bg${++bgSeq}`;
-  const child = spawn("/bin/bash", ["-lc", cmd], {
+  // plain `-c`, not `-lc`: a login shell sources ~/.bash_profile, whose `cd`
+  // would move background jobs out of the workspace (#34)
+  const child = spawn("/bin/bash", ["-c", cmd], {
     cwd: ctx.cwd,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, TERM: "dumb", GIT_PAGER: "cat", PAGER: "cat" },
+    env: shellEnv(),
   });
   const sh: BgShell = {
     id, cmd, child,
@@ -267,11 +281,14 @@ export function hasRunningBgShells(cwd: string): boolean {
 /** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-lc", cmd], {
+    // `bash -l` sources /etc/profile + ~/.bash_profile, either of which may
+    // `cd` somewhere — which silently moved every later relative path out of
+    // the workspace (#34). Plain `-c` starts in ctx.cwd and stays there.
+    const child = spawn("/bin/bash", ["-c", cmd], {
       cwd: ctx.cwd,
       detached: true, // own process group
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, TERM: "dumb", GIT_PAGER: "cat", PAGER: "cat" },
+      env: shellEnv(),
     });
     let out = "";
     let done = false;

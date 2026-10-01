@@ -11,7 +11,7 @@ import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
 import { TermSizeTracker } from "./term-size.ts";
-import { SUB_PERSONAS } from "../master.ts";
+import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
 import type { ProviderConfig } from "../master.ts";
 import { providerHeaders } from "../agent/llm.ts";
@@ -295,7 +295,7 @@ export function buildApp(master: Master): Hono {
       start?: boolean;
     }>();
     if (!body.workspace?.trim()) return c.json({ error: "workspace required" }, 400);
-    const ws = path.resolve(body.workspace.replace(/^~/, process.env.HOME ?? "~"));
+    const ws = resolveWorkspace(body.workspace, path.dirname(master.configPath));
     try {
       const st = await fs.stat(ws);
       if (!st.isDirectory()) return c.json({ error: "not a directory" }, 400);
