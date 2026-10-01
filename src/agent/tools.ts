@@ -626,13 +626,78 @@ async function applyPatch(patch: string, ctx: ToolContext): Promise<ToolResult> 
     return { ok: false, result: `patch validation failed: ${(e as Error).message}` };
   }
 
-  // phase 2 — commit
-  for (const w of writes) {
-    await fs.mkdir(path.dirname(w.abs), { recursive: true });
-    await fs.writeFile(w.abs, w.content, "utf8");
+  // phase 2 — commit.
+  //
+  // Phase 1 validates every hunk in memory, so a CONTENT mismatch never
+  // lands halfway. An I/O failure still could: the old loop wrote straight
+  // to the final paths, so a failure on write k of n left writes 1..k-1
+  // already on disk while the tool reported "patch failed". apply_patch is
+  // documented as atomic, so make the commit phase live up to it:
+  //   1. back up the current bytes of every path we are about to change
+  //   2. write each new file to a sibling temp file, then rename() over the
+  //      target (rename within a directory is atomic, so a reader never
+  //      observes a half-written file)
+  //   3. on ANY failure, restore the backups and remove temp files
+  // Deletes are only performed once every write has landed, and a failed
+  // delete is now reported instead of silently swallowed.
+  const backups = new Map<string, string | null>();
+  const temps: string[] = [];
+  try {
+    for (const w of writes) {
+      if (!backups.has(w.abs)) backups.set(w.abs, await fs.readFile(w.abs, "utf8").catch(() => null));
+      await fs.mkdir(path.dirname(w.abs), { recursive: true });
+      const tmp = `${w.abs}.teapot-patch-${process.pid}-${temps.length}.tmp`;
+      temps.push(tmp);
+      await fs.writeFile(tmp, w.content, "utf8");
+      await fs.rename(tmp, w.abs);
+    }
+  } catch (e) {
+    await rollbackWrites(backups, temps);
+    return {
+      ok: false,
+      result:
+        `patch commit failed and was rolled back (no files changed): ${(e as Error).message}\n` +
+        "re-read the files and regenerate the patch",
+    };
   }
-  for (const d of deletes) await fs.rm(d).catch(() => {});
+
+  // writes are in — now the deletes. A delete that fails is a real, visible
+  // inconsistency (the old content moved/updated but the source survived),
+  // so roll the whole patch back rather than report a false success.
+  const removed: string[] = [];
+  try {
+    for (const d of deletes) {
+      await fs.rm(d);
+      removed.push(d);
+    }
+  } catch (e) {
+    for (const d of removed) {
+      const orig = await fs.readFile(d, "utf8").catch(() => null);
+      if (orig !== null) await fs.writeFile(d, orig, "utf8").catch(() => {});
+    }
+    await rollbackWrites(backups, temps);
+    return {
+      ok: false,
+      result: `patch commit failed and was rolled back (no files changed): ${(e as Error).message}`,
+    };
+  }
   return { ok: true, result: `patch applied:\n${summary.join("\n")}` };
+}
+
+/**
+ * Undo a partially committed patch: restore each target's original bytes
+ * (null = it did not exist before, so remove the file we created) and clean
+ * up any temp file that never made it through its rename.
+ */
+async function rollbackWrites(
+  backups: Map<string, string | null>,
+  temps: string[],
+): Promise<void> {
+  for (const t of temps) await fs.rm(t, { force: true }).catch(() => {});
+  for (const [abs, orig] of backups) {
+    if (orig === null) await fs.rm(abs, { force: true }).catch(() => {});
+    else await fs.writeFile(abs, orig, "utf8").catch(() => {});
+  }
 }
 
 export const TOOLS: ToolDef[] = [

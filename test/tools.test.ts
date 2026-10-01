@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdir, readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdir, readFile, chmod } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 import { useTempDir } from "./helpers/tmp.ts";
@@ -281,6 +281,63 @@ test("apply_patch is all-or-nothing on failure", async () => {
     assert.equal(r.ok, false);
     assert.match(r.result, /missing\.txt/);
     assert.equal(await readFile(path.join(ctx.cwd, "keep.txt"), "utf8"), good); // rolled back = never written
+  });
+});
+
+test("apply_patch rolls back writes when the COMMIT phase fails midway (#6)", async () => {
+  // Phase 1 (validation) already passed for every hunk — this fails in phase 2
+  // on an I/O error, which used to leave earlier writes on disk while the tool
+  // reported failure. A read-only directory makes the second write EACCES.
+  await withCtx(async (ctx) => {
+    const f1 = "original one\n";
+    await executeTool("write_file", JSON.stringify({ path: "a.txt", content: f1 }), ctx);
+    const locked = path.join(ctx.cwd, "locked");
+    await mkdir(locked, { recursive: true });
+    await chmod(locked, 0o555); // r-x: cannot create files inside
+    try {
+      const patch = `*** Begin Patch
+*** Update File: a.txt
+@@
+-original one
++CHANGED one
+*** Add File: locked/new.txt
++nope
+*** End Patch`;
+      const r = await executeTool("apply_patch", JSON.stringify({ patch }), ctx);
+      assert.equal(r.ok, false, `expected commit failure, got: ${r.result}`);
+      assert.match(r.result, /rolled back/);
+
+      // the first write must be UNDONE, not left applied
+      assert.equal(await readFile(path.join(ctx.cwd, "a.txt"), "utf8"), f1);
+      assert.equal(existsSync(path.join(locked, "new.txt")), false);
+      // and no temp litter anywhere in the workspace
+      const stray = readdirSync(ctx.cwd, { recursive: true }).filter((f) => String(f).includes(".teapot-patch-"));
+      assert.deepEqual(stray, [], `temp files leaked: ${stray.join(", ")}`);
+    } finally {
+      await chmod(locked, 0o755); // let the temp-dir cleanup remove it
+    }
+  });
+});
+
+test("apply_patch leaves no temp files on success", async () => {
+  await withCtx(async (ctx) => {
+    await executeTool("write_file", JSON.stringify({ path: "b.txt", content: "x\n" }), ctx);
+    const r = await executeTool(
+      "apply_patch",
+      JSON.stringify({
+        patch: `*** Begin Patch
+*** Update File: b.txt
+@@
+-x
++y
+*** End Patch`,
+      }),
+      ctx,
+    );
+    assert.ok(r.ok, r.result);
+    assert.equal(await readFile(path.join(ctx.cwd, "b.txt"), "utf8"), "y\n");
+    const stray = readdirSync(ctx.cwd, { recursive: true }).filter((f) => String(f).includes(".teapot-patch-"));
+    assert.deepEqual(stray, []);
   });
 });
 
