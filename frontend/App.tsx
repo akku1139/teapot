@@ -2,6 +2,7 @@ import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, 
 import { renderMarkdown } from "./md";
 import { fmtDur } from "./format";
 import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog } from "./live-buffer";
+import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -814,18 +815,17 @@ export default function App() {
     // consumed it. Re-sequence it to its prompt-delivered note's position so
     // the timeline reads in true context order: the message lands between the
     // agent output that came before the delivery and the reply after it.
-    for (const e of visible) {
+    for (let i = 0; i < visible.length; i++) {
+      const e = visible[i]!;
       if (e.type !== "prompt" || e.data?.source !== "user") continue;
       const pid = String((e.data as any)?.promptId ?? "");
-      const note = deliveredNotes.get(pid);
-      if (note && note > e.seq) e.seq = note;
-      // a withdrawn row sorts at the position of its cancellation and carries
+      // A withdrawn row sorts at the position of its cancellation and carries
       // a marker, so it renders as withdrawn rather than as a sent message
       const cancelSeq = cancelledNotes.get(pid);
-      if (cancelSeq !== undefined) {
-        if (cancelSeq > e.seq) e.seq = cancelSeq;
-        if (e.data) (e.data as any).cancelled = true;
-      }
+      if (cancelSeq !== undefined && e.data) (e.data as any).cancelled = true;
+      // move it down to whichever note comes LAST (delivery or cancellation) —
+      // that is where the model actually consumed (or dropped) it (#37)
+      visible[i] = resequenceToDelivery(e, Math.max(deliveredNotes.get(pid) ?? 0, cancelSeq ?? 0) || undefined);
     }
     const pend = pendingMsgs().filter((p) => {
       if (!p.promptId) return true;
@@ -838,11 +838,7 @@ export default function App() {
     // above the log's max seq), and multiple pending messages keep their own
     // send order — first-sent highest, so the block reads top-down in the
     // order the operator typed them.
-    const maxSeq = visible.reduce((m, e) => Math.max(m, e.seq), 0);
-    echoes.forEach((e, i) => {
-      e.seq = maxSeq + 1 + i;
-    });
-    return [...visible, ...echoes];
+    return placeEchoesBelow(visible, echoes);
   });
   // Reference-stable echo rows: chatEvents re-runs on EVERY event burst, and
   // rebuilding the echo objects each time handed Solid's <For> a brand-new
