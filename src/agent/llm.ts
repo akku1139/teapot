@@ -34,6 +34,14 @@ export interface LlmConfig {
   apiKey: string;
   model: string;
   timeoutMs?: number;
+  /**
+   * Reasoning effort for models that support it (#47). Only ever SENT when the
+   * endpoint is OpenRouter and the model advertises `reasoning_effort` — see
+   * effortForRequest(). Absent means "provider default".
+   */
+  reasoningEffort?: string;
+  /** per-model capabilities from the endpoint catalogue; gates the above */
+  supportedParameters?: string[];
 }
 
 export interface LlmResult {
@@ -49,6 +57,41 @@ export interface LlmResult {
 }
 
 const clients = new WeakMap<LlmConfig, OpenAI>();
+
+/**
+ * Reasoning effort for a request body (#47).
+ *
+ * Kept local and deliberately conservative: the setting is only honoured when
+ * the endpoint is OpenRouter, the value is one OpenRouter documents, and the
+ * catalogue says this model advertises `reasoning_effort`. Support is far from
+ * universal (verified against the live /models endpoint: 196 of 462 models),
+ * so an unsent field is much safer than a wrong one.
+ *
+ * Implemented here rather than via model-meta to avoid an import cycle —
+ * model-meta already imports providerHeaders from this file.
+ */
+export function effortForRequest(
+  cfg: LlmConfig,
+  supported: string[] | undefined = cfg.supportedParameters,
+): { reasoning_effort?: Effort } {
+  const e = cfg.reasoningEffort;
+  if (!e || !(REASONING_EFFORTS as readonly string[]).includes(e)) return {};
+  if (!isOpenRouterEndpoint(cfg.baseUrl)) return {};
+  if (!supported?.includes("reasoning_effort")) return {};
+  return { reasoning_effort: e as Effort };
+}
+
+function isOpenRouterEndpoint(baseUrl: string | undefined): boolean {
+  try {
+    return /(^|\.)openrouter\.ai$/i.test(new URL(String(baseUrl ?? "")).host);
+  } catch {
+    return false;
+  }
+}
+
+const REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
+/** the OpenAI SDK already types this union; mirror it so the body matches */
+type Effort = "minimal" | "low" | "medium" | "high";
 
 /**
  * OpenRouter app attribution (https://openrouter.ai/docs/app-attribution):
@@ -163,6 +206,7 @@ export async function chat(
         model: cfg.model,
         messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         ...(tools.length ? { tools } : {}),
+        ...effortForRequest(cfg),
       },
       { signal },
     );
@@ -259,6 +303,7 @@ export async function chatStream(
         model: cfg.model,
         messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         ...(tools.length ? { tools } : {}),
+        ...effortForRequest(cfg),
         stream: true,
         // ask providers to include the final usage chunk in streaming mode
         // (OpenAI-compatible; harmless where unsupported)

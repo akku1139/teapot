@@ -13,6 +13,12 @@ export interface ModelMeta {
   pricing?: { prompt: number; completion: number };
   /** what the model can accept and produce — drives the 📄🖼️→📄 badge */
   modalities?: { input: string[]; output: string[] };
+  /**
+   * Parameters the endpoint advertises for this model (OpenRouter publishes
+   * `supported_parameters`). Lets the UI show reasoning-effort controls only
+   * where they actually work — support is far from universal (#47).
+   */
+  supportedParameters?: string[];
 }
 
 const cache = new Map<string, { at: number; list: ModelMeta[] }>();
@@ -47,6 +53,7 @@ export async function fetchModelList(
           input_modalities?: string[];
           output_modalities?: string[];
         };
+        supported_parameters?: string[];
       }[];
     };
     const list = (j.data ?? [])
@@ -69,6 +76,11 @@ export async function fetchModelList(
                 output: m.architecture!.output_modalities ?? ["text"],
               }
             : undefined,
+        // OpenRouter advertises per-model capabilities; other endpoints omit
+        // the field entirely, which leaves support "unknown" rather than false.
+        supportedParameters: Array.isArray(m.supported_parameters)
+          ? m.supported_parameters.filter((p): p is string => typeof p === "string")
+          : undefined,
       }))
       .filter((m) => m.id);
     cache.set(root, { at: Date.now(), list });
@@ -83,6 +95,50 @@ export function contextLengthFor(
   model: string,
 ): number | undefined {
   return list.find((m) => m.id === model)?.contextLength;
+}
+
+/** Reasoning-effort levels OpenRouter accepts (`reasoning_effort`). */
+export const REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(v: unknown): v is ReasoningEffort {
+  return typeof v === "string" && (REASONING_EFFORTS as readonly string[]).includes(v);
+}
+
+/** True when the endpoint is OpenRouter (the only one that documents effort). */
+export function isOpenRouter(baseUrl: string | undefined): boolean {
+  try {
+    return /(^|\.)openrouter\.ai$/i.test(new URL(String(baseUrl ?? "")).host);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The `reasoning_effort` value to actually SEND, or undefined to omit it.
+ *
+ * Verified against the live OpenRouter /models endpoint (462 models): 196
+ * advertise `reasoning_effort`, 331 the broader `reasoning`, and NONE a bare
+ * top-level `effort`. Support is therefore far from universal, and sending the
+ * parameter to a model that does not advertise it is how a request gets
+ * rejected or a setting silently ignored (#47) — so it is sent only when the
+ * endpoint is OpenRouter AND the model advertises it. Off by default: an absent
+ * setting means "let the provider apply its own default".
+ */
+export function resolveReasoningEffort(opts: {
+  baseUrl?: string;
+  model?: string;
+  list?: ModelMeta[];
+  effort?: string | null;
+}): ReasoningEffort | undefined {
+  if (!isReasoningEffort(opts.effort)) return undefined;
+  if (!isOpenRouter(opts.baseUrl)) return undefined;
+  const meta = opts.list?.find((m) => m.id === opts.model);
+  // No catalogue for this endpoint: we cannot verify support, so do not send.
+  // A wrong body field is worse than an unset one.
+  if (!meta?.supportedParameters) return undefined;
+  if (!meta.supportedParameters.includes("reasoning_effort")) return undefined;
+  return opts.effort;
 }
 
 /** test hook */

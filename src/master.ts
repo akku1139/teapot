@@ -140,6 +140,8 @@ export interface AgentConfig {
   autoContinue?: boolean;
   /** automatically compact when context exceeds budget (default true) */
   autoCompact?: boolean;
+  /** reasoning effort for models that support it (#47); omit = provider default */
+  reasoningEffort?: string;
   /**
    * Internal session id this agent is currently bound to. Persisted so a
    * restart reattaches to the SAME session instead of guessing: sessions were
@@ -557,6 +559,13 @@ export class Master {
       ]);
       void listPromise.catch(() => []);
     }
+    // catalogue entry for this model — gates reasoning_effort support (#47)
+    const modelMeta = (
+      await Promise.race([
+        fetchModelList(llm.baseUrl, llm.apiKey),
+        new Promise<undefined>((r) => setTimeout(() => r(undefined), 1_500)),
+      ])
+    )?.find((m) => m.id === llm.model);
     const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
     await mkdirSync(sessionDir, { recursive: true });
     // every session dir this master hands out carries an ownership manifest —
@@ -590,6 +599,12 @@ export class Master {
       ...(ac.readOnly ? { readOnlyTools: true } : {}),
       ...(ac.parent ? { parent: ac.parent } : {}),
       ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
+      // #47: reasoning effort is a per-agent choice; the catalogue decides
+      // whether it can actually be sent (see effortForRequest)
+      ...(ac.reasoningEffort ? { reasoningEffort: ac.reasoningEffort } : {}),
+      ...(modelMeta?.supportedParameters
+        ? { supportedParameters: modelMeta.supportedParameters }
+        : {}),
     });
     // pricing metadata (USD/token) for the runtime cost estimate — best
     // effort: providers without pricing in /models simply show no cost

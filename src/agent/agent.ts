@@ -97,6 +97,10 @@ export interface AgentOptions {
   continueDelayMs?: number;
   /** automatically compact when context exceeds budget (default true) */
   autoCompact?: boolean;
+  /** reasoning effort for models that support it (#47) */
+  reasoningEffort?: string;
+  /** the endpoint catalogue's per-model capabilities; gates the effort field */
+  supportedParameters?: string[];
   maxConsecutiveToolErrors?: number;
   /** estimated-token budget; older history is compacted when exceeded */
   /** estimated-token budget; older history is compacted when exceeded */
@@ -267,6 +271,10 @@ export class Agent {
       autoContinue: true,
       continueDelayMs: 15_000,
       autoCompact: true,
+      // #47: no effort and no catalogue entry means "provider default" — the
+      // effort field is then never sent, which is the safe default
+      reasoningEffort: "",
+      supportedParameters: [],
       maxConsecutiveToolErrors: 5,
       maxTurnsPerRound: 200,
       onError: "stop",
@@ -346,7 +354,22 @@ export class Agent {
     onDelta?: (snap: { text: string; reasoning: string }) => void,
   ) {
     const fn = this.opts.chatFn ?? chatStream;
-    return fn(this.opts.llm, messages, tools, this.abort?.signal, onDelta);
+    // #47: carry the effort setting + the model's advertised capabilities into
+    // the request config. chat() applies effortForRequest(), which sends the
+    // field ONLY for OpenRouter endpoints whose catalogue lists support.
+    return fn(
+      {
+        ...this.opts.llm,
+        ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
+        ...(this.opts.supportedParameters
+          ? { supportedParameters: this.opts.supportedParameters }
+          : {}),
+      },
+      messages,
+      tools,
+      this.abort?.signal,
+      onDelta,
+    );
   }
 
   /** expose id for metrics */
