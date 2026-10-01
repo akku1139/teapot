@@ -28,6 +28,12 @@ declare const __APP_VERSION__: string;
 /** Reasoning-effort levels OpenRouter documents for `reasoning_effort` (#47). */
 const REASONING_EFFORT_OPTIONS = ["minimal", "low", "medium", "high"] as const;
 
+/** Width at which the right bar becomes a floating drawer over the content.
+ *  MUST stay equal to the `@media (max-width: 1100px)` breakpoint in app.css —
+ *  the JS drives the drawer state, the CSS positions it, and they only agree if
+ *  both are 1100. */
+const NARROW_PX = 1100;
+
 /* ---------- types ---------- */
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
@@ -224,15 +230,26 @@ export default function App() {
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
   const [showCfg, setShowCfg] = createSignal(false);
+  /* Below NARROW_PX the right bar stops being a grid column and becomes a
+   * fixed drawer over the content — which hides the ▤ toggle that opens it.
+   * That is why the drawer needs its own close button, and why the breakpoint
+   * lives in ONE place shared with the CSS media query. */
+  const isNarrow = () => window.innerWidth <= NARROW_PX;
   const [showRight, setShowRight] = createSignal(
     localStorage.getItem("teapot.panel") !== null
       ? localStorage.getItem("teapot.panel") === "1"
-      : window.innerWidth > 1100,
+      : window.innerWidth > NARROW_PX,
   );
-  const toggleRight = () => {
-    const next = !showRight();
+  const setRight = (next: boolean) => {
     setShowRight(next);
     localStorage.setItem("teapot.panel", next ? "1" : "0");
+  };
+  const toggleRight = () => setRight(!showRight());
+  const closeRight = () => {
+    // Escape and the drawer's ✕ must not persist "panel open" — a drawer
+    // remembered as open slides back over the content on the next load, which
+    // is exactly the state we are trying to make escapable.
+    if (showRight()) setRight(false);
   };
 
   /* ---------- theme picker (per-browser, localStorage-backed) ---------- */
@@ -1574,13 +1591,17 @@ export default function App() {
       if (showCfg()) { setShowCfg(false); return; }
       if (showThemes()) { setShowThemes(false); return; }
       if (editing()) { setEditing(null); return; }
+      // BEFORE the running-agent interrupt (#50): narrow, the drawer is a modal
+      // sheet over the content and Escape must close THAT first. It used to
+      // fall through to the /stop branch, so with an agent working, Escape
+      // stopped the agent and left the panel stuck open.
+      if (isNarrow() && showRight()) { closeRight(); return; }
       const s = sel();
       if (s?.status === "running") {
         // Claude-Code-style: Esc interrupts the running agent
         api(`/api/agents/${s.id}/stop`, { method: "POST" }).then(refreshAgents);
         return;
       }
-      if (showRight() && window.innerWidth <= 1100) setShowRight(false);
       return;
     }
     if (showNew() || showCfg()) return;
@@ -2857,6 +2878,16 @@ export default function App() {
       </section>
 
       {/* ---------- right bar ---------- */}
+      {/* Drawer-only close row (#50). In wide mode .rightbar is a grid column
+          that sits next to the content, and the ▤ button in the channel header
+          is right there — so this row stays `display:none` (see app.css) and
+          costs a wide-screen user nothing. Narrow, the panel is a fixed drawer
+          covering up to 92vw of the screen; it covers the ▤ button that opened
+          it, leaving NO visible way back out. This is that way out. */}
+      <div class={"rightbarhead" + (showRight() ? " open" : "")}>
+        <span class="muted">details</span>
+        <IconBtn icon="✕" title="close details panel (esc)" onClick={closeRight} />
+      </div>
       <aside
         class={"rightbar" + (showRight() ? " open" : "")}
         ref={rightbarEl}

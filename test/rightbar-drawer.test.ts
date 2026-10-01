@@ -70,17 +70,18 @@ function ruleBody(token: string): string {
 
 test("the drawer has a close button of its own (#50)", () => {
   assert.ok(
-    /class="rightbarhead"/.test(app),
+    /class=\{"rightbarhead"/.test(app),
     "the panel needs a header row that hosts the ✕ button",
   );
-  // the ✕ lives INSIDE .rightbar (the drawer), not in the channel header it covers
+  // the ✕ lives in the drawer's OWN header row, not the channel header the
+  // drawer slides over and hides
   assert.ok(
-    /class="rightbarhead"[\s\S]{0,400}?icon="✕"[\s\S]{0,200}?close details panel/i.test(app),
+    /class=\{"rightbarhead"[\s\S]{0,300}?icon="✕"[\s\S]{0,200}?close details panel/i.test(app),
     "the ✕ must sit inside the panel, where it is reachable once the drawer covers the header (#50)",
   );
   assert.ok(
-    /class=\{"rightbarhead"/.test(app),
-    "the header must react to narrow mode (static column needs no ✕ row)",
+    /class=\{"rightbarhead" \+ \(showRight\(\) \? " open" : ""\)\}/.test(app),
+    "the header slides in WITH the drawer — a pinned ✕ over a hidden panel is worse than none",
   );
 });
 
@@ -130,9 +131,17 @@ test("the backdrop sits under the drawer and over the content (#50)", () => {
 /* ---------- 3: Escape reaches the drawer before the interrupt ---------- */
 
 test("Escape closes the drawer before it can stop a running agent (#50)", () => {
-  const handler = app.slice(app.indexOf('e.key === "Escape"'), app.indexOf('e.key === "Escape"') + 1400);
-  const drawerIdx = handler.search(/showRight\(\)/);
-  const stopIdx = handler.indexOf("/stop");
+  // Target the keydown handler's OWN Escape branch, not the earlier `typing`
+  // one (which fires when the caret is in a field and merely blurs it).
+  const start = app.indexOf('if (e.key === "Escape") {', app.indexOf('if (typing)'));
+  assert.notEqual(start, -1, "the global keydown Escape branch must exist");
+  const end = app.indexOf('if (showNew() || showCfg()) return;', start);
+  const handler = app.slice(start, end === -1 ? start + 1400 : end);
+  const drawerIdx = handler.search(/isNarrow\(\) && showRight\(\)/);
+  // anchor on the actual REQUEST, not the "/stop" substring — a comment
+  // mentioning the endpoint would otherwise satisfy this and hide a real
+  // ordering regression behind it
+  const stopIdx = handler.indexOf('api(`/api/agents/${s.id}/stop`');
   assert.ok(drawerIdx !== -1, "Escape must close the drawer");
   assert.ok(stopIdx !== -1, "the running-agent interrupt must still exist");
   assert.ok(
