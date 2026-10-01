@@ -137,6 +137,27 @@ Object.defineProperty(w, "innerWidth", {
   set: (v) => { viewportWidth = Number(v); },
 });
 w.document.body.innerHTML = `<div id="root"></div>`;
+
+/* Attach the built stylesheet. The bundle is JS-only, so without this
+ * getComputedStyle sees no rules at all and every "is this element hidden?"
+ * question answers yes-to-everything. #50's wide-mode check depends on the
+ * REAL `display:none` on .rightbarhead, so load it from the same assets dir. */
+{
+  const cssFile = fs
+    .readdirSync(pub)
+    .filter((f) => f.endsWith(".css"))
+    .sort()
+    .at(-1);
+  if (cssFile) {
+    const style = w.document.createElement("style");
+    style.textContent = fs.readFileSync(path.join(pub, cssFile), "utf8");
+    w.document.head.appendChild(style);
+    console.log("smoke: loaded stylesheet", cssFile);
+  } else {
+    console.error(`smoke: no *.css in ${pub} — width-sensitive checks would pass vacuously`);
+    process.exit(1);
+  }
+}
 try { Object.defineProperty(w.document, "visibilityState", { value: "visible", configurable: true }); } catch {}
 const setGlobal = (name, value) => {
   try {
@@ -510,7 +531,41 @@ console.log("deep render ok: feed rows present");
   console.log("deep render ok: sidebar groups chats by workspace (#18)");
 }
 
-// give deferred Solid effects a final tick before declaring victory
+/* ---------- #50: WIDE mode must be untouched by the drawer work ----------
+ * The narrow fixes added a backdrop and a ✕ row. Both are drawer-only, and a
+ * mistake in either (rendering them unconditionally) would be catastrophic on a
+ * wide screen: a full-screen click-catcher swallows every click in the app, and
+ * a ✕ row is a dead control sitting above the session card.
+ *
+ * This runs on the DEFAULT 1440 path, so it covers the common case, and it
+ * toggles the panel — including the open state, in which a wrongly-unconditional
+ * backdrop would be mounted. */
+{
+  const sleepW = (ms) => new Promise((r) => setTimeout(r, ms));
+  const failW = (msg) => { console.error(`#50 WIDE REGRESSION: ${msg}`); process.exit(1); };
+  if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
+    const bar = () => w.document.querySelector(".rightbar");
+    const toggle = [...w.document.querySelectorAll(".iconbtn")].find(
+      (b) => /toggle details panel/.test(b.getAttribute("title") ?? ""),
+    );
+    if (!toggle) failW("no ▤ details-panel toggle found");
+    if (!bar()?.classList.contains("open")) toggle.click(); // wide starts open; close first
+    await sleepW(80);
+    if (!bar()?.classList.contains("open")) failW("could not open the panel on a wide screen");
+    if (w.document.querySelector(".rightbarbackdrop"))
+      failW("a full-screen backdrop is mounted on a wide screen — it would swallow every click in the app");
+    const head = w.document.querySelector(".rightbarhead");
+    if (head && w.document.defaultView.getComputedStyle(head).display !== "none")
+      failW("the drawer-only ✕ row is visible on a wide screen");
+    toggle.click(); // …and it still toggles inline
+    await sleepW(80);
+    if (bar()?.classList.contains("open")) failW("the ▤ toggle no longer closes the panel");
+    if (w.document.querySelector(".rightbarbackdrop"))
+      failW("backdrop mounted after closing on a wide screen");
+    console.log("deep render ok: wide panel is an inline toggle, no drawer chrome (#50)");
+  }
+}
+
 /* ---------- #50: the narrow-screen drawer must be closable ----------------
  * Below 1100px .rightbar becomes a fixed drawer OVER the content, so the ▤
  * button that opened it is covered. Driving the real UI at 900px proves the
