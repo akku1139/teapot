@@ -337,6 +337,24 @@ export class Agent {
    * skill was added, edited or removed (save_skill writes one, so a
    * self-created skill still shows up on the very next turn).
    */
+  /**
+   * Render the skill catalogue for the system prompt (#31).
+   *
+   * Name + description only, one line each — the full SKILL.md is what
+   * load_skill() is for, and this block goes into EVERY request of the session,
+   * so it has to stay small. The description is what the model matches its task
+   * against, so a skill with a poor description is effectively undiscoverable;
+   * that is worth knowing when authoring one.
+   */
+  private skillCatalogueText(): string {
+    if (!this.skillsCache.length) return "";
+    const lines = this.skillsCache.map((s) => {
+      const desc = (s.description || "(no description)").replace(/\s+/g, " ").slice(0, 200);
+      return `- ${s.name}: ${desc}`;
+    });
+    return lines.join("\n");
+  }
+
   private async refreshSkills(): Promise<void> {
     try {
       const stamp = await skillRootsFingerprint(this.skillRoots);
@@ -1903,9 +1921,16 @@ export class Agent {
 
   /** AGENTS.md content cached for the session (empty string = none/read-failed) */
   private agentsMd = "";
+  /** captured once, with the rest of the session-frozen context */
   private agentsMdLoaded = false;
   /** one-time workspace listing injected with the system prompt */
   private wsSnapshot = "";
+  /**
+   * one-time catalogue of available skills, injected with the system prompt
+   * (#31). Built once alongside wsSnapshot so the prompt stays byte-identical
+   * for the session and the provider prefix cache survives.
+   */
+  private skillCatalogue = "";
 
   private systemPrompt(): string {
     if (!this.agentsMdLoaded) {
@@ -1968,6 +1993,9 @@ export class Agent {
           this.agentsMd = "";
         }
       }
+      // #31: capture the skill catalogue in the SAME one-shot block, so the
+      // system prompt stays byte-identical for the session (prefix cache).
+      this.skillCatalogue = this.skillCatalogueText();
     }
     let sys = SYSTEM_TEMPLATE;
     if (this.agentsMd.trim()) {
@@ -1975,6 +2003,22 @@ export class Agent {
     }
     if (this.wsSnapshot) {
       sys += `\n\n## Workspace snapshot (top level)\n${this.wsSnapshot}\nUse list_dir/read_file for anything deeper — do NOT list again what is already here.`;
+    }
+    // #31: the catalogue of AVAILABLE SKILLS. The prompt previously named the
+    // skill TOOLS but never the skills themselves, so the only way to discover
+    // one was to spend a tool call on list_skills() — and a model that does not
+    // know a skill exists will never think to look.
+    //
+    // Appended ONCE, in the same one-shot block as AGENTS.md and the workspace
+    // snapshot, so SYSTEM_TEMPLATE stays byte-identical for the session and the
+    // provider prefix cache survives (#14's constraint). list_skills() remains
+    // for the full detail (a skill saved mid-session shows up there).
+    if (this.skillCatalogue) {
+      sys +=
+        `\n\n## Skills available in this workspace\n${this.skillCatalogue}\n` +
+        `Load one with load_skill(name, instructions) when its description matches your task — ` +
+        `pass what you want done so the instructions arrive with the playbook. ` +
+        `list_skills() shows the full detail.`;
     }
     return sys;
   }
