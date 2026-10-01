@@ -2409,7 +2409,10 @@ export default function App() {
 
       {/* ---------- channel ---------- */}
       <section class="channel">
-        <Show when={sel()} fallback={<div style="display:grid;place-items:center;height:100%" class="muted">select an agent</div>}>
+        {/* keyed on the agent id: an agent-update snapshot replaces the agent OBJECT, and an
+            object-gated Show would rebuild the whole layout (and every focused
+            control in it) on every poll (#30). */}
+        <Show when={sel()?.id} keyed fallback={<div style="display:grid;place-items:center;height:100%" class="muted">select an agent</div>}>
           <header class="chan-head">
             <span class="hash">#</span>
             <span class="title">{sel()!.id}</span>
@@ -2810,7 +2813,16 @@ export default function App() {
         ref={rightbarEl}
         onscroll={(e) => { rightbarTop = (e.currentTarget as HTMLDivElement).scrollTop; }}
       >
-        <Show when={sel()}>
+        {/* Gated on the agent ID, not the agent OBJECT (#30). `when={sel()}`
+            re-ran this whole subtree whenever an agent-update snapshot replaced
+            the object — its compiled children getter builds a fresh array each
+            time, so Solid rebuilt the panel and any focused control inside it
+            (the tasks editor lost focus and caret). The id only changes when the
+            operator actually switches agent, which is the only case where a
+            rebuild is correct. Same trick FilesPanel uses below. */}
+        <Show when={sel()?.id} keyed fallback={null}>
+          {(_aid) => (
+          <>
           <h3 title="identity + storage locations for this agent">🎛 session</h3>
           <div class="card sesscard">
             <div class="sessrow"><span class="k">agent</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
@@ -3103,27 +3115,14 @@ export default function App() {
               />
             </div>
           </Show>
-          <Show
-            when={todoViewMode()}
-            fallback={
-              /* rendered checklist — the default view; markdown + real checkboxes */
-              <div class="content mdpreview" style="max-height:40vh;padding:8px 10px" innerHTML={renderMarkdownCached(todoDraft())} />
-            }
-          >
-            <textarea
-              id="todo-input"
-              class="mono"
-              rows={5}
-              placeholder={"- task one\n- task two"}
-              value={todoDraft()}
-              oninput={(e) => {
-                setTodoDraft(e.currentTarget.value);
-                setTodoDirty(true);
-              }}
-              title="shared with the agent — it may check items off via set_todo; your unsaved edits win until you save"
-              style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
-            />
-          </Show>
+          <TodoEditor
+            draft={todoDraft()}
+            viewMode={todoViewMode()}
+            onDraft={(text: string) => {
+              setTodoDraft(text);
+              setTodoDirty(true);
+            }}
+          />
           <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px">
             <IconBtn
               icon={todoViewMode() ? "👁" : "✎"}
@@ -3368,6 +3367,8 @@ export default function App() {
               )}
             </For>
           </Show>
+          </>
+          )}
         </Show>
       </aside>
     </div>
@@ -4431,6 +4432,45 @@ const fileUiFor = (agentId: string): FileUiState => {
   }
   return s;
 };
+
+/**
+ * The tasks editor, as its own component with PRIMITIVE props (#30).
+ *
+ * Inline in the right panel it was re-created whenever an `agent-update`
+ * snapshot replaced the agent object — verified by staging the real UI: the
+ * editor survived typing, saving and the /api/agents poll, and was recreated
+ * only by the websocket snapshot, taking focus and caret with it. A component
+ * boundary with primitive props (a string, a function) gives Solid a stable
+ * element to keep, exactly as FilesPanel below already does for the file tree.
+ *
+ * `renderMarkdownCached` still renders the checklist preview from the draft.
+ */
+function TodoEditor(props: {
+  draft: string;
+  viewMode: boolean;
+  onDraft: (text: string) => void;
+}) {
+  return (
+    <Show
+      when={props.viewMode}
+      fallback={
+        /* rendered checklist — the default view; markdown + real checkboxes */
+        <div class="content mdpreview" style="max-height:40vh;padding:8px 10px" innerHTML={renderMarkdownCached(props.draft)} />
+      }
+    >
+      <textarea
+        id="todo-input"
+        class="mono"
+        rows={5}
+        placeholder={"- task one\n- task two"}
+        value={props.draft}
+        oninput={(e) => props.onDraft(e.currentTarget.value)}
+        title="shared with the agent \u2014 it may check items off via set_todo; your unsaved edits win until you save"
+        style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
+      />
+    </Show>
+  );
+}
 
 function FilesPanel(props: { agentId: string; workspace: string }) {
   const ui = fileUiFor(props.agentId);

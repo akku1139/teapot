@@ -454,6 +454,16 @@ console.log("deep render ok: feed rows present");
   // keystroke in flight — the reported "editing gets force-committed" symptom.
   // isolate: was the VIEW MODE toggled by the re-render? that swaps the branch
   // walk up to find the first replaced ancestor
+  // #30: the editor NODE must survive an agent-update snapshot. It used to be
+  // re-created (focus + caret lost) because the right panel was gated on the
+  // agent OBJECT, whose identity changes on every snapshot.
+  if (after !== box || w.document.activeElement?.id !== "todo-input") {
+    console.error(
+      "#30 REGRESSION: the tasks editor was recreated by an agent-update\n" +
+        `  sameNode=${after === box} focus=${JSON.stringify(w.document.activeElement?.id ?? null)}`,
+    );
+    process.exit(1);
+  }
   if (after.value !== TYPED) {
     console.error(
       `#30 REGRESSION: in-progress todo was clobbered by a panel re-render\n` +
