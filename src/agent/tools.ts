@@ -88,6 +88,39 @@ async function readText(p: string): Promise<string> {
   return fs.readFile(p, "utf8");
 }
 
+/**
+ * Optimistic-concurrency guard (#5). The model reads a file, thinks, then
+ * writes — and in between, a sub-agent, a background job or the operator may
+ * have changed it. Anchored edits usually fail safe (old_text is gone, so the
+ * call errors), but two paths silently clobber work nobody looked at:
+ * `replace_all` rewrites every occurrence present NOW, including ones that
+ * appeared after the model formed its plan, and write_file/apply_patch replace
+ * whole files unconditionally.
+ *
+ * A caller that passes `base_content` (the bytes it actually read) therefore
+ * gets a refusal instead of a lost update — the same contract the web file
+ * editor already enforces (see api.ts PUT /file). The check is advisory by
+ * design: omitting the parameter keeps today's behaviour, so this can never
+ * break a working agent loop that does not use it.
+ */
+function staleGuard(pathArg: string, base: unknown, current: string | null): ToolResult | null {
+  if (typeof base !== "string") return null; // not supplied → no check
+  if (base === current) return null; // unchanged → proceed
+  const rel = pathArg;
+  return {
+    ok: false,
+    result:
+      `${rel} changed on disk since you read it — nothing was written.\n` +
+      `your base_content: ${base.length} bytes, on disk now: ${current === null ? "(deleted)" : `${current.length} bytes`}.\n` +
+      `Re-read ${rel}, redo the edit against the current content, and pass the fresh text as base_content.`,
+  };
+}
+
+/** Read the file for a guarded write, or null when it does not exist. */
+async function currentOrNull(p: string): Promise<string | null> {
+  return fs.readFile(p, "utf8").catch(() => null);
+}
+
 /** Resolve a path inside the workspace; reject escapes (incl. symlink targets).
  *  KNOWN LIMIT (review finding, accepted): the check-then-open pattern has a
  *  TOCTOU window — a symlink swapped in between safeJoin() and fs.open() could
@@ -770,12 +803,18 @@ export const TOOLS: ToolDef[] = [
     description:
       "Create ONE new file, or replace a file's entire content (parent dirs auto-created). " +
       "Creating files as part of a larger batch of edits → one apply_patch instead. " +
-      "Partial changes to an existing file → edit_file.",
+      "Partial changes to an existing file → edit_file. " +
+      "Pass base_content (the bytes you read) when rewriting a file that may have changed under you — the write is refused rather than clobbering a concurrent edit.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string" },
         content: { type: "string" },
+        base_content: {
+          type: "string",
+          description:
+            "Optional: the exact bytes you read before writing. The write is REFUSED if the file changed since — re-read and retry instead of clobbering someone else's edit.",
+        },
       },
       required: ["path", "content"],
     },
@@ -793,6 +832,8 @@ export const TOOLS: ToolDef[] = [
         };
       }
       const p = safeJoin(ctx.cwd, str(args.path));
+      const stale = staleGuard(str(args.path), args.base_content, await currentOrNull(p));
+      if (stale) return stale;
       await fs.mkdir(path.dirname(p), { recursive: true });
       await fs.writeFile(p, args.content, "utf8");
       return { ok: true, result: `wrote ${p} (${args.content.length} bytes)` };
@@ -804,7 +845,8 @@ export const TOOLS: ToolDef[] = [
       "Make exactly ONE small, unique replacement in one existing file — the cheapest tool for a single spot change. " +
       "Copy old_text from the file contents (NOT from read_file's `N| ` prefixed display); it must appear exactly once — " +
       "if it matches several places, add surrounding lines or pass replace_all=true. " +
-      "Two or more changes (or a rename/delete) → use apply_patch instead.",
+      "Two or more changes (or a rename/delete) → use apply_patch instead. " +
+      "Pass base_content (the bytes you read) whenever the file may have changed under you — especially with replace_all, which otherwise rewrites occurrences that appeared after you read.",
     parameters: {
       type: "object",
       properties: {
@@ -812,12 +854,19 @@ export const TOOLS: ToolDef[] = [
         old_text: { type: "string" },
         new_text: { type: "string" },
         replace_all: { type: "boolean", description: "replace every occurrence instead of requiring uniqueness" },
+        base_content: {
+          type: "string",
+          description:
+            "Optional: the exact bytes you read before editing. Refuses the edit if the file changed since — important with replace_all, which otherwise rewrites occurrences that appeared after you read.",
+        },
       },
       required: ["path", "old_text", "new_text"],
     },
     async run(args, ctx) {
       const p = safeJoin(ctx.cwd, str(args.path));
       let text = await readText(p);
+      const stale = staleGuard(str(args.path), args.base_content, text);
+      if (stale) return stale;
       const oldText = str(args.old_text);
       const newText = str(args.new_text);
       if (!oldText) return { ok: false, result: "old_text is required" };

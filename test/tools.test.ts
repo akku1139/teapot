@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdir, readFile, chmod } from "node:fs/promises";
+import { mkdir, readFile, chmod, writeFile as fsWrite, rm } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
@@ -118,6 +118,112 @@ test("edit_file tolerates LF patterns against CRLF files", async () => {
     assert.match(e.result, /CRLF→LF/);
     const r = await executeTool("read_file", JSON.stringify({ path: "crlf.txt" }), ctx);
     assert.match(r.result, /1\| one\n2\| two/);
+  });
+});
+
+/* ---------- optimistic concurrency: don't clobber unseen edits (#5) ---------- */
+
+test("edit_file refuses a stale edit when base_content no longer matches (#5)", async () => {
+  await withCtx(async (ctx) => {
+    const p = "race.txt";
+    const v1 = "alpha\nbeta\n";
+    await executeTool("write_file", JSON.stringify({ path: p, content: v1 }), ctx);
+
+    // the model reads v1, then something else edits the file behind it
+    const v2 = "alpha\nBETA\n";
+    await fsWrite(path.join(ctx.cwd, p), v2);
+
+    const r = await executeTool(
+      "edit_file",
+      JSON.stringify({ path: p, old_text: "beta", new_text: "gamma", base_content: v1 }),
+      ctx,
+    );
+    assert.equal(r.ok, false, "a stale edit must be refused");
+    assert.match(r.result, /changed on disk since you read it/);
+    assert.match(r.result, /nothing was written/);
+    // the concurrent edit survives untouched
+    assert.equal(await readFile(path.join(ctx.cwd, p), "utf8"), v2);
+  });
+});
+
+test("edit_file proceeds when base_content still matches (#5)", async () => {
+  await withCtx(async (ctx) => {
+    const p = "same.txt";
+    const v1 = "alpha\nbeta\n";
+    await executeTool("write_file", JSON.stringify({ path: p, content: v1 }), ctx);
+    const r = await executeTool(
+      "edit_file",
+      JSON.stringify({ path: p, old_text: "beta", new_text: "gamma", base_content: v1 }),
+      ctx,
+    );
+    assert.ok(r.ok, r.result);
+    assert.equal(await readFile(path.join(ctx.cwd, p), "utf8"), "alpha\ngamma\n");
+  });
+});
+
+test("replace_all cannot rewrite occurrences added after the model read (#5)", async () => {
+  await withCtx(async (ctx) => {
+    const p = "multi.txt";
+    const v1 = "y=1\n"; // the model saw exactly ONE occurrence
+    await executeTool("write_file", JSON.stringify({ path: p, content: v1 }), ctx);
+    // a sub-agent appends two more occurrences
+    const v2 = "y=1\ny=2\ny=3\n";
+    await fsWrite(path.join(ctx.cwd, p), v2);
+
+    const r = await executeTool(
+      "edit_file",
+      JSON.stringify({ path: p, old_text: "y=", new_text: "z=", replace_all: true, base_content: v1 }),
+      ctx,
+    );
+    assert.equal(r.ok, false, "replace_all must not clobber unseen occurrences");
+    assert.match(r.result, /changed on disk since you read it/);
+    assert.equal(await readFile(path.join(ctx.cwd, p), "utf8"), v2);
+  });
+});
+
+test("write_file refuses to overwrite a changed file (#5)", async () => {
+  await withCtx(async (ctx) => {
+    const p = "cfg.json";
+    await executeTool("write_file", JSON.stringify({ path: p, content: '{"v":1}\n' }), ctx);
+    const current = '{"v":1}\n';
+    await fsWrite(path.join(ctx.cwd, p), '{"v":2}\n'); // edited behind the model
+
+    const r = await executeTool(
+      "write_file",
+      JSON.stringify({ path: p, content: '{"v":0}\n', base_content: current }),
+      ctx,
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.result, /changed on disk since you read it/);
+    assert.equal(await readFile(path.join(ctx.cwd, p), "utf8"), '{"v":2}\n');
+  });
+});
+
+test("base_content is OPTIONAL — behaviour is unchanged when omitted (#5)", async () => {
+  await withCtx(async (ctx) => {
+    await executeTool("write_file", JSON.stringify({ path: "opt.txt", content: "a\n" }), ctx);
+    const e = await executeTool(
+      "edit_file",
+      JSON.stringify({ path: "opt.txt", old_text: "a", new_text: "b" }),
+      ctx,
+    );
+    assert.ok(e.ok, e.result);
+    assert.equal(await readFile(path.join(ctx.cwd, "opt.txt"), "utf8"), "b\n");
+  });
+});
+
+test("base_content treats a deleted file as changed (#5)", async () => {
+  await withCtx(async (ctx) => {
+    const p = "gone.txt";
+    await executeTool("write_file", JSON.stringify({ path: p, content: "x\n" }), ctx);
+    await rm(path.join(ctx.cwd, p), { force: true });
+    const r = await executeTool(
+      "write_file",
+      JSON.stringify({ path: p, content: "y\n", base_content: "x\n" }),
+      ctx,
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.result, /deleted/);
   });
 });
 
