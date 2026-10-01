@@ -1012,6 +1012,40 @@ export default function App() {
     return rows;
   });
 
+  /**
+   * Sidebar rows, annotated with where the WORKSPACE changes (#18).
+   *
+   * The tree groups by parent/child agent only, so chats belonging to entirely
+   * unrelated projects end up interleaved in one undifferentiated list — the
+   * "which chat was that?" problem. Every agent already carries its workspace,
+   * so grouping needs no new concept at all; a header row marks each project.
+   * Sub-agents inherit their parent's workspace so a subtree stays together.
+   */
+  const workspaceOf = (id: string, seen = new Set<string>()): string => {
+    const a = agents().find((x) => x.id === id);
+    if (!a) return "";
+    if (!a.parent) return a.workspace || "";
+    if (seen.has(id)) return a.workspace || ""; // cycle guard
+    seen.add(id);
+    return workspaceOf(a.parent, seen) || a.workspace || "";
+  };
+  /** collapsed workspace groups in the sidebar (#18) */
+  const [wsCollapsed, setWsCollapsed] = createSignal<Set<string>>(new Set());
+  /** last path segment, for a compact workspace header */
+  const basenameOf = (p: string): string => p.replace(/\/+$/, "").split(/[/\\]/).pop() || p;
+  const sidebarRows = createMemo(() => {
+    const rows = treeRows();
+    const out: ({ a: Agent; depth: number; wsHeader?: string })[] = [];
+    let lastWs: string | null = null;
+    for (const r of rows) {
+      const ws = workspaceOf(r.a.id);
+      const header = ws !== lastWs ? ws : undefined;
+      out.push({ ...r, wsHeader: header });
+      lastWs = ws;
+    }
+    return out;
+  });
+
   // null = show everything; otherwise only the chosen branch's events
   const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
   // Reference-stabilize events across fetches: logged events are immutable,
@@ -2238,37 +2272,51 @@ export default function App() {
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
         <div class="agent-list">
-          <For each={treeRows()}>
-            {({ a, depth }) => (
+          <For each={sidebarRows()}>
+            {(row) => (
+              <>
+              {/* workspace header: which project this chat belongs to (#18) */}
+              <Show when={row.wsHeader !== undefined && row.wsHeader !== ""}>
+                <div
+                  class="wsheader"
+                  title={row.wsHeader || ""}
+                  onclick={() => setWsCollapsed((c) => {
+                    const n = new Set(c);
+                    if (n.has(row.wsHeader!)) n.delete(row.wsHeader!);
+                    else n.add(row.wsHeader!);
+                    return n;
+                  })}
+                ><span class="wscaret">{wsCollapsed().has(row.wsHeader!) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}</div>
+              </Show>
               <div
-                class={"agent-item" + (a.id === selected() ? " sel" : "") + (depth > 0 ? " sub-row" : "")}
-                style={depth > 0 ? `padding-left:${10 + depth * 14}px` : ""}
-                onclick={() => select(a.id)}
-                title={a.parent ? `sub-agent of @${a.parent}` : undefined}
+                class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "")}
+                style={row.depth > 0 ? `padding-left:${10 + row.depth * 14}px` : ""}
+                onclick={() => select(row.a.id)}
+                title={row.a.parent ? `sub-agent of @${row.a.parent}` : undefined}
               >
-                <Show when={agents().some((x) => x.parent === a.id)} fallback={<span class="caret-spacer" />}>
+                <Show when={agents().some((x) => x.parent === row.a.id)} fallback={<span class="caret-spacer" />}>
                   <span
                     class="caret"
-                    title={collapsedSubs().has(a.id) ? "expand sub-agents" : "collapse sub-agents"}
-                    onclick={(e: MouseEvent) => { e.stopPropagation(); toggleCollapse(a.id); }}
-                  >{collapsedSubs().has(a.id) ? "▸" : "▾"}</span>
+                    title={collapsedSubs().has(row.a.id) ? "expand sub-agents" : "collapse sub-agents"}
+                    onclick={(e: MouseEvent) => { e.stopPropagation(); toggleCollapse(row.a.id); }}
+                  >{collapsedSubs().has(row.a.id) ? "▸" : "▾"}</span>
                 </Show>
-                <span class={`dot ${a.status}`} />
+                <span class={`dot ${row.a.status}`} />
                 <span
-                  class={a.workspaceMissing ? " ghost" : ""}
-                  title={a.workspaceMissing ? `workspace not found on disk (${a.workspace}) — it will be created when this session runs` : undefined}
-                >{a.id}</span>
-                {a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
-                <Show when={subtreeUnread(a.id) > 0}>
-                  <span class="notifbadge" title={`${subtreeUnread(a.id)} unread notification${subtreeUnread(a.id) > 1 ? "s" : ""} (including sub-agents)`}>
-                    🔔{subtreeUnread(a.id)}
+                  class={row.a.workspaceMissing ? " ghost" : ""}
+                  title={row.a.workspaceMissing ? `workspace not found on disk (${row.a.workspace}) — it will be created when this session runs` : undefined}
+                >{row.a.id}</span>
+                {row.a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
+                <Show when={subtreeUnread(row.a.id) > 0}>
+                  <span class="notifbadge" title={`${subtreeUnread(row.a.id)} unread notification${subtreeUnread(row.a.id) > 1 ? "s" : ""} (including sub-agents)`}>
+                    🔔{subtreeUnread(row.a.id)}
                   </span>
                 </Show>
                 {/* collapsed tree: surface how many subs are still working so a
                     busy parent doesn't look idle with its subtree hidden */}
-                <Show when={collapsedSubs().has(a.id)}>
+                <Show when={collapsedSubs().has(row.a.id)}>
                   {(() => {
-                    const kids = agents().filter((x) => x.parent === a.id);
+                    const kids = agents().filter((x) => x.parent === row.a.id);
                     const running = kids.filter((k) => k.status === "running" || k.status === "waiting").length;
                     return kids.length > 0 ? (
                       <span
@@ -2280,12 +2328,13 @@ export default function App() {
                     ) : null;
                   })()}
                 </Show>
-                <Show when={a.parent}><span class="subtag">🧩</span></Show>
-                <Show when={agentTasks(a.id).length > 0}>
-                  <span class="mini-cron" title={agentTasks(a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
+                <Show when={row.a.parent}><span class="subtag">🧩</span></Show>
+                <Show when={agentTasks(row.a.id).length > 0}>
+                  <span class="mini-cron" title={agentTasks(row.a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
                 </Show>
-                <Show when={a.goal.status === "done"}><span title="goal done">✓</span></Show>
+                <Show when={row.a.goal.status === "done"}><span title="goal done">✓</span></Show>
               </div>
+              </>
             )}
           </For>
         </div>

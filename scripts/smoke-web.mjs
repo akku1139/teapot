@@ -78,7 +78,8 @@ function apiResponse(url) {
       agents: [{ id: AGENT.id, workspace: AGENT.workspace }],
       tasks: [],
     };
-  if (u === "/api/agents") return { agents: [AGENT] };
+  if (u === "/api/agents")
+    return { agents: [AGENT, { ...AGENT, id: "beta", workspace: "/tmp/other-project" }] };
   if (u === `/api/agents/${AGENT.id}/load`) return { ok: true };
   if (u === `/api/agents/${AGENT.id}/events`) return { events: EVENTS, total: EVENTS.length };
   if (u === `/api/agents/${AGENT.id}/branches`) return { branches: [{ branch: "br0", events: EVENTS.length }] };
@@ -251,7 +252,14 @@ console.log("deep render ok: feed rows present");
     fetchCount++;
     const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
     const u = raw.split("?")[0];
-    if (u === "/api/agents") return { ok: true, status: 200, json: async () => ({ agents: [RUNNING_AGENT] }) };
+    if (u === "/api/agents")
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          agents: [RUNNING_AGENT, { ...RUNNING_AGENT, id: "beta", workspace: "/tmp/other-project" }],
+        }),
+      };
     if (u === `/api/agents/${AGENT.id}/events`)
       return { ok: true, status: 200, json: async () => ({ events: PENDING_EVENTS, total: PENDING_EVENTS.length }) };
     if (u === `/api/agents/${AGENT.id}/prompt`)
@@ -472,6 +480,27 @@ console.log("deep render ok: feed rows present");
     process.exit(1);
   }
   console.log("deep render ok: in-progress todo survives a panel re-render (#30)");
+}
+
+/* ---------- #18: the sidebar marks which workspace each chat belongs to ------ */
+{
+  const headers = [...w.document.querySelectorAll(".wsheader")].map((h) => h.textContent.trim());
+  const items = w.document.querySelectorAll(".agent-item").length;
+  // the fixture has two agents in two different workspaces, so there must be a
+  // header per workspace and an item per agent
+  if (headers.length !== 2) {
+    console.error(`#18 REGRESSION: expected one workspace header per project, got ${JSON.stringify(headers)}`);
+    process.exit(1);
+  }
+  if (items !== 2) {
+    console.error(`#18 REGRESSION: expected both agents in the sidebar, got ${items}`);
+    process.exit(1);
+  }
+  if (!headers.some((h) => /ws|alpha/.test(h)) || !headers.some((h) => /other-project|beta/.test(h))) {
+    console.error(`#18 REGRESSION: headers do not name the projects: ${JSON.stringify(headers)}`);
+    process.exit(1);
+  }
+  console.log("deep render ok: sidebar groups chats by workspace (#18)");
 }
 
 // give deferred Solid effects a final tick before declaring victory

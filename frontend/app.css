@@ -112,6 +112,18 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .swdots { display: inline-flex; gap: 2px; flex-shrink: 0; }
 .swdots i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-shadow: inset 0 0 0 1px #0004; }
 .agent-list { flex: 1; overflow-y: auto; min-height: 0; }
+/* workspace header: which project the chats below belong to (#18). The sidebar
+   grouped by parent/child agent only, so chats from unrelated projects
+   interleaved in one undifferentiated list. */
+.wsheader {
+  display: flex; align-items: center; gap: 6px; padding: 10px 10px 4px;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--dim); cursor: pointer; user-select: none;
+  border-top: 1px solid var(--line); margin-top: 6px;
+}
+.wsheader:first-child { border-top: none; margin-top: 0; }
+.wsheader:hover { color: var(--fg); }
+.wsheader .wscaret { width: 12px; flex-shrink: 0; font-size: 9px; }
 .agent-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; color: var(--dim); }
 .agent-item .subtag { color: var(--dim); font-size: 10px; }
 .caret { width: 12px; flex-shrink: 0; cursor: pointer; color: var(--dim); font-size: 9px; text-align: center; user-select: none; }
