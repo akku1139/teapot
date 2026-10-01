@@ -176,8 +176,12 @@ export default function App() {
   const [masterSessionIndex, setMasterSessionIndex] = createSignal<Map<string, string>>(new Map());
   const [sessionsByAgent, setSessionsByAgent] = createSignal<Map<string, string[]>>(new Map());
   let sessionIndexFetched = false;
-  async function refreshSessionIndex(): Promise<void> {
-    if (sessionIndexFetched) return; // one fetch is enough — sessions rarely change
+  async function refreshSessionIndex(force = false): Promise<void> {
+    // A permanent latch meant a session created or deleted while the tab was
+    // open never appeared — the UI kept a handle to a session that no longer
+    // existed, which is the unusable half of #39. Refetch when asked; the
+    // caller decides when that is worth it.
+    if (sessionIndexFetched && !force) return;
     sessionIndexFetched = true;
     try {
       const r = await api("/api/sessions");
@@ -1198,8 +1202,17 @@ export default function App() {
   const timelineCache = new Map<string, { events: Ev[]; total: number; at: number }>();
   const TIMELINE_CACHE_MAX = 6;
 
-  /** newest internal session id owned by an agent (server returns newest first) */
+  /**
+   * The session an agent should open: the one the server says it is BOUND to,
+   * falling back to the newest on disk.
+   *
+   * Taking the newest by mtime is what resurrected a deleted/old session (#39):
+   * the list is a directory scan, so a stale dir with a newer chat.jsonl won
+   * and the operator's view and the agent's actual timeline disagreed.
+   */
   function latestSessionOf(agentId: string): string | null {
+    const bound = agents().find((a) => a.id === agentId)?.session;
+    if (bound && sessionsByAgent().get(agentId)?.includes(bound)) return bound;
     return sessionsByAgent().get(agentId)?.[0] ?? null;
   }
 
@@ -2878,7 +2891,7 @@ export default function App() {
             >{sel()!.status === "running" ? "■ stop" : "▶ start"}</button>
             <button
               title="branch off the conversation here — try things without disturbing the main line"
-              onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(() => select(sel()!.id))}
+              onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(async () => { await refreshSessionIndex(true); await select(sel()!.id); })}
             >⑂ fork</button>
             <button onclick={async () => {
               const id = selected();
@@ -2886,6 +2899,10 @@ export default function App() {
               await api(`/api/agents/${id}`, { method: "DELETE" }).catch(() => {});
               const rest = agents().filter((a) => a.id !== id);
               setAgents(rest);
+              // the agent is gone, so its session is too — drop the cached
+              // index or the UI keeps routing to a session that no longer
+              // exists (#39)
+              void refreshSessionIndex(true);
               if (rest[0]) select(rest[0].id);
               else { setSelected(null); setEvents([]); }
               }} title="remove agent from teapot (session log stays on disk)">🗑 remove</button>

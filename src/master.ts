@@ -140,6 +140,14 @@ export interface AgentConfig {
   autoContinue?: boolean;
   /** automatically compact when context exceeds budget (default true) */
   autoCompact?: boolean;
+  /**
+   * Internal session id this agent is currently bound to. Persisted so a
+   * restart reattaches to the SAME session instead of guessing: sessions were
+   * discovered by scanning the sessions dir and sorting by chat.jsonl mtime,
+   * so a newer-but-older-in-reality dir (or a deleted one still on disk) could
+   * win and hand the agent a timeline the operator had moved off (#39).
+   */
+  session?: string;
 };
 
 export interface TaskConfig {
@@ -629,7 +637,22 @@ export class Master {
       this.config.agents.push(ac);
       this.saveConfig();
     }
+    // Remember which session this agent is bound to, so a restart reattaches
+    // deterministically instead of re-guessing from directory mtimes (#39).
+    // Done for EVERY agent (persisted or spawned): a spawned child is re-created
+    // on boot too, and guessing there is the same resurrection bug.
+    this.recordSession(ac, path.basename(sessionDir));
     return agent;
+  }
+
+  /** Persist an agent's current session id into the config, if it changed. */
+  private recordSession(ac: AgentConfig, sessionId: string): void {
+    if (!sessionId || ac.session === sessionId) return;
+    ac.session = sessionId;
+    const entry = this.config.agents.find((a) => a.id === ac.id);
+    if (!entry) return; // not a configured agent — nothing to persist yet
+    entry.session = sessionId;
+    this.saveConfig();
   }
 
   /** spawn-tree depth of an agent (0 = top level); unknown → 0 */
@@ -1037,6 +1060,21 @@ if (active().length === 0) wake();
           console.log(`[teapot] migrated session storage: ${agentId}.jsonl → sessions/${agentId}/chat.jsonl`);
         }
       }
+    }
+
+    // Prefer the recorded session: the config says exactly which timeline this
+    // agent was on. Guessing by mtime let a stale-or-deleted dir whose
+    // chat.jsonl happened to be newer win, handing the agent a timeline the
+    // operator had moved off — the "deleted session comes back" report (#39).
+    const recorded = this.config.agents.find((a) => a.id === agentId)?.session;
+    if (!fresh && recorded) {
+      const dir = path.join(root, recorded);
+      // only trust it when it is really THIS agent's dir (ownership comes from
+      // the manifest; a renamed/reused dir must not resurrect a ghost)
+      const owner = this.readSessionOwner(recorded);
+      if (existsSync(dir) && (owner === null || owner === agentId)) return dir;
+      // the recorded dir is gone (deleted) — fall through and mint a new one
+      console.log(`[teapot] session ${recorded} for ${agentId} is gone; starting a new one`);
     }
 
     // Prefer the LATEST session directory that actually carries history.
