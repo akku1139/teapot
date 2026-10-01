@@ -155,6 +155,13 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .msg.pending .ts { color: var(--warn); font-weight: 600; }
 .msg.pending .avatar { animation: pulse 1.6s ease-in-out infinite; }
 .msg.pending .editbtn.cancel { color: var(--err); }
+/* withdrawn: the operator sent this and pulled it back before the model ever
+   saw it. It stays on the timeline as a record, but must not read as a
+   delivered message — dimmed and struck through, like a struck-through draft. */
+.msg.withdrawn { opacity: .55; }
+.msg.withdrawn .msg-body { text-decoration: line-through; text-decoration-color: var(--muted); }
+.msg.withdrawn .msg-head { text-decoration: none; }
+.msg.withdrawn .ts { color: var(--muted); font-weight: 600; }
 .msg.grouped { padding-top: 0; }
 .avatar { width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 17px; margin-top: 2px; }
 .msg-body { min-width: 0; flex: 1; }

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
@@ -216,4 +217,94 @@ test("regression: prefix collision — example-session-2 timeline not empty when
 
     await b1.dispose(); await b2.dispose();
   });
+});
+
+/* ---------- #19: a cancelled pending prompt must not linger as "sent" ---------- */
+
+test("regression: cancelling a queued prompt logs prompt-cancelled and never delivers it", async () => {
+  await useTempDirs(["cancel-root-", "cancel-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    (m as any).config.defaultProvider = "p";
+    const app = buildApp(m);
+    const agent = await m.addAgent(
+      { id: "alpha", workspace: ws, provider: "p", model: "m" },
+      { fresh: true, persist: false },
+    );
+    (agent as any).opts.autoContinue = false;
+    await agent.load();
+    // keep the agent from draining: it stays stopped, so the prompt stays queued
+    agent.stop("test-hold");
+
+    const post = (url: string, body: unknown) =>
+      app.request(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const r = await post("/api/agents/alpha/prompt", { text: "please do the thing", start: false });
+    assert.equal(r.status, 200);
+    const { promptId } = await r.json();
+    assert.ok(promptId, "promptId must be returned for the echo to cancel");
+
+    // still queued before the cancel
+    assert.equal(agent.snapshot().pendingPrompts, 1);
+
+    // enqueuePrompt logs the prompt row asynchronously (after ensureReady), so
+    // wait for it before cancelling — otherwise we race the very row we assert
+    const logFile = path.join(dataDir, "sessions", agent.snapshot().session, "chat.jsonl");
+    const hasRow = async (id: string) =>
+      (await readEvents(logFile)).some(
+        (e) => e.type === "prompt" && (e.data as any)?.promptId === id,
+      );
+    const t0 = Date.now();
+    while (!(await hasRow(promptId)) && Date.now() - t0 < 5000)
+      await new Promise((r) => setTimeout(r, 20));
+
+    const rc = await post("/api/agents/alpha/prompt/cancel", { promptId });
+    assert.equal(rc.status, 200);
+    const body = await rc.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.text, "please do the thing", "cancel returns the text for the composer");
+
+    // dequeued
+    assert.equal(agent.snapshot().pendingPrompts, 0);
+
+    // the log tells the whole story: the prompt row (written at enqueue) AND a
+    // prompt-cancelled note, but NEVER a prompt-delivered note — the frontend
+    // derives "withdrawn" from that pair instead of showing it as sent (#19).
+    const events = await readEvents(logFile);
+    const promptRow = events.find(
+      (e) => e.type === "prompt" && (e.data as any)?.source === "user" && (e.data as any)?.promptId === promptId,
+    );
+    assert.ok(promptRow, "the enqueue-time prompt row is still in the log");
+    const note = events.find(
+      (e) => e.type === "system_note" && (e.data as any)?.event === "prompt-cancelled" && (e.data as any)?.promptId === promptId,
+    );
+    assert.ok(note, "a prompt-cancelled note must be recorded for the withdrawn id");
+    assert.ok(
+      !events.some(
+        (e) => e.type === "system_note" && (e.data as any)?.event === "prompt-delivered" && (e.data as any)?.promptId === promptId,
+      ),
+      "a cancelled prompt must never be delivered to the model",
+    );
+
+    // a second cancel is a 409, not a silent success
+    const rc2 = await post("/api/agents/alpha/prompt/cancel", { promptId });
+    assert.equal(rc2.status, 409);
+
+    await agent.dispose();
+  });
+});
+
+test("regression: cancelled prompt renders as withdrawn, not as a sent message (#19)", async () => {
+  const src = await readFile("frontend/App.tsx", "utf8");
+  // the timeline must derive withdrawn state from the prompt-cancelled note…
+  assert.match(src, /prompt-cancelled/);
+  // …mark the log row…
+  assert.match(src, /\.cancelled = true/);
+  // …and render it differently from a delivered message
+  assert.match(src, /withdrawn/);
+  // a withdrawn message never reached the model, so forking from it is wrong
+  assert.match(src, /!e\.data\?\.cancelled/);
 });

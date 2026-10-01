@@ -755,6 +755,11 @@ export default function App() {
     const deliveredIds = new Set<string>();
     const loggedUserPrompts = new Set<string>();
     const deliveredNotes = new Map<string, number>(); // promptId → seq of its prompt-delivered note
+    // promptId → seq of its prompt-cancelled note. A withdrawn message is
+    // logged at ENQUEUE time but never delivered, so once the echo is dropped
+    // its prompt row comes back as an ordinary "sent" message — implying the
+    // model saw something it never received (#19).
+    const cancelledNotes = new Map<string, number>();
     for (const e of deduped) {
       const pid = (e.data as any)?.promptId;
       if (!pid) continue;
@@ -763,6 +768,8 @@ export default function App() {
         deliveredIds.add(String(pid));
         deliveredNotes.set(String(pid), e.seq);
       }
+      if (e.type === "system_note" && (e.data as any)?.event === "prompt-cancelled")
+        cancelledNotes.set(String(pid), e.seq);
     }
     const deliveredSeq = new Map<string, number>();
     const stillPendingIds = new Set<string>();
@@ -784,6 +791,13 @@ export default function App() {
       const pid = String((e.data as any)?.promptId ?? "");
       const note = deliveredNotes.get(pid);
       if (note && note > e.seq) e.seq = note;
+      // a withdrawn row sorts at the position of its cancellation and carries
+      // a marker, so it renders as withdrawn rather than as a sent message
+      const cancelSeq = cancelledNotes.get(pid);
+      if (cancelSeq !== undefined) {
+        if (cancelSeq > e.seq) e.seq = cancelSeq;
+        if (e.data) (e.data as any).cancelled = true;
+      }
     }
     const pend = pendingMsgs().filter((p) => {
       if (!p.promptId) return true;
@@ -2428,9 +2442,11 @@ export default function App() {
                       // settled user prompts only: a pending message has not
                       // reached the model, so there is nothing to fork from —
                       // cancel (✕) returns its text to the composer instead.
+                      // A withdrawn message likewise never reached the model.
                       e.type === "prompt" &&
                       e.data?.source === "user" &&
-                      !(e.data?.pending && e.data?.sent !== true)
+                      !(e.data?.pending && e.data?.sent !== true) &&
+                      !e.data?.cancelled
                         ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
                         : undefined
                     }
@@ -3715,7 +3731,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
 
   return (
     <div
-      class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "")}
+      class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "") + (e.data?.cancelled ? " withdrawn" : "")}
       data-eid={e.id}
     >
       {/* grouped rows keep the same geometry as the row that started the
@@ -3737,7 +3753,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
             <Show when={e.data?.actor}>
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
-            <span class="ts">{e.data?.pending ? "queued…" : fmtTs(e.ts)}</span>
+            <span class="ts">{e.data?.pending ? "queued…" : e.data?.cancelled ? "withdrawn" : fmtTs(e.ts)}</span>
             <span class="ts">{e.branch}</span>
             <Show when={props.onCancel}>
               <button
