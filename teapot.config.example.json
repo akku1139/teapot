@@ -1,10 +1,26 @@
 {
   "port": 7788,
   "//dataDir": "defaults to ~/.local/share/teapot-coding-agent",
+  "//multiple model presets on ONE api key": "just add one provider entry per model, repeating the same baseUrl + apiKey with a different model, then point each agent at its own entry by name. Switching an agent's model never touches the others.",
   "providers": {
     "openrouter": {
       "baseUrl": "https://openrouter.ai/api/v1",
       "apiKey": "sk-or-..."
+    },
+    "openrouter-sonnet": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "sk-or-...",
+      "model": "anthropic/claude-sonnet-4"
+    },
+    "openrouter-opus": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "sk-or-...",
+      "model": "anthropic/claude-opus-4"
+    },
+    "openrouter-haiku": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "sk-or-...",
+      "model": "anthropic/claude-haiku-4"
     },
     "orcarouter": {
       "baseUrl": "https://api.orcarouter.ai/v1",

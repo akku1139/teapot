@@ -119,3 +119,50 @@ test("live-update: /api/version and /api/update/restart endpoints exist", async 
     assert.equal(cj.version, vj.version);
   });
 });
+
+/* ---------- #22: several model presets sharing one API key ---------- */
+
+test("one API key can back several model presets (#22)", async () => {
+  await useTempDirs(["preset-root-", "preset-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    const KEY = "sk-one-key";
+    const URL = "https://openrouter.ai/api/v1";
+    m.config.providers = {
+      "or-sonnet": { baseUrl: URL, apiKey: KEY, model: "anthropic/claude-sonnet-4" },
+      "or-opus": { baseUrl: URL, apiKey: KEY, model: "anthropic/claude-opus-4" },
+      "or-haiku": { baseUrl: URL, apiKey: KEY, model: "anthropic/claude-haiku-4" },
+    } as any;
+    m.config.defaultProvider = "or-sonnet";
+
+    const seen: Record<string, string> = {};
+    for (const p of ["or-sonnet", "or-opus", "or-haiku"]) {
+      const a = await m.addAgent(
+        { id: p, workspace: ws, provider: p, chatFn: async () => ({ message: { role: "assistant", content: "ok" } }) },
+        { fresh: true, persist: false },
+      );
+      seen[p] = a.opts.llm.model;
+      // every preset must carry the SAME key through to the agent
+      assert.equal(a.opts.llm.apiKey, KEY, `${p} must use the shared key`);
+      assert.equal(a.opts.llm.baseUrl, URL);
+      await a.dispose();
+    }
+    // each entry resolves to its OWN model — they do not collapse
+    assert.equal(seen["or-sonnet"], "anthropic/claude-sonnet-4");
+    assert.equal(seen["or-opus"], "anthropic/claude-opus-4");
+    assert.equal(seen["or-haiku"], "anthropic/claude-haiku-4");
+  });
+});
+
+test("an agent's own model overrides its preset's model (#22)", async () => {
+  await useTempDirs(["preset2-root-", "preset2-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    m.config.providers = { or: { baseUrl: "http://x", apiKey: "k", model: "default-model" } } as any;
+    m.config.defaultProvider = "or";
+    const a = await m.addAgent(
+      { id: "over", workspace: ws, provider: "or", model: "pinned-model" },
+      { fresh: true, persist: false },
+    );
+    assert.equal(a.opts.llm.model, "pinned-model");
+    await a.dispose();
+  });
+});

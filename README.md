@@ -207,6 +207,33 @@ Lookup order: CLI arg → `$TEAPOT_CONFIG` → `~/.config/teapot-coding-agent/co
 </details>
 
 <details>
+<summary><b>Several model presets on one API key</b></summary>
+
+A provider entry is just `{ baseUrl, apiKey, model }`, so "one key, many
+models" is one entry per model — repeat the same `baseUrl`/`apiKey` and vary
+`model`. Each agent then names the preset it wants:
+
+```json
+{
+  "providers": {
+    "or-sonnet": { "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-...", "model": "anthropic/claude-sonnet-4" },
+    "or-opus":   { "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-...", "model": "anthropic/claude-opus-4" },
+    "or-haiku":  { "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-...", "model": "anthropic/claude-haiku-4" }
+  },
+  "defaultProvider": "or-sonnet",
+  "agents": [
+    { "id": "main", "workspace": "~/proj", "provider": "or-sonnet" },
+    { "id": "deep", "workspace": "~/proj", "provider": "or-opus" }
+  ]
+}
+```
+
+Switching an agent's model in the right panel never disturbs the others, and
+an agent may still pin its own `model` to override the preset's.
+
+</details>
+
+<details>
 <summary><b>Mixing providers</b></summary>
 
 ```jsonc
