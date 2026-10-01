@@ -10,7 +10,7 @@ import {
   isValidSkillName,
   skillRootsFingerprint,
 } from "../src/agent/skills.ts";
-import { executeTool, type ToolContext } from "../src/agent/tools.ts";
+import { executeTool, toolSpecs, type ToolContext } from "../src/agent/tools.ts";
 import { Agent } from "../src/agent/agent.ts";
 import type { ChatFn, LlmConfig, LlmResult } from "../src/agent/llm.ts";
 
@@ -227,4 +227,72 @@ test("an unchanged skill root never triggers a rescan; a changed one does (#14)"
     assert.deepEqual(priv.skillsCache.map((s) => s.name).sort(), ["alpha", "beta"]);
     await agent.dispose();
   });
+});
+
+/* ---------- #25: instructions ride along with the loaded skill ---------- */
+
+test("load_skill delivers instructions in the SAME turn (#25)", async () => {
+  // The complaint: load_skill is an ordinary tool, so its result ended the turn.
+  // Any instruction the model wanted to attach had to go through enqueuePrompt
+  // and arrive at the NEXT turn boundary — an extra full round-trip for
+  // something the model already knows when it calls the tool.
+  await useTempDirs(["sk25a-", "sk25b-"], async ([ws, sessionDir]) => {
+    const skillsDir = path.join(ws, "skills", "demo-skill");
+    await mkdir(skillsDir, { recursive: true });
+    await writeFile(path.join(skillsDir, "SKILL.md"), "# Demo skill\n\nDo the thing carefully.\n");
+    const ctx: ToolContext = {
+      cwd: ws,
+      defaultTimeoutMs: 5_000,
+      maxOutputBytes: 10_000,
+      skillRoots: [{ dir: path.join(ws, "skills"), source: "workspace" }],
+    };
+
+    const withInstr = await executeTool(
+      "load_skill",
+      JSON.stringify({ name: "demo-skill", instructions: "apply it to the auth module" }),
+      ctx,
+    );
+    assert.ok(withInstr.ok, withInstr.result);
+    assert.match(withInstr.result, /Do the thing carefully/, "the playbook is still returned (#25)");
+    assert.match(
+      withInstr.result,
+      /apply it to the auth module/,
+      "the instruction must arrive with the skill, not next turn (#25)",
+    );
+    // one result, not two: the instruction rides inside the SAME tool result
+    assert.match(withInstr.result, /Instructions for this task/);
+  });
+});
+
+test("load_skill without instructions is unchanged (#25)", async () => {
+  // omitting the new optional field must be byte-identical to before
+  await useTempDirs(["sk25c-", "sk25d-"], async ([ws, sessionDir]) => {
+    const skillsDir = path.join(ws, "skills", "plain-skill");
+    await mkdir(skillsDir, { recursive: true });
+    await writeFile(path.join(skillsDir, "SKILL.md"), "# Plain\n\nJust do it.\n");
+    const ctx: ToolContext = {
+      cwd: ws,
+      defaultTimeoutMs: 5_000,
+      maxOutputBytes: 10_000,
+      skillRoots: [{ dir: path.join(ws, "skills"), source: "workspace" }],
+    };
+    const r = await executeTool("load_skill", JSON.stringify({ name: "plain-skill" }), ctx);
+    assert.ok(r.ok, r.result);
+    assert.match(r.result, /Just do it\./);
+    assert.doesNotMatch(
+      r.result,
+      /Instructions for this task/,
+      "no instructions were passed, so none should appear (#25)",
+    );
+    void sessionDir;
+  });
+});
+
+test("load_skill advertises the instructions parameter (#25)", () => {
+  // the model can only use it if the schema says so
+  const spec = toolSpecs().find((t) => t.function.name === "load_skill");
+  assert.ok(spec, "load_skill spec missing");
+  const props = spec!.function.parameters.properties as Record<string, unknown>;
+  assert.ok("instructions" in props, "the schema must expose `instructions` (#25)");
+  assert.deepEqual(spec!.function.parameters.required, ["name"], "only `name` stays required (#25)");
 });

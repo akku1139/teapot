@@ -1517,11 +1517,21 @@ export const TOOLS: ToolDef[] = [
     name: "load_skill",
     description:
       "Load a skill's full instructions by name. Use when the system prompt's skill list " +
-      "matches your current task; follow the loaded playbook.",
+      "matches your current task; follow the loaded playbook. " +
+      // #25: the instruction used to need a SECOND, separately-queued message that
+      // only arrived at the next turn boundary. Passing `instructions` delivers it
+      // in the SAME turn as the playbook, so "load X and do Y" costs one round-trip.
+      "Pass `instructions` with what you want done with it to receive both at once.",
     parameters: {
       type: "object",
       properties: {
         name: { type: "string", description: "skill name from the list in your system prompt" },
+        instructions: {
+          type: "string",
+          description:
+            "Optional: what you want done with this skill (the task, constraints, scope). " +
+            "Delivered in this same turn — no need to queue a follow-up message.",
+        },
       },
       required: ["name"],
     },
@@ -1552,6 +1562,13 @@ export const TOOLS: ToolDef[] = [
           listed.map((f) => `- ${f}`).join("\n") +
           `\nRun scripts with bash (chmod +x first if needed).`;
       }
+      // #25: deliver the caller's instructions in THIS result, so the model does
+      // not have to queue a second message that only lands next turn.
+      const instructions = str(args.instructions).trim();
+      if (instructions)
+        result +=
+          `\n\n--- Instructions for this task (from the same call):\n${instructions}\n` +
+          "Apply the playbook above to these instructions now, in this turn.";
       return { ok: true, result };
     },
   },
