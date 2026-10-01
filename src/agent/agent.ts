@@ -2129,8 +2129,21 @@ export class Agent {
       // fallback: drop the oldest half without LLM help so work can continue
       mode = "truncate";
       summarizedCount = 0;
-      const halfCut = this.safeCut(Math.floor(oldCount / 2));
+      // Cut at a safe boundary, but never at index 0 — that would drop the
+      // ENTIRE history (including the prompt just delivered) and leave the agent
+      // with nothing. On a short history floor(oldCount/2) can round to 0, and
+      // the old code then bailed out silently: compaction "ran", reported
+      // nothing, and the context stayed over budget, so the very next provider
+      // call overflowed — the "unstable after compact" report (#8). Always drop
+      // at least one message, and say so.
+      const halfCut = this.safeCut(Math.max(1, Math.floor(oldCount / 2)));
       if (halfCut <= 0) {
+        // nothing in the prefix is safe to drop (e.g. it is all tool results).
+        // Report it instead of pretending compaction happened.
+        await this.log.append("system_note", this.currentSession, this.currentBranch, {
+          event: "context-compaction-skipped",
+          reason: "summarize failed and no safe prefix to truncate",
+        });
         this.compactPhase = "";
         bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
         return;
