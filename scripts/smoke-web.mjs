@@ -556,24 +556,58 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   // 3. Escape closes it WITHOUT stopping a running agent. The old handler
   //    reached the /stop branch first, so Esc interrupted the agent and left
   //    the panel open — the exact "can't close it" symptom.
+  //
+  //    The agent MUST be running for this to mean anything: with an idle agent
+  //    the /stop branch is never reached, so a regression that moved the drawer
+  //    close back behind it would still pass. Earlier blocks in this script
+  //    leave /api/agents stubbed to their own fixtures, so pin the status here
+  //    rather than inheriting whatever they happened to leave behind — and
+  //    wait for the UI to show it, so we are not racing the poll.
   const stopCalls = [];
   const realFetch = globalThis.fetch;
+  const RUNNING_FOR_ESC = { ...AGENT, status: "running" };
   setGlobal("fetch", async (url, init) => {
-    const u = String(url).split("?")[0];
-    if (u.endsWith("/stop")) { stopCalls.push(u); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+    const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
+    const u = raw.split("?")[0];
+    if (u.endsWith("/stop")) {
+      stopCalls.push(u);
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    if (u === "/api/agents")
+      return { ok: true, status: 200, json: async () => ({ agents: [RUNNING_FOR_ESC] }) };
     return realFetch(url, init);
   });
+  // nudge the app to re-poll, then wait for the running badge to actually render
+  MockWS.instances.at(-1)?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: RUNNING_FOR_ESC }),
+  });
+  const agentIsRunning = await waitFor("agent shows as running", () =>
+    [...w.document.querySelectorAll(".badge")].some((b) => b.textContent.trim() === "running"),
+  );
+  if (!agentIsRunning)
+    fail("agent never reported as running — the Escape assertion below would prove nothing");
+
   toggle.click();
   await sleep(80);
+  if (!drawerOpen()) fail("could not re-open the drawer for the Escape check");
   w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await sleep(120);
-  if (drawerOpen()) fail("Escape did not close the drawer");
+  if (drawerOpen()) fail("Escape did not close the drawer (agent running)");
   if (stopCalls.length)
     fail(`Escape stopped the agent instead of closing the drawer (${stopCalls.length} /stop call/s)`);
   console.log("deep render ok: narrow drawer closes via ✕, click-outside and Escape (#50)");
 
   // a closed drawer must leave the UI interactive
   if (w.document.querySelector(".rightbarbackdrop")) fail("backdrop left mounted");
+
+  // 4. with the drawer closed, Escape still reaches the interrupt — the panel
+  //    must not permanently shadow it. This is the other half of the reordering.
+  w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await sleep(120);
+  if (!stopCalls.length)
+    fail("Escape no longer stops the running agent once the drawer is closed — the panel shadowed it forever");
+  console.log("deep render ok: Escape still interrupts a running agent when no drawer is open (#50)");
+
   setGlobal("fetch", realFetch);
 }
 

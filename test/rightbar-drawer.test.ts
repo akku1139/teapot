@@ -125,6 +125,39 @@ test("the ✕ row and the panel are stacked, never overlapped (#50)", () => {
   );
 });
 
+/**
+ * The ✕ row is a SIBLING of <aside class="rightbar">, not a descendant: the
+ * panel is `overflow-y: auto`, so a close button inside it would scroll out of
+ * reach — re-creating the bug one scroll away. A sticky child would have been
+ * the in-panel alternative, but .rightbar carries tuned scroll-restore logic
+ * (rightbarTop) and sticking a child into that container risks it.
+ *
+ * The cost of a sibling is that the drawer becomes TWO fixed boxes, which only
+ * still reads as one drawer if they share an edge and a width. That is a CSS
+ * invariant, so it is pinned here rather than left to visual inspection.
+ */
+test("the ✕ row and the panel share one edge — they read as a single drawer (#50)", () => {
+  const narrow = narrowBlock();
+  // NOTE: this selector must match ONLY the standalone drawer rule. `\.rightbar\s*\{`
+  // also matches `.layout.right-hidden .rightbar { display: block }` earlier in
+  // the block, which declares none of the properties below — the comparison
+  // would fail on correct code. Require the line to start with `.rightbar`.
+  const panel = narrow.match(/^\s*\.rightbar\s*\{[^}]*\}/m)?.[0] ?? "";
+  assert.notEqual(panel, "", "the narrow standalone .rightbar rule must exist (#50)");
+  const head = narrow.match(/^\s*\.rightbarhead\s*\{[^}]*\}/m)?.[0] ?? "";
+  assert.notEqual(head, "", "the narrow .rightbarhead rule must exist (#50)");
+  for (const decl of [/right:\s*0/, /width:\s*min\(420px,\s*92vw\)/, /position:\s*fixed/]) {
+    assert.match(head, decl, `.rightbarhead must also set ${decl} so it lines up with the panel (#50)`);
+    assert.match(panel, decl, `.rightbar must set ${decl} (#50)`);
+  }
+  // the header sits flush to the panel's top: its own `top` must be 0
+  assert.match(
+    head,
+    /top:\s*0/,
+    "a header offset from the top would open a gap above the drawer (#50)",
+  );
+});
+
 /* ---------- 2: click outside dismisses the drawer ---------- */
 
 test("a click outside the drawer closes it (#50)", () => {
