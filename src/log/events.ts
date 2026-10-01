@@ -153,6 +153,20 @@ export class EventLog {
     return this.lastByBranch.get(branch) ?? null;
   }
 
+  /**
+   * Seed the parent link for a brand-new branch so its first event chains to
+   * the event that created it.
+   *
+   * `lastByBranch` is per branch, so without this a new branch's first event
+   * got `parent: null` — severing the chain. lineageOf() walks parents from the
+   * newest event, so the entire pre-fork history became unreachable and a
+   * restart rebuilt the conversation with none of it (#38).
+   */
+  seedBranch(branch: string, parentEventId: string | null): void {
+    if (!branch) return;
+    this.lastByBranch.set(branch, parentEventId ?? "");
+  }
+
   async close(): Promise<void> {
     await this.chain.catch(() => {});
     if (!this.stream) return;

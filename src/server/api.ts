@@ -1017,8 +1017,23 @@ export function buildApp(master: Master): Hono {
     for (const e of events) {
       const b = branches.get(e.branch) ?? { branch: e.branch, events: 0 };
       b.events++;
-      if (e.type === "fork") b.forkedFrom = e.data;
       branches.set(e.branch, b);
+      // A fork event is recorded on the branch it was forked FROM (so the
+      // parent chain stays linked), but it describes the branch it CREATED.
+      // Attribute it to the new branch, or the fork shows up as belonging to
+      // the old one and the fork picker mislabels it (#38).
+      if (e.type === "fork") {
+        const created = String((e.data as { newBranch?: string } | undefined)?.newBranch ?? "");
+        if (created && created !== e.branch) {
+          const nb = branches.get(created) ?? { branch: created, events: 0 };
+          nb.forkedFrom = e.data;
+          branches.set(created, nb);
+          b.events--; // it is not an event OF the branch it was forked from
+          if (b.events <= 0) branches.delete(e.branch);
+        } else {
+          b.forkedFrom = e.data;
+        }
+      }
     }
     return c.json({ branches: [...branches.values()] });
   });

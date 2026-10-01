@@ -696,7 +696,13 @@ export class Agent {
     text: string,
     tail: "discard" | "summarize",
   ): Promise<{ droppedEvents: number; branch: string }> {
-    if (this.status === "running")
+    // "running" is not the only live state: parkForTool() rewrites the status to
+    // "idle" while the loop is still very much alive inside a parked tool
+    // (wait_children does this), and queued prompts have not been consumed yet.
+    // Editing underneath either of those replaces the very `messages` array the
+    // agent is about to resume into, so its old-branch work kept running
+    // against the new branch (#38).
+    if (this.status === "running" || this.parkedByTool || this.pendingPrompts.length)
       throw new Error("agent is running — stop it before editing history");
     const all = await readEvents(this.log.filePath);
     const target = all.find((e) => e.id === eventId);
@@ -732,7 +738,17 @@ export class Agent {
     msgs.push({ role: "user", content: text });
 
     const newBranch = `br${this.branchCount()}${Date.now().toString(36).slice(-4)}`;
-    await this.log.append("fork", this.currentSession, newBranch, {
+    // Quiesce BEFORE rewriting history: an in-flight LLM call, a parked tool or
+    // a queued prompt would otherwise resume into the NEW messages array and
+    // keep running the old branch's work here (#38). Mirrors stop(), which is
+    // the only other place that cancels this state.
+    await this.quiesceForHistoryEdit();
+    // The fork event must be appended while currentBranch is still the OLD
+    // one. EventLog links parents PER BRANCH (lastByBranch), so appending it
+    // under the new branch gave it parent:null — severing the chain, and
+    // lineageOf() then returned only the post-fork events, so a restart rebuilt
+    // the history with none of the pre-edit context (#38).
+    await this.log.append("fork", this.currentSession, this.currentBranch, {
       fromSession: this.currentSession,
       fromBranch: this.currentBranch,
       fromEvent: kept.at(-1)?.id ?? null,
@@ -741,11 +757,48 @@ export class Agent {
       droppedEvents: dropped.length,
       tailMode: tail,
     });
+    // Seed the new branch's parent link to the fork event just written, so its
+    // first event chains across instead of starting a disconnected parent:null
+    // history (#38).
+    this.log.seedBranch(newBranch, this.log.lastEventId(this.currentBranch));
     this.currentBranch = newBranch;
     this.messages = msgs;
     await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "user", text });
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
     return { droppedEvents: dropped.length, branch: newBranch };
+  }
+
+  /**
+   * Cancel everything that could resume against the history we are about to
+   * replace, then wait for the loop to actually stop.
+   *
+   * An edit rewinds the conversation, so any work still in flight belongs to
+   * the branch being discarded: an LLM call whose result would append to the
+   * new messages, a parked tool, and queued prompts that were never delivered
+   * (#38). stopRequested is set and cleared around the wait so the agent is
+   * usable again once the edit lands.
+   */
+  private async quiesceForHistoryEdit(): Promise<void> {
+    if (!this.stopRequested) {
+      this.stopRequested = true;
+      this.abort?.abort(); // interrupt an in-flight LLM call
+      this.toolAbort.abort(); // kill subprocesses / interrupt a parked tool
+      this.wake?.(); // release wait_children
+      try {
+        await this.settled();
+      } catch {
+        /* the loop is being abandoned; its errors are not ours to report */
+      }
+      this.parkedByTool = false;
+      this.pendingPrompts = []; // undelivered prompts belong to the old branch
+      this.stopRequested = false;
+      // a fresh signal: toolCtx holds a copy of the reference, so republish
+      if (this.toolAbort.signal.aborted) {
+        this.toolAbort = new AbortController();
+        (this.toolCtx as { signal: AbortSignal }).signal = this.toolAbort.signal;
+      }
+      this.bgExits = []; // old-branch job exits must not be folded in
+    }
   }
 
   private parseGoalFile(text: string): GoalState {
