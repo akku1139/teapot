@@ -127,8 +127,15 @@ class MockWS {
 }
 
 const w = new Window({ url: "http://localhost:7788/session/test" });
-// widen the viewport so the details panel is open by default (the crash site)
-Object.defineProperty(w, "innerWidth", { value: 1440 });
+// widen the viewport so the details panel is open by default (the crash site).
+// configurable + writable so a scenario can RESIZE mid-run (#50: the reported
+// flow is narrowing the window with the panel open, not loading narrow).
+let viewportWidth = Number(process.env.SMOKE_WIDTH ?? 1440);
+Object.defineProperty(w, "innerWidth", {
+  configurable: true,
+  get: () => viewportWidth,
+  set: (v) => { viewportWidth = Number(v); },
+});
 w.document.body.innerHTML = `<div id="root"></div>`;
 try { Object.defineProperty(w.document, "visibilityState", { value: "visible", configurable: true }); } catch {}
 const setGlobal = (name, value) => {
@@ -504,6 +511,72 @@ console.log("deep render ok: feed rows present");
 }
 
 // give deferred Solid effects a final tick before declaring victory
+/* ---------- #50: the narrow-screen drawer must be closable ----------------
+ * Below 1100px .rightbar becomes a fixed drawer OVER the content, so the ▤
+ * button that opened it is covered. Driving the real UI at 900px proves the
+ * operator can actually get back out — via the ✕, via a click outside, and
+ * via Escape — and that Escape does not stop a running agent on the way. */
+if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const drawer = () => w.document.querySelector(".rightbar");
+  const drawerOpen = () => drawer()?.classList.contains("open") ?? false;
+  const fail = (msg) => { console.error(`#50 REGRESSION: ${msg}`); process.exit(1); };
+
+  // open it the way a user does: the ▤ toggle in the channel header
+  const toggle = [...w.document.querySelectorAll(".iconbtn")].find(
+    (b) => /toggle details panel/.test(b.getAttribute("title") ?? ""),
+  );
+  if (!toggle) fail("no ▤ details-panel toggle found");
+  if (!drawerOpen()) toggle.click();
+  await sleep(80);
+  if (!drawerOpen()) fail("the ▤ toggle did not open the drawer at narrow width");
+
+  // 1. the ✕ row must exist and close the drawer
+  const closeBtn = [...w.document.querySelectorAll(".rightbarhead .iconbtn")].find(
+    (b) => /close details panel/.test(b.getAttribute("title") ?? ""),
+  );
+  if (!closeBtn) fail("no ✕ close button inside the drawer — the drawer covers its own opener");
+  closeBtn.click();
+  await sleep(80);
+  if (drawerOpen()) fail("the ✕ did not close the drawer");
+
+  // 2. a click outside must dismiss it too
+  toggle.click();
+  await sleep(80);
+  if (!drawerOpen()) fail("re-opening the drawer failed");
+  const backdrop = w.document.querySelector(".rightbarbackdrop");
+  if (!backdrop) fail("no click-outside backdrop while the drawer is open");
+  backdrop.click();
+  await sleep(80);
+  if (drawerOpen()) fail("clicking outside did not dismiss the drawer");
+  // and it must not linger as a blocker once closed
+  if (w.document.querySelector(".rightbarbackdrop"))
+    fail("backdrop still mounted after close — it would swallow every click in the app");
+
+  // 3. Escape closes it WITHOUT stopping a running agent. The old handler
+  //    reached the /stop branch first, so Esc interrupted the agent and left
+  //    the panel open — the exact "can't close it" symptom.
+  const stopCalls = [];
+  const realFetch = globalThis.fetch;
+  setGlobal("fetch", async (url, init) => {
+    const u = String(url).split("?")[0];
+    if (u.endsWith("/stop")) { stopCalls.push(u); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+    return realFetch(url, init);
+  });
+  toggle.click();
+  await sleep(80);
+  w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await sleep(120);
+  if (drawerOpen()) fail("Escape did not close the drawer");
+  if (stopCalls.length)
+    fail(`Escape stopped the agent instead of closing the drawer (${stopCalls.length} /stop call/s)`);
+  console.log("deep render ok: narrow drawer closes via ✕, click-outside and Escape (#50)");
+
+  // a closed drawer must leave the UI interactive
+  if (w.document.querySelector(".rightbarbackdrop")) fail("backdrop left mounted");
+  setGlobal("fetch", realFetch);
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);

@@ -48,3 +48,39 @@ test("web bundle: module init + deep render survive", async (t) => {
   ]);
   assert.equal(code, 0, `bundle smoke test failed:\n${out}`);
 });
+
+/**
+ * #50 — the same bundle at a NARROW viewport, where .rightbar is a fixed
+ * drawer over the content instead of a grid column. The wide run above can
+ * never reach that code path: the drawer styles live in a media query that
+ * happy-dom does not evaluate, so "the panel is a column" is the only thing
+ * it proves. This run drives the actual close paths (✕, click-outside, Esc)
+ * against the rendered DOM.
+ */
+test("web bundle: the narrow-screen drawer can be closed (#50)", async (t) => {
+  const assetsDir = path.join(root, "public", "assets");
+  const hasBundle =
+    fs.existsSync(assetsDir) &&
+    fs.readdirSync(assetsDir).some((f) => f.startsWith("index-") && f.endsWith(".js"));
+  if (!hasBundle) return t.skip("no built bundle (run pnpm build)");
+
+  const child = spawn(
+    process.execPath,
+    [path.join(root, "scripts", "smoke-web.mjs"), assetsDir],
+    { cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SMOKE_WIDTH: "900" } },
+  );
+  let out = "";
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (out += c));
+
+  const code = await Promise.race([
+    new Promise<number | null>((res) => child.on("exit", res)),
+    new Promise<null>((_, rej) =>
+      setTimeout(() => {
+        child.kill("SIGKILL");
+        rej(new Error("narrow-viewport smoke test timed out after 30s"));
+      }, 30_000),
+    ),
+  ]);
+  assert.equal(code, 0, `narrow-viewport smoke test failed:\n${out}`);
+});
