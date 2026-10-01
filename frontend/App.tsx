@@ -3299,7 +3299,18 @@ export default function App() {
             </Show>
           </div>
 
-          <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span></h3>
+          <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span>
+            {/* Say what the filter actually does: it shows ONLY that branch's
+                own events, while the agent's real context on a fork also
+                includes everything inherited before the fork point. Without
+                this the filtered view looks like data loss (#38). */}
+            <Show when={branchFilter()}>
+              <div class="muted" style="font-size:11px;text-transform:none;letter-spacing:0">
+                showing <b>{branchFilter()}</b> only — the agent also reasons over the history
+                inherited before this branch forked
+              </div>
+            </Show>
+          </h3>
           <For each={branches()}>
             {(b) => (
               <div
@@ -3307,8 +3318,23 @@ export default function App() {
                 title={b.branch === branchFilter() ? "click to show all branches again" : `show only ${b.branch}`}
                 onclick={() => {
                   const next = branchFilter() === b.branch ? null : b.branch;
+                  const changing = next !== branchFilter();
                   setBranchFilter(next);
-                  if (selected()) loadEvents(selected()!);
+                  if (!selected()) return;
+                  // A filter change is a new VIEW, exactly like a session switch:
+                  // bump the generation so an in-flight fetch for the previous
+                  // filter is discarded rather than landing in this one (#38).
+                  if (changing) {
+                    feedGeneration++;
+                    // and drop the rows that no longer belong — loadEvents
+                    // union-merges with `prev`, so without this the previous
+                    // branch's rows stayed on screen after filtering, which is
+                    // the "the branch filter doesn't work" report.
+                    setEvents([]);
+                    setEventsTotal(0);
+                    setOlderDone(false);
+                  }
+                  loadEvents(selected()!);
                 }}
               >
                 <span>{b.branch}{b.branch === sel()!.branch ? " (current)" : ""}</span>
