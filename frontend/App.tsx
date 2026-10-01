@@ -1,6 +1,7 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { fmtDur } from "./format";
+import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog } from "./live-buffer";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -1308,14 +1309,27 @@ export default function App() {
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.kind === "ping" || msg.kind === "pong") return;
+      if (msg.kind === "event" && isTurnBoundary(msg.event)) {
+        // TURN BOUNDARY (#40). The agent's `status` does not change between
+        // tool calls inside one round, so a completed reply's live buffer was
+        // never cleared: the feed refresh below only drops it once a persisted
+        // assistant message matches its text, and its `status !== "running"`
+        // short-circuit kept it alive meanwhile. The previous turn's text then
+        // kept rendering under the streaming…/writing… chrome — reported as
+        // "agent2 shows agent1's message, with a writing prompt attached".
+        //
+        // The server logs one "llm turn start" state event per turn (with an
+        // incrementing `turn`), which is the only reliable boundary signal. The
+        // empty llm-delta the server sends before each call is NOT usable: it
+        // fires on every RETRY attempt too, so clearing on it would flash the
+        // bubble away mid-reply.
+        setLiveByAgent((prev) => clearLive(prev, msg.agentId));
+        return; // the feed refresh below handles the actual row
+      }
       if (msg.kind === "llm-delta") {
         // update THIS agent's buffer only — other sessions keep streaming in
         // the background and their bubble must survive session switches
-        setLiveByAgent((prev) => {
-          const m = new Map(prev);
-          m.set(msg.agentId, { text: msg.text ?? "", reasoning: msg.reasoning ?? "", at: Date.now() });
-          return m;
-        });
+        setLiveByAgent((prev) => applyDelta(prev, msg.agentId, msg));
         // thinking-timer bookkeeping (selected session only): start the clock
         // when reasoning arrives with no text yet; reset once real text flows
         if (msg.agentId === selected()) {
@@ -1421,14 +1435,11 @@ export default function App() {
               // where tool turns landed after it — the bubble then lingered
               // forever as a duplicate "streaming…" row above its own copy.
               const body = buf.text.trim();
-              const covered =
-                sel()?.status !== "running" ||
-                events().some(
-                  (e) =>
-                    e.type === "message" &&
-                    e.data?.role === "assistant" &&
-                    String(e.data.content ?? "").trim() === body,
-                );
+              const covered = isCoveredByLog(
+                { text: body, reasoning: "", at: buf.at },
+                events(),
+                sel()?.status,
+              );
               if (covered) setLive(null);
             } else if (buf && !buf.text) {
               // reasoning-only buffer with no text: drop as soon as the agent
