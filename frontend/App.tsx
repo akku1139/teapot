@@ -4,6 +4,7 @@ import { fmtDur } from "./format";
 import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog } from "./live-buffer";
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine } from "./goal-timeline";
+import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -3493,7 +3494,14 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
       <>
         {codeBlock(out(), max)}
         <div class="meta">
-          {fmtDur(res.data?.durationMs)}{res.data?.ok === false ? " · FAILED" : ""}
+          {fmtDur(res.data?.durationMs)}
+          {/* #46: a killed shell said nothing here beyond a generic · FAILED, so
+              a TIMED OUT command still read as an ordinary completed run. */}
+          {name === "bash"
+            ? outcomeMarker(shellOutcome(res.data?.ok, String(res.data?.result ?? "")))
+            : res.data?.ok === false
+              ? " · FAILED"
+              : ""}
           <CopyBtn text={out()} />
         </div>
       </>
@@ -3511,11 +3519,15 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
         // forgotten. Give them their own identity + the job id for bash_output.
         const bgJob = isBg ? (String(out()).match(/job (bg\d+)/)?.[1] ?? "") : "";
         label = (isBg ? "⏳ " : "$ ") + oneLine(cmd, 96);
-        const timeoutHint = argStr("timeout_ms") ? ` · timeout ${Math.round(Number(argStr("timeout_ms")) / 1000)}s` : "";
+        const timeoutMs = argStr("timeout_ms") ? Number(argStr("timeout_ms")) : undefined;
+        // #46: a command the harness KILLED used to render as
+        // `300ms · timeout 1s` — indistinguishable from a fast success, so the
+        // row never read as finished. Name the outcome on the summary line.
+        const outcome = shellOutcome(res?.data?.ok, res ? String(res.data?.result ?? "") : "");
         hint = res
           ? isBg
-            ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutHint}`
-            : `${fmtDur(res.data?.durationMs)}${timeoutHint}`
+            ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutMs ? ` · timeout ${Math.round(timeoutMs / 1000)}s` : ""}`
+            : shellHint({ outcome, durationMs: res.data?.durationMs, timeoutMs, fmtDur })
           : null; // live elapsed renders in the summary (below)
         body = (
           <>
