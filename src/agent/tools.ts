@@ -1816,6 +1816,237 @@ type ToolSpecLike = { type: "function"; function: { name: string; description: s
 /** tools that mutate the workspace — blocked for read-only personas */
 const MUTATING_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "bash"]);
 
+/**
+ * Repair + normalise one tool call's arguments (#17, "A-rank item 1").
+ *
+ * The issue's thesis is "the harness deterministically does what a model does
+ * badly", and the concrete failures it names for Ox/Qwen/DeepSeek-class models
+ * are all argument-shaped. Before this, teapot repaired only tool NAMES and
+ * then did a bare JSON.parse, so any of the following burned a whole turn on a
+ * generic "invalid JSON arguments":
+ *
+ *   - a JSON-stringified object:      {"command":"{\"path\":\"a\"}"}
+ *   - a bare scalar for an object:   {"paths":"a.ts"}
+ *   - everything as strings:         {"limit":"100"} / {"ignore_case":"true"}
+ *   - an alias for the real key:     {"cmd":"ls"} / {"oldValue":"x"}
+ *   - markdown framing on a path:    {"path":"**\`a.ts\`"}
+ *
+ * Pure and side-effect free so it is directly unit-testable; it returns the
+ * repaired args plus any notes about what it changed, and NEVER throws — an
+ * unrepairable call is reported as `error` so the caller can hand the model a
+ * shape it can actually send next.
+ */
+export interface RepairResult {
+  args: Record<string, unknown>;
+  notes: string[];
+  /** set when the call cannot be made usable; says what to send instead */
+  error?: string;
+}
+
+/** per-tool aliases: the common wrong key -> the key the schema declares. */
+const ARG_ALIASES: Record<string, Record<string, string>> = {
+  bash: { cmd: "command", script: "command", shell: "command", input: "command" },
+  read_file: { file_path: "path", filepath: "path", file: "path", name: "path" },
+  write_file: { file_path: "path", filepath: "path", file: "path" },
+  edit_file: { file_path: "path", filepath: "path", oldValue: "old_text", newValue: "new_text" },
+  apply_patch: { patch_text: "patch", diff: "patch" },
+  list_dir: { file_path: "path", dir: "path", directory: "path" },
+  list_children: { file_path: "path", dir: "path" },
+  read_url: { uri: "url", link: "url" },
+};
+
+/**
+ * The one argument each tool's whole call usually boils down to. Used to
+ * salvage a bare word ("ls") that was never wrapped in JSON at all — but ONLY
+ * for tools where that is unambiguous, so "12" is never mistaken for a path.
+ */
+const PRIMARY_STRING_ARG: Record<string, string> = {
+  bash: "command",
+  read_file: "path",
+  write_file: "content",
+  list_dir: "path",
+  list_children: "path",
+  read_url: "url",
+  load_skill: "name",
+  save_skill: "content",
+};
+
+/** keys whose schema type is a number / boolean, per tool. */
+const NUMERIC_ARGS: Record<string, string[]> = {
+  read_file: ["offset", "limit", "context"],
+  bash: ["timeout_ms"],
+  list_dir: [],
+  write_file: [],
+};
+
+const BOOL_ARGS: Record<string, string[]> = {
+  read_file: ["ignore_case"],
+  bash: ["background"],
+  edit_file: ["replace_all"],
+  write_file: [],
+  list_dir: [],
+};
+
+/** markdown/backtick framing models like to wrap a path in */
+function unframe(v: string): string {
+  const m = /^[`*_\s]+(.+?)[`*_\s]*$/.exec(v);
+  return m ? m[1]! : v;
+}
+
+/** coerce "100" -> 100, "true" -> true; returns undefined when not coercible */
+function coerceScalar(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  const t = v.trim();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  if (t !== "" && !Number.isNaN(Number(t)) && /^[-+]?\d+(\.\d+)?$/.test(t)) return Number(t);
+  return v;
+}
+
+/** Turn a value into an array, tolerating a bare scalar or a JSON array. */
+function toArray(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (t.startsWith("[")) {
+      try {
+        const p = JSON.parse(t);
+        if (Array.isArray(p)) return p;
+      } catch {
+        /* fall through — treat as a single element */
+      }
+    }
+    return [v];
+  }
+  if (v === undefined || v === null) return [];
+  return [v];
+}
+
+export function repairToolInput(name: string, rawArgs: string): RepairResult {
+  const notes: string[] = [];
+  let parsed: unknown;
+  try {
+    parsed = rawArgs?.trim() ? JSON.parse(rawArgs) : {};
+  } catch {
+    // not JSON at all: a whole call was stringified, or the model emitted a
+    // bare word. Only salvageable when the tool takes a single obvious string.
+    const bare = rawArgs?.trim().replace(/^[`*\s]+|[`*\s]+$/g, "");
+    const primary = PRIMARY_STRING_ARG[name];
+    // a bare number/boolean is never a path or a command — refusing is far
+    // better than inventing one (#17)
+    const isScalarish = bare !== "" && /^(true|false|null|-?\d+(\.\d+)?)$/i.test(bare);
+    if (bare && primary && !isScalarish && !bare.startsWith("{") && !bare.startsWith("[")) {
+      notes.push(`wrapped a bare string as {"${primary}": …}`);
+      return { args: { [primary]: unframe(bare) }, notes };
+    }
+    return { args: {}, notes, error: `arguments were not valid JSON — send a JSON object, e.g. {"…"}` };
+  }
+  // a JSON-stringified object arrives as a string
+  if (typeof parsed === "string" && /[{[]/.test(parsed.trim().slice(0, 2))) {
+    try {
+      parsed = JSON.parse(parsed);
+      notes.push("unwrapped a JSON-stringified argument object");
+    } catch {
+      /* leave as-is; it may genuinely be a string argument */
+    }
+  }
+  // a bare scalar where an object is required
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (parsed === null || parsed === undefined) return { args: {}, notes, error: "arguments were empty" };
+    // An ARRAY is a legitimate value for a path-ish argument, but only for the
+    // tools that actually take one — inventing {path:[…]} for apply_patch would
+    // hand the tool a key it has never heard of (#17).
+    if (Array.isArray(parsed) && name === "read_file") {
+      notes.push("kept the array as a paths list");
+      return { args: { paths: parsed }, notes };
+    }
+    const primary = PRIMARY_STRING_ARG[name];
+    if (primary && typeof parsed === "string") {
+      notes.push(`wrapped a bare string as {"${primary}": …}`);
+      return { args: { [primary]: unframe(parsed) }, notes };
+    }
+    return {
+      args: {},
+      notes,
+      error:
+        `expected a JSON object for ${name}, got a bare ${Array.isArray(parsed) ? "array" : typeof parsed}` +
+        (primary ? ` — send {"${primary}": …}` : ""),
+    };
+  }
+  const args = { ...(parsed as Record<string, unknown>) };
+  // alias normalisation
+  for (const [from, to] of Object.entries(ARG_ALIASES[name] ?? {})) {
+    if (!(from in args)) continue;
+    if (!(to in args)) {
+      args[to] = args[from];
+      notes.push(`renamed "${from}" -> "${to}"`);
+    } else {
+      // both present: the schema key wins and the stray alias is DROPPED, not
+      // left behind as an unknown argument the tool would ignore (#17)
+      notes.push(`dropped "${from}" — "${to}" was also given and wins`);
+    }
+    delete args[from];
+  }
+  // string -> number / boolean for the keys whose schema says so
+  for (const k of NUMERIC_ARGS[name] ?? []) {
+    if (k in args) {
+      const c = coerceScalar(args[k]);
+      if (typeof c !== typeof args[k]) {
+        args[k] = c;
+        notes.push(`coerced "${k}" to ${typeof c}`);
+      }
+    }
+  }
+  for (const k of BOOL_ARGS[name] ?? []) {
+    if (k in args) {
+      const c = coerceScalar(args[k]);
+      if (typeof c !== typeof args[k]) {
+        args[k] = c;
+        notes.push(`coerced "${k}" to ${typeof c}`);
+      }
+    }
+  }
+  // an array-typed arg arriving as a scalar
+  if (name === "read_file" && "paths" in args) {
+    const before = args.paths;
+    args.paths = toArray(before);
+    if (!Array.isArray(before)) notes.push('coerced "paths" to an array');
+  }
+  // a JSON-stringified object hiding inside a single argument, e.g.
+  // {"path": "{\"path\": \"a.ts\"}"} — unwrap it and merge its keys
+  // Only PATH-like keys: `content`/`old_text`/`new_text` legitimately hold JSON
+  // (writing a .json file!), and unwrapping those would REPLACE the file's
+  // actual data with an inner field — silent data loss, not repair.
+  for (const k of ["path", "command"]) {
+    const v = args[k];
+    if (typeof v !== "string") continue;
+    const t = v.trim();
+    if (!/^[{[]/.test(t)) continue;
+    try {
+      const inner = JSON.parse(t);
+      if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+        delete args[k];
+        Object.assign(args, inner);
+        notes.push(`unwrapped a JSON-stringified object out of "${k}"`);
+        break;
+      }
+    } catch {
+      /* genuinely not JSON — leave it alone */
+    }
+  }
+  // markdown framing on a path
+  for (const k of ["path", "file_path"]) {
+    if (typeof args[k] === "string") {
+      const f = unframe(args[k] as string);
+      if (f !== args[k]) {
+        args[k] = f;
+        notes.push(`stripped markdown framing from "${k}"`);
+      }
+    }
+  }
+  return { args, notes };
+}
+
 export async function executeTool(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
   const def = TOOLS.find((t) => t.name === name);
   if (!def) return { ok: false, result: `unknown tool: ${name}` };
@@ -1823,12 +2054,15 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
   // read-only personas (researcher/reviewer) are enforced, not just asked
   if (ctx.readOnly && MUTATING_TOOLS.has(name))
     return { ok: false, result: `${name} is blocked: this agent runs with read-only tools` };
-  let args: Record<string, unknown>;
-  try {
-    args = rawArgs ? JSON.parse(rawArgs) : {};
-  } catch {
-    return { ok: false, result: `invalid JSON arguments: ${rawArgs.slice(0, 200)}` };
-  }
+  // #17: repair the call before handing it to the tool. A model that sends
+// {"cmd":"ls"} or {"limit":"100"} should get the work done, not a generic parse
+// failure and a wasted turn. Unrepairable calls say what to send instead.
+  const repaired = repairToolInput(name, rawArgs);
+  if (repaired.error)
+    return { ok: false, result: `${name}: ${repaired.error}` };
+  const args = repaired.args;
+  if (repaired.notes.length && process.env.TEAPOT_DEBUG_REPAIR)
+    console.error(`[repair] ${name}: ${repaired.notes.join("; ")}`);
   try {
     return await def.run(args, ctx);
   } catch (err) {
