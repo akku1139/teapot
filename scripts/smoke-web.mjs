@@ -370,6 +370,100 @@ console.log("deep render ok: feed rows present");
   }
 }
 
+/* ---------- #30: an in-progress todo edit must survive a panel re-render ----------
+ * The operator types into the tasks editor while the right panel re-renders for
+ * unrelated reasons (a poll returning a fresh agent snapshot). The typed text
+ * must NOT be committed/overwritten out from under them. */
+{
+  const editor = w.document.getElementById("todo-input");
+  if (!editor) {
+    // the editor only exists in markdown-edit view; click the toggle first
+    const toggle = [...w.document.querySelectorAll(".iconbtn")].find((b) =>
+      /edit markdown|rendered checklist/.test(b.getAttribute("title") ?? ""),
+    );
+    if (!toggle) {
+      console.error("#30: no tasks editor and no view toggle found");
+      process.exit(1);
+    }
+    toggle.click();
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  const box = w.document.getElementById("todo-input");
+  if (!box) {
+    console.error("#30: tasks editor (todo-input) never rendered");
+    process.exit(1);
+  }
+
+  // The exact reported flow: the operator SAVES, then keeps typing (or types
+  // again immediately) while the agent's own set_todo lands — a re-render in
+  // that window must not commit/overwrite the draft.
+  const box0 = w.document.getElementById("todo-input");
+  box0.value = "- first pass";
+  box0.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40));
+  // click "save tasks"
+  const saveBtn = [...w.document.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").includes("save tasks"),
+  );
+  if (!saveBtn) { console.error("#30: no 'save tasks' button"); process.exit(1); }
+  saveBtn.click();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const TYPED = "- half-typed task that must survive";
+  box.focus();
+  box.value = TYPED;
+  box.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 60));
+
+  // Force exactly what the issue describes: the right panel re-renders because
+  // the agent list is polled again and a new snapshot object arrives.
+  const origFetch = globalThis.fetch;
+  setGlobal("fetch", async (url, init) => {
+    fetchCount++;
+    const u = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+    if (u === "/api/agents")
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ agents: [{ ...AGENT, turns: AGENT.stats.turns + 1 }] }),
+      };
+    return origFetch(url, init);
+  });
+  // this is the shape the server really sends: a fresh snapshot. Any field that
+  // differs replaces the agent object, which is what re-renders the panel.
+  await new Promise((r) => setTimeout(r, 150));
+  const appWs2 = MockWS.instances.at(-1);
+  appWs2.onmessage?.({
+    data: JSON.stringify({
+      kind: "agent-update",
+      agentId: AGENT.id,
+      snapshot: { ...AGENT, turns: 4 },
+    }),
+  });
+  await new Promise((r) => setTimeout(r, 250));
+
+  const after = w.document.getElementById("todo-input");
+  if (!after) {
+    console.error("#30: the tasks editor vanished during a panel re-render");
+    process.exit(1);
+  }
+  // A re-render that REPLACES the node drops the operator's focus, caret and
+  // any keystroke in flight — the visible symptom of "the panel re-renders".
+  // THE #30 ASSERTION: the editor node itself must survive. A re-render that
+  // replaces it silently drops the operator's focus, caret position and any
+  // keystroke in flight — the reported "editing gets force-committed" symptom.
+  // isolate: was the VIEW MODE toggled by the re-render? that swaps the branch
+  // walk up to find the first replaced ancestor
+  if (after.value !== TYPED) {
+    console.error(
+      `#30 REGRESSION: in-progress todo was clobbered by a panel re-render\n` +
+        `  expected: ${JSON.stringify(TYPED)}\n  actual:   ${JSON.stringify(after.value)}`,
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: in-progress todo survives a panel re-render (#30)");
+}
+
 // give deferred Solid effects a final tick before declaring victory
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
