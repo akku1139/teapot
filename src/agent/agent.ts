@@ -1054,8 +1054,20 @@ export class Agent {
     // suppressed while bg jobs are alive) — its exit IS the wake-up call.
     // Without this the report would sit unread until the operator poked
     // the agent. Stopped agents stay stopped (a deliberate human stop).
-    if (this.status === "idle" && !this.stopRequested) {
-      this.start(`background job ${info.id} finished`);
+    //
+    // Checking status once is NOT enough: the exit can land in the window
+    // between the loop's hasRunningBgShells() check (which breaks the round
+    // out) and the loop actually flipping to idle. The callback then sees
+    // "running", skips start(), and the agent goes idle with the report
+    // unread — wedged until a human pokes it. So remember that the loop was
+    // still winding down, and re-check once it has settled.
+    const windingDown = this.status === "running";
+    if (!this.stopRequested && (this.status === "idle" || windingDown)) {
+      // park the decision until the in-flight round has actually settled
+      void this.enqueue(async () => {
+        if (this.stopRequested) return; // a stop raced us — respect it
+        if (this.status === "idle") this.start(`background job ${info.id} finished`);
+      });
     }
   }
 

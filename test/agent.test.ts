@@ -311,6 +311,46 @@ test("background bash exit notifies the agent at the next turn boundary", async 
     await agent.dispose();
   });
 });
+test("a bg job that exits as the round parks still wakes the agent", async () => {
+  // regression: auto-continue breaks the round out while a bg job is alive,
+  // expecting the job's exit to be the wake-up. But the wake-up read
+  // `status === "idle"` exactly once — so when the job exited in the window
+  // between the loop's hasRunningBgShells() check and the loop flipping to
+  // idle, the callback saw "running", skipped start(), and the agent went
+  // idle forever with the exit report unread (auto-continue-suppressed, no
+  // nudge ever followed). Observed ~1 run in 10; the agent sat wedged until a
+  // human poked it. This drives the real bash background path, where the job's
+  // lifetime overlaps the round's teardown.
+  let sawReport = false;
+  let calls = 0;
+  const chatFn = async (_cfg: unknown, messages: any): Promise<LlmResult> => {
+    calls++;
+    if (calls === 1)
+      return reply("starting", [tc("b1", "bash", { command: "echo hi", background: true })]);
+    if (
+      messages.some(
+        (m: any) => m.role === "user" && /Background job report/.test(String(m.content)),
+      )
+    ) {
+      sawReport = true;
+      return reply("acknowledged", [tc("fin", "finish", { goalComplete: true })]);
+    }
+    return reply("waiting");
+  };
+  await withAgent({ chatFn, autoContinue: true, continueDelayMs: 20 }, async (agent, _ws, _sd) => {
+    await agent.setGoal("watch a background job");
+    agent.enqueuePrompt("start it");
+    agent.start("t");
+    await agent.settled();
+    for (let i = 0; i < 250 && !sawReport; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(
+      sawReport,
+      "the agent must be woken by the exit even when it lands mid-teardown",
+    );
+    await agent.dispose();
+  });
+});
+
 test("delivered prompt emits a prompt-delivered note carrying its promptId", async () => {
   // the web UI flips a pending echo to "sent" and swaps it for the logged row
   // based on THIS note — without it the "sent ✓" echo lingered indefinitely
