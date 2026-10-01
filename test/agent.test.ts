@@ -284,9 +284,16 @@ test("background bash exit notifies the agent at the next turn boundary", async 
     agent.start("t");
     await agent.settled();
     // the wake-up round runs on a NEW runChain (the job exits AFTER the first
-    // round settled) — wait for it to actually consume the report
-    // the report lands as a LOGGED prompt regardless of LLM timing — poll
-    // the log itself instead of racing agent status transitions
+    // round settled) — wait for it to actually consume the report.
+    // Poll the condition we actually assert. The previous version waited for
+    // the report to be LOGGED, which happens synchronously inside
+    // drainBackgroundExits() — but the LLM call that READS it (setting
+    // sawReport) happens after, so under load the log check could win the
+    // race and assert on a not-yet-run turn. Wait for sawReport itself.
+    for (let i = 0; i < 250 && !sawReport; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(sawReport, "a later LLM call must contain the Background job report");
     let reportLogged = false;
     for (let i = 0; i < 100 && !reportLogged; i++) {
       await new Promise((r) => setTimeout(r, 20));
@@ -294,8 +301,6 @@ test("background bash exit notifies the agent at the next turn boundary", async 
       reportLogged = evts.some((e) => e.type === "prompt" && /Background job report/.test(String(e.data?.text ?? "")));
     }
     assert.ok(reportLogged, "the background report must reach the conversation");
-    assert.ok(sawReport, "a later LLM call must contain the Background job report");
-    assert.ok(sawReport, "a later LLM call must contain the Background job report");
     const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
     const report = events.find((e) => e.type === "prompt" && /Background job report/.test(String(e.data?.text ?? "")));
     assert.ok(report, "the report must be logged as a prompt");
