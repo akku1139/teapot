@@ -3,6 +3,7 @@ import { renderMarkdown } from "./md";
 import { fmtDur } from "./format";
 import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog } from "./live-buffer";
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
+import { goalLine } from "./goal-timeline";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -3753,9 +3754,27 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
     );
   }
   if (e.type === "goal") {
-    const d = e.data ?? {};
-    const what = d.event === "status" ? `marked ${String(d.status ?? "")}` : oneLine(String(d.text ?? ""), 80);
-    return <div class="divider-msg">🎯 goal {String(d.event ?? "")}: {what}</div>;
+    // #41: the finish→audit→continue lifecycle used to render as bare labels
+    // with an EMPTY body ("🎯 goal audit:"), hiding the verification contract
+    // and the verdict. Every branch now carries a real detail, and "done" is
+    // labelled as PENDING audit because it is logged before the audit runs.
+    const line = goalLine(e.data ?? {});
+    return (
+      <div class={"divider-msg " + (line.tone === "err" ? "err" : line.tone === "warn" ? "compacting" : "")}>
+        {line.label}
+        {line.detail && (
+          <div
+            class={"card " + (line.tone === "ok" ? "auditcard ok" : line.tone === "warn" ? "auditcard" : "verifycard")}
+            style="max-height:none;margin-top:6px;text-align:left"
+            innerHTML={
+              line.markdown
+                ? renderMarkdown(line.detail)
+                : renderMarkdown(`\`\`\`\n${line.detail}\n\`\`\``)
+            }
+          />
+        )}
+      </div>
+    );
   }
   if (e.type === "todo") {
     return <div class="divider-msg">✅ tasks updated ({String(e.data?.by ?? "human")})</div>;
