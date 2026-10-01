@@ -920,6 +920,8 @@ export const TOOLS: ToolDef[] = [
       "Read a text file from the workspace. Returns numbered lines (`N| ` prefixes are display-only — never copy them into edit_file). " +
       "With `line_ids:\"hash\"` it instead returns `LINE:HASH| content` anchors (the hashline format used by other coding harnesses), " +
       "which edit_file accepts VERBATIM and re-verifies against the file — so prefer it when you intend to edit what you just read. " +
+      "Pass `paths` (max 10) to read SEVERAL files in one call instead of one call per file; " +
+      "pass `fuzzy` when you do not know the exact path. " +
       "With `pattern`, acts like grep: only matching lines (JS regex, optional `ignore_case`) plus `context` surrounding lines are returned. " +
       "A negative `offset` counts from the end (-30 → last 30 lines, or last 30 matches in pattern mode).",
     parameters: {
@@ -931,6 +933,21 @@ export const TOOLS: ToolDef[] = [
         pattern: { type: "string", description: "JS regex — return only matching lines (+context) instead of the whole file" },
         context: { type: "number", description: "context lines around each pattern match (max 5)" },
         ignore_case: { type: "boolean", description: "case-insensitive pattern matching" },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Read SEVERAL files in one call (max 10) instead of one call per file. " +
+            "Each comes back under its own `--- path ---` header, and a file that " +
+            "cannot be read is reported inline without failing the others.",
+        },
+        fuzzy: {
+          type: "string",
+          description:
+            "Read the file when you do not know its exact path. Matches loosely " +
+            "(characters in order, ignoring separators and case); if several files " +
+            "match it lists them so you can pick the right one with `path`.",
+        },
         line_ids: {
           type: "string",
           enum: ["none", "hash"],
@@ -943,8 +960,47 @@ export const TOOLS: ToolDef[] = [
       required: ["path"],
     },
     async run(args, ctx) {
+      // #16: MULTI-FILE and FUZZY reads.
+      //
+      // Both are opt-in and handled HERE rather than by restructuring this
+      // tool: `paths` re-enters executeTool once per file, and `fuzzy` locates
+      // a file then re-enters it. Nothing about the single-file path below
+      // changes, so its output stays byte-identical — which #7's hashline
+      // anchors and the existing tests both depend on.
+      if (Array.isArray(args.paths) && args.paths.length) {
+        const wanted = (args.paths as unknown[])
+          .map((v) => str(v).trim())
+          .filter(Boolean);
+        if (!wanted.length) return { ok: false, result: "paths must contain at least one path" };
+        if (wanted.length > MAX_MULTI_READ) {
+          return {
+            ok: false,
+            result: `too many paths (${wanted.length}); the maximum is ${MAX_MULTI_READ} — read fewer files per call`,
+          };
+        }
+        const chunks: string[] = [];
+        for (const rel of wanted) {
+          const r = await executeTool("read_file", JSON.stringify({ ...args, path: rel, paths: undefined }), ctx);
+          // one bad file must not sink the others: report it inline
+          chunks.push(`--- ${rel} ---\n${r.ok ? r.result : `ERROR: ${r.result}`}`);
+        }
+        return { ok: true, result: chunks.join("\n\n") };
+      }
+      if (args.fuzzy) return fuzzyRead(str(args.fuzzy), ctx, args as Record<string, unknown>);
       const p = safeJoin(ctx.cwd, str(args.path));
-      const text = await readText(p);
+      let text: string;
+      try {
+        text = await readText(p);
+      } catch (err) {
+        // name the file, not just the errno: a multi-file read reports each bad
+        // path inline, and "ENOENT … /tmp/xyz/nope.ts" leaves the model to work
+        // out which of the paths it asked for (#16)
+        const code = (err as NodeJS.ErrnoException).code;
+        return {
+          ok: false,
+          result: code === "ENOENT" ? `cannot read ${str(args.path)}: no such file` : `cannot read ${str(args.path)}: ${(err as Error).message}`,
+        };
+      }
       ctx.onFileRead?.(str(args.path));
       const lines = text.split("\n");
       // #7/#4: opt-in hashline output. Default stays the historical `N| ` so
@@ -1650,6 +1706,99 @@ export const TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/** #16: how many files one read_file call may cover. Each costs context, so an
+ *  unbounded array would just be a way to overflow the window in one shot. */
+const MAX_MULTI_READ = 10;
+
+/**
+ * Subsequence match: every character of `needle` appears in `hay`, in order,
+ * gaps allowed (#16 "fuzzy").
+ *
+ * Deliberately not a ranked edit-distance search. This answers "is this the
+ * file I meant", and it can only say yes or no — it cannot rank a plausible
+ * WRONG file above the right one, which is the failure mode that actually costs
+ * an agent time. Searching file CONTENT is what bash/grep are for.
+ */
+export function fuzzyPathMatch(needle: string, hay: string): boolean {
+  const n = needle.toLowerCase().replace(/[\s._/-]+/g, "");
+  if (!n) return false;
+  const h = hay.toLowerCase();
+  let i = 0;
+  for (const ch of h) {
+    if (ch === n[i]) i++;
+    if (i === n.length) return true;
+  }
+  return false;
+}
+
+/**
+ * Locate a file by a loose name and read it (#16).
+ *
+ * Walks the workspace (skipping .git, node_modules and build noise) and ranks
+ * matches: exact path, exact basename, ends-with, then subsequence. When
+ * several match it LISTS them rather than picking one — guessing here would have
+ * the agent edit the wrong file, which is the expensive mistake.
+ */
+async function fuzzyRead(
+  needle: string,
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const q = needle.trim();
+  if (!q) return { ok: false, result: "fuzzy needs a non-empty search string" };
+  const SKIP = new Set([".git", "node_modules", "dist", "build", ".cache", "coverage", "__pycache__"]);
+  const found: { rel: string; rank: number }[] = [];
+  const walk = async (dir: string, rel: string, depth: number): Promise<void> => {
+    if (depth > 12) return;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (SKIP.has(e.name)) continue;
+        await walk(path.join(dir, e.name), r, depth + 1);
+        continue;
+      }
+      let rank = -1;
+      if (r === q) rank = 0;
+      else if (e.name === q) rank = 1;
+      else if (r.endsWith("/" + q) || r.endsWith(q)) rank = 2;
+      else if (fuzzyPathMatch(q, r)) rank = 3;
+      if (rank >= 0) found.push({ rel: r, rank });
+    }
+  };
+  await walk(ctx.cwd, "", 0);
+  if (!found.length) {
+    return {
+      ok: false,
+      result:
+        `no file matches "${q}" under the workspace. ` +
+        "Use list_dir to see what exists, or pass the exact path instead of fuzzy.",
+    };
+  }
+  found.sort((a, b) => a.rank - b.rank || a.rel.length - b.rel.length || a.rel.localeCompare(b.rel));
+  const best = found[0]!;
+  // Only a confident match is read directly. If the query is vague enough that
+  // several files match, LIST them: guessing would hand the agent the wrong
+  // file, and the cost of that mistake is far higher than one extra call.
+  // An exact path or basename is unambiguous, so those still read straight away.
+  if (best.rank <= 1 || found.length === 1) {
+    // re-enter the tool so a unique match behaves exactly like a normal read
+    return executeTool("read_file", JSON.stringify({ ...args, path: best.rel, fuzzy: undefined }), ctx);
+  }
+  return {
+    ok: true,
+    result:
+      `${found.length} files match "${q}" — pass the exact path (or a longer query) to read one:\n` +
+      found.slice(0, 8).map((f) => `  ${f.rel}`).join("\n"),
+  };
+}
 
 /** Current skills across the configured roots (for the system prompt listing). */
 export async function currentSkills(ctx: ToolContext): Promise<SkillDef[]> {
