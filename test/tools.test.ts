@@ -605,3 +605,62 @@ test("save_skill bundles helper scripts next to SKILL.md (regression)", async ()
     await assert.rejects(stat(path.join(ctx.skillRoots[0]!.dir, "escape.sh")));
   });
 });
+
+/* ---------- background shells: exit vs close (#23) ---------- */
+
+test("a background shell that forks an inheriting child still reports its exit (#23)", async () => {
+  await withCtx(async (ctx) => {
+    const exits: { id: string; code: number | null; cmd: string }[] = [];
+    ctx.onBackgroundExit = (i) => exits.push({ id: i.id, code: i.code, cmd: i.cmd });
+
+    // the shell exits IMMEDIATELY, but the backgrounded grandchild inherits
+    // stdout, so Node's "close" event (stdio drained) never fires. Keying exit
+    // state off "close" left the job marked running forever, which pinned the
+    // agent in "running" and suppressed auto-continue.
+    const r = await executeTool(
+      "bash",
+      JSON.stringify({ command: "sleep 3 & echo started", background: true }),
+      ctx,
+    );
+    assert.ok(r.ok, r.result);
+    const jobId = /bg\d+/.exec(r.result)?.[0];
+    assert.ok(jobId, `expected a bg id in: ${r.result}`);
+
+    // the shell is gone within a second even though "close" is still pending
+    const t0 = Date.now();
+    for (;;) {
+      if (exits.length) break;
+      assert.ok(Date.now() - t0 < 2500, "exit notification never arrived");
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.equal(exits.length, 1, "exactly one exit notification");
+    assert.equal(exits[0].code, 0);
+    assert.match(exits[0].cmd, /sleep 3/);
+
+    // and it must no longer count as a running background shell, or the
+    // auto-continue loop would suppress its nudge forever
+    const { hasRunningBgShells } = await import("../src/agent/tools.ts");
+    assert.equal(hasRunningBgShells(ctx.cwd), false, "a dead shell must not look alive");
+  });
+});
+
+test("a normally-exiting background shell still notifies exactly once (#23)", async () => {
+  await withCtx(async (ctx) => {
+    const exits: number[] = [];
+    ctx.onBackgroundExit = (i) => exits.push(i.code ?? -1);
+    const r = await executeTool(
+      "bash",
+      JSON.stringify({ command: "echo hi", background: true }),
+      ctx,
+    );
+    assert.ok(r.ok, r.result);
+    const t0 = Date.now();
+    while (!exits.length) {
+      assert.ok(Date.now() - t0 < 2500, "exit notification never arrived");
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    // exit AND close both fire here — the notification must not double up
+    await new Promise((r) => setTimeout(r, 250));
+    assert.deepEqual(exits, [0], "exactly one notification, with the real code");
+  });
+});

@@ -197,14 +197,29 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   };
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
-  child.on("close", (code) => {
+  // "exit" (process gone) and "close" (all stdio drained) are DIFFERENT events.
+  // A backgrounded grandchild that inherits stdout — `npm run dev &`,
+  // `docker compose up &`, a script that forks a watcher — keeps the pipe open,
+  // so "close" can stay pending long after the shell itself is dead. Keying
+  // the exit state off "close" alone left such jobs marked running FOREVER:
+  // hasRunningBgShells() said yes, the auto-continue loop kept breaking out on
+  // "background job still running", and the agent sat in "running" with the
+  // job long dead and no notification ever delivered (#23).
+  //
+  // So: "exit" is authoritative for state and for the completion
+  // notification; "close" only means "output finally drained" and is used to
+  // capture the tail. The notify() helper keeps this exactly-once.
+  let exitNotified = false;
+  const notify = (code: number | null) => {
     sh.exited = true;
-    sh.code = code;
+    if (code !== null) sh.code = code;
+    if (exitNotified) return;
+    exitNotified = true;
     // tell the harness so the agent learns the outcome WITHOUT polling
     try {
       ctx.onBackgroundExit?.({
         id,
-        code,
+        code: sh.code,
         cmd,
         durationMs: Date.now() - sh.startedAt,
         outputTail: sh.out.slice(-2000),
@@ -212,7 +227,9 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     } catch {
       /* notification is best-effort */
     }
-  });
+  };
+  child.on("exit", (code) => notify(code));
+  child.on("close", (code) => notify(code));
   map.set(id, sh);
   return id;
 }
