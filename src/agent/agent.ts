@@ -14,6 +14,39 @@ import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, has
 import { skillRootsFingerprint, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
+/**
+ * Harness nudges, named and exported so they can be asserted on directly.
+ *
+ * Both were fixed for a reason invisible in the prose:
+ *
+ *  - AUTO_CONTINUE_NUDGE (#43) used to say only "continue working". The model
+ *    was never told HOW TO STOP, so it worked forever: it replied in prose, the
+ *    loop saw an active goal and no finish(), and nudged again. The sub-agent
+ *    variant already named finish() — the ROOT one did not.
+ *  - PROGRESS_REQUEST (#45) used to DESCRIBE the report instead of asking for
+ *    the tool, so the model answered in prose, then — not knowing that had
+ *    satisfied the request — sent a voluntary report_progress right after, and
+ *    every requested report appeared TWICE on the timeline.
+ */
+export const AUTO_CONTINUE_NUDGE =
+  "Continue working toward the current goal. If you are blocked, explain why briefly. " +
+  // name the tool explicitly, the way the sub-agent nudge already does
+  "When the goal is genuinely met — or truly blocked — call finish() " +
+  "(finish(goalComplete=true) when met, finish(goalComplete=false) when blocked) " +
+  "instead of replying in prose; prose here does not stop the loop.";
+
+export const PROGRESS_REQUEST =
+  // The leading sentence is kept VERBATIM: it is what existing harness prompts,
+  // tests and any operator muscle-memory key off. #45 changed the INSTRUCTION
+  // (call the tool, don't answer in prose), not the identification of the request.
+  "[harness] Please give a brief progress report now: what you are doing, goal progress, " +
+  "what you recently tried, any problems, and your next step. Keep it under 10 lines. " +
+  // ask for the TOOL, not prose — a prose answer left the model unsure whether it
+  // had satisfied the request, so it sent a voluntary report_progress right after
+  // and every requested report appeared TWICE on the timeline (#45)
+  "Record it with the report_progress TOOL (doing, goalStatus, recent, problems, next) — " +
+  "call that tool; do NOT answer in prose, which would just duplicate this request.";
+
 export type AgentStatus = "idle" | "running" | "stopped" | "error" | "waiting";
 
 export interface GoalState {
@@ -1294,7 +1327,7 @@ export class Agent {
         const isSub = !!this.opts.parent;
         const nudge = isSub
           ? `[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
-          : "Continue working toward the current goal. If you are blocked, explain why briefly.";
+          : AUTO_CONTINUE_NUDGE;
         await this.log.append("prompt", this.currentSession, this.currentBranch, {
           source: "harness",
           text: nudge,
@@ -2015,9 +2048,7 @@ export class Agent {
     this.lastProgressAt = Date.now();
     this.activityChars = 0;
     this.turnsSinceProgress = 0;
-    const request =
-      "[harness] Please give a brief progress report now: what you are doing, goal progress, " +
-      "what you recently tried, any problems, and your next step. Keep it under 10 lines.";
+    const request = PROGRESS_REQUEST;
     // log both sides so a session restore replays this exchange faithfully
     await this.log.append("prompt", this.currentSession, this.currentBranch, {
       source: "harness",
