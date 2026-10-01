@@ -456,6 +456,11 @@ body:has(.termdrawer) .jump {
   font-size: 11px; padding: 0 2px; opacity: 0; transition: opacity .12s;
 }
 .msg:hover .msg-head .editbtn { opacity: 1; }
+/* The cancel affordance on a QUEUED message must never depend on hover (#49):
+   a keyboard user cannot hover, and the row is often read in a burst — so a
+   control that only exists on hover is a control that does not exist. */
+.msg.pending .msg-head .editbtn { opacity: 1; }
+.msg-head .editbtn:focus-visible { opacity: 1; outline: 2px solid var(--acc); outline-offset: 1px; }
 .msg-head .editbtn:hover { color: var(--acc); }
 .modal textarea { resize: vertical; }
 .branch-row { display: flex; justify-content: space-between; padding: 3px 0; color: var(--dim); font-size: 12px; cursor: pointer; }

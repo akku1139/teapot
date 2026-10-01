@@ -3803,8 +3803,18 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
     if (ev.type === "prompt") return `src:${String(d.source ?? "user")}`;
     return `type:${ev.type}`;
   };
+  // A PENDING (queued) message must NEVER group with the row above it (#49).
+  //
+  // The cancel affordance lives inside the msg-head, and that head is only
+  // rendered when !grouped — so a queued message that happened to follow a
+  // SENT user prompt (same actor key, same author) lost its ✕ entirely and
+  // could not be withdrawn. Since #37 deliberately places echoes BELOW settled
+  // rows, "sent → pending" is now the NORMAL case rather than an edge case.
   const grouped =
     props.prev &&
+    !e.data?.pending &&
+    !props.prev.data?.pending &&
+    !e.data?.cancelled &&
     actorKey(props.prev) === actorKey(e) &&
     authorOf(props.prev).name === a.name &&
     e.session === props.prev.session &&
