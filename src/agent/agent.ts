@@ -11,7 +11,7 @@ import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, type ToolContext } from "./tools.ts";
-import type { SkillDef } from "./skills.ts";
+import { skillRootsFingerprint, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
 export type AgentStatus = "idle" | "running" | "stopped" | "error" | "waiting";
@@ -276,11 +276,24 @@ export class Agent {
 
   private skillRoots: { dir: string; source: string }[];
   private skillsCache: SkillDef[] = [];
+  /** fingerprint of the roots that produced skillsCache ("" = not scanned yet) */
+  private skillsStamp = "";
 
-  /** Rescan skill roots (cheap: a readdir per root, done once per turn). */
+  /**
+   * Rescan skill roots — but only when something actually changed (#14).
+   * This used to run a readdir per root plus a read of every SKILL.md at the
+   * top of EVERY turn; the cache is only ever read by list_skills, so that
+   * was pure I/O on the hot path. A cheap stat fingerprint of the roots and
+   * their SKILL.md files gates the real scan, so a turn only pays when a
+   * skill was added, edited or removed (save_skill writes one, so a
+   * self-created skill still shows up on the very next turn).
+   */
   private async refreshSkills(): Promise<void> {
     try {
+      const stamp = await skillRootsFingerprint(this.skillRoots);
+      if (stamp === this.skillsStamp) return; // unchanged → reuse the cache
       this.skillsCache = await currentSkills(this.toolCtx);
+      this.skillsStamp = stamp;
     } catch {
       /* keep previous cache */
     }

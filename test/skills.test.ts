@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
 import {
@@ -8,8 +8,18 @@ import {
   discoverSkills,
   saveSkill,
   isValidSkillName,
+  skillRootsFingerprint,
 } from "../src/agent/skills.ts";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
+import { Agent } from "../src/agent/agent.ts";
+import type { ChatFn, LlmConfig, LlmResult } from "../src/agent/llm.ts";
+
+const LLM: LlmConfig = { baseUrl: "http://mock", apiKey: "k", model: "m" };
+const reply = (content: string): LlmResult => ({ message: { role: "assistant", content } });
+function mkMock(handler: (n: number) => Promise<LlmResult> | LlmResult): ChatFn {
+  let n = 0;
+  return async () => handler(n++);
+}
 
 const REPO_BUNDLED_SKILLS = path.join(new URL("..", import.meta.url).pathname, "skills");
 
@@ -128,5 +138,93 @@ test("save_skill stores globally; overwrite-safe; warns on workspace shadow", as
     const r3 = await executeTool("save_skill", JSON.stringify({ name: "deploy", description: "d3", content: "# v3" }), ctx);
     assert.equal(r3.ok, true);
     assert.match(r3.result, /takes precedence/);
+  });
+});
+
+/* ---------- mtime-gated skill cache (#14) ---------- */
+
+test("skillRootsFingerprint changes when a skill is added, edited or removed", async () => {
+  await useTempDir("fp-", async (dir) => {
+    const root = { dir: path.join(dir, "skills"), source: "workspace" };
+    // saveSkill writes <workspaceRoot>/<name>/SKILL.md — point it at the root
+    await mkdir(root.dir, { recursive: true });
+
+    const empty = await skillRootsFingerprint([root]);
+    // stable across repeated reads — this is what lets the agent skip a rescan
+    assert.equal(await skillRootsFingerprint([root]), empty);
+
+    // ADD: a brand-new skill dir must invalidate
+    await saveSkill(root.dir, "alpha", "first", "# body");
+    const afterAdd = await skillRootsFingerprint([root]);
+    assert.notEqual(afterAdd, empty, "adding a skill must change the fingerprint");
+
+    // EDIT: same byte length, different content — an mtime-only miss here
+    // would keep a stale cache, so the stamp must move
+    const skillFile = path.join(root.dir, "alpha", "SKILL.md");
+    const before = await readFile(skillFile, "utf8");
+    await writeFile(skillFile, before.slice(0, -1) + (before.endsWith("X") ? "Y" : "X"), "utf8");
+    const afterEdit = await skillRootsFingerprint([root]);
+    assert.notEqual(afterEdit, afterAdd, "editing SKILL.md (same size) must change the fingerprint");
+
+    // REMOVE: a deleted skill must invalidate too
+    await mkdir(path.join(root.dir, "beta"), { recursive: true });
+    await writeFile(path.join(root.dir, "beta", "SKILL.md"), "---\nname: beta\ndescription: d\n---\nbody");
+    const withBeta = await skillRootsFingerprint([root]);
+    await rm(path.join(root.dir, "beta"), { recursive: true, force: true });
+    assert.notEqual(await skillRootsFingerprint([root]), withBeta, "removing a skill must change the fingerprint");
+  });
+});
+
+test("skillRootsFingerprint survives rapid same-size rewrites (no missed changes)", async () => {
+  await useTempDir("fp2-", async (dir) => {
+    const root = { dir: path.join(dir, "skills"), source: "workspace" };
+    await mkdir(root.dir, { recursive: true });
+    await saveSkill(root.dir, "alpha", "d", "# body");
+    const skillFile = path.join(root.dir, "alpha", "SKILL.md");
+    const text = await readFile(skillFile, "utf8");
+    let missed = 0;
+    // same-length alternating writes: only the mtime can distinguish them
+    for (let i = 0; i < 100; i++) {
+      const a = await skillRootsFingerprint([root]);
+      await writeFile(skillFile, text.slice(0, -1) + (i % 2 ? "X" : "Y"), "utf8");
+      const b = await skillRootsFingerprint([root]);
+      if (a === b) missed++;
+    }
+    assert.equal(missed, 0, "mtime resolution must be fine enough to catch same-size edits");
+  });
+});
+
+test("an unchanged skill root never triggers a rescan; a changed one does (#14)", async () => {
+  await useTempDirs(["sk-ws-", "sk-sess-"], async ([ws, sess]) => {
+    const agent = new Agent({
+      id: "t",
+      workspace: ws,
+      llm: LLM,
+      sessionDir: sess,
+      globalSkillsDir: path.join(ws, "global-skills"),
+      continueDelayMs: 10,
+      chatFn: mkMock(() => reply("ok")),
+      autoContinue: false,
+    });
+    await agent.init();
+    // count real scans (not fingerprint checks) by wrapping discoverSkills'
+    // observable output: the cache object identity only changes on a rescan
+    const priv = agent as unknown as {
+      refreshSkills(): Promise<void>;
+      skillsCache: { name: string }[];
+    };
+    await saveSkill(path.join(ws, "skills"), "alpha", "d", "# one");
+    await priv.refreshSkills();
+    assert.deepEqual(priv.skillsCache.map((s) => s.name), ["alpha"]);
+    const first = priv.skillsCache;
+
+    await priv.refreshSkills();
+    assert.equal(priv.skillsCache, first, "an unchanged root must reuse the cached list");
+
+    await saveSkill(path.join(ws, "skills"), "beta", "d", "# two");
+    await priv.refreshSkills();
+    assert.notEqual(priv.skillsCache, first, "a new skill must force a rescan");
+    assert.deepEqual(priv.skillsCache.map((s) => s.name).sort(), ["alpha", "beta"]);
+    await agent.dispose();
   });
 });

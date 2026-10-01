@@ -21,6 +21,52 @@ import path from "node:path";
 
 export const SKILL_FILE = "SKILL.md";
 
+/**
+ * Cheap change-detector for a set of skill roots. Returns a stable string
+ * that changes whenever a root is added, removed, or modified — so callers
+ * can skip a full rescan (a readdir per root plus a read of every SKILL.md)
+ * on the overwhelmingly common "nothing changed" path.
+ *
+ * The fingerprint covers each root's own mtime/size AND the mtime/size of
+ * every SKILL.md one level down, because writing SKILL.md does not bump the
+ * parent directory's mtime. Helper scripts edited in place are covered by
+ * the SKILL.md stat only in aggregate; a rewritten SKILL.md always lands
+ * here too (saveSkill rewrites it), so bundled-file edits ride along with
+ * the next skill write rather than triggering their own rescan.
+ */
+export async function skillRootsFingerprint(
+  roots: { dir: string; source: string }[],
+): Promise<string> {
+  const parts: string[] = [];
+  for (const root of roots) {
+    parts.push(root.dir);
+    let st: { mtimeMs: number; size: number } | null = null;
+    try {
+      st = await fs.stat(root.dir);
+    } catch {
+      parts.push("-"); // root missing → no skills here (same as discoverSkills)
+      continue;
+    }
+    parts.push(`${st.mtimeMs}:${st.size}`);
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(root.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith(".")) continue;
+      try {
+        const s = await fs.stat(path.join(root.dir, e.name, SKILL_FILE));
+        parts.push(`${e.name}=${s.mtimeMs}:${s.size}`);
+      } catch {
+        parts.push(`${e.name}=none`);
+      }
+    }
+  }
+  return parts.join("|");
+}
+
 export interface SkillDef {
   name: string;
   description: string;
