@@ -447,11 +447,23 @@ export default function App() {
   // moves the queue into this.messages — so reconcile against that count
   // instead of waiting for every prompt-delivered note to arrive over WS (the
   // badge and the echo visibly disagreed during that gap).
+  //
+  // Reconcile by IDENTITY, not by count (#9). This used to be slice(0, queued)
+  // — "the newest entries were consumed" — which only holds when the model
+  // drains the queue front-to-back. Cancelling a message in the MIDDLE also
+  // lowers the count, and that heuristic then dropped a still-queued echo
+  // while keeping the withdrawn one: with [A, B] queued, cancelling A leaves
+  // the badge at 1 and slice(0,1) keeps A, discards B. Match on promptId and
+  // keep the echoes the live queue can still account for.
   createEffect(() => {
     const queued = sel()?.pendingPrompts ?? 0;
     setPendingMsgs((list) => {
       if (queued >= list.length) return list;
-      return list.slice(0, queued); // newest entries were consumed by the model
+      // echoes predating promptId tracking (or from before a reload) have no
+      // identity to match — fall back to the head-keep heuristic, which is
+      // correct for the plain drain case
+      if (!list.some((p) => p.promptId)) return list.slice(0, queued);
+      return list.filter((p) => !!p.promptId).slice(0, queued);
     });
   });
   createEffect(() => {
@@ -2337,9 +2349,13 @@ export default function App() {
             <Show when={(sel()!.pendingPrompts ?? 0) > 0}>
               <span
                 class="badge queued"
-                title={`${sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you waiting in the queue. They will be handed to the model at its next turn boundary — the timeline shows them as "pending (queued)…" until then, and each can be withdrawn with ✕ cancel while it's still queued.`}
+                title={
+                  sel()!.status === "stopped"
+                    ? `${sel()!.pendingPrompts} message${(sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you are still queued, but this agent is STOPPED — nothing will run until you press start (or it is resumed). Each can be withdrawn with ✕ cancel while it is still queued.`
+                    : `${sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you waiting in the queue. They will be handed to the model at its next turn boundary — the timeline shows them as "pending (queued)…" until then, and each can be withdrawn with ✕ cancel while it's still queued.`
+                }
               >
-                ⏳ {sel()!.pendingPrompts} of yours queued
+                ⏳ {sel()!.pendingPrompts} of yours queued{sel()!.status === "stopped" ? " (stopped)" : ""}
               </span>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>

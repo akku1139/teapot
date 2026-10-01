@@ -308,3 +308,68 @@ test("regression: cancelled prompt renders as withdrawn, not as a sent message (
   // a withdrawn message never reached the model, so forking from it is wrong
   assert.match(src, /!e\.data\?\.cancelled/);
 });
+
+test("regression: queued prompts survive stop without being delivered (#9)", async () => {
+  await useTempDirs(["stop9-root-", "stop9-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    (m as any).config.defaultProvider = "p";
+    const agent = await m.addAgent(
+      { id: "alpha", workspace: ws, provider: "p", model: "m" },
+      { fresh: true, persist: false },
+    );
+    (agent as any).opts.autoContinue = false;
+    await agent.load();
+    agent.stop("operator pressed stop");
+
+    let llmCalls = 0;
+    (agent as any).opts.chatFn = async () => {
+      llmCalls++;
+      return { message: { role: "assistant", content: "should not happen" } };
+    };
+
+    const pid = agent.enqueuePrompt("QUEUED-WORK", "user");
+    assert.ok(pid);
+    // a stopped agent must NOT drain the queue or call the model
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(agent.snapshot().status, "stopped");
+    assert.equal(agent.snapshot().pendingPrompts, 1, "the message stays queued, not lost");
+    assert.equal(llmCalls, 0, "a stopped agent must not deliver queued prompts");
+    await agent.dispose();
+  });
+});
+
+test("regression: cancelling one of two queued prompts keeps the other (#9)", async () => {
+  await useTempDirs(["stop9b-root-", "stop9b-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    (m as any).config.defaultProvider = "p";
+    const agent = await m.addAgent(
+      { id: "alpha", workspace: ws, provider: "p", model: "m" },
+      { fresh: true, persist: false },
+    );
+    (agent as any).opts.autoContinue = false;
+    await agent.load();
+    agent.stop("hold");
+
+    const a1 = agent.enqueuePrompt("FIRST", "user");
+    const a2 = agent.enqueuePrompt("SECOND", "user");
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(agent.snapshot().pendingPrompts, 2);
+
+    // cancel the FIRST of the two — the second must remain queued
+    assert.equal(agent.cancelPrompt(a1), "FIRST");
+    assert.equal(agent.snapshot().pendingPrompts, 1);
+    // cancelling an already-withdrawn id is a miss, not a double-remove
+    assert.equal(agent.cancelPrompt(a1), null);
+    assert.equal(agent.snapshot().pendingPrompts, 1, "the survivor must not be consumed by a repeat cancel");
+    assert.ok(a2);
+    await agent.dispose();
+  });
+});
+
+test("regression: pending-echo reconciliation no longer uses the head-keep heuristic (#9)", async () => {
+  const src = await readFile("frontend/App.tsx", "utf8");
+  // the buggy line dropped queued echoes when a middle message was cancelled
+  assert.doesNotMatch(src, /newest entries were consumed by the model/);
+  // and the badge must admit when a stopped agent will not deliver
+  assert.match(src, /\(stopped\)/);
+});
