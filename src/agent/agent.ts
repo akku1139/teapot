@@ -207,6 +207,14 @@ export class Agent {
   modelPricing?: { prompt: number; completion: number };
   /** messages.length right after the last successful compaction */
   private compactedAtLen = 0;
+  /**
+   * A sub-agent's latest bare text turn, held back until the round ends.
+   * Models usually end a sub-agent task with a plain message instead of calling
+   * finish(); only finish() forwards a report to the parent, so without this the
+   * parent got nothing (#42). Held (not sent immediately) so a mid-task
+   * narration never pre-empts a real finish() summary.
+   */
+  private pendingSubReport = "";
   /** live compaction phase for UI progress ("summarizing"/"harvesting") */
   private compactPhase = "";
   /** set by ask_user: the loop is parked until the operator replies */
@@ -1201,6 +1209,20 @@ export class Agent {
           });
           break;
         }
+        // A SUB-AGENT that ended its round on a bare message (no finish call)
+        // still owes the parent a report — nothing else will carry it (#42).
+        // Emitted HERE, after the loop, so a real finish() on a later turn
+        // always wins and this never pre-empts a better summary.
+        if (this.pendingSubReport) {
+          const report = this.pendingSubReport;
+          this.pendingSubReport = "";
+          if (!finished) {
+            await this.handleFinish(
+              JSON.stringify({ goalComplete: true, summary: report }),
+            );
+            finished = true; // it IS finished now — don't auto-nudge a reporter
+          }
+        }
         // auto-continue only makes sense with an active goal to continue toward
         if (
           finished ||
@@ -1434,11 +1456,64 @@ export class Agent {
       this.turnsSinceProgress++;
       this.activityChars += m.content?.length ?? 0;
 
-      if (!m.tool_calls?.length) return finished;
+      // A round that ends with a plain assistant message and NO tool calls is
+      // the end of the agent's work. For a ROOT agent that is just "done" — but
+      // for a SUB-AGENT it means the work is over and the parent is waiting.
+      //
+      // Models overwhelmingly prefer writing their report as the final message
+      // over calling finish(), and only handleFinish() emits the `final: true`
+      // event that onChildEvent() forwards to the parent. So that habit silently
+      // cost the parent the ENTIRE result (#42) — the report existed only in the
+      // child's own log, which the parent's model context never replays.
+      // Harvest it here so both paths share one code path.
+      if (!m.tool_calls?.length) {
+        // A turn with no tool calls and real text is how models overwhelmingly
+        // signal "I'm done" — far more often than by calling finish(), which
+        // the spawn directive asks for but they routinely ignore.
+        //
+        // Two things were wrong (#42):
+        //  1. only handleFinish() emits the `final: true` event that
+        //     onChildEvent() forwards to the parent, so a sub-agent that ended
+        //     with a plain message sent the parent NOTHING — the report lived
+        //     only in the child's log, which the parent's context never
+        //     replays;
+        //  2. the round then returned "not finished" with an active goal, so
+        //     auto-continue re-nudged and the child looped forever (measured:
+        //     257 consecutive turns) re-reporting the same text.
+        //
+        // A bare message might be a mid-task narration though — sub-agents
+        // often say "here's what I found so far…" and call finish() later with
+        // a better summary. So do NOT report yet: remember it and give the child
+        // ONE more turn to call finish() properly. The harness nudge makes that
+        // turn explicit, so a child that just wanted to narrate ends here (and
+        // its held report is forwarded by the loop's end-of-round path), while
+        // a child that has a real summary delivers it instead. A real finish()
+        // clears the held note, so it is forwarded exactly once (#42).
+        if (this.opts.parent) {
+          if (this.pendingSubReport) {
+            // already offered a turn after a bare message — take the held report
+            this.messages.push({
+              role: "user",
+              content:
+                "[harness] Report delivered. If this IS your final answer, call finish() now with a summary for your parent; otherwise continue the task.",
+            });
+          } else {
+            this.pendingSubReport = (m.content ?? "").trim();
+            this.messages.push({
+              role: "user",
+              content:
+                "[harness] If you are done, call finish() with a summary for your parent so it receives your report. Otherwise continue the task.",
+            });
+          }
+          continue; // one more turn before we treat the message as final
+        }
+        return finished;
+      }
 
       for (const call of m.tool_calls) {
         if (this.stopRequested) return finished;
         if (call.function.name === "finish") {
+          this.pendingSubReport = ""; // the real summary supersedes it
           await this.handleFinish(call.function.arguments);
           // surface still-running children so the operator knows work may
           // continue after this agent goes idle
@@ -1864,7 +1939,11 @@ export class Agent {
         // the raw content is what matters here, and cap hard: these can be huge
         line = `[${who}] ${(m.content ?? "").trim().slice(0, 1200)}`;
       }
-      recent.unshift(line.slice(0, 1500));
+      // A generous cap, but not unbounded: one runaway turn must not blow up
+      // the parent's context. The old 1500 char clip cut findings in half —
+      // a review's conclusions routinely live past that mark (#42) — and this
+      // text is bounded by 6 turns, so the worst case is ~120k chars.
+      recent.unshift(line.slice(0, 20_000));
     }
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",

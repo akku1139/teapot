@@ -293,3 +293,136 @@ test("messaging an unknown id explains that no such sub-agent exists (#11)", asy
     await disposeAll(m);
   });
 });
+
+/* ---------- #42: a sub-agent's final MESSAGE must reach the parent ---------- */
+
+/**
+ * Spawn a child, install a chat mock that makes it end with a plain assistant
+ * message (no `finish` tool call — which is what models overwhelmingly prefer),
+ * and return the parent's report once it lands.
+ */
+async function runChildEndingWith(
+  m: Master,
+  ws: string,
+  turns: (n: number) => { message: any },
+  timeoutMs = 45_000,
+): Promise<string> {
+  const parent = await m.addAgent({ id: "p", workspace: ws });
+  const spawn = m as unknown as {
+    spawnChildFor(a: unknown, o: unknown): Promise<{ id: string }>;
+  };
+  const child = (await spawn.spawnChildFor(parent, { task: "review things", context: "none" })).id;
+  // stop it immediately so the mock is installed before its first LLM call
+  await m.agents.get(child)!.stop("installing mock");
+
+  const cAgent = m.agents.get(child)!;
+  let n = 0;
+  (cAgent as unknown as { opts: { chatFn?: unknown; continueDelayMs?: number } }).opts.chatFn =
+    async () => {
+      n++;
+      return turns(n);
+    };
+  // the default 15s auto-continue delay would make every test wait for the
+  // nudge; these cases turn on what happens when NO further round follows
+  (cAgent as unknown as { opts: { continueDelayMs?: number } }).opts.continueDelayMs = 10;
+  await cAgent.setGoal("review");
+  cAgent.enqueuePrompt("go");
+  if (cAgent.status !== "running") cAgent.start("t");
+
+  const { readEvents } = await import("../src/log/events.ts");
+  const pAgent = m.agents.get("p")!;
+  const deadline = Date.now() + timeoutMs;
+  let report = "";
+  while (Date.now() < deadline) {
+    try {
+      const events = await readEvents(pAgent.log.filePath);
+      const found = events.find(
+        (e: any) =>
+          e.type === "prompt" && /finished\. Final report/.test(String(e.data?.text ?? "")),
+      );
+      if (found) {
+        report = String(found.data.text);
+        break;
+      }
+    } catch {
+      /* parent log may not exist yet */
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return report;
+}
+
+test("a sub-agent that ends with a plain message still reports to the parent (#42)", async () => {
+  await useTempDirs(["f42a-", "f42b-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    try {
+      const FINDINGS = "FINDINGS: src/auth.ts:42 unsalted hash; staging DSN leaks in config/default.json.";
+      const report = await runChildEndingWith(m, ws, (n) =>
+        n === 1
+          ? { message: { role: "assistant", content: FINDINGS } }
+          : { message: { role: "assistant", content: "" } },
+      );
+      assert.ok(report, "the parent MUST receive the report (#42)");
+      assert.match(report, /finished\. Final report/);
+      assert.match(report, /FINDINGS/, "the final message must reach the parent verbatim (#42)");
+    } finally {
+      await disposeAll(m);
+    }
+  });
+});
+
+test("a sub-agent's long final message is not truncated (#42)", async () => {
+  await useTempDirs(["f42c-", "f42d-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    try {
+      // the conclusion lives PAST the old 1500-char clip
+      const filler = "x".repeat(4000);
+      const tail = "THE_ACTUAL_CONCLUSION_AT_THE_END";
+      const report = await runChildEndingWith(m, ws, (n) =>
+        n === 1
+          ? { message: { role: "assistant", content: `${filler}\n${tail}` } }
+          : { message: { role: "assistant", content: "" } },
+      );
+      assert.ok(report, "parent must receive the report (#42)");
+      assert.match(
+        report,
+        /THE_ACTUAL_CONCLUSION_AT_THE_END/,
+        "the tail of a long report must survive (#42)",
+      );
+    } finally {
+      await disposeAll(m);
+    }
+  });
+});
+
+test("a root agent is unaffected by the sub-agent harvest (#42)", async () => {
+  // the fix must NOT make every root agent emit a spurious finish report
+  await useTempDirs(["f42e-", "f42f-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    try {
+      const a = await m.addAgent({ id: "solo", workspace: ws });
+      let n = 0;
+      (a as unknown as { opts: { chatFn?: unknown } }).opts.chatFn = async () => {
+        n++;
+        return { message: { role: "assistant", content: n === 1 ? "just talking" : "" } };
+      };
+      await a.setGoal("do a thing");
+      a.enqueuePrompt("hi");
+      a.start("t");
+      for (let i = 0; i < 200 && a.status === "running"; i++)
+        await new Promise((r) => setTimeout(r, 25));
+      const { readEvents } = await import("../src/log/events.ts");
+      const events = await readEvents(a.log.filePath);
+      const finals = events.filter(
+        (e: any) => e.type === "message" && e.data?.final === true,
+      );
+      assert.equal(
+        finals.length,
+        0,
+        "a root agent must not synthesize a finish report (#42)",
+      );
+    } finally {
+      await disposeAll(m);
+    }
+  });
+});
