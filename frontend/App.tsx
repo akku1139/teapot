@@ -4889,6 +4889,26 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
     })),
   );
   const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? "");
+  // the default as it exists on disk, so we can tell "configured but missing"
+  // from "you just changed it" (#21)
+  const cfgDefaultProvider = () => props.cfg.defaultProvider ?? "";
+  // A <select> whose value matches no <option> silently falls back to the
+  // first option — which is exactly the "(none — first provider wins)" row.
+  // So a configured default that has no provider row (deleted/renamed) showed
+  // as "none", i.e. as if the topmost provider were always chosen, and the
+  // next save persisted that. Render the orphaned name as its own option so
+  // the dropdown always shows the real value.
+  const providerNames = (): string[] => {
+    const names = [...new Set(providers().map((p) => p.name.trim()).filter(Boolean))];
+    const cur = defaultProvider();
+    if (cur && !names.includes(cur)) names.push(cur);
+    return names;
+  };
+  const staleDefaultProvider = (): string => {
+    const cur = defaultProvider();
+    if (!cur) return "";
+    return providers().some((p) => p.name.trim() === cur) ? "" : cur;
+  };
   const [intervalMin, setIntervalMin] = createSignal(Math.round((props.cfg.progressIntervalMs ?? 600000) / 60000));
   const [minChars, setMinChars] = createSignal(props.cfg.progressMinChars ?? 4000);
   // empty input = DERIVED budget (75% of each model's window) — the old UI
@@ -4997,11 +5017,21 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
               onchange={(e) => setDefaultProvider(e.currentTarget.value)}
             >
               <option value="">(none — first provider wins)</option>
-              <For each={[...new Set(providers().map((p) => p.name.trim()).filter(Boolean))]}>
+              <For each={providerNames()}>
                 {(n) => <option value={n}>{n}</option>}
               </For>
             </select>
           </label></div>
+          <Show when={staleDefaultProvider()}>
+            <div class="muted" style="font-size:11.5px;margin-top:4px">
+              ⚠ configured default provider <code>{staleDefaultProvider()}</code> has no provider row here
+              {staleDefaultProvider() === cfgDefaultProvider()
+                ? " — the dropdown above cannot show it."
+                : " — it was replaced by your selection."}{" "}
+              Add a provider named <code>{staleDefaultProvider()}</code> or pick a default below; otherwise agents
+              fall back to the first provider.
+            </div>
+          </Show>
         </fieldset>
 
         <fieldset>

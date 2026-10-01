@@ -373,3 +373,68 @@ test("regression: pending-echo reconciliation no longer uses the head-keep heuri
   // and the badge must admit when a stopped agent will not deliver
   assert.match(src, /\(stopped\)/);
 });
+
+/* ---------- #21: the "default provider" dropdown must show the real value ---------- */
+
+test("regression: a <select> falls back to its first option when the value matches none (#21)", async () => {
+  const { Window } = await import("happy-dom");
+  const w = new Window();
+  const d = w.document;
+  // exactly the shape App.tsx renders: a "(none — first provider wins)" row
+  // followed by one option per provider row
+  d.body.innerHTML =
+    '<select id="s"><option value="">(none — first provider wins)</option>' +
+    '<option value="aaa">aaa</option><option value="zzz">zzz</option></select>';
+  const s = d.getElementById("s") as HTMLSelectElement;
+
+  // a default that names a provider with no row (deleted/renamed) has NO
+  // matching option, so the browser shows the "none" row instead
+  s.value = "gone";
+  assert.equal(s.value, "", "unmatched value collapses to the first option");
+
+  // with the orphan rendered as its own option, the real value survives
+  const fixed = d.createElement("select");
+  for (const [v, t] of [["", "(none)"], ["aaa", "aaa"], ["zzz", "zzz"], ["gone", "gone ⚠"]] as const) {
+    const o = d.createElement("option");
+    o.value = v;
+    o.textContent = t;
+    fixed.appendChild(o);
+  }
+  d.body.appendChild(fixed);
+  const f = fixed as HTMLSelectElement;
+  f.value = "gone";
+  assert.equal(f.value, "gone", "rendering the orphan keeps the true default visible");
+});
+
+test("regression: default provider is honored and not silently dropped (#21)", async () => {
+  await useTempDirs(["dp-root-", "dp-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir);
+    m.config.providers = {
+      zzz: { baseUrl: "http://z", apiKey: "zk", model: "zm" },
+      aaa: { baseUrl: "http://a", apiKey: "ak", model: "am" },
+    } as any;
+    // deliberately NOT the first key
+    m.config.defaultProvider = "zzz";
+    m.config.llm = { baseUrl: "http://fallback", apiKey: "k", model: "fb" };
+
+    const { buildApp } = await import("../src/server/api.ts");
+    const app = buildApp(m);
+    const agent = await m.addAgent({ id: "t", workspace: ws }, { fresh: true, persist: false });
+    assert.equal(agent.opts.provider, "zzz", "defaultProvider must win over list order");
+    assert.equal(agent.opts.llm.baseUrl, "http://z");
+
+    // and the config endpoint reports it back for the panel to render
+    const res = await app.request("/api/config");
+    const cfg = await res.json();
+    assert.equal(cfg.defaultProvider, "zzz");
+    await agent.dispose();
+  });
+});
+
+test("regression: the default-provider select renders an orphaned configured default (#21)", async () => {
+  const src = await readFile("frontend/App.tsx", "utf8");
+  // the orphan must be added to the option list, and surfaced in the UI
+  assert.match(src, /providerNames/);
+  assert.match(src, /staleDefaultProvider/);
+  assert.match(src, /has no provider row here/);
+});
