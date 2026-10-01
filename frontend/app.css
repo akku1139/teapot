@@ -533,6 +533,11 @@ body:has(.termdrawer) .jump {
 .modal input[type=url], .modal input[type=email], .modal select, .modal textarea {
   background: var(--bg-darkest); border: 1px solid transparent; border-radius: 6px; padding: 7px 9px;
   color: var(--fg); font: inherit; outline: none;
+  /* A flex item defaults to min-width:auto (its min-content width), so a long
+     <option> in a <select> refuses to shrink and pushed the new-agent dialog
+     past its 620px box — which made .modal (overflow-y:auto ⇒ horizontal
+     overflow computes to auto too) scroll sideways. Matches .modelbox below. */
+  min-width: 0;
 }
 .modal input:focus, .modal select:focus, .modal textarea:focus { border-color: var(--acc); }
 .modal ::placeholder { color: #7c818f; opacity: 1; }

@@ -4199,7 +4199,7 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
         </div>
         <div style="display:flex;gap:10px">
           <label style="flex:1">agent name <input type="text" placeholder="(directory name)" value={name()} oninput={(e) => setName(e.currentTarget.value)} /></label>
-          <label>provider
+          <label style="flex:0 1 auto;min-width:0">provider
             <select value={provider()} onchange={(e) => setProvider(e.currentTarget.value)}>
               <For each={props.providers}>{(p) => <option>{p}</option>}</For>
             </select>
