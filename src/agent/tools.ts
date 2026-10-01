@@ -185,6 +185,18 @@ function shellEnv(): NodeJS.ProcessEnv {
   return { ...rest, TERM: "dumb", GIT_PAGER: "cat", PAGER: "cat" };
 }
 
+/**
+ * Human-readable elapsed-time suffix appended to a shell result so the MODEL
+ * sees how long a command actually took (#26). Only the operator saw it — the
+ * model happily re-issued commands that ran for tens of minutes.
+ *
+ * Kept terse and single-line: it rides along with the tool output, and mirrors
+ * what bash_output already prints for a still-running job.
+ */
+export function elapsed(t0: number, now = Date.now()): string {
+  return `\n[took ${((now - t0) / 1000).toFixed(1)}s]`;
+}
+
 function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   const map = bgMapFor(ctx.cwd);
   // opportunistic cleanup of long-dead jobs so the map can't grow forever
@@ -281,6 +293,7 @@ export function hasRunningBgShells(cwd: string): boolean {
 /** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {
+    const t0 = Date.now();
     // `bash -l` sources /etc/profile + ~/.bash_profile, either of which may
     // `cd` somewhere — which silently moved every later relative path out of
     // the workspace (#34). Plain `-c` starts in ctx.cwd and stays there.
@@ -326,7 +339,7 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
       ctx.signal?.removeEventListener("abort", onAbort);
       if (!done) {
         done = true;
-        resolve({ ok: false, result: `spawn error: ${err.message}` });
+        resolve({ ok: false, result: `spawn error: ${err.message}${elapsed(t0)}` });
       }
     });
     child.on("close", (code, signal) => {
@@ -337,7 +350,7 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
       if (killReason) {
         resolve({
           ok: false,
-          result: `${killReason}. Partial output:\n${clip(out.trim() || "(no output)", ctx.maxOutputBytes)}`,
+          result: `${killReason}. Partial output:\n${clip(out.trim() || "(no output)", ctx.maxOutputBytes)}${elapsed(t0)}`,
         });
         return;
       }
@@ -345,7 +358,10 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
         ok: code === 0,
         result:
           (code === 0 ? "" : `exit=${code}${signal ? ` signal=${signal}` : ""}\n`) +
-          clip(out.trim() || "(no output)", ctx.maxOutputBytes),
+          clip(out.trim() || "(no output)", ctx.maxOutputBytes) +
+          // the model, not just the operator, needs to know a command was slow —
+          // otherwise it happily re-issues something that takes 40 minutes (#26)
+          elapsed(t0),
       });
     });
   });

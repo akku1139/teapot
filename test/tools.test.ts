@@ -60,7 +60,9 @@ test("paths escaping the workspace are rejected", async () => {
 test("bash captures stdout and reports failures", async () => {
   await withCtx(async (ctx) => {
     const ok = await executeTool("bash", JSON.stringify({ command: "echo hi" }), ctx);
-    assert.equal(ok.result.trim(), "hi");
+    // stdout comes first; the trailing "[took Ns]" stamp (#26) rides along so
+    // the MODEL sees the elapsed time, not just the operator in the UI
+    assert.match(ok.result, /^hi\n\[took \d+\.\d+s\]$/);
     const fail = await executeTool("bash", JSON.stringify({ command: "exit 3" }), ctx);
     assert.equal(fail.ok, false);
     assert.match(fail.result, /exit=3/);

@@ -148,3 +148,35 @@ test("a backgrounded bash job also stays in the workspace (#34)", async () => {
   });
 });
 
+test("bash reports how long it took to the model (#26)", async () => {
+  await useTempDirs(["wsdur-root-", "wsdur-ws-"], async ([_d, ws]) => {
+    // The model, not just the operator, must see the elapsed time — otherwise
+    // it re-issues commands that silently take tens of minutes.
+    const ok = await executeTool("bash", JSON.stringify({ command: "sleep 0.3; echo hi" }), ctxIn(ws));
+    assert.ok(ok.ok, ok.result);
+    assert.match(ok.result, /\n\[took \d+\.\d+s\]$/, `success path reports elapsed: ${ok.result}`);
+
+    const fail = await executeTool("bash", JSON.stringify({ command: "exit 3" }), ctxIn(ws));
+    assert.equal(fail.ok, false);
+    assert.match(fail.result, /\n\[took \d+\.\d+s\]$/, "non-zero exit still reports elapsed");
+
+    const timeout = await executeTool(
+      "bash",
+      JSON.stringify({ command: "sleep 30", timeout_ms: 300 }),
+      ctxIn(ws),
+    );
+    assert.equal(timeout.ok, false);
+    assert.match(timeout.result, /TIMEOUT/);
+    assert.match(timeout.result, /\n\[took \d+\.\d+s\]$/, "timeout path reports elapsed too");
+  });
+});
+
+test("the elapsed stamp reports a real duration, not a frozen zero (#26)", async () => {
+  await useTempDirs(["wsdur2-root-", "wsdur2-ws-"], async ([_d, ws]) => {
+    const r = await executeTool("bash", JSON.stringify({ command: "sleep 1.2" }), ctxIn(ws));
+    assert.ok(r.ok, r.result);
+    const secs = Number(/\[took (\d+(?:\.\d+)?)s\]/.exec(r.result)?.[1]);
+    assert.ok(secs >= 1, `expected >= 1.0s for a 1.2s sleep, got ${secs}`);
+    assert.ok(secs < 30, `implausible: ${secs}s`);
+  });
+});
