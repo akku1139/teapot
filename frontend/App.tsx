@@ -1,5 +1,6 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
+import { fmtDur } from "./format";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -3402,9 +3403,9 @@ function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: n
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
-  const s = () => Math.max(0, (now() - start) / 1000);
-  const txt = () =>
-    s() < 60 ? `${s().toFixed(1)}s` : `${Math.floor(s() / 60)}m ${Math.round(s() % 60)}s`;
+  // shares fmtDur() with the finished rows so a running call and its result
+  // read identically instead of flipping between two formats (#24)
+  const txt = () => fmtDur(Math.max(0, now() - start));
   // inline: compact form for the folded summary ("running… 1m 26s")
   if (props.inline) {
     return (
@@ -3423,12 +3424,7 @@ function ThinkingTimer(props: { startedAt: number }) {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
-  const s = () => Math.max(0, (now() - props.startedAt) / 1000);
-  return (
-    <span class="thinktimer">
-      {s() < 60 ? `${s().toFixed(0)}s` : `${Math.floor(s() / 60)}m ${Math.round(s() % 60)}s`}
-    </span>
-  );
+  return <span class="thinktimer">{fmtDur(Math.max(0, now() - props.startedAt))}</span>;
 }
 
 /* ---------- per-tool timeline rendering ---------- */
@@ -3472,7 +3468,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
       <>
         {codeBlock(out(), max)}
         <div class="meta">
-          {res.data?.durationMs}ms{res.data?.ok === false ? " · FAILED" : ""}
+          {fmtDur(res.data?.durationMs)}{res.data?.ok === false ? " · FAILED" : ""}
           <CopyBtn text={out()} />
         </div>
       </>
@@ -3494,7 +3490,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
         hint = res
           ? isBg
             ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutHint}`
-            : `${res.data?.durationMs ?? "?"}ms${timeoutHint}`
+            : `${fmtDur(res.data?.durationMs)}${timeoutHint}`
           : null; // live elapsed renders in the summary (below)
         body = (
           <>
@@ -3546,7 +3542,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
             <pre class="mono toolbody add">{"+ " + truncate(argStr("new_text"), 900)}</pre>
             {res ? (
               <div class="meta">
-                {oneLine(out(), 120)} · {res.data?.durationMs}ms
+                {oneLine(out(), 120)} · {fmtDur(res.data?.durationMs)}
               </div>
             ) : (
               <div class="meta">applying…</div>
@@ -3619,7 +3615,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
         body = res ? (
           <>
             <div class="content" innerHTML={renderMarkdown(mdBody)} />
-            <div class="meta">{res.data?.durationMs}ms</div>
+            <div class="meta">{fmtDur(res.data?.durationMs)}</div>
           </>
         ) : (
           <div class="meta">loading…</div>
@@ -3633,7 +3629,7 @@ function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () 
         body = (
           <>
             {files.length ? <div class="meta">bundled: {files.join(", ")}</div> : null}
-            {res ? <div class="meta">{oneLine(out(), 160)} · {res.data?.durationMs}ms</div> : <div class="meta">saving…</div>}
+            {res ? <div class="meta">{oneLine(out(), 160)} · {fmtDur(res.data?.durationMs)}</div> : <div class="meta">saving…</div>}
           </>
         );
         break;
@@ -3925,7 +3921,7 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
             <CopyBtn text={out} />
           </summary>
           <div class="mono">{truncate(out, 4000)}</div>
-          <div class="meta">{e.data.durationMs}ms{e.data.ok ? "" : " · FAILED"}</div>
+          <div class="meta">{fmtDur(e.data.durationMs)}{e.data.ok ? "" : " · FAILED"}</div>
         </details>
       );
     }
