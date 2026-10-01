@@ -5146,21 +5146,25 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
                   btn.textContent = "updating…";
                   const res = await api("/api/update/restart", { method: "POST" });
                   if (!res.ok) throw new Error((await res.json()).error ?? "restart failed");
-                  // Success — the server will restart. Wait for new version then reload.
+                  // Success — the server will restart. Wait until the NEW
+                  // server actually answers, then reload. Comparing versions
+                  // alone was not enough: during the handover the old process
+                  // is still serving /api/version, so a reload fired too early
+                  // landed on a port nobody was listening on (#35).
                   btn.textContent = "restarting…";
-                  // Poll for new version
-                  for (let i = 0; i < 60; i++) {
+                  let reloaded = false;
+                  for (let i = 0; i < 90 && !reloaded; i++) {
                     await new Promise((r) => setTimeout(r, 1000));
                     try {
                       const v = await api("/api/version");
                       if (v.version && v.version !== __APP_VERSION__) {
-                        // New version is up — reload the page
+                        // New version is serving AND it answered — safe to reload
+                        reloaded = true;
                         window.location.reload();
-                        return;
                       }
                     } catch {}
                   }
-                  throw new Error("restart timeout — new server did not come up");
+                  if (!reloaded) throw new Error("restart timeout — new server did not come up");
                 } catch (ex) {
                   setErr((ex as Error).message);
                 } finally {

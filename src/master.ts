@@ -1345,16 +1345,26 @@ if (active().length === 0) wake();
     const env = { ...process.env };
     // Tell the new process it's a restart (it will read the version from the old one)
     env.TEAPOT_RESTART_FROM = String(process.pid);
+    // Mark OURSELVES as a live-update predecessor too. Our own SIGTERM handler
+    // (src/index.ts) lingers when this var is set, so /api/update/restart's
+    // response still reaches the browser before we exit — otherwise the new
+    // process SIGTERMs us the instant it binds the port and the browser sees a
+    // dropped connection instead of {ok:true} (#35).
+    process.env.TEAPOT_RESTART_FROM = String(process.pid);
 
     const child = spawn(execPath, args, {
-      detached: true,
-      stdio: "ignore",
+      // NOT detached, and NOT stdio:"ignore" (#35). Both made the live update
+      // silently daemonize: the replacement inherited nothing from this
+      // process, so its console.log output vanished — you could not see what it
+      // was doing — and it outlived the terminal, so Ctrl-C and a closing
+      // shell could no longer stop it. Inheriting stdio keeps the logs on the
+      // same console and, without `detached`, the child stays in this process
+      // group so it receives the same Ctrl-C.
+      stdio: "inherit",
       env,
     });
-    child.unref(); // Let the parent exit when ready
 
-    // Give the new process time to start and bind the port
-    // This process will exit when the new one takes over (SIGTERM handled in index.ts)
-    await new Promise((r) => setTimeout(r, 1_000));
+    await new Promise((r) => setTimeout(r, 1_500));
+    void child; // deliberately not unref()'d — see above
   }
 }
