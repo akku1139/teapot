@@ -101,6 +101,30 @@ test("the close header only shows on a narrow screen (#50)", () => {
   );
 });
 
+test("the ✕ row and the panel are stacked, never overlapped (#50)", () => {
+  const narrow = narrowBlock();
+  // THE regression this guards: a literal height in one rule and a literal
+  // offset in another. They are separate numbers, so resizing the row (or a
+  // font/zoom change altering its height) silently slides the panel's first
+  // row under the ✕ bar — or opens a gap above it.
+  assert.match(
+    narrow,
+    /\.rightbarhead\s*\{[^}]*--rightbarhead-h:/,
+    "the header must declare its own height (#50)",
+  );
+  assert.match(
+    narrow,
+    /\.rightbar\s*\{[^}]*top:\s*var\(--rightbarhead-h/,
+    "the panel must be offset by the header's height, not a second literal (#50)",
+  );
+  // and the header must actually be the height it declares
+  assert.match(
+    narrow,
+    /\.rightbarhead\s*\{[^}]*height:\s*var\(--rightbarhead-h\)/,
+    "a declared height nobody applies would leave the two boxes misaligned (#50)",
+  );
+});
+
 /* ---------- 2: click outside dismisses the drawer ---------- */
 
 test("a click outside the drawer closes it (#50)", () => {

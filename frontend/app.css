@@ -83,16 +83,24 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
   .rightbarbackdrop { display: block; }
   /* The drawer is two stacked fixed boxes: this header row on top, then the
      scrolling panel. Both are transformed together, or the ✕ would drift away
-     from the panel it closes. */
+     from the panel it closes.
+     The height is DECLARED here (--rightbarhead-h) and the panel reads it, so
+     the two boxes can never disagree. Deriving it instead — 24px .iconbtn +
+     10px padding top/bottom + 1px border = 45px — left a magic number in a
+     second rule, where changing the padding silently overlapped the panel's
+     first row. */
   .rightbarhead {
+    --rightbarhead-h: 45px;
     display: flex; position: fixed; top: 0; right: 0; z-index: 6;
+    height: var(--rightbarhead-h); box-sizing: border-box;
     width: min(420px, 92vw); padding: 10px 14px;
     background: var(--bg-dark); border-left: 2px solid var(--line); border-bottom: 1px solid var(--line);
     transform: translateX(100%); transition: transform .18s ease;
   }
   .rightbarhead.open { transform: none; }
   .rightbar {
-    position: fixed; top: 41px; right: 0; bottom: 0; width: min(420px, 92vw); z-index: 5;
+    position: fixed; top: var(--rightbarhead-h, 45px); right: 0; bottom: 0;
+    width: min(420px, 92vw); z-index: 5;
     transform: translateX(100%); transition: transform .18s ease; box-shadow: -8px 0 24px #0007;
   }
   .rightbar.open { transform: none; }
@@ -444,16 +452,16 @@ body:has(.termdrawer) .jump {
 .hint { color: var(--dim); font-size: 11px; margin-top: 5px; }
 
 /* ---- right bar ---- */
-/* Drawer-only close row (#50). It is a SIBLING of .rightbar, not a child, so
-   the panel's own overflow-y never scrolls the ✕ away. Hidden on wide screens
-   (the ▤ toggle sits in the channel header there); shown by the narrow media
-   query, where the drawer covers that toggle. */
 /* Drawer-only click-outside layer (#50), same trick as .notifbackdrop.
    `display:none` outside narrow mode: a full-screen click-catcher around a
    static column would swallow every click in the app. z-index 4 sits BELOW
    .rightbar (5) and .rightbarhead (6), so the drawer's own controls still
    get their clicks. */
 .rightbarbackdrop { display: none; position: fixed; inset: 0; z-index: 4; background: #0004; }
+/* Drawer-only close row (#50). It is a SIBLING of .rightbar, not a child, so
+   the panel's own overflow-y never scrolls the ✕ away. Hidden on wide screens
+   (the ▤ toggle sits in the channel header there); shown by the narrow media
+   query, where the drawer covers that toggle. */
 .rightbarhead { display: none; align-items: center; justify-content: space-between; gap: 8px; }
 .rightbarhead .muted { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .rightbar { background: var(--bg-dark); border-left: 2px solid var(--line); overflow-y: auto; padding: 14px; font-size: 13px; display: flex; flex-direction: column; min-height: 0; scrollbar-gutter: stable; }
