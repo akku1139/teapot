@@ -783,11 +783,143 @@ async function rollbackWrites(
   }
 }
 
+/* ---------- hashline: stable, verifiable line anchors (#7 / #4) ----------
+ *
+ * The default `N| ` gutter is a trap: read_file prints it, but edit_file's
+ * old_text must NOT contain it — so the model strips the gutter by hand on
+ * every read, and the only mitigation is a sentence in the tool description.
+ *
+ * Format follows the established "hashline" convention used across AI coding
+ * harnesses (quangdang46/hashline, kebbbnnn/hashline, opencode-hashline,
+ * pi-hashline-edit-pro, …) so anchors read the same everywhere:
+ *
+ *     12:a3f1| function calculateTotal(items) {
+ *
+ * i.e. `LINE:HASH| content` — the line number is KEPT (humans and models both
+ * navigate by line) and the content hash is ADDED as an integrity anchor.
+ *
+ * Design points taken from those implementations rather than invented:
+ *  - the hash covers the STRIPPED content, so re-indenting a line does not
+ *    invalidate its anchor;
+ *  - blank/whitespace-only lines get a fixed reserved hash;
+ *  - when a hash occurs more than once, the anchor's line number disambiguates
+ *    via PROXIMITY search, instead of silently taking the first match.
+ */
+
+const HASH_BLANK = "    "; // 4 spaces: reserved, cannot collide with a hex hash
+// A real hash is 4 HEX chars, but the shape also accepts other 4-8 char
+// alphanumerics: a model that mistypes or invents an anchor is common enough
+// that we should still recognise the SHAPE and say "that anchor is malformed"
+// rather than falling through to "no similar text found" (#7).
+const ANCHOR_RE = /^\s*(\d+):([0-9a-z]{4,8}| {4})\|/;
+
+/** 4-char content hash (FNV-1a 32-bit → hex), of the STRIPPED line */
+export function hashLine(content: string): string {
+  const stripped = content.trim();
+  if (!stripped) return HASH_BLANK;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < stripped.length; i++) {
+    h ^= stripped.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return (h >>> 0).toString(16).padStart(8, "0").slice(-4);
+}
+
+/** `LINE:HASH| content` for each line, 1-indexed */
+export function renderHashlines(lines: string[], startLine = 1): string {
+  return lines
+    .map((l, i) => `${startLine + i}:${hashLine(l)}| ${l}`)
+    .join("\n");
+}
+
+/** parse a `LINE:HASH` anchor; returns null when the text is not an anchor */
+export function parseAnchor(anchor: string): { line: number; hash: string } | null {
+  const m = /^\s*(\d+):([0-9a-z]{4,8}| {4})\s*$/.exec(anchor);
+  if (!m) return null;
+  return { line: Number(m[1]), hash: m[2] };
+}
+
+/**
+ * Locate the line an anchor refers to.
+ *
+ * The hash is authoritative; the line number only disambiguates when the same
+ * content appears twice (proximity search). Falling back to "nearest line" for
+ * an unknown hash is deliberately NOT done — that would silently edit the wrong
+ * line, which is the entire failure mode hashline exists to prevent.
+ */
+export function resolveAnchor(
+  lines: string[],
+  anchor: { line: number; hash: string },
+): { index: number; how: string } | { error: string } {
+  const hits: number[] = [];
+  for (let i = 0; i < lines.length; i++) if (hashLine(lines[i]!) === anchor.hash) hits.push(i);
+  if (!hits.length)
+    return {
+      error: /^[0-9a-f]{4}$/.test(anchor.hash) || anchor.hash === HASH_BLANK
+        ? `no line matches hash ${anchor.hash} — the file changed since you read it (re-read it)`
+        : // distinguish "you invented/mistyped this anchor" from "the file moved",
+          // which sends the agent to fix the right thing (#7)
+          `hash ${JSON.stringify(anchor.hash)} is not a valid anchor (expected 4 hex chars) — re-read the file and copy the anchor verbatim`,
+    };
+  if (hits.length === 1) return { index: hits[0]!, how: "unique" };
+  const target = anchor.line - 1;
+  const best = hits.reduce((a, b) => (Math.abs(b - target) < Math.abs(a - target) ? b : a));
+  return { index: best, how: `ambiguous, resolved by proximity to line ${anchor.line}` };
+}
+
+/** Is this whole block a hashline block (every line carries an anchor)? */
+export function isHashlineBlock(block: string): boolean {
+  const rows = block.split("\n").filter((l) => l !== "");
+  if (!rows.length) return false;
+  return rows.every((l) => ANCHOR_RE.test(l));
+}
+
+/**
+ * Turn a copied hashline block back into file content.
+ *
+ * The anchors are verified against the CURRENT file, so a stale read is
+ * refused instead of editing the wrong bytes — the whole point of the format.
+ */
+export function resolveHashlineBlock(
+  block: string,
+  lines: string[],
+): { text: string; indices: number[]; notes: string[] } | { error: string } {
+  const rows = block.split("\n").filter((l) => l !== "");
+  const picked: number[] = [];
+  const content: string[] = [];
+  const notes: string[] = [];
+  const used = new Set<number>();
+  for (const row of rows) {
+    const a = parseAnchor(row.slice(0, row.indexOf("|")));
+    if (!a) return { error: `not a valid hashline anchor: ${row.slice(0, 12)}…` };
+    const r = resolveAnchor(lines, a);
+    if ("error" in r) return { error: r.error };
+    if (used.has(r.index))
+      return { error: `anchor ${a.line}:${a.hash} resolves to a line already used in this block` };
+    used.add(r.index);
+    picked.push(r.index);
+    content.push(lines[r.index]!);
+    if (r.how !== "unique") notes.push(r.how);
+  }
+  if (!picked.length) return { error: "empty hashline block" };
+  return { text: content.join("\n"), indices: picked, notes };
+}
+
+/** normalize the read_file line-reference argument */
+export function lineIdMode(args: Record<string, unknown>): "none" | "hash" {
+  const v = args.line_ids ?? args.hashline;
+  if (v === true) return "hash";
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "hash" || s === "hashline" || s === "true" ? "hash" : "none";
+}
+
 export const TOOLS: ToolDef[] = [
   {
     name: "read_file",
     description:
       "Read a text file from the workspace. Returns numbered lines (`N| ` prefixes are display-only — never copy them into edit_file). " +
+      "With `line_ids:\"hash\"` it instead returns `LINE:HASH| content` anchors (the hashline format used by other coding harnesses), " +
+      "which edit_file accepts VERBATIM and re-verifies against the file — so prefer it when you intend to edit what you just read. " +
       "With `pattern`, acts like grep: only matching lines (JS regex, optional `ignore_case`) plus `context` surrounding lines are returned. " +
       "A negative `offset` counts from the end (-30 → last 30 lines, or last 30 matches in pattern mode).",
     parameters: {
@@ -799,6 +931,14 @@ export const TOOLS: ToolDef[] = [
         pattern: { type: "string", description: "JS regex — return only matching lines (+context) instead of the whole file" },
         context: { type: "number", description: "context lines around each pattern match (max 5)" },
         ignore_case: { type: "boolean", description: "case-insensitive pattern matching" },
+        line_ids: {
+          type: "string",
+          enum: ["none", "hash"],
+          description:
+            "'hash' → `LINE:HASH| content` anchors that you can hand to edit_file VERBATIM; " +
+            "the hash is verified against the file, so a stale read is refused instead of editing the wrong lines. " +
+            "'none' (default) → `N| ` gutters, which are display-only and must be stripped by hand.",
+        },
       },
       required: ["path"],
     },
@@ -807,6 +947,9 @@ export const TOOLS: ToolDef[] = [
       const text = await readText(p);
       ctx.onFileRead?.(str(args.path));
       const lines = text.split("\n");
+      // #7/#4: opt-in hashline output. Default stays the historical `N| ` so
+      // nothing that depends on it changes until the mode is chosen.
+      const idMode = lineIdMode(args as Record<string, unknown>);
 
       // grep mode
       if (typeof args.pattern === "string" && args.pattern !== "") {
@@ -831,7 +974,9 @@ export const TOOLS: ToolDef[] = [
           else regions.push([s, e]);
         }
         const parts = regions.map(([s, e]) =>
-          lines.slice(s, e + 1).map((l, k) => `${s + k + 1}| ${l}`).join("\n"),
+          idMode === "hash"
+            ? renderHashlines(lines.slice(s, e + 1), s + 1)
+            : lines.slice(s, e + 1).map((l, k) => `${s + k + 1}| ${l}`).join("\n"),
         );
         let result = parts.join("\n--\n");
         if (idxs.length > page.length || off > 0)
@@ -843,9 +988,11 @@ export const TOOLS: ToolDef[] = [
       let off = num(args.offset, 1);
       off = off < 0 ? Math.max(0, lines.length + off) : Math.max(0, off - 1);
       const lim = num(args.limit, 2000);
-      const slice = lines.slice(off, off + lim).map((l, i) => `${off + i + 1}| ${l}`);
+      const pageLines = lines.slice(off, off + lim);
+      const slice =
+        idMode === "hash" ? renderHashlines(pageLines, off + 1) : pageLines.map((l, i) => `${off + i + 1}| ${l}`).join("\n");
       const more = off + lim < lines.length ? `\n... (${lines.length - off - lim} more lines)` : "";
-      return { ok: true, result: slice.join("\n") + more };
+      return { ok: true, result: slice + more };
     },
   },
   {
@@ -895,6 +1042,8 @@ export const TOOLS: ToolDef[] = [
       "Make exactly ONE small, unique replacement in one existing file — the cheapest tool for a single spot change. " +
       "Copy old_text from the file contents (NOT from read_file's `N| ` prefixed display); it must appear exactly once — " +
       "if it matches several places, add surrounding lines or pass replace_all=true. " +
+      "Or read with read_file(line_ids:\"hash\") and pass that block VERBATIM — `LINE:HASH| ` anchors are verified against the " +
+      "current file, and a block whose anchors no longer match is refused as a stale read instead of editing the wrong lines. " +
       "Two or more changes (or a rename/delete) → use apply_patch instead. " +
       "Pass base_content (the bytes you read) whenever the file may have changed under you — especially with replace_all, which otherwise rewrites occurrences that appeared after you read.",
     parameters: {
@@ -917,13 +1066,35 @@ export const TOOLS: ToolDef[] = [
       let text = await readText(p);
       const stale = staleGuard(str(args.path), args.base_content, text);
       if (stale) return stale;
-      const oldText = str(args.old_text);
+      let oldText = str(args.old_text);
       const newText = str(args.new_text);
       if (!oldText) return { ok: false, result: "old_text is required" };
       const replaceAll = args.replace_all === true;
-      let count = text.split(oldText).length - 1;
+      // #7/#4: accept a block copied straight out of read_file's hashline
+      // output. When the anchors do not verify we FAIL with the specific reason
+      // rather than silently falling back to literal matching — a literal match
+      // that happened to succeed would edit the wrong bytes, which is the exact
+      // failure mode hashline exists to prevent.
+      //
+      // On success we edit by RESOLVED LINE INDEX rather than by searching for
+      // the text: the anchors already pinpointed the lines, so a block whose
+      // content legitimately appears twice (the case proximity search exists
+      // for) must not then fail the uniqueness check on the resolved text.
+      let hashNote = "";
+      let hashNotes: string[] = [];
+      let hashSpan: { start: number; end: number } | null = null;
+      if (isHashlineBlock(oldText)) {
+        const srcLines = text.replace(/\r\n/g, "\n").split("\n");
+        const r = resolveHashlineBlock(oldText, srcLines);
+        if ("error" in r) hashNote = r.error;
+        else {
+          oldText = r.text;
+          hashNotes = r.notes;
+          hashSpan = { start: r.indices[0]!, end: r.indices[r.indices.length - 1]! + 1 };
+        }
+      }
+      let count = hashNote ? 0 : text.split(oldText).length - 1;
       let normalized = false;
-      // tolerate LF patterns against CRLF files (convert once, on success)
       if (count === 0 && oldText.includes("\n") && text.includes("\r\n")) {
         const lf = text.replace(/\r\n/g, "\n");
         const lfCount = lf.split(oldText).length - 1;
@@ -969,25 +1140,46 @@ export const TOOLS: ToolDef[] = [
           : `No similar text found — re-read ${str(args.path)} around the target area and copy old_text exactly.`;
         return {
           ok: false,
-          result: `old_text not found in file. ${hint} Watch indentation/trailing spaces and drop the \`N| \` line-number prefixes.`,
+          // a hashline block that did not resolve gets ITS reason — the generic
+          // "not found" would send the model hunting for a whitespace problem
+          // when the real issue is a stale read (#7)
+          result: hashNote
+            ? `old_text is a hashline block but did not resolve: ${hashNote}.`
+            : `old_text not found in file. ${hint} Watch indentation/trailing spaces and drop the \`N| \` line-number prefixes.`,
         };
       }
-      if (count > 1 && !replaceAll) {
+      if (count > 1 && !replaceAll && !hashSpan) {
         const at = matchLines(text, oldText);
         return {
           ok: false,
           result: `old_text matched ${count} times (lines ${at.slice(0, 5).join(", ")}) and must be unique — add surrounding lines to old_text, or pass replace_all=true`,
         };
       }
-      await fs.writeFile(
-        p,
-        replaceAll ? text.split(oldText).join(newText) : text.replace(oldText, newText),
-        "utf8",
-      );
-      const where = count > 1 ? ` (${count} occurrences)` : "";
+      // A verified hashline block is addressed BY LINE INDEX: the anchors
+      // already proved which lines it means, so a block whose content occurs
+      // twice must still edit the anchored occurrence rather than fail the
+      // uniqueness check (#4).
+      const out = hashSpan
+        ? text
+            .split("\n")
+            .slice(0, hashSpan.start)
+            .concat(newText.split("\n"), text.split("\n").slice(hashSpan.end))
+            .join("\n")
+        : replaceAll
+          ? text.split(oldText).join(newText)
+          : text.replace(oldText, newText);
+      await fs.writeFile(p, out, "utf8");
+      const where = hashSpan
+        ? ` (lines ${hashSpan.start + 1}–${hashSpan.end}, verified by hash anchor)`
+        : count > 1
+          ? ` (${count} occurrences)`
+          : "";
       return {
         ok: true,
-        result: `${replaceAll ? "replaced all" : "edited"}${where}${normalized ? " (file converted CRLF→LF)" : ""}`,
+        result:
+          `${replaceAll && !hashSpan ? "replaced all" : "edited"}${where}` +
+          `${hashNotes.length ? ` (${hashNotes[0]})` : ""}` +
+          `${normalized ? " (file converted CRLF→LF)" : ""}`,
       };
     },
   },
