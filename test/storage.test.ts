@@ -92,6 +92,52 @@ test("system prompt stays byte-identical across turns even if AGENTS.md appears"
   });
 });
 
+test("AGENTS.md is embedded in the prompt and never ALSO told to be read (#13)", async () => {
+  const seen: string[] = [];
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    seen.push(String(messages[0]?.content ?? ""));
+    return n++ === 0 ? reply("go") : reply("done", [tc("f", "finish", { goalComplete: true })]);
+  };
+  await useTempDirs(["ag-ws-", "ag-sess-"], async ([ws, sess]) => {
+    await writeFile(path.join(ws, "AGENTS.md"), "# Conventions\nCONVENTION_MARKER keep tests fast\n");
+    const { agent } = await mkAgent(ws, sess, { chatFn: chat, autoContinue: false });
+    agent.enqueuePrompt("go");
+    agent.start("t");
+    await agent.settled();
+
+    const sys = seen[0];
+    assert.ok(sys, "a system prompt was sent");
+    // (a) the file's content really is embedded…
+    assert.match(sys, /CONVENTION_MARKER/);
+    // (b) …so the prompt must NOT also tell the agent to go read it. The
+    // old wording ("read it with read_file at session start") made every
+    // session re-read a file it already had verbatim in its context.
+    assert.doesNotMatch(sys, /read it with read_file/);
+    assert.doesNotMatch(sys, /AGENTS\.md[^\n]*read[^\n]*read_file/i);
+    assert.doesNotMatch(sys, /read_file[^\n]*AGENTS\.md/i);
+    await agent.dispose();
+  });
+});
+
+test("system prompt no longer claims session state is never injected (#13)", async () => {
+  await useTempDirs(["ag2-ws-", "ag2-sess-"], async ([ws, sess]) => {
+    // no AGENTS.md here — the blanket claim was wrong either way, and it
+    // contradicted the embedding that happens whenever one IS present.
+    const { agent } = await mkAgent(ws, sess, {
+      chatFn: mkMock(() => reply("ok")),
+      autoContinue: false,
+    });
+    agent.enqueuePrompt("go");
+    agent.start("t");
+    await agent.settled();
+    const sys = String((agent as unknown as { buildMessages(): { content?: unknown }[] }).buildMessages()[0].content ?? "");
+    assert.match(sys, /AGENTS\.md/);
+    assert.doesNotMatch(sys, /Session state is not injected into prompts/);
+    await agent.dispose();
+  });
+});
+
 /* ---------- on-demand state tools ---------- */
 
 test("get_goal / read_memory return harness-managed state on demand", async () => {
