@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 
@@ -22,9 +23,18 @@ test("stopAllAgents: gracefully stops all running agents", async () => {
   });
 });
 
-test("getVersion: returns the bundled version string", async () => {
-  // the version is injected at build time (or stays as the literal sentinel
-  // in dev). The endpoint must always return a string the client can compare.
+test("getVersion: returns the real version from package.json (#33)", async () => {
+  // regression #33: the settings panel rendered the literal
+  // "current version: __APP_VERSION__". `__APP_VERSION__` is substituted by
+  // *vite* only, so the tsc-built backend shipped the raw placeholder. The
+  // version must now be read from package.json at runtime, in every context
+  // (built app, `pnpm dev`, node --test — none of which necessarily run vite).
+  const expected = (
+    JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+      version: string;
+    }
+  ).version;
+  assert.equal(Master.VERSION, expected, "matches package.json");
   await useTempDirs(["ver-root-", "ver-ws-"], async ([dataDir, ws]) => {
     const m = new Master(
       { port: 0, dataDir, llm: { baseUrl: "http://x", apiKey: "k", model: "m" },
@@ -34,5 +44,7 @@ test("getVersion: returns the bundled version string", async () => {
     const v = m.getVersion();
     assert.equal(typeof v, "string");
     assert.ok(v.length > 0, "version string is non-empty");
+    assert.notEqual(v, "__APP_VERSION__", "the vite placeholder never leaks (#33)");
+    assert.match(v, /^\d+\.\d+\.\d+/, "looks like a semver, not a placeholder");
   });
 });

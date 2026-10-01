@@ -112,11 +112,15 @@ test("live-update: /api/version and /api/update/restart endpoints exist", async 
     const vj = (await v.json()) as { version: string };
     assert.equal(typeof vj.version, "string");
     assert.ok(vj.version.length > 0);
+    // #33: the settings panel prints this verbatim ("current version: …"), so
+    // the unsubstituted vite placeholder must never reach the client.
+    assert.notEqual(vj.version, "__APP_VERSION__", "no raw placeholder leaks (#33)");
 
     // sanity: config endpoint also includes the version (UI displays it)
     const cfg = await app.request("/api/config");
     const cj = (await cfg.json()) as { version: string };
     assert.equal(cj.version, vj.version);
+    assert.notEqual(cj.version, "__APP_VERSION__", "config payload too (#33)");
   });
 });
 

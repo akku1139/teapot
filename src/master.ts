@@ -29,6 +29,33 @@ const BUNDLED_SKILLS_DIR = path.resolve(
   "../skills",
 );
 
+/**
+ * Application version, read from package.json next to this module.
+ *
+ * Walks up from `dist/master.js` / `src/master.ts` to the package root so it
+ * resolves in every layout (repo checkout, global install, npx cache). Falls
+ * back to `"0.0.0"` rather than throwing: a missing/unreadable package.json
+ * must never stop the server from booting.
+ */
+function readAppVersion(): string {
+  try {
+    let dir = path.dirname(fileURLToPath(import.meta.url));
+    for (let i = 0; i < 6; i++) {
+      const pkg = path.join(dir, "package.json");
+      if (existsSync(pkg)) {
+        const v = (JSON.parse(readFileSync(pkg, "utf8")) as { version?: string }).version;
+        if (typeof v === "string" && v) return v;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    /* fall through to the sentinel below */
+  }
+  return "0.0.0";
+}
+
 /** default sub-agent personas — mentionable from the composer (@name) and
  *  usable by agents via spawn_agent({persona}) */
 export const SUB_PERSONAS: Record<
@@ -1248,8 +1275,16 @@ if (active().length === 0) wake();
     };
   }
 
-  /** Current application version (injected at build time via package.json). */
-  static readonly VERSION = "__APP_VERSION__";
+  /**
+   * Current application version.
+   *
+   * Read from package.json at runtime rather than via a `"__APP_VERSION__"`
+   * literal: `__APP_VERSION__` is substituted by *vite* only, so the tsc-built
+   * backend used to ship the raw placeholder and the settings panel rendered
+   * "current version: __APP_VERSION__" (#33). A runtime read is correct in the
+   * built app, in `pnpm dev` and under `node --test`, which never run vite.
+   */
+  static readonly VERSION = readAppVersion();
 
   /** Return the current server version. */
   getVersion(): string {
