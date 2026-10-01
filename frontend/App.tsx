@@ -2884,6 +2884,17 @@ export default function App() {
           costs a wide-screen user nothing. Narrow, the panel is a fixed drawer
           covering up to 92vw of the screen; it covers the ▤ button that opened
           it, leaving NO visible way back out. This is that way out. */}
+      {/* Click-outside dismiss for the drawer (#50). Mirrors .notifbackdrop:
+          an invisible full-screen layer UNDER the panel but OVER everything
+          else, so a click anywhere on the content closes the drawer — the same
+          gesture users already know from the notification popover.
+          Rendered only in narrow mode: on a wide screen the panel is a static
+          column and a full-screen click-catcher would swallow every click in
+          the app. Gated on showRight() too, so a closed drawer — which is still
+          in the DOM, translated off-screen — never blocks the UI. */}
+      <Show when={isNarrow() && showRight()}>
+        <div class="rightbarbackdrop" onclick={() => setRight(false)} />
+      </Show>
       <div class={"rightbarhead" + (showRight() ? " open" : "")}>
         <span class="muted">details</span>
         <IconBtn icon="✕" title="close details panel (esc)" onClick={closeRight} />

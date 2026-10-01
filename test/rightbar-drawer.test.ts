@@ -108,23 +108,45 @@ test("a click outside the drawer closes it (#50)", () => {
     /class="rightbarbackdrop"/.test(app),
     "a click-outside layer is needed — the drawer covers the ▤ toggle (#50)",
   );
+  // setRight, not a bare setShowRight: dismissing the drawer must also drop the
+  // persisted "panel open" flag, or the next load re-opens the sheet that was
+  // just dismissed — the same trap the ✕ and Escape paths avoid.
   assert.ok(
-    /class="rightbarbackdrop"[\s\S]{0,200}?onclick=\{\(\) => setShowRight\(false\)\}/.test(app),
+    /class="rightbarbackdrop"[^>]*onclick=\{\(\) => setRight\(false\)\}/.test(app),
     "the backdrop must close the panel",
+  );
+  assert.ok(
+    /<Show when=\{isNarrow\(\) && showRight\(\)\}>/.test(app),
+    "the backdrop must not exist while the drawer is closed — the drawer stays in the DOM " +
+      "translated off-screen, and a full-screen layer would block the whole UI (#50)",
   );
 });
 
 test("the backdrop sits under the drawer and over the content (#50)", () => {
-  const narrow = narrowBlock();
   assert.match(
-    narrow,
-    /\.rightbarbackdrop[^}]*z-index:\s*4/,
+    ruleBody(".rightbarbackdrop"),
+    /z-index:\s*4/,
     "below .rightbar's z-index:5, otherwise it swallows the drawer's own clicks",
   );
   assert.match(
-    ruleBody(".rightbar"),
-    /z-index:\s*5/,
+    narrowBlock(),
+    /\.rightbar\s*\{[^}]*z-index:\s*5/,
     "the drawer must stay above its own backdrop (#50)",
+  );
+  assert.match(
+    narrowBlock(),
+    /\.rightbarhead\s*\{[^}]*z-index:\s*6/,
+    "the ✕ row sits above both, so it stays clickable (#50)",
+  );
+  assert.match(
+    ruleBody(".rightbarbackdrop"),
+    /display:\s*none/,
+    "a click-catcher around a static column would swallow every click in the app",
+  );
+  assert.match(
+    narrowBlock(),
+    /\.rightbarbackdrop\s*\{\s*display:\s*block/,
+    "…so the narrow media query is what turns it on (#50)",
   );
 });
 
@@ -154,11 +176,14 @@ test("Escape closes the drawer before it can stop a running agent (#50)", () => 
 /* ---------- 4: wide screens are untouched ---------- */
 
 test("the backdrop is not rendered on a wide screen (#50)", () => {
-  // match on a BOOLEAN assertion, not assert.match(app, …): a failed regex
-  // against the whole 250KB component dumps the entire file into the report.
+  // the Show gate is asserted above; this pins the PREDICATE itself, which the
+  // CSS media query and the JS must agree on
   assert.ok(
-    /<Show when=\{isNarrow\(\)\}>/.test(app),
-    "the backdrop is a drawer-only affordance (#50)",
+    /const isNarrow = \(\) => window\.innerWidth <= NARROW_PX;/.test(app),
+    "narrow mode needs one predicate shared by every drawer-only branch (#50)",
   );
-  assert.ok(/isNarrow/.test(app), "narrow mode needs a single shared predicate");
+  assert.ok(
+    /const NARROW_PX = 1100;/.test(app),
+    "NARROW_PX must match the `@media (max-width: 1100px)` breakpoint in app.css (#50)",
+  );
 });
