@@ -102,32 +102,69 @@ export function parseSkillMd(text: string): ParsedSkill {
 }
 
 /** Root dirs in priority order: [0] overrides later ones on name clash. */
+/**
+ * How deep to look for nested skills (#27).
+ *
+ * Bounded because a skill directory also holds BUNDLED FILES (helper scripts)
+ * and arbitrary payload, so an unbounded walk is not safe. Depth is not the
+ * thing that makes a directory a skill, though — holding a SKILL.md is — so the
+ * bound only limits how far we look, never what counts.
+ */
+const MAX_SKILL_DEPTH = 4;
+
+/** Root dirs in priority order: [0] overrides later ones on name clash. */
 export async function discoverSkills(roots: { dir: string; source: string }[]): Promise<SkillDef[]> {
   const byName = new Map<string, SkillDef>();
+  // name -> depth, so a SHALLOWER skill wins over a nested namesake rather than
+  // a deep one silently shadowing the obvious skill (#27)
+  const depthByName = new Map<string, number>();
   for (const root of roots) {
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await fs.readdir(root.dir, { withFileTypes: true });
-    } catch {
-      continue; // root missing → simply no skills there
-    }
-    for (const e of entries) {
-      if (!e.isDirectory() || e.name.startsWith(".")) continue;
-      const filePath = path.join(root.dir, e.name, SKILL_FILE);
-      let text: string;
-      try {
-        text = await fs.readFile(filePath, "utf8");
-      } catch {
-        continue; // directory without SKILL.md is not a skill
-      }
-      const parsed = parseSkillMd(text);
-      const name = parsed.meta.name || e.name;
-      if (byName.has(name)) continue; // higher-priority root already defined it
-      // collect bundled files (helper scripts, templates, ...) next to SKILL.md
+    await walkSkills(root.dir, root.source, 0, byName, depthByName);
+  }
+  return [...byName.values()];
+}
+
+/**
+ * Depth-first walk collecting every directory that holds a SKILL.md (#27).
+ *
+ * A directory WITHOUT its own SKILL.md is only a container to descend into — we
+ * never treat one as a skill, which is what keeps bundled helper directories
+ * from being reported as skills themselves.
+ */
+async function walkSkills(
+  dir: string,
+  source: string,
+  depth: number,
+  byName: Map<string, SkillDef>,
+  depthByName: Map<string, number>,
+): Promise<void> {
+  if (depth > MAX_SKILL_DEPTH) return;
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return; // root missing → simply no skills there
+  }
+  // a SKILL.md sitting directly in `dir` makes `dir` a skill AND a container
+  const here = path.join(dir, SKILL_FILE);
+  let hereText: string | null = null;
+  try {
+    hereText = await fs.readFile(here, "utf8");
+  } catch {
+    hereText = null;
+  }
+  if (hereText !== null && depth > 0) {
+    const parsed = parseSkillMd(hereText);
+    const name = parsed.meta.name || path.basename(dir);
+    const prevDepth = depthByName.get(name);
+    // first root wins on a name clash, and a shallower skill beats a deeper one
+    const wins =
+      prevDepth === undefined ||
+      (prevDepth !== undefined && depth < prevDepth && byName.get(name)?.source === source);
+    if (wins) {
       let files: string[] = [];
       try {
-        const siblings = await fs.readdir(path.join(root.dir, e.name), { withFileTypes: true });
-        files = siblings
+        files = (await fs.readdir(dir, { withFileTypes: true }))
           .filter((f) => f.isFile() && f.name !== SKILL_FILE && !f.name.startsWith("."))
           .map((f) => f.name)
           .sort();
@@ -137,13 +174,21 @@ export async function discoverSkills(roots: { dir: string; source: string }[]): 
       byName.set(name, {
         name,
         description: parsed.meta.description || "",
-        source: root.source,
-        filePath,
+        source,
+        filePath: here,
         files,
       });
+      depthByName.set(name, depth);
     }
   }
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    // Recurse into every subdirectory: nesting means a skill can sit at ANY depth
+    // (skills/stage1/template/SKILL.md), and "stage1" itself has no SKILL.md.
+    // Bundled helper payloads are not mistaken for skills because a directory
+    // only BECOMES a skill when it holds its own SKILL.md (#27).
+    await walkSkills(path.join(dir, e.name), source, depth + 1, byName, depthByName);
+  }
 }
 
 export async function readSkillFile(def: SkillDef): Promise<string> {
