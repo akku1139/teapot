@@ -456,3 +456,23 @@ test("regression: the selected-agent effect no longer re-runs on tab churn (#10)
   const eff = src.slice(src.indexOf("_termFollowAgent"));
   assert.match(eff.slice(0, 600), /if \(id === _termFollowAgent\) return;/);
 });
+
+/* ---------- Safari IME: Enter must confirm, not send (ported from #12) ---------- */
+
+test("regression: Enter during IME composition must not send the message", async () => {
+  const src = await readFile("frontend/App.tsx", "utf8");
+  // KeyboardEvent.isComposing cannot be trusted here: Safari ends composition
+  // BEFORE the final Enter keydown, so it is already false. We track it.
+  assert.match(src, /let imeInProgress = false;/);
+  assert.match(src, /oncompositionstart=/);
+  // the reset must be deferred a frame so that keydown still sees the flag
+  assert.match(src, /oncompositionend[\s\S]{0,320}requestAnimationFrame/);
+  // and the send path must consult our flag, not e.isComposing
+  const send = src.slice(src.indexOf('if (e.key === "Enter" && !e.shiftKey && !imeInProgress)'));
+  assert.match(send.slice(0, 200), /void send\(e\)/);
+  assert.doesNotMatch(
+    src,
+    /if \(e\.key === "Enter" && !e\.shiftKey && !e\.isComposing\)/,
+    "the unreliable e.isComposing check must be gone from the composer",
+  );
+});

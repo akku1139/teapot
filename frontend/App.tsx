@@ -57,6 +57,16 @@ const flashHint = (msg: string) => {
   flashTimer = setTimeout(() => setFlash(""), 3200);
 };
 
+/* ---------- IME composition (Safari) ---------- */
+// KeyboardEvent.isComposing is NOT reliable for this: Safari fires
+// compositionend BEFORE the final keydown for Enter, so by the time the
+// keydown handler asks, isComposing is already false and Enter gets SENT
+// instead of confirming the conversion — the half-converted text went to the
+// model and the user's kana/kanji input was swallowed. Track composition
+// ourselves and clear it on the next frame, after that keydown has run.
+// (ported from #12)
+let imeInProgress = false;
+
 /* ---------- themes ---------- */
 type ThemeMeta = {
   key: string;
@@ -2650,6 +2660,17 @@ export default function App() {
                 rows={1}
                 placeholder={`message #${sel()!.id} — / for commands · paste or 📎 to attach images`}
                 value={draft()}
+                oncompositionstart={() => {
+                  imeInProgress = true;
+                }}
+                oncompositionend={() => {
+                  // Safari fires compositionend BEFORE the final keydown for
+                  // Enter, so defer the reset one frame to let that keydown
+                  // observe the flag (see imeInProgress).
+                  requestAnimationFrame(() => {
+                    imeInProgress = false;
+                  });
+                }}
                 onpaste={(e) => {
                   // screenshots land on the clipboard as files — stage them
                   const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
@@ -2677,7 +2698,7 @@ export default function App() {
                     setCmdIdx((i) => Math.max(i - 1, 0));
                     return;
                   }
-                  if (sugg.length > 0 && (e.key === "Tab" || e.key === "Enter") && !e.shiftKey && cmdIdx() >= 0) {
+                  if (sugg.length > 0 && (e.key === "Tab" || e.key === "Enter") && !e.shiftKey && cmdIdx() >= 0 && !imeInProgress) {
                     e.preventDefault();
                     saveDraft(sugg[cmdIdx()]!.insert);
                     setCmdIdx(-1);
@@ -2687,8 +2708,10 @@ export default function App() {
                     setCmdIdx(-1); // close popup only
                     return;
                   }
-                  // IME composition: Enter confirms the conversion, never sends
-                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                  // IME composition: Enter confirms the conversion, never sends.
+                  // Test our own flag, not e.isComposing — Safari has already
+                  // ended composition by the time this keydown arrives.
+                  if (e.key === "Enter" && !e.shiftKey && !imeInProgress) {
                     e.preventDefault();
                     void send(e);
                   }
@@ -3844,7 +3867,9 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
         value={val()}
         oninput={(e) => setVal(e.currentTarget.value)}
         onkeydown={(e: KeyboardEvent) => {
-          if (e.key === "Enter") { e.preventDefault(); submit(); }
+          // same Safari IME caveat as the main composer: isComposing is
+          // already false by the time Enter's keydown arrives
+          if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }
         }}
       />
       <button disabled={props.answered || !val().trim()} onclick={submit}>reply</button>
