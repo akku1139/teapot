@@ -228,6 +228,106 @@ test("a real tool call survives a restart and the resumed turn stays valid (#50)
   });
 });
 
+/* ---------- the OTHER timeline-only artefact: an empty assistant turn ----- */
+
+/**
+ * A kill mid-stream can leave an assistant `message` event with empty content
+ * and no tool calls — the model streamed nothing before teapot died. The live
+ * run never had such a turn in `messages` (the abort path pushes the partial
+ * only when there IS one), but the restore replays it as a real assistant
+ * utterance.
+ *
+ * Then sanitize() does what it must to keep providers happy: an assistant
+ * message with blank content becomes the literal string "(no content)". So the
+ * agent is sent a sentence it never said, attributed to itself. That is a
+ * history shape no live run produces, which is the same class of thing that
+ * comes back as a 200 with no choices (#50).
+ */
+test("a restored session drops an empty assistant turn instead of inventing one (#50)", async () => {
+  await useTempDirs(["a50k-", "a50l-"], async ([ws, sessionDir]) => {
+    const sent: ChatMessage[] = [];
+    const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
+      for (const m of messages as ChatMessage[]) sent.push(m);
+      return reply("ok");
+    };
+
+    const first = mkAgent(ws, sessionDir, chatFn);
+    await first.init();
+    first.enqueuePrompt("hello");
+    first.start("t");
+    await first.settled();
+    // a turn that streamed nothing before the process died
+    await first.log.append("message", first.snapshot().session, first.snapshot().branch, {
+      role: "assistant",
+      content: "",
+    });
+    await first.dispose();
+
+    const second = mkAgent(ws, sessionDir, chatFn);
+    await second.init();
+    second.enqueuePrompt("still there?");
+    second.start("t");
+    await second.settled();
+
+    const restored = second.messages as ChatMessage[];
+    assert.equal(
+      restored.some((m) => m.role === "assistant" && m.content === ""),
+      false,
+      "an empty assistant turn must not survive the restore (#50)",
+    );
+    // and nothing may be sent in its place either
+    assert.equal(
+      sent.some((m) => m.role === "assistant" && m.content === "(no content)"),
+      false,
+      `sanitize() would turn it into a sentence the agent never said (#50)`,
+    );
+    await second.dispose();
+  });
+});
+
+test("an empty assistant turn that DID carry tool calls is kept (#50)", async () => {
+  // The blank-content turn is only meaningless when it said nothing AT ALL.
+  // A tool-calling turn legitimately has empty content (sanitize() replaces it
+  // with "(tool call)"), and dropping it would orphan its tool results.
+  await useTempDirs(["a50m-", "a50n-"], async ([ws, sessionDir]) => {
+    const chatFn = async (): Promise<LlmResult> => reply("ok");
+    const first = mkAgent(ws, sessionDir, chatFn);
+    await first.init();
+    first.enqueuePrompt("go");
+    first.start("t");
+    await first.settled();
+    await first.log.append("message", first.snapshot().session, first.snapshot().branch, {
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "call_real_1", name: "write_file" }],
+    });
+    await first.log.append("tool_result", first.snapshot().session, first.snapshot().branch, {
+      callId: "call_real_1",
+      name: "write_file",
+      ok: true,
+      result: "wrote the file",
+    });
+    await first.dispose();
+
+    const second = mkAgent(ws, sessionDir, chatFn);
+    await second.init();
+    second.enqueuePrompt("next");
+    second.start("t");
+    await second.settled();
+
+    const restored = second.messages as ChatMessage[];
+    assert.ok(
+      restored.some((m) => m.tool_calls?.some((t) => t.id === "call_real_1")),
+      "a blank turn that issued tool calls must be kept — its results depend on it (#50)",
+    );
+    assert.ok(
+      restored.some((m) => m.role === "tool" && m.tool_call_id === "call_real_1"),
+      "…and so must its tool result (#50)",
+    );
+    await second.dispose();
+  });
+});
+
 /* ---------- the guard that keeps it out ---------- */
 
 test("an operator-facing message is skipped by the restore (#50)", async () => {

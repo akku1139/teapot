@@ -2925,8 +2925,18 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       // 200 with zero choices (#50).
       if (d.final === true || d.operatorFacing === true) continue;
       const role = d.role === "assistant" ? "assistant" : "user";
-      const m: ChatMessage = { role, content: typeof d.content === "string" ? d.content : "" };
-      if (Array.isArray(d.toolCalls) && d.toolCalls.length > 0) {
+      const content = typeof d.content === "string" ? d.content : "";
+      const hasCalls = Array.isArray(d.toolCalls) && d.toolCalls.length > 0;
+      // A blank assistant turn that issued NO tool calls is an artefact of a
+      // kill mid-stream: the model streamed nothing, so the live run never had
+      // this turn, yet the restore replays it as a real utterance. sanitize()
+      // then rewrites blank assistant content to the literal "(no content)",
+      // so the agent is told it previously said a sentence it never said — a
+      // history shape no live run produces (#50). A blank turn that DID call
+      // tools is legitimate and must stay, or its results are orphaned.
+      if (role === "assistant" && !content && !hasCalls) continue;
+      const m: ChatMessage = { role, content };
+      if (hasCalls) {
         m.tool_calls = (d.toolCalls as { id: string; name: string }[]).map((c) => ({
           id: c.id,
           type: "function" as const,
