@@ -953,13 +953,29 @@ if (active().length === 0) wake();
       );
     }
 
-    // mirror feed-worthy activity; nested subs keep their original actor id
-    const MIRROR = new Set(["prompt", "message", "tool_call", "tool_result", "progress", "error", "question", "state"]);
-    if (!MIRROR.has(e.type)) return;
-    const inner = e.type === "sub" ? (e.data as { sub?: string; type?: string; data?: unknown }) : null;
-    const actor = inner?.sub ?? ac.id;
-    const payload = inner ? { sub: actor, type: inner.type, data: inner.data } : { sub: ac.id, type: e.type, data: e.data };
-    void parent.log.append("sub", parent.currentSession, parent.currentBranch, payload);
+    // #63: a child's activity is NOT mirrored into the parent's log.
+    //
+    // This used to write a `sub` row per child prompt/message/tool_call/…, so
+    // the parent's timeline filled with the child's entire transcript. Two
+    // problems, in order of discovery:
+    //
+    //  1. The rows were invisible, because `"sub"` was never in the web UI's
+    //     FEED_TYPES — so the filter dropped them and the feature did nothing
+    //     for as long as it existed (#40).
+    //  2. Once it was made to work (#40), the parent's timeline was flooded:
+    //     the operator reads a delegation as "what is this chat doing", not as
+    //     a firehose of a child's work.
+    //
+    // The mirroring bought nothing. `sub` rows are display-only:
+    // `rebuildMessagesFrom` never reads them, so the model never saw them and
+    // the child's own history was never duplicated into the parent's context.
+    // What the parent actually needs — the child's report — already arrives as
+    // a harness prompt above, which is the channel the model reads.
+    //
+    // So the right fix is to stop writing them. A chat's timeline is its own.
+    // If per-child detail is wanted in the UI later, it belongs behind an
+    // explicit filter ("show sub-agent activity"), reading each child's own log
+    // rather than interleaving a copy into the parent's.
   }
 
   /** sessions root + helpers */

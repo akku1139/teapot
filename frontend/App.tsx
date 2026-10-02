@@ -144,12 +144,12 @@ const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
   "state", "error", "fork", "goal", "todo", "question", "decision", "compaction",
   "system_note",
-  // "sub" carries a CHILD agent's activity, mirrored into the parent's log by
-  // the master. It must be in the feed set or the `real` filter strips it below
-  // and the expansion that tags it with an `actor` never runs — which is
-  // exactly what happened: the mirroring was written, and never displayed, so
-  // a parent's feed showed no trace of the work it had delegated (#40).
-  "sub",
+  // NOTE: "sub" is deliberately NOT here. A child's activity is no longer
+  // mirrored into the parent's log (#63) — those rows flooded the parent's
+  // timeline, and they were display-only anyway: `rebuildMessagesFrom` never
+  // read them, so the model never saw them either. A chat's timeline is its own.
+  // The expansion below still handles a `sub` row so an OLD log that already
+  // contains one renders as an attributed child row rather than vanishing.
 ]);
 // system_note rows never RENDER, but two of them drive pending-echo state:
 // prompt-delivered flips the echo to "sent" and must ALSO refresh the feed so
@@ -798,6 +798,13 @@ export default function App() {
       if (!isCarrier) lastKind = e.type === "tool_result" ? "tool" : e.type;
     }
     const real = events().filter((e) => {
+      // `sub` rows are no longer WRITTEN (#63) — a child's activity never
+      // belonged in the parent's timeline. But logs written before that still
+      // contain them, and silently dropping rows an operator can see on disk is
+      // how a log stops being trustworthy. So they are admitted here for
+      // rendering: the expansion below tags each with its actor, and the
+      // reader sees a child row rather than a row that mysteriously vanished.
+      if (e.type === "sub") return true;
       if (!FEED_TYPES.has(e.type)) return false;
       // report_progress calls are fully rendered by the progress embed below
       // (the timeline's 📈 row + the right panel's snapshot) — the tool-call

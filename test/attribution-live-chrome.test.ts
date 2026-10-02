@@ -144,31 +144,25 @@ test("a mirrored row with no type defaults to a message (#40)", () => {
   assert.equal(rows[0]!.data.actor, "kid");
 });
 
-test("a grandchild's row is attributed to the agent that acted (#40)", () => {
-  // The master UNWRAPS a nested mirror before re-emitting it: for an incoming
-  // `sub` it takes `inner.sub` as the actor and `inner.type`/`inner.data` as
-  // the payload, so a `sub` whose `type` is itself `sub` is never written to
-  // any log. A grandchild therefore reaches the top-level parent's feed as a
-  // FLAT `sub` row already carrying the grandchild's id.
+test("a legacy `sub` row is still rendered, attributed to its actor (#63)", () => {
+  // A child's activity is no longer written into the parent's log (#63) — the
+  // mirroring flooded the parent's timeline and bought nothing, since
+  // `rebuildMessagesFrom` never read those rows, so the model never saw them.
   //
-  // This matters for attribution: the feed must show @grandchild, not the
-  // intermediate child, or the operator is told the wrong agent did the work.
-  const asMasterWritesIt = { type: "sub", data: { sub: "leaf", type: "message", data: { content: "x" } } };
-  const rows = expand([asMasterWritesIt]);
-  assert.equal(rows[0]!.data.actor, "leaf", "the acting agent is named (#40)");
+  // But logs written BEFORE that change still contain them, and dropping rows
+  // an operator can see in the file on disk is how a log stops being
+  // trustworthy. They are still admitted by the filter and expanded, so a child
+  // row renders as a child row instead of vanishing.
+  const rows = expand([{ type: "sub", data: { sub: "leaf", type: "message", data: { content: "x" } } }]);
+  assert.equal(rows[0]!.data.actor, "leaf", "a legacy child row keeps its actor (#63)");
+  assert.equal(isOwnLiveWork(rows[0]!), false, "and is not the parent's own live work (#40)");
 
-  // and the unwrapping is what keeps the log single-level: assert the master
-  // does it, so a future change cannot start nesting them
+  // and nothing writes them any more
   const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
-  assert.match(
+  assert.doesNotMatch(
     master,
-    /const actor = inner\?\.sub \?\? ac\.id;/,
-    "a nested mirror must be re-emitted under the original actor (#40)",
-  );
-  assert.match(
-    master,
-    /type: inner\.type, data: inner\.data/,
-    "and flattened, so a log never holds a sub-of-a-sub (#40)",
+    /log\.append\("sub"/,
+    "the parent log must no longer be written a copy of the child's activity (#63)",
   );
 });
 
