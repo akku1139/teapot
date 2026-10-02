@@ -27,6 +27,18 @@ import path from "node:path";
 
 export const ACP_PROTOCOL_VERSION = 1;
 
+/**
+ * How often a running turn is drained for new events.
+ *
+ * The web UI gets a WebSocket push; ACP has no such channel here, so the turn
+ * is streamed by polling the agent's own log. 150ms is well under the ~60ms
+ * render tick a human notices, and the read is a tail of a file this process
+ * is already appending to — cheap enough to be invisible next to an LLM call.
+ */
+const STREAM_POLL_MS = 150;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export type JsonRpcId = string | number | null;
 
 export interface JsonRpcRequest {
@@ -71,6 +83,132 @@ interface Session {
  * request bookkeeping have somewhere to live, and so it is directly testable
  * with an in-memory stream pair.
  */
+/* ---------- streaming: log events → session/update notifications ---------- */
+
+/**
+ * ACP `ToolCall.kind` for a teapot tool name.
+ *
+ * The schema's own enum (verified against schema/v1/schema.json, not memory):
+ * read, edit, delete, move, search, execute, fetch, think, switch_mode, other,
+ * description. Editors use this to pick an icon and to decide whether the call
+ * mutates anything, so mapping our tools onto it is worth doing properly.
+ */
+const TOOL_KINDS: Record<string, string> = {
+  read_file: "read",
+  list_dir: "read",
+  glob: "search",
+  grep: "search",
+  bash: "execute",
+  bash_output: "execute",
+  read_url: "fetch",
+  web_fetch: "fetch",
+  edit_file: "edit",
+  write_file: "edit",
+  apply_patch: "edit",
+  file_edit: "edit",
+  memory: "edit",
+  get_memory: "read",
+};
+
+/** Filesystem tools whose `path` argument is worth surfacing as a location. */
+const LOCATED_TOOLS = new Set([
+  "read_file",
+  "edit_file",
+  "write_file",
+  "apply_patch",
+  "file_edit",
+  "list_dir",
+]);
+
+/** a one-line title for a tool call, the way an editor shows it in a list */
+function toolTitle(name: string, args: Record<string, unknown>): string {
+  const first = (k: string) => {
+    const v = args[k];
+    return typeof v === "string" && v ? v : undefined;
+  };
+  if (name === "bash") return first("command") ?? "bash";
+  if (name === "grep") return first("pattern") ? `grep /${first("pattern")}/` : "grep";
+  return first("path") ?? name;
+}
+
+/** Absolute path for a tool's location, so an editor can open the file. */
+function toolLocation(
+  name: string,
+  args: Record<string, unknown>,
+  workspace: string,
+): { path: string; line?: number }[] {
+  if (!LOCATED_TOOLS.has(name)) return [];
+  const p = args.path;
+  if (typeof p !== "string" || !p) return [];
+  const abs = path.isAbsolute(p) ? p : path.resolve(workspace, p);
+  const line = Number(args.line ?? args.line_number ?? NaN);
+  return [{ path: abs, ...(Number.isFinite(line) && line > 0 ? { line } : {}) }];
+}
+
+/**
+ * Turn one logged event into the session/update payload for it, or null when
+ * the event has no ACP equivalent (and must therefore NOT be invented into
+ * one).
+ *
+ * Pure and exported so the mapping is testable without a transport, which is
+ * how the previous scaffold went unverified: `drainOnce` existed, was never
+ * called, and nothing noticed.
+ */
+export function updateForEvent(
+  e: { type: string; data: unknown },
+  opts: { workspace: string },
+): { sessionUpdate: string; [k: string]: unknown } | null {
+  const d = (e.data ?? {}) as Record<string, any>;
+  switch (e.type) {
+    case "message": {
+      // The completion AUDIT's verdict and the operator-facing summary are
+      // timeline content, not something the agent said to the model. They are
+      // marked precisely so the web feed can skip them; an editor must not be
+      // shown an agent speaking a harness message.
+      if (d.final === true || d.operatorFacing === true) return null;
+      const text = String(d.content ?? "");
+      if (!text.trim()) return null;
+      return {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text },
+      };
+    }
+    case "tool_call": {
+      const name = String(d.name ?? "tool");
+      const args = (d.args ?? {}) as Record<string, unknown>;
+      return {
+        sessionUpdate: "tool_call",
+        toolCallId: String(d.callId ?? e.type),
+        title: toolTitle(name, args),
+        name,
+        kind: TOOL_KINDS[name] ?? "other",
+        status: "in_progress",
+        rawInput: args,
+        locations: toolLocation(name, args, opts.workspace),
+      };
+    }
+    case "tool_result": {
+      const name = String(d.name ?? "tool");
+      return {
+        sessionUpdate: "tool_call_update",
+        toolCallId: String(d.callId ?? e.type),
+        status: d.ok === false ? "failed" : "completed",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: String(d.result ?? "").slice(0, 20_000) },
+          },
+        ],
+      };
+    }
+    default:
+      // state transitions, goals, todos, compactions, notes: all internal. The
+      // schema HAS update kinds for some of this (plan, usage_update), but
+      // emitting them with guessed payloads would be worse than silence.
+      return null;
+  }
+}
+
 export class AcpAdapter {
   private readonly master: Master;
   private readonly input: NodeJS.ReadableStream;
@@ -79,6 +217,8 @@ export class AcpAdapter {
   private readonly sessions = new Map<string, Session>();
   /** id -> notification params, so a prompt turn can stream updates */
   private readonly turnUpdates = new Map<JsonRpcId, { sessionId: string }>();
+  /** sessions cancelled during the CURRENT turn, cleared when it starts (#15) */
+  private readonly cancelled = new Set<string>();
   private buffer = "";
   private nextSession = 1;
   private initialized = false;
@@ -218,7 +358,12 @@ export class AcpAdapter {
   private cancel(params: unknown): void {
     const p = (params ?? {}) as { sessionId?: string };
     const s = p.sessionId ? this.sessions.get(String(p.sessionId)) : undefined;
-    s?.agent.stop("cancelled via ACP");
+    if (!s) return;
+    // Remember it HERE rather than asking the Agent whether it was stopped:
+    // the flag that says so is private, and the adapter already knows — it is
+    // the component that answered the cancel notification.
+    this.cancelled.add(s.id);
+    s.agent.stop("cancelled via ACP");
   }
 
   /* ---------- prompt turn ---------- */
@@ -234,34 +379,80 @@ export class AcpAdapter {
     if (!text) return this.fail(id, INVALID_PARAMS, "prompt must contain text");
 
     this.turnUpdates.set(id, { sessionId: s.id });
+    this.cancelled.delete(s.id); // a cancel is per-turn, not per-session
+    // Stream the turn as it happens. The editor shows the reply and each tool
+    // call appear as they happen; without this the client sees NOTHING until
+    // the whole turn finishes, which is the difference between a usable agent
+    // and a black box that eventually prints an answer.
+    const abort = new AbortController();
+    const stream = this.streamTurn(s.id, abort.signal).catch(() => {});
     try {
       s.agent.enqueuePrompt(text, "user");
       if (s.agent.status !== "running") s.agent.start("acp prompt");
       await s.agent.settled();
-      const stopReason = s.agent.goal.status === "done" ? "end_turn" : "end_turn";
-      return this.ok(id, { stopReason });
+      // One last drain, or the final tool result and closing message can be
+      // missed: `settled()` resolves the moment the agent stops, and the last
+      // append may not have landed yet.
+      abort.abort();
+      await stream; // resolves after its own final drain
+      return this.ok(id, { stopReason: this.cancelled.has(s.id) ? "cancelled" : "end_turn" });
+    } catch (err) {
+      return this.fail(id, INTERNAL_ERROR, (err as Error).message);
     } finally {
+      abort.abort();
       this.turnUpdates.delete(id);
     }
   }
 
-  /** Stream a session's events to the client as session/update notifications. */
+/** Stream a session's events to the client as session/update notifications. */
   async drainOnce(sessionId: string, afterSeq = 0): Promise<number> {
     const s = this.sessions.get(sessionId);
     if (!s) return afterSeq;
     const events = await readEvents(s.agent.log.filePath).catch(() => []);
     for (const e of events) {
       if (e.seq <= afterSeq) continue;
-      this.notify("session/update", {
-        sessionId,
-        update: {
-          sessionUpdate: e.type === "message" ? "agent_message_chunk" : "tool_call",
-          content: { type: "text", text: String((e.data as { content?: unknown })?.content ?? "") },
-        },
-      });
+      const update = updateForEvent(e, { workspace: s.cwd });
+      // null means "no ACP equivalent" — state flips, goals, notes. Staying
+      // silent is correct; the old code invented a tool_call for every one.
+      if (update) this.notify("session/update", { sessionId, update });
     }
-    const max = events.reduce((m, e) => Math.max(m, e.seq), afterSeq);
-    return max;
+    // Advance past EVERY event we read, including the ones we did not emit, so
+    // an un-emitted event is not reconsidered on the next poll.
+    return events.reduce((m, e) => Math.max(m, e.seq), afterSeq);
+  }
+
+  /**
+   * Poll one session until it settles, streaming each batch as it appears.
+   *
+   * Polling the JSONL rather than subscribing to the bus is deliberate: the log
+   * is the agent's own record, so a listener attached at the wrong moment can
+   * miss the start of a reply, and a crash mid-turn leaves the file as the one
+   * complete account of what happened. It also means a resumed session replays
+   * exactly the same updates.
+   */
+  private async streamTurn(sessionId: string, signal: AbortSignal): Promise<void> {
+    // Start from the CURRENT tail: everything before this prompt belongs to
+    // earlier turns, and a resumed session has already been replayed.
+    let cursor = await this.logTail(sessionId);
+    // NOTE the drain happens BEFORE the abort check, not after it. A short
+    // turn — a cached model, a tiny task, a failing endpoint that gives up
+    // quickly — can finish inside one poll interval, so a loop that slept and
+    // then bailed on `signal.aborted` would exit having drained NOTHING. That
+    // is exactly what happened: every turn raced the first tick and the
+    // editor received silence.
+    for (;;) {
+      cursor = await this.drainOnce(sessionId, cursor);
+      if (signal.aborted) return;
+      await sleep(STREAM_POLL_MS);
+    }
+  }
+
+  /** highest seq currently in a session's log, or 0 */
+  private async logTail(sessionId: string): Promise<number> {
+    const s = this.sessions.get(sessionId);
+    if (!s) return 0;
+    const events = await readEvents(s.agent.log.filePath).catch(() => []);
+    return events.reduce((m, e) => Math.max(m, e.seq), 0);
   }
 
   get initialized_(): boolean {
