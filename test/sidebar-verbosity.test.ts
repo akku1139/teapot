@@ -190,3 +190,61 @@ test("chat collapse reuses the persisted group set rather than new state (#58)",
   assert.match(app, /const isChat = !row\.a\.parent;/, "the row caret keys off being top-level (#58)");
   assert.match(app, /toggleWsGroup\(`chat:\$\{row\.a\.id\}`/, "and toggles it in the persisted set (#58)");
 });
+
+/* ---------- #62: a directory's chats must be CONTIGUOUS ---------- */
+
+test("one directory renders ONE header even when its chats are interleaved (#62)", () => {
+  // The report pasted the DOM: `/p/teapot` appeared, then `/p/tyb2`, then
+  // `/p/teapot` AGAIN — three sections for two projects, with a count badge
+  // ("9 chats") contradicted by the rows beneath it.
+  //
+  // Roots arrive in whatever order the server sent them, so a chat created
+  // later (teapot-7) landed after another project's group and split the
+  // directory in two.
+  const agents = [
+    a("teapot", "/p/teapot"),
+    a("teapot-2", "/p/teapot"),
+    a("tyb2", "/p/tyb2"),
+    a("teapot-7", "/p/teapot"),
+    a("teapot-8", "/p/teapot"),
+  ];
+  const headers = render(agents).filter((r) => r.headerOnly).map((r) => r.wsHeader);
+  assert.deepEqual(headers, ["/p/teapot", "/p/tyb2"], `a directory must appear once (#62): ${JSON.stringify(headers)}`);
+});
+
+test("a header appears exactly once no matter how the chats are ordered (#62)", () => {
+  // Ordering-independence: any interleaving of the same set gives one header
+  // per directory, so the bug cannot reappear for a different arrival order.
+  const ids: Array<[string, string]> = [
+    ["a", "/one"], ["b", "/two"], ["c", "/one"], ["d", "/two"], ["e", "/one"],
+  ];
+  for (const perm of [ids, [...ids].reverse(), [ids[2]!, ids[0]!, ids[4]!, ids[1]!, ids[3]!]]) {
+    const headers = render(perm.map(([id, ws]) => a(id, ws)))
+      .filter((r) => r.headerOnly)
+      .map((r) => r.wsHeader);
+    assert.equal(new Set(headers).size, headers.length, `a directory repeated (#62): ${JSON.stringify(headers)}`);
+    assert.equal(headers.length, 2, `exactly two directories (#62): ${JSON.stringify(headers)}`);
+  }
+});
+
+test("grouping by directory keeps each group's chat order (#62)", () => {
+  // The fix groups by directory; it must not reshuffle a directory's chats or
+  // reorder the directories themselves on every render.
+  const agents = [a("z", "/one"), a("m", "/one"), a("k", "/two")];
+  const rows = render(agents);
+  assert.deepEqual(
+    rows.map((r) => (r.headerOnly ? `dir:${r.wsHeader}` : r.a.id)),
+    ["dir:/one", "z", "m", "dir:/two", "k"],
+    `within-directory order and directory order must both be stable (#62): ${JSON.stringify(rows)}`,
+  );
+});
+
+test("a sub-agent still follows its parent across the regrouping (#62)", () => {
+  const agents = [a("p1", "/one"), a("p2", "/two"), a("k1", "", "p1")];
+  const rows = render(agents);
+  const kid = rows.find((r) => !r.headerOnly && r.a.id === "k1")!;
+  assert.equal(kid.depth, 1, "a sub-agent is still indented under its chat (#62)");
+  // and it sits directly after its parent, not after the other project
+  const i = rows.findIndex((r) => !r.headerOnly && r.a.id === "p1");
+  assert.equal(rows[i + 1]!.a.id, "k1", "the subtree stays with its parent (#62)");
+});

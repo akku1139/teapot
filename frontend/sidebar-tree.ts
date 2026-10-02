@@ -107,7 +107,29 @@ export function treeRowsOf<T extends TreeAgent>(
       if (kids?.length && !collapsedSubs.has(a.id)) walk(kids, depth + 1);
     }
   };
-  walk(roots, 0);
+  // #62: a workspace header is only meaningful if a directory's chats are
+  // CONTIGUOUS. Roots arrive in whatever order the server sent them, so a chat
+  // created later (teapot-7) landed after another project's group and split
+  // /p/teapot into two sections under the same header — the sidebar read as
+  // three projects where there were two, and the count badge then contradicted
+  // the rows beneath it.
+  //
+  // So group the roots by directory first. Directories keep first-seen order,
+  // so the sidebar stays stable and predictable (sorting by name would reshuffle
+  // everything whenever a project was added), and each group's chats keep their
+  // own relative order.
+  const groupKeys: string[] = [];
+  const groups = new Map<string, T[]>();
+  for (const a of roots) {
+    const ws = workspaceOf(list, a.id);
+    const g = groups.get(ws);
+    if (g) g.push(a);
+    else {
+      groups.set(ws, [a]);
+      groupKeys.push(ws);
+    }
+  }
+  for (const ws of groupKeys) walk(groups.get(ws)!, 0);
   return rows;
 }
 
