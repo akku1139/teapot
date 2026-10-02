@@ -1061,21 +1061,56 @@ export default function App() {
     seen.add(id);
     return workspaceOf(a.parent, seen) || a.workspace || "";
   };
-  /** collapsed workspace groups in the sidebar (#18) */
-  const [wsCollapsed, setWsCollapsed] = createSignal<Set<string>>(new Set());
+  /** collapsed workspace groups in the sidebar (#18) — persisted, like the
+   *  sub-agent collapse state above, so a reload keeps the operator's grouping */
+  const [wsCollapsed, setWsCollapsed] = createSignal<Set<string>>((() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("teapot.wsCollapsed") ?? "[]");
+      return new Set<string>(Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : []);
+    } catch {
+      return new Set<string>();
+    }
+  })());
+  const toggleWsGroup = (ws: string) => {
+    const next = new Set(wsCollapsed());
+    if (next.has(ws)) next.delete(ws);
+    else next.add(ws);
+    setWsCollapsed(next);
+    try {
+      localStorage.setItem("teapot.wsCollapsed", JSON.stringify([...next]));
+    } catch {
+      /* private mode / quota — the toggle still works for this session */
+    }
+  };
   /** last path segment, for a compact workspace header */
   const basenameOf = (p: string): string => p.replace(/\/+$/, "").split(/[/\\]/).pop() || p;
   const sidebarRows = createMemo(() => {
+    const collapsed = wsCollapsed();
     const rows = treeRows();
-    const out: ({ a: Agent; depth: number; wsHeader?: string })[] = [];
+    const out: ({ a: Agent; depth: number; wsHeader?: string; wsCollapsedGroup?: boolean })[] = [];
     let lastWs: string | null = null;
     for (const r of rows) {
       const ws = workspaceOf(r.a.id);
+      // A collapsed group keeps ONE header row so it can be reopened, and
+      // none of its chats. The header must survive on its own: this is the row
+      // the caret lives on, so dropping it with the group would leave the
+      // operator no way back in.
+      if (collapsed.has(ws)) {
+        out.push({ ...r, wsHeader: lastWs === ws ? undefined : ws, wsCollapsedGroup: true });
+        continue;
+      }
       const header = ws !== lastWs ? ws : undefined;
       out.push({ ...r, wsHeader: header });
       lastWs = ws;
     }
-    return out;
+    // a collapsed group's rows collapse into its single header — the chats
+    // themselves are not rendered (the For below skips them)
+    return out.filter((r, i) => {
+      if (!r.wsCollapsedGroup) return true;
+      const prev = out[i - 1];
+      // keep the FIRST row of a collapsed run as the header row
+      return !prev?.wsCollapsedGroup || prev.wsHeader !== r.wsHeader;
+    });
   });
 
   // null = show everything; otherwise only the chosen branch's events
@@ -2316,14 +2351,11 @@ export default function App() {
                 <div
                   class="wsheader"
                   title={row.wsHeader || ""}
-                  onclick={() => setWsCollapsed((c) => {
-                    const n = new Set(c);
-                    if (n.has(row.wsHeader!)) n.delete(row.wsHeader!);
-                    else n.add(row.wsHeader!);
-                    return n;
-                  })}
+                  onclick={() => toggleWsGroup(row.wsHeader!)}
                 ><span class="wscaret">{wsCollapsed().has(row.wsHeader!) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}</div>
               </Show>
+              {/* a collapsed group shows its header and nothing else (#18) */}
+              <Show when={!row.wsCollapsedGroup}>
               <div
                 class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "")}
                 style={row.depth > 0 ? `padding-left:${10 + row.depth * 14}px` : ""}
@@ -2370,6 +2402,7 @@ export default function App() {
                 </Show>
                 <Show when={row.a.goal.status === "done"}><span title="goal done">✓</span></Show>
               </div>
+              </Show>
               </>
             )}
           </For>

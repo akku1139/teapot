@@ -531,6 +531,62 @@ console.log("deep render ok: feed rows present");
   console.log("deep render ok: sidebar groups chats by workspace (#18)");
 }
 
+/* ---------- #18: clicking a workspace header must ACTUALLY collapse it ------
+ * The unit test mirrors sidebarRows(); this drives the real bundle. The bug:
+ * the header's click wrote to wsCollapsed and flipped the caret, but the memo
+ * never READ the set, so every chat stayed on screen — a header that looked
+ * collapsible and did nothing. Only the DOM can catch that: the caret glyph
+ * changed while the row list did not. */
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
+  const headers = () => [...w.document.querySelectorAll(".wsheader")];
+  const itemIds = () =>
+    [...w.document.querySelectorAll(".agent-item")]
+      .map((el) => el.textContent.match(/\b(alpha|beta)\b/)?.[1])
+      .filter(Boolean);
+
+  const before = itemIds();
+  if (before.length !== 2) fail(`fixture should start with 2 chats, got ${before.length}`);
+  // match on the header's title (the workspace PATH), never its textContent:
+  // that includes the caret glyph, which is exactly what the click flips
+  const headerFor = (ws) => headers().find((h) => h.getAttribute("title") === ws);
+  const target = headerFor(AGENT.workspace);
+  if (!target) fail(`no header for ${AGENT.workspace}: ${headers().map((h) => h.getAttribute("title"))}`);
+  const wasCollapsed = /▸/.test(target.querySelector(".wscaret")?.textContent ?? "");
+
+  target.click();
+  await sleep(120);
+  const after = itemIds();
+  const caret = headerFor(AGENT.workspace)?.querySelector(".wscaret")?.textContent ?? "";
+
+  // clicking must FLIP the caret: ▸ (collapsed) ↔ ▾ (open). Comparing against
+  // the expected new value is what hides the bug — assert it actually changed
+  if (caret === (wasCollapsed ? "▸" : "▾"))
+    fail(
+      `the caret did not flip — still "${caret}" after clicking a ${wasCollapsed ? "collapsed" : "open"} group`,
+    );
+  if (after.length === before.length)
+    fail(
+      `clicking a workspace header must hide its chats — still ${after.length} rows (${JSON.stringify(after)})`,
+    );
+  // alpha's workspace collapses; beta's chat must survive
+  if (after.includes("alpha")) fail(`alpha stayed visible after collapsing its group: ${JSON.stringify(after)}`);
+  if (!after.includes("beta")) fail(`beta belongs to another group and must stay: ${JSON.stringify(after)}`);
+  // exactly one header survives per visible group — the collapsed one stays
+  // clickable, otherwise the operator can never reopen it
+  if (headers().length !== 2)
+    fail(`a collapsed group must keep its header so it can be reopened, got ${headers().length}`);
+
+  // …and clicking again restores it
+  headerFor(AGENT.workspace)?.click();
+  await sleep(120);
+  const restored = itemIds();
+  if (restored.length !== 2)
+    fail(`reopening must restore every chat, got ${JSON.stringify(restored)}`);
+  console.log("deep render ok: a workspace group really collapses and reopens (#18)");
+}
+
 /* ---------- #50: WIDE mode must be untouched by the drawer work ----------
  * The narrow fixes added a backdrop and a ✕ row. Both are drawer-only, and a
  * mistake in either (rendering them unconditionally) would be catastrophic on a
