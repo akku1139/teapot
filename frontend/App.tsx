@@ -1061,6 +1061,19 @@ export default function App() {
     seen.add(id);
     return workspaceOf(a.parent, seen) || a.workspace || "";
   };
+  const chatGroupKey = (a: Agent): string => {
+    // resolve to the TOP-LEVEL ancestor so a sub-agent shares its parent's group
+    let id = a.id;
+    const seen = new Set<string>();
+    for (;;) {
+      const cur = agents().find((x) => x.id === id);
+      if (!cur?.parent || seen.has(id)) break;
+      seen.add(id);
+      id = cur.parent;
+    }
+    return `chat:${id || a.id}`;
+  };
+
   /** collapsed workspace groups in the sidebar (#18) — persisted, like the
    *  sub-agent collapse state above, so a reload keeps the operator's grouping */
   const [wsCollapsed, setWsCollapsed] = createSignal<Set<string>>((() => {
@@ -1071,18 +1084,18 @@ export default function App() {
       return new Set<string>();
     }
   })());
-  const toggleWsGroup = (ws: string) => {
+  const toggleWsGroup = (groupKey: string, label: string) => {
     const next = new Set(wsCollapsed());
-    if (next.has(ws)) next.delete(ws);
+    if (next.has(groupKey)) next.delete(groupKey);
     else {
-      next.add(ws);
-      // Collapsing hides every chat in the group — including the one the
-      // operator is currently reading. That reads as "my session vanished",
-      // so say what happened and how to get back. The open conversation stays
+      next.add(groupKey);
+      // Collapsing hides the chat(s) in the group — including the one the
+      // operator is currently reading. That reads as "my session vanished", so
+      // say what happened and how to get back. The open conversation stays
       // loaded and keeps running either way; only its sidebar row goes away.
-      if (selected() && workspaceOf(selected()!) === ws) {
-        flashHint(`hid ${wsCountLabel(ws)} in ${basenameOf(ws)} — click the header to show them`);
-      }
+      const open = selected();
+      if (open && (groupKey === `chat:${open}` || chatGroupKey(agents().find((x) => x.id === open)!) === groupKey))
+        flashHint(`hid ${label} — click the header to show it`);
     }
     setWsCollapsed(next);
     try {
@@ -1117,33 +1130,76 @@ export default function App() {
     }
     return counts;
   });
+  /**
+   * Sidebar rows with TWO header levels (#18).
+   *
+   * Level 1 — WORKSPACE: a header wherever the working directory changes, the
+   * grouping #18 introduced so unrelated projects stop interleaving.
+   *
+   * Level 2 — CHAT: each TOP-LEVEL chat is its own group. Grouping by
+   * workspace path alone gave every chat in a directory ONE identity — one
+   * header, one collapse toggle, one row to hide — but "some top-level chat
+   * dirs exist in the same working directory and are separate" means they must
+   * be independently addressable. A count badge said "there are 2" without
+   * giving them separate identities; nesting them under the directory fixes
+   * the identity while keeping the project grouping meaningful.
+   *
+   * Sub-agents inherit their parent's chat group, so a subtree collapses as one.
+   */
   const sidebarRows = createMemo(() => {
     const collapsed = wsCollapsed();
     const rows = treeRows();
-    const out: ({ a: Agent; depth: number; wsHeader?: string; wsCollapsedGroup?: boolean })[] = [];
+    const out: ({
+      a: Agent;
+      depth: number;
+      wsHeader?: string;
+      chatHeader?: string;
+      /** a HEADER row: renders its caret + label, never the chat itself */
+      headerOnly?: boolean;
+      wsCollapsedGroup?: boolean;
+      chatCollapsedGroup?: boolean;
+    })[] = [];
     let lastWs: string | null = null;
+    let lastChat: string | null = null;
     for (const r of rows) {
       const ws = workspaceOf(r.a.id);
-      // A collapsed group keeps ONE header row so it can be reopened, and
-      // none of its chats. The header must survive on its own: this is the row
-      // the caret lives on, so dropping it with the group would leave the
-      // operator no way back in.
-      if (collapsed.has(ws)) {
-        out.push({ ...r, wsHeader: lastWs === ws ? undefined : ws, wsCollapsedGroup: true });
-        continue;
+      const gkey = chatGroupKey(r.a);
+      // Header rows carry NO agent — they are headers, not chats. The agent
+      // row is pushed exactly once, at the end of the loop; spreading `r`
+      // into a header row too rendered the same chat two or three times.
+      // workspace header — emitted when the DIRECTORY changes
+      const wsHeader = ws !== lastWs ? ws : undefined;
+      if (wsHeader !== undefined) {
+        lastWs = ws;
+        lastChat = null;
+        const wsOff = collapsed.has(`ws:${ws}`);
+        out.push({
+          a: r.a,
+          depth: 0,
+          headerOnly: true,
+          wsHeader,
+          wsCollapsedGroup: wsOff,
+        });
+        if (wsOff) continue; // whole directory hidden
       }
-      const header = ws !== lastWs ? ws : undefined;
-      out.push({ ...r, wsHeader: header });
-      lastWs = ws;
+      // chat header — a top-level chat always gets one, so it can be collapsed
+      // on its own even when siblings share its directory
+      if (!r.a.parent && gkey !== lastChat) {
+        lastChat = gkey;
+        const chatOff = collapsed.has(gkey);
+        out.push({
+          a: r.a,
+          depth: 0,
+          headerOnly: true,
+          chatHeader: gkey,
+          chatCollapsedGroup: chatOff,
+        });
+        if (chatOff) continue; // just this chat hidden
+      }
+      out.push({ ...r });
     }
-    // a collapsed group's rows collapse into its single header — the chats
-    // themselves are not rendered (the For below skips them)
-    return out.filter((r, i) => {
-      if (!r.wsCollapsedGroup) return true;
-      const prev = out[i - 1];
-      // keep the FIRST row of a collapsed run as the header row
-      return !prev?.wsCollapsedGroup || prev.wsHeader !== r.wsHeader;
-    });
+    // every row is emitted once; nothing to de-duplicate here
+    return out;
   });
 
   // null = show everything; otherwise only the chosen branch's events
@@ -2387,11 +2443,11 @@ export default function App() {
                     row.wsCollapsedGroup
                       ? `${row.wsHeader} — collapsed (${wsCountLabel(row.wsHeader!)} hidden). Click to show.`
                       : (wsChatCounts().get(row.wsHeader!) ?? 0) > 1
-                        ? `${row.wsHeader} — ${wsCountLabel(row.wsHeader!)} share this directory`
+                        ? `${row.wsHeader} — ${wsCountLabel(row.wsHeader!)} in this directory`
                         : row.wsHeader || ""
                   }
-                  onclick={() => toggleWsGroup(row.wsHeader!)}
-                ><span class="wscaret">{wsCollapsed().has(row.wsHeader!) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
+                  onclick={() => toggleWsGroup(`ws:${row.wsHeader}`, basenameOf(row.wsHeader!))}
+                ><span class="wscaret">{wsCollapsed().has(`ws:${row.wsHeader!}`) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
                   {/* several separate chats often share one directory — say so,
                       so the group reads as N chats rather than one (#18).
                       A COLLAPSED group must always show the count: that is
@@ -2401,8 +2457,22 @@ export default function App() {
                   </Show>
                 </div>
               </Show>
-              {/* a collapsed group shows its header and nothing else (#18) */}
-              <Show when={!row.wsCollapsedGroup}>
+              {/* chat header: each top-level chat is its OWN group, so two chats
+                  sharing a directory can be opened and hidden separately (#18) */}
+              <Show when={row.chatHeader !== undefined}>
+                <div
+                  class="chatheader"
+                  title={
+                    row.chatCollapsedGroup
+                      ? `${row.a.id} — collapsed. Click to show.`
+                      : `${row.a.id} — its own chat, working in ${basenameOf(workspaceOf(row.a.id))}`
+                  }
+                  onclick={() => toggleWsGroup(row.chatHeader!, row.a.id)}
+                ><span class="wscaret">{wsCollapsed().has(row.chatHeader!) ? "▸" : "▾"}</span>{row.a.id}</div>
+              </Show>
+              {/* a collapsed group shows its header and nothing else (#18); a header row
+                  never renders its own agent, which would double the chat */}
+              <Show when={!row.headerOnly && !row.wsCollapsedGroup && !row.chatCollapsedGroup}>
               <div
                 class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "")}
                 style={row.depth > 0 ? `padding-left:${10 + row.depth * 14}px` : ""}

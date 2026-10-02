@@ -145,6 +145,16 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
   background: var(--bg-light); color: var(--dim);
   font-size: 10px; font-weight: 600; line-height: 15px; letter-spacing: 0;
 }
+/* per-chat group header (#18) — a top-level chat is its OWN group, so two
+   chats sharing a working directory stay separately openable/collapsible.
+   Nested one level under the workspace header it belongs to. */
+.chatheader {
+  display: flex; align-items: center; gap: 6px; padding: 4px 10px 2px 22px;
+  font-size: 11px; font-weight: 600; letter-spacing: .03em;
+  color: var(--dim); cursor: pointer; user-select: none;
+}
+.chatheader:hover { color: var(--fg); }
+.chatheader .wscaret { width: 12px; flex-shrink: 0; font-size: 9px; }
 .agent-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; color: var(--dim); }
 .agent-item .subtag { color: var(--dim); font-size: 10px; }
 .caret { width: 12px; flex-shrink: 0; cursor: pointer; color: var(--dim); font-size: 9px; text-align: center; user-select: none; }

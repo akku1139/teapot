@@ -594,12 +594,14 @@ console.log("deep render ok: feed rows present");
 
 /* ---------- #18: separate chats sharing ONE working directory --------------
  * "Some top-level chat dirs exist in the same working directory but are
- * separate." Grouping by workspace path alone merged them into one anonymous
- * bucket, so the group header gave no clue it held more than one chat. The
- * header now carries the count.
+ * separate." Grouping by workspace path alone gave every chat in a directory
+ * ONE identity — one header, one collapse toggle, one row to hide. A count
+ * badge said "there are 2" without making them separate things.
  *
- * The base fixture has one chat per directory, so this block swaps in a third
- * agent pointing at alpha's SAME workspace and re-reads the rendered header. */
+ * Each top-level chat is now its own group, nested under the workspace header
+ * it shares. The base fixture has one chat per directory, so this block swaps in
+ * a third agent pointing at alpha's SAME workspace and asserts the two render as
+ * two independently collapsible groups. */
 {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
@@ -632,30 +634,76 @@ console.log("deep render ok: feed rows present");
   const sharedHeader = headerFor(AGENT.workspace);
   if (!sharedHeader) fail("the shared workspace lost its header entirely (#18)");
 
+  // ONE workspace header per CONTIGUOUS run of that directory in tree order.
+  // alpha and gamma share /tmp/ws but beta sits between them, so the directory
+  // legitimately appears as two runs — each needs its own header to keep the
+  // chats under it visually contiguous.
+  const wsTitles = [...w.document.querySelectorAll(".wsheader")].map((h) => h.getAttribute("title") ?? "");
+  const sharedRuns = wsTitles.filter((t) => t.startsWith(AGENT.workspace)).length;
+  if (sharedRuns < 1) fail(`the shared directory lost its header entirely: ${JSON.stringify(wsTitles)}`);
+  // headers alternate: every workspace header should be distinct from its
+  // neighbour, i.e. a header is never emitted twice in a row for one directory
+  for (let i = 1; i < wsTitles.length; i++) {
+    if (wsTitles[i] === wsTitles[i - 1])
+      fail(`consecutive identical workspace headers: ${JSON.stringify(wsTitles)}`);
+  }
+
+  // …but TWO chat headers: alpha and gamma are separate chats in one directory
+  const chatHeaders = [...w.document.querySelectorAll(".chatheader")]
+    .map((h) => h.textContent.trim());
+  for (const id of ["alpha", "gamma"]) {
+    if (!chatHeaders.some((t) => t.includes(id)))
+      fail(`${id} must have its OWN group header, got ${JSON.stringify(chatHeaders)}`);
+  }
+
   const chats = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
     .filter(Boolean);
-  // three chats exist; alpha and gamma share a directory, so the group must
-  // still show BOTH as separate rows. beta belongs to another project and is
-  // legitimately in the sidebar — it just must not be counted in this group.
   if (!chats.includes("alpha") || !chats.includes("gamma"))
     fail(`both chats of the shared directory must be listed separately, got ${JSON.stringify(chats)}`);
 
-  const badge = sharedHeader.querySelector(".wscount");
-  if (!badge) fail(`a group with 2 chats must show its count: ${sharedHeader.textContent}`);
-  if (badge.textContent.trim() !== "2")
-    fail(`the count badge should read 2, got ${JSON.stringify(badge.textContent)}`);
+  // THE ASSERTION THE BUG WAS ABOUT: collapsing ONE chat must leave its
+  // sibling in the SAME directory visible. Sharing a header (the old
+  // behaviour) made this impossible — they collapsed together.
+  const headerOf = (id) =>
+    [...w.document.querySelectorAll(".chatheader")].find((h) => h.textContent.trim().includes(id));
+  const alphaHeader = headerOf("alpha");
+  const gammaHeader = headerOf("gamma");
+  if (!alphaHeader || !gammaHeader) fail("chat headers missing before collapsing (#18)");
+  alphaHeader.click();
+  await sleep(200);
+  const afterOne = [...w.document.querySelectorAll(".agent-item")]
+    .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
+    .filter(Boolean);
+  if (afterOne.includes("alpha"))
+    fail(`collapsing alpha's chat must hide alpha, got ${JSON.stringify(afterOne)}`);
+  if (!afterOne.includes("gamma"))
+    fail(`gamma shares a DIRECTORY but is a separate chat — it must stay visible, got ${JSON.stringify(afterOne)}`);
+  if (!afterOne.includes("beta"))
+    fail(`beta is in another project entirely and must stay visible, got ${JSON.stringify(afterOne)}`);
+  // the collapsed chat keeps its own header so it can be reopened
+  if (!headerOf("alpha")) fail("a collapsed chat must keep its header (#18)");
 
-  // and the header's tooltip should say so in words
-  const tip = sharedHeader.getAttribute("title") ?? "";
-  if (!/2 chats share/.test(tip)) fail(`the header tooltip should explain the count, got ${JSON.stringify(tip)}`);
+  headerOf("alpha")?.click();
+  await sleep(200);
+  const reopened = [...w.document.querySelectorAll(".agent-item")]
+    .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
+    .filter(Boolean);
+  if (!reopened.includes("alpha")) fail(`reopening must restore alpha, got ${JSON.stringify(reopened)}`);
 
-  // the OTHER project still has a single chat → no badge
-  if (headerFor("/tmp/other-project")?.querySelector(".wscount"))
-    fail("a single-chat project must not show a count badge (#18)");
+  // and collapsing the WORKSPACE still hides every chat under it
+  headerFor(AGENT.workspace)?.click();
+  await sleep(200);
+  const afterWs = [...w.document.querySelectorAll(".agent-item")]
+    .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
+    .filter(Boolean);
+  if (afterWs.includes("alpha") || afterWs.includes("gamma"))
+    fail(`collapsing the directory must hide both of its chats, got ${JSON.stringify(afterWs)}`);
+  headerFor(AGENT.workspace)?.click();
+  await sleep(200);
 
   setGlobal("fetch", origFetch);
-  console.log("deep render ok: chats sharing one directory stay separate and counted (#18)");
+  console.log("deep render ok: chats sharing one directory are SEPARATE groups (#18)");
 }
 
 /* ---------- #18: a COLLAPSED group must still say how much it hides --------
