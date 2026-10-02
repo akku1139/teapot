@@ -19,9 +19,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+// #58 moved the tree/grouping rules into ./sidebar-tree so they could be unit
+// tested; the assertions below follow the code to its new home.
+const tree = readFileSync(new URL("../frontend/sidebar-tree.ts", import.meta.url), "utf8");
 
 function srcHas(label: string, re: RegExp): void {
   if (!re.test(app)) assert.fail(`${label}\n  expected source to match: ${re}`);
+}
+
+function treeHas(label: string, re: RegExp): void {
+  if (!re.test(tree)) assert.fail(`${label}\n  expected sidebar-tree.ts to match: ${re}`);
 }
 
 interface A {
@@ -169,15 +176,16 @@ test("a sub-agent does not become its own chat group (#18)", () => {
 
 test("the group key is the CHAT, not the workspace path (#18)", () => {
   // the defect: one group identity per directory, shared by every chat in it
-  srcHas(
+  treeHas(
     "top-level chats must get their own group key (#18)",
     /`chat:\$\{id \|\| a\.id\}`/,
   );
-  srcHas("the memo must key groups by chat (#18)", /const gkey = chatGroupKey\(r\.a\)/);
+  treeHas("the row builder must key groups by chat (#18)", /const gkey = chatGroupKeyOf\(agents, r\.a\)/);
+  srcHas("App.tsx must delegate that lookup (#18)", /chatGroupKeyOf\(agents\(\), a\)/);
 });
 
 test("collapsing a chat hides only that chat (#18)", () => {
-  srcHas(
+  treeHas(
     "the collapse check must use the CHAT key, not the directory (#18)",
     /collapsed\.has\(gkey\)/,
   );
@@ -203,5 +211,5 @@ test("the workspace header summarises how many chats the directory holds (#18)",
 test("the count excludes sub-agents (#18)", () => {
   // a sub-agent already hangs under its parent chat header; counting it would
   // inflate "how many chats do I have here"
-  srcHas("only top-level chats may be counted (#18)", /if \(a\.parent\) continue; \/\/ a sub-agent/);
+  treeHas("only top-level chats may be counted (#18)", /if \(a\.parent\) continue; \/\/ a sub-agent/);
 });

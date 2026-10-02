@@ -14,6 +14,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+// #58 moved the row-building rules into ./sidebar-tree so they could be unit
+// tested; the wiring assertion below follows the code to its new home.
+const tree = readFileSync(new URL("../frontend/sidebar-tree.ts", import.meta.url), "utf8");
+function treeHas(label: string, re: RegExp): void {
+  if (!re.test(tree)) assert.fail(`${label}\n  expected sidebar-tree.ts to match: ${re}`);
+}
 /** assert on a MATCH only — a failing source-text match otherwise dumps the
  *  whole 250KB component into the failure message and buries the point */
 function srcHas(label: string, re: RegExp): void {
@@ -162,11 +168,15 @@ test("sidebarRows reads the collapsed set (the click was a no-op) (#18)", () => 
   // not collapse. Assert the memo both reads the set AND filters on it.
   srcHas(
     "sidebarRows() must consult wsCollapsed() — otherwise clicking a header does nothing (#18)",
-    /const sidebarRows = createMemo\(\(\) => \{[\s\S]{0,600}wsCollapsed\(\)/,
+    /const sidebarRows = createMemo\(\(\) =>\s*sidebarRowsOf\(agents\(\), treeRows\(\), wsCollapsed\(\)\)/,
   );
   srcHas(
     "a collapsed group's chats must be filtered out of the row list (#18)",
     /wsCollapsedGroup/,
+  );
+  treeHas(
+    "the row builder must actually drop the members of a collapsed group (#18)",
+    /if \(collapsed\.has\(`ws:\$\{ws\}`\)\) continue;/,
   );
 });
 

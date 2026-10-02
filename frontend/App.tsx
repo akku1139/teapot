@@ -5,6 +5,13 @@ import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog } from "./live-bu
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
+import {
+  treeRowsOf,
+  sidebarRowsOf,
+  workspaceOf as workspaceOfPure,
+  chatGroupKeyOf,
+  wsChatCountsOf,
+} from "./sidebar-tree";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -1053,31 +1060,14 @@ export default function App() {
     setCollapsedSubs(next);
     localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
   };
-  const treeRows = createMemo(() => {
+  // The tree and grouping rules live in ./sidebar-tree so they can be unit
+  // tested without a DOM (happy-dom does no layout). These wrappers only feed
+  // the pure functions the live signal values.
+  const treeRows = createMemo(() =>
     // 👻 toggle: drop ghost sessions (workspace missing on disk) from the
     // sidebar tree entirely — they are noise once you know about them
-    const list = hideGhosts() ? agents().filter((a) => !a.workspaceMissing) : agents();
-    const byParent = new Map<string, Agent[]>();
-    const roots: Agent[] = [];
-    for (const a of list) {
-      const isSub = a.parent && list.some((p) => p.id === a.parent);
-      if (isSub) {
-        // newest sub first — freshly spawned agents are what you want to see
-        if (!byParent.has(a.parent!)) byParent.set(a.parent!, []);
-        byParent.get(a.parent!)!.unshift(a);
-      } else roots.push(a);
-    }
-    const rows: { a: Agent; depth: number }[] = [];
-    const walk = (nodes: Agent[], depth: number) => {
-      for (const a of nodes) {
-        rows.push({ a, depth });
-        const kids = byParent.get(a.id);
-        if (kids?.length && !collapsedSubs().has(a.id)) walk(kids, depth + 1);
-      }
-    };
-    walk(roots, 0);
-    return rows;
-  });
+    treeRowsOf(agents(), collapsedSubs(), hideGhosts()),
+  );
 
   /**
    * Sidebar rows, annotated with where the WORKSPACE changes (#18).
@@ -1088,26 +1078,10 @@ export default function App() {
    * so grouping needs no new concept at all; a header row marks each project.
    * Sub-agents inherit their parent's workspace so a subtree stays together.
    */
-  const workspaceOf = (id: string, seen = new Set<string>()): string => {
-    const a = agents().find((x) => x.id === id);
-    if (!a) return "";
-    if (!a.parent) return a.workspace || "";
-    if (seen.has(id)) return a.workspace || ""; // cycle guard
-    seen.add(id);
-    return workspaceOf(a.parent, seen) || a.workspace || "";
-  };
-  const chatGroupKey = (a: Agent): string => {
-    // resolve to the TOP-LEVEL ancestor so a sub-agent shares its parent's group
-    let id = a.id;
-    const seen = new Set<string>();
-    for (;;) {
-      const cur = agents().find((x) => x.id === id);
-      if (!cur?.parent || seen.has(id)) break;
-      seen.add(id);
-      id = cur.parent;
-    }
-    return `chat:${id || a.id}`;
-  };
+  const workspaceOf = (id: string): string => workspaceOfPure(agents(), id);
+  /** the `chat:<id>` group this agent collapses under — its top-level ancestor,
+   *  so a sub-agent shares its parent's group rather than becoming its own */
+  const chatGroupKey = (a: Agent): string => chatGroupKeyOf(agents(), a);
 
   /** collapsed workspace groups in the sidebar (#18) — persisted, like the
    *  sub-agent collapse state above, so a reload keeps the operator's grouping */
@@ -1155,16 +1129,7 @@ export default function App() {
    * answered worst where it mattered most. The header now carries the count so
    * a shared directory reads as "N chats" instead of looking like one.
    */
-  const wsChatCounts = createMemo(() => {
-    const counts = new Map<string, number>();
-    for (const a of agents()) {
-      if (a.parent) continue; // a sub-agent is part of its parent's group
-      const ws = workspaceOf(a.id);
-      if (!ws) continue;
-      counts.set(ws, (counts.get(ws) ?? 0) + 1);
-    }
-    return counts;
-  });
+  const wsChatCounts = createMemo(() => wsChatCountsOf(agents()));
   /**
    * Sidebar rows with TWO header levels (#18).
    *
@@ -1181,61 +1146,11 @@ export default function App() {
    *
    * Sub-agents inherit their parent's chat group, so a subtree collapses as one.
    */
-  const sidebarRows = createMemo(() => {
-    const collapsed = wsCollapsed();
-    const rows = treeRows();
-    const out: ({
-      a: Agent;
-      depth: number;
-      wsHeader?: string;
-      chatHeader?: string;
-      /** a HEADER row: renders its caret + label, never the chat itself */
-      headerOnly?: boolean;
-      wsCollapsedGroup?: boolean;
-      chatCollapsedGroup?: boolean;
-    })[] = [];
-    let lastWs: string | null = null;
-    let lastChat: string | null = null;
-    for (const r of rows) {
-      const ws = workspaceOf(r.a.id);
-      const gkey = chatGroupKey(r.a);
-      // Header rows carry NO agent — they are headers, not chats. The agent
-      // row is pushed exactly once, at the end of the loop; spreading `r`
-      // into a header row too rendered the same chat two or three times.
-      // workspace header — emitted when the DIRECTORY changes
-      const wsHeader = ws !== lastWs ? ws : undefined;
-      if (wsHeader !== undefined) {
-        lastWs = ws;
-        lastChat = null;
-        const wsOff = collapsed.has(`ws:${ws}`);
-        out.push({
-          a: r.a,
-          depth: 0,
-          headerOnly: true,
-          wsHeader,
-          wsCollapsedGroup: wsOff,
-        });
-        if (wsOff) continue; // whole directory hidden
-      }
-      // chat header — a top-level chat always gets one, so it can be collapsed
-      // on its own even when siblings share its directory
-      if (!r.a.parent && gkey !== lastChat) {
-        lastChat = gkey;
-        const chatOff = collapsed.has(gkey);
-        out.push({
-          a: r.a,
-          depth: 0,
-          headerOnly: true,
-          chatHeader: gkey,
-          chatCollapsedGroup: chatOff,
-        });
-        if (chatOff) continue; // just this chat hidden
-      }
-      out.push({ ...r });
-    }
-    // every row is emitted once; nothing to de-duplicate here
-    return out;
-  });
+  // The row/grouping rules — including the #58 "no chat header for a solo
+  // chat" decision — live in ./sidebar-tree, where they are unit-tested.
+  const sidebarRows = createMemo(() =>
+    sidebarRowsOf(agents(), treeRows(), wsCollapsed()),
+  );
 
   // null = show everything; otherwise only the chosen branch's events
   const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
