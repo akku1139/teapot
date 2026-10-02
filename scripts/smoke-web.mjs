@@ -65,6 +65,20 @@ const EVENTS = [
     type: "tool_call", data: { callId: "c1", name: "bash", args: { command: "ls" } } },
   { id: "e4", seq: 4, ts: "2026-01-01T10:00:10Z", session: "alpha-s1", branch: "br0", parent: "e3",
     type: "tool_result", data: { callId: "c1", name: "bash", result: "file.txt", ok: true, durationMs: 12 } },
+  // #40: a CHILD agent's activity, mirrored into the parent's log by the
+  // master. These rows were written and never displayed — "sub" was missing
+  // from FEED_TYPES, so the filter dropped them before the expansion that
+  // tags them with an actor could run.
+  { id: "e4b", seq: 5, ts: "2026-01-01T10:00:11Z", session: "alpha-s1", branch: "br0", parent: "e4",
+    type: "sub", data: { sub: "alpha-kid", type: "message", data: { content: "CHILD REPORT TEXT" } } },
+  { id: "e4c", seq: 6, ts: "2026-01-01T10:00:12Z", session: "alpha-s1", branch: "br0", parent: "e4b",
+    type: "sub", data: { sub: "alpha-kid", type: "tool_call", data: { callId: "ck1", name: "bash", args: { command: "ls child" } } } },
+  { id: "e4d", seq: 7, ts: "2026-01-01T10:00:13Z", session: "alpha-s1", branch: "br0", parent: "e4c",
+    type: "sub", data: { sub: "alpha-kid", type: "tool_result", data: { callId: "ck1", name: "bash", result: "child.txt", ok: true } } },
+  // child STATE churn must stay filtered out — a kid flipping running→idle
+  // would otherwise fill the parent feed with dividers
+  { id: "e4e", seq: 8, ts: "2026-01-01T10:00:14Z", session: "alpha-s1", branch: "br0", parent: "e4d",
+    type: "sub", data: { sub: "alpha-kid", type: "state", data: { from: "running", to: "idle" } } },
   // #51: the completion-audit lifecycle. Two shapes that used to render wrong —
   // a card with a real reason, and a verdict with NO reason (which must not
   // produce a card at all).
@@ -1331,6 +1345,28 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
   if (!barOpen()) failR("widening closed the panel — on a wide screen it is a column (#50)");
   detailToggle().click(); await sleepR(80);
   if (barOpen()) failR("the ▤ toggle stopped working on a wide screen after a resize (#50)");
+  // ---------- #40: mirrored sub-agent activity must actually RENDER ----------
+  // The first time these rows have ever reached the DOM: "sub" was missing from
+  // FEED_TYPES, so the filter dropped them and a parent feed showed no trace of
+  // the work it had delegated.
+  const feedText40 = w.document.querySelector(".feed")?.textContent ?? "";
+  if (!feedText40.includes("CHILD REPORT TEXT"))
+    failR(`a child's message must render in the parent's feed (#40), got: ${JSON.stringify(feedText40.slice(0, 300))}`);
+  const actorChips40 = [...w.document.querySelectorAll(".actor")].map((el) => el.textContent.trim());
+  if (!actorChips40.some((t) => t.includes("alpha-kid")))
+    failR(`the child's rows must be attributed to it (#40), got chips ${JSON.stringify(actorChips40)}`);
+  if (!feedText40.includes("child.txt"))
+    failR(`the child's tool_result must render too (#40)`);
+  if (/running\s*(→|->)\s*idle/.test(feedText40))
+    failR(`child state churn must stay filtered out (#40), got: ${JSON.stringify(feedText40.slice(0, 300))}`);
+  // every chip must name the CHILD, and the parent's own rows must carry none:
+  // the tool row, its result, and the message each render their own chip
+  if (actorChips40.some((t) => !t.includes("alpha-kid")))
+    failR(`no actor chip may name the parent (#40), got ${JSON.stringify(actorChips40)}`);
+  if (actorChips40.length < 3)
+    failR(`the child's message, tool call and result must all be attributed (#40), got ${JSON.stringify(actorChips40)}`);
+  console.log("deep render ok: mirrored sub-agent activity renders, attributed (#40)");
+
   console.log("deep render ok: widening back disarms the drawer without breaking the column (#50)");
 }
 

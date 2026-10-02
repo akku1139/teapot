@@ -144,6 +144,12 @@ const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
   "state", "error", "fork", "goal", "todo", "question", "decision", "compaction",
   "system_note",
+  // "sub" carries a CHILD agent's activity, mirrored into the parent's log by
+  // the master. It must be in the feed set or the `real` filter strips it below
+  // and the expansion that tags it with an `actor` never runs — which is
+  // exactly what happened: the mirroring was written, and never displayed, so
+  // a parent's feed showed no trace of the work it had delegated (#40).
+  "sub",
 ]);
 // system_note rows never RENDER, but two of them drive pending-echo state:
 // prompt-delivered flips the echo to "sent" and must ALSO refresh the feed so
