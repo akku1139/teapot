@@ -2366,6 +2366,20 @@ export class Agent {
       phase: "summarizing",
       summarized: oldCount,
     } satisfies BusEvent);
+    // #56: the START belongs on the timeline too. Only the right panel showed
+    // compaction, and it reports the *outcome*; a long summarize (hundreds of
+    // thousands of tokens) looks exactly like a hung agent on the timeline,
+    // because the first `context-compacted` event is only appended once the
+    // whole pass is over. Log the announcement as a visible system_note so
+    // the operator sees WHERE the conversation was rewritten, even if the
+    // pass later fails — `before`/`oldCount` are known at this point, and the
+    // completion divider still carries the authoritative after-figures.
+    await this.log.append("system_note", this.currentSession, this.currentBranch, {
+      event: "context-compaction-started",
+      tokensBefore: before,
+      messages: oldCount,
+      reason: force ? "manual" : "auto",
+    });
     this.compactPhase = "summarizing";
     try {
       summary = await this.summarize(old, (text) => {

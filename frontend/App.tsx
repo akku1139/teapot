@@ -4281,6 +4281,18 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdi
         </div>
       );
     }
+    // #56: the START of the pass, logged before the (slow) summarizer runs so
+    // the timeline shows the conversation being rewritten rather than going
+    // quiet for the whole summarize. The completion divider above carries the
+    // after-figures; this one only claims what was already known.
+    if (ev === "context-compaction-started") {
+      return (
+        <div class="divider-msg" title="compaction is rewriting older history — the agent is not stuck">
+          🗜 compacting: summarizing {String(e.data?.messages ?? "?")} earlier messages from{" "}
+          {String(e.data?.tokensBefore ?? "?")} tok ({String(e.data?.reason ?? "auto")})…
+        </div>
+      );
+    }
     return null; // log-only notes (prompt-delivered, llm-retry, …)
   }
 
