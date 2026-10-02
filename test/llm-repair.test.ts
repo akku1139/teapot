@@ -167,6 +167,67 @@ test("a restarted session's next request is one a provider accepts (#50)", async
   });
 });
 
+/* ---------- the contract scenario: a REAL tool, a restart, a resumed turn --- */
+
+/**
+ * The reported shape end to end, with nothing stubbed but the provider: the
+ * agent runs a real tool, teapot restarts, and the operator sends another
+ * message. Every request the SECOND incarnation makes — the one built from the
+ * rebuilt history — is checked against a provider that rejects malformed
+ * message arrays, which is what turns into a 200 with zero choices (#50).
+ */
+test("a real tool call survives a restart and the resumed turn stays valid (#50)", async () => {
+  await useTempDirs(["a50i-", "a50j-"], async ([ws, sessionDir]) => {
+    const rejected: (string | null)[] = [];
+    const sawResult: string[] = [];
+    let resumed = 0;
+    const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
+      // only judge requests that carry real conversation (not the auditor's
+      // tools-less side conversation, which is legitimately built on top)
+      const last = String(messages.at(-1)?.content ?? "");
+      if (!last.includes("independent completion AUDITOR")) rejected.push(providerReject(messages));
+      if (last === "and now?") resumed++;
+      // the tool result is present in the request ONLY if it really executed
+      const executed = messages.some(
+        (m: ChatMessage) => m.role === "tool" && /note\.txt/.test(String(m.content ?? "")),
+      );
+      if (executed) {
+        sawResult.push("ran");
+        return reply("all done");
+      }
+      return reply("writing", [tc("w1", "write_file", { path: "note.txt", content: "hello" })]);
+    };
+
+    const first = mkAgent(ws, sessionDir, chatFn);
+    await first.init();
+    first.enqueuePrompt("write a note");
+    first.start("t");
+    await first.settled();
+    await first.dispose();
+    assert.ok(sawResult.length, "the fixture must actually execute a tool (#50)");
+
+    // --- restart: brand-new Agent over the SAME session dir ---
+    const second = mkAgent(ws, sessionDir, chatFn);
+    await second.init();
+    second.enqueuePrompt("and now?");
+    second.start("t");
+    await second.settled();
+
+    assert.equal(resumed, 1, "the resumed incarnation must run exactly one turn (#50)");
+    assert.deepEqual(
+      rejected.filter(Boolean),
+      [],
+      `a resumed session produced a request a provider would reject (#50): ${rejected.find(Boolean)}`,
+    );
+    // the restored history must still contain the tool exchange, not have lost it
+    assert.ok(
+      (second.messages as ChatMessage[]).some((m) => m.role === "tool"),
+      "the tool result must survive the restart — otherwise the pair is broken (#50)",
+    );
+    await second.dispose();
+  });
+});
+
 /* ---------- the guard that keeps it out ---------- */
 
 test("an operator-facing message is skipped by the restore (#50)", async () => {
