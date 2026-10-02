@@ -1081,8 +1081,7 @@ export default function App() {
       // so say what happened and how to get back. The open conversation stays
       // loaded and keeps running either way; only its sidebar row goes away.
       if (selected() && workspaceOf(selected()!) === ws) {
-        const n = wsChatCounts().get(ws) ?? 0;
-        flashHint(`hid ${n} chat${n === 1 ? "" : "s"} in ${basenameOf(ws)} — click the header to show them`);
+        flashHint(`hid ${wsCountLabel(ws)} in ${basenameOf(ws)} — click the header to show them`);
       }
     }
     setWsCollapsed(next);
@@ -1094,6 +1093,11 @@ export default function App() {
   };
   /** last path segment, for a compact workspace header */
   const basenameOf = (p: string): string => p.replace(/\/+$/, "").split(/[/\\]/).pop() || p;
+  /** "1 chat" / "3 chats" — a header saying "1 chats hidden" looks broken */
+  const wsCountLabel = (ws: string): string => {
+    const n = wsChatCounts().get(ws) ?? 0;
+    return `${n} chat${n === 1 ? "" : "s"}`;
+  };
   /**
    * How many TOP-LEVEL chats share each workspace.
    *
@@ -2381,9 +2385,9 @@ export default function App() {
                   class="wsheader"
                   title={
                     row.wsCollapsedGroup
-                      ? `${row.wsHeader} — collapsed (${wsChatCounts().get(row.wsHeader!) ?? 0} chats hidden). Click to show.`
+                      ? `${row.wsHeader} — collapsed (${wsCountLabel(row.wsHeader!)} hidden). Click to show.`
                       : (wsChatCounts().get(row.wsHeader!) ?? 0) > 1
-                        ? `${row.wsHeader} — ${wsChatCounts().get(row.wsHeader!)} chats share this directory`
+                        ? `${row.wsHeader} — ${wsCountLabel(row.wsHeader!)} share this directory`
                         : row.wsHeader || ""
                   }
                   onclick={() => toggleWsGroup(row.wsHeader!)}

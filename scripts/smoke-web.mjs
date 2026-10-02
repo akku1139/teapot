@@ -685,6 +685,9 @@ console.log("deep render ok: feed rows present");
     fail(`a collapsed single-chat group should read 1, got ${JSON.stringify(badge.textContent)}`);
   if (!/collapsed/i.test(collapsedHeader.getAttribute("title") ?? ""))
     fail("a collapsed header's tooltip should say so (#18)");
+  // singular grammar: the common single-chat case must not read "1 chats hidden"
+  if (/1 chats/.test(collapsedHeader.getAttribute("title") ?? ""))
+    fail(`a one-chat group must read "1 chat hidden", got ${JSON.stringify(collapsedHeader.getAttribute("title"))}`);
   if ([...w.document.querySelectorAll(".agent-item")].some((el) => /beta/.test(el.textContent)))
     fail("beta's chat should be hidden while its group is collapsed (#18)");
 
