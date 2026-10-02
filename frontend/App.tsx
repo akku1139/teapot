@@ -1,7 +1,7 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { fmtDur } from "./format";
-import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog } from "./live-buffer";
+import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog, isOwnLiveWork } from "./live-buffer";
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
@@ -2717,7 +2717,14 @@ export default function App() {
                     // the row kept a snapshot from before the click.
                     answeredIds={answeredQuestionIds}
                     onAnswered={markAnswered}
-                    agentActive={sel()?.status === "running" || sel()?.status === "waiting"}
+                    // #40: a row showing MIRRORED SUB-AGENT activity is the
+                    // child's work, not this agent's, so it must not wear the
+                    // parent's live chrome ("writing…", the running blink)
+                    // just because the parent happens to be running.
+                    agentActive={
+                      (sel()?.status === "running" || sel()?.status === "waiting") &&
+                      isOwnLiveWork(e)
+                    }
                     onResize={() => { if (atBottom()) requestAnimationFrame(() => scrollBottom(true)); }}
                     onCancel={
                       e.data?.pending && e.data?.promptId && e.data?.sent !== true

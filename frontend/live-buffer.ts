@@ -85,3 +85,32 @@ export function isCoveredByLog(
       String(e.data.content ?? "").trim() === body,
   );
 }
+
+/**
+ * Is this row the SELECTED agent's own in-flight work?
+ *
+ * #40 — "agent2's message is agent1's content, with a writing cursor on it."
+ * The timeline marked every row live based on the selected agent's status
+ * alone, so a row could wear another actor's "writing…" / "running…" chrome.
+ *
+ * Two kinds of row can do that, and both are real:
+ *
+ *  1. MIRRORED SUB-AGENT ACTIVITY. The master appends a child's events into
+ *     the parent's own log as `sub` rows, which the feed expands into
+ *     normal-looking rows tagged with `actor` (see the expansion in App.tsx).
+ *     Those rows are the CHILD's work: they belong in the parent's feed for
+ *     context, but the parent going `running` says nothing about whether the
+ *     child is still going, so painting them as the parent's live work is
+ *     simply wrong.
+ *  2. A TOOL CALL whose result never arrived. A row with no result and a live
+ *     agent reads as "in flight"; once the agent is idle it is simply stale,
+ *     and the existing `staleDone` guard in ToolRow already covers that.
+ *
+ * A row with an `actor` is therefore never the selected agent's own work.
+ * Everything else — the parent's own messages, tool calls and results — is.
+ */
+export function isOwnLiveWork(row: { data?: { actor?: unknown } } | null | undefined): boolean {
+  if (!row) return false;
+  const actor = row.data?.actor;
+  return !(typeof actor === "string" && actor.length > 0);
+}
