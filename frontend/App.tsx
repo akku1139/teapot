@@ -2910,15 +2910,28 @@ export default function App() {
       <Show when={narrow() && showRight()}>
         <div class="rightbarbackdrop" onclick={() => setRight(false)} />
       </Show>
-      <div class={"rightbarhead" + (showRight() ? " open" : "")}>
-        <span class="muted">details</span>
-        <IconBtn icon="✕" title="close details panel (esc)" onClick={closeRight} />
-      </div>
       <aside
         class={"rightbar" + (showRight() ? " open" : "")}
         ref={rightbarEl}
         onscroll={(e) => { rightbarTop = (e.currentTarget as HTMLDivElement).scrollTop; }}
       >
+        {/* Close row (#50) — INSIDE the panel, and sticky so the panel's own
+            overflow-y can never scroll it out of reach. On a wide screen
+            .rightbar is a grid column sitting next to the content and the ▤
+            button is right there, so this row stays display:none and a static
+            column gets no new control. Narrow, the panel is a fixed drawer
+            covering up to 92vw; it covers the ▤ button that opened it, leaving
+            no visible way back out. This is that way out.
+
+            Sticky rather than merely first-child: .rightbar is a long scroll
+            container (session, runtime, files, tasks…), and a close button
+            that scrolls away is the bug one scroll away from returning. The
+            negative margin lets the row's background cover the panel's padding
+            while the sticky top stays 0. */}
+        <div class="rightbarhead">
+          <span class="muted">details</span>
+          <IconBtn icon="✕" title="close details panel (esc)" onClick={closeRight} />
+        </div>
         {/* Gated on the agent ID, not the agent OBJECT (#30). `when={sel()}`
             re-ran this whole subtree whenever an agent-update snapshot replaced
             the object — its compiled children getter builds a fresh array each

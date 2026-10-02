@@ -586,14 +586,32 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   await sleep(80);
   if (!drawerOpen()) fail("the ▤ toggle did not open the drawer at narrow width");
 
-  // 1. the ✕ row must exist and close the drawer
+  // 1. the ✕ row must exist, live INSIDE .rightbar, and close the drawer.
+  //    `.rightbarhead .iconbtn` is a descendant selector, so finding it at all
+  //    proves containment; the explicit `contains` check names the requirement so
+  //    a future refactor that re-parents the row fails loudly.
   const closeBtn = [...w.document.querySelectorAll(".rightbarhead .iconbtn")].find(
     (b) => /close details panel/.test(b.getAttribute("title") ?? ""),
   );
   if (!closeBtn) fail("no ✕ close button inside the drawer — the drawer covers its own opener");
+  if (!drawer().contains(closeBtn))
+    fail("the ✕ is not a descendant of .rightbar — it must travel with the panel (#50)");
+
+  // …and it must survive the panel being scrolled: .rightbar is overflow-y:auto,
+  // so a close button that is not sticky is out of reach one scroll down. This is
+  // the reachable-close-control requirement, exercised at runtime.
+  drawer().scrollTop = 99999;
+  w.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await sleep(60);
+  const head = w.document.querySelector(".rightbarhead");
+  if (!head || !drawer().contains(head)) fail("the ✕ row left the panel after a scroll (#50)");
+  const cs = w.document.defaultView.getComputedStyle(head);
+  if (cs.position !== "sticky")
+    fail(`the ✕ row must be sticky so scrolling cannot hide it (got position:${cs.position}) (#50)`);
+
   closeBtn.click();
   await sleep(80);
-  if (drawerOpen()) fail("the ✕ did not close the drawer");
+  if (drawerOpen()) fail("the ✕ did not close the drawer after the panel was scrolled");
 
   // 2. a click outside must dismiss it too
   toggle.click();

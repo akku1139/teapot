@@ -66,95 +66,155 @@ function ruleBody(token: string): string {
   }
 }
 
+/**
+ * Like `ruleBody`, but skips rules nested inside an @media block.
+ *
+ * Needed because the narrow media query comes FIRST in the file and now carries
+ * a `.rightbarhead` rule of its own (position/z-index). Without this, asking for
+ * "the .rightbarhead rule" silently returns the media-query one and every
+ * assertion about the base styling fails on correct code.
+ */
+function baseRuleBody(token: string): string {
+  let i = 0;
+  for (;;) {
+    const open = css.indexOf("{", i);
+    if (open === -1) throw new Error(`no rule mentioning ${token}`);
+    const prevClose = css.lastIndexOf("}", open);
+    const selStart = prevClose === -1 ? 0 : prevClose + 1;
+    let depth = 0;
+    let close = -1;
+    for (let j = open; j < css.length; j++) {
+      if (css[j] === "{") depth++;
+      else if (css[j] === "}") {
+        depth--;
+        if (depth === 0) { close = j; break; }
+      }
+    }
+    if (close === -1) throw new Error("unterminated rule");
+    // skip anything whose selector line sits inside braces (i.e. inside @media)
+    const before = css.slice(0, open);
+    const mediaDepth = (before.match(/\{/g)?.length ?? 0) - (before.match(/\}/g)?.length ?? 0);
+    // …and strip comments: the CSS explains the layout in prose, and a
+    // `.rightbarhead` MENTIONED in a comment would otherwise match as though it
+    // were a selector — returning the neighbouring .rightbarbackdrop rule.
+    const sel = css.slice(selStart, open).replace(/\/\*[\s\S]*?\*\//g, "");
+    if (sel.includes(token) && mediaDepth === 0) return css.slice(open + 1, close);
+    i = close + 1;
+  }
+}
+
 /* ---------- 1: the drawer carries its own close button ---------- */
 
 test("the drawer has a close button of its own (#50)", () => {
   assert.ok(
-    /class=\{"rightbarhead"/.test(app),
-    "the panel needs a header row that hosts the ✕ button",
+    /class="rightbarhead"/.test(app),
+    "the panel needs a row that hosts the ✕ button",
   );
-  // the ✕ lives in the drawer's OWN header row, not the channel header the
-  // drawer slides over and hides
+  // THE regression this pins: the ✕ must live INSIDE <aside class="rightbar">.
+  // The drawer covers the channel header's ▤ toggle, so the close control has to
+  // travel with the panel itself — anywhere else it is either invisible or behind
+  // the drawer.
+  const aside = app.indexOf('class={"rightbar"');
+  const asideEnd = app.indexOf("</aside>", aside);
+  assert.ok(aside !== -1, 'the <aside class="rightbar"> must exist (#50)');
+  // Find the row GLOBALLY first, so a failure can distinguish "the row is gone"
+  // from "the row exists but sits outside the panel" — two different bugs that
+  // otherwise report as one confusing message.
+  assert.notEqual(
+    app.indexOf('class="rightbarhead"'),
+    -1,
+    "the ✕ row must exist — the drawer has no way out (#50)",
+  );
+  const head = app.indexOf('class="rightbarhead"', aside);
   assert.ok(
-    /class=\{"rightbarhead"[\s\S]{0,300}?icon="✕"[\s\S]{0,200}?close details panel/i.test(app),
-    "the ✕ must sit inside the panel, where it is reachable once the drawer covers the header (#50)",
+    head > aside && head < asideEnd,
+    "the ✕ row must be a DESCENDANT of .rightbar, not a sibling beside it (#50)",
   );
   assert.ok(
-    /class=\{"rightbarhead" \+ \(showRight\(\) \? " open" : ""\)\}/.test(app),
-    "the header slides in WITH the drawer — a pinned ✕ over a hidden panel is worse than none",
+    /class="rightbarhead"[\s\S]{0,300}?icon="✕"[\s\S]{0,200}?close details panel/i.test(app),
+    "the ✕ must sit on that row, where it is reachable once the drawer covers the header (#50)",
+  );
+  // first child: it must be the first thing the panel shows, above every section
+  const between = app.slice(aside, head);
+  assert.ok(
+    !/<h3|<Show|<For/.test(between.slice(between.indexOf(">") + 1)),
+    "the ✕ row must come before the panel's sections (#50)",
   );
 });
 
-test("the close header only shows on a narrow screen (#50)", () => {
+test("the ✕ row is STICKY — the panel scrolls, the close button must not (#50)", () => {
+  // THE regression: .rightbar is overflow-y:auto with a long body (session,
+  // runtime, files, tasks…). A close button that merely sits at the top scrolls
+  // out of reach, which is the original bug one scroll away from returning.
+  const narrow = narrowBlock();
+  assert.match(
+    narrow,
+    /\.rightbarhead\s*\{[^}]*position:\s*sticky/,
+    "the ✕ row must be sticky inside the scrolling panel (#50)",
+  );
+  assert.match(
+    narrow,
+    /\.rightbarhead\s*\{[^}]*top:\s*0/,
+    "sticky with no top offset pins to the wrong edge (#50)",
+  );
+  // sticky lets later content scroll underneath, so the row must be opaque.
+  // BASE rule: the narrow media query comes first in the file and also has a
+  // .rightbarhead rule, so ruleBody() would hand back the wrong one.
+  const base = baseRuleBody(".rightbarhead");
+  assert.match(
+    base,
+    /background:\s*var\(--bg-dark\)/,
+    "a sticky row without a background shows the panel's text through the ✕ (#50)",
+  );
+  assert.match(
+    base,
+    /border-bottom:\s*1px solid var\(--line\)/,
+    "content scrolling under a bare row reads as broken (#50)",
+  );
+  // and it must bleed over the panel padding, or the bar stops short of the edges
+  assert.match(
+    base,
+    /margin:\s*-14px -14px 0/,
+    "the row must span the panel's padding, or it looks like a floating chip (#50)",
+  );
+});
+
+test("the close row only shows on a narrow screen (#50)", () => {
   // a static column has no need for a ✕ row — showing one on a wide screen
   // would add a dead control above the session card.
   assert.match(
-    ruleBody(".rightbarhead"),
+    baseRuleBody(".rightbarhead"),
     /display:\s*none/,
     "the ✕ row must be hidden by default (wide screens keep the ▤ toggle)",
   );
-  const narrow = narrowBlock();
   assert.match(
-    narrow,
-    /\.rightbarhead\s*\{[^}]*display:\s*flex/,
-    "the ✕ row must appear inside the narrow media query (#50)",
+    narrowBlock(),
+    /\.rightbarhead\s*\{[^}]*position:\s*sticky/,
+    "the narrow media query is what makes it a real, visible row (#50)",
   );
 });
 
-test("the ✕ row and the panel are stacked, never overlapped (#50)", () => {
+test("the drawer is ONE fixed box again (#50)", () => {
+  // The ✕ used to be a sibling, so the drawer was two stacked fixed boxes and
+  // their heights had to be coupled (--rightbarhead-h) or the panel overlapped
+  // the row. Inside the panel there is nothing to couple: the row is a child.
   const narrow = narrowBlock();
-  // THE regression this guards: a literal height in one rule and a literal
-  // offset in another. They are separate numbers, so resizing the row (or a
-  // font/zoom change altering its height) silently slides the panel's first
-  // row under the ✕ bar — or opens a gap above it.
   assert.match(
     narrow,
-    /\.rightbarhead\s*\{[^}]*--rightbarhead-h:/,
-    "the header must declare its own height (#50)",
+    /\.rightbar\s*\{[^}]*position:\s*fixed[^}]*top:\s*0/,
+    "the panel must be flush to the top of the screen (#50)",
+  );
+  // strip comments first: the CSS explains what this variable USED to be, and a
+  // mention in prose is not a live declaration
+  const cssNoComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.ok(
+    !/--rightbarhead-h\s*:/.test(cssNoComments),
+    "the two-box height coupling must be gone now that the ✕ is inside the panel (#50)",
   );
   assert.match(
     narrow,
-    /\.rightbar\s*\{[^}]*top:\s*var\(--rightbarhead-h/,
-    "the panel must be offset by the header's height, not a second literal (#50)",
-  );
-  // and the header must actually be the height it declares
-  assert.match(
-    narrow,
-    /\.rightbarhead\s*\{[^}]*height:\s*var\(--rightbarhead-h\)/,
-    "a declared height nobody applies would leave the two boxes misaligned (#50)",
-  );
-});
-
-/**
- * The ✕ row is a SIBLING of <aside class="rightbar">, not a descendant: the
- * panel is `overflow-y: auto`, so a close button inside it would scroll out of
- * reach — re-creating the bug one scroll away. A sticky child would have been
- * the in-panel alternative, but .rightbar carries tuned scroll-restore logic
- * (rightbarTop) and sticking a child into that container risks it.
- *
- * The cost of a sibling is that the drawer becomes TWO fixed boxes, which only
- * still reads as one drawer if they share an edge and a width. That is a CSS
- * invariant, so it is pinned here rather than left to visual inspection.
- */
-test("the ✕ row and the panel share one edge — they read as a single drawer (#50)", () => {
-  const narrow = narrowBlock();
-  // NOTE: this selector must match ONLY the standalone drawer rule. `\.rightbar\s*\{`
-  // also matches `.layout.right-hidden .rightbar { display: block }` earlier in
-  // the block, which declares none of the properties below — the comparison
-  // would fail on correct code. Require the line to start with `.rightbar`.
-  const panel = narrow.match(/^\s*\.rightbar\s*\{[^}]*\}/m)?.[0] ?? "";
-  assert.notEqual(panel, "", "the narrow standalone .rightbar rule must exist (#50)");
-  const head = narrow.match(/^\s*\.rightbarhead\s*\{[^}]*\}/m)?.[0] ?? "";
-  assert.notEqual(head, "", "the narrow .rightbarhead rule must exist (#50)");
-  for (const decl of [/right:\s*0/, /width:\s*min\(420px,\s*92vw\)/, /position:\s*fixed/]) {
-    assert.match(head, decl, `.rightbarhead must also set ${decl} so it lines up with the panel (#50)`);
-    assert.match(panel, decl, `.rightbar must set ${decl} (#50)`);
-  }
-  // the header sits flush to the panel's top: its own `top` must be 0
-  assert.match(
-    head,
-    /top:\s*0/,
-    "a header offset from the top would open a gap above the drawer (#50)",
+    /\.rightbarhead\s*\{[^}]*position:\s*sticky[^}]*\}/,
+    "…replaced by a sticky child of that one box (#50)",
   );
 });
 
@@ -215,10 +275,13 @@ test("the backdrop sits under the drawer and over the content (#50)", () => {
     /\.rightbar\s*\{[^}]*z-index:\s*5/,
     "the drawer must stay above its own backdrop (#50)",
   );
+  // The ✕ row is now INSIDE .rightbar (a stacking context at z-index:5), so it
+  // no longer needs a global z-index above the backdrop — it only has to sit
+  // above the panel's own scrolling content.
   assert.match(
     narrowBlock(),
-    /\.rightbarhead\s*\{[^}]*z-index:\s*6/,
-    "the ✕ row sits above both, so it stays clickable (#50)",
+    /\.rightbarhead\s*\{[^}]*z-index:\s*1/,
+    "the sticky ✕ row must out-stack the content that scrolls under it (#50)",
   );
   assert.match(
     ruleBody(".rightbarbackdrop"),
