@@ -597,6 +597,21 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   if (!drawer().contains(closeBtn))
     fail("the ✕ is not a descendant of .rightbar — it must travel with the panel (#50)");
 
+  // …and it must actually be VISIBLE. This is the check that matters: the row
+  // existed, sat inside the panel and was sticky while still computing to
+  // display:none, because the minifier hoists media-query rules above the base
+  // rule and equal specificity then loses the cascade. happy-dom applies media
+  // queries at parse time, so this scenario — which loads NARROW — is the only
+  // place that bug is observable.
+  {
+    const row = w.document.querySelector(".rightbarhead");
+    const cs = w.document.defaultView.getComputedStyle(row);
+    if (cs.display === "none" || cs.display === "hidden")
+      fail(`the ✕ row is ${cs.display} at narrow width — the drawer has no visible way out (#50)`);
+    if (cs.position !== "sticky")
+      fail(`the ✕ row must be sticky (got position:${cs.position}) (#50)`);
+  }
+
   // …and it must survive the panel being scrolled: .rightbar is overflow-y:auto,
   // so a close button that is not sticky is out of reach one scroll down. This is
   // the reachable-close-control requirement, exercised at runtime.

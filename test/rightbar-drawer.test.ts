@@ -149,12 +149,12 @@ test("the ✕ row is STICKY — the panel scrolls, the close button must not (#5
   const narrow = narrowBlock();
   assert.match(
     narrow,
-    /\.rightbarhead\s*\{[^}]*position:\s*sticky/,
+    /\.rightbar \.rightbarhead\s*\{[^}]*position:\s*sticky/,
     "the ✕ row must be sticky inside the scrolling panel (#50)",
   );
   assert.match(
     narrow,
-    /\.rightbarhead\s*\{[^}]*top:\s*0/,
+    /\.rightbar \.rightbarhead\s*\{[^}]*top:\s*0/,
     "sticky with no top offset pins to the wrong edge (#50)",
   );
   // sticky lets later content scroll underneath, so the row must be opaque.
@@ -189,7 +189,7 @@ test("the close row only shows on a narrow screen (#50)", () => {
   );
   assert.match(
     narrowBlock(),
-    /\.rightbarhead\s*\{[^}]*position:\s*sticky/,
+    /\.rightbar \.rightbarhead\s*\{[^}]*position:\s*sticky/,
     "the narrow media query is what makes it a real, visible row (#50)",
   );
 });
@@ -213,8 +213,68 @@ test("the drawer is ONE fixed box again (#50)", () => {
   );
   assert.match(
     narrow,
-    /\.rightbarhead\s*\{[^}]*position:\s*sticky[^}]*\}/,
+    /\.rightbar \.rightbarhead\s*\{[^}]*position:\s*sticky[^}]*\}/,
     "…replaced by a sticky child of that one box (#50)",
+  );
+});
+
+
+/* ---------- 1b: the row must actually be VISIBLE ---------- */
+
+test("the close row is VISIBLE on a narrow screen, not merely present (#50)", () => {
+  // THE regression: the base rule is `display: none` (hidden on a wide screen),
+  // so the narrow media query must set `display` back. Collapsing the two rules
+  // and keeping only `position: sticky` left the row at display:none — the x
+  // existed, sat inside the panel, was sticky, and was COMPLETELY INVISIBLE.
+  // happy-dom never re-evaluates media queries, so no runtime check can catch
+  // this; it has to be asserted here or not at all.
+  const narrow = narrowBlock();
+  // selector is scoped (.rightbar .rightbarhead) so it outranks the base rule
+  const row = narrow.match(/^\s*\.rightbar \.rightbarhead\s*\{[^}]*\}/m)?.[0] ?? "";
+  assert.notEqual(row, "", "the narrow .rightbarhead rule must exist (#50)");
+  assert.match(
+    row,
+    /display:\s*flex/,
+    "the narrow query must set display:flex — the base rule is display:none, so " +
+      "without this the close button renders invisible (#50)",
+  );
+  assert.match(
+    ruleBody(".rightbarhead"),
+    /display:\s*none/,
+    "…and the base rule must still hide it on a wide screen (#50)",
+  );
+});
+
+/* ---------- 1c: narrow rules must OUT-SPECIFY their base rules ---------- */
+
+test("narrow-only rules out-specify their base counterparts (#50)", () => {
+  // THE regression, and the subtlest one yet. The Vite minifier HOISTS AND
+  // INLINES rules out of the media query, placing them near the top of the
+  // bundle. A narrow rule with the SAME specificity as its base rule therefore
+  // loses the cascade at equal specificity regardless of source order — the
+  // base `.rightbarhead { display: none }` came after it and won, so the ✕ was
+  // invisible at EVERY width, narrow included. Scoping the narrow rules to a
+  // descendant selector raises specificity above the base rule, so the build
+  // can no longer reorder them into a no-op.
+  const narrow = narrowBlock();
+  assert.match(
+    narrow,
+    /\.rightbar \.rightbarhead\s*\{/,
+    "the narrow ✕ rule must be scoped (.rightbar .rightbarhead) to outrank the base rule (#50)",
+  );
+  assert.match(
+    narrow,
+    /\.layout \.rightbarbackdrop\s*\{/,
+    "the narrow backdrop rule must be scoped (.layout .rightbarbackdrop) to outrank the base rule (#50)",
+  );
+  // …and no bare-class narrow rule may survive for these two
+  assert.ok(
+    !/^\s*\.rightbarhead\s*\{/m.test(narrow),
+    "a bare .rightbarhead in the media query loses the cascade after minification (#50)",
+  );
+  assert.ok(
+    !/^\s*\.rightbarbackdrop\s*\{/m.test(narrow),
+    "a bare .rightbarbackdrop in the media query loses the cascade after minification (#50)",
   );
 });
 
