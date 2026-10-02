@@ -65,6 +65,15 @@ const EVENTS = [
     type: "tool_call", data: { callId: "c1", name: "bash", args: { command: "ls" } } },
   { id: "e4", seq: 4, ts: "2026-01-01T10:00:10Z", session: "alpha-s1", branch: "br0", parent: "e3",
     type: "tool_result", data: { callId: "c1", name: "bash", result: "file.txt", ok: true, durationMs: 12 } },
+  // #51: the completion-audit lifecycle. Two shapes that used to render wrong —
+  // a card with a real reason, and a verdict with NO reason (which must not
+  // produce a card at all).
+  { id: "g1", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0", parent: "e4",
+    type: "goal", data: { event: "audit-started", verify: "npm test passes" } },
+  { id: "g2", seq: 6, ts: "2026-01-01T10:00:30Z", session: "alpha-s1", branch: "br0", parent: "g1",
+    type: "goal", data: { event: "audit", verdict: "changes-required", feedback: "the parser drops CRLF line endings" } },
+  { id: "g3", seq: 7, ts: "2026-01-01T10:00:40Z", session: "alpha-s1", branch: "br0", parent: "g2",
+    type: "goal", data: { event: "audit", verdict: "approved", feedback: "" } },
 ];
 
 function apiResponse(url) {
@@ -261,6 +270,84 @@ if (!feedText) {
   process.exit(1);
 }
 console.log("deep render ok: feed rows present");
+
+/* ---------- #51: the audit rows must not render as one long line ----------
+ * Reported: "`🔍 completion audit started` and the audit body to its right are
+ * on ONE line, and the card's left edge is out of line with the others", plus
+ * "`⚠ audit: changes required (no detail)` between the divider lines looks a
+ * bit off".
+ *
+ * happy-dom does no layout, so getBoundingClientRect() returns all zeros and
+ * the same-row bug cannot be measured as geometry. What CAUSED it is structural
+ * though — a card nested inside a `display:flex` .divider-msg becomes a flex
+ * SIBLING of the label — so the assertions below check the structure and the
+ * computed display that together produce the one-line layout. On the pre-fix
+ * code the audit row is a .divider-msg and the card is its direct child. */
+{
+  const fail = (msg) => { console.error(`#51 REGRESSION: ${msg}`); process.exit(1); };
+  const css = (el, prop) => w.document.defaultView.getComputedStyle(el).getPropertyValue(prop);
+  const text = (el) => el?.textContent ?? "";
+
+  const lines = [...w.document.querySelectorAll(".goalline")];
+  if (!lines.length) {
+    const old = [...w.document.querySelectorAll(".divider-msg")].find((d) =>
+      /completion audit|audit: /.test(text(d)),
+    );
+    if (old)
+      fail(
+        "the audit row is still a .divider-msg, whose display:flex puts the card on " +
+        `the SAME line as its label (#51): ${JSON.stringify(text(old).slice(0, 60))}`,
+      );
+    fail("no audit rows rendered at all (#51)");
+  }
+
+  for (const line of lines) {
+    const label = line.querySelector(".goalline-label");
+    if (!label) fail(`an audit row has no label element (#51): ${text(line).slice(0, 60)}`);
+
+    // THE bug: the card must be nested INSIDE a block wrapper, never a direct
+    // child of the flex row
+    if (css(line, "display") === "flex")
+      fail(`.goalline must not be display:flex — that is the same-row bug (#51)`);
+    if (line.classList.contains("divider-msg"))
+      fail(`the audit row still uses the flex .divider-msg container (#51)`);
+    if (css(label, "display") === "flex" || css(label, "display") === "inline-flex")
+      fail(`the label must be its own block so the card drops beneath it (#51)`);
+
+    const card = line.querySelector(".card");
+    if (card) {
+      // the card has to be a DESCENDANT of the stacking wrapper, and the label
+      // a SIBLING of it — never both children of a flex row
+      if (card.parentElement === line && label.parentElement === line) {
+        const parentDisplay = css(line, "display");
+        if (parentDisplay.includes("flex"))
+          fail(`label and card are flex siblings of ${line.className} (#51)`);
+      }
+      // alignment: the card must not be shifted by an inline offset
+      if (/margin-left|transform/.test(css(card, "margin-left") + css(card, "transform")))
+        fail(`the audit card must not be offset from the feed's left edge (#51)`);
+    }
+  }
+
+  // a verdict with NO reason must not produce a card at all — "(no detail)" is
+  // the absence of a finding, and drawing it as one was the second complaint
+  const approvedLine = lines.find((l) => /audit: approved/.test(text(l)));
+  if (!approvedLine) fail("the approved audit row is missing (#51)");
+  if (approvedLine.querySelector(".card"))
+    fail(
+      `a verdict with no reason must render the label ALONE, not a card (#51): ${text(approvedLine).slice(0, 60)}`,
+    );
+  if (/no detail/i.test(text(approvedLine)))
+    fail(`the literal "no detail" placeholder must never reach the UI (#51)`);
+
+  // and a verdict WITH a real reason must still show it
+  const rejectedLine = lines.find((l) => /changes required/.test(text(l)));
+  if (!rejectedLine?.querySelector(".card")) fail("a real audit finding must still render its card (#51)");
+  if (!/CRLF/.test(text(rejectedLine)))
+    fail(`the auditor's reason must be visible (#51): ${text(rejectedLine).slice(0, 60)}`);
+
+  console.log("deep render ok: audit rows stack and a reasonless verdict shows no card (#51)");
+}
 
 /* ---------- #52: the timeline Copy buttons must actually copy -------------
  * Reported crash: `Cannot read properties of undefined (reading 'writeText')`

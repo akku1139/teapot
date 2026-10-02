@@ -122,7 +122,27 @@ test("missing fields degrade gracefully (#41)", () => {
   ]) {
     const line = goalLine(e);
     assert.ok(line.label.trim(), `empty label for ${JSON.stringify(e)}`);
+    // #41: never a bare label with nothing after it.
+    // #51: a VERDICT with no REASON is the one deliberate exception — a card
+    // whose whole content is "(no detail)" is the absence of a finding dressed
+    // up as one. The label still stands; only the card is withheld, and
+    // `hasCard` is the flag that says so.
+    // `audit-started` is NOT the exception: it always carries the verification
+    // contract (or a "checking…" fallback).
+    if (e.event === "audit" && !line.hasCard) {
+      assert.equal(line.detail.trim(), "", "a withheld card must carry no detail (#51)");
+      continue;
+    }
     assert.ok(line.detail.trim(), `empty detail for ${JSON.stringify(e)} (#41)`);
+    assert.equal(line.hasCard, true, `hasCard must agree with detail for ${JSON.stringify(e)}`);
+  }
+});
+
+test("a verdict WITH a reason still gets its card (#51)", () => {
+  for (const verdict of ["approved", "changes-required"]) {
+    const line = goalLine({ event: "audit", verdict, feedback: "the parser drops CRLF" });
+    assert.equal(line.hasCard, true, `a real ${verdict} reason must render a card (#51)`);
+    assert.match(line.detail, /CRLF/);
   }
 });
 
@@ -149,7 +169,12 @@ test("App.tsx renders goal events through goalLine (#41)", () => {
     /🎯 goal \{String\(d\.event/,
     "the old empty-body template must be gone (#41)",
   );
-  // the label alone is not enough — the detail must be rendered too
+  // the label alone is not enough — the detail must be rendered too, and the
+  // decision to render it is `hasCard`, not a guess from an empty string (#51)
   const block = src.slice(src.indexOf('if (e.type === "goal")'));
-  assert.match(block.slice(0, 1400), /line\.detail/, "the detail body must be rendered (#41)");
+  assert.match(
+    block.slice(0, 1400),
+    /line\.hasCard/,
+    "the detail body must be rendered when hasCard says so (#41, #51)",
+  );
 });

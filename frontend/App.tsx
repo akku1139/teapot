@@ -3,7 +3,7 @@ import { renderMarkdown } from "./md";
 import { fmtDur } from "./format";
 import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog } from "./live-buffer";
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
-import { goalLine } from "./goal-timeline";
+import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
@@ -3329,7 +3329,16 @@ export default function App() {
                     {a().verdict === "approved" ? "✅ audit: approved" : "⚠ audit: changes required"}
                     <span class="meta muted" style="margin-left:auto">{relTime(a().at)}</span>
                   </div>
-                  <div class="content" innerHTML={renderMarkdown(a().feedback)} />
+                  {/* #51: the auditor can return a verdict with no reason.
+                      An empty card says less than an honest one-liner. */}
+                  <div
+                    class="content"
+                    innerHTML={
+                      isPlaceholderDetail(a().feedback)
+                        ? renderMarkdown("_the auditor returned a verdict with no detail_")
+                        : renderMarkdown(a().feedback)
+                    }
+                  />
                 </div>
               )}
             </Show>
@@ -4130,21 +4139,30 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
     // with an EMPTY body ("🎯 goal audit:"), hiding the verification contract
     // and the verdict. Every branch now carries a real detail, and "done" is
     // labelled as PENDING audit because it is logged before the audit runs.
+    //
+    // #51: the label and this card were children of `.divider-msg`, which is
+    // `display:flex` with ::before/::after filling the slack — so the card was
+    // a FLEX SIBLING of the label and everything shared one row, with the
+    // card's left edge wherever the flex layout put it. `.goalline` stacks them
+    // instead: label on its own line, card beneath, both aligned to the same
+    // left edge as every other card in the feed.
     const line = goalLine(e.data ?? {});
     return (
-      <div class={"divider-msg " + (line.tone === "err" ? "err" : line.tone === "warn" ? "compacting" : "")}>
-        {line.label}
-        {line.detail && (
+      <div class={"goalline " + (line.tone === "err" ? "err" : line.tone === "warn" ? "warn" : "")}>
+        <div class="goalline-label">{line.label}</div>
+        {/* an empty detail means "nothing real to show" — the label stands
+            alone rather than getting a placeholder card (#51). `hasCard` is
+            the explicit flag, so this is never a guess from an empty string. */}
+        <Show when={line.hasCard}>
           <div
             class={"card " + (line.tone === "ok" ? "auditcard ok" : line.tone === "warn" ? "auditcard" : "verifycard")}
-            style="max-height:none;margin-top:6px;text-align:left"
             innerHTML={
               line.markdown
                 ? renderMarkdown(line.detail)
                 : renderMarkdown(`\`\`\`\n${line.detail}\n\`\`\``)
             }
           />
-        )}
+        </Show>
       </div>
     );
   }

@@ -441,6 +441,16 @@ body:has(.termdrawer) .jump {
 .divider-msg.err { color: var(--err); }
 /* live compaction banner — animated so it reads as work in progress */
 .divider-msg.compacting { color: var(--acc); animation: pulse 1.6s ease-in-out infinite; }
+/* Goal / audit lifecycle row (#51). NOT a .divider-msg: that is `display:flex`
+   with ::before/::after rules filling the slack, so anything nested in it is
+   forced onto the SAME row as the label — which is why the audit card used to
+   sit to the right of its label with a left edge that lined up with nothing.
+   This stacks: label, then card beneath, both flush with the feed's cards. */
+.goalline { padding: 4px 18px; color: var(--dim); font-size: 11.5px; }
+.goalline-label { display: block; color: var(--dim); }
+.goalline.warn .goalline-label { color: var(--warn); }
+.goalline.err .goalline-label { color: var(--err); }
+.goalline .card { margin-top: 6px; text-align: left; }
 
 .day-divider { display: flex; align-items: center; gap: 10px; padding: 14px 18px 6px; }
 .day-divider::before, .day-divider::after { content: ""; flex: 1; height: 1px; background: var(--bg-light); }

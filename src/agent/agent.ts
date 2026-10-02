@@ -2060,7 +2060,12 @@ export class Agent {
           const text = String(res.message.content ?? "");
           const approved = /^APPROVED\b/i.test(text.trim());
           const feedback = text.replace(/^(APPROVED|CHANGES-REQUIRED)\s*[:—-]?\s*/i, "").trim();
-          await this.setGoalAudit(approved ? "approved" : "changes-required", feedback || "(no detail)");
+          // #51: storing the literal "(no detail)" made the UI draw a card
+          // whose whole content was the absence of a reason, and that same
+          // string landed in goal.md for the right panel. An empty string is
+          // the honest value: the auditor returned a verdict and no reason,
+          // which every consumer can already render as "label only".
+          await this.setGoalAudit(approved ? "approved" : "changes-required", feedback);
           // `operatorFacing: true` — the verdict is written for the TIMELINE
           // only. The audit ran in its own side conversation (a tools-less call
           // over buildMessages() + an audit prompt), so it was never in
@@ -2076,10 +2081,16 @@ export class Agent {
               : `🔍 completion audit: CHANGES REQUIRED — ${feedback}`,
           });
           if (!approved) {
-            // hand the gaps back to the worker as its next instruction
+            // hand the gaps back to the worker as its next instruction.
+            // #51: with the "(no detail)" placeholder gone, an empty verdict
+            // would leave this prompt saying "address these gaps" and then
+            // naming none — so restate the contract as the thing to re-check.
+            const gaps = feedback.trim()
+              ? feedback.slice(0, 2000)
+              : `The auditor returned no specific gaps. Re-read the verification contract above and re-run it yourself, item by item, before finishing again:\n\n${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
             this.pendingPrompts.push({
               source: "harness",
-              text: `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${feedback.slice(0, 2000)}`,
+              text: `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`,
             });
           }
         } catch (err) {
