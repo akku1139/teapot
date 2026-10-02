@@ -833,9 +833,43 @@ export function hashLine(content: string): string {
 
 /** `LINE:HASH| content` for each line, 1-indexed */
 export function renderHashlines(lines: string[], startLine = 1): string {
-  return lines
+  // same trailing-newline rule as renderGutter (#7): a file ending in "\n"
+  // splits into a final "" that is not a line, and an anchor for it is a lie
+  // the model can copy into an edit that then never verifies
+  const body = lines.length && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
+  return body
     .map((l, i) => `${startLine + i}:${hashLine(l)}| ${l}`)
     .join("\n");
+}
+
+/**
+ * Width of the `N| ` gutter for a page, so every line in it lines up.
+ *
+ * #7: the prefix had no padding, so the gutter silently widened at line 1000
+ * and the whole block jumped sideways mid-file — the exact "unfriendly line
+ * numbers" complaint. Padding to the widest number IN THE PAGE is enough: a
+ * page is a bounded window, and aligning to the file's total length would
+ * push every line of a 20-line read of a 500k-line file 6 characters right.
+ */
+export function gutterWidth(startLine: number, count: number): number {
+  return String(Math.max(0, startLine - 1) + count).length;
+}
+
+/**
+ * The default `N| ` display, with a stable gutter width and no phantom line.
+ *
+ * #7, second half: the prefix was added AFTER `text.split("\n")`, so a file
+ * ending in a newline produced a final numbered row for a line that does not
+ * exist. A model that copies the tail verbatim then hands `edit_file` an
+ * old_text with a phantom line in it, and the edit fails for no visible reason.
+ * A trailing empty element is dropped, which is what the reader means.
+ */
+export function renderGutter(lines: string[], startLine = 1): string {
+  // a trailing newline splits into a final "" — not a line of the file
+  const body = lines.length && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
+  if (!body.length) return "";
+  const w = gutterWidth(startLine, body.length);
+  return body.map((l, i) => `${String(startLine + i).padStart(w)}| ${l}`).join("\n");
 }
 
 /** parse a `LINE:HASH` anchor; returns null when the text is not an anchor */
@@ -1038,7 +1072,7 @@ export const TOOLS: ToolDef[] = [
         const parts = regions.map(([s, e]) =>
           idMode === "hash"
             ? renderHashlines(lines.slice(s, e + 1), s + 1)
-            : lines.slice(s, e + 1).map((l, k) => `${s + k + 1}| ${l}`).join("\n"),
+            : renderGutter(lines.slice(s, e + 1), s + 1),
         );
         let result = parts.join("\n--\n");
         if (idxs.length > page.length || off > 0)
@@ -1052,8 +1086,11 @@ export const TOOLS: ToolDef[] = [
       const lim = num(args.limit, 2000);
       const pageLines = lines.slice(off, off + lim);
       const slice =
-        idMode === "hash" ? renderHashlines(pageLines, off + 1) : pageLines.map((l, i) => `${off + i + 1}| ${l}`).join("\n");
-      const more = off + lim < lines.length ? `\n... (${lines.length - off - lim} more lines)` : "";
+        idMode === "hash" ? renderHashlines(pageLines, off + 1) : renderGutter(pageLines, off + 1);
+      // the phantom trailing line is dropped for the count too, or a file that
+      // ends in a newline always reports one line more than it has
+      const total = lines.length && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+      const more = off + lim < total ? `\n... (${total - off - lim} more lines)` : "";
       return { ok: true, result: slice + more };
     },
   },

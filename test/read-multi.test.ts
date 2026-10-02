@@ -30,13 +30,17 @@ async function seed(ws: string) {
 
 /* ---------- the single-file contract must not move (#16) ---------- */
 
-test("a plain single-path read is byte-identical to before (#16)", async () => {
+test("a plain single-path read keeps the historical format, minus the phantom line (#16/#7)", async () => {
   await useTempDirs(["m16a-", "m16b-"], async ([ws]) => {
     await seed(ws);
     const r = await executeTool("read_file", JSON.stringify({ path: "a.ts" }), ctx(ws));
     assert.ok(r.ok, r.result);
-    // exact historical format: `N| ` gutters, trailing empty line preserved
-    assert.equal(r.result, "1| AAA\n2| BBB\n3| ", "single-read format changed (#16)");
+    // #16 pinned `N| ` gutters byte-for-byte. #7 changed ONE thing on purpose:
+    // the trailing empty line a final newline splits into is not a line of the
+    // file, and a model copying the tail verbatim fed `edit_file` an old_text
+    // with a phantom row in it, so the edit failed for no visible reason. The
+    // gutter itself is unchanged.
+    assert.equal(r.result, "1| AAA\n2| BBB", "single-read format changed (#16/#7)");
   });
 });
 

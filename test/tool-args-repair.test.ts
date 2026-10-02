@@ -168,7 +168,9 @@ test("the single-read format is unchanged by repair (#17)", async () => {
     const ctx = { cwd: d, defaultTimeoutMs: 5_000, maxOutputBytes: 10_000 };
     assert.equal(
       (await executeTool("read_file", '{"path":"a.ts"}', ctx)).result,
-      "1| AAA\n2| BBB\n3| ",
+      // #7 dropped the phantom trailing row; #17's point is that REPAIR does
+      // not alter the format, so it is compared against the shipped one
+      "1| AAA\n2| BBB",
       "repair must not alter the output format (#17)",
     );
   });
