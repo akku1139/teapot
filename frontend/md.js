@@ -192,25 +192,60 @@ function renderEscaped(lines) {
   }
 }
 
-/** Split a table row on unescaped pipes; `\|` becomes a literal pipe. */
+/**
+ * Split a table row into cells.
+ *
+ * A pipe is a cell boundary only when it is NOT:
+ *   - escaped as `\|` → a literal pipe, and
+ *   - inside a CODE SPAN, where it is ordinary text.
+ *
+ * The code-span rule deliberately mirrors `inline()`'s `/`([^`]+)`/g exactly.
+ * The two must agree, or a cell is split at a place the inline renderer treats
+ * as code — which is how `| `N| ` gutter |` came out as four columns instead of
+ * two, and how `` `a|b` `` lost its code formatting. GFM agrees: inside a code
+ * span a pipe is content, and the only escape needed is `\|`.
+ *
+ * Note the escaped pipe is also suppressed INSIDE a span: `` `a\|b` `` is the
+ * documented way to write a pipe in code, and the backslash there is the
+ * author's, not markup.
+ */
 function splitRow(line) {
   let s = line.trim();
   if (s.startsWith("|")) s = s.slice(1);
   const cells = [];
   let cur = "";
   for (let k = 0; k < s.length; k++) {
-    if (s[k] === "\\" && s[k + 1] === "|") {
+    const ch = s[k];
+    if (ch === "\\" && s[k + 1] === "|") {
+      // a literal pipe, inside a span or out
       cur += "|";
       k++;
       continue;
     }
-    if (s[k] === "|" && k === s.length - 1) break; // trailing pipe
-    if (s[k] === "|") {
+    if (ch === "`") {
+      // Only enter a span if it actually CLOSES. `inline()` uses
+      // /`([^`]+)`/g, so an unclosed backtick is literal text THERE — if we
+      // treated it as a span here, this row would keep every pipe to its end
+      // and merge columns the inline renderer does consider separate. A
+      // half-open span is the exact disagreement this fix exists to remove,
+      // so a span must be complete on BOTH ends before any pipe is
+      // suppressed.
+      const close = s.indexOf("`", k + 1);
+      if (close !== -1) {
+        cur += s.slice(k, close + 1); // the span verbatim, pipes included
+        k = close;
+        continue;
+      }
+      cur += ch;
+      continue;
+    }
+    if (ch === "|" && k === s.length - 1) break; // trailing pipe
+    if (ch === "|") {
       cells.push(cur.trim());
       cur = "";
       continue;
     }
-    cur += s[k];
+    cur += ch;
   }
   cells.push(cur.trim());
   return cells.filter((c, idx) => !(c === "" && idx === cells.length - 1 && s.endsWith("|")));
