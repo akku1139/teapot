@@ -40,6 +40,62 @@ async function waitForPortFree(
   return false;
 }
 
+/* ---------- live-update handover: keeping the operator's terminal (#35) ---------- */
+
+/**
+ * The pid of the process that replaced US, or null if we are the server.
+ *
+ * `Master.restartServer()` spawns the replacement and records its pid here, so
+ * the outgoing process can supervise its own successor instead of exiting and
+ * handing the shell a prompt. A field on the master rather than an env var: both
+ * processes are separate, but this value is written and read in the SAME
+ * process, so there is no environment for the two of them to disagree over.
+ */
+
+/** is `pid` still running? (EPERM means alive but not ours to signal) */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Watch the replacement on the operator's behalf.
+ *
+ * The terminal is still wired to THIS process, so their Ctrl-C arrives here
+ * first. Two things must happen, and the old one-shot shutdown() could do
+ * neither:
+ *
+ *  1. forward the signal, so the replacement actually stops; and
+ *  2. when the replacement does exit, leave too — otherwise the shell waits on
+ *     a supervisor with nothing left to supervise and Ctrl-C looks broken.
+ *
+ * The original shutdown() cannot be reused for this: its `shuttingDown` latch
+ * is already set by the SIGTERM that started the handover, so a later Ctrl-C
+ * would be swallowed and this process would never exit.
+ */
+function supervise(pid: number): void {
+  let signalled = false;
+  const forward = (sig: NodeJS.Signals) => {
+    // Once the replacement is on its way out, stop bouncing signals: a second
+    // SIGINT arriving during its shutdown would re-raise the same failure and
+    // the operator would have to press Ctrl-C several times to be heard.
+    if (signalled) return;
+    signalled = true;
+    try {
+      process.kill(pid, sig);
+    } catch {
+      /* already gone — the poll loop below notices and exits */
+    }
+  };
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => forward(sig));
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function main(): Promise<void> {
   // CLI: teapot [--port N] [-p N] [--config file] [-c file] [config.json]
   let cfgArg: string | undefined;
@@ -119,7 +175,7 @@ async function main(): Promise<void> {
   }
 
   const app = buildApp(master);
-  serveApp(app, config.port, config.host);
+  const server = serveApp(app, config.port, config.host);
 
   // agent crash isolation: an agent error never escapes its own loop; here we
   // also make sure the process survives unexpected rejections.
@@ -134,6 +190,36 @@ async function main(): Promise<void> {
   const shutdown = async (signal?: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // SUPERVISOR MODE. When a live update replaced us, we are no longer the
+    // server — but we are still the process the SHELL is waiting on, and it
+    // is still this process group that owns the terminal. Exiting here ended
+    // the shell's foreground job, so the operator was dumped back to the
+    // prompt mid-session while the new server kept running in the background
+    // ("teapot live restart returns to the shell", #35).
+    //
+    // So instead of exiting we hand over: keep the job slot, forward signals
+    // to the replacement, and only leave once it is gone. The operator's
+    // terminal — and their Ctrl-C — follow the server across the restart.
+    //
+    // The replacement is the child we spawned ourselves, so we hold it directly:
+    // no pid passed through the environment, and no way for the two processes
+    // to disagree about who supervises whom.
+    if (master.replacementPid !== null) {
+      const replacement = master.replacementPid;
+      console.log(`[teapot] handing the terminal to the new server (pid ${replacement})...`);
+      // Release the port FIRST. The replacement is blocked in waitForPortFree
+      // waiting for exactly this, and it will SIGTERM us again if we do not go
+      // — but the difference now is that we stop SERVING rather than exiting,
+      // so the shell's foreground job survives the handover.
+      await server.close();
+      console.log("[teapot] port released; supervising the new server");
+      supervise(replacement);
+      // Stay attached until the replacement exits. The shell is still waiting
+      // on US, so leaving early is exactly the bug.
+      while (pidAlive(replacement)) await sleep(500);
+      console.log("[teapot] new server exited; releasing the terminal");
+      process.exit(0);
+    }
     console.log(`\n[teapot] shutting down${signal ? ` (${signal})` : ""}...`);
     await Promise.allSettled([...master.agents.values()].map((a) => a.dispose()));
     // During a live update the replacement SIGTERMs us to take the port. Linger

@@ -333,6 +333,13 @@ function printAgentEvent(e: TeapotEvent): void {
 
 export class Master {
   readonly agents = new Map<string, Agent>();
+  /**
+   * pid of the process that replaced us in a live update, or null while we are
+   * still the server. `restartServer()` sets it; `index.ts` reads it to keep
+   * supervising the replacement instead of exiting and dropping the operator
+   * back at the shell prompt (#35).
+   */
+  replacementPid: number | null = null;
   private tasks: {
     task: TaskConfig;
     schedule: Schedule;
@@ -1421,6 +1428,11 @@ if (active().length === 0) wake();
     // dropped connection instead of {ok:true} (#35).
     process.env.TEAPOT_RESTART_FROM = String(process.pid);
 
+    // #35: remember the replacement so this process can hand the operator's
+    // terminal over to it. Without that, the old process exited, the shell's
+    // foreground job ended, and the operator was dumped back at the prompt while
+    // the new server ran on in the background.
+    this.replacementPid = null; // cleared below, once the pid is known
     const child = spawn(execPath, args, {
       // NOT detached, and NOT stdio:"ignore" (#35). Both made the live update
       // silently daemonize: the replacement inherited nothing from this
@@ -1433,6 +1445,7 @@ if (active().length === 0) wake();
       env,
     });
 
+    this.replacementPid = child.pid ?? null;
     await new Promise((r) => setTimeout(r, 1_500));
     void child; // deliberately not unref()'d — see above
   }

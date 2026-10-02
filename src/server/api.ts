@@ -1172,10 +1172,40 @@ export function buildApp(master: Master): Hono {
   return app;
 }
 
-export function serveApp(app: Hono, port: number, host?: string): void {
+/**
+ * Serve the app, returning a handle that can release the listening socket.
+ *
+ * #35: the live-update handover needs to give the port up WITHOUT exiting —
+ * the outgoing process stays attached to the operator's terminal and supervises
+ * its replacement, so it must not still be holding the port the replacement is
+ * waiting to bind. Returning the server is what makes "stop serving, keep
+ * running" expressible; previously the handle was dropped here and the only way
+ * to release the port was process.exit().
+ */
+export function serveApp(app: Hono, port: number, host?: string): { close: () => Promise<void> } {
   const wss = new WebSocketServer({ noServer: true });
-  serve({ fetch: app.fetch, port, hostname: host, websocket: { server: wss } }, (info) => {
-    const shown = host && host !== "0.0.0.0" && host !== "::" ? `http://${host}:${info.port}` : `http://localhost:${info.port} (all interfaces)`;
-    console.log(`[teapot] master listening on ${shown}`);
-  });
+  const server = serve(
+    { fetch: app.fetch, port, hostname: host, websocket: { server: wss } },
+    (info) => {
+      const shown =
+        host && host !== "0.0.0.0" && host !== "::"
+          ? `http://${host}:${info.port}`
+          : `http://localhost:${info.port} (all interfaces)`;
+      console.log(`[teapot] master listening on ${shown}`);
+    },
+  );
+  return {
+    close: async () => {
+      // WebSocket clients hold the server open; without this the close would
+      // hang on a live terminal and the handover would stall.
+      for (const c of wss.clients) c.terminate();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        // A keep-alive connection can keep the socket open indefinitely; the
+        // handover must not wait on that, so force it and report the port free
+        // rather than blocking the replacement forever.
+        setTimeout(resolve, 2_000);
+      });
+    },
+  };
 }

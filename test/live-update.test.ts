@@ -58,6 +58,16 @@ async function waitFor(fn: () => boolean | Promise<boolean>, ms: number): Promis
   return false;
 }
 
+/** is this pid still running? (EPERM = alive, just not ours to signal) */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** SIGKILL the child's whole process group — a live update spawns a grandchild. */
 function killTree(proc: ChildProcess): void {
   try { process.kill(-proc.pid!, "SIGKILL"); } catch {}
@@ -130,9 +140,21 @@ test("live update: the replacement stays attached and its logs stay visible (#35
   assert.equal(res.status, 200, `restart endpoint must answer: ${res.body}\n${a.out}`);
 
   // The replacement inherits our stdio, so its banner lands in the SAME stream.
+  //
+  // COUNT the banner, do not test for its presence: both boots print it, so
+  // `includes` was already true from the FIRST server and the assertion used
+  // to pass before the handover had even started — which is what let a broken
+  // handover go unnoticed here.
   assert.ok(
-    await waitFor(() => a.out.includes("master listening on"), 30_000),
+    await waitFor(() => (a.out.match(/master listening on/g) ?? []).length >= 2, 30_000),
     `replacement never logged to the inherited stdio (#35 stdio:"ignore" bug):\n${a.out}`,
+  );
+
+  // The handover is only COMPLETE once the old process has released the port
+  // and is supervising. Asserting before that is asserting mid-flight.
+  assert.ok(
+    await waitFor(() => a.out.includes("supervising the new server"), 30_000),
+    `the handover never completed (#35):\n${a.out}`,
   );
 
   // still serving after the handover
@@ -141,15 +163,84 @@ test("live update: the replacement stays attached and its logs stay visible (#35
     "no process is serving /api/version after the handover",
   );
 
-  // A detached child would NOT receive our SIGINT. Ctrl-C must reach the
-  // replacement, which is only true while it stays in our process group.
+  // Ctrl-C must still reach the replacement. Since the handover the terminal
+  // is wired to the SUPERVISOR, so this is no longer a same-process-group
+  // accident: the supervisor forwards it and then leaves once the replacement
+  // is gone, so the shell's job ends the way it started (#35).
   a.proc.kill("SIGINT");
-  const gone = await waitFor(async () => {
-    try { process.kill(a.proc.pid!, 0); return false; } catch { return true; }
-  }, 30_000);
-  // the replacement is a CHILD of `a.proc`, so check it directly too
-  assert.ok(gone, "old process did not exit after the handover");
+  const gone = await waitFor(() => !pidAlive(a.proc.pid!), 30_000);
+  assert.ok(gone, `Ctrl-C must tear down the supervisor and the replacement (#35):\n${a.out}`);
   killTree(a.proc);
+});
+
+test("live update: the operator is NOT dumped back at the shell (#35)", async (t) => {
+  // The regression, verbatim: "teapot live restart returns to the shell."
+  //
+  // The shell waits on the PID it was given. That process spawned a
+  // replacement and then EXITED, so the shell's foreground job ended and it
+  // printed its prompt — while the new server kept serving, in the background,
+  // with the operator no longer attached to it. Everything else about the
+  // handover worked (logs visible, Ctrl-C reaches the child), which is why it
+  // took a second report to pin down.
+  //
+  // The old process must now RELEASE THE PORT and stay alive supervising the
+  // replacement, so the job slot the shell holds on to never ends.
+  const port = await freePort();
+  const a = await boot("super", port);
+  t.after(() => {
+    killTree(a.proc);
+    rmSync(a.dir, { recursive: true, force: true });
+  });
+
+  assert.ok(
+    await waitFor(async () => (await get(port, "/api/version")).status === 200, 20_000),
+    `first server never came up: ${a.out}`,
+  );
+
+  const res = await get(port, "/api/update/restart", "POST");
+  assert.equal(res.status, 200, `restart endpoint must answer: ${res.body}`);
+
+  // the replacement is up. The banner is printed by both boots, so count it.
+  assert.ok(
+    await waitFor(() => (a.out.match(/master listening on/g) ?? []).length >= 2, 30_000),
+    `replacement never logged (#35):\n${a.out}`,
+  );
+  // …and hands the terminal over explicitly, so the operator sees why they are
+  // still attached. Waiting for THIS is what makes the assertions below
+  // meaningful: the banner above is printed by both boots, so waiting for it
+  // alone would let the test race a handover that had not happened yet.
+  assert.ok(
+    await waitFor(() => a.out.includes("supervising the new server"), 30_000),
+    `the handover never completed (#35):\n${a.out}`,
+  );
+
+  // THE ASSERTION: the original process is still alive. If it had exited, the
+  // shell would have taken its prompt back.
+  assert.ok(
+    pidAlive(a.proc.pid!),
+    "the original process must SURVIVE the handover — exiting is what returns the operator to the shell (#35)",
+  );
+
+  // and it really did give the port up, which is what lets the replacement bind
+  assert.ok(
+    await waitFor(async () => (await get(port, "/api/version")).status === 200, 30_000),
+    "no process is serving /api/version after the handover",
+  );
+
+  // Ctrl-C must still reach the replacement through the supervisor: the
+  // terminal is wired to the OLD process, so its keystroke arrives there first.
+  a.proc.kill("SIGINT");
+  assert.ok(
+    await waitFor(async () => {
+      try {
+        process.kill(a.proc.pid!, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    }, 30_000),
+    "Ctrl-C must tear the whole thing down, supervisor included (#35)",
+  );
 });
 
 test("live update: the port is never left unowned for long (#35)", async (t) => {
