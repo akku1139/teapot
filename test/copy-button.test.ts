@@ -118,6 +118,16 @@ test("an empty string is refused rather than silently copied (#52)", async () =>
   assert.equal(exec, 0, "nothing to copy must not invoke the clipboard (#52)");
 });
 
+test("a THROWING execCommand reports failure rather than escaping (#52)", async () => {
+  const got = await copyText("x", {
+    clipboard: undefined,
+    execCommand: () => {
+      throw new Error("blocked by policy");
+    },
+  });
+  assert.equal(got, "failed", "a throwing execCommand must not escape the handler (#52)");
+});
+
 test("both paths failing reports a real failure (#52)", async () => {
   const got = await copyText("x", {
     clipboard: { writeText: async () => { throw new Error("no"); } },
@@ -151,4 +161,18 @@ test("the shipped handler feature-detects before calling writeText (#52)", () =>
 
 test("the legacy execCommand fallback is reachable (#52)", () => {
   srcHas("the execCommand fallback must exist (#52)", /execCommand\("copy"\)/);
+});
+
+/* ---------- the legacy path must not leak DOM ---------- */
+
+test("the staging textarea is removed in a finally block (#52)", () => {
+  const code = app
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//"))
+    .join("\n");
+  assert.match(
+    code,
+    /finally\s*\{[\s\S]{0,200}ta\?\.remove\(\)/,
+    "the staging textarea must be removed in a finally, not after a call that can throw (#52)",
+  );
 });

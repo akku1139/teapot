@@ -174,9 +174,11 @@ export function goalLine(d: GoalEventData): GoalLine {
       const name = String(d.event ?? "").trim();
       return {
         label: name ? `🎯 goal ${name}` : "🎯 goal updated",
-        // never render a bare label with nothing after it (#41) — that was the
-        // exact shape of the reported bug
-        detail: what || "no detail recorded",
+        // #41: never render a bare label with nothing after it — that was the
+        // exact shape of the reported bug. An unknown event with no text still
+        // gets a body, but it must SAY something rather than read as a verdict
+        // that was never delivered (#51).
+        detail: what || `the "${name || "goal"}" event carried no further detail`,
         tone: "",
         markdown: false,
         hasCard: true,

@@ -4541,18 +4541,23 @@ async function copyText(text: string): Promise<"copied" | "unsupported" | "faile
       /* rejected (denied, unfocused, insecure) — try the legacy path */
     }
   }
+  // legacy path, used when the API is missing OR refused
+  let ta: HTMLTextAreaElement | null = null;
   try {
-    const ta = document.createElement("textarea");
+    ta = document.createElement("textarea");
     ta.value = text;
     ta.style.position = "fixed";
     ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok ? "copied" : "failed";
+    return document.execCommand("copy") ? "copied" : "failed";
   } catch {
     return "failed";
+  } finally {
+    // ALWAYS remove the staging textarea: a throw from execCommand used to skip
+    // the cleanup, leaving an invisible element in the document once per failed
+    // copy — and they accumulate for the life of the tab
+    ta?.remove();
   }
 }
 
