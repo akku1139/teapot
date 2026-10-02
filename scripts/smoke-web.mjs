@@ -612,21 +612,32 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
       fail(`the ✕ row must be sticky (got position:${cs.position}) (#50)`);
   }
 
-  // …and it must survive the panel being scrolled: .rightbar is overflow-y:auto,
-  // so a close button that is not sticky is out of reach one scroll down. This is
-  // the reachable-close-control requirement, exercised at runtime.
-  drawer().scrollTop = 99999;
-  w.dispatchEvent(new w.Event("scroll", { bubbles: true }));
-  await sleep(60);
-  const head = w.document.querySelector(".rightbarhead");
-  if (!head || !drawer().contains(head)) fail("the ✕ row left the panel after a scroll (#50)");
-  const cs = w.document.defaultView.getComputedStyle(head);
-  if (cs.position !== "sticky")
-    fail(`the ✕ row must be sticky so scrolling cannot hide it (got position:${cs.position}) (#50)`);
-
-  closeBtn.click();
-  await sleep(80);
-  if (drawerOpen()) fail("the ✕ did not close the drawer after the panel was scrolled");
+  // Make the panel genuinely scrollable first: assigning scrollTop to an
+  // element with no overflow is a silent no-op, so every assertion below
+  // would pass vacuously. Injected filler stands in for the real long body.
+  {
+    const filler = w.document.createElement("div");
+    filler.style.height = "4000px";
+    drawer().appendChild(filler);
+    await sleep(30);
+    const el = drawer();
+    el.scrollTop = el.scrollHeight; // all the way to the bottom
+    w.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await sleep(60);
+    const head = w.document.querySelector(".rightbarhead");
+    if (!head || !drawer().contains(head)) fail("the ✕ row left the panel after a scroll (#50)");
+    const cs = w.document.defaultView.getComputedStyle(head);
+    if (cs.position !== "sticky")
+      fail(`the ✕ row must be sticky so scrolling cannot hide it (got position:${cs.position}) (#50)`);
+    // the control itself must still be pressable at the bottom of the panel
+    const btn = head.querySelector(".iconbtn");
+    if (!btn) fail("the ✕ button vanished from the row after scrolling (#50)");
+    btn.click();
+    await sleep(80);
+    if (drawerOpen()) fail("the ✕ did not close the drawer after scrolling to the bottom");
+    filler.remove();
+    await sleep(20);
+  }
 
   // 2. a click outside must dismiss it too
   toggle.click();
