@@ -470,7 +470,11 @@ body:has(.termdrawer) .jump {
 /* sections must never compress to fit — the panel scrolls instead */
 .rightbar > * { flex-shrink: 0; }
 .rightbar h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 14px 0 6px; }
-.rightbar h3:first-child { margin-top: 0; }
+/* the first SECTION heading sits flush under the panel's top edge. Keyed on
+   `h3:first-of-type`, not `h3:first-child`: the drawer-only ✕ row (#50) is now
+   the panel's first child, so `:first-child` stopped matching and the heading
+   gained a stray 14px gap under the ✕ bar on a narrow screen. */
+.rightbar h3:first-of-type { margin-top: 0; }
 .card { background: var(--bg-darkest); border-radius: 8px; padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
 /* the 📊 runtime card must NOT scroll internally: no max-height here — it
    grows with its content and the PANEL (.rightbar, overflow-y:auto) scrolls

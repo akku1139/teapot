@@ -219,6 +219,25 @@ test("the drawer is ONE fixed box again (#50)", () => {
 });
 
 
+/* ---------- 1a: the panel's first heading must stay flush ---------- */
+
+test("the panel's first heading keeps margin-top:0 (#50)", () => {
+  // THE regression: `.rightbar h3:first-child { margin-top: 0 }` pulled the
+  // session heading flush against the panel's top edge. Moving the ✕ row INSIDE
+  // .rightbar made it the first child, so `:first-child` stopped matching and
+  // the heading silently gained a 14px gap under the ✕ bar — a layout change
+  // caused by a control being added, on a screen where nobody was looking for it.
+  assert.match(
+    baseRuleBody(".rightbar h3:first-of-type"),
+    /margin-top:\s*0/,
+    "the first section heading must stay flush (#50)",
+  );
+  assert.ok(
+    !/\.rightbar h3:first-child/.test(css),
+    ":first-child stops matching once the ✕ row is the panel's first child (#50)",
+  );
+});
+
 /* ---------- 1b: the row must actually be VISIBLE ---------- */
 
 test("the close row is VISIBLE on a narrow screen, not merely present (#50)", () => {
