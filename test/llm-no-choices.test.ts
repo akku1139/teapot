@@ -261,7 +261,40 @@ test("the fallback decision never reads the error message (#50)", async () => {
     /streamUnsupported|\/stream\|event-source/i,
     "the fallback must key on the HTTP status, never on message text (#50)",
   );
-  assert.match(fallback, /status >= 400 && status < 500/, "a 4xx is what means 'no streaming' (#50)");
+  assert.match(
+    fallback,
+    /STREAM_REJECTED_STATUS\.has\(status\)/,
+    "a known 'shape unsupported' status is what permits the retry (#50)",
+  );
+});
+
+test("the fallback status set is an allow-list, not the whole 4xx range (#50)", async () => {
+  // 408/425/429 are transient and 401/403 are auth: replaying any of them
+  // without `stream` re-issues the SAME failing request, doubling provider load
+  // (or a round trip) for no new information.
+  const llm = readFileSync(new URL("../src/agent/llm.ts", import.meta.url), "utf8");
+  const set = llm.match(/const STREAM_REJECTED_STATUS = new Set\(\[([^\]]*)\]\)/)?.[1] ?? "";
+  const codes = set.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
+  assert.ok(codes.length > 0, "the allow-list must be declared (#50)");
+  for (const transient of [408, 425, 429, 401, 403]) {
+    assert.ok(
+      !codes.includes(transient),
+      `${transient} must not permit the non-streaming retry (#50); set is [${set.trim()}]`,
+    );
+  }
+  // and the shapes a provider really uses to say "no streaming" must be there
+  for (const shape of [400, 404, 422]) {
+    assert.ok(codes.includes(shape), `${shape} is a 'shape unsupported' status and must fall back (#50)`);
+  }
+});
+
+test("an empty stream is distinguishable from a rejected request (#50)", async () => {
+  // The zero-chunk case is signalled by a marker, not by the message text —
+  // otherwise "empty completion" and a provider rejection are indistinguishable
+  // and the flaky-proxy safety net cannot be reinstated.
+  const llm = readFileSync(new URL("../src/agent/llm.ts", import.meta.url), "utf8");
+  assert.match(llm, /e\.emptyStream = true/, "the empty stream must be marked (#50)");
+  assert.match(llm, /emptyStream === true/, "the handler must read that marker (#50)");
 });
 
 /* ---------- 4: restore must not un-prune ---------- */
@@ -550,4 +583,84 @@ test("restore-pruning leaves an OLD log without a usage event alone (#50)", asyn
     );
     await c.dispose();
   });
+});
+
+/* ---------- adversarial QA follow-ups ---------- */
+
+test("a 200 stream with ZERO chunks still falls back (#50)", async () => {
+  // Regression found in review: tightening the fallback to "the provider
+  // rejected the request" deleted the safety net for a broken/flaky proxy
+  // that opens an SSE response, sends nothing, and closes cleanly. That case
+  // used to recover via the non-streaming retry and then hard-failed.
+  const { error, shapes } = await serve(
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end("");
+    },
+    (url) => chatStream(cfg(url), MSGS, []),
+  );
+  assert.ok(
+    shapes.includes(false),
+    `an empty 200 stream must still try the non-streaming shape (#50); saw ${JSON.stringify(shapes)}`,
+  );
+  // whatever the outcome, it must be a diagnosis rather than a bare TypeError
+  assert.match(error?.message ?? "", /no choices|empty completion/i, `needs a diagnosis (#50): ${error?.message}`);
+});
+
+test("a transient 429 must NOT trigger the fallback (#50)", async () => {
+  // Keying on "any 4xx" would replay an identical request against a provider
+  // that just asked us to slow down, doubling the load for nothing. 400/404/
+  // 405/422/501 mean the SHAPE is unsupported; 408/425/429 do not.
+  const { shapes } = await serve(
+    (_req, res) => json(res, 429, { error: { message: "slow down" } }),
+    (url) => chatStream(cfg(url), MSGS, []),
+  );
+  assert.ok(
+    !shapes.includes(false),
+    `a 429 is transient, not a capability rejection (#50); saw ${JSON.stringify(shapes)}`,
+  );
+});
+
+test("an auth failure must NOT trigger the fallback (#50)", async () => {
+  // 401 is not fixed by dropping `stream`, so a fallback there replaces one
+  // honest error with the same error and a wasted round trip.
+  const { error, shapes } = await serve(
+    (_req, res) => json(res, 401, { error: { message: "invalid api key" } }),
+    (url) => chatStream(cfg(url), MSGS, []),
+  );
+  assert.match(error?.message ?? "", /invalid api key|401/i, "the auth error must reach the caller (#50)");
+  assert.ok(
+    !shapes.includes(false),
+    `a 401 must not be retried in another shape (#50); saw ${JSON.stringify(shapes)}`,
+  );
+});
+
+test("the non-JSON bodies that used to throw a bare SyntaxError are diagnosed (#50)", async () => {
+  // The scenario the fix is NAMED for: a gateway serves an SSE body to a
+  // non-streaming request. Whichever layer hands the text over — the SDK
+  // returning a String or throwing during its own parse — the operator must
+  // get a diagnosis naming the shape, never "Unexpected token 'd'".
+  for (const [label, ct, body] of [
+    ["SSE", "text/event-stream", 'data: {"choices":[{"delta":{"content":"x"}}]}\n\ndata: [DONE]\n\n'],
+    ["html", "text/html", "<html>oops</html>"],
+    ["empty", "text/plain", ""],
+  ] as const) {
+    const { error } = await serve(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": ct });
+        res.end(body);
+      },
+      (url) => chat(cfg(url), MSGS, []),
+    );
+    assert.match(
+      error?.message ?? "",
+      /no choices/i,
+      `a ${label} body must be diagnosed, not crash (#50); got: ${error?.message}`,
+    );
+    assert.doesNotMatch(
+      error?.message ?? "",
+      /SyntaxError|Unexpected token|JSON/i,
+      `a ${label} body must not surface a raw parse error (#50); got: ${error?.message}`,
+    );
+  }
 });

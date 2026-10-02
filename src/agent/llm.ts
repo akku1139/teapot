@@ -259,6 +259,19 @@ function safeShape(res: unknown): string {
   }
 }
 
+/**
+ * HTTP statuses that mean "this request shape is not supported here", so
+ * re-issuing it without `stream: true` is a genuinely different request.
+ *
+ * Deliberately an allow-list rather than the whole 4xx range. 408/425/429 are
+ * TRANSIENT: replaying them immediately against an already-saturated provider
+ * just doubles the request count without changing anything. 401/403 mean the
+ * credentials are wrong, which is not fixed by dropping `stream` either — they
+ * are excluded on purpose, since a fallback there would replace one honest
+ * auth error with the same one and a wasted round trip.
+ */
+const STREAM_REJECTED_STATUS = new Set([400, 404, 405, 406, 415, 422, 501]);
+
 export async function chat(
   cfg: LlmConfig,
   messages: ChatMessage[],
@@ -454,8 +467,17 @@ export async function chatStream(
           function: { name: c.name, arguments: c.args || "{}" },
         }];
       });
-    if (!message.content && !message.tool_calls)
-      throw new Error("LLM API error: empty completion");
+    if (!message.content && !message.tool_calls) {
+      // #50: a stream that opened, produced NOTHING, and closed cleanly. The
+      // throw carries a marker so the handler below can tell this apart from a
+      // request the provider actively rejected: this one is a broken/flaky
+      // proxy, and re-issuing it without `stream` is a genuinely different
+      // request that usually succeeds. Throwing a bare Error would make the two
+      // indistinguishable and cost us that safety net.
+      const e = new Error("LLM API error: empty completion") as Error & { emptyStream?: boolean };
+      e.emptyStream = true;
+      throw e;
+    }
     return { message, reasoning: reasoning || undefined, usage };
   } catch (err) {
     // #50 — a provider that doesn't support streaming at all still gets ONE
@@ -472,19 +494,29 @@ export async function chatStream(
     // discarded on the first attempt and could never be recognised by
     // isContextOverflow(), so the compact-and-retry recovery never ran.
     //
-    // Only a 4xx counts as "this endpoint may not do streaming": that is the
-    // shape a provider uses to reject `stream: true`. A 5xx, a transport
-    // failure, or any 2xx carrying an error frame is the ANSWER and is
-    // rethrown untouched, so overflow recovery can see it.
+    // Two exclusions, and the second one matters as much as the first:
     //
-    // Deliberately NOT message matching: the SDK's own error strings contain
-    // the word "stream" in generic prefixes ("LLM API error 500: …"), so a
-    // regex over the message made a server error look like a stream problem
-    // and re-armed the very fallback this is meant to suppress.
+    //  1. A status that means the REQUEST ITSELF was rejected. Only then is
+    //     re-issuing it without `stream` a different request rather than the
+    //     same failing one. `400`/`404`/`405`/`422` are the shapes a provider
+    //     uses to say "no streaming here" — deliberately NOT the whole 4xx
+    //     range, because 408/425/429 are transient: replaying those against an
+    //     already-saturated provider just doubles the request count.
+    //  2. A THROWN error, as opposed to a request that simply produced no
+    //     chunks. A 200 that streams zero chunks and closes cleanly is a
+    //     broken/flaky proxy, and that is precisely the case the non-streaming
+    //     retry rescues. Requiring a 4xx here would have deleted that safety
+    //     net — a regression this file's own tests caught.
+    //
+    // So the fallback runs when the request was rejected outright, OR when it
+    // completed without error and without a single chunk. Everything else —
+    // 5xx, an error frame, a mid-stream failure — is the ANSWER, rethrown
+    // untouched so overflow recovery can see it.
     const status = (err as { status?: unknown })?.status;
-    const providerRejected =
-      typeof status === "number" && status >= 400 && status < 500;
-    if (!gotChunk && !signal?.aborted && providerRejected) {
+    const rejectedByProvider =
+      typeof status === "number" && STREAM_REJECTED_STATUS.has(status);
+    const emptyStream = (err as { emptyStream?: boolean })?.emptyStream === true;
+    if (!gotChunk && !signal?.aborted && (rejectedByProvider || emptyStream)) {
       return chat(cfg, messages, tools, signal, onDelta);
     }
     // user interrupt: hand back whatever streamed so far so the harness can
