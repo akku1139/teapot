@@ -1960,6 +1960,36 @@ export class Agent {
     return hasSystem ? [...head, ...this.messages.slice(1)] : [...head, ...this.messages];
   }
 
+  /**
+   * Re-read AGENTS.md and adopt it if it changed. Returns the new text when it
+   * did, or null when there is nothing to do.
+   *
+   * Called on compaction (#64 follow-up) and nowhere else. The one-shot capture
+   * in systemPrompt() exists to keep the system prompt byte-identical for the
+   * session so the provider's prefix cache survives; this is the single point
+   * where breaking that identity is free, because compaction has just rewritten
+   * the history underneath it.
+   *
+   * Failure is deliberately non-destructive: a read error, or a file that
+   * vanished, leaves the previous content in place. Dropping the instructions
+   * because of a transient error would be far worse than running one compaction
+   * on slightly stale rules.
+   */
+  private reloadAgentsMd(): string | null {
+    if (!this.agentsMdLoaded) return null; // nothing captured yet; nothing to update
+    let fresh: string;
+    try {
+      const p = path.join(this.opts.workspace, "AGENTS.md");
+      if (!existsSync(p)) return null; // deleted → keep the last known rules
+      fresh = readFileSync(p, "utf8").slice(0, 12_000);
+    } catch {
+      return null; // unreadable → keep what we have
+    }
+    if (fresh === this.agentsMd) return null;
+    this.agentsMd = fresh;
+    return fresh;
+  }
+
   /** AGENTS.md content cached for the session (empty string = none/read-failed) */
   private agentsMd = "";
   /** captured once, with the rest of the session-frozen context */
@@ -2497,6 +2527,33 @@ export class Agent {
         this.recentReads = this.recentReads.slice(0, restored.length); // keep order, drop misses
       }
     }
+    // #64 follow-up: compaction is the ONE point in a session where re-reading
+    // AGENTS.md is both safe and expected.
+    //
+    // It is expected because compaction exists precisely to summarise work
+    // against the CURRENT instructions: an agent that spent an hour under one
+    // set of project rules, then compacted, would otherwise carry the old rules
+    // over the summary and never see the edit.
+    //
+    // It is safe because the prefix-cache concern that motivates freezing the
+    // prompt does not apply here. That concern is about a prompt changing
+    // mid-turn, re-pricing the whole prefix on every call. A compaction
+    // ALREADY rewrote the history the prompt sits on top of, so the cache is
+    // being re-priced regardless — one more changed block costs nothing extra.
+    //
+    // Only AGENTS.md is re-read, deliberately. The workspace listing and the
+    // skills catalogue stay frozen: both are a snapshot of the workspace as it
+    // was, and re-listing mid-session would contradict the instruction to
+    // "not list again what is already here". AGENTS.md is different — it is
+    // instructions, not a listing, and a stale copy is actively misleading.
+    const refreshed = this.reloadAgentsMd();
+    if (refreshed) {
+      await this.log.append("system_note", this.currentSession, this.currentBranch, {
+        event: "agents-md-reloaded",
+        bytes: refreshed.length,
+      });
+    }
+
     // the operator can inspect WHAT was remembered — a dedicated typed event
     // (not an agent message) keeps it out of the model's own voice
     await this.log.append("compaction", this.currentSession, this.currentBranch, {
