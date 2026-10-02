@@ -173,9 +173,34 @@ test("a click outside the drawer closes it (#50)", () => {
     "the backdrop must close the panel",
   );
   assert.ok(
-    /<Show when=\{isNarrow\(\) && showRight\(\)\}>/.test(app),
+    /<Show when=\{narrow\(\) && showRight\(\)\}>/.test(app),
     "the backdrop must not exist while the drawer is closed — the drawer stays in the DOM " +
       "translated off-screen, and a full-screen layer would block the whole UI (#50)",
+  );
+});
+
+test("the narrow check is a SIGNAL, not a one-shot read (#50)", () => {
+  // THE regression: `<Show when={isNarrow() && …}>` evaluated window.innerWidth
+  // during render and never again — nothing reactive changed, so no resize
+  // re-ran the branch. The reported flow is NARROWING AN ALREADY-LOADED
+  // WINDOW, so on exactly that path the drawer opened with no click-outside
+  // backdrop at all. scripts/smoke-web.mjs drives a live resize to catch it.
+  assert.ok(
+    /<Show when=\{narrow\(\)/.test(app) &&
+      !/<Show when=\{isNarrow\(\)/.test(app),
+    "the backdrop gate must read the reactive signal, not the plain function (#50)",
+  );
+  assert.ok(
+    /const \[narrow, setNarrow\] = createSignal\(isNarrow\(\)\)/.test(app),
+    "narrow mode needs a signal so the drawer arms on a mid-session resize (#50)",
+  );
+  assert.ok(
+    /window\.addEventListener\("resize", onResize\)/.test(app),
+    "the signal must be updated on resize (#50)",
+  );
+  assert.ok(
+    /window\.removeEventListener\("resize", onResize\)/.test(app),
+    "…and the listener must be removed on cleanup, or every unmount leaks one (#50)",
   );
 });
 

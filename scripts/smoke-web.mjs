@@ -666,6 +666,62 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   setGlobal("fetch", realFetch);
 }
 
+/* ---------- #50: narrowing an already-loaded window ----------------------
+ * The REPORTED flow is not "open the app on a narrow screen" but "make the
+ * window narrower while it is running". That is the case the drawer scenario
+ * above cannot reach: happy-dom evaluates media queries once at parse time, so
+ * a scenario that loads narrow proves nothing about a mid-session resize.
+ *
+ * What does break here is the JS half. `<Show when={isNarrow() && …}>` reads
+ * window.innerWidth during render and never again — it is not a signal, so no
+ * resize re-ran the branch. After narrowing, the drawer opened with NO
+ * click-outside backdrop at all: the exact state the fix was meant to cure.
+ *
+ * The media query itself is not re-evaluated either; what is asserted here is
+ * the reactive JS (the backdrop), which is ours to own. */
+if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
+  const sleepR = (ms) => new Promise((r) => setTimeout(r, ms));
+  const failR = (msg) => { console.error(`#50 RESIZE REGRESSION: ${msg}`); process.exit(1); };
+  const barOpen = () => w.document.querySelector(".rightbar")?.classList.contains("open") ?? false;
+  const detailToggle = () =>
+    [...w.document.querySelectorAll(".iconbtn")].find(
+      (b) => /toggle details panel/.test(b.getAttribute("title") ?? ""),
+    );
+
+  // wide load → panel is a column, open by default, no drawer chrome.
+  // (The wide-mode block above finishes by CLOSING it, so open it here rather
+  // than inherit whatever it left behind.)
+  if (!barOpen()) detailToggle().click();
+  await sleepR(80);
+  if (!barOpen()) failR("panel not open at wide load");
+  if (w.document.querySelector(".rightbarbackdrop")) failR("backdrop present on a wide screen");
+
+  // NARROW the window, exactly as dragging the splitter would
+  viewportWidth = 900;
+  w.dispatchEvent(new w.Event("resize"));
+  await sleepR(120);
+  if (!barOpen()) failR("narrowing the window closed the panel outright");
+
+  const closeBtn = [...w.document.querySelectorAll(".rightbarhead .iconbtn")].find(
+    (b) => /close details panel/.test(b.getAttribute("title") ?? ""),
+  );
+  if (!closeBtn) failR("no ✕ after narrowing — the drawer covers its own opener");
+
+  // the backdrop must APPEAR on the resize, not just on a fresh narrow load
+  if (!w.document.querySelector(".rightbarbackdrop"))
+    failR("narrowing the window mounted no click-outside backdrop (isNarrow is not reactive)");
+  console.log("deep render ok: narrowing the window arms the drawer's close paths (#50)");
+
+  // …and all three close paths still work after the resize
+  closeBtn.click(); await sleepR(80);
+  if (barOpen()) failR("✕ did not close the drawer after a resize");
+  detailToggle().click(); await sleepR(80);
+  if (!barOpen()) failR("could not re-open after a resize");
+  w.document.querySelector(".rightbarbackdrop").click(); await sleepR(80);
+  if (barOpen()) failR("click-outside did not dismiss after a resize");
+}
+
+// give deferred Solid effects a final tick before declaring victory
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);

@@ -235,6 +235,21 @@ export default function App() {
    * That is why the drawer needs its own close button, and why the breakpoint
    * lives in ONE place shared with the CSS media query. */
   const isNarrow = () => window.innerWidth <= NARROW_PX;
+  /* ...but the JSX needs the REACTIVE form. A plain function reads fine inside
+   * a keydown handler and is evaluated on every Escape, yet `<Show
+   * when={isNarrow() && …}>` evaluates it ONCE at render and never again:
+   * window.innerWidth is not a signal, so nothing re-ran the branch. The
+   * reported flow is narrowing an already-loaded window, which is exactly when
+   * that bites — the backdrop never appeared, and the drawer had no
+   * click-outside at all. A signal updated on resize makes it track the same
+   * breakpoint the CSS media query does. */
+  const [narrow, setNarrow] = createSignal(isNarrow());
+  onMount(() => {
+    const onResize = () => setNarrow(isNarrow());
+    window.addEventListener("resize", onResize);
+    onCleanup(() => window.removeEventListener("resize", onResize));
+    onResize(); // a late load can land on the other side of the breakpoint
+  });
   const [showRight, setShowRight] = createSignal(
     localStorage.getItem("teapot.panel") !== null
       ? localStorage.getItem("teapot.panel") === "1"
@@ -2892,7 +2907,7 @@ export default function App() {
           column and a full-screen click-catcher would swallow every click in
           the app. Gated on showRight() too, so a closed drawer — which is still
           in the DOM, translated off-screen — never blocks the UI. */}
-      <Show when={isNarrow() && showRight()}>
+      <Show when={narrow() && showRight()}>
         <div class="rightbarbackdrop" onclick={() => setRight(false)} />
       </Show>
       <div class={"rightbarhead" + (showRight() ? " open" : "")}>
