@@ -699,6 +699,32 @@ export default function App() {
   // a user prompt logged later than the question event. The tool_result that
   // pairs with the question is written immediately when the question is SHOWN
   // (it parks the loop), so its mere existence never means "answered".
+  /**
+   * Questions answered in THIS tab whose prompt event has not reached the log
+   * yet (#55).
+   *
+   * The derived set alone is only correct once the reply is LOGGED. Clicking an
+   * option POSTs and shows a toast, so between the click and the bus event
+   * landing the buttons stayed enabled — and a second click sent a DUPLICATE
+   * prompt. Switching sessions and back "fixed" it because that re-read the log.
+   *
+   * Keyed by callId and looked up per row, so an entry whose question is no
+   * longer loaded is inert rather than able to disable an unrelated question.
+   * The log stays authoritative: anything answered elsewhere (another tab, a
+   * reload, before this session was opened) is derived as before.
+   */
+  const [locallyAnswered, setLocallyAnswered] = createSignal<Set<string>>(new Set());
+  const markAnswered = (callId: string) => {
+    if (!callId) return;
+    setLocallyAnswered((prev: Set<string>): Set<string> => {
+      if (prev.has(callId)) return prev;
+      const next: Set<string> = new Set<string>(prev);
+      next.add(callId);
+      return next;
+    });
+  };
+  /** a session switch must not carry one session's answers into another */
+  const clearLocallyAnswered = () => setLocallyAnswered(new Set<string>());
   const answeredQuestionIds = createMemo(() => {
     const set = new Set<string>();
     let lastQuestionAt = -1;
@@ -719,6 +745,8 @@ export default function App() {
         if (e.type === "question" && e.seq <= lastUserPromptAt)
           set.add(String((e.data as any)?.callId ?? ""));
     }
+    // …plus anything answered in this tab whose reply has not been logged yet
+    for (const id of locallyAnswered()) set.add(id);
     return set;
   });
   const chatEvents = createMemo(() => {
@@ -1457,6 +1485,10 @@ export default function App() {
       // which read as "the old conversation showing up in the new session"
       setEvents([]);
       evCache.clear(); // event ids are per-log (e1, e2…) — never share across sessions
+      // #55: the optimistic answer set is per-SESSION. Carrying it across would
+      // disable a question that merely reuses a callId, or one the operator
+      // has not actually answered in this session.
+      clearLocallyAnswered();
       // NOTE: live buffers are per-agent — leaving a session must NOT drop its
       // streaming bubble; the map keeps every session's stream independently.
       setCompacting(null);
@@ -2761,7 +2793,15 @@ export default function App() {
                     // a bare anonymous row and the run read as unfinished.
                     orphan={pairInfo().orphanCalls.has(e.id)}
                     onOption={(t) => void sendText(t)}
-                    answeredIds={answeredQuestionIds()}
+                    // #55: pass the ACCESSOR, not the Set. A <For> child is a
+                    // non-reactive closure, so `answeredQuestionIds()` was
+                    // evaluated once when the row was built and never re-read.
+                    // The old derivation only ever changed when `events()`
+                    // changed, which re-created the rows and hid the bug; an
+                    // optimistic answer changes nothing about `events()`, so
+                    // the row kept a snapshot from before the click.
+                    answeredIds={answeredQuestionIds}
+                    onAnswered={markAnswered}
                     agentActive={sel()?.status === "running" || sel()?.status === "waiting"}
                     onResize={() => { if (atBottom()) requestAnimationFrame(() => scrollBottom(true)); }}
                     onCancel={
@@ -4120,7 +4160,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Group consecutive rows from the same ACTOR. The actor for tool events is
@@ -4293,7 +4333,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdi
           </div>
         </Show>
 
-        <SwitchContent e={e} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} agentActive={props.agentActive} onResize={props.onResize} />
+        <SwitchContent e={e} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} />
       </div>
     </div>
   );
@@ -4331,7 +4371,7 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
   );
 }
 
-function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
+function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   switch (e.type) {
     case "prompt": {
@@ -4428,13 +4468,14 @@ function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (t
       // closes the call). Answered questions keep their options visible but
       // disabled — tapping them twice used to send duplicate prompts.
       const callId = e.data?.callId ? String(e.data.callId) : "";
-      const answered = props.answeredIds?.has(callId) ?? false;
+      // called inside the row, so it tracks the signal reactively (#55)
+      const answered = () => props.answeredIds?.().has(callId) ?? false;
       return (
-        <div class={"embed question" + (answered ? " answered" : "")}>
+        <div class={"embed question" + (answered() ? " answered" : "")}>
           {/* questions are model-written and often carry markdown (code refs,
               lists) — render them like progress embeds instead of dumping raw */}
           <div>❓ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
-          <Show when={answered}>
+          <Show when={answered()}>
             <div class="meta" style="color:var(--ok)">✓ answered — continuing below</div>
           </Show>
           <Show when={opts.length > 0}>
@@ -4443,8 +4484,13 @@ function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (t
                 {(o) => (
                   <button
                     class="qopt"
-                    disabled={answered}
+                    disabled={answered()}
                     onclick={() => {
+                      // #55: mark it answered NOW, before the POST. The derived
+                      // set only catches up when the prompt event is logged, and
+                      // until then the buttons stayed live — so a second click
+                      // sent a duplicate prompt.
+                      props.onAnswered?.(callId);
                       const actor = e.data?.actor;
                       if (actor) {
                         void api(`/api/agents/${encodeURIComponent(String(actor))}/prompt`, {
@@ -4461,7 +4507,7 @@ function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (t
               </For>
             </div>
           </Show>
-          <FreeTextAnswer answered={answered} onOption={props.onOption} />
+          <FreeTextAnswer answered={answered()} onOption={props.onOption} />
         </div>
       );
     }

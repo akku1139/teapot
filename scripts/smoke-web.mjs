@@ -68,11 +68,15 @@ const EVENTS = [
   // #51: the completion-audit lifecycle. Two shapes that used to render wrong —
   // a card with a real reason, and a verdict with NO reason (which must not
   // produce a card at all).
-  { id: "g1", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0", parent: "e4",
+  // #55: an OPEN ask_user. Its options must disable the moment one is clicked,
+  // without waiting for the reply to be logged and streamed back.
+  { id: "q1", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0", parent: "e4",
+    type: "question", data: { callId: "q-call-1", question: "which library?", options: ["libfoo", "libbar"] } },
+  { id: "g1", seq: 6, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0", parent: "q1",
     type: "goal", data: { event: "audit-started", verify: "npm test passes" } },
-  { id: "g2", seq: 6, ts: "2026-01-01T10:00:30Z", session: "alpha-s1", branch: "br0", parent: "g1",
+  { id: "g2", seq: 7, ts: "2026-01-01T10:00:30Z", session: "alpha-s1", branch: "br0", parent: "g1",
     type: "goal", data: { event: "audit", verdict: "changes-required", feedback: "the parser drops CRLF line endings" } },
-  { id: "g3", seq: 7, ts: "2026-01-01T10:00:40Z", session: "alpha-s1", branch: "br0", parent: "g2",
+  { id: "g3", seq: 8, ts: "2026-01-01T10:00:40Z", session: "alpha-s1", branch: "br0", parent: "g2",
     type: "goal", data: { event: "audit", verdict: "approved", feedback: "" } },
 ];
 
@@ -361,6 +365,46 @@ console.log("deep render ok: feed rows present");
     fail(`the auditor's reason must be visible (#51): ${text(rejectedLine).slice(0, 60)}`);
 
   console.log("deep render ok: audit rows stack and a reasonless verdict shows no card (#51)");
+}
+
+/* ---------- #55: an answered ask_user must disable its options ------------
+ * Reported: "I clicked the agent's ask_user option but it isn't disabled in the
+ * UI" — and switching to another session and back DOES disable it.
+ *
+ * That clue is the diagnosis: the state is correct but STALE. The derived
+ * "answered" set only flips once the reply is LOGGED, so between the click and
+ * the bus event the buttons stayed live and a second click would send a
+ * DUPLICATE prompt. This asserts the buttons disable on the click itself. */
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg) => { console.error(`#55 REGRESSION: ${msg}`); process.exit(1); };
+  const opts = () => [...w.document.querySelectorAll(".qopt")];
+  const btns = opts();
+  if (btns.length < 2) fail(`the open question's options did not render (#55): ${btns.length}`);
+  if (btns.some((b) => b.disabled))
+    fail("an UNANSWERED question must offer live options (#55)");
+  if (!w.document.querySelector(".embed.question"))
+    fail("the question row is missing (#55)");
+
+  // click one option — no reload, no session switch, no waiting for a WS event
+  btns[0].click();
+  await sleep(150);
+
+  const after = opts();
+  if (after.length < 2) fail("the options vanished instead of disabling (#55)");
+  if (!after.every((b) => b.disabled))
+    fail(
+      `every option must disable once answered — ${after.filter((b) => b.disabled).length}/${after.length} disabled (#55)`,
+    );
+  if (!w.document.querySelector(".embed.question.answered"))
+    fail("the answered question must be marked as such (#55)");
+  // the free-text reply must close too, or the same duplicate-reply hole is
+  // still open by the back door
+  const freeInput = w.document.querySelector(".qfree input");
+  if (freeInput && !freeInput.disabled)
+    fail("the free-text answer must disable with the options (#55)");
+
+  console.log("deep render ok: an answered ask_user disables its options at once (#55)");
 }
 
 /* ---------- #58: a deep link must open the session it NAMES ----------------
