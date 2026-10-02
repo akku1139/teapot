@@ -1,79 +1,236 @@
+/**
+ * #50 — "`⚠ LLM API returned no choices`" — reported as "seems to happen in a
+ * session that RESUMES after a teapot restart, details unknown".
+ *
+ * `LLM API returned no choices` is the one error this harness raises on a
+ * SUCCESSFUL HTTP 200: the endpoint answered, but `choices` was missing. A
+ * gateway answers a malformed chat-completions request that way far more often
+ * than with a clean 400, so the report's "after a restart" is the tell — the
+ * history rebuilt from chat.jsonl is a shape no live run produces.
+ *
+ * The specific shape: the completion AUDIT (goal `verify:` contract) asks the
+ * model for a verdict in a side conversation that is NOT part of this.messages,
+ * then writes the verdict to the log as a plain assistant `message` event. The
+ * live run therefore never carries that message, but restoreFromLog() replays
+ * every logged `message` — so after a restart the audit verdict reappears in
+ * the conversation as if the agent had said it. From there the request carries
+ * an assistant turn that answers nothing and a following prompt that answers
+ * nothing, which is exactly the sort of thing a gateway drops on the floor.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { chat } from "../src/agent/llm.ts";
+import { useTempDirs } from "./helpers/tmp.ts";
+import { Agent } from "../src/agent/agent.ts";
+import { readEvents } from "../src/log/events.ts";
+import type { ChatMessage, LlmResult } from "../src/agent/llm.ts";
 
-/** one-shot provider that answers with a fixed JSON body */
-async function withProvider(body: unknown, fn: (port: number) => Promise<void>) {
-  const srv = createServer((req, res) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(body));
-  });
-  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
-  const port = (srv.address() as { port: number }).port;
-  try {
-    await fn(port);
-  } finally {
-    await new Promise<void>((r) => srv.close(() => r()));
-  }
-}
-
-test("llm repairs provider-glued tool calls (framing tags leaked into name)", async () => {
-  // seen live: two calls arrived as ONE entry whose name contained
-  // get_goal</tool_call><…><tool_call><list_dir
-  await withProvider(
-    {
-      choices: [
-        {
-          message: {
-            role: "assistant",
-            content: "",
-            tool_calls: [
-              {
-                id: "cb6d6991",
-                function: { name: "get_goal\ufffd\ufffdlist_dir", arguments: "{}" },
-              },
-            ],
-          },
-          finish_reason: "tool_calls",
-        },
-      ],
-    },
-    async (port) => {
-      const res = await chat(
-        { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "k", model: "m" },
-        [{ role: "user", content: "hi" }],
-        [],
-      );
-      const names = res.message.tool_calls?.map((c) => c.function.name) ?? [];
-      assert.deepEqual(names, ["get_goal", "list_dir"]); // split back into two real calls
-      assert.ok(res.message.tool_calls!.every((c) => !/[\ufffd<>]/.test(c.function.name)));
-    },
-  );
+const tc = (id: string, name: string, args: unknown) => ({
+  id,
+  type: "function" as const,
+  function: { name, arguments: JSON.stringify(args) },
+});
+const reply = (content: string, calls?: ReturnType<typeof tc>[]): LlmResult => ({
+  message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
 });
 
-test("llm drops unsalvageable tool names instead of failing the round with 'unknown tool'", async () => {
-  await withProvider(
-    {
-      choices: [
-        {
-          message: {
-            role: "assistant",
-            content: "",
-            tool_calls: [{ id: "x", function: { name: "<garbage><", arguments: "{}" } }],
-          },
-          finish_reason: "tool_calls",
-        },
-      ],
-    },
-    async (port) => {
-      const res = await chat(
-        { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "k", model: "m" },
-        [{ role: "user", content: "hi" }],
-        [],
-      );
-      assert.deepEqual(res.message.tool_calls ?? [], []); // dropped (empty array)
-      assert.ok(!res.message.content || res.message.content.length >= 0);
-    },
-  );
+function mkAgent(ws: string, sessionDir: string, chatFn: any): Agent {
+  return new Agent({
+    id: "t",
+    workspace: ws,
+    sessionDir,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
+    chatFn,
+    autoContinue: false,
+    restoreSession: true,
+  } as any);
+}
+
+/**
+ * Provider-shaped request check. A real endpoint answers a malformed message
+ * array with a 200 and (often) zero choices — the bug report — so the mock
+ * stands in for the thing that would otherwise be invisible.
+ */
+function providerReject(messages: ChatMessage[]): string | null {
+  const called = new Set<string>();
+  const answered = new Set<string>();
+  for (const m of messages) for (const t of m.tool_calls ?? []) called.add(t.id);
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.role === "tool") {
+      if (!called.has(m.tool_call_id!)) return `tool result "${m.tool_call_id}" answers nothing`;
+      if (answered.has(m.tool_call_id!)) return `duplicate tool result "${m.tool_call_id}"`;
+      if (messages[i - 1]?.role !== "assistant") return "tool message not directly after its assistant turn";
+      answered.add(m.tool_call_id!);
+    }
+  }
+  const orphans = [...called].filter((id) => !answered.has(id));
+  return orphans.length ? `unanswered tool_call(s): ${orphans.join(", ")}` : null;
+}
+
+const AUDIT_MARK = "completion audit:";
+
+/* ---------- the bug ---------- */
+
+test("a restarted session does not replay the completion audit into the conversation (#50)", async () => {
+  await useTempDirs(["a50a-", "a50b-"], async ([ws, sessionDir]) => {
+    let turn = 0;
+    const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
+      const sys = String(messages[0]?.content ?? "");
+      // the auditor is a separate, tools-less call — identify it by shape
+      if (!messages.some((m: ChatMessage) => m.tool_calls?.length) &&
+          String(messages.at(-1)?.content ?? "").includes("independent completion AUDITOR")) {
+        return reply("APPROVED: the work is genuinely complete");
+      }
+      turn++;
+      if (turn === 1)
+        return reply("calling finish", [
+          tc("f1", "set_goal", { text: "ship the feature", verify: "npm test passes" }),
+        ]);
+      if (turn === 2)
+        return reply("done", [tc("f2", "finish", { goalComplete: true, summary: "shipped it" })]);
+      return reply("ok");
+    };
+
+    const first = mkAgent(ws, sessionDir, chatFn);
+    await first.init();
+    first.enqueuePrompt("go");
+    first.start("t");
+    await first.settled();
+    await first.dispose();
+
+    const logged = await readEvents(first.log.filePath);
+    const auditEvents = logged.filter(
+      (e) => e.type === "message" && String((e.data as any).content ?? "").includes(AUDIT_MARK),
+    );
+    assert.equal(
+      auditEvents.length,
+      1,
+      `fixture must produce one audit message event, got ${auditEvents.length}`,
+    );
+    assert.equal(
+      (first.messages as ChatMessage[]).some((m) => String(m.content ?? "").includes(AUDIT_MARK)),
+      false,
+      "the live history must NOT carry the audit verdict (it was a side conversation)",
+    );
+
+    // the restart: same session dir, fresh agent
+    const second = mkAgent(ws, sessionDir, chatFn);
+    await second.init();
+    second.enqueuePrompt("anything else?");
+    second.start("t");
+    await second.settled();
+
+    const leaked = (second.messages as ChatMessage[]).filter((m) =>
+      String(m.content ?? "").includes(AUDIT_MARK),
+    );
+    assert.deepEqual(
+      leaked.map((m) => m.role),
+      [],
+      `the audit verdict came back into the model's history after a restart (#50): ${JSON.stringify(leaked[0]?.content ?? "")}`,
+    );
+    await second.dispose();
+  });
+});
+
+test("a restarted session's next request is one a provider accepts (#50)", async () => {
+  await useTempDirs(["a50c-", "a50d-"], async ([ws, sessionDir]) => {
+    const rejected: (string | null)[] = [];
+    let turn = 0;
+    const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
+      const last = String(messages.at(-1)?.content ?? "");
+      if (last.includes("independent completion AUDITOR")) return reply("APPROVED: verified");
+      rejected.push(providerReject(messages));
+      turn++;
+      if (turn === 1) return reply("calling finish", [tc("f1", "finish", { summary: "ok" })]);
+      return reply("fine");
+    };
+
+    const first = mkAgent(ws, sessionDir, chatFn);
+    await first.init();
+    first.enqueuePrompt("go");
+    first.start("t");
+    await first.settled();
+    await first.dispose();
+
+    const second = mkAgent(ws, sessionDir, chatFn);
+    await second.init();
+    second.enqueuePrompt("next");
+    second.start("t");
+    await second.settled();
+
+    assert.deepEqual(
+      rejected.filter(Boolean),
+      [],
+      `restored history was rejected by the provider mock (#50): ${rejected.find(Boolean)}`,
+    );
+    await second.dispose();
+  });
+});
+
+/* ---------- the guard that keeps it out ---------- */
+
+test("an operator-facing message is skipped by the restore (#50)", async () => {
+  // Same leak, reached without the auditor: any timeline-only assistant
+  // `message` the live loop never put in `messages` must stay out of the
+  // rebuilt history. `final: true` is already skipped; this pins the sibling
+  // `operatorFacing` flag so a future "log it for the timeline" change cannot
+  // smuggle a note back into the model's context.
+  await useTempDirs(["a50e-", "a50f-"], async ([ws, sessionDir]) => {
+    const first = mkAgent(ws, sessionDir, async () => reply("ok"));
+    await first.init();
+    first.enqueuePrompt("hi");
+    first.start("t");
+    await first.settled();
+    // an operator-facing note written straight to the log, as the audit path does
+    await first.log.append("message", first.snapshot().session, first.snapshot().branch, {
+      role: "assistant",
+      operatorFacing: true,
+      content: `${AUDIT_MARK} CHANGES REQUIRED — add a test`,
+    });
+    await first.dispose();
+
+    const second = mkAgent(ws, sessionDir, async () => reply("ok"));
+    await second.init();
+    second.enqueuePrompt("continue");
+    second.start("t");
+    await second.settled();
+    assert.equal(
+      (second.messages as ChatMessage[]).some((m) => String(m.content ?? "").includes(AUDIT_MARK)),
+      false,
+      "operator-facing audit notes must not enter the model's history (#50)",
+    );
+    await second.dispose();
+  });
+});
+
+test("a provider 200 with zero choices is a retryable error, not a dead session (#50)", async () => {
+  await useTempDirs(["a50g-", "a50h-"], async ([ws, sessionDir]) => {
+    let calls = 0;
+    const chatFn = async (): Promise<LlmResult> => {
+      calls++;
+      // first two attempts behave like the gateway's empty 200 (as thrown by
+      // llm.ts), then the provider recovers
+      if (calls <= 2) throw new Error("LLM API returned no choices");
+      return reply("recovered");
+    };
+    const agent = new Agent({
+      id: "t",
+      workspace: ws,
+      sessionDir,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
+      chatFn,
+      autoContinue: false,
+      // collapse the retry ladder's first waits so the test stays quick
+      retryDelayMs: 1,
+    } as any);
+    await agent.init();
+    agent.enqueuePrompt("go");
+    agent.start("t");
+    await agent.settled();
+    assert.ok(
+      (agent.messages as ChatMessage[]).some((m) => String(m.content ?? "").includes("recovered")),
+      "an empty-choices 200 must ride the retry ladder, not end the session (#50)",
+    );
+    await agent.dispose();
+  });
 });

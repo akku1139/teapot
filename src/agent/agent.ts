@@ -2061,8 +2061,16 @@ export class Agent {
           const approved = /^APPROVED\b/i.test(text.trim());
           const feedback = text.replace(/^(APPROVED|CHANGES-REQUIRED)\s*[:—-]?\s*/i, "").trim();
           await this.setGoalAudit(approved ? "approved" : "changes-required", feedback || "(no detail)");
+          // `operatorFacing: true` — the verdict is written for the TIMELINE
+          // only. The audit ran in its own side conversation (a tools-less call
+          // over buildMessages() + an audit prompt), so it was never in
+          // `this.messages` and must not come back through a restore: doing so
+          // injected an assistant turn that answers nothing into the model's
+          // context, which providers answer with a 200 and no choices (#50).
+          // The rejection feedback reaches the agent as a real prompt below.
           await this.log.append("message", this.currentSession, this.currentBranch, {
             role: "assistant",
+            operatorFacing: true,
             content: approved
               ? `✅ completion audit: APPROVED — ${feedback}`
               : `🔍 completion audit: CHANGES REQUIRED — ${feedback}`,
@@ -2909,9 +2917,13 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       if (openCalls.size > 0) bufferedUsers.push(text), bufferedParts.push(imgs);
       else msgs.push(mk());
     } else if (e.type === "message") {
-      // final summaries are operator-facing only — the live loop never puts
-      // them in model history, so restores must skip them too
-      if (d.final === true) continue;
+      // Operator-facing rows are TIMELINE content, not conversation: the live
+      // loop never put them in `messages`, so a restore must not either.
+      // `final` is the finish() summary; `operatorFacing` covers harness notes
+      // such as the completion audit verdict. Replaying either produced a
+      // history shape no live run emits, and a provider given that answers
+      // 200 with zero choices (#50).
+      if (d.final === true || d.operatorFacing === true) continue;
       const role = d.role === "assistant" ? "assistant" : "user";
       const m: ChatMessage = { role, content: typeof d.content === "string" ? d.content : "" };
       if (Array.isArray(d.toolCalls) && d.toolCalls.length > 0) {
