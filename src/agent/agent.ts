@@ -743,6 +743,15 @@ export class Agent {
     if (msgs.length > 0) {
       this.messages = msgs;
       this.currentBranch = last.branch;
+      // #50: re-apply pruning to the restored history. `maybePrune` clips
+      // oversized tool output IN PLACE, so a live session keeps its clipped
+      // text while the log still holds the full result — a restart therefore
+      // handed the provider a strictly LARGER prompt than the one that had just
+      // succeeded, which is a size regression that only shows up after a
+      // reload. It is a size fix, not a semantic one: the model has already
+      // seen and acted on that output, and the pruned form keeps the head plus
+      // a marker, exactly as it did live.
+      this.maybePrune();
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "session-restored",
         branch: last.branch,

@@ -193,6 +193,72 @@ function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
   });
 }
 
+/**
+ * Why did the response carry no usable message?
+ *
+ * #50 — this used to be a bare "LLM API returned no choices", which is what
+ * made the report undiagnosable: an empty `choices` array, a 200 carrying an
+ * `error` object, a `delta`-shaped body, and an SSE stream that the SDK
+ * handed back as a plain String all produce the identical line, and none of
+ * them is a useful thing to read in a log.
+ *
+ * The leading text is kept stable at "LLM API returned no choices" so any
+ * existing matching (and the retry notes operators have learned to read)
+ * still works; the diagnosis follows after a colon.
+ */
+function noChoicesDetail(res: unknown): string {
+  const base = "LLM API returned no choices";
+  // a gateway that answers 200 with an error object instead of failing: the
+  // actionable message is right there and used to be thrown away
+  const err = (res as { error?: { message?: unknown; type?: unknown; code?: unknown } })?.error;
+  if (err && typeof err === "object") {
+    const msg = typeof err.message === "string" ? err.message : JSON.stringify(err);
+    const code = err.code ?? err.type;
+    return `${base}: provider returned an error in a 200 response${
+      code ? ` (${String(code)})` : ""
+    } — ${String(msg).slice(0, 300)}`;
+  }
+  // the SDK returned raw text — e.g. an SSE body served to a non-streaming
+  // request. JSON.parse succeeds for a real object, so a failure here means we
+  // were handed something that is not a completion at all.
+  if (typeof res === "string") {
+    const head = res.slice(0, 160).replace(/\s+/g, " ").trim();
+    return `${base}: response was not a completion object (${res.length} bytes of ${
+      res.trimStart().startsWith("data:") || res.trimStart().startsWith("event:") ? "SSE" : "text"
+    })${head ? ` — ${head}` : ""}`;
+  }
+  const choices = (res as { choices?: unknown[] })?.choices;
+  if (Array.isArray(choices)) {
+    const first = choices[0] as { message?: unknown; delta?: unknown; finish_reason?: unknown } | undefined;
+    if (!first) return `${base}: the provider returned an empty choices array (0 candidates)`;
+    if (first.delta && !first.message) {
+      return `${base}: the provider returned a streaming delta on a non-streaming request (finish_reason=${String(
+        first.finish_reason,
+      )})`;
+    }
+    if (first.message === null) {
+      return `${base}: the provider returned a choice with a null message (finish_reason=${String(
+        first.finish_reason,
+      )})`;
+    }
+    return `${base}: the provider returned a choice with no message field (finish_reason=${String(
+      first.finish_reason,
+    )})`;
+  }
+  return `${base}: the response had no choices array (${safeShape(res)})`;
+}
+
+/** a short type summary of an unexpected response, for the log line */
+function safeShape(res: unknown): string {
+  try {
+    const o = res as Record<string, unknown> | null;
+    if (!o || typeof o !== "object") return `got ${typeof res}`;
+    return `keys: ${Object.keys(o).slice(0, 8).join(", ") || "(none)"}`;
+  } catch {
+    return "unreadable response";
+  }
+}
+
 export async function chat(
   cfg: LlmConfig,
   messages: ChatMessage[],
@@ -210,9 +276,13 @@ export async function chat(
       },
       { signal },
     );
-    const raw = res.choices?.[0];
+    // #50: a gateway may answer with `null` (or any non-object) on some proxy
+    // error paths, so the guard is on `rm`, not on `res` being truthy —
+    // reading `res.choices` unguarded threw a bare TypeError that named neither
+    // the provider nor the shape.
+    const raw = res?.choices?.[0];
     const rm = raw?.message as unknown as Record<string, unknown> | undefined;
-    if (!rm) throw new Error("LLM API returned no choices");
+    if (!rm) throw new Error(noChoicesDetail(res));
     // normalize: providers attach extra fields (reasoning, refusal, ...) and
     // nullable content — keep only what our protocol understands
     const message: ChatMessage = {
@@ -273,6 +343,12 @@ export async function chat(
     };
   } catch (err) {
     const e = err as { status?: number; message?: string; error?: { message?: string } };
+    // #50: our own shape-diagnosis already reads as a full sentence and names
+    // the response it saw. It carries no HTTP status (the request SUCCEEDED —
+    // that is the whole problem), so the generic wrapper below would have
+    // relabelled it "LLM API error ?: …", hiding both the diagnosis and the
+    // fact that no status was ever involved.
+    if (String((err as Error).message ?? "").startsWith("LLM API returned no choices")) throw err;
     if (e.status === undefined && !String((err as Error).message).includes("provider returned"))
       throw err; // not an API error (abort, bug, ...)
     const detail = e.error?.message ?? e.message ?? "unknown provider error";
@@ -382,8 +458,35 @@ export async function chatStream(
       throw new Error("LLM API error: empty completion");
     return { message, reasoning: reasoning || undefined, usage };
   } catch (err) {
-    // provider may not support streaming at all — one clean fallback
-    if (!gotChunk && !signal?.aborted) return chat(cfg, messages, tools, signal, onDelta);
+    // #50 — a provider that doesn't support streaming at all still gets ONE
+    // clean fallback, but ONLY when the streaming attempt produced nothing for
+    // a reason that could plausibly be the stream itself.
+    //
+    // The old condition was `!gotChunk && !signal?.aborted`, which also matched
+    // a request that FAILED — a gateway answering 200 with an SSE `error`
+    // frame, or a context-length rejection. In those cases the fallback
+    // re-issued the same oversized request in a different shape, and the
+    // resulting "LLM API returned no choices" replaced the real diagnosis.
+    // That is why a restored 1500-message session reported "no choices" three
+    // times and then errored: the genuine "context length exceeded" was
+    // discarded on the first attempt and could never be recognised by
+    // isContextOverflow(), so the compact-and-retry recovery never ran.
+    //
+    // Only a 4xx counts as "this endpoint may not do streaming": that is the
+    // shape a provider uses to reject `stream: true`. A 5xx, a transport
+    // failure, or any 2xx carrying an error frame is the ANSWER and is
+    // rethrown untouched, so overflow recovery can see it.
+    //
+    // Deliberately NOT message matching: the SDK's own error strings contain
+    // the word "stream" in generic prefixes ("LLM API error 500: …"), so a
+    // regex over the message made a server error look like a stream problem
+    // and re-armed the very fallback this is meant to suppress.
+    const status = (err as { status?: unknown })?.status;
+    const providerRejected =
+      typeof status === "number" && status >= 400 && status < 500;
+    if (!gotChunk && !signal?.aborted && providerRejected) {
+      return chat(cfg, messages, tools, signal, onDelta);
+    }
     // user interrupt: hand back whatever streamed so far so the harness can
     // keep the partial output visible instead of losing it
     if (signal?.aborted && (text || reasoning)) {

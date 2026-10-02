@@ -267,7 +267,13 @@ export function isContextOverflow(err: unknown): boolean {
   return (
     /context (length|window|limit)|too many tokens|prompt is too long|max.{0,12}tokens.{0,20}(exceed|surpass)|request too large|payload too large|exceeds.{0,20}limit/.test(
       msg,
-    ) || /\b(400|413)\b.*token/.test(msg)
+    ) ||
+    /\b(400|413)\b.*token/.test(msg) ||
+    // #50: some gateways answer an over-long request with HTTP 200 and put the
+    // real diagnosis in the body, which llm.ts now surfaces after the "no
+    // choices" prefix. Without this the compact-and-retry recovery never
+    // recognised it and the turn simply failed.
+    /no choices:[\s\S]{0,300}context (length|window|limit)/.test(msg)
   );
 }
 
