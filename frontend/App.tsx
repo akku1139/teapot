@@ -44,6 +44,9 @@ const NARROW_PX = 1100;
 /* ---------- types ---------- */
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
+  /** is work in flight that `stop` would stop? `status` alone cannot say — a
+   *  parked tool and queued prompts are both live while status reads "idle" (#59) */
+  live?: boolean;
   session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
   workspaceMissing?: boolean;
   latestProgress: any; stats: any; model: string; provider?: string;
@@ -554,6 +557,19 @@ export default function App() {
     onCleanup(() => document.removeEventListener("visibilitychange", onVisible));
   });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
+  /**
+   * Is the selected agent doing work that `stop` would stop? (#59)
+   *
+   * The server is the authority (`Agent.live`), because the client genuinely
+   * cannot derive it: a parked tool and queued prompts both leave `status` at
+   * "idle" while the loop is alive. Falls back to the status check for an older
+   * server, where it is at worst the behaviour we had before.
+   */
+  const isSelLive = (): boolean => {
+    const a = sel();
+    if (!a) return false;
+    return a.live ?? (a.status === "running" || a.status === "waiting");
+  };
   // prompt being edited → edit-prompt fork dialog. SETTLED user prompts only:
   // a pending (queued, not yet delivered) message offers ✕ cancel instead —
   // editing implies the model may have seen it, which is false while queued.
@@ -1696,7 +1712,7 @@ export default function App() {
   createEffect(() => {
     const a = sel();
     const base = a
-      ? `${a.status === "running" ? "▶ " : a.status === "error" ? "⚠ " : ""}${a.id} · teapot`
+      ? `${isSelLive() ? "▶ " : a.status === "error" ? "⚠ " : ""}${a.id} · teapot`
       : "teapot";
     // unread notification count in the tab title — "(2) linux · teapot"
     document.title = unreadCount() > 0 ? `(${unreadCount()}) ${base}` : base;
@@ -1719,7 +1735,9 @@ export default function App() {
       // stopped the agent and left the panel stuck open.
       if (isNarrow() && showRight()) { closeRight(); return; }
       const s = sel();
-      if (s?.status === "running") {
+      // #59: `live`, not `status` — an agent parked in wait_children reads
+      // "idle", and Escape then did nothing at all on a working agent.
+      if (s && isSelLive()) {
         // Claude-Code-style: Esc interrupts the running agent
         api(`/api/agents/${s.id}/stop`, { method: "POST" }).then(refreshAgents);
         return;
@@ -2488,7 +2506,7 @@ export default function App() {
                 <Show when={collapsedSubs().has(row.a.id)}>
                   {(() => {
                     const kids = agents().filter((x) => x.parent === row.a.id);
-                    const running = kids.filter((k) => k.status === "running" || k.status === "waiting").length;
+                    const running = kids.filter((k) => k.live ?? (k.status === "running" || k.status === "waiting")).length;
                     return kids.length > 0 ? (
                       <span
                         class={"subcount" + (running > 0 ? " live" : "")}
@@ -2741,8 +2759,7 @@ export default function App() {
                     // parent's live chrome ("writing…", the running blink)
                     // just because the parent happens to be running.
                     agentActive={
-                      (sel()?.status === "running" || sel()?.status === "waiting") &&
-                      isOwnLiveWork(e)
+                      isSelLive() && isOwnLiveWork(e)
                     }
                     onResize={() => { if (atBottom()) requestAnimationFrame(() => scrollBottom(true)); }}
                     onCancel={
@@ -3220,14 +3237,18 @@ export default function App() {
                 visibly reflowed the panel (width jump + row wrap). Toggling
                 class/text keeps the same element, so layout never moves. */}
             <button
-              class={sel()!.status === "running" ? "danger" : "runbtn"}
+              class={isSelLive() ? "danger" : "runbtn"}
               title={
-                sel()!.status === "running"
+                isSelLive()
                   ? "interrupt: aborts the current LLM call; the running tool finishes first"
                   : "run toward the goal (starts the loop)"
               }
-              onclick={sel()!.status === "running" ? act("/stop") : act("/start")}
-            >{sel()!.status === "running" ? "■ stop" : "▶ start"}</button>
+              // #59: key off the server's `live` flag, not `status`. A parked
+              // tool (wait_children) and queued prompts both read "idle" while
+              // the agent is very much alive, so the old check offered START on
+              // a working agent and the user could not stop it.
+              onclick={isSelLive() ? act("/stop") : act("/start")}
+            >{isSelLive() ? "■ stop" : "▶ start"}</button>
             <button
               title="branch off the conversation here — try things without disturbing the main line"
               onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(async () => { await refreshSessionIndex(true); await select(sel()!.id); })}

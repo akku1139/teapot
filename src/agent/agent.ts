@@ -464,10 +464,24 @@ export class Agent {
   }
 
   /**
-   * Long-parking tools (wait_children) flip the visible status to idle so the
-   * operator isn't staring at a running spinner for minutes. The run chain is
-   * still parked inside the tool — but any prompt/stop wakes it immediately.
+   * Is this agent doing work that `stop()` would actually stop?
+   *
+   * `status` cannot answer this on its own. Three states count as live:
+   *   - `running`: the obvious one;
+   *   - a PARKED TOOL: `parkForTool()` flips the visible status to "idle" so a
+   *     multi-minute `wait_children` doesn't look like a running spinner, but
+   *     the loop is very much alive inside the tool;
+   *   - QUEUED PROMPTS: prompts handed to a stopped agent are accepted and held,
+   *     and a later `start()` will consume them.
+   *
+   * Anything keying "should this button stop or start?" off `status` alone
+   * therefore offers **start** on a working agent, and the user cannot stop it
+   * (#59) — the same trap #38 documented for editing history.
    */
+  isLive(): boolean {
+    return this.status === "running" || this.parkedByTool || this.pendingPrompts.length > 0;
+  }
+
   /**
    * A background shell (bash background=true) finished. Two channels:
    * 1. a system_note row in the timeline — the operator sees the outcome
@@ -1035,6 +1049,17 @@ export class Agent {
       id: this.opts.id,
       status: this.status,
       statusReason: this.statusReason,
+      /**
+       * Is there work in flight that `stop` would actually stop?
+       *
+       * `status` alone is not enough to answer that, and the UI needs it: a
+       * parked tool (`wait_children`) rewrites the status to "idle" while the
+       * loop is very much alive, so a client keying "stop vs start" off
+       * `status === "running"` offered **start** on a running agent and the
+       * user could not stop it (#59). This is the same "running is not the
+       * only live state" fact #38 had to be taught about editing.
+       */
+      live: this.isLive(),
       workspace: this.workspace,
       workspaceMissing: this.workspaceMissing,
       session: this.currentSession,
