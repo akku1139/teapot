@@ -23,9 +23,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { useTempDir } from "./helpers/tmp.ts";
 import { executeTool, renderGutter, renderHashlines, gutterWidth } from "../src/agent/tools.ts";
 
 async function read(dir: string, args: unknown): Promise<string> {
@@ -34,10 +34,20 @@ async function read(dir: string, args: unknown): Promise<string> {
   return r.result;
 }
 
+/**
+ * A workspace that is REMOVED once the test finishes.
+ *
+ * `useTempDir` rather than a bare `mkdtemp`: the bare version leaked a
+ * directory on every single run, and because the suite is run constantly that
+ * had quietly filled /tmp with hundreds of them. The helper deletes in a
+ * `finally`, so it cannot leak on a failure either — which a manual rm at the
+ * end of the test would.
+ */
 async function withFile<T>(name: string, body: string, fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(path.join(tmpdir(), "p7-"));
-  await writeFile(path.join(dir, name), body, "utf8");
-  return fn(dir);
+  return useTempDir("p7-", async (dir) => {
+    await writeFile(path.join(dir, name), body, "utf8");
+    return fn(dir);
+  });
 }
 
 /* ---------- 1: the gutter must not jump mid-file ---------- */

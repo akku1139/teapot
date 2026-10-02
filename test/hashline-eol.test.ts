@@ -19,9 +19,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
+import { useTempDir } from "./helpers/tmp.ts";
 import { executeTool } from "../src/agent/tools.ts";
 
 /** run the real read→copy→edit cycle a model performs */
@@ -31,7 +31,7 @@ async function readThenEdit(
   newText: string,
   lineIndex = 0,
 ): Promise<{ ok: boolean; result: string; after: string }> {
-  const ws = await mkdtemp(path.join(tmpdir(), "p61-"));
+  return useTempDir("p61-", async (ws) => {
   const ctx = { cwd: ws };
   const p = path.join(ws, "a.js");
   await writeFile(p, file, "utf8");
@@ -41,6 +41,7 @@ async function readThenEdit(
   const anchorLine = String(read.result).split("\n")[lineIndex]!;
   const edit = await call("edit_file", { path: "a.js", old_text: oldText ?? anchorLine, new_text: newText });
   return { ok: edit.ok, result: String(edit.result), after: await readFile(p, "utf8") };
+  });
 }
 
 const CRLF = "function f() {\r\n  const a = 1;\r\n  const b = 2;\r\n}\r\n";
