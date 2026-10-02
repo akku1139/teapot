@@ -366,7 +366,18 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .imgchip .imgx {
   position: absolute; top: -5px; right: -5px; width: 16px; height: 16px;
   border-radius: 50%; border: none; background: var(--err); color: #fff;
-  font-size: 9px; line-height: 1; cursor: pointer;
+  font-size: 9px; cursor: pointer;
+  /* #57: two separate defects broke the circle.
+     1. the UA default button padding is still in play — with
+        `* { box-sizing: border-box }` that padding is subtracted from the
+        declared 16px, so the circle came out smaller than its box and the
+        glyph sat off-centre;
+     2. the glyph was NOT flex-centred: `line-height: 1` parks a 9px char on
+        the text baseline inside a 16px box, leaving the ✕ visibly high and
+        left (the same trap .iconbtn fell into in #44). */
+  padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  line-height: 1;
 }
 .promptimgs { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 img.promptimg { max-width: 180px; max-height: 120px; border-radius: 6px; border: 1px solid var(--line); }
