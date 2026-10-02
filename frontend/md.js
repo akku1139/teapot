@@ -76,8 +76,19 @@ function renderEscaped(lines) {
         const style = a && a !== "left" ? ` style="text-align:${a}"` : "";
         return `<${tag}${style}>${inline(c)}</${tag}>`;
       };
+      // A header row of nothing but blank cells is a legal GFM table, and
+      // cmark-gfm does render a <thead> for it — but visually it is a bare
+      // strip of dark cells and a border above the real content, reading as a
+      // stray empty row rather than as column headings. It also happens by
+      // accident whenever someone pipes a table out of a tool whose header is
+      // empty. So: keep the table, drop the meaningless <thead> entirely.
+      // Only when EVERY cell is blank — a table with one real heading still
+      // needs its header, and a partially-blank one keeps the blanks so the
+      // real columns stay aligned over their data.
+      const hasHeader = head.some((c) => c !== "");
       out.push(
-        `<div class="tbl"><table><thead><tr>${head.map((c, k) => cell(c, k, "th")).join("")}</tr></thead>` +
+        `<div class="tbl"><table>` +
+          (hasHeader ? `<thead><tr>${head.map((c, k) => cell(c, k, "th")).join("")}</tr></thead>` : "") +
           `<tbody>${rows.map((r) => `<tr>${r.map((c, k) => cell(c, k, "td")).join("")}</tr>`).join("")}</tbody></table></div>`,
       );
       continue;
