@@ -1074,7 +1074,17 @@ export default function App() {
   const toggleWsGroup = (ws: string) => {
     const next = new Set(wsCollapsed());
     if (next.has(ws)) next.delete(ws);
-    else next.add(ws);
+    else {
+      next.add(ws);
+      // Collapsing hides every chat in the group — including the one the
+      // operator is currently reading. That reads as "my session vanished",
+      // so say what happened and how to get back. The open conversation stays
+      // loaded and keeps running either way; only its sidebar row goes away.
+      if (selected() && workspaceOf(selected()!) === ws) {
+        const n = wsChatCounts().get(ws) ?? 0;
+        flashHint(`hid ${n} chat${n === 1 ? "" : "s"} in ${basenameOf(ws)} — click the header to show them`);
+      }
+    }
     setWsCollapsed(next);
     try {
       localStorage.setItem("teapot.wsCollapsed", JSON.stringify([...next]));
@@ -2370,16 +2380,20 @@ export default function App() {
                 <div
                   class="wsheader"
                   title={
-                    (wsChatCounts().get(row.wsHeader!) ?? 0) > 1
-                      ? `${row.wsHeader} — ${wsChatCounts().get(row.wsHeader!)} chats share this directory`
-                      : row.wsHeader || ""
+                    row.wsCollapsedGroup
+                      ? `${row.wsHeader} — collapsed (${wsChatCounts().get(row.wsHeader!) ?? 0} chats hidden). Click to show.`
+                      : (wsChatCounts().get(row.wsHeader!) ?? 0) > 1
+                        ? `${row.wsHeader} — ${wsChatCounts().get(row.wsHeader!)} chats share this directory`
+                        : row.wsHeader || ""
                   }
                   onclick={() => toggleWsGroup(row.wsHeader!)}
                 ><span class="wscaret">{wsCollapsed().has(row.wsHeader!) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
                   {/* several separate chats often share one directory — say so,
-                      so the group reads as N chats rather than one (#18) */}
-                  <Show when={(wsChatCounts().get(row.wsHeader!) ?? 0) > 1}>
-                    <span class="wscount">{wsChatCounts().get(row.wsHeader!)}</span>
+                      so the group reads as N chats rather than one (#18).
+                      A COLLAPSED group must always show the count: that is
+                      the only thing telling the operator how much is hidden. */}
+                  <Show when={(wsChatCounts().get(row.wsHeader!) ?? 0) > 1 || row.wsCollapsedGroup}>
+                    <span class="wscount">{wsChatCounts().get(row.wsHeader!) ?? 0}</span>
                   </Show>
                 </div>
               </Show>

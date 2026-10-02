@@ -549,8 +549,11 @@ console.log("deep render ok: feed rows present");
   const before = itemIds();
   if (before.length !== 2) fail(`fixture should start with 2 chats, got ${before.length}`);
   // match on the header's title (the workspace PATH), never its textContent:
-  // that includes the caret glyph, which is exactly what the click flips
-  const headerFor = (ws) => headers().find((h) => h.getAttribute("title") === ws);
+  // that includes the caret glyph, which is exactly what the click flips.
+  // `startsWith`, not `===`: a collapsed header's title gains a suffix
+  // ("— collapsed (N chats hidden)"), and an exact match silently stops
+  // finding it — which reads as "the reopen click does nothing".
+  const headerFor = (ws) => headers().find((h) => h.getAttribute("title")?.startsWith(ws));
   const target = headerFor(AGENT.workspace);
   if (!target) fail(`no header for ${AGENT.workspace}: ${headers().map((h) => h.getAttribute("title"))}`);
   const wasCollapsed = /▸/.test(target.querySelector(".wscaret")?.textContent ?? "");
@@ -578,7 +581,9 @@ console.log("deep render ok: feed rows present");
   if (headers().length !== 2)
     fail(`a collapsed group must keep its header so it can be reopened, got ${headers().length}`);
 
-  // …and clicking again restores it
+  // …and clicking again restores it. Re-query the header: Solid may have
+  // replaced the node (the collapsed header renders different content), and a
+  // click on a DETACHED element is a silent no-op that looks like a bug.
   headerFor(AGENT.workspace)?.click();
   await sleep(120);
   const restored = itemIds();
@@ -651,6 +656,46 @@ console.log("deep render ok: feed rows present");
 
   setGlobal("fetch", origFetch);
   console.log("deep render ok: chats sharing one directory stay separate and counted (#18)");
+}
+
+/* ---------- #18: a COLLAPSED group must still say how much it hides --------
+ * The count badge is the only thing telling the operator what a collapsed
+ * header took off screen. Hiding it along with the chats left a ▸ next to a
+ * bare project name — no way to know a conversation was in there at all. */
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
+  const headers = () => [...w.document.querySelectorAll(".wsheader")];
+  const headerFor = (ws) => headers().find((h) => h.getAttribute("title")?.startsWith(ws));
+
+  // /tmp/other-project holds exactly ONE chat (beta): its header must show no
+  // count badge while open — a "1" badge is noise.
+  const soloHeader = headerFor("/tmp/other-project");
+  if (!soloHeader) fail("the single-chat project lost its header (#18)");
+  if (soloHeader.querySelector(".wscount"))
+    fail(`a single-chat project must not show a count badge: ${soloHeader.textContent}`);
+
+  soloHeader.click(); // collapse it
+  await sleep(150);
+  const collapsedHeader = headerFor("/tmp/other-project");
+  if (!collapsedHeader) fail("collapsing removed the header — no way to reopen (#18)");
+  const badge = collapsedHeader.querySelector(".wscount");
+  if (!badge) fail(`a collapsed group must still show how many chats it hides (#18): ${collapsedHeader.textContent}`);
+  if (badge.textContent.trim() !== "1")
+    fail(`a collapsed single-chat group should read 1, got ${JSON.stringify(badge.textContent)}`);
+  if (!/collapsed/i.test(collapsedHeader.getAttribute("title") ?? ""))
+    fail("a collapsed header's tooltip should say so (#18)");
+  if ([...w.document.querySelectorAll(".agent-item")].some((el) => /beta/.test(el.textContent)))
+    fail("beta's chat should be hidden while its group is collapsed (#18)");
+
+  collapsedHeader.click(); // restore
+  await sleep(150);
+  if (![...w.document.querySelectorAll(".agent-item")].some((el) => /beta/.test(el.textContent)))
+    fail("reopening must bring beta's chat back (#18)");
+  // the OTHER groups are untouched by collapsing this one
+  if (![...w.document.querySelectorAll(".agent-item")].some((el) => /alpha|gamma/.test(el.textContent)))
+    fail("collapsing one project must not disturb the others (#18)");
+  console.log("deep render ok: a collapsed group still reports what it hides (#18)");
 }
 
 /* ---------- #50: WIDE mode must be untouched by the drawer work ----------
