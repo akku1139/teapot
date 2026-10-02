@@ -185,9 +185,10 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
    `opacity: .5` stacked on the already-muted name colour, so a collapsed chat
    was the least readable thing in the sidebar — and a collapsed chat is a
    deliberate, reversible state the operator chose, not stale or disabled.
-   The name stays fully legible; the caret carries the state. */
-.agent-item.collapsed { cursor: default; }
-.agent-item.collapsed:hover { background: none; }
+   The name stays fully legible; the caret carries the state, and the row is
+   still clickable — a collapsed chat opens AND expands (#66), so it can never
+   become a dead entry you have to guess at. */
+.agent-item.collapsed { cursor: pointer; }
 /* Selection is now carried by the BACKGROUND alone: the name is already
    `var(--fg)` on every row, so re-stating the colour here would be dead. */
 .agent-item.sel { background: var(--bg-mid); }

@@ -2521,7 +2521,17 @@ export default function App() {
               <div
                 class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "") + (row.chatCollapsedGroup ? " collapsed" : "")}
                 style={row.depth > 0 ? `padding-left:${10 + row.depth * 14}px` : ""}
-                onclick={() => { if (!row.chatCollapsedGroup) select(row.a.id); }}
+                // #66: a COLLAPSED chat must still be selectable. The row is a
+                // normal chat that happens to be closed, and the report was that
+                // with every chat collapsed you could not get into any of them —
+                // the only way back was the ~9px caret, which nobody looks for
+                // on a row that looked inactive. Clicking it now selects the
+                // chat AND expands it, so the first click does what the row
+                // obviously means.
+                onclick={() => {
+                  if (row.chatCollapsedGroup) toggleWsGroup(`chat:${row.a.id}`, row.a.id, true);
+                  select(row.a.id);
+                }}
                 title={row.a.parent ? `sub-agent of @${row.a.parent}` : undefined}
               >
                 {/* A TOP-LEVEL CHAT is always collapsible, whether or not it has

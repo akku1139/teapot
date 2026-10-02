@@ -263,16 +263,37 @@ test("a collapsed chat is NEVER removed from the tree (#18)", () => {
   assert.ok(rows.some((r) => !r.headerOnly && r.a.id === "gamma"), "gamma stays (#18)");
 });
 
-test("a collapsed chat's row is not selectable, and reads as closed (#18)", () => {
+test("a collapsed chat's row is still selectable (#18/#66)", () => {
   const app2 = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
   const css2 = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-  // the row is still rendered, so it must not look or behave like a live chat
-  assert.match(
+
+  // This assertion used to require the row to be UNSELECTABLE while collapsed,
+  // on the reasoning that "it is not a live row". That was wrong, and #66 is the
+  // report: with every chat collapsed you could not get into any of them,
+  // because the only way back was the ~9px caret on a row that looked inert.
+  //
+  // A collapsed chat is a normal chat that happens to be CLOSED. Clicking it now
+  // selects it and expands it — the first click does what the row obviously
+  // means — so a collapsed row can never become a dead end.
+  assert.doesNotMatch(
     app2,
     /onclick=\{\(\) => \{ if \(!row\.chatCollapsedGroup\) select\(row\.a\.id\); \}\}/,
-    "a collapsed row must not open the session (#18)",
+    "a collapsed chat must not be a dead entry (#66)",
   );
-  assert.match(css2, /\.agent-item\.collapsed \{/, "and must read as collapsed (#18)");
+  assert.match(
+    app2,
+    /if \(row\.chatCollapsedGroup\) toggleWsGroup\(`chat:\$\{row\.a\.id\}`/,
+    "clicking it expands the chat (#66)",
+  );
+
+  // it still READS as closed — via the caret, not by fading out (#66)
+  assert.match(css2, /\.agent-item\.collapsed \{/, "and must read as collapsed (#66)");
+  assert.match(
+    css2,
+    /\.agent-item\.collapsed \{[^}]*cursor:\s*pointer/,
+    "a collapsed chat must still invite the click that opens it (#66)",
+  );
+
   // the Show guard must not filter collapsed CHATS away — only the directory
   // header still hides its rows
   assert.match(
@@ -281,3 +302,4 @@ test("a collapsed chat's row is not selectable, and reads as closed (#18)", () =
     "a collapsed chat's row must survive the render guard (#18)",
   );
 });
+

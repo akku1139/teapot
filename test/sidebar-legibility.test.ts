@@ -117,13 +117,22 @@ test("a collapsed chat is NOT dimmed (#66)", () => {
   );
 });
 
-test("a collapsed chat still does not react to a row click (#66)", () => {
-  // keeping this is correct: the row is inert, the CARET is the control.
-  assert.match(lastRule(".agent-item.collapsed"), /cursor:\s*default/, "the row must not invite a click (#66)");
+test("a collapsed chat is still clickable (#66)", () => {
+  // #66's title is the real bug: "you cannot select from the chat list without
+  // expanding the sub-agent list". The row click was guarded so a collapsed chat
+  // could only be reopened through its ~9px caret — and on a row that looked
+  // inactive nobody looks for a control there. Clicking now selects the chat AND
+  // expands it, so the collapsed row is never a dead end.
   assert.match(
-    lastRule(".agent-item.collapsed:hover"),
-    /background:\s*none/,
-    "and must not light up on hover (#66)",
+    lastRule(".agent-item.collapsed"),
+    /cursor:\s*pointer/,
+    "a collapsed chat must invite the click that opens it (#66)",
+  );
+  // no rule may switch its hover off — that was what made the row look inert
+  assert.doesNotMatch(
+    css,
+    /\.agent-item\.collapsed:hover\s*\{[^}]*background:\s*none/,
+    "a collapsed chat must light up on hover like any other selectable row (#66)",
   );
 });
 
@@ -132,4 +141,22 @@ test("the collapsed caret is what shows the state (#66)", () => {
   // renders it, so "collapsed" is never conveyed by opacity alone
   const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
   assert.match(app, /\{off \? "▸" : "▾"\}/, "the caret must reflect the collapsed state (#66)");
+});
+
+test("clicking a collapsed chat selects it and expands it (#66)", () => {
+  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    app,
+    /onclick=\{\(\) => \{ if \(!row\.chatCollapsedGroup\) select\(row\.a\.id\); \}\}/,
+    "the row must never be a dead end when collapsed (#66)",
+  );
+  // selecting must happen unconditionally, and the expand must come first so the
+  // chat is open by the time it is selected
+  const onclick = app.slice(app.indexOf("onclick={() => {\n                  if (row.chatCollapsedGroup)"), app.indexOf("onclick={() => {\n                  if (row.chatCollapsedGroup)") + 400);
+  assert.match(onclick, /toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, true\)/, "a click expands the chat (#66)");
+  assert.match(onclick, /select\(row\.a\.id\)/, "and then selects it (#66)");
+  assert.ok(
+    onclick.indexOf("toggleWsGroup") < onclick.indexOf("select(row.a.id)"),
+    "expanding first means the chat is already open when it becomes selected (#66)",
+  );
 });
