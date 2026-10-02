@@ -763,6 +763,26 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
   if (!barOpen()) failR("could not re-open after a resize");
   w.document.querySelector(".rightbarbackdrop").click(); await sleepR(80);
   if (barOpen()) failR("click-outside did not dismiss after a resize");
+
+  // WIDENING BACK must disarm the drawer again. The backdrop is gated on the
+  // `narrow` signal, so a resize back to a wide viewport has to REMOVE it — a
+  // full-screen click-catcher left over at 1400px would swallow every click in
+  // the app while the panel is an ordinary column. This is the mirror of the
+  // narrow case, and it was the direction nothing covered.
+  detailToggle().click(); await sleepR(80);
+  if (!barOpen()) failR("could not re-open the panel before widening");
+  viewportWidth = 1400;
+  w.dispatchEvent(new w.Event("resize"));
+  await sleepR(120);
+  if (w.document.querySelector(".rightbarbackdrop"))
+    failR("backdrop still mounted after widening — it would swallow every click in the app (#50)");
+  const wideHead = w.document.querySelector(".rightbarhead");
+  if (wideHead && w.document.defaultView.getComputedStyle(wideHead).display !== "none")
+    failR("the ✕ row is still visible after widening back to a wide screen (#50)");
+  if (!barOpen()) failR("widening closed the panel — on a wide screen it is a column (#50)");
+  detailToggle().click(); await sleepR(80);
+  if (barOpen()) failR("the ▤ toggle stopped working on a wide screen after a resize (#50)");
+  console.log("deep render ok: widening back disarms the drawer without breaking the column (#50)");
 }
 
 // give deferred Solid effects a final tick before declaring victory
