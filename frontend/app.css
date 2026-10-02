@@ -157,7 +157,14 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 /* A top-level chat is its own group and its ROW is that group: the caret in
    .agent-item collapses it, so two chats sharing a working directory stay
    separately openable without a second header row restating each name. */
-.agent-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; color: var(--dim); min-width: 0; }
+/* #66: the chat NAME is the primary content of this row and was rendering at
+   `var(--dim)` — the same muted grey used for the caret and the badges — so a
+   sidebar full of chats read as uniformly inactive, with only the SELECTED row
+   at full brightness. That is a hierarchy with the emphasis exactly backwards:
+   the thing you are choosing between is the faintest thing on screen.
+   The row is now `var(--fg)` and the SECONDARY parts (dot, badges, caret) stay
+   dim, which is where the muted colour belongs. */
+.agent-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; color: var(--fg); min-width: 0; }
 /* #60: the chat's own id is the ONE flexible item in this row — the dot,
    caret, 🔔 unread badge, 🧩 sub-agent count, ⏰ cron and ✓ all keep their
    intrinsic width. Without this the id could not shrink, so a long id plus a
@@ -173,11 +180,24 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .caret:hover { color: var(--fg); }
 .caret-spacer { width: 12px; flex-shrink: 0; }
 .agent-item:hover { background: var(--bg-mid); }
-/* a COLLAPSED chat keeps its row so the caret can bring it back; it is not a
-   live row, so it reads as closed and does not react to a click */
-.agent-item.collapsed { opacity: .5; cursor: default; }
+/* A COLLAPSED chat keeps its row so the caret can bring it back (#18). It is
+   marked by its CLOSED CARET, not by dimming the whole row: the earlier
+   `opacity: .5` stacked on the already-muted name colour, so a collapsed chat
+   was the least readable thing in the sidebar — and a collapsed chat is a
+   deliberate, reversible state the operator chose, not stale or disabled.
+   The name stays fully legible; the caret carries the state. */
+.agent-item.collapsed { cursor: default; }
 .agent-item.collapsed:hover { background: none; }
-.agent-item.sel { background: var(--bg-mid); color: var(--fg); }
+/* Selection is now carried by the BACKGROUND alone: the name is already
+   `var(--fg)` on every row, so re-stating the colour here would be dead. */
+.agent-item.sel { background: var(--bg-mid); }
+/* A sub-agent is a child of the chat above it, and once the parent's name is
+   full-brightness the only remaining cue that this row is subordinate is its
+   indent — which is easy to miss when scanning. Mute it slightly so the
+   parent/child relationship reads at a glance, and keep the selected sub-agent
+   at full brightness so it never looks disabled. */
+.agent-item.sub-row { color: var(--dim); }
+.agent-item.sub-row.sel { color: var(--fg); }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .dot.running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .dot.waiting { background: var(--acc); box-shadow: 0 0 6px var(--acc); animation: pulse 1.6s ease-in-out infinite; }
