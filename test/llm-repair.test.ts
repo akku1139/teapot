@@ -19,6 +19,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
@@ -68,6 +70,20 @@ function providerReject(messages: ChatMessage[]): string | null {
 }
 
 const AUDIT_MARK = "completion audit:";
+
+/** assistant tool_calls with no result, and tool results with no call */
+function audit(msgs: ChatMessage[]): { orphanResults: string[]; orphanCalls: string[] } {
+  const called = new Set<string>();
+  const answered = new Set<string>();
+  for (const m of msgs) {
+    for (const t of m.tool_calls ?? []) called.add(t.id);
+    if (m.tool_call_id) answered.add(m.tool_call_id);
+  }
+  return {
+    orphanResults: [...answered].filter((id) => !called.has(id)),
+    orphanCalls: [...called].filter((id) => !answered.has(id)),
+  };
+}
 
 /* ---------- the bug ---------- */
 
@@ -393,5 +409,69 @@ test("a provider 200 with zero choices is a retryable error, not a dead session 
       "an empty-choices 200 must ride the retry ladder, not end the session (#50)",
     );
     await agent.dispose();
+  });
+});
+/* ---------- contract: no restored shape may need a fabricated message ------ */
+
+/**
+ * The sweep behind both #50 fixes. Every `message` event shape a log can hold is
+ * replayed through a REAL restore, and each is checked for the two things that
+ * turn a resumed session into a 200 with zero choices:
+ *
+ *   1. no assistant turn the live run never had (blank, or operator-facing), and
+ *   2. no dangling tool_call/tool_result pair.
+ *
+ * A blank turn that DID call tools is deliberately kept — sanitize() sends it
+ * as "(tool call)", which is a valid placeholder — so it is exempt from (1) and
+ * judged on (2) alone.
+ */
+test("no message-event shape survives a restore in an unsafe form (#50)", async () => {
+  await useTempDirs(["a50o-ws-", "a50o-"], async ([workspace, base]) => {
+    const cases: [string, Record<string, unknown>][] = [
+      ["blank assistant, no calls", { role: "assistant", content: "" }],
+      ["blank assistant, with calls", { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "bash" }] }],
+      ["final summary", { role: "assistant", content: "done", final: true }],
+      ["operator-facing audit", { role: "assistant", content: "audit verdict", operatorFacing: true }],
+      ["normal assistant", { role: "assistant", content: "a real reply" }],
+      ["user echo", { role: "user", content: "a real prompt" }],
+    ];
+
+    for (const [label, data] of cases) {
+      const sessionDir = path.join(base, label.replace(/\W+/g, "-"));
+      await mkdir(sessionDir, { recursive: true });
+      const chatFn = async (): Promise<LlmResult> => reply("ok");
+      const first = mkAgent(workspace, sessionDir, chatFn);
+      await first.init();
+      first.enqueuePrompt("go");
+      first.start("t");
+      await first.settled();
+      await first.log.append("message", first.snapshot().session, first.snapshot().branch, data);
+      if (label.includes("with calls"))
+        await first.log.append("tool_result", first.snapshot().session, first.snapshot().branch, {
+          callId: "c1",
+          name: "bash",
+          ok: true,
+          result: "fine",
+        });
+      await first.dispose();
+
+      const second = mkAgent(workspace, sessionDir, chatFn);
+      await second.init();
+      second.enqueuePrompt("next");
+      second.start("t");
+      await second.settled();
+
+      const restored = second.messages as ChatMessage[];
+      const a = audit(restored);
+      assert.deepEqual(a.orphanCalls, [], `${label}: dangling tool_call (#50)`);
+      assert.deepEqual(a.orphanResults, [], `${label}: dangling tool result (#50)`);
+      // only the intentional blank+tool_calls case may keep a blank turn
+      const blank = restored.filter((m) => m.role === "assistant" && m.content === "");
+      if (label === "blank assistant, with calls")
+        assert.equal(blank.length, 1, `${label}: must be KEPT — its results depend on it (#50)`);
+      else
+        assert.equal(blank.length, 0, `${label}: a blank assistant turn must not survive (#50)`);
+      await second.dispose();
+    }
   });
 });
