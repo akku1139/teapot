@@ -817,7 +817,14 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
   background: var(--bg-dark); z-index: -1;
 }
 .composer.maximized form {
-  flex: 1; min-height: 0; align-items: stretch;
+  /* #65: `min-height: 0` is load-bearing. A flex item will not shrink below
+     its content size, so as the textarea grew line by line the form grew with
+     it — moving the composer's bottom edge and pushing the hint below it down
+     the screen. This lets the form absorb the leftover space and stop where
+     the column ends, leaving the hint on the last row. */
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
 }
 .composer.maximized textarea {
   height: auto !important; /* maximize owns the size, autosize stands down */
