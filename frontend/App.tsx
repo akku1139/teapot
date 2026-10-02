@@ -4499,43 +4499,60 @@ function IconBtn(props: {
   );
 }
 
+/** Copy `text` using the best path this environment actually supports.
+ *
+ *  #52 — every Copy button was dead. `navigator.clipboard` only exists in a
+ *  SECURE context, and teapot serves the UI over plain `http://127.0.0.1` by
+ *  default, so the property is ABSENT — `navigator.clipboard.writeText(text)`
+ *  threw synchronously, before a promise existed, so the `.catch()` fallback
+ *  written underneath it never ran and the legacy path was dead code.
+ *
+ *  So: feature-DETECT rather than assume. `clipboard` may be undefined, null,
+ *  or present without a usable `writeText` (older browsers, embedded webviews),
+ *  and a present API may still reject on permission or an unfocused document.
+ *  Each of those must reach the legacy path, and a genuine failure must say so.
+ */
+async function copyText(text: string): Promise<"copied" | "unsupported" | "failed"> {
+  if (!text) return "unsupported";
+  const writeText = typeof navigator !== "undefined" ? navigator.clipboard?.writeText : undefined;
+  if (typeof writeText === "function") {
+    try {
+      await writeText.call(navigator.clipboard, text);
+      return "copied";
+    } catch {
+      /* rejected (denied, unfocused, insecure) — try the legacy path */
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok ? "copied" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
 function CopyBtn(props: { text: string; label?: string; title?: string }) {
   const [done, setDone] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
   const copy = (e: MouseEvent) => {
     e.preventDefault(); // <summary> buttons must not toggle the details row
     e.stopPropagation();
-    const text = props.text ?? "";
-    if (!text) {
-      setFailed(true); // nothing to copy — say so instead of a silent no-op
-      setTimeout(() => setFailed(false), 1200);
-      return;
-    }
-    // clipboard API needs focus + secure context; fall back to the ancient
-    // execCommand path when it rejects (background tab, permission denial)
-    navigator.clipboard
-      .writeText(text)
-      .then(() => {
-        setDone(true);
-        setTimeout(() => setDone(false), 900);
-      })
-      .catch(() => {
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed";
-          ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          ta.remove();
-          setDone(true);
-          setTimeout(() => setDone(false), 900);
-        } catch {
-          setFailed(true);
-          setTimeout(() => setFailed(false), 1200);
-        }
-      });
+    void copyText(props.text ?? "").then((result) => {
+      if (result === "unsupported" || result === "failed") {
+        setFailed(true); // nothing copied — say so instead of a silent no-op
+        setTimeout(() => setFailed(false), 1200);
+        return;
+      }
+      setDone(true);
+      setTimeout(() => setDone(false), 900);
+    });
   };
   return (
     <button

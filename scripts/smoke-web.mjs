@@ -262,6 +262,93 @@ if (!feedText) {
 }
 console.log("deep render ok: feed rows present");
 
+/* ---------- #52: the timeline Copy buttons must actually copy -------------
+ * Reported crash: `Cannot read properties of undefined (reading 'writeText')`
+ * at the copy handler.
+ *
+ * The cause is that `navigator.clipboard` is only exposed in a SECURE context.
+ * teapot serves the UI over plain http://127.0.0.1 by default — so the API is
+ * simply ABSENT, not rejecting. `navigator.clipboard.writeText(...)` therefore
+ * threw synchronously, before any promise existed, so the `.catch()` fallback
+ * below it never ran: every Copy button was dead on the default setup, with the
+ * execCommand path unreachable dead code.
+ *
+ * This block drives the real bundle in exactly that environment (happy-dom at
+ * http://localhost, no clipboard) and asserts the text lands somewhere. */
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg) => { console.error(`#52 REGRESSION: ${msg}`); process.exit(1); };
+
+  // Capture whichever path the button takes, WITHOUT a real clipboard.
+  //
+  // happy-dom ships a `clipboard.writeText` that resolves while doing nothing,
+  // and no execCommand at all — the same shape as a browser where the API
+  // exists but silently does nothing. That is why the "API exists" case is not
+  // evidence of a working copy, and why the button has to fall through when the
+  // environment cannot really copy.
+  const copied = [];
+  let execCommandCalls = 0;
+  const realExec = w.document.execCommand;
+  w.document.execCommand = (cmd) => {
+    if (cmd === "copy") {
+      execCommandCalls++;
+      // the legacy path stages the text in a textarea before copying it —
+      // capture it so the test can check the RIGHT text was copied
+      const ta = w.document.querySelector("textarea[style*='fixed']");
+      if (ta) copied.push(ta.value);
+    }
+    return true;
+  };
+  // THE REPORTED ENVIRONMENT: plain http, so navigator.clipboard is ABSENT.
+  // happy-dom defines it on the prototype as a getter, so `delete` cannot
+  // remove it — redefine it to undefined on the instance instead.
+  Object.defineProperty(w.navigator, "clipboard", {
+    configurable: true,
+    writable: true,
+    value: undefined,
+  });
+  if (typeof navigator.clipboard !== "undefined") {
+    console.error("#52 REGRESSION: could not simulate a non-secure context (clipboard is still present)");
+    process.exit(1);
+  }
+  const hadClipboard = typeof navigator.clipboard;
+
+  const btns = [...w.document.querySelectorAll(".copybtn")];
+  if (!btns.length) fail("no Copy buttons rendered on the timeline (#52)");
+  const btn = btns[0];
+  btn.click(); // must NOT throw out of the handler
+  await sleep(250);
+
+  if (!execCommandCalls)
+    fail(
+      `the Copy button wrote nothing at all — clipboard=${hadClipboard}, ` +
+      `writeText=${copied.length}, execCommand=${execCommandCalls} (#52)`,
+    );
+  if (!copied.length)
+    fail(`the legacy path staged no text to copy (#52)`);
+  if (typeof copied[0] !== "string" || !copied[0].length)
+    fail(`copy must send the row's non-empty text, got ${JSON.stringify(copied[0])} (#52)`);
+
+  // the operator must be able to TELL it worked — no silent button
+  const glyph = () => btn.textContent.trim();
+  if (!["✓", "⧉", "✗"].includes(glyph()))
+    fail(`the Copy button shows unexpected state ${JSON.stringify(glyph())} (#52)`);
+  const afterClick = glyph();
+  if (afterClick === "✓") {
+    // success feedback: confirm the button reports it, then returns to idle
+    await sleep(1200);
+    if (glyph() === "✓")
+      fail("the copied state must revert, or the button lies about later copies (#52)");
+  }
+
+  // restore the environment for the rest of the run
+  try { w.document.execCommand = realExec; } catch {}
+  if (hadClipboard === "undefined") {
+    try { delete w.navigator.clipboard; } catch {}
+  }
+  console.log("deep render ok: a Copy button actually copies (#52)");
+}
+
 /* ---------- pending-echo regression (undelivered prompt must not double-render) ----------
  * Full UI path: type into the composer and submit (agent RUNNING). The POST
  * returns promptId "upending1"; the server has ALREADY logged the prompt row
