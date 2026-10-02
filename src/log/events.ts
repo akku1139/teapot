@@ -194,3 +194,90 @@ export async function readEvents(filePath: string): Promise<TeapotEvent[]> {
     return [];
   }
 }
+
+/** Default floor for a tail read, so a small `limit` cannot cause a tiny read. */
+const TAIL_MIN_BYTES = 64 * 1024;
+
+/**
+ * Read only the LAST `limit` events from an append-only JSONL log.
+ *
+ * #59: the web UI polls this endpoint every ~120 ms for the selected agent, and
+ * the full re-parse cost 348 ms on a 57 MB / 200 000-event log. The mtime cache
+ * could not help — a RUNNING agent appends constantly, so `size` and `mtimeMs`
+ * change on every single request and the cache only ever helped stopped agents.
+ *
+ * The log is strictly append-only: `EventLog.append` is the only writer and
+ * always writes a whole `JSON.stringify(evt) + "\n"` under a serialized chain,
+ * so an append never rewrites earlier bytes. That makes a tail read safe, and
+ * makes byte-offset caching legitimate.
+ *
+ * Anchored to the tail deliberately. The read starts at a byte offset chosen for
+ * the file's current size, so the FIRST line it sees is usually a fragment —
+ * dropped. `bytesScanned` is reported so callers (and tests) can assert the read
+ * really was partial rather than trusting a wall-clock number.
+ */
+export async function readEventsTail(
+  filePath: string,
+  limit: number,
+): Promise<{ events: TeapotEvent[]; total: number; bytesScanned: number; truncated: boolean }> {
+  const empty = { events: [] as TeapotEvent[], total: 0, bytesScanned: 0, truncated: false };
+  if (limit <= 0) return empty;
+  let fh: import("node:fs/promises").FileHandle | null = null;
+  try {
+    const fsp = await import("node:fs/promises");
+    fh = await fsp.open(filePath, "r");
+    const st = await fh.stat();
+    if (st.size === 0) return empty;
+
+    // grow the window until it holds `limit` whole lines. Start at a floor so a
+    // small limit still reads a sensible block, then double — bounded by the
+    // file size, because a pathological file must not make us read forever.
+    let want = Math.min(st.size, Math.max(TAIL_MIN_BYTES, limit * 512));
+    for (;;) {
+      const r = await readWindow(fh, st.size, want);
+      if (r.events.length >= limit || want >= st.size) {
+        return {
+          events: r.events.slice(-limit),
+          // `total` is an APPROXIMATE count: only the window was parsed, so this
+          // is "at least this many". /events uses it for the "load older" hint,
+          // where approximate is fine — an exact count would mean reading the
+          // entire file, which is the cost this function exists to avoid.
+          total: r.events.length,
+          bytesScanned: r.bytes,
+          truncated: r.bytes < st.size,
+        };
+      }
+      want = Math.min(st.size, want * 4);
+    }
+  } catch {
+    return empty;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
+
+/** read the last `bytes` of the file, dropping the leading partial line */
+async function readWindow(
+  fh: import("node:fs/promises").FileHandle,
+  size: number,
+  bytes: number,
+): Promise<{ events: TeapotEvent[]; bytes: number }> {
+  const start = Math.max(0, size - bytes);
+  const buf = Buffer.alloc(size - start);
+  if (buf.length) await fh.read(buf, 0, buf.length, start);
+  const text = buf.toString("utf8");
+  const nl = text.indexOf("\n");
+  // the first line is a fragment unless we started at 0
+  const body = start > 0 ? (nl === -1 ? "" : text.slice(nl + 1)) : text;
+  const events: TeapotEvent[] = [];
+  for (const line of body.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line) as TeapotEvent);
+    } catch {
+      /* torn or corrupt line: skip it, never return a fragment */
+    }
+  }
+  return { events, bytes: buf.length };
+}
+

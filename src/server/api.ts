@@ -75,7 +75,7 @@ async function listModels(
 }
 import path from "node:path";
 import { bus } from "../bus.ts";
-import { readEvents } from "../log/events.ts";
+import { readEvents, readEventsTail } from "../log/events.ts";
 import type { Master } from "../master.ts";
 
 /** media categories the file tree can preview inline */
@@ -996,11 +996,22 @@ export function buildApp(master: Master): Hono {
       if (!rec || rec.agentId !== c.req.param("id")) return c.json({ error: "not found" }, 404);
       filePath = path.join(rec.dir, "chat.jsonl");
     }
-    let events = await readEventsCached(filePath);
+    // #59: the plain "latest N" request is what the UI polls every ~120 ms for
+    // a RUNNING agent, and it is the one that does NOT need history — it serves
+    // it from a tail read that scans ~2% of the file. `?before` (older pages)
+    // and `?branch` genuinely need the whole log, so they keep the full parse.
+    // `total` is a lower bound on the tail path (see readEventsTail) and is
+    // only used for the "load older" affordance, where approximate is fine.
     const branch = c.req.query("branch");
+    const before = c.req.query("before");
+    if (!before && !branch) {
+      const tail = await readEventsTail(filePath, limit);
+      return c.json({ events: tail.events, total: tail.total, partial: tail.truncated });
+    }
+
+    let events = await readEventsCached(filePath);
     if (branch) events = events.filter((e) => e.branch === branch);
     // cursor pagination for older pages: everything strictly BEFORE this id
-    const before = c.req.query("before");
     if (before) {
       const idx = events.findIndex((e) => e.id === before);
       events = idx === -1 ? [] : events.slice(0, idx);
