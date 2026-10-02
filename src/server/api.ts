@@ -978,7 +978,14 @@ export function buildApp(master: Master): Hono {
   app.get("/api/agents/:id/events", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    const limit = Math.min(Number(c.req.query("limit") ?? 200), 5000);
+    // #54: the frontend pairs a tool_call with its tool_result by walking the
+    // events it holds, so a window that can contain a result WITHOUT its call
+    // strands the bash row at "waiting for output…" forever — the call scrolled
+    // out while the command was still running. 200 was small enough to hit this
+    // on any moderately long command. The default is now sized to hold a whole
+    // pair even when thousands of events land in between (a long stream logs one
+    // per delta); the server clamps hard, so a caller asking for more is cheap.
+    const limit = Math.min(Number(c.req.query("limit") ?? 2000), 20000);
     let filePath = a.log.filePath;
     // ?session=<internalId> reads ANY session owned by this agent (past
     // incarnations too) — the internal id, not the agent id, is the stable

@@ -672,6 +672,7 @@ export default function App() {
     const resFor = new Map<string, Ev>();
     const consumed = new Set<string>();
     const awaiting = new Map<string, Ev[]>();
+    const orphanCalls = new Map<string, Ev>();
     for (const e of events()) {
       if (!FEED_TYPES.has(e.type)) continue;
       if (e.type === "tool_call") {
@@ -683,12 +684,18 @@ export default function App() {
         if (call) {
           resFor.set(call.id, e);
           consumed.add(e.id);
+        } else {
+          // #54: the call scrolled out of the events window while the command
+          // was still running. Without this the result rendered as a bare,
+          // anonymous row — and when the window ALSO trimmed the call, the bash
+          // row simply vanished, reading as "it never finished". Synthesise the
+          // missing call so the tool still shows, WITH its output and timing.
+          orphanCalls.set(e.id, e);
         }
       }
     }
-    return { resFor, consumed };
-  });
-  // A question is ANSWERED only when a real operator reply arrived AFTER it —
+    return { resFor, consumed, orphanCalls };
+  });  // A question is ANSWERED only when a real operator reply arrived AFTER it —
   // a user prompt logged later than the question event. The tool_result that
   // pairs with the question is written immediately when the question is SHOWN
   // (it parks the loop), so its mere existence never means "answered".
@@ -2735,6 +2742,11 @@ export default function App() {
                     e={e}
                     prev={chatEvents()[i() - 1]}
                     res={pairInfo().resFor.get(e.id)}
+                    // #54: an unpaired tool_result is rendered as a COMPLETED
+                    // tool row of its own — its call fell out of the events
+                    // window while the command ran. Without this the result was
+                    // a bare anonymous row and the run read as unfinished.
+                    orphan={pairInfo().orphanCalls.has(e.id)}
                     onOption={(t) => void sendText(t)}
                     answeredIds={answeredQuestionIds()}
                     agentActive={sel()?.status === "running" || sel()?.status === "waiting"}
@@ -3814,7 +3826,7 @@ function ThinkingTimer(props: { startedAt: number }) {
 
 /* ---------- per-tool timeline rendering ---------- */
 
-function ToolRow(props: { e: Ev; res?: Ev; agentActive?: boolean; onResize?: () => void }) {
+function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const res = props.res;
   // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
@@ -4095,7 +4107,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Group consecutive rows from the same ACTOR. The actor for tool events is
@@ -4268,7 +4280,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; onEdit?: () => void; on
           </div>
         </Show>
 
-        <SwitchContent e={e} res={props.res} onOption={props.onOption} answeredIds={props.answeredIds} agentActive={props.agentActive} onResize={props.onResize} />
+        <SwitchContent e={e} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} agentActive={props.agentActive} onResize={props.onResize} />
       </div>
     </div>
   );
@@ -4306,7 +4318,7 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
   );
 }
 
-function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
+function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: Set<string>; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   switch (e.type) {
     case "prompt": {
@@ -4343,18 +4355,40 @@ function SwitchContent(props: { e: Ev; res?: Ev; onOption?: (text: string) => vo
         </>
       );
     case "tool_call":
-      return <ToolRow e={e} res={props.res} agentActive={props.agentActive} onResize={props.onResize} />;
+      return <ToolRow e={e} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} />;
     case "tool_result": {
-      // orphan result (its call scrolled past the 300-event window)
-      const out = String(e.data.result);
+      // #54: a result whose call is no longer in the events window. It used to
+      // render as a bare output blob with no tool name and no command, which
+      // read as "the run never finished". Render the SAME completed tool row a
+      // paired result gets, from the result's own metadata, so it is
+      // indistinguishable from one that survived in the window.
+      const out = String(e.data.result ?? "");
+      const name = String(e.data.name ?? "tool");
+      const ok = e.data.ok !== false;
       return (
-        <details class={"embed" + (e.data.ok ? "" : " fail")}>
+        <details class={"embed " + (ok ? "" : "fail")} open={props.orphan}>
           <summary>
-            <span class="meta">{oneLine(out, 120)}</span>
+            <span class="iconmeta">⚙</span>
+            <span class="meta">
+              {/* the call is gone, so the command is too — show the tool and
+                  the outcome rather than inventing an argument that was never
+                  logged here */}
+              {name === "bash" ? `$ (bash, call evicted)` : name}
+            </span>
             <CopyBtn text={out} />
           </summary>
           <div class="mono">{truncate(out, 4000)}</div>
-          <div class="meta">{fmtDur(e.data.durationMs)}{e.data.ok ? "" : " · FAILED"}</div>
+          <div class="meta">
+            {fmtDur(e.data.durationMs)}
+            {name === "bash"
+              ? outcomeMarker(shellOutcome(e.data.ok, out))
+              : ok
+                ? ""
+                : " · FAILED"}
+          </div>
+          <Show when={props.orphan}>
+            <div class="meta">its call is no longer in the loaded events — the run itself finished</div>
+          </Show>
         </details>
       );
     }
