@@ -913,48 +913,66 @@ console.log("deep render ok: feed rows present");
       fail(`consecutive identical workspace headers: ${JSON.stringify(wsTitles)}`);
   }
 
-  // …but TWO chat headers: alpha and gamma are separate chats in one directory
-  const chatHeaders = [...w.document.querySelectorAll(".chatheader")]
-    .map((h) => h.textContent.trim());
+  // …and alpha and gamma are SEPARATE chats sharing that one directory. There
+  // is no chat header any more (it only restated each chat's own name, so a
+  // six-chat directory rendered thirteen rows): the chat ROW carries the caret,
+  // which is what makes the chat its own collapsible group.
+  const rowFor = (id) =>
+    [...w.document.querySelectorAll(".agent-item")].find((el) =>
+      el.textContent.match(new RegExp(`\\b${id}\\b`)),
+    );
+  const caretIn = (el) => el?.querySelector(".caret");
   for (const id of ["alpha", "gamma"]) {
-    if (!chatHeaders.some((t) => t.includes(id)))
-      fail(`${id} must have its OWN group header, got ${JSON.stringify(chatHeaders)}`);
+    if (!caretIn(rowFor(id)))
+      fail(`${id} is a top-level chat and must offer its own collapse caret (#18)`);
   }
 
-  const chats = [...w.document.querySelectorAll(".agent-item")]
+  const chats2 = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
     .filter(Boolean);
-  if (!chats.includes("alpha") || !chats.includes("gamma"))
-    fail(`both chats of the shared directory must be listed separately, got ${JSON.stringify(chats)}`);
+  if (!chats2.includes("alpha") || !chats2.includes("gamma"))
+    fail(`both chats of the shared directory must be listed separately, got ${JSON.stringify(chats2)}`);
 
   // THE ASSERTION THE BUG WAS ABOUT: collapsing ONE chat must leave its
-  // sibling in the SAME directory visible. Sharing a header (the old
+  // sibling in the SAME directory visible. Sharing one group (the old
   // behaviour) made this impossible — they collapsed together.
-  const headerOf = (id) =>
-    [...w.document.querySelectorAll(".chatheader")].find((h) => h.textContent.trim().includes(id));
-  const alphaHeader = headerOf("alpha");
-  const gammaHeader = headerOf("gamma");
-  if (!alphaHeader || !gammaHeader) fail("chat headers missing before collapsing (#18)");
-  alphaHeader.click();
+  caretIn(rowFor("alpha"))?.click();
   await sleep(200);
   const afterOne = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
     .filter(Boolean);
-  if (afterOne.includes("alpha"))
-    fail(`collapsing alpha's chat must hide alpha, got ${JSON.stringify(afterOne)}`);
+  // alpha stays as a COLLAPSED row rather than vanishing: with the chat header
+  // gone, that row is the only control that can reopen it, so hiding it would
+  // strand the chat. What must be true is that it is marked collapsed and that
+  // its own sub-agents are gone.
+  const alphaAfter = rowFor("alpha");
+  if (!alphaAfter)
+    fail(`a collapsed chat must keep its row so it can be reopened (#18)`);
+  if (!alphaAfter.className.includes("collapsed"))
+    fail(`a collapsed chat must be marked collapsed, got ${JSON.stringify(alphaAfter.className)}`);
+  if (caretIn(alphaAfter)?.textContent.trim() !== "▸")
+    fail(`a collapsed chat's caret must point closed, got ${JSON.stringify(caretIn(alphaAfter)?.textContent)}`);
   if (!afterOne.includes("gamma"))
     fail(`gamma shares a DIRECTORY but is a separate chat — it must stay visible, got ${JSON.stringify(afterOne)}`);
   if (!afterOne.includes("beta"))
     fail(`beta is in another project entirely and must stay visible, got ${JSON.stringify(afterOne)}`);
-  // the collapsed chat keeps its own header so it can be reopened
-  if (!headerOf("alpha")) fail("a collapsed chat must keep its header (#18)");
 
-  headerOf("alpha")?.click();
+  // …and the collapse survives, so the chat can be brought back. This is the
+  // strand-a-chat guard: with the header gone the row caret is the only
+  // control, so it has to work in BOTH directions.
+  caretIn(alphaAfter)?.click();
   await sleep(200);
   const reopened = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
     .filter(Boolean);
   if (!reopened.includes("alpha")) fail(`reopening must restore alpha, got ${JSON.stringify(reopened)}`);
+  if (rowFor("alpha")?.className.includes("collapsed"))
+    fail(`reopened alpha must no longer read as collapsed (#18)`);
+
+  // a chat with NO sub-agents is still collapsible — the header existed for
+  // exactly this case, so dropping it must not drop the capability
+  if (!caretIn(rowFor("gamma")))
+    fail("a childless top-level chat must still offer a collapse caret (#18)");
 
   // and collapsing the WORKSPACE still hides every chat under it
   headerFor(AGENT.workspace)?.click();

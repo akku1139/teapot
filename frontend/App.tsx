@@ -1079,11 +1079,6 @@ export default function App() {
   // The tree and grouping rules live in ./sidebar-tree so they can be unit
   // tested without a DOM (happy-dom does no layout). These wrappers only feed
   // the pure functions the live signal values.
-  const treeRows = createMemo(() =>
-    // 👻 toggle: drop ghost sessions (workspace missing on disk) from the
-    // sidebar tree entirely — they are noise once you know about them
-    treeRowsOf(agents(), collapsedSubs(), hideGhosts()),
-  );
 
   /**
    * Sidebar rows, annotated with where the WORKSPACE changes (#18).
@@ -1109,6 +1104,22 @@ export default function App() {
       return new Set<string>();
     }
   })());
+
+  // A top-level chat is a collapse GROUP too: its row is the group, and its
+  // sub-agents hang beneath it. Collapsing one hides it and its whole subtree
+  // without touching its siblings in the same directory — the ability #18
+  // wanted, without the extra header row it used to require.
+  const chatCollapsed = createMemo<Set<string>>(() => {
+    const out = new Set<string>();
+    for (const k of wsCollapsed()) if (k.startsWith("chat:")) out.add(k);
+    return out;
+  });
+
+  const treeRows = createMemo(() =>
+    // 👻 toggle: drop ghost sessions (workspace missing on disk) from the
+    // sidebar tree entirely — they are noise once you know about them
+    treeRowsOf(agents(), collapsedSubs(), hideGhosts(), chatCollapsed()),
+  );
   /**
    * Toggle a group header.
    *
@@ -2465,34 +2476,68 @@ export default function App() {
                   </Show>
                 </div>
               </Show>
-              {/* chat header: each top-level chat is its OWN group, so two chats
-                  sharing a directory can be opened and hidden separately (#18) */}
-              <Show when={row.chatHeader !== undefined}>
-                <div
-                  class="chatheader"
-                  title={
-                    row.chatCollapsedGroup
-                      ? `${row.a.id} — collapsed. Click to show.`
-                      : `${row.a.id} — its own chat, working in ${basenameOf(workspaceOf(row.a.id))}`
-                  }
-                  onclick={() => toggleWsGroup(row.chatHeader!, row.a.id, row.chatCollapsedGroup === true)}
-                ><span class="wscaret">{wsCollapsed().has(row.chatHeader!) ? "▸" : "▾"}</span>{row.a.id}</div>
-              </Show>
-              {/* a collapsed group shows its header and nothing else (#18); a header row
-                  never renders its own agent, which would double the chat */}
-              <Show when={!row.headerOnly && !row.wsCollapsedGroup && !row.chatCollapsedGroup}>
+              {/* A collapsed group shows its header and nothing else (#18); a header row
+                  never renders its own agent, which would double the chat.
+                  The `chat:<id>` header is GONE (#18 follow-up): a directory
+                  holding six chats rendered thirteen rows, each chat repeated
+                  under a header bearing its own name. The chat row is the
+                  group — it carries the caret below — so nothing is lost but
+                  the duplication. */}
+              {/* A collapsed CHAT still renders its row (dimmed, ▸) — with the
+                  chat header gone that row is the only control that can bring
+                  it back, so hiding it would strand the chat for good.
+                  Collapsing the DIRECTORY still hides every row under it,
+                  because the directory header is what reopens that. */}
+              <Show when={!row.headerOnly && !row.wsCollapsedGroup}>
               <div
-                class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "")}
+                class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "") + (row.chatCollapsedGroup ? " collapsed" : "")}
                 style={row.depth > 0 ? `padding-left:${10 + row.depth * 14}px` : ""}
-                onclick={() => select(row.a.id)}
+                onclick={() => { if (!row.chatCollapsedGroup) select(row.a.id); }}
                 title={row.a.parent ? `sub-agent of @${row.a.parent}` : undefined}
               >
-                <Show when={agents().some((x) => x.parent === row.a.id)} fallback={<span class="caret-spacer" />}>
-                  <span
-                    class="caret"
-                    title={collapsedSubs().has(row.a.id) ? "expand sub-agents" : "collapse sub-agents"}
-                    onclick={(e: MouseEvent) => { e.stopPropagation(); toggleCollapse(row.a.id); }}
-                  >{collapsedSubs().has(row.a.id) ? "▸" : "▾"}</span>
+                {/* A TOP-LEVEL CHAT is always collapsible, whether or not it has
+                    sub-agents. It is its own group — that is what #18 needed
+                    when two chats shared a directory — and with the chat
+                    header gone, this caret is the ONLY control for it, so
+                    gating it on "has children" would make a childless chat
+                    impossible to collapse and, once collapsed (by a stored
+                    `chat:<id>` key), impossible to reopen. Only a SUB-agent
+                    with no children of its own has nothing to collapse. */}
+                <Show
+                  when={
+                    !row.a.parent ||
+                    agents().some((x) => x.parent === row.a.id)
+                  }
+                  fallback={<span class="caret-spacer" />}
+                >
+                  {(() => {
+                    const isChat = !row.a.parent;
+                    const off = isChat
+                      ? chatCollapsed().has(`chat:${row.a.id}`)
+                      : collapsedSubs().has(row.a.id);
+                    return (
+                      <span
+                        class="caret"
+                        title={
+                          isChat
+                            ? off
+                              ? `show ${row.a.id}`
+                              : `hide ${row.a.id} and its sub-agents`
+                            : off
+                              ? "expand sub-agents"
+                              : "collapse sub-agents"
+                        }
+                        onclick={(e: MouseEvent) => {
+                          e.stopPropagation();
+                          // top-level chats share the persisted group set, so a
+                          // reload keeps them collapsed; sub-agent collapse is
+                          // its own set, as before
+                          if (isChat) toggleWsGroup(`chat:${row.a.id}`, row.a.id, off);
+                          else toggleCollapse(row.a.id);
+                        }}
+                      >{off ? "▸" : "▾"}</span>
+                    );
+                  })()}
                 </Show>
                 <span class={`dot ${row.a.status}`} />
                 <span

@@ -1,215 +1,283 @@
 /**
  * #18 follow-up — "some top-level chat dirs exist in the same working
- * directory but are separate."
+ *        directory but are separate", and then the second half of that idea:
+ *        the chat level it produced was one row too many.
  *
- * The first attempt at this added a COUNT BADGE and left the grouping keyed on
- * the workspace path. That says "there are 2 chats here" but still gives them
- * ONE group identity: one header, one collapse toggle, one row to hide. Two
- * genuinely separate chats still cannot be opened or hidden independently,
- * which is the thing the report asks for.
+ * The first fix keyed each top-level chat as its own GROUP — correctly, since
+ * two chats sharing a directory must be independently collapsible. It gave
+ * that group its own HEADER row, so the tree ended up with two header levels:
  *
- * The fix keys each top-level chat as its own group, identified by the chat
- * itself rather than the directory it happens to share with another. The shared
- * directory is still visible — it becomes the PARENT header, with the chats
- * nested under it — so the project grouping that motivated #18 survives while
- * the chats inside it become individually addressable.
+ *     ▾ TEAPOT            <- workspace header (directory)
+ *       ▾ teapot          <- chat header
+ *         teapot          <- the chat row
+ *       ▾ teapot-2
+ *         teapot-2
+ *
+ * Every chat named twice, and a directory with six chats rendered thirteen rows
+ * for six conversations. A second pass removed the redundant header for SOLO
+ * chats only, which fixed the one-chat-per-project case and left this one.
+ *
+ * The chat level is now gone entirely. What it bought — per-chat collapse that
+ * leaves siblings alone — needs no header of its own, because a top-level chat
+ * IS an agent row and its sub-agents already hang beneath it. So the row
+ * carries the caret, exactly as a sub-agent's does, and `chat:<id>` remains the
+ * group key so an existing collapse still applies after a reload.
+ *
+ * These tests import the real module. The point of extracting it was that the
+ * earlier structural assertions here were source-text matches and a hand-rolled
+ * replica — both of which pass by construction.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import {
+  treeRowsOf,
+  sidebarRowsOf,
+  workspaceOf,
+  chatGroupKeyOf,
+  type TreeAgent,
+} from "../frontend/sidebar-tree.ts";
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-// #58 moved the tree/grouping rules into ./sidebar-tree so they could be unit
-// tested; the assertions below follow the code to its new home.
-const tree = readFileSync(new URL("../frontend/sidebar-tree.ts", import.meta.url), "utf8");
+const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
-function srcHas(label: string, re: RegExp): void {
-  if (!re.test(app)) assert.fail(`${label}\n  expected source to match: ${re}`);
+const a = (id: string, workspace: string, parent = ""): TreeAgent => ({ id, workspace, parent });
+
+/** the full render, using the SAME two calls App.tsx makes */
+function render(
+  agents: readonly TreeAgent[],
+  wsCollapsed: Set<string> = new Set(),
+  collapsedSubs: Set<string> = new Set(),
+) {
+  const chats = new Set([...wsCollapsed].filter((k) => k.startsWith("chat:")));
+  return sidebarRowsOf(agents, treeRowsOf(agents, collapsedSubs, false, chats), wsCollapsed);
 }
+const visible = (rows: ReturnType<typeof render>) =>
+  rows.filter((r) => !r.headerOnly).map((r) => r.a.id);
 
-function treeHas(label: string, re: RegExp): void {
-  if (!re.test(tree)) assert.fail(`${label}\n  expected sidebar-tree.ts to match: ${re}`);
-}
+/* ---------- the reported shape ---------- */
 
-interface A {
-  id: string;
-  parent: string;
-  workspace: string;
-}
+test("a directory of six chats renders six rows, not thirteen (#18)", () => {
+  const agents = ["teapot", "teapot-2", "teapot-3", "teapot-4", "teapot-5", "teapot-6"].map((id) =>
+    a(id, "/p/teapot"),
+  );
+  const rows = render(agents);
+  assert.equal(
+    rows.filter((r) => r.headerOnly).length,
+    1,
+    `exactly one header — the directory. Got: ${JSON.stringify(rows.map((r) => r.wsHeader ?? r.a.id))}`,
+  );
+  assert.equal(rows.length, 7, "one header plus six chats (#18)");
+  assert.deepEqual(visible(rows), ["teapot", "teapot-2", "teapot-3", "teapot-4", "teapot-5", "teapot-6"]);
+});
 
-function workspaceOf(agents: A[], id: string, seen = new Set<string>()): string {
-  const a = agents.find((x) => x.id === id);
-  if (!a) return "";
-  if (!a.parent) return a.workspace || "";
-  if (seen.has(id)) return a.workspace || "";
-  seen.add(id);
-  return workspaceOf(agents, a.parent, seen) || a.workspace || "";
-}
-
-/**
- * mirror of the fixed sidebarRows().
- *
- * Two header levels:
- *   - a WORKSPACE header whenever the directory changes (unchanged from #18),
- *   - a CHAT header for each TOP-LEVEL chat, so two chats sharing a directory
- *     are two separately collapsible groups rather than one shared bucket.
- */
-function sidebarRows(
-  agents: A[],
-  collapsed: Set<string> = new Set(),
-): { kind: "workspace" | "chat" | "agent"; key: string; id?: string }[] {
-  const rows: { a: A; depth: number }[] = [];
-  const byParent = new Map<string, A[]>();
-  const roots: A[] = [];
-  for (const a of agents) {
-    if (a.parent && agents.some((p) => p.id === a.parent)) {
-      if (!byParent.has(a.parent)) byParent.set(a.parent, []);
-      byParent.get(a.parent)!.unshift(a);
-    } else roots.push(a);
-  }
-  const walk = (nodes: A[], depth: number) => {
-    for (const a of nodes) {
-      rows.push({ a, depth });
-      walk(byParent.get(a.id) ?? [], depth + 1);
-    }
-  };
-  walk(roots, 0);
-
-  const out: { kind: "workspace" | "chat" | "agent"; key: string; id?: string }[] = [];
-  let lastWs: string | null = null;
-  let lastGroup: string | null = null;
-  for (const r of rows) {
-    const ws = workspaceOf(agents, r.a.id);
-    if (ws !== lastWs) {
-      out.push({ kind: "workspace", key: `ws:${ws}` });
-      lastWs = ws;
-      lastGroup = null;
-    }
-    // each TOP-LEVEL chat is its own group
-    if (!r.a.parent) {
-      const key = `chat:${r.a.id}`;
-      if (key !== lastGroup) out.push({ kind: "chat", key });
-      lastGroup = key;
-    }
-    out.push({ kind: "agent", key: r.a.id, id: r.a.id });
-  }
-  // collapsed groups drop their member rows but keep their own header. A chat
-  // row belongs to whichever group header most recently preceded it, and a
-  // WORKSPACE collapse takes everything under it.
-  return out.filter((row, i) => {
-    if (row.kind !== "agent") return true;
-    const chat = precedingKind(out, i, "chat");
-    const ws = precedingKind(out, i, "workspace");
-    return !(chat && collapsed.has(chat.key)) && !(ws && collapsed.has(ws.key));
-  });
-}
-
-/** the nearest header of `kind` above row i, or null */
-function precedingKind(
-  rows: { kind: string; key: string }[],
-  i: number,
-  kind: string,
-): { key: string } | null {
-  for (let j = i - 1; j >= 0; j--) {
-    if (rows[j]!.kind === kind) return rows[j]!;
-    if (rows[j]!.kind === "workspace" && kind === "chat") return null;
-  }
-  return null;
-}
-
-const shared: A[] = [
-  { id: "bugfix", parent: "", workspace: "/p/teapot" },
-  { id: "review", parent: "", workspace: "/p/teapot" },
-  { id: "elsewhere", parent: "", workspace: "/p/other" },
-];
-
-/* ---------- the rule ---------- */
-
-test("two chats in one directory are SEPARATE groups (#18)", () => {
-  const rows = sidebarRows(shared);
-  const chatHeaders = rows.filter((r) => r.kind === "chat").map((r) => r.key);
-  assert.deepEqual(
-    chatHeaders,
-    ["chat:bugfix", "chat:review", "chat:elsewhere"],
-    "every top-level chat must be its own group (#18)",
+test("no row is a header repeating the chat's own name (#18)", () => {
+  // the specific complaint: a caret row reading `teapot` directly above a row
+  // reading `teapot`. The directory header's LABEL is the basename, so compare
+  // against the full path to be sure we are not matching on "teapot" twice.
+  const agents = ["teapot", "teapot-2"].map((id) => a(id, "/p/teapot"));
+  const rows = render(agents);
+  const headers = rows.filter((r) => r.headerOnly);
+  assert.equal(headers.length, 1, `one header only (#18): ${JSON.stringify(rows)}`);
+  assert.equal(headers[0]!.wsHeader, "/p/teapot", "and it is the directory (#18)");
+  assert.equal(
+    rows.filter((r) => r.chatHeader !== undefined).length,
+    0,
+    "no chat headers may be emitted at all (#18)",
+  );
+  // the label the UI shows for that header is the basename, once
+  assert.match(
+    app,
+    /basenameOf\(row\.wsHeader/,
+    "the directory header keeps the short name (#18)",
   );
 });
 
-test("the shared directory still has ONE workspace header (#18)", () => {
-  const wsHeaders = sidebarRows(shared).filter((r) => r.kind === "workspace").map((r) => r.key);
-  assert.deepEqual(wsHeaders, ["ws:/p/teapot", "ws:/p/other"], "one header per directory (#18)");
+/* ---------- what the chat level bought, still works ---------- */
+
+test("two chats in one directory stay separately collapsible (#18)", () => {
+  const agents = [a("bugfix", "/p/teapot"), a("review", "/p/teapot"), a("elsewhere", "/p/other")];
+  const rows = render(agents, new Set(["chat:bugfix"]));
+  const vis = visible(rows);
+  // the collapsed chat KEEPS a row — marked collapsed — because with the chat
+  // header gone that row is the only control that can reopen it
+  const bugfix = rows.find((r) => !r.headerOnly && r.a.id === "bugfix");
+  assert.ok(bugfix, "a collapsed chat must keep its row (#18)");
+  assert.equal(bugfix!.chatCollapsedGroup, true, "and be marked collapsed (#18)");
+  assert.ok(vis.includes("review"), "its sibling in the SAME directory must remain (#18)");
+  assert.ok(vis.includes("elsewhere"), "another directory is untouched (#18)");
 });
 
-test("collapsing one chat leaves its sibling alone (#18)", () => {
-  const rows = sidebarRows(shared, new Set(["chat:bugfix"]));
-  const visible = rows.filter((r) => r.kind === "agent").map((r) => r.key);
-  assert.ok(!visible.includes("bugfix"), "the collapsed chat must be hidden (#18)");
-  assert.ok(visible.includes("review"), "its sibling in the SAME directory must remain (#18)");
-});
-
-test("collapsing a chat keeps its header so it can be reopened (#18)", () => {
-  const rows = sidebarRows(shared, new Set(["chat:bugfix"]));
-  const keys = rows.map((r) => r.key);
-  assert.ok(keys.includes("chat:bugfix"), "the collapsed chat's header must survive (#18)");
-  assert.ok(keys.includes("chat:review"), "the sibling header must survive (#18)");
-});
-
-test("collapsing the WORKSPACE hides every chat under it (#18)", () => {
-  const rows = sidebarRows(shared, new Set(["ws:/p/teapot"]));
-  const visible = rows.filter((r) => r.kind === "agent").map((r) => r.key);
-  assert.deepEqual(visible, ["elsewhere"], "the whole directory's chats go (#18)");
-});
-
-test("a sub-agent does not become its own chat group (#18)", () => {
-  const rows = sidebarRows([
-    ...shared,
-    { id: "bugfix-sub", parent: "bugfix", workspace: "" },
-  ]);
-  const chatHeaders = rows.filter((r) => r.kind === "chat").map((r) => r.key);
-  assert.ok(
-    !chatHeaders.includes("chat:bugfix-sub"),
-    "a sub-agent belongs to its parent's group (#18)",
+test("a chat with NO sub-agents is still collapsible (#18)", () => {
+  const agents = [a("solo", "/p/teapot"), a("other", "/p/teapot")];
+  const rows = render(agents, new Set(["chat:solo"]));
+  assert.deepEqual(visible(rows), ["solo", "other"]);
+  assert.equal(
+    rows.find((r) => !r.headerOnly && r.a.id === "solo")!.chatCollapsedGroup,
+    true,
+    "the childless chat is collapsed, not hidden (#18)",
   );
+});
+
+test("collapsing a chat hides its sub-agents but keeps its own row (#18)", () => {
+  const agents = [a("parent", "/p/teapot"), a("sub-1", "", "parent"), a("sub-2", "", "parent"), a("other", "/p/teapot")];
+  const vis = visible(render(agents, new Set(["chat:parent"])));
+  assert.ok(vis.includes("parent"), "the chat row stays so it can be reopened (#18)");
+  assert.ok(vis.includes("other"), "a sibling chat is untouched (#18)");
+  assert.ok(!vis.includes("sub-1") && !vis.includes("sub-2"), "its sub-agents are hidden (#18)");
+});
+
+test("collapsing the WORKSPACE still hides every chat under it (#18)", () => {
+  const agents = ["a", "b", "c"].map((id) => a(id, "/p/teapot"));
+  assert.deepEqual(visible(render(agents, new Set(["ws:/p/teapot"]))), []);
+  // and its header survives so it can be reopened
+  const rows = render(agents, new Set(["ws:/p/teapot"]));
+  assert.equal(rows.length, 1, "a collapsed directory keeps its header (#18)");
+  assert.equal(rows[0]!.wsCollapsedGroup, true);
+});
+
+test("directory and chat collapse compose independently (#18)", () => {
+  const agents = [a("a", "/p/one"), a("b", "/p/one"), a("c", "/p/two")];
+  // a collapsed DIRECTORY still hides every row under it, including a chat
+  // that is itself collapsed — the directory is the outer group
+  assert.deepEqual(visible(render(agents, new Set(["ws:/p/one", "chat:b"]))), ["c"]);
+});
+
+/* ---------- sub-agents still behave as before ---------- */
+
+test("a sub-agent with children collapses just that subtree (#18)", () => {
+  // NOTE: collapsing a LEAF sub-agent is a no-op, and always has been — there
+  // is nothing under it to hide. The caret only renders for a row that has
+  // children, so this was verified as pre-existing behaviour rather than
+  // assumed: v0.24.2's treeRowsOf emits the same rows for the same input.
+  const agents = [
+    a("parent", "/p/teapot"),
+    a("sub-1", "", "parent"),
+    a("sub-1-kid", "", "sub-1"),
+    a("sub-2", "", "parent"),
+  ];
+  const vis = visible(render(agents, new Set(), new Set(["sub-1"])));
+  assert.ok(vis.includes("parent"), "the parent stays (#18)");
+  assert.ok(vis.includes("sub-1"), "the collapsed row itself stays visible (#18)");
+  assert.ok(!vis.includes("sub-1-kid"), "only its own subtree goes (#18)");
+  assert.ok(vis.includes("sub-2"), "its sibling stays (#18)");
+});
+
+test("a sub-agent never becomes a group of its own (#18)", () => {
+  const agents = [a("p", "/p/teapot"), a("kid", "", "p")];
+  assert.equal(chatGroupKeyOf(agents, agents[1]!), "chat:p", "a sub-agent rides its parent (#18)");
+});
+
+/* ---------- inheritance and degenerate input ---------- */
+
+test("a sub-agent inherits its parent's directory and indent (#18)", () => {
+  const agents = [a("parent", "/p/teapot"), a("kid", "", "parent")];
+  assert.equal(workspaceOf(agents, "kid"), "/p/teapot");
+  const kid = render(agents).find((r) => !r.headerOnly && r.a.id === "kid");
+  assert.equal(kid?.depth, 1, "a sub-agent is indented one level (#18)");
+});
+
+test("a chat with no workspace still lists, with no header (#18)", () => {
+  // an empty path is not a directory: grouping on it would produce a header
+  // labelled "", which is the cosmetic bug #58 fixed
+  const rows = render([a("nowhere", "")]);
+  assert.equal(rows.length, 1, "the chat must still be listed (#18)");
+  assert.equal(rows[0]!.a.id, "nowhere");
+  assert.equal(rows[0]!.wsHeader, undefined, "no empty directory header (#18)");
+});
+
+test("an empty agent list renders nothing (#18)", () => {
+  assert.deepEqual(render([]), []);
 });
 
 /* ---------- wiring ---------- */
 
-test("the group key is the CHAT, not the workspace path (#18)", () => {
-  // the defect: one group identity per directory, shared by every chat in it
-  treeHas(
-    "top-level chats must get their own group key (#18)",
-    /`chat:\$\{id \|\| a\.id\}`/,
+test("the chat header element and its CSS are gone (#18)", () => {
+  assert.doesNotMatch(app, /class="chatheader"/, "the chat header row must not be rendered (#18)");
+  assert.doesNotMatch(css, /\.chatheader/, "and its styles must go with it (#18)");
+});
+
+test("a top-level chat row gets a collapse caret (#18)", () => {
+  // the capability now lives on the row, so the row must be able to collapse
+  assert.match(app, /toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, off\)/, "its caret must toggle the chat group (#18)");
+});
+
+test("EVERY top-level chat shows that caret, not just one with sub-agents (#18)", () => {
+  // The subtle half. With the chat header gone, this caret is the only control
+  // for a chat, so gating it on "has children" does two bad things:
+  //
+  //   1. a childless chat can never be collapsed — the feature is dead; and
+  //   2. if a `chat:<id>` key is ALREADY in localStorage (every chat collapsed
+  //      under the old header, which is the normal upgrade path), that chat is
+  //      hidden, has no caret, and nothing on screen can bring it back. That is
+  //      the strand-a-chat bug, reintroduced by deleting the header.
+  //
+  // So the condition must be the agent's TOP-LEVEL-ness, not its child count.
+  const gate = app.slice(
+    app.indexOf("A TOP-LEVEL CHAT is always collapsible"),
+    app.indexOf("A TOP-LEVEL CHAT is always collapsible") + 900,
   );
-  treeHas("the row builder must key groups by chat (#18)", /const gkey = chatGroupKeyOf\(agents, r\.a\)/);
-  srcHas("App.tsx must delegate that lookup (#18)", /chatGroupKeyOf\(agents\(\), a\)/);
-});
-
-test("collapsing a chat hides only that chat (#18)", () => {
-  treeHas(
-    "the collapse check must use the CHAT key, not the directory (#18)",
-    /collapsed\.has\(gkey\)/,
+  assert.match(gate, /!row\.a\.parent \|\|/, "a top-level chat is always collapsible (#18)");
+  assert.doesNotMatch(
+    gate,
+    /chatCollapsed\(\)\.has\(`chat:\$\{row\.a\.id\}`\)\)\s*\}?/,
+    "the caret must not be gated on being ALREADY collapsed — that is unreachable (#18)",
   );
-  srcHas("a chat header must exist in the DOM (#18)", /class="chatheader"/);
+  // and a childless sub-agent still gets the spacer, so rows stay aligned
+  assert.match(gate, /fallback=\{<span class="caret-spacer" \/>\}/, "leaf sub-agents keep the spacer (#18)");
 });
 
-test("a workspace header still exists above the chat headers (#18)", () => {
-  srcHas("the project grouping must survive (#18)", /kind: "workspace"|wsHeader/);
+test("a childless chat round-trips through collapse (#18)", () => {
+  const agents = [a("solo", "/p/teapot"), a("other", "/p/teapot")];
+  assert.deepEqual(visible(render(agents)), ["solo", "other"], "expanded (#18)");
+  const collapsed = render(agents, new Set(["chat:solo"]));
+  const row = collapsed.find((r) => !r.headerOnly && r.a.id === "solo");
+  assert.ok(row, "collapsed: the row must still exist to carry the caret (#18)");
+  assert.equal(row!.chatCollapsedGroup, true);
+  // expanding is the same call with the key gone
+  assert.deepEqual(visible(render(agents)), ["solo", "other"], "expanded again: it returns (#18)");
 });
 
-/* ---------- the directory-level count, which survives as a summary -------- */
-
-/**
- * The count badge stays, but as a SUMMARY of the directory rather than as a
- * substitute for separate identities. It answers "how much is in here" at a
- * glance while the chat headers answer "what exactly is in here".
- */
-test("the workspace header summarises how many chats the directory holds (#18)", () => {
-  srcHas("the directory count must still be computed (#18)", /wsChatCounts/);
-  srcHas("the count must render on the workspace header (#18)", /class="wscount"/);
+test("chat collapse shares the PERSISTED group set, so a reload keeps it (#18)", () => {
+  // the whole point of keeping `chat:<id>` as the key
+  assert.match(app, /const chatCollapsed = createMemo<Set<string>>/, "derived from wsCollapsed (#18)");
+  assert.match(app, /k\.startsWith\("chat:"\)/, "the chat: keys are reused, not new state (#18)");
 });
 
-test("the count excludes sub-agents (#18)", () => {
-  // a sub-agent already hangs under its parent chat header; counting it would
-  // inflate "how many chats do I have here"
-  treeHas("only top-level chats may be counted (#18)", /if \(a\.parent\) continue; \/\/ a sub-agent/);
+test("a collapsed chat is NEVER removed from the tree (#18)", () => {
+  // THE strand-a-chat guard. With the `chat:<id>` header deleted, the row is the
+  // only control that can reopen the chat: hide the row too and nothing on
+  // screen clears the stored key, so the chat is gone for the rest of the
+  // session and across reloads. This is the bug ec8282a fixed for the old
+  // header, and deleting the header without this reintroduced it.
+  const agents = [a("alpha", "/p/one"), a("gamma", "/p/one"), a("alpha-sub", "", "alpha")];
+  const rows = render(agents, new Set(["chat:alpha"]));
+  const row = rows.find((r) => !r.headerOnly && r.a.id === "alpha");
+  assert.ok(row, "the collapsed chat must still have a row (#18)");
+  assert.equal(row!.chatCollapsedGroup, true, "and be marked collapsed (#18)");
+  assert.ok(
+    !rows.some((r) => !r.headerOnly && r.a.id === "alpha-sub"),
+    "its sub-agents are what the collapse hides (#18)",
+  );
+  // and its sibling, in the same directory, is untouched
+  assert.ok(rows.some((r) => !r.headerOnly && r.a.id === "gamma"), "gamma stays (#18)");
+});
+
+test("a collapsed chat's row is not selectable, and reads as closed (#18)", () => {
+  const app2 = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const css2 = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+  // the row is still rendered, so it must not look or behave like a live chat
+  assert.match(
+    app2,
+    /onclick=\{\(\) => \{ if \(!row\.chatCollapsedGroup\) select\(row\.a\.id\); \}\}/,
+    "a collapsed row must not open the session (#18)",
+  );
+  assert.match(css2, /\.agent-item\.collapsed \{/, "and must read as collapsed (#18)");
+  // the Show guard must not filter collapsed CHATS away — only the directory
+  // header still hides its rows
+  assert.match(
+    app2,
+    /<Show when=\{!row\.headerOnly && !row\.wsCollapsedGroup\}>/,
+    "a collapsed chat's row must survive the render guard (#18)",
+  );
 });

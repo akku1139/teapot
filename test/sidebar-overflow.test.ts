@@ -144,7 +144,10 @@ test("the goal-done tick carries a class so the row can spare it (#60)", () => {
 /* ---------- the badges the report names must still exist ---------- */
 
 test("the three badges from the report are all still rendered (#60)", () => {
-  const row = app.slice(app.indexOf('class={"agent-item"'), app.indexOf('class={"agent-item"') + 3000);
+  // locate the row by its class, then take a generous window: the badges are
+  // several hundred lines apart once the caret gained an inline render
+  const start = app.indexOf('class={"agent-item"');
+  const row = app.slice(start, start + 6000);
   assert.match(row, /notifbadge/, "the 🔔 unread badge must remain (#60)");
   assert.match(row, /subcount/, "the 🧩 sub-agent count must remain (#60)");
   assert.match(row, /goaldone/, "the ✓ goal tick must remain (#60)");

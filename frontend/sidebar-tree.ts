@@ -62,10 +62,21 @@ export interface SidebarRow<T extends TreeAgent = TreeAgent> {
  * sub-agents, newest sub first (a freshly spawned agent is what you want to
  * see), with collapsed subtrees omitted entirely.
  */
+/**
+ * Flatten the agent forest into display order: each agent followed by its
+ * sub-agents, newest sub first (a freshly spawned agent is what you want to
+ * see), with collapsed subtrees omitted entirely.
+ *
+ * `collapsed` holds agent ids whose SUBTREE is hidden. A top-level chat's row
+ * is collapsible too — it is a group in its own right, because its sub-agents
+ * hang beneath it — so the caller passes the chat group keys as well and both
+ * kinds of collapse end up here, in one place.
+ */
 export function treeRowsOf<T extends TreeAgent>(
   agents: readonly T[],
   collapsedSubs: ReadonlySet<string> = new Set(),
   hideGhosts = false,
+  collapsedChats: ReadonlySet<string> = new Set(),
 ): TreeRow<T>[] {
   const list = hideGhosts ? agents.filter((a) => !a.workspaceMissing) : agents;
   const byParent = new Map<string, T[]>();
@@ -81,6 +92,16 @@ export function treeRowsOf<T extends TreeAgent>(
   const rows: TreeRow<T>[] = [];
   const walk = (nodes: T[], depth: number) => {
     for (const a of nodes) {
+      // A collapsed TOP-LEVEL chat still contributes its OWN row (so the caret
+      // on it can bring the chat back) but NOT its sub-agents, which are what
+      // the collapse actually hides. Dropping the row too is what strands a
+      // chat: with the `chat:<id>` header gone, nothing else on screen controls
+      // it and the stored key is never cleared.
+      const chatOff = depth === 0 && collapsedChats.has(chatGroupKeyOf(list, a));
+      if (chatOff) {
+        rows.push({ a, depth });
+        continue;
+      }
       rows.push({ a, depth });
       const kids = byParent.get(a.id);
       if (kids?.length && !collapsedSubs.has(a.id)) walk(kids, depth + 1);
@@ -142,66 +163,53 @@ export function sidebarRowsOf<T extends TreeAgent>(
   rows: readonly TreeRow<T>[],
   collapsed: ReadonlySet<string> = new Set(),
 ): SidebarRow<T>[] {
-  const counts = wsChatCountsOf(agents);
   const out: SidebarRow<T>[] = [];
   let lastWs: string | null = null;
-  let lastEmittedChat: string | null = null;
   for (const r of rows) {
     const ws = workspaceOf(agents, r.a.id);
-    const gkey = chatGroupKeyOf(agents, r.a);
     // A chat with no working directory has nothing to group by, so it gets no
     // header at all rather than one labelled with the empty string.
     if (!ws) {
       out.push({ a: r.a, depth: r.depth });
       continue;
     }
-    // workspace header — emitted when the DIRECTORY changes
+    // ONE header level: the working directory (#18).
+    //
+    // There used to be a second level — a `chat:<id>` header per top-level chat
+    // — so a directory holding six chats rendered thirteen rows:
+    //
+    //     ▾ TEAPOT
+    //       ▾ teapot
+    //         teapot          <- same name again
+    //
+    // The chat level existed to make each top-level chat independently
+    // collapsible, and that ability does not need its own row: a top-level chat
+    // IS an agent row, and its sub-agents already hang beneath it. So the row
+    // itself carries the collapse caret, exactly as a sub-agent's does, and
+    // `chat:<id>` remains the group key so an old collapse still applies.
     if (ws !== lastWs) {
       lastWs = ws;
-      lastEmittedChat = null;
-      const solo = !r.a.parent && (counts.get(ws) ?? 0) <= 1;
-      // A solo chat was collapsible through its own `chat:<id>` key before
-      // #58, and that state is still on disk. Its header is gone now, so
-      // honour it here — without this a chat the operator had deliberately
-      // hidden would be stuck visible with no control left to reopen it. The
-      // row also REPORTS the key so the header can clear it on click; without
-      // that the chat is hidden but unreachable, which is worse than the
-      // cosmetic gap it replaces.
-      const legacyKey = solo && collapsed.has(gkey) ? gkey : undefined;
-      const wsOff = collapsed.has(`ws:${ws}`) || !!legacyKey;
       out.push({
         a: r.a,
         depth: 0,
         headerOnly: true,
         wsHeader: ws,
-        wsCollapsedGroup: wsOff,
-        ...(legacyKey ? { collapsedVia: legacyKey } : {}),
+        wsCollapsedGroup: collapsed.has(`ws:${ws}`),
       });
     }
-    // EVERY row in the directory is subject to the directory's collapse, not
-    // just the first one after its header. Checking only while emitting the
-    // header let the remaining chats in a collapsed directory stay on screen
-    // beneath it — the header said "collapsed" and the chats were still there.
     if (collapsed.has(`ws:${ws}`)) continue;
-    // chat header — only for a top-level chat that is NOT alone in its
-    // directory (#58). With a single chat the workspace header already
-    // carries the caret, the name and the collapse toggle, so a second header
-    // restating it is pure height.
-    if (!r.a.parent) {
-      if ((counts.get(ws) ?? 0) > 1 && gkey !== lastEmittedChat) {
-        lastEmittedChat = gkey;
-        out.push({
-          a: r.a,
-          depth: 0,
-          headerOnly: true,
-          chatHeader: gkey,
-          chatCollapsedGroup: collapsed.has(gkey),
-        });
-      }
+    // A collapsed CHAT keeps a row. With the `chat:<id>` header gone, that row
+    // carries the caret — so hiding the row too would leave the chat
+    // permanently unreachable: no header to click, no row to click, and the
+    // stored key is never cleared. This is the strand-a-chat bug, and the
+    // header used to be what prevented it.
+    //
+    // The row is marked so the UI can show it as collapsed (▸, dimmed) rather
+    // than as a normal chat, and its sub-agents stay hidden.
+    if (collapsed.has(chatGroupKeyOf(agents, r.a))) {
+      out.push({ a: r.a, depth: r.depth, chatCollapsedGroup: true });
+      continue;
     }
-    // A collapsed chat hides its own row AND every sub-agent under it: they
-    // all resolve to the same top-level group key, so this covers the subtree.
-    if (collapsed.has(gkey)) continue;
     out.push({ a: r.a, depth: r.depth });
   }
   return out;

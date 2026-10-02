@@ -97,7 +97,10 @@ test("the sidebar renders through sidebarRows() (#18)", () => {
 test("the header is styled and collapsible (#18)", () => {
   assert.match(css, /\.wsheader\s*\{/s, "the header needs its own style (#18)");
   assert.match(css, /\.wsheader \.wscaret/, "the collapse caret needs styling (#18)");
-  assert.match(app, /wsCollapsed\(\)\.has\(/, "groups must be collapsible (#18)");
+  // the collapse is driven by the persisted group set; assert on the helper
+  // rather than a specific call site, which moves whenever the row markup does
+  assert.match(app, /const toggleWsGroup = /, "groups must be collapsible (#18)");
+  assert.match(app, /setWsCollapsed\(next\)/, "and the click must write it (#18)");
 });
 
 /* ---------- the real DOM check lives in the bundle smoke test ---------- */
