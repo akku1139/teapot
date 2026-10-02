@@ -1211,6 +1211,22 @@ export default function App() {
     sidebarRowsOf(agents(), treeRows(), wsCollapsed()),
   );
 
+  /**
+   * Events requested per page.
+   *
+   * #54: the timeline pairs a tool_call with its tool_result by walking the
+   * events it holds, so a window that can contain a result WITHOUT its call
+   * strands the bash row at "running…" forever. The server default was raised
+   * to 2000 for exactly this, but the UI passed an explicit `limit=300` and
+   * therefore never benefited — 300 is small enough that a command streaming
+   * one event per delta evicts its own call.
+   *
+   * A page is cheap (a tail read) and the clamp is server-side, so ask for the
+   * size the pairing actually needs rather than a round number that undoes the
+   * fix.
+   */
+  const FEED_PAGE = 2000;
+
   // null = show everything; otherwise only the chosen branch's events
   const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
   // Reference-stabilize events across fetches: logged events are immutable,
@@ -1321,7 +1337,7 @@ export default function App() {
       const tid = timelineId();
       const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
       const res = await api(
-        `/api/agents/${id}/events?limit=300&before=${encodeURIComponent(oldest.id)}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`,
+        `/api/agents/${id}/events?limit=${FEED_PAGE}&before=${encodeURIComponent(oldest.id)}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`,
       );
       const page: Ev[] = res.events ?? [];
       if (page.length === 0) { setOlderDone(true); return; }
@@ -1362,7 +1378,7 @@ export default function App() {
         // matching the context the agent actually reasons over. Filtering by
         // strict branch id showed less than the model sees, which read as data
         // loss even though nothing was missing from the log.
-        api(`/api/agents/${id}/events?limit=300${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""}`),
+        api(`/api/agents/${id}/events?limit=${FEED_PAGE}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""}`),
         needsBranches
           ? api(`/api/agents/${id}/branches`)
           : Promise.resolve({ branches: branches() }),

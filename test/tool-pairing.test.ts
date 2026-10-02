@@ -24,6 +24,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 /**
  * mirror of the shipped pairing walk in pairInfo(): tool_call events are queued
@@ -140,8 +141,6 @@ test("an orphaned result is still rendered, not dropped (#54)", () => {
 
 /* ---------- what the shipped code must do ---------- */
 
-import { readFileSync } from "node:fs";
-
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
 
@@ -182,4 +181,51 @@ test("an orphan result renders as a COMPLETED tool row (#54)", () => {
     /oneLine\(out, 120\)/,
     "the old anonymous output blob is what made the run look unfinished (#54)",
   );
+});
+
+/* ---------- #54: the window must be able to hold a whole call/result pair ---------- */
+
+test("the UI asks for a window large enough to hold a call/result pair (#54)", async () => {
+  // The server default was raised to 2000 precisely because a window holding a
+  // result WITHOUT its call strands the bash row at "running…". The UI passed
+  // an explicit `limit=300` and so never benefited from that — 300 is small
+  // enough for a command streaming one event per delta to evict its own call.
+  //
+  // This was the whole of the second #54 report: the fix was present, correct,
+  // and inert.
+  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    app,
+    /events\?limit=300/,
+    "the UI must not hardcode a window that evicts a live tool_call (#54)",
+  );
+  const page = app.match(/const FEED_PAGE = (\d+);/)?.[1];
+  assert.ok(page, "the page size must be a named constant, with the reason (#54)");
+  assert.ok(
+    Number(page) >= 2000,
+    `the page must be at least the server default the fix raised it to (#54); got ${page}`,
+  );
+  // and it must be used by BOTH fetches — the tail poll and the older-pages one
+  const uses = (app.match(/events\?limit=\$\{FEED_PAGE\}/g) ?? []).length;
+  assert.equal(uses, 2, `both the poll and the older-page fetch must use it (#54); found ${uses}`);
+});
+
+test("the server default still holds a whole pair (#54)", async () => {
+  // Guards the other half: the UI is not the only caller, and the default is
+  // what a future caller gets.
+  const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
+  const dflt = api.match(/c\.req\.query\("limit"\) \?\? (\d+)\)/)?.[1];
+  const clamp = api.match(/\?\? \d+\), (\d+)\)/)?.[1];
+  assert.ok(Number(dflt) >= 2000, `server default must be >= 2000 (#54); got ${dflt}`);
+  assert.ok(Number(clamp) >= Number(dflt), `the clamp must admit the default (#54); ${clamp} < ${dflt}`);
+});
+
+test("a result whose call was evicted still renders as a COMPLETED tool row (#54)", () => {
+  // The rescue for the window case, kept as a backstop for any window size:
+  // the tool name, duration and outcome come from the result's own metadata, so
+  // it is indistinguishable from a pair that survived.
+  const orphan = { type: "tool_result", data: { callId: "c1", name: "bash", ok: false, result: "timeout after 30s", durationMs: 30_000 } };
+  assert.equal(orphan.data.name, "bash", "the name travels with the result (#54)");
+  assert.equal(orphan.data.ok, false, "and so does the outcome (#54)");
+  assert.equal(orphan.data.durationMs, 30_000, "and the timing (#54)");
 });
