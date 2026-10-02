@@ -89,6 +89,17 @@ function apiResponse(url) {
     };
   if (u === "/api/agents")
     return { agents: [AGENT, { ...AGENT, id: "beta", workspace: "/tmp/other-project" }] };
+  // #58: one agent owning SEVERAL session dirs (each incarnation mints one).
+  // alpha is BOUND to alpha-s2; alpha-s1 and alpha-s9 are past sessions.
+  if (u === "/api/sessions")
+    return {
+      sessions: [
+        { id: "alpha-s9", agentId: "alpha", mtimeMs: Date.now() - 1000, sizeBytes: 900 },
+        { id: "alpha-s2", agentId: "alpha", mtimeMs: Date.now() - 5000, sizeBytes: 800 },
+        { id: "alpha-s1", agentId: "alpha", mtimeMs: Date.now() - 9000, sizeBytes: 700 },
+        { id: "beta-s1", agentId: "beta", mtimeMs: Date.now() - 2000, sizeBytes: 600 },
+      ],
+    };
   if (u === `/api/agents/${AGENT.id}/load`) return { ok: true };
   if (u === `/api/agents/${AGENT.id}/events`) return { events: EVENTS, total: EVENTS.length };
   if (u === `/api/agents/${AGENT.id}/branches`) return { branches: [{ branch: "br0", events: EVENTS.length }] };
@@ -111,6 +122,8 @@ function apiResponse(url) {
 }
 
 let fetchCount = 0;
+/** every URL the app asked for — lets a test assert WHICH session it opened (#58) */
+const requestedUrls = [];
 
 /* ---------- happy-dom globals ---------- */
 
@@ -193,6 +206,7 @@ setGlobal("WebSocket", MockWS);
 // pending-echo regression below to push bus events into the app
 setGlobal("fetch", async (url) => {
   fetchCount++;
+  requestedUrls.push(String(url));
   const u = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
   return { ok: true, status: 200, json: async () => apiResponse(u) };
 });
@@ -347,6 +361,39 @@ console.log("deep render ok: feed rows present");
     fail(`the auditor's reason must be visible (#51): ${text(rejectedLine).slice(0, 60)}`);
 
   console.log("deep render ok: audit rows stack and a reasonless verdict shows no card (#51)");
+}
+
+/* ---------- #58: a deep link must open the session it NAMES ----------------
+ * `select()` resolved an agent id to its newest/bound session and ignored the
+ * session in the URL, so `/session/alpha-s1` opened alpha-s2 and then REWROTE
+ * the URL to match. The bookmark quietly pointed at a different conversation.
+ *
+ * The bundle boots at http://localhost:7788/session/test; this drives a real
+ * deep link through history and asserts both the fetch and the final URL. */
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg) => { console.error(`#58 REGRESSION: ${msg}`); process.exit(1); };
+
+  // the fixture gives alpha three sessions; ask for an OLD one on purpose
+  const want = "alpha-s1";
+  history.replaceState(null, "", `/session/${want}`);
+  requestedUrls.length = 0;
+  // drive it the way a Back/Forward would: change the URL, then fire popstate
+  history.replaceState(null, "", `/session/${want}`);
+  w.dispatchEvent(new w.PopStateEvent("popstate", { bubbles: true }));
+  await sleep(400);
+
+  const eventFetches = requestedUrls.filter((u) => /\/events/.test(u));
+  if (!eventFetches.length) fail("no events request was made for the deep-linked session (#58)");
+  // at least one events request must carry the REQUESTED session, not alpha-s2
+  if (!eventFetches.some((u) => u.includes(`session=${want}`)))
+    fail(
+      `the deep link to ${want} never reached the events fetch: ${JSON.stringify(eventFetches)} (#58)`,
+    );
+  // and the URL must still name the session we asked for
+  if (!location.pathname.includes(want))
+    fail(`the URL was rewritten away from ${want} to ${location.pathname} (#58)`);
+  console.log("deep render ok: a deep link opens the session it names (#58)");
 }
 
 /* ---------- #52: the timeline Copy buttons must actually copy -------------

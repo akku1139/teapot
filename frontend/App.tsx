@@ -1418,13 +1418,19 @@ export default function App() {
    * the list is a directory scan, so a stale dir with a newer chat.jsonl won
    * and the operator's view and the agent's actual timeline disagreed.
    */
-  function latestSessionOf(agentId: string): string | null {
+  function latestSessionOf(agentId: string, requested?: string | null): string | null {
+    // #58: an EXPLICIT request (a deep link, browser Back/Forward, or the
+    // session switcher) is authoritative — it used to be discarded here, so
+    // /session/<id> silently opened whatever session was bound and then
+    // REWROTE the URL to match. Honoured only when this agent really owns the
+    // session, so a crafted URL cannot cross into another agent's timeline.
+    if (requested && sessionsByAgent().get(agentId)?.includes(requested)) return requested;
     const bound = agents().find((a) => a.id === agentId)?.session;
     if (bound && sessionsByAgent().get(agentId)?.includes(bound)) return bound;
     return sessionsByAgent().get(agentId)?.[0] ?? null;
   }
 
-  async function select(id: string, push = true) {
+  async function select(id: string, push = true, forceSession?: string | null) {
     const prevId = selected();
     const prevTid = timelineId();
     const prevEvents = events();
@@ -1436,7 +1442,7 @@ export default function App() {
     // Falls back to the agent id for brand-new agents whose first session dir
     // isn't listed yet (the events fetch still works: same log).
     if (!sessionsByAgent().size) void refreshSessionIndex(); // first select before index landed
-    let tid = latestSessionOf(id) ?? id;
+    let tid = latestSessionOf(id, forceSession) ?? id;
     if (prevId !== id || tid !== prevTid) {
       // remember what the outgoing session looked like so returning is instant
       if (prevTid && prevEvents.length) {
@@ -1713,7 +1719,11 @@ export default function App() {
     // resolve the internal id to its owning agent and open THAT agent's tab;
     // the timeline itself is fetched by ?session=<internalId> in loadEvents
     const owner = masterSessionIndex().get(sid);
-    if (owner && owner !== selected()) select(owner, false);
+    // #58: this used to require `owner !== selected()`, which made Back and
+    // Forward between two sessions of the SAME agent a no-op — the very case
+    // the history entry exists for. Compare the SESSION, not the agent, and let
+    // select() ignore a repeat of what is already showing.
+    if (owner && (owner !== selected() || sid !== timelineId())) select(owner, false, sid || null);
   });
 
   /* ---------- small UX niceties ---------- */
@@ -2072,7 +2082,10 @@ export default function App() {
         agents().find((a) => a.id === want && !masterSessionIndex().has(want)) ??
         agents().find((a) => a.id === localStorage.getItem("teapot.session")) ??
         agents()[0];
-      if (initial) select(initial.id, false);
+      // #58: pass the deep-linked session through. `select(initial.id)` alone
+      // discarded it, so /session/<old-id> opened the bound session and then
+      // rewrote the URL to match — the bookmark quietly pointed somewhere else.
+      if (initial) select(initial.id, false, want || null);
     });
     refreshMetrics();
     loadTasks();
