@@ -104,6 +104,21 @@ function renderEscaped(lines) {
       continue;
     }
     // paragraph
+    //
+    // TERMINATION IS THE WHOLE CONTRACT HERE. Every branch in this loop must
+    // consume at least one line, or the outer `while` re-reads the same line
+    // forever. A line can match a guard ABOVE (which therefore declines it) and
+    // still match one of these — "```js```" opens a fence but also contains
+    // its own closer, so the fence branch skips it, and then the paragraph loop
+    // skips it for starting with ```. Nothing consumed it. That hung the whole
+    // browser tab, growing `out` by one empty <p> per spin, and it was
+    // reachable from ordinary model output: a reply that typed an inline fence
+    // (```js```) while streaming.
+    //
+    // So: if the paragraph is empty and we are still on the line we started
+    // from, consume it unconditionally rather than spinning. A stray ``` is
+    // better rendered as a paragraph than as a hang.
+    const startLine = i;
     const para = [];
     while (
       i < lines.length &&
@@ -117,6 +132,7 @@ function renderEscaped(lines) {
     ) {
       para.push(lines[i++]);
     }
+    if (i === startLine) para.push(lines[i++]);
     out.push(`<p>${para.map(inline).join("<br>")}</p>`);
   }
   return out.join("\n");
