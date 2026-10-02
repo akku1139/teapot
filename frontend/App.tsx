@@ -2503,7 +2503,7 @@ export default function App() {
                 <Show when={agentTasks(row.a.id).length > 0}>
                   <span class="mini-cron" title={agentTasks(row.a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
                 </Show>
-                <Show when={row.a.goal.status === "done"}><span title="goal done">✓</span></Show>
+                <Show when={row.a.goal.status === "done"}><span class="goaldone" title="goal done">✓</span></Show>
               </div>
               </Show>
               </>

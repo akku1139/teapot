@@ -107,7 +107,10 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 }
 
 /* ---- sidebar ---- */
-.sidebar { background: var(--bg-darkest); overflow-y: auto; padding: 10px 8px; display: flex; flex-direction: column; }
+/* #60: `overflow-y: auto` alone computes `overflow-x` to `auto` as well, so a
+   row that could not shrink made the whole panel scroll sideways. Clipping the
+   X axis is what actually stops it — the ellipsis above makes the content fit. */
+.sidebar { background: var(--bg-darkest); overflow-y: auto; overflow-x: hidden; padding: 10px 8px; display: flex; flex-direction: column; }
 /* theme picker popover */
 .themepop {
   position: static;
@@ -130,7 +133,7 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .themebtn.on { border-color: var(--acc); }
 .swdots { display: inline-flex; gap: 2px; flex-shrink: 0; }
 .swdots i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-shadow: inset 0 0 0 1px #0004; }
-.agent-list { flex: 1; overflow-y: auto; min-height: 0; }
+.agent-list { flex: 1; overflow-y: auto; min-height: 0; min-width: 0; }
 /* workspace header: which project the chats below belong to (#18). The sidebar
    grouped by parent/child agent only, so chats from unrelated projects
    interleaved in one undifferentiated list. */
@@ -161,8 +164,18 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 }
 .chatheader:hover { color: var(--fg); }
 .chatheader .wscaret { width: 12px; flex-shrink: 0; font-size: 9px; }
-.agent-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; color: var(--dim); }
+.agent-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; color: var(--dim); min-width: 0; }
+/* #60: the chat's own id is the ONE flexible item in this row — the dot,
+   caret, 🔔 unread badge, 🧩 sub-agent count, ⏰ cron and ✓ all keep their
+   intrinsic width. Without this the id could not shrink, so a long id plus a
+   few badges overflowed the row and the whole sidebar scrolled sideways.
+   Same `min-width:0` + ellipsis contract the notification list and the
+   runtime panel already use. */
+.agent-item > span:not(.dot):not(.caret):not(.caret-spacer):not(.notifbadge):not(.subcount):not(.subtag):not(.ghosttag):not(.mini-cron):not(.goaldone) {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .agent-item .subtag { color: var(--dim); font-size: 10px; }
+.agent-item .goaldone { flex-shrink: 0; }
 .caret { width: 12px; flex-shrink: 0; cursor: pointer; color: var(--dim); font-size: 9px; text-align: center; user-select: none; }
 .caret:hover { color: var(--fg); }
 .caret-spacer { width: 12px; flex-shrink: 0; }
