@@ -281,3 +281,52 @@ async function readWindow(
   return { events, bytes: buf.length };
 }
 
+
+/**
+ * Keep one branch's rows out of a timeline, optionally including the history it
+ * inherited before it forked.
+ *
+ * #38. A fork is a new timeline, but the agent's CONTEXT on it still includes
+ * everything before the fork point — `rebuildMessagesFrom` walks the parent
+ * chain across branch boundaries precisely so a restarted fork keeps its
+ * history. Filtering the view by strict equality therefore showed *less* than
+ * the model actually reasons over, which is why a filtered fork looked like
+ * data loss even though nothing was missing from the log.
+ *
+ * `includeInherited` walks the parent links out of the branch's own events and
+ * keeps everything they reach, so the view matches the model's context. Strict
+ * remains the default: a caller that genuinely wants only a branch's own rows
+ * (counting, auditing) should not be handed inherited history silently.
+ *
+ * Pure and exported so the rule can be tested without an HTTP server.
+ */
+export function filterByBranch(
+  events: readonly TeapotEvent[],
+  branch: string,
+  includeInherited = false,
+): TeapotEvent[] {
+  if (!includeInherited) return events.filter((e) => e.branch === branch);
+  const byId = new Map(events.map((e) => [e.id, e]));
+  // every event belonging to the branch, plus everything reachable by `parent`
+  const wanted = new Set<string>();
+  // A WORKLIST, not a loop over the growing set: iterating `wanted` while
+  // adding to it inside the same pass re-visits nodes and, on a parent cycle,
+  // never terminates.
+  const queue: string[] = [];
+  for (const e of events) {
+    if (e.branch !== branch) continue;
+    if (wanted.has(e.id)) continue;
+    wanted.add(e.id);
+    queue.push(e.id);
+  }
+  while (queue.length) {
+    const cur = byId.get(queue.pop()!);
+    // walk up through the fork boundary — a fork's parent is the last event of
+    // the SOURCE branch, and that branch's history is inherited too
+    if (cur?.parent && !wanted.has(cur.parent)) {
+      wanted.add(cur.parent);
+      queue.push(cur.parent);
+    }
+  }
+  return events.filter((e) => wanted.has(e.id));
+}

@@ -82,16 +82,20 @@ test("a no-op click still reloads rather than doing nothing (#38)", () => {
 
 /* ---------- the semantics are now stated in the UI ---------- */
 
-test("the filter explains that it hides inherited history (#38)", () => {
+test("the filter explains that it now SHOWS the inherited history (#38)", () => {
+  // The behaviour changed: the filter used to hide inherited history and the
+  // note admitted it, which read as data loss. It now includes that history, so
+  // the note must describe the new behaviour — a note left describing the old
+  // one would actively mislead.
   assert.match(
+    app,
+    /showing <b>\{branchFilter\(\)\}<\/b> and the history it inherited before forking/,
+    "the note must say the inherited history IS shown (#38)",
+  );
+  assert.doesNotMatch(
     app,
     /showing <b>\{branchFilter\(\)\}<\/b> only/,
-    "the strict-equality filter must say what it excludes (#38)",
-  );
-  assert.match(
-    app,
-    /inherited before this branch forked/,
-    "the operator must be told the model still reasons over the pre-fork history (#38)",
+    "the old 'only — hides inherited history' wording must be gone (#38)",
   );
 });
 

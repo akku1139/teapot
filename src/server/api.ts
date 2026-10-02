@@ -75,7 +75,7 @@ async function listModels(
 }
 import path from "node:path";
 import { bus } from "../bus.ts";
-import { readEvents, readEventsTail } from "../log/events.ts";
+import { readEvents, readEventsTail, filterByBranch } from "../log/events.ts";
 import type { Master } from "../master.ts";
 
 /** media categories the file tree can preview inline */
@@ -1010,7 +1010,7 @@ export function buildApp(master: Master): Hono {
     }
 
     let events = await readEventsCached(filePath);
-    if (branch) events = events.filter((e) => e.branch === branch);
+    if (branch) events = filterByBranch(events, branch, c.req.query("lineage") === "true");
     // cursor pagination for older pages: everything strictly BEFORE this id
     if (before) {
       const idx = events.findIndex((e) => e.id === before);

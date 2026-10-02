@@ -1334,7 +1334,11 @@ export default function App() {
       const needsBranches = genAtStart !== lastBranchesGen || !branches().length;
       const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
       const [ev, br, sk] = await Promise.all([
-        api(`/api/agents/${id}/events?limit=300${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`),
+        // #38: `lineage=true` so a filtered fork shows the history it inherited,
+        // matching the context the agent actually reasons over. Filtering by
+        // strict branch id showed less than the model sees, which read as data
+        // loss even though nothing was missing from the log.
+        api(`/api/agents/${id}/events?limit=300${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""}`),
         needsBranches
           ? api(`/api/agents/${id}/branches`)
           : Promise.resolve({ branches: branches() }),
@@ -3604,14 +3608,14 @@ export default function App() {
           </div>
 
           <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span>
-            {/* Say what the filter actually does: it shows ONLY that branch's
-                own events, while the agent's real context on a fork also
-                includes everything inherited before the fork point. Without
-                this the filtered view looks like data loss (#38). */}
+            {/* Say what the filter actually does. A fork INHERITS everything
+                before its fork point, and that history is now included, so the
+                view matches the context the agent actually reasons over. Say
+                so explicitly, because a strict branch filter used to hide the
+                inherited rows and read as data loss (#38). */}
             <Show when={branchFilter()}>
               <div class="muted" style="font-size:11px;text-transform:none;letter-spacing:0">
-                showing <b>{branchFilter()}</b> only — the agent also reasons over the history
-                inherited before this branch forked
+                showing <b>{branchFilter()}</b> and the history it inherited before forking
               </div>
             </Show>
           </h3>
