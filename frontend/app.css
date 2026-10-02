@@ -95,9 +95,15 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
   .rightbar .rightbarhead { position: sticky; top: 0; z-index: 1; display: flex; }
   .rightbar {
     position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw); z-index: 5;
-    transform: translateX(100%); transition: transform .18s ease; box-shadow: -8px 0 24px #0007;
+    transform: translateX(100%); transition: transform .18s ease, box-shadow .18s ease;
+    /* #53: the closed drawer is slid off-screen, NOT removed, so its shadow
+       used to keep painting a dark sliver at the screen edge — "a shadow shows
+       up even when the panel is closed, and it gets in the way". An off-screen
+       element still paints whatever falls inside the viewport, and the shadow
+       was the one thing that did. No shadow until it opens. */
+    box-shadow: none;
   }
-  .rightbar.open { transform: none; }
+  .rightbar.open { transform: none; box-shadow: -8px 0 24px #0007; }
 }
 
 /* ---- sidebar ---- */

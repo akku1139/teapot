@@ -1012,6 +1012,54 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
     fail("Escape no longer stops the running agent once the drawer is closed — the panel shadowed it forever");
   console.log("deep render ok: Escape still interrupts a running agent when no drawer is open (#50)");
 
+  /* ---------- #53: a CLOSED drawer must leave nothing painted -------------
+   * Reported: "on a narrow screen the right panel leaves a shadow behind even
+   * after it is closed — it gets in the way".
+   *
+   * The drawer is slid off-screen with `transform: translateX(100%)` rather
+   * than hidden, so its own `box-shadow: -8px 0 24px` still paints at the
+   * screen edge. The element is "off-screen", not "gone", and a shadow is the
+   * one thing about it that still lands inside the viewport.
+   *
+   * This checks COMPUTED style, which is the only way to see it: querying for
+   * the element proves nothing, because the drawer is always in the DOM. */
+  {
+    const cs = (sel, prop) => {
+      const el = w.document.querySelector(sel);
+      return el ? w.document.defaultView.getComputedStyle(el).getPropertyValue(prop) : null;
+    };
+    const isNone = (v) => !v || v === "none" || v === "0px" || v === "";
+
+    // closed: no shadow, no visible box
+    const shadowClosed = cs(".rightbar", "box-shadow");
+    if (!isNone(shadowClosed))
+      fail(`a CLOSED drawer must not paint a box-shadow, got ${JSON.stringify(shadowClosed)} (#53)`);
+    if (cs(".rightbar", "visibility") === "visible" && !isNone(cs(".rightbar", "opacity")))
+      fail(`a closed drawer must not be painted, opacity=${cs(".rightbar", "opacity")} (#53)`);
+
+    // and the backdrop must be gone entirely, not merely transparent
+    const bd = w.document.querySelector(".rightbarbackdrop");
+    if (bd) {
+      const disp = w.document.defaultView.getComputedStyle(bd).display;
+      const op = w.document.defaultView.getComputedStyle(bd).opacity;
+      if (disp !== "none" && op !== "0" && Number(op) !== 0)
+        fail(`a closed drawer must not leave a click-catching backdrop (display=${disp}, opacity=${op}) (#53)`);
+    }
+
+    // open: the shadow IS wanted — it lifts the drawer off the content
+    toggle.click();
+    await sleep(120);
+    if (!drawerOpen()) fail("could not re-open the drawer for the shadow check (#53)");
+    const shadowOpen = cs(".rightbar", "box-shadow");
+    if (isNone(shadowOpen))
+      fail(`an OPEN drawer must cast its shadow, got ${JSON.stringify(shadowOpen)} (#53)`);
+    toggle.click();
+    await sleep(120);
+    if (cs(".rightbar", "box-shadow") !== shadowClosed)
+      fail(`closing must restore the no-shadow state (#53)`);
+    console.log("deep render ok: a closed drawer leaves nothing painted (#53)");
+  }
+
   setGlobal("fetch", realFetch);
 }
 
