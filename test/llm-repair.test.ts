@@ -24,6 +24,7 @@ import { mkdir } from "node:fs/promises";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
+import { readFileSync } from "node:fs";
 import type { ChatMessage, LlmResult } from "../src/agent/llm.ts";
 
 const tc = (id: string, name: string, args: unknown) => ({
@@ -473,5 +474,59 @@ test("no message-event shape survives a restore in an unsafe form (#50)", async 
         assert.equal(blank.length, 0, `${label}: a blank assistant turn must not survive (#50)`);
       await second.dispose();
     }
+  });
+});
+
+/**
+ * The data-loss trap in the blank-turn fix.
+ *
+ * An operator can send a prompt with NO TEXT and only an image attachment. That
+ * is a legitimate user turn whose content is empty and whose payload lives in
+ * `content_parts` — the exact "blank message" shape the assistant-turn guard
+ * drops. It must never be swept up by it: dropping it would silently delete the
+ * operator's attachment from every future turn of that session.
+ */
+test("an image-only prompt survives a restore even though its text is empty (#50)", async () => {
+  await useTempDirs(["a50p-", "a50q-"], async ([ws, sessionDir]) => {
+    const chatFn = async (): Promise<LlmResult> => reply("ok");
+    const first = mkAgent(ws, sessionDir, chatFn);
+    await first.init();
+    first.start("t");
+    await first.settled();
+    // text is "" and the image carries the whole message
+    first.enqueuePrompt("", "user", [{ url: "data:image/png;base64,AAAA" }]);
+    await first.settled();
+    await first.dispose();
+
+    const second = mkAgent(ws, sessionDir, chatFn);
+    await second.init();
+    second.enqueuePrompt("next");
+    second.start("t");
+    await second.settled();
+
+    const restored = second.messages as ChatMessage[];
+    const withImage = restored.filter((m) => (m.content_parts ?? []).length > 0);
+    assert.ok(withImage.length > 0, "an image-only prompt must survive the restore (#50)");
+    assert.ok(
+      withImage.some((m) => m.role === "user"),
+      "the operator's attachment must not be dropped as a blank message (#50)",
+    );
+    assert.ok(
+      restored.some((m) => m.role === "user" && m.content === ""),
+      "the blank-text user turn itself must be present (#50)",
+    );
+    await second.dispose();
+
+    // The behavioural half above cannot fail on its own: prompts are replayed
+    // from the "prompt" branch, which no message-branch guard touches. So pin
+    // the guard's SCOPE directly — a blanket "drop every blank message" is the
+    // exact edit that would start deleting user attachments, and it must fail
+    // here rather than in production.
+    const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
+    assert.match(
+      src,
+      /if \(role === "assistant" && !content && !hasCalls\) continue;/,
+      "the blank-turn drop must be scoped to ASSISTANT turns — a blanket drop deletes image-only prompts (#50)",
+    );
   });
 });
