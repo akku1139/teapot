@@ -1084,6 +1084,25 @@ export default function App() {
   };
   /** last path segment, for a compact workspace header */
   const basenameOf = (p: string): string => p.replace(/\/+$/, "").split(/[/\\]/).pop() || p;
+  /**
+   * How many TOP-LEVEL chats share each workspace.
+   *
+   * Several separate top-level chats commonly point at ONE working directory,
+   * and grouping by path alone merged them into one anonymous bucket — the
+   * exact "which chat was that?" question the grouping was meant to answer,
+   * answered worst where it mattered most. The header now carries the count so
+   * a shared directory reads as "N chats" instead of looking like one.
+   */
+  const wsChatCounts = createMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of agents()) {
+      if (a.parent) continue; // a sub-agent is part of its parent's group
+      const ws = workspaceOf(a.id);
+      if (!ws) continue;
+      counts.set(ws, (counts.get(ws) ?? 0) + 1);
+    }
+    return counts;
+  });
   const sidebarRows = createMemo(() => {
     const collapsed = wsCollapsed();
     const rows = treeRows();
@@ -2350,9 +2369,19 @@ export default function App() {
               <Show when={row.wsHeader !== undefined && row.wsHeader !== ""}>
                 <div
                   class="wsheader"
-                  title={row.wsHeader || ""}
+                  title={
+                    (wsChatCounts().get(row.wsHeader!) ?? 0) > 1
+                      ? `${row.wsHeader} — ${wsChatCounts().get(row.wsHeader!)} chats share this directory`
+                      : row.wsHeader || ""
+                  }
                   onclick={() => toggleWsGroup(row.wsHeader!)}
-                ><span class="wscaret">{wsCollapsed().has(row.wsHeader!) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}</div>
+                ><span class="wscaret">{wsCollapsed().has(row.wsHeader!) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
+                  {/* several separate chats often share one directory — say so,
+                      so the group reads as N chats rather than one (#18) */}
+                  <Show when={(wsChatCounts().get(row.wsHeader!) ?? 0) > 1}>
+                    <span class="wscount">{wsChatCounts().get(row.wsHeader!)}</span>
+                  </Show>
+                </div>
               </Show>
               {/* a collapsed group shows its header and nothing else (#18) */}
               <Show when={!row.wsCollapsedGroup}>

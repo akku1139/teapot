@@ -587,6 +587,72 @@ console.log("deep render ok: feed rows present");
   console.log("deep render ok: a workspace group really collapses and reopens (#18)");
 }
 
+/* ---------- #18: separate chats sharing ONE working directory --------------
+ * "Some top-level chat dirs exist in the same working directory but are
+ * separate." Grouping by workspace path alone merged them into one anonymous
+ * bucket, so the group header gave no clue it held more than one chat. The
+ * header now carries the count.
+ *
+ * The base fixture has one chat per directory, so this block swaps in a third
+ * agent pointing at alpha's SAME workspace and re-reads the rendered header. */
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
+  const origFetch = globalThis.fetch;
+  const THIRD = { ...AGENT, id: "gamma", workspace: AGENT.workspace }; // same dir!
+  setGlobal("fetch", async (url, init) => {
+    const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
+    const u = raw.split("?")[0];
+    if (u === "/api/agents")
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          agents: [AGENT, { ...AGENT, id: "beta", workspace: "/tmp/other-project" }, THIRD],
+        }),
+      };
+    return origFetch(url, init);
+  });
+  // Push the NEW agent over the bus: the agent-update handler appends an agent
+  // it has not seen before (an existing id is replaced in place), which is the
+  // real server's path for "a session appeared". The /api/agents stub above is
+  // the belt-and-braces for the polling refresh.
+  MockWS.instances.at(-1)?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: THIRD.id, snapshot: THIRD }),
+  });
+  await sleep(300);
+
+  const headerFor = (ws) =>
+    [...w.document.querySelectorAll(".wsheader")].find((h) => h.getAttribute("title")?.startsWith(ws));
+  const sharedHeader = headerFor(AGENT.workspace);
+  if (!sharedHeader) fail("the shared workspace lost its header entirely (#18)");
+
+  const chats = [...w.document.querySelectorAll(".agent-item")]
+    .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
+    .filter(Boolean);
+  // three chats exist; alpha and gamma share a directory, so the group must
+  // still show BOTH as separate rows. beta belongs to another project and is
+  // legitimately in the sidebar — it just must not be counted in this group.
+  if (!chats.includes("alpha") || !chats.includes("gamma"))
+    fail(`both chats of the shared directory must be listed separately, got ${JSON.stringify(chats)}`);
+
+  const badge = sharedHeader.querySelector(".wscount");
+  if (!badge) fail(`a group with 2 chats must show its count: ${sharedHeader.textContent}`);
+  if (badge.textContent.trim() !== "2")
+    fail(`the count badge should read 2, got ${JSON.stringify(badge.textContent)}`);
+
+  // and the header's tooltip should say so in words
+  const tip = sharedHeader.getAttribute("title") ?? "";
+  if (!/2 chats share/.test(tip)) fail(`the header tooltip should explain the count, got ${JSON.stringify(tip)}`);
+
+  // the OTHER project still has a single chat → no badge
+  if (headerFor("/tmp/other-project")?.querySelector(".wscount"))
+    fail("a single-chat project must not show a count badge (#18)");
+
+  setGlobal("fetch", origFetch);
+  console.log("deep render ok: chats sharing one directory stay separate and counted (#18)");
+}
+
 /* ---------- #50: WIDE mode must be untouched by the drawer work ----------
  * The narrow fixes added a backdrop and a ✕ row. Both are drawer-only, and a
  * mistake in either (rendering them unconditionally) would be catastrophic on a
