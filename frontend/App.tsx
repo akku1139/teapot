@@ -1093,11 +1093,30 @@ export default function App() {
       return new Set<string>();
     }
   })());
-  const toggleWsGroup = (groupKey: string, label: string) => {
+  /**
+   * Toggle a group header.
+   *
+   * `isCollapsed` is the state the header is DISPLAYING, not a re-derivation of
+   * the stored set — those can disagree after #58, and when they do, keying the
+   * decision off the stored set means clicking a header that plainly reads
+   * "collapsed" takes the expand branch that looks for a key it does not have,
+   * and instead COLLAPSES again. `alsoClear` is the key actually holding the
+   * group hidden (a legacy `chat:<id>`), which no other control can remove.
+   */
+  const toggleWsGroup = (
+    groupKey: string,
+    label: string,
+    isCollapsed: boolean,
+    alsoClear?: string,
+  ) => {
     const next = new Set(wsCollapsed());
-    if (next.has(groupKey)) next.delete(groupKey);
-    else {
+    if (isCollapsed) {
+      // expanding: drop every key that could be hiding this group
+      next.delete(groupKey);
+      if (alsoClear) next.delete(alsoClear);
+    } else {
       next.add(groupKey);
+      if (alsoClear) next.delete(alsoClear);
       // Collapsing hides the chat(s) in the group — including the one the
       // operator is currently reading. That reads as "my session vanished", so
       // say what happened and how to get back. The open conversation stays
@@ -2413,8 +2432,8 @@ export default function App() {
                         ? `${row.wsHeader} — ${wsCountLabel(row.wsHeader!)} in this directory`
                         : row.wsHeader || ""
                   }
-                  onclick={() => toggleWsGroup(`ws:${row.wsHeader}`, basenameOf(row.wsHeader!))}
-                ><span class="wscaret">{wsCollapsed().has(`ws:${row.wsHeader!}`) ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
+                  onclick={() => toggleWsGroup(`ws:${row.wsHeader}`, basenameOf(row.wsHeader!), row.wsCollapsedGroup === true, row.collapsedVia)}
+                ><span class="wscaret">{row.wsCollapsedGroup ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
                   {/* several separate chats often share one directory — say so,
                       so the group reads as N chats rather than one (#18).
                       A COLLAPSED group must always show the count: that is
@@ -2434,7 +2453,7 @@ export default function App() {
                       ? `${row.a.id} — collapsed. Click to show.`
                       : `${row.a.id} — its own chat, working in ${basenameOf(workspaceOf(row.a.id))}`
                   }
-                  onclick={() => toggleWsGroup(row.chatHeader!, row.a.id)}
+                  onclick={() => toggleWsGroup(row.chatHeader!, row.a.id, row.chatCollapsedGroup === true)}
                 ><span class="wscaret">{wsCollapsed().has(row.chatHeader!) ? "▸" : "▾"}</span>{row.a.id}</div>
               </Show>
               {/* a collapsed group shows its header and nothing else (#18); a header row

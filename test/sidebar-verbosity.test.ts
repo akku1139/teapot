@@ -243,3 +243,42 @@ test("the chat-header row is still rendered when it exists (#18)", () => {
   // or the two chats in one directory would lose their separate identities.
   srcHas("the chat header must remain in the DOM (#18)", /class="chatheader"/);
 });
+
+/* ---------- the migration round-trip: a hidden chat must be reachable again ---------- */
+
+test("a solo chat collapsed under the OLD scheme reports the key holding it (#58)", async () => {
+  // The row must not merely be hidden — it must SAY which key is doing the
+  // hiding, so the header can clear it. Without that, the chat is gone with no
+  // control anywhere that can bring it back: the legacy `chat:<id>` key is
+  // never removed, so every click re-hides it and the operator is stuck. This
+  // is the one path where #58's migration could strand a chat permanently.
+  const rows = sidebarRowsOf(soloProjects, treeRowsOf(soloProjects), new Set(["chat:proj-a"]));
+  const header = rows.find((r) => r.wsHeader === "/p/teapot")!;
+  assert.equal(header.wsCollapsedGroup, true, "the header must read as collapsed (#58)");
+  assert.equal(
+    header.collapsedVia,
+    "chat:proj-a",
+    "the header must report the legacy key so a click can clear it (#58)",
+  );
+});
+
+test("a normally collapsed directory reports no foreign key (#58)", async () => {
+  // Only the migrated state needs the extra key; a plain `ws:<dir>` collapse is
+  // cleared by the header's own toggle.
+  const rows = sidebarRowsOf(soloProjects, treeRowsOf(soloProjects), new Set(["ws:/p/teapot"]));
+  const header = rows.find((r) => r.wsHeader === "/p/teapot")!;
+  assert.equal(header.wsCollapsedGroup, true);
+  assert.equal(header.collapsedVia, undefined, "a normal collapse is its own key (#58)");
+});
+
+test("a visible header reports no collapsed key at all (#58)", async () => {
+  const rows = sidebarRowsOf(soloProjects, treeRowsOf(soloProjects));
+  const headers = rows.filter((r) => r.wsHeader !== undefined);
+  assert.equal(headers.length, 3, "every project gets a header (#58)");
+  for (const r of headers) {
+    assert.equal(r.wsCollapsedGroup, false, `nothing is collapsed here (#58): ${r.wsHeader}`);
+    assert.equal(r.collapsedVia, undefined, "and no foreign key is claimed (#58)");
+  }
+});
+
+

@@ -44,6 +44,17 @@ export interface SidebarRow<T extends TreeAgent = TreeAgent> {
   headerOnly?: boolean;
   wsCollapsedGroup?: boolean;
   chatCollapsedGroup?: boolean;
+  /**
+   * The key that is ACTUALLY holding this directory collapsed, when it is not
+   * the header's own `ws:<dir>` key.
+   *
+   * A solo chat used to have its own `chat:<id>` header, so a collapse from
+   * before #58 is persisted under that key while the header is now the
+   * directory's. The row must report it so the click handler can clear it —
+   * otherwise the chat stays hidden and the caret keeps pointing "open", with
+   * no control anywhere that can bring it back.
+   */
+  collapsedVia?: string;
 }
 
 /**
@@ -152,9 +163,20 @@ export function sidebarRowsOf<T extends TreeAgent>(
       // A solo chat was collapsible through its own `chat:<id>` key before
       // #58, and that state is still on disk. Its header is gone now, so
       // honour it here — without this a chat the operator had deliberately
-      // hidden would be stuck visible with no control left to reopen it.
-      const wsOff = collapsed.has(`ws:${ws}`) || (solo && collapsed.has(gkey));
-      out.push({ a: r.a, depth: 0, headerOnly: true, wsHeader: ws, wsCollapsedGroup: wsOff });
+      // hidden would be stuck visible with no control left to reopen it. The
+      // row also REPORTS the key so the header can clear it on click; without
+      // that the chat is hidden but unreachable, which is worse than the
+      // cosmetic gap it replaces.
+      const legacyKey = solo && collapsed.has(gkey) ? gkey : undefined;
+      const wsOff = collapsed.has(`ws:${ws}`) || !!legacyKey;
+      out.push({
+        a: r.a,
+        depth: 0,
+        headerOnly: true,
+        wsHeader: ws,
+        wsCollapsedGroup: wsOff,
+        ...(legacyKey ? { collapsedVia: legacyKey } : {}),
+      });
     }
     // EVERY row in the directory is subject to the directory's collapse, not
     // just the first one after its header. Checking only while emitting the
