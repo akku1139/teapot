@@ -1221,12 +1221,27 @@ export const TOOLS: ToolDef[] = [
       // already proved which lines it means, so a block whose content occurs
       // twice must still edit the anchored occurrence rather than fail the
       // uniqueness check (#4).
+      // The hashline path splits on "\n" to index by resolved line number, which
+      // leaves a trailing "\r" on every line of a CRLF file. Rejoining with
+      // "\n" then DROPS all of them, so a single edit silently rewrote a
+      // Windows file's line endings: the replaced line arrived with the model's
+      // "\n" while every untouched line kept its "\r\n". The file still parsed
+      // and the edit "succeeded", so nothing reported it — but the next
+      // checkout diff shows the whole file changed, and tools that normalise on
+      // EOL (git, prettier, formatters) now rewrite it.
+      //
+      // So the EOL is detected ONCE from the untouched text and re-applied to
+      // the replacement, which also keeps a CRLF file CRLF when the model sends
+      // LF-separated new_text (the overwhelmingly common case — models never
+      // emit \r).
+      const eol = text.includes("\r\n") ? "\r\n" : "\n";
       const out = hashSpan
         ? text
             .split("\n")
             .slice(0, hashSpan.start)
-            .concat(newText.split("\n"), text.split("\n").slice(hashSpan.end))
+            .concat(newText.replace(/\r\n/g, "\n").split("\n"), text.split("\n").slice(hashSpan.end))
             .join("\n")
+            .replace(/(?<!\r)\n/g, eol)
         : replaceAll
           ? text.split(oldText).join(newText)
           : text.replace(oldText, newText);
