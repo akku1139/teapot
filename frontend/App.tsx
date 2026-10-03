@@ -1337,7 +1337,12 @@ export default function App() {
       const tid = timelineId();
       const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
       const res = await api(
-        `/api/agents/${id}/events?limit=${FEED_PAGE}&before=${encodeURIComponent(oldest.id)}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}` : ""}`,
+        // #77: `lineage=true` here too. The tail fetch asks for it, so a filtered
+        // fork's first page shows the INHERITED history; omitting it on the
+        // older-pages fetch made scrolling up switch to strict filtering, and the
+        // parent's pre-fork rows vanished from the top — reading as data loss,
+        // which is exactly what #38 was about.
+        `/api/agents/${id}/events?limit=${FEED_PAGE}&before=${encodeURIComponent(oldest.id)}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""}`,
       );
       const page: Ev[] = res.events ?? [];
       if (page.length === 0) { setOlderDone(true); return; }

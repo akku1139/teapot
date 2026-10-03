@@ -20,35 +20,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /** Body of the FIRST rule whose SELECTOR list contains `selector`. */
 function firstRule(selector: string): string {
-  let i = 0;
-  for (;;) {
-    const open = css.indexOf("{", i);
-    if (open === -1) throw new Error(`no rule with selector ${selector}`);
-    const prevClose = css.lastIndexOf("}", open);
-    const selStart = prevClose === -1 ? 0 : prevClose + 1;
-    let depth = 0;
-    let close = -1;
-    for (let j = open; j < css.length; j++) {
-      if (css[j] === "{") depth++;
-      else if (css[j] === "}") {
-        depth--;
-        if (depth === 0) {
-          close = j;
-          break;
-        }
-      }
-    }
-    if (close === -1) throw new Error(`unterminated rule at ${open}`);
-    const sel = css.slice(selStart, open);
-    if (sel.includes(selector)) return css.slice(open + 1, close);
-    i = close + 1;
-  }
+  // #75: delegates to the shared helper so the body has its COMMENTS STRIPPED.
+  // The original scanned the stylesheet itself and returned the raw text, so a
+  // declaration that lived only inside an explanatory comment satisfied the
+  // assertion — commenting out the whole #44/#57 fix still passed.
+  return cssRuleBody(css, selector);
 }
 
 const imgx = () => firstRule(".imgchip .imgx");
