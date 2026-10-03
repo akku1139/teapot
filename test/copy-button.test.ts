@@ -22,37 +22,23 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+// #75: the copy logic moved OUT of App.tsx into frontend/clipboard.ts, so the
+// source assertions below must read it there. Reading App.tsx made them
+// vacuous the moment the extraction landed.
+const app = readFileSync(new URL("../frontend/clipboard.ts", import.meta.url), "utf8");
+const appTsx = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
- * Mirror of the shipped copy strategy, extracted so each environment is under
- * test rather than just described.
+ * #75: this used to be a MIRROR of the shipped copy strategy, so the suite
+ * exercised the mirror while the app ran something else. Deleting the entire
+ * `execCommand("copy")` fallback from App.tsx left this file green 11/11 — the #52
+ * fix could be half-removed invisibly.
+ *
+ * `copyText` now lives in `frontend/clipboard.ts` and both App.tsx and this file
+ * import it, so the tests drive the code that runs.
  */
-export async function copyText(
-  text: string,
-  env: {
-    clipboard?: { writeText?: (t: string) => Promise<void> } | null;
-    execCommand: (c: string) => boolean;
-  },
-): Promise<"copied" | "unsupported" | "failed"> {
-  if (!text) return "unsupported";
-  // the fix: feature-DETECT the method, never assume the object is there
-  const writeText = env.clipboard?.writeText;
-  if (typeof writeText === "function") {
-    try {
-      await writeText.call(env.clipboard, text);
-      return "copied";
-    } catch {
-      /* fall through to the legacy path — permission denied, insecure frame */
-    }
-  }
-  // legacy path, used when the API is missing OR refused
-  try {
-    return env.execCommand("copy") ? "copied" : "failed";
-  } catch {
-    return "failed";
-  }
-}
+import { copyText } from "../frontend/clipboard.ts";
+import { fakeStaging } from "./helpers/staging.ts";
 
 function srcHas(label: string, re: RegExp): void {
   if (!re.test(app)) assert.fail(`${label}\n  expected source to match: ${re}`);
@@ -63,6 +49,7 @@ function srcHas(label: string, re: RegExp): void {
 test("copy works when navigator.clipboard is absent (plain http) (#52)", async () => {
   let exec = 0;
   const got = await copyText("hello", {
+    makeTextarea: fakeStaging,
     clipboard: undefined, // ← the reported TypeError case
     execCommand: () => (exec++, true),
   });
@@ -72,7 +59,8 @@ test("copy works when navigator.clipboard is absent (plain http) (#52)", async (
 
 test("copy works when navigator.clipboard is explicitly null (#52)", async () => {
   let exec = 0;
-  const got = await copyText("hello", { clipboard: null, execCommand: () => (exec++, true) });
+  const got = await copyText("hello", {
+    makeTextarea: fakeStaging, clipboard: null, execCommand: () => (exec++, true) });
   assert.equal(got, "copied");
   assert.equal(exec, 1, "a null clipboard must not be treated as usable (#52)");
 });
@@ -80,6 +68,7 @@ test("copy works when navigator.clipboard is explicitly null (#52)", async () =>
 test("copy works when writeText is missing from the clipboard object (#52)", async () => {
   let exec = 0;
   const got = await copyText("hello", {
+    makeTextarea: fakeStaging,
     clipboard: {} as never, // present but useless — happy-dom, some webviews
     execCommand: () => (exec++, true),
   });
@@ -93,6 +82,7 @@ test("copy uses the clipboard API when it is genuinely available (#52)", async (
   const written: string[] = [];
   let exec = 0;
   const got = await copyText("payload", {
+    makeTextarea: fakeStaging,
     clipboard: { writeText: async (t) => { written.push(t); } },
     execCommand: () => (exec++, true),
   });
@@ -104,6 +94,7 @@ test("copy uses the clipboard API when it is genuinely available (#52)", async (
 test("a REJECTING clipboard still falls back to the legacy path (#52)", async () => {
   let exec = 0;
   const got = await copyText("payload", {
+    makeTextarea: fakeStaging,
     clipboard: { writeText: async () => { throw new Error("denied"); } },
     execCommand: () => (exec++, true),
   });
@@ -113,13 +104,15 @@ test("a REJECTING clipboard still falls back to the legacy path (#52)", async ()
 
 test("an empty string is refused rather than silently copied (#52)", async () => {
   let exec = 0;
-  const got = await copyText("", { clipboard: undefined, execCommand: () => (exec++, true) });
+  const got = await copyText("", {
+    makeTextarea: fakeStaging, clipboard: undefined, execCommand: () => (exec++, true) });
   assert.equal(got, "unsupported");
   assert.equal(exec, 0, "nothing to copy must not invoke the clipboard (#52)");
 });
 
 test("a THROWING execCommand reports failure rather than escaping (#52)", async () => {
   const got = await copyText("x", {
+    makeTextarea: fakeStaging,
     clipboard: undefined,
     execCommand: () => {
       throw new Error("blocked by policy");
@@ -130,6 +123,7 @@ test("a THROWING execCommand reports failure rather than escaping (#52)", async 
 
 test("both paths failing reports a real failure (#52)", async () => {
   const got = await copyText("x", {
+    makeTextarea: fakeStaging,
     clipboard: { writeText: async () => { throw new Error("no"); } },
     execCommand: () => false,
   });

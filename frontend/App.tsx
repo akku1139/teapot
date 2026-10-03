@@ -11,6 +11,9 @@ import {
 } from "./live-buffer";
 import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
+// #75: extracted so the tests drive the code that runs — they used to carry their
+// own copy, and deleting the real execCommand fallback left them green.
+import { copyText } from "./clipboard";
 import { groupedWith, type RowLike } from "./row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./question-answered";
 import { reconcilePending, type PendingEcho } from "./pending-echo";
@@ -4836,36 +4839,6 @@ function IconBtn(props: {
  *  and a present API may still reject on permission or an unfocused document.
  *  Each of those must reach the legacy path, and a genuine failure must say so.
  */
-async function copyText(text: string): Promise<"copied" | "unsupported" | "failed"> {
-  if (!text) return "unsupported";
-  const writeText = typeof navigator !== "undefined" ? navigator.clipboard?.writeText : undefined;
-  if (typeof writeText === "function") {
-    try {
-      await writeText.call(navigator.clipboard, text);
-      return "copied";
-    } catch {
-      /* rejected (denied, unfocused, insecure) — try the legacy path */
-    }
-  }
-  // legacy path, used when the API is missing OR refused
-  let ta: HTMLTextAreaElement | null = null;
-  try {
-    ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    return document.execCommand("copy") ? "copied" : "failed";
-  } catch {
-    return "failed";
-  } finally {
-    // ALWAYS remove the staging textarea: a throw from execCommand used to skip
-    // the cleanup, leaving an invisible element in the document once per failed
-    // copy — and they accumulate for the life of the tab
-    ta?.remove();
-  }
-}
 
 function CopyBtn(props: { text: string; label?: string; title?: string }) {
   const [done, setDone] = createSignal(false);
