@@ -1046,6 +1046,12 @@ export default function App() {
         body: JSON.stringify({ text: todoDraft(), notify }),
       });
       setTodoDirty(false);
+      // #88: saving now shows the RESULT. The button previously left the editor
+      // open with no visible confirmation, so "save" looked like it had done
+      // nothing — and the obvious next click was to keep typing. Flipping to the
+      // rendered checklist shows what was actually stored, which is also the
+      // only way to see the agent's formatting of it.
+      setTodoViewMode(true);
       flashHint(`tasks saved${notify && todoDraft().trim() ? " & notification queued" : ""}`);
       refreshAgents();
     } catch (ex) {
