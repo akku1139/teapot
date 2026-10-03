@@ -13,14 +13,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import path from "node:path";
+import { useTempDir } from "./helpers/tmp.ts";
 import { bundleFreshness, bundleInputs, freshnessMessage } from "./helpers/bundle-freshness.ts";
 
 /** a fake project root with a bundle and some sources */
-function project(opts: { bundle?: boolean; sourceAges: Record<string, number>; bundleAge?: number }): string {
-  const root = mkdtempSync(path.join(tmpdir(), "bf-"));
+function project(root: string, opts: { bundle?: boolean; sourceAges: Record<string, number>; bundleAge?: number }): void {
+  // #75: the root comes from useTempDir, which removes it in a finally. A bare
+  // mkdtemp here leaked a directory on every single run.
   mkdirSync(path.join(root, "frontend"), { recursive: true });
   mkdirSync(path.join(root, "public", "assets"), { recursive: true });
   const now = Date.now();
@@ -36,50 +37,58 @@ function project(opts: { bundle?: boolean; sourceAges: Record<string, number>; b
     writeFileSync(p, "// src");
     utimesSync(p, new Date(now - age), new Date(now - age));
   }
-  return root;
 }
 
-test("no bundle is reported missing, not silently fresh (#75)", () => {
-  const root = project({ bundle: false, sourceAges: { "frontend/App.tsx": 0 } });
-  assert.equal(bundleFreshness(root).state, "missing");
+test("no bundle is reported missing, not silently fresh (#75)", async () => {
+  await useTempDir("bf-", (root) => { project(root, { bundle: false, sourceAges: { "frontend/App.tsx": 0 } });
+    assert.equal(bundleFreshness(root).state, "missing");
+  });
 });
 
-test("a bundle older than its sources is STALE (#75)", () => {
+test("a bundle older than its sources is STALE (#75)", async () => {
   // the bundle was built 10 minutes ago; a source changed 1 minute ago
-  const root = project({ bundleAge: 600_000, sourceAges: { "frontend/App.tsx": 60_000 } });
-  assert.equal(bundleFreshness(root).state, "stale");
+  await useTempDir("bf-", (root) => {
+    project(root, { bundleAge: 600_000, sourceAges: { "frontend/App.tsx": 60_000 } });
+    assert.equal(bundleFreshness(root).state, "stale");
+  });
 });
 
-test("the NEWEST source is the one that decides (#75)", () => {
+test("the NEWEST source is the one that decides (#75)", async () => {
   // Regression guard. The first version compared against the OLDEST input,
   // which is always older than any build done afterwards — so it never fired,
   // silently. One very old source plus one newer than the bundle must be stale.
-  const root = project({
-    bundleAge: 300_000, // built 5 min ago
-    sourceAges: {
-      "frontend/md.js": 86_400_000, // a day old — irrelevant
-      "frontend/App.tsx": 60_000, // newer than the bundle — this decides
-    },
+  await useTempDir("bf-", (root) => {
+    project(root, {
+      bundleAge: 300_000, // built 5 min ago
+      sourceAges: {
+        "frontend/md.js": 86_400_000, // a day old — irrelevant
+        "frontend/App.tsx": 60_000, // newer than the bundle — this decides
+      },
+    });
+    const f = bundleFreshness(root);
+    assert.equal(f.state, "stale", "the newest source decides staleness (#75)");
+    assert.match(f.newestSource ?? "", /App\.tsx$/, "and the report names it (#75)");
   });
-  const f = bundleFreshness(root);
-  assert.equal(f.state, "stale", "the newest source decides staleness (#75)");
-  assert.match(f.newestSource ?? "", /App\.tsx$/, "and the report names it (#75)");
 });
 
-test("a bundle newer than every source is fresh (#75)", () => {
-  const root = project({ bundleAge: 0, sourceAges: { "frontend/App.tsx": 120_000 } });
-  assert.equal(bundleFreshness(root).state, "fresh");
+test("a bundle newer than every source is fresh (#75)", async () => {
+  await useTempDir("bf-", (root) => {
+    project(root, { bundleAge: 0, sourceAges: { "frontend/App.tsx": 120_000 } });
+    assert.equal(bundleFreshness(root).state, "fresh");
+  });
 });
 
-test("a same-second edit does not count as stale (#75)", () => {
+test("a same-second edit does not count as stale (#75)", async () => {
   // filesystem timestamp granularity is 1s on some systems; a source written
   // immediately after a build is not a real staleness signal
-  const root = project({ bundleAge: 0, sourceAges: { "frontend/App.tsx": 0 } });
-  assert.equal(bundleFreshness(root).state, "fresh", "coarse timestamps must not produce false alarms (#75)");
+  await useTempDir("bf-", (root) => {
+    project(root, { bundleAge: 0, sourceAges: { "frontend/App.tsx": 0 } });
+    assert.equal(bundleFreshness(root).state, "fresh", "coarse timestamps must not produce false alarms (#75)");
+  });
 });
 
-test("every bundle input is considered (#75)", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "bf2-"));
+test("every bundle input is considered (#75)", async () => {
+  await useTempDir("bf2-", (root) => {
   mkdirSync(path.join(root, "frontend", "deep"), { recursive: true });
   mkdirSync(path.join(root, "public", "assets"), { recursive: true });
   const now = Date.now();
@@ -93,20 +102,26 @@ test("every bundle input is considered (#75)", () => {
   assert.ok(inputs.includes("frontend/deep/App.tsx"), "nested sources count (#75)");
   assert.ok(inputs.includes("index.html"), "index.html counts (#75)");
   assert.ok(inputs.includes("vite.config.ts"), "the vite config counts (#75)");
+  });
 });
 
-test("the message says what to do (#75)", () => {
-  const stale = project({ bundleAge: 600_000, sourceAges: { "frontend/App.tsx": 60_000 } });
-  const m = freshnessMessage(bundleFreshness(stale));
-  assert.match(m, /pnpm build/, "the stale message must name the fix (#75)");
-  assert.match(m, /App\.tsx/, "and the offending file (#75)");
-  const missing = freshnessMessage(bundleFreshness(project({ bundle: false, sourceAges: {} })));
-  assert.match(missing, /pnpm build/, "the missing message must name the fix (#75)");
-  assert.match(missing, /NOTHING|proves/i, "and say the suite is not testing the UI (#75)");
+test("the message says what to do (#75)", async () => {
+  await useTempDir("bf-", (root) => {
+    project(root, { bundleAge: 600_000, sourceAges: { "frontend/App.tsx": 60_000 } });
+    const m = freshnessMessage(bundleFreshness(root));
+    assert.match(m, /pnpm build/, "the stale message must name the fix (#75)");
+    assert.match(m, /App\.tsx/, "and the offending file (#75)");
+  });
+  await useTempDir("bf-", (root) => {
+    project(root, { bundle: false, sourceAges: {} });
+    const missing = freshnessMessage(bundleFreshness(root));
+    assert.match(missing, /pnpm build/, "the missing message must name the fix (#75)");
+    assert.match(missing, /NOTHING|proves/i, "and say the suite is not testing the UI (#75)");
+  });
 });
 
-test("the newest bundle wins when several exist (#75)", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "bf3-"));
+test("the newest bundle wins when several exist (#75)", async () => {
+  await useTempDir("bf3-", (root) => {
   mkdirSync(path.join(root, "frontend"), { recursive: true });
   mkdirSync(path.join(root, "public", "assets"), { recursive: true });
   const now = Date.now();
@@ -122,4 +137,5 @@ test("the newest bundle wins when several exist (#75)", () => {
   // only the NEWEST bundle is the live one; judging by the old one would call
   // this stale for no reason
   assert.equal(bundleFreshness(root).state, "fresh");
+  });
 });

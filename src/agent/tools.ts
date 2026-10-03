@@ -89,6 +89,66 @@ async function readText(p: string): Promise<string> {
 }
 
 /**
+ * Line-ending handling (#84).
+ *
+ * A file's EOL is a property of the FILE, not of any one edit. Three forms
+ * matter: LF (`\n`), CRLF (Windows, `\r\n`) and the old-Mac CR (`\r`).
+ *
+ * `edit_file` has handled CRLF since #61, but only on its hashline path, and
+ * nothing detected CR-only files at all. Measured gaps before this:
+ *
+ *  - `read_file` splits on `\n` only, so a CR-only file came back as ONE line:
+ *    the model could not address lines 2..n at all.
+ *  - `write_file` wrote the model's content verbatim, so rewriting a CRLF file
+ *    with LF content silently converted every line — a whole-file diff for what
+ *    the model believed was a one-line change.
+ *  - a mixed-EOL file was rewritten wholesale by any LF write.
+ *
+ * The detection is deliberately conservative: it reports the DOMINANT form and
+ * only when the file is unambiguous. A genuinely mixed file is left alone rather
+ * than homogenised, because picking a winner there would itself be a silent
+ * whole-file rewrite — the very thing this is meant to prevent.
+ */
+export type Eol = "\n" | "\r\n" | "\r";
+
+/**
+ * The file's dominant line ending, or null when it is mixed or empty.
+ *
+ * `null` means "do not normalise" — see the note above.
+ */
+export function detectEol(text: string): Eol | null {
+  if (!text) return null;
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  // a bare CR is a CR not followed by LF
+  const cr = (text.match(/\r(?!\n)/g) ?? []).length;
+  const lf = (text.match(/(?<!\r)\n/g) ?? []).length;
+  const kinds = [crlf, cr, lf].filter((n) => n > 0).length;
+  // one kind only -> unambiguous. Mixed -> null.
+  if (kinds !== 1) return null;
+  if (crlf > 0) return "\r\n";
+  if (cr > 0) return "\r";
+  return "\n";
+}
+
+/** Split on ANY of the three line endings, dropping the terminators. */
+export function splitEolLines(text: string): string[] {
+  return text.split(/\r\n|\r|\n/);
+}
+
+/**
+ * Re-apply `eol` to content the model supplied.
+ *
+ * Models emit `\n` essentially always, so a CRLF or CR file rewritten with LF
+ * content would otherwise be silently converted. Untouched terminators already
+ * in the right form are left alone, so this is safe to run on merged content.
+ */
+export function applyEol(content: string, eol: Eol | null): string {
+  if (!eol || eol === "\n") return content;
+  // normalise to \n first, then re-apply — avoids double-CR on "\r\n"
+  return content.replace(/\r\n|\r|\n/g, eol);
+}
+
+/**
  * Optimistic-concurrency guard (#5). The model reads a file, thinks, then
  * writes — and in between, a sub-agent, a background job or the operator may
  * have changed it. Anchored edits usually fail safe (old_text is gone, so the
@@ -1087,7 +1147,11 @@ export const TOOLS: ToolDef[] = [
         };
       }
       ctx.onFileRead?.(str(args.path));
-      const lines = text.split("\n");
+      // #84: split on ALL THREE line endings. A CR-only (old-Mac) file used to
+      // come back as a single line, so the model could not address lines 2..n at
+      // all — and a CRLF file left a trailing "\r" on every line, which then
+      // had to be stripped again by every consumer.
+      const lines = splitEolLines(text);
       // #7/#4: opt-in hashline output. Default stays the historical `N| ` so
       // nothing that depends on it changes until the mode is chosen.
       const idMode = lineIdMode(args as Record<string, unknown>);
@@ -1176,8 +1240,26 @@ export const TOOLS: ToolDef[] = [
       const stale = staleGuard(str(args.path), args.base_content, await currentOrNull(p));
       if (stale) return stale;
       await fs.mkdir(path.dirname(p), { recursive: true });
-      await fs.writeFile(p, args.content, "utf8");
-      return { ok: true, result: `wrote ${p} (${args.content.length} bytes)` };
+      // #84: a file's line endings belong to the FILE. Writing the model's
+      // content verbatim silently converted a CRLF (or CR) file to LF whenever
+      // the model rewrote it — the model never emits \r — so one logical edit
+      // produced a whole-file diff, and any tool that normalises on EOL (git,
+      // prettier) would rewrite it afterwards.
+      //
+      // So an EXISTING file's dominant EOL is re-applied. detectEol returns null
+      // for a mixed file, which is left untouched on purpose: choosing a winner
+      // there would itself be the silent whole-file rewrite this prevents.
+      const before = await currentOrNull(p);
+      const eol = before === null ? null : detectEol(before);
+      const out = applyEol(args.content, eol);
+      await fs.writeFile(p, out, "utf8");
+      const converted = eol !== null && eol !== "\n" && out !== args.content;
+      return {
+        ok: true,
+        result:
+          `wrote ${p} (${out.length} bytes)` +
+          (converted ? ` (kept ${eol === "\r\n" ? "CRLF" : "CR"} line endings)` : ""),
+      };
     },
   },
   {
@@ -1256,12 +1338,15 @@ export const TOOLS: ToolDef[] = [
         const patLines = oldText.replace(/\r\n/g, "\n").split("\n");
         const hits = trailingWsMatches(srcLines, patLines);
         if (hits.length === 1 && patLines.length > 0) {
-          const eol = text.includes("\r\n") ? "\r\n" : "\n";
-          const rebuilt = [
-            ...srcLines.slice(0, hits[0]),
-            ...newText.replace(/\r\n/g, "\n").split("\n"),
-            ...srcLines.slice(hits[0]! + patLines.length),
-          ].join(eol);
+        // #84: same detection as the hashline path — CR-only files are detected
+        // too, and a MIXED file yields null and is left as-is rather than
+        // homogenised. The old `includes("\r\n")` test called a CR-only file
+        // "\n", so an edit to one silently converted its line endings.
+        const rebuilt = [
+          ...srcLines.slice(0, hits[0]),
+          ...splitEolLines(newText),
+          ...srcLines.slice(hits[0]! + patLines.length),
+        ].join(detectEol(text) ?? "\n");
           await fs.writeFile(p, rebuilt, "utf8");
           return {
             ok: true,
@@ -1318,12 +1403,10 @@ export const TOOLS: ToolDef[] = [
       // emit \r).
       const eol = text.includes("\r\n") ? "\r\n" : "\n";
       const out = hashSpan
-        ? text
-            .split("\n")
+        ? splitEolLines(text)
             .slice(0, hashSpan.start)
-            .concat(newText.replace(/\r\n/g, "\n").split("\n"), text.split("\n").slice(hashSpan.end))
-            .join("\n")
-            .replace(/(?<!\r)\n/g, eol)
+            .concat(splitEolLines(newText), splitEolLines(text).slice(hashSpan.end))
+            .join(eol ?? "\n")
         : replaceAll
           ? text.split(oldText).join(newText)
           : text.replace(oldText, newText);
