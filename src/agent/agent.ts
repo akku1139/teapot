@@ -1321,16 +1321,32 @@ export class Agent {
     // flips its echo to "sent" when prompt-delivered carries this id back
     const promptId =
       source === "user" ? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` : "";
+    // #108: the queue entry is registered SYNCHRONOUSLY, before the async work.
+    //
+    // It used to be pushed inside the `.then()`, so it only existed once
+    // `ensureReady()` resolved — while `cancelPrompt` reads the array
+    // synchronously. A cancel issued in that window found nothing, returned null,
+    // got a 409, and the UI discarded the draft: the operator saw a withdrawn
+    // prompt that the model then received and acted on.
+    //
+    // The wide case is worse than the same-tick one: an agent still restoring a
+    // 4,000-event session log holds that promise for real wall-clock time, so the
+    // cancel essentially always loses.
+    //
+    // Registering first is safe because the queue is drained only at a turn
+    // boundary (`drainPendingPrompts`), which cannot run inside this
+    // synchronous stretch. The log append still happens in order, after.
+    const entry = { source, text, images, ...(promptId ? { id: promptId } : {}) };
+    this.pendingPrompts.push(entry);
     void this.ensureReady()
-      .then(() => {
-        this.pendingPrompts.push({ source, text, images, ...(promptId ? { id: promptId } : {}) });
-        return this.log.append("prompt", this.currentSession, this.currentBranch, {
+      .then(() =>
+        this.log.append("prompt", this.currentSession, this.currentBranch, {
           source,
           text,
           ...(images?.length ? { images: images.map((i) => ({ url: i.url, name: i.name })) } : {}),
           ...(promptId ? { promptId } : {}),
-        });
-      })
+        }),
+      )
       .then(() =>
         bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
       )
