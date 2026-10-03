@@ -1139,6 +1139,17 @@ export class Agent {
         ...(this.compactPhase ? { compacting: this.compactPhase } : {}),
       },
       pendingPrompts: this.pendingPrompts.length,
+      // #78: the IDS as well as the count. The web UI reconciles its local echo
+      // list against the live queue, and it was doing that by POSITION
+      // (slice(0, queued)) because only a count was published — so whenever the
+      // count dipped below the true queue length (a mid-queue cancellation, or a
+      // momentary gap), the NEWEST still-queued echoes were dropped and their
+      // undelivered log rows reappeared as settled "sent" rows. Identity needs
+      // the ids to travel; the count alone cannot express "these two".
+      //
+      // Bounded like the rest of the snapshot, and ids are opaque, so this
+      // cannot carry prompt text.
+      pendingPromptIds: this.pendingPrompts.map((p) => p.id).filter((x): x is string => !!x).slice(0, 64),
       todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
       parent: this.opts.parent,
       awaiting: this.awaitingUser,

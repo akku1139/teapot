@@ -53,6 +53,8 @@ interface Agent {
   /** reasoning effort in force, and whether this model accepts one (#47) */
   reasoningEffort?: string; effortSupported?: boolean;
   pendingPrompts?: number;
+  /** #78: the ids of the still-queued prompts, so the UI can reconcile by IDENTITY */
+  pendingPromptIds?: string[];
   todo?: string;
   parent?: string;
   autoContinue?: boolean;
@@ -537,13 +539,36 @@ export default function App() {
   // keep the echoes the live queue can still account for.
   createEffect(() => {
     const queued = sel()?.pendingPrompts ?? 0;
+    const liveIds = sel()?.pendingPromptIds;
     setPendingMsgs((list) => {
       if (queued >= list.length) return list;
-      // echoes predating promptId tracking (or from before a reload) have no
-      // identity to match — fall back to the head-keep heuristic, which is
-      // correct for the plain drain case
-      if (!list.some((p) => p.promptId)) return list.slice(0, queued);
-      return list.filter((p) => !!p.promptId).slice(0, queued);
+
+      // #78: match on IDENTITY. The comment here used to claim this and the code
+      // did `filter(!!promptId).slice(0, queued)` — which keeps the FIRST N by
+      // position, so every time the server's count dipped below the real queue
+      // (a mid-queue ✕ cancel, or the brief gap before drainPendingPrompts()
+      // settles) the NEWEST still-queued echoes were dropped. Because
+      // stillPendingIds is derived from this list, their undelivered log rows
+      // then showed up as settled "sent" rows — re-introducing the #19
+      // cancellation bug the block below exists to prevent.
+      //
+      // The server now publishes pendingPromptIds, so this can actually match:
+      // keep exactly the echoes the live queue can account for.
+      if (liveIds?.length) {
+        const live = new Set(liveIds);
+        const matched = list.filter((p) => p.promptId && live.has(p.promptId));
+        if (matched.length) {
+          // echoes with no id (predating tracking, or pre-reload) have no
+          // identity to match — keep them only if the ids alone cannot account
+          // for the queue, so they are never silently dropped
+          const unidentifiable = list.filter((p) => !p.promptId);
+          return unidentifiable.length ? [...matched, ...unidentifiable].slice(0, queued) : matched;
+        }
+      }
+      // No ids to match on at all (older server, or every echo predates promptId
+      // tracking): fall back to keeping the HEAD, which is correct for the plain
+      // front-to-back drain case.
+      return list.slice(0, queued);
     });
   });
   createEffect(() => {
