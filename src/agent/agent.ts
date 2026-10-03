@@ -1425,6 +1425,8 @@ export class Agent {
 
   /** monotonic counter: a start() bumps it, so a pending stop status write loses */
   private stopSeq = 0;
+  /** #95: set when this round already injected a harness progress request */
+  private progressRequestedThisRound = false;
 
   private setStatus(s: AgentStatus, reason = ""): void {
     // Update the field FIRST. log.append fires onEvent synchronously, and the
@@ -1525,6 +1527,22 @@ export class Agent {
         // older tasks — it would keep going forever without ever finish()ing.
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
+        // #95: do NOT pair this with a progress request. Both fire at the turn
+        // boundary and both inject a user message, so the model received two
+        // harness instructions back to back — "Continue working toward the
+        // current goal" immediately followed by "Please give a brief progress
+        // report now", which reads as the harness talking to itself.
+        //
+        // The progress request already re-enters the loop, so it IS the
+        // continuation: suppressing the nudge when one is pending costs nothing
+        // and leaves exactly one instruction per boundary.
+        if (this.progressRequestedThisRound) {
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "auto-continue-suppressed",
+            detail: "a progress report was already requested this round (#95)",
+          });
+          break;
+        }
         const isSub = !!this.opts.parent;
         const nudge = isSub
           ? `[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
@@ -1647,6 +1665,11 @@ export class Agent {
       // skills may have been created last turn — refresh the prompt listing
       await this.refreshSkills();
       // periodic progress report at turn boundary (no mid-turn interruption)
+      // #95: the flag is per-TURN, not per-round. `maybeRequestProgress` sits
+      // inside the turn loop and auto-continue is checked after the round
+      // ends, so the flag has to mean "this boundary already carried an
+      // instruction" — reset here, set below if the request fires.
+      this.progressRequestedThisRound = false;
       await this.maybeRequestProgress();
       // keep the context window bounded before spending tokens on a turn
       await this.maybeCompact();
@@ -2474,6 +2497,9 @@ export class Agent {
       this.activityChars >= this.opts.progressMinChars ||
       this.turnsSinceProgress >= this.opts.progressMaxQuietTurns;
     if (!elapsedOk || !activityOk) return; // stalling provider → don't waste a turn asking
+    // #95: remember that this boundary already carries an instruction, so the
+    // auto-continue nudge can stand down instead of pairing with it.
+    this.progressRequestedThisRound = true;
     this.lastProgressAt = Date.now();
     this.activityChars = 0;
     this.turnsSinceProgress = 0;
