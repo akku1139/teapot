@@ -503,10 +503,24 @@ export default function App() {
     // unselected agent's buffer could rely entirely on a turn-boundary event
     // that never arrived — leaving stale text under the streaming chrome with
     // the writing cursor attached, until a reload.
-    setLiveByAgent((prev) => {
-      const statusOf = (id: string) => agents().find((x) => x.id === id)?.status;
-      return pruneDeadLiveBuffers(prev, statusOf);
-    });
+    //
+    // #40 (second pass): this sweep was DEAD CODE, so the report kept
+    // reproducing. `agents()` was read INSIDE the signal updater, and
+    // `liveByAgent` is an empty Map on the first run — so `pruneDeadLiveBuffers`
+    // looped over nothing, never called `statusOf`, and the effect subscribed
+    // to NO signal at all. It ran exactly once, at mount.
+    //
+    // Proven with an instrumented bundle: "effect runs: 1, statusOf calls: 0".
+    // The helper was correct and fully unit-tested; only the WIRING was wrong,
+    // which is why the pure-helper tests passed and the bug shipped.
+    //
+    // Solid does track reads inside an updater (a minimal repro confirms it) —
+    // the empty map at mount is what prevented the first read. Reading the
+    // dependency here, outside the updater, subscribes the effect properly.
+    const list = agents();
+    setLiveByAgent((prev) =>
+      pruneDeadLiveBuffers(prev, (id) => list.find((x) => x.id === id)?.status),
+    );
     setThinkStartedAt(0);
   });
 

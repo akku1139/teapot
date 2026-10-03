@@ -204,16 +204,31 @@ describe("pruneDeadLiveBuffers (#40)", () => {
   });
 
   test("App.tsx prunes by agent status, not by the selected session", () => {
+    // This assertion used to REQUIRE the dead-code shape — `agents()` read
+    // inside the signal updater — which is precisely why v0.26.1 shipped the fix
+    // and it never ran. It asserted the text, not the behaviour.
+    //
+    // The wiring is now asserted in test/live-buffer-wiring.test.ts, which
+    // checks the dependency is read OUTSIDE the updater (the thing that actually
+    // makes the effect subscribe) and that nothing else has the same bug.
     const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+    const at = app.indexOf("pruneDeadLiveBuffers(prev");
+    const start = app.lastIndexOf("createEffect(", at);
+    const body = app.slice(start, app.indexOf("\n  });", at));
     assert.match(
-      app,
-      /pruneDeadLiveBuffers\(prev, statusOf\)/,
-      "the effect must sweep all agents (#40)",
+      body,
+      /const list = agents\(\)/,
+      "agents() must be read in the effect body so the effect subscribes (#40)",
     );
     assert.match(
-      app,
-      /agents\(\)\.find\(\(x\) => x\.id === id\)\?\.status/,
+      body,
+      /list\.find\(\(x\) => x\.id === id\)/,
       "status must come from the agent snapshot, per agent (#40)",
+    );
+    assert.doesNotMatch(
+      body,
+      /selected\(\)/,
+      "and must not be scoped to the selected agent — that was the original bug (#40)",
     );
   });
 });
