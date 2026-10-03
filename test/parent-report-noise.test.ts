@@ -52,8 +52,40 @@ test("a '(tool call)' placeholder is not reported as content (#94)", () => {
   assert.equal(kept("x (tool call)"), true, "only a WHOLE placeholder is dropped (#94)");
 });
 
-test("the other provider placeholders are dropped too (#94)", () => {
-  for (const p of ["(no content)", "(no output)"]) assert.equal(kept(p), false, `#94: ${p}`);
+test("EVERY parenthesised acknowledgement is dropped, not just three (#94)", () => {
+  // Measured across all session logs. My first filter listed three literals and
+  // caught 2 of the 10 forms actually reaching a parent — the rest are harness
+  // acks from answerMeta and the meta-tool handlers.
+  const real = [
+    "(tool call)",
+    "(no content)",
+    "(no output)",
+    "(tool_call)",            // underscore variant
+    "(goal complete)",
+    "(round ended)",
+    "(round ended: finished)",
+    "(tool try)",
+    "(no sub-agents)",
+    "(nothing running to stop)",
+    "(no result recorded)",
+    "(todo.md is empty — no task list yet)",
+    "(decisions.md is empty — no decisions recorded yet)",
+    "(skills created)",
+  ];
+  for (const p of real) assert.equal(kept(p), false, `#94 must drop the ack: ${p}`);
+});
+
+test("real work is never mistaken for an acknowledgement (#94)", () => {
+  // the trade of matching a SHAPE: a genuine message that happened to be
+  // entirely parenthesised would also go. These must not.
+  for (const g of [
+    "All files clean, running the final verification.",
+    "leds-mt6320.c newline=OK trailing-ws=0",
+    "════ FINAL ════ checkpatch: 0 errors, 718 lines checked",
+    "Seven rejections with no stated gap. I stopped auditing the driver.",
+    "The symbol is MFD_MT6397, not MFD_MT6320 — see drivers/mfd/Kconfig:1141",
+  ])
+    assert.equal(kept(g), true, `#94 must keep real work: ${g.slice(0, 40)}`);
 });
 
 test("harness acknowledgements do not consume a slot (#94)", () => {

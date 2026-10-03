@@ -187,14 +187,25 @@ Most session state is not injected into prompts — fetch it with tools instead:
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
 
 /**
- * Placeholder text a provider adapter substitutes for a message with no usable
- * content (`llm.ts`).
+ * A message whose ENTIRE text is parenthesised is an acknowledgement, not work.
  *
- * #94: these are DISPLAY ARTIFACTS. They were reaching the parent inside a
- * sub-agent's final report, where they occupied two of six entries while saying
- * nothing — the parent was told "[assistant] (tool call)" as if it were content.
- */
-export const PLACEHOLDER_TEXT = /^\((tool call|no content|no output)\)$/i;
+ * #94: the first version of this listed three literals — `(tool call)`,
+ * `(no content)`, `(no output)` — and caught 2 of the 10 forms actually reaching
+ * a parent. Measured across every session log, the rest are harness
+ * acknowledgements written by `answerMeta` and the meta-tool handlers:
+ *
+ *     (goal complete)  (round ended)  (tool try)  (no sub-agents)
+ *     (tool_call)      (nothing running to stop)  (no result recorded)
+ *     (todo.md is empty …)  (decisions.md is empty …)
+ *
+ * So it matches the SHAPE — a whole line wrapped in parentheses — rather than an
+ * enumeration that is stale the moment another ack is added.
+ *
+ * The trade: a genuine message that happens to be entirely parenthesised would
+ * also be dropped. That is vanishingly rare in this feed, and the alternative —
+ * an enumeration — was measured to be wrong 80% of the time. If it ever matters,
+ * the ack should be marked structurally rather than by its punctuation.
+ */export const PLACEHOLDER_TEXT = /^\(.*\)$/;
 
 /**
  * Harness acknowledgements — meta-lines about the run itself rather than the
