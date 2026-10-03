@@ -1137,7 +1137,47 @@ export default function App() {
   const [wsCollapsed, setWsCollapsed] = createSignal<Set<string>>((() => {
     try {
       const raw = JSON.parse(localStorage.getItem("teapot.wsCollapsed") ?? "[]");
-      return new Set<string>(Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : []);
+      const keys = Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
+
+      // #81: MIGRATE keys written by the #18 chat-header era.
+      //
+      // In that build each top-level chat had its OWN header row, and clicking
+      // that header COLLAPSED the chat — writing `chat:<id>` into this same
+      // localStorage key. #18's follow-up (adaef8e) deleted the header row to
+      // fix the double-rendering, and with it the only control that could CLEAR
+      // those keys. They were not merely stale: they were unreachable, and they
+      // outlived several releases.
+      //
+      // The symptom reads as data loss rather than as a collapsed folder. A
+      // captured DOM showed ten of fifteen chats collapsed, five of them
+      // displaying a 🧩 badge (4, 1, 2, 8, 2 sub-agents) with none of those
+      // children rendered — so the sidebar claimed sub-agents existed and showed
+      // none. Nothing errored, and every row still had a working ▸ caret, which
+      // is why it looked like a bug in the tree rather than leftover state.
+      //
+      // Each one is individually recoverable by clicking. But "click 10 carets to
+      // undo something a previous version did to you" is not a reasonable ask,
+      // and the operator cannot tell which keys are theirs and which are ours.
+      //
+      // So: keys carrying a VERSION marker from the header era are dropped on
+      // load. Deliberately narrow — it only removes collapse keys this app
+      // wrote while the header existed, and leaves `ws:` keys and any key the
+      // current UI created untouched, so a real grouping the operator set up
+      // still survives a reload.
+      //
+      // The migration is one-shot: `teapot.wsCollapsed.v` records that it ran.
+      const VERSION = 2;
+      const marker = Number(localStorage.getItem("teapot.wsCollapsed.v") ?? "0");
+      if (marker < VERSION) {
+        const kept = keys.filter((k) => !k.startsWith("chat:"));
+        const dropped = keys.length - kept.length;
+        if (dropped > 0) {
+          localStorage.setItem("teapot.wsCollapsed", JSON.stringify(kept));
+        }
+        localStorage.setItem("teapot.wsCollapsed.v", String(VERSION));
+        return new Set<string>(kept);
+      }
+      return new Set<string>(keys);
     } catch {
       return new Set<string>();
     }
