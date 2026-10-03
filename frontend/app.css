@@ -931,45 +931,29 @@ h3 .filetoggle { margin-left: 0; }
    accent-color colours the check mark once checked; the empty box stayed white. */
 input[type="checkbox"] {
   background-color: var(--bg-darkest);
-  border: 1px solid var(--line);
+  /* #112: this was `--line`, which is the theme's HAIRLINE colour — measured
+     against --bg-darkest it is 1.02–1.09:1 in every theme, i.e. invisible. The
+     box had no boundary at all, so an unchecked checkbox was a 14px smudge with
+     nothing to say "this is a control you can click".
+
+     `--dim` is the existing muted-FOREGROUND token: 5.9–6.4:1 against the same
+     background in all four themes, comfortably over the 3.0:1 WCAG wants for a
+     non-text UI boundary. It is already used for secondary text, so the box now
+     reads at the same weight as the label beside it. */
+  border: 1px solid var(--dim);
   border-radius: 3px;
 }
-/* Only when the browser supports it: appearance:none removes the native widget,
-   which is what lets the background show at all. Without support the rule is
-   ignored and the accent-color above still applies — so this degrades safely. */
-@supports (appearance: none) {
-  input[type="checkbox"] {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    display: inline-grid;
-    place-content: center;
-    cursor: pointer;
-  }
-  /* the tick, drawn rather than inherited from the UA */
-  input[type="checkbox"]:checked::before {
-    content: "✓";
-    font-size: 11px;
-    line-height: 1;
-    color: var(--bg-darkest);
-    font-weight: 700;
-  }
-  input[type="checkbox"]:checked {
-    background-color: var(--acc);
-    border-color: var(--acc);
-  }
-  input[type="checkbox"]:focus-visible {
-    outline: 2px solid var(--acc);
-    outline-offset: 1px;
-  }
-  /* disabled must not look interactive */
-  input[type="checkbox"]:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-}
 
+/* #112: keep the NATIVE widget. An earlier version replaced it wholesale
+   (`appearance: none`) and drew a "✓" by hand. That fixed the white box and made
+   everything else worse: a hand-drawn glyph at 11px is softer than the platform's
+   own tick, it does not match the theme's type, and it loses the UA's
+   high-contrast and forced-colours handling.
+
+   The reported bug was only ever an UNCHECKED box rendering white, so that is all
+   this needs to touch. The native widget draws its own tick in a colour that
+   contrasts with `background-color`, and `accent-color` (below) tints it per
+   theme. */
 /* 2. the native number-input spinners. These are drawn by the UA in a colour it
    picks for itself, so they stay white no matter what the field's background is.
    Both the standard and the prefixed pseudo-elements are needed: Chromium wants
@@ -996,7 +980,10 @@ input[type="number"] {
 .modal button:not(.iconbtn):not([class]) {
   background: var(--bg-light);
   color: var(--fg);
-  border: 1px solid var(--line);
+  /* #112: `--line` measured 1.35-1.55:1 against the page background, so the
+     button's edge was only just perceptible. The text is fine (12.7-14.8:1 on
+     the fill); it is the boundary that needs to read as a control. */
+  border: 1px solid var(--dim);
   border-radius: 6px;
   padding: 6px 10px;
   font: inherit;

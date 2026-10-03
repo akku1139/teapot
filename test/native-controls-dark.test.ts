@@ -38,15 +38,74 @@ test("an unchecked checkbox gets a theme background (#102)", () => {
     /background-color:\s*var\(--bg-darkest\)/,
     "the EMPTY box is UA-painted unless told otherwise — accent-color does not cover it (#102)",
   );
-  assert.match(rule, /border:\s*1px solid var\(--line\)/, "and needs a border to read as a control (#102)");
+  // #112: `--line` is the hairline colour and measured 1.02-1.09:1 against
+  // --bg-darkest in every theme — i.e. no visible boundary at all. The test now
+  // checks the CONTRAST rather than a token name, so it cannot drift with the
+  // palette.
+  assert.match(rule, /border:\s*1px solid var\(--dim\)/, "the box border must be a visible weight (#112)");
 });
 
-test("the checkbox tick is drawn, not inherited (#102)", () => {
-  assert.match(
+/* ---------- contrast, measured rather than token-matched (#112) ---------- */
+
+const hex = (h: string) => {
+  const s = h.replace("#", "").length === 3 ? h.replace("#", "").split("").map((c) => c + c).join("") : h.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16) / 255);
+};
+const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+const lum = (h: string) => {
+  const [r, g, b] = hex(h).map(lin);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+/** WCAG contrast ratio */
+const contrast = (a: string, b: string) => {
+  const [x, y] = [lum(a), lum(b)];
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+};
+
+/** every theme block: [name, bg-darkest, dim] — the two the checkbox uses */
+const THEMES: [string, string, string][] = [
+  ["default", "#1a1c22", "#9298a5"],
+  ["nord", "#0d0f18", "#8a90ad"],
+  ["solarized", "#241c16", "#b39d82"],
+  ["mocha", "#191410", "#a89478"],
+];
+
+test("the unchecked checkbox border is VISIBLE in every theme (#112)", () => {
+  // the operator's report was "the new colours are hard to read". Measured, the
+  // cause was --line at 1.02-1.09:1 — no boundary at all. WCAG wants 3.0:1 for
+  // a non-text UI boundary.
+  for (const [name, bg, dim] of THEMES) {
+    const ratio = contrast(dim, bg);
+    assert.ok(
+      ratio >= 3.0,
+      `${name}: the unchecked box border must be visible (#112); ${dim} on ${bg} is only ${ratio.toFixed(2)}:1`,
+    );
+  }
+});
+
+test("the palette values above are the ones the themes actually ship (#112)", () => {
+  // so this cannot pass against stale numbers after a palette change
+  for (const [name, bg, dim] of THEMES) {
+    assert.ok(css.includes(bg), `${name}: --bg-darkest ${bg} must exist (#112)`);
+    assert.ok(css.includes(dim), `${name}: --dim ${dim} must exist (#112)`);
+  }
+});
+
+test("the NATIVE widget is kept, not reimplemented (#112)", () => {
+  // the hand-drawn "✓" replaced the platform tick with an 11px glyph that does
+  // not match the theme's type and loses forced-colours support. The reported
+  // bug was only ever an unchecked box rendering white.
+  assert.doesNotMatch(
     css,
-    /input\[type="checkbox"\]:checked::before\s*\{[^}]*content:\s*"✓"/,
-    "with appearance:none the UA tick disappears, so it must be drawn (#102)",
+    /input\[type="checkbox"\][^{]*\{[^}]*appearance:\s*none/,
+    "the native checkbox must be kept — only its background needed fixing (#112)",
   );
+  assert.doesNotMatch(css, /content:\s*"✓"/, "and the tick must not be hand-drawn (#112)");
+});
+
+test("accent-color still tints the checked state per theme (#112)", () => {
+  // with the native widget back, this is what colours the check
+  assert.match(css, /input\[type="checkbox"\]\s*\{[^}]*accent-color:\s*var\(--acc\)/, "accent-color must remain (#112)");
 });
 
 /* ---------- 2. the number spinners ---------- */
@@ -81,7 +140,9 @@ test("the modal add-buttons are themed, not white (#102)", () => {
   const block = css.slice(css.indexOf(".modal > button"), css.indexOf("@media") === -1 ? css.length : 1e9);
   assert.match(block, /background:\s*var\(--bg-light\)/, "a background is required (#102)");
   assert.match(block, /color:\s*var\(--fg\)/, "and a readable text colour (#102)");
-  assert.match(block, /border:\s*1px solid var\(--line\)/, "and a border to match the other inputs (#102)");
+  // #112: --dim, not --line — the hairline border measured 1.35-1.55:1 against
+  // the page, so the button's edge barely registered as a control
+  assert.match(block, /border:\s*1px solid var\(--dim\)/, "and a border that reads as a control (#112)");
 });
 
 test("the modal rule cannot repaint the composer or icon buttons (#102)", () => {
