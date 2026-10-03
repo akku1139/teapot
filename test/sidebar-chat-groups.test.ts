@@ -202,29 +202,24 @@ test("a top-level chat row gets a collapse caret (#18)", () => {
   assert.match(app, /toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, off\)/, "its caret must toggle the chat group (#18)");
 });
 
-test("EVERY top-level chat shows that caret, not just one with sub-agents (#18)", () => {
-  // The subtle half. With the chat header gone, this caret is the only control
-  // for a chat, so gating it on "has children" does two bad things:
-  //
-  //   1. a childless chat can never be collapsed — the feature is dead; and
-  //   2. if a `chat:<id>` key is ALREADY in localStorage (every chat collapsed
-  //      under the old header, which is the normal upgrade path), that chat is
-  //      hidden, has no caret, and nothing on screen can bring it back. That is
-  //      the strand-a-chat bug, reintroduced by deleting the header.
-  //
-  // So the condition must be the agent's TOP-LEVEL-ness, not its child count.
-  const gate = app.slice(
-    app.indexOf("A TOP-LEVEL CHAT is always collapsible"),
-    app.indexOf("A TOP-LEVEL CHAT is always collapsible") + 900,
+// #106 narrowed this rule, so the gate itself is asserted where it can actually
+// be exercised — as a pure function over all four states, including the strand
+// state a bundle check cannot reach. See test/sidebar-caret-gate.test.ts.
+//
+// What remains here is the part that IS about the tree: a leaf sub-agent still
+// gets the spacer, so rows stay aligned, and the fallback is still wired.
+test("the caret fallback keeps leaf rows aligned (#18)", () => {
+  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  assert.match(
+    app,
+    /fallback=\{<span class="caret-spacer" \/>\}/,
+    "leaf sub-agents keep the spacer so rows stay aligned (#18)",
   );
-  assert.match(gate, /!row\.a\.parent \|\|/, "a top-level chat is always collapsible (#18)");
-  assert.doesNotMatch(
-    gate,
-    /chatCollapsed\(\)\.has\(`chat:\$\{row\.a\.id\}`\)\)\s*\}?/,
-    "the caret must not be gated on being ALREADY collapsed — that is unreachable (#18)",
+  assert.match(
+    app,
+    /when=\{shouldShowCollapseCaret\(\{/,
+    "the gate must be the shared helper (#106)",
   );
-  // and a childless sub-agent still gets the spacer, so rows stay aligned
-  assert.match(gate, /fallback=\{<span class="caret-spacer" \/>\}/, "leaf sub-agents keep the spacer (#18)");
 });
 
 test("a childless chat round-trips through collapse (#18)", () => {

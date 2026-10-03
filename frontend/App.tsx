@@ -12,7 +12,7 @@ import {
 import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
-import { descendantsOf } from "./sidebar-tree";
+import { descendantsOf, shouldShowCollapseCaret } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
 // own copy, and deleting the real execCommand fallback left them green.
 import { copyText } from "./clipboard";
@@ -2861,11 +2861,40 @@ export default function App() {
                     impossible to collapse and, once collapsed (by a stored
                     `chat:<id>` key), impossible to reopen. Only a SUB-agent
                     with no children of its own has nothing to collapse. */}
+                {/* #106: a caret that collapses nothing is noise — but NEVER at
+                 * the cost of stranding a chat.
+                 *
+                 * The report is right about the common case: a chat with no
+                 * sub-agents, not collapsed, has a caret that does nothing.
+                 *
+                 * The obvious implementation — gate a top-level chat's caret on
+                 * "has children" — is WRONG, and #18 documented why. Collapsing
+                 * is what WRITES the `chat:<id>` key, so a childless chat can
+                 * never have one from a click... but it can have a STALE one, and
+                 * there are two ordinary paths to that:
+                 *
+                 *   1. upgrade: every chat was collapsed under the old header, so
+                 *      every existing install starts with `chat:<id>` keys set;
+                 *   2. a chat that HAD sub-agents, collapsed, then the subs
+                 *      finished or were disposed.
+                 *
+                 * In both, `sidebarRowsOf` still renders the row (marked
+                 * `chatCollapsedGroup`), so it is visible — but with no caret
+                 * there is NO on-screen control to clear the key. The chat is
+                 * stuck showing its ▸ forever. That is the strand-a-chat bug, and
+                 * I reproduced it before writing this.
+                 *
+                 * So the gate is "has children OR is currently collapsed", which
+                 * makes the caret exactly as visible as it needs to be: absent
+                 * only when it would do nothing, present whenever it is the way
+                 * out.
+                 */}
                 <Show
-                  when={
-                    !row.a.parent ||
-                    agents().some((x) => x.parent === row.a.id)
-                  }
+                  when={shouldShowCollapseCaret({
+                    isSub: !!row.a.parent,
+                    collapsed: row.chatCollapsedGroup === true,
+                    hasChildren: agents().some((x) => x.parent === row.a.id),
+                  })}
                   fallback={<span class="caret-spacer" />}
                 >
                   {(() => {

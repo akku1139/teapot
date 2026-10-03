@@ -230,6 +230,38 @@ export function workspaceOf(agents: readonly TreeAgent[], id: string, seen = new
 }
 
 /**
+ * Should this sidebar row show its collapse caret? (#106)
+ *
+ * A caret that collapses nothing is noise — the operator reported exactly that:
+ * "if there are no sub-agents, the expand button is not needed".
+ *
+ * The naive fix (gate a chat's caret on "has children") is WRONG, and #18
+ * documented why. Collapsing is what WRITES the `chat:<id>` key, so a chat can
+ * hold a STALE one by two ordinary routes:
+ *
+ *   1. upgrade — every chat was collapsed under the old chat header, so every
+ *      existing install starts with keys already set;
+ *   2. a chat that HAD sub-agents, was collapsed, then lost them to disposal.
+ *
+ * In both, `sidebarRowsOf` still renders the row marked `chatCollapsedGroup`, so
+ * it is visible — but with no caret there is NO on-screen control to clear the
+ * key, and the chat is stuck showing ▸ for good. That is the strand-a-chat bug.
+ *
+ * So: a caret is shown exactly when it would do something, or when it is the only
+ * way back out.
+ */
+export function shouldShowCollapseCaret(args: {
+  /** is this row a sub-agent rather than a top-level chat? */
+  isSub: boolean;
+  /** is the row's group currently collapsed? */
+  collapsed: boolean;
+  /** does this row have any children? */
+  hasChildren: boolean;
+}): boolean {
+  return args.isSub ? args.hasChildren : args.collapsed || args.hasChildren;
+}
+
+/**
  * Every DESCENDANT of `agentId`, at any depth (#98).
  *
  * #98: the sidebar's 🧩 badge counted only DIRECT children

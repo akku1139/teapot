@@ -933,6 +933,29 @@ console.log("deep render ok: feed rows present");
   const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
   const origFetch = globalThis.fetch;
   const THIRD = { ...AGENT, id: "gamma", workspace: AGENT.workspace }; // same dir!
+  // #106: GAMMA has a sub-agent, alpha and beta do not. The collapse round-trip
+  // below must hide something REAL, so it targets gamma — and that also makes the
+  // #106 distinction checkable in the same fixture: alpha (childless, expanded)
+  // must have no caret, gamma (has children) must have one.
+  const GAMMA_SUB = { ...AGENT, id: "gamma-sub", parent: "gamma", workspace: AGENT.workspace };
+  // #106: DELTA is a CHILDLESS chat that is COLLAPSED — the strand state, and the
+  // only situation where `chatCollapsedGroup` is the sole reason a caret renders.
+  // Two ordinary paths reach it: an upgrade (every chat was collapsed under the
+  // old header), and a chat that had sub-agents, was collapsed, then lost them.
+  // The fixture had no such case, so removing the `chatCollapsedGroup` clause
+  // from the gate still passed — it was guarding nothing.
+  // #113: DELTA's workspace. #106 shows the caret when a chat is COLLAPSED, so
+  // `delta-sub`'s row is suppressed while `delta` is collapsed — and `delta`'s row
+  // is not a child of anything, so it shows. That is correct: a collapsed chat
+  // keeps its row so it can be reopened, and its sub-agents hide.
+  const DELTA = { ...AGENT, id: "delta", workspace: "/tmp/ws" };
+  // delta starts WITH a sub-agent, so its caret is real and can be clicked. The
+  // sub-agent is then removed over the bus, which is the second ordinary path
+  // into the strand state: a chat that was collapsed while it had children, and
+  // has since lost them. (The bundle already loaded, so a stale localStorage key
+  // planted now would never be read — reaching the state through the UI is both
+  // possible and closer to what an operator does.)
+  const DELTA_SUB = { ...AGENT, id: "delta-sub", parent: "delta", workspace: "/tmp/other-project" };
   setGlobal("fetch", async (url, init) => {
     const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
     const u = raw.split("?")[0];
@@ -941,7 +964,14 @@ console.log("deep render ok: feed rows present");
         ok: true,
         status: 200,
         json: async () => ({
-          agents: [AGENT, { ...AGENT, id: "beta", workspace: "/tmp/other-project" }, THIRD],
+          agents: [
+            AGENT,
+            { ...AGENT, id: "beta", workspace: "/tmp/other-project" },
+            THIRD,
+            GAMMA_SUB,
+            DELTA,
+            DELTA_SUB,
+          ],
         }),
       };
     return origFetch(url, init);
@@ -950,8 +980,19 @@ console.log("deep render ok: feed rows present");
   // it has not seen before (an existing id is replaced in place), which is the
   // real server's path for "a session appeared". The /api/agents stub above is
   // the belt-and-braces for the polling refresh.
-  MockWS.instances.at(-1)?.onmessage?.({
+  const sock = MockWS.instances.at(-1);
+  sock?.onmessage?.({
     data: JSON.stringify({ kind: "agent-update", agentId: THIRD.id, snapshot: THIRD }),
+  });
+  // #106: push gamma's and delta's sub-agents, so both have something to collapse
+  sock?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: GAMMA_SUB.id, snapshot: GAMMA_SUB }),
+  });
+  sock?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: DELTA.id, snapshot: DELTA }),
+  });
+  sock?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: DELTA_SUB.id, snapshot: DELTA_SUB }),
   });
   await sleep(300);
 
@@ -978,15 +1019,35 @@ console.log("deep render ok: feed rows present");
   // is no chat header any more (it only restated each chat's own name, so a
   // six-chat directory rendered thirteen rows): the chat ROW carries the caret,
   // which is what makes the chat its own collapsible group.
+  // The row text is e.g. "▾gamma" — the caret glyph ABUTS the name, so a
+  // whitespace-anchored match never fires. Strip the glyphs and badges first,
+  // then require the id as a whole token.
+  //
+  // `\\bdelta\\b` alone is wrong: it also matches inside "delta-sub", so a
+  // hyphenated sub-agent id hijacked the parent's row lookup (#106).
+  const rowText = (el) =>
+    el.textContent.replace(/[▾▸🔔🧩✓]/g, "").replace(/\d+/g, "").trim();
   const rowFor = (id) =>
-    [...w.document.querySelectorAll(".agent-item")].find((el) =>
-      el.textContent.match(new RegExp(`\\b${id}\\b`)),
-    );
+    [...w.document.querySelectorAll(".agent-item")].find((el) => {
+      const parts = rowText(el).split(/\s+/);
+      return parts.includes(id) || rowText(el) === id;
+    });
   const caretIn = (el) => el?.querySelector(".caret");
-  for (const id of ["alpha", "gamma"]) {
-    if (!caretIn(rowFor(id)))
-      fail(`${id} is a top-level chat and must offer its own collapse caret (#18)`);
+  // #106: a caret that collapses nothing is noise. alpha and beta are CHILDLESS
+  // and not collapsed, so they must NOT offer one; gamma HAS a sub-agent, so its
+  // caret is real and must be there.
+  //
+  // The #18 requirement this narrows was that a chat must stay REACHABLE, and it
+  // still holds: `sidebarRowsOf` renders a collapsed chat's row marked
+  // `chatCollapsedGroup`, and the gate below keeps the caret for exactly that
+  // state — so a chat collapsed by a stale key, or by having had sub-agents, can
+  // always be reopened.
+  for (const id of ["alpha", "beta"]) {
+    if (caretIn(rowFor(id)))
+      fail(`${id} has no sub-agents, so it must not offer a collapse caret (#106)`);
   }
+  if (!caretIn(rowFor("gamma")))
+    fail("gamma HAS a sub-agent, so its collapse caret must be present (#106)");
 
   const chats2 = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
@@ -997,38 +1058,73 @@ console.log("deep render ok: feed rows present");
   // THE ASSERTION THE BUG WAS ABOUT: collapsing ONE chat must leave its
   // sibling in the SAME directory visible. Sharing one group (the old
   // behaviour) made this impossible — they collapsed together.
-  caretIn(rowFor("alpha"))?.click();
+  caretIn(rowFor("gamma"))?.click();
   await sleep(200);
   const afterOne = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
     .filter(Boolean);
-  // alpha stays as a COLLAPSED row rather than vanishing: with the chat header
+  // The collapsed chat stays as a ROW rather than vanishing: with the chat header
   // gone, that row is the only control that can reopen it, so hiding it would
   // strand the chat. What must be true is that it is marked collapsed and that
   // its own sub-agents are gone.
-  const alphaAfter = rowFor("alpha");
+  //
+  // #106: this collapses GAMMA, which has a sub-agent. Collapsing `alpha` used
+  // to be the check, but #106 removed the caret from a childless chat — so the
+  // test was clicking a control that correctly no longer exists.
+  const alphaAfter = rowFor("gamma");
   if (!alphaAfter)
     fail(`a collapsed chat must keep its row so it can be reopened (#18)`);
   if (!alphaAfter.className.includes("collapsed"))
     fail(`a collapsed chat must be marked collapsed, got ${JSON.stringify(alphaAfter.className)}`);
   if (caretIn(alphaAfter)?.textContent.trim() !== "▸")
     fail(`a collapsed chat's caret must point closed, got ${JSON.stringify(caretIn(alphaAfter)?.textContent)}`);
-  if (!afterOne.includes("gamma"))
-    fail(`gamma shares a DIRECTORY but is a separate chat — it must stay visible, got ${JSON.stringify(afterOne)}`);
+  if (!afterOne.includes("alpha"))
+    fail(`alpha shares a DIRECTORY but is a separate chat — it must stay visible, got ${JSON.stringify(afterOne)}`);
+  // #106: collapsing gamma must hide its own sub-agent
+  if (afterOne.includes("gamma-sub"))
+    fail(`a collapsed chat must hide its sub-agents (#106), got ${JSON.stringify(afterOne)}`);
   if (!afterOne.includes("beta"))
     fail(`beta is in another project entirely and must stay visible, got ${JSON.stringify(afterOne)}`);
 
   // …and the collapse survives, so the chat can be brought back. This is the
-  // strand-a-chat guard: with the header gone the row caret is the only
-  // control, so it has to work in BOTH directions.
-  caretIn(alphaAfter)?.click();
+  // strand-a-chat guard: with the header gone the row caret is the only control,
+  // so it has to work in BOTH directions.
+  //
+  // Both steps were defects in this check, found by mutating the gate away and
+  // watching it still pass:
+  //   - `caretIn(...)?.click()` silently no-ops when the caret is MISSING, which
+  //     is exactly the strand state. It must be a hard failure.
+  //   - it then asserted on `alpha`, which is never collapsed — so it was
+  //     checking nothing. It is GAMMA that gets collapsed here.
+  const reopenCaret = caretIn(alphaAfter);
+  if (!reopenCaret)
+    fail("a collapsed chat MUST keep its caret — it is the only control that can reopen it (#106)");
+  reopenCaret.click();
   await sleep(200);
   const reopened = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
     .filter(Boolean);
-  if (!reopened.includes("alpha")) fail(`reopening must restore alpha, got ${JSON.stringify(reopened)}`);
-  if (rowFor("alpha")?.className.includes("collapsed"))
-    fail(`reopened alpha must no longer read as collapsed (#18)`);
+  if (!reopened.includes("gamma")) fail(`reopening must restore gamma, got ${JSON.stringify(reopened)}`);
+  if (rowFor("gamma")?.className.includes("collapsed"))
+    fail(`reopened gamma must no longer read as collapsed (#18)`);
+  // and the sub-agent it was hiding must come back with it
+  if (caretIn(rowFor("gamma"))?.textContent.trim() !== "▾")
+    fail(`reopened gamma must point its caret open (#18/#106)`);
+
+  // #106 THE STRAND STATE IS NOT CHECKED HERE, AND THAT IS A DELIBERATE CHOICE.
+  //
+  // Reaching it needs a chat that is childless AND collapsed, which requires the
+  // sub-agent to be gone from `agents()` — not merely hidden. `treeRowsOf` hides a
+  // collapsed chat's children while they remain in the list, so removing the
+  // rendered row proves nothing: the has-children branch still fires and the
+  // caret renders either way. Driving it through the poller took ~11s of
+  // timing-dependent DOM work, and deleting the strand clause from the gate STILL
+  // passed. A check that cannot fail is worse than no check.
+  //
+  // The gate is a pure function of three booleans, so it is tested directly in
+  // test/sidebar-caret-gate.test.ts across all four states. That is deterministic
+  // and the mutation fails it. This bundle check covers only what IS reachable
+  // here: a childless expanded chat has no caret, and a chat with sub-agents does.
 
   // a chat with NO sub-agents is still collapsible — the header existed for
   // exactly this case, so dropping it must not drop the capability
