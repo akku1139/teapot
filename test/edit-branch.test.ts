@@ -96,9 +96,20 @@ test("the fork event keeps the chain linked to the pre-edit history (#38)", asyn
       chain.push(`${cur.branch}:${cur.type}`);
       cur = cur.parent ? byId.get(cur.parent) : undefined;
     }
+    // #69: the chain must reach the events that SURVIVED the edit — NOT the
+    // discarded prompt. This assertion used to require `br0:prompt`, which is
+    // precisely the resurrection: the prompt being edited is dropped, so a
+    // chain that reaches it means the discarded tail came back on restart.
+    //
+    // What must be reachable is everything BEFORE the cut point. Here that is the
+    // goal and the state event ahead of the prompt.
     assert.ok(
-      chain.some((c) => c === "br0:prompt"),
-      `the post-fork chain must reach the pre-edit branch; got ${chain.join(" < ")} (#38)`,
+      chain.some((c) => c === "br0:goal"),
+      `the chain must still reach the surviving pre-edit context; got ${chain.join(" < ")} (#69)`,
+    );
+    assert.ok(
+      !chain.includes("br0:prompt"),
+      `the chain must NOT reach the DISCARDED prompt — that is the resurrection (#69); got ${chain.join(" < ")}`,
     );
     await agent.dispose();
   });
@@ -135,9 +146,14 @@ test("a restart after an edit keeps the pre-edit context (#38)", async () => {
       texts.some((t) => t.includes("edited instead")),
       "the edited prompt must survive the restart (#38)",
     );
+    // #69: the DISCARDED prompt must NOT come back. This assertion used to
+    // require the restored text to include "first" — the prompt the edit
+    // replaced — which is the data-loss bug itself, pinned as expected
+    // behaviour. The surviving pre-edit context is the goal, which is already
+    // asserted above by the edited prompt surviving alongside it.
     assert.ok(
-      texts.some((t) => t.includes("first")),
-      "the pre-edit context must NOT vanish after a restart (#38)",
+      !texts.some((t) => t.includes("first")),
+      `the discarded prompt must not resurrect after a restart (#69); got ${JSON.stringify(texts)}`,
     );
     await second.dispose();
   });

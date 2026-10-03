@@ -861,10 +861,19 @@ export class Agent {
       droppedEvents: dropped.length,
       tailMode: tail,
     });
-    // Seed the new branch's parent link to the fork event just written, so its
-    // first event chains across instead of starting a disconnected parent:null
-    // history (#38).
-    this.log.seedBranch(newBranch, this.log.lastEventId(this.currentBranch));
+    // Seed the new branch's parent link so its first event chains across
+    // instead of starting a disconnected parent:null history (#38).
+    //
+    // #69: seed from the CUT POINT, not from this branch's tip. The fork event
+    // records where the edit was made (`fromEvent` = the last KEPT event), but
+    // `lastEventId(currentBranch)` is the newest event on the branch — which is
+    // one of the events this edit just DISCARDED. Seeding from the tip chained
+    // the new branch to the discarded tail, so lineageOf() walked straight back
+    // through it and a restart resurrected every dropped turn.
+    //
+    // The cut point is the right parent: it is the last event that survives.
+    const cutPoint = kept.at(-1)?.id ?? null;
+    this.log.seedBranch(newBranch, cutPoint);
     this.currentBranch = newBranch;
     this.messages = msgs;
     await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "user", text });
@@ -2697,12 +2706,24 @@ export class Agent {
   async fork(fromEventId?: string | null): Promise<{ session: string; branch: string }> {
     const newBranch = `br${this.branchCount()}${Date.now().toString(36).slice(-4)}`;
     const parentBranch = this.currentBranch;
-    await this.log.append("fork", this.currentSession, newBranch, {
+    // Where the fork leaves the source branch. Recorded on the event AND used
+    // to seed the new branch, so the two can never disagree.
+    const fromEvent = fromEventId ?? this.log.lastEventId(parentBranch);
+    // #69: the fork event must be appended under the SOURCE branch. Appending it
+    // under the new one gave it parent:null (nothing had been written to that
+    // branch yet), so lineageOf() walked an empty chain and a restart rebuilt
+    // the fork with NO history at all — the same class of bug editPromptAt had,
+    // fixed on one path only. editPromptAt already appends under the old
+    // branch for exactly this reason.
+    await this.log.append("fork", this.currentSession, parentBranch, {
       fromSession: this.currentSession,
       fromBranch: parentBranch,
-      fromEvent: fromEventId ?? this.log.lastEventId(parentBranch),
+      fromEvent,
       newBranch,
     });
+    // Seed the new branch's parent to the point it leaves the source, so its
+    // first event chains across instead of starting at parent:null.
+    this.log.seedBranch(newBranch, fromEvent);
     this.currentBranch = newBranch;
     this.messages = [...this.messages]; // independent history copy
     return { session: this.currentSession, branch: newBranch };
