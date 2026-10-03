@@ -663,6 +663,41 @@ export class Agent {
     await this.ensureReady();
   }
 
+  /**
+   * Answer tool_calls in a RESTORED history that have no tool_result (#54).
+   *
+   * The ordinary backstop (`answerUnansweredToolCalls`) works on an assistant
+   * turn inside a live loop. After a restart there is no loop: the call is in
+   * the log, the process that was running it is gone, and nothing else will ever
+   * write its result.
+   */
+  private async answerUnansweredRestoredCalls(): Promise<void> {
+    const seen = new Set<string>();
+    for (const ev of await readEvents(this.log.filePath)) {
+      const d = (ev.data ?? {}) as { callId?: unknown };
+      const id = d.callId ? String(d.callId) : null;
+      if (!id) continue;
+      if (ev.type === "tool_call") seen.add(id);
+      else if (ev.type === "tool_result") seen.delete(id);
+    }
+    for (const id of seen) {
+      await this.log.append("tool_result", this.currentSession, this.currentBranch, {
+        callId: id,
+        name: "unknown",
+        ok: false,
+        durationMs: 0,
+        result: "not completed — the agent restarted while this tool was running",
+        synthesized: true,
+      });
+    }
+    if (seen.size)
+      await this.log.append("system_note", this.currentSession, this.currentBranch, {
+        event: "unfinished-tools-closed",
+        count: seen.size,
+        detail: "a restart left these tool calls without a result; they are marked not completed (#54)",
+      });
+  }
+
   /** harness-managed files inside the session directory */
   private get goalFile(): string {
     return path.join(this.opts.sessionDir, "goal.md");
@@ -837,6 +872,26 @@ export class Agent {
       // seen and acted on that output, and the pruned form keeps the head plus
       // a marker, exactly as it did live.
       this.maybePrune();
+
+      // #54: answer tool_calls the log says are still open.
+      //
+      // The restore path rebuilds `msgs` straight from the log, so a call whose
+      // process died mid-command comes back as an assistant turn with
+      // `tool_calls` and NO matching `tool_result`. Nothing ever answers it —
+      // not `stop()` (there is no turn to stop) and not `dispose()` (the process
+      // is already gone). The row then renders as still running for good.
+      //
+      // Measured across every session log: 43,483 tool_calls, and 4 unanswered —
+      // every one a `bash`, each followed immediately by
+      // `session-restored` / `idle->stopped disposed`. The shape is a restart
+      // (or a crash) landing while a long command was in flight, which is
+      // precisely when a human is most likely to notice "it never finished".
+      //
+      // So close them ON RESTORE, before the restored history is used. This is
+      // the same backstop as the mid-turn paths, reached from the one place
+      // those could not: after the process is gone.
+      await this.answerUnansweredRestoredCalls();
+
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "session-restored",
         branch: last.branch,
