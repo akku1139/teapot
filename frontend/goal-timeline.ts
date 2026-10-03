@@ -163,7 +163,13 @@ export function goalLine(d: GoalEventData): GoalLine {
         };
       return {
         label: `🎯 goal ${s || "updated"}`,
-        detail: String(d.text ?? "").trim(),
+        // #101: a status event carries the STATUS but no text, so this produced
+        // an empty card — the exact shape #41 and #51 fixed in the branches
+        // above. Your read was right: it is a leftover from when this line was
+        // the centered banner, and it survived the move to left-aligned cards.
+        // Either give the card a body or drop it; an empty one reads as a verdict
+        // that was never delivered.
+        detail: String(d.text ?? "").trim() || `the goal is now ${s}`,
         tone: "",
         markdown: false,
         hasCard: true,
