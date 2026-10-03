@@ -14,7 +14,13 @@ import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/c
 import type { LlmConfig, ChatFn } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
-import { fetchModelList, contextLengthFor, isReasoningEffort, type ModelMeta } from "./model-meta.ts";
+import {
+  fetchModelList,
+  contextLengthFor,
+  isReasoningEffort,
+  type ModelMeta,
+  type ReasoningEffort,
+} from "./model-meta.ts";
 
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 const MAX_SPAWN_DEPTH = 3;
@@ -184,6 +190,15 @@ export interface TeapotConfig {
   contextWindowTokens?: number;
   /** how deep agents may nest sub-agent spawning (default 3) */
   maxSpawnDepth?: number;
+  /**
+   * Default reasoning effort for spawned sub-agents (#105), applied when the
+   * spawn call does not name one. Named after OpenAI Codex's
+   * `agent_default_subagent_reasoning_effort`, which exists for the same reason:
+   * a per-spawn argument is the most specific, but a global backstop stops every
+   * sub-agent from silently inheriting a parent's expensive effort. The parent's
+   * own effort remains the last resort.
+   */
+  defaultSubagentReasoningEffort?: ReasoningEffort;
   /** soft cap on LLM turns per round (0 disables); reaching it is not an error */
   maxTurnsPerRound?: number;
   /** round-fatal API errors: "stop" (default) or "retry" (backoff + fresh round) */
@@ -747,7 +762,14 @@ export class Master {
    */
   async spawnChildFor(
     parent: Agent,
-    o: { task: string; context: "none" | "fork"; name?: string; persona?: string },
+    o: {
+      task: string;
+      context: "none" | "fork";
+      name?: string;
+      persona?: string;
+      /** #105: per-spawn effort; highest-precedence step of the chain below */
+      reasoning_effort?: string;
+    },
   ): Promise<{ id: string }> {
     const parentId = parent.opts_id();
     const persona =
@@ -770,6 +792,26 @@ export class Master {
       forkTip = parent.log.lastEventId(parent.currentBranch);
       forkBranch = parent.currentBranch;
     }
+    // #105: reasoning effort for the child.
+    //
+    // Precedence mirrors OpenAI Codex (codex-rs/core/src/agent/child_config.rs:
+    // `requested.or_else(configured_default).or(parent)`):
+    //
+    //   1. the spawn argument        — explicit, per-call
+    //   2. `defaultSubagentReasoningEffort` from config — a global backstop
+    //   3. the parent's effort       — last resort
+    //
+    // Codex deliberately does NOT inherit by default, and its own test proves the
+    // intent: parent at XHigh, spawn requests Low, and the child runs at Low
+    // (codex-rs/core/tests/suite/subagent_notifications.rs). Sub-agents are
+    // usually narrow and cheap, so inheriting a parent's `high` across twenty
+    // trivial scouts multiplies cost and latency for no gain.
+    //
+    // Before this, `reasoningEffort` was simply omitted here while `provider`,
+    // `model` and `contextWindowTokens` two lines below WERE inherited — so a
+    // parent's effort vanished silently, with no way for a spawn to express one.
+    const childEffort =
+      o.reasoning_effort || this.config.defaultSubagentReasoningEffort || pcfg?.reasoningEffort;
     const child = await this.addAgent(
       {
         id,
@@ -777,6 +819,9 @@ export class Master {
         provider: pcfg?.provider,
         model: pcfg?.model,
         contextWindowTokens: pcfg?.contextWindowTokens,
+        // #105: persisted with the child, like every other inherited field, so a
+        // restart restores the same effort rather than reverting to the default
+        ...(childEffort ? { reasoningEffort: childEffort } : {}),
         parent: parentId,
         ...(persona && SUB_PERSONAS[persona]?.readOnly ? { readOnly: true } : {}),
       },

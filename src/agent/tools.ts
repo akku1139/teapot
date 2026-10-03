@@ -13,6 +13,7 @@ import {
   SKILL_FILE,
   type SkillDef,
 } from "./skills.ts";
+import { isReasoningEffort } from "../model-meta.ts";
 
 export interface ToolContext {
   cwd: string;
@@ -29,7 +30,13 @@ export interface ToolContext {
   subAgents?: {
     /** depth of THIS agent in the spawn tree (0 = top level) */
     depth: number;
-    spawn(o: { task: string; context: "none" | "fork"; name?: string }): Promise<{ id: string }>;
+    spawn(o: {
+      task: string;
+      context: "none" | "fork";
+      name?: string;
+      /** #105: per-spawn reasoning effort; falls back to the parent's */
+      reasoning_effort?: string;
+    }): Promise<{ id: string }>;
     list(): { id: string; status: string; goal: string }[];
     stop(ids?: string[]): Promise<{ stopped: string[] }>;
     message(id: string, text: string): Promise<void>;
@@ -1681,6 +1688,25 @@ export const TOOLS: ToolDef[] = [
         task: { type: "string", description: "self-contained instructions for the sub-agent" },
         context: { type: "string", enum: ["none", "fork"], description: "default none" },
         name: { type: "string", description: "optional short name fragment for the id" },
+        // #105: reasoning effort for THIS sub-agent, overriding both the
+        // configured subagent default and the parent's inherited value.
+        //
+        // Precedence mirrors OpenAI Codex (codex-rs/core/src/agent/child_config.rs):
+        // spawn argument -> configured default -> parent's effort. Codex
+        // deliberately does NOT inherit by default — its own test sets a parent at
+        // XHigh and asserts a child spawned with Low runs at Low, because
+        // sub-agents are usually narrow and cheap and inheriting a parent's high
+        // effort across many trivial scouts multiplies cost for no gain.
+        //
+        // Naming it here is what stops the silent loss: previously a spawn could
+        // not express an effort at all, so the parent's value simply vanished.
+        reasoning_effort: {
+          type: "string",
+          enum: ["minimal", "low", "medium", "high", "xhigh"],
+          description:
+            "reasoning effort for this sub-agent. Omit to use the configured default, " +
+            "then the parent's effort. Lower it for cheap, narrow scouts.",
+        },
       },
       required: ["task"],
     },
@@ -1691,10 +1717,21 @@ export const TOOLS: ToolDef[] = [
       if (!task) return { ok: false, result: "task required" };
       const context = args.context === "fork" ? "fork" : "none";
       try {
+        // #105: validate like the per-agent setter does, so a typo cannot reach
+        // the provider as an unrecognised effort value.
+        const effort = str(args.reasoning_effort).trim();
+        if (effort && !isReasoningEffort(effort))
+          return {
+            ok: false,
+            result:
+              `reasoning_effort must be minimal|low|medium|high|xhigh (got "${effort}") — ` +
+              "omit it to use the configured default, then the parent's effort",
+          };
         const r = await sa.spawn({
           task,
           context,
           name: str(args.name).trim() || undefined,
+          ...(effort ? { reasoning_effort: effort } : {}),
         });
         return { ok: true, result: `spawned sub-agent ${r.id} — park with wait_children() until it reports (never bash sleep), steer via message_agent, halt via stop_children` };
       } catch (e) {

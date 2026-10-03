@@ -48,7 +48,9 @@ function liveNodes(html: string): { total: number; kinds: string[] } {
   kinds.push(...[...d.querySelectorAll("iframe,object,embed")].map((e) => e.tagName.toLowerCase()));
   // any executable attribute, anywhere
   for (const el of d.querySelectorAll("*")) {
-    for (const a of [...el.attributes]) {
+    // NamedArrayIterator, so the copy is required — el.attributes is LIVE and
+    // would otherwise mutate under the loop
+    for (const a of Array.from(el.attributes)) {
       if (/^on/i.test(a.name)) kinds.push(`on${a.name}`);
       const v = a.value.trim().toLowerCase();
       if ((a.name === "href" || a.name === "src" || a.name === "formaction") &&
