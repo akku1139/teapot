@@ -128,14 +128,35 @@ const MAX_WS_CLIENTS = 64;
 
   // Optional bearer auth for LAN exposure — TEAPOT_API_TOKEN env wins, else
   // the config's `password` field. Static files stay public; only /api/* is
-  // gated. WebSocket handshakes can't send headers → they accept ?token=.
+  // gated.
   const apiToken = process.env.TEAPOT_API_TOKEN || master.config.password || "";
+
+  /**
+   * Routes where `?token=` is accepted (#79).
+   *
+   * A browser WebSocket handshake cannot send an Authorization header, so the
+   * query parameter is the ONLY way for the UI to authenticate those two
+   * sockets. It used to be accepted on EVERY `/api/*` route, which put the
+   * secret into proxy access logs, `Referer` headers and browser history for
+   * requests that never needed it — `DELETE /api/agents/:id`, `PUT
+   * /api/config`, `POST /api/update/restart`.
+   *
+   * So this narrows where the secret can LEAK rather than changing who is
+   * authenticated: every route still accepts the header, and only these two
+   * also accept the query form.
+   */
+  const tokenInQueryOk = (path: string): boolean =>
+    path === "/api/ws" || /^\/api\/agents\/[^/]+\/term$/.test(path);
+
   if (apiToken)
     app.use("/api/*", async (c, next) => {
       const h = c.req.header("authorization");
       const provided = h?.startsWith("Bearer ") ? h.slice(7) : undefined;
-      const q = c.req.query("token");
-      if ((provided && provided === apiToken) || (q && q === apiToken)) return next();
+      if (provided && provided === apiToken) return next();
+      if (tokenInQueryOk(c.req.path)) {
+        const q = c.req.query("token");
+        if (q && q === apiToken) return next();
+      }
       return c.json({ error: "unauthorized" }, 401);
     });
 
