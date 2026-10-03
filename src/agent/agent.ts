@@ -2262,14 +2262,27 @@ export class Agent {
         this.stats.toolCalls++;
         // #106: a tool call is real work, so it clears the idle-round counter.
         this.consecutiveIdleRounds = 0;
+        // #109: ONE clip, applied to BOTH the log and the live message.
+        //
+        // The log stored `result.slice(0, 8000)` while `messages` kept the full
+        // text, and a restore rebuilds `messages` from the log — so a model
+        // resuming work saw a different (and much smaller) tool result than it
+        // had just seen live. Measured: 8000 bytes logged, 436 after restart.
+        //
+        // The 8000-byte log clip is deliberate — it bounds the log file — so the
+        // fix is not to log everything. It is to clip the live message the SAME
+        // way, so the two views agree and a restart is not a silent downgrade.
+        // Restore is byte-exact everywhere else (`answerMeta` preserves its exact
+        // content); this was the one place the replay diverged.
+        const capped = result.result.slice(0, 8000);
         await this.log.append("tool_result", this.currentSession, this.currentBranch, {
           callId: call.id,
           name: call.function.name,
           ok: result.ok,
           durationMs: Date.now() - t0,
-          result: result.result.slice(0, 8000),
+          result: capped,
         });
-        this.messages.push({ role: "tool", tool_call_id: call.id, content: result.result });
+        this.messages.push({ role: "tool", tool_call_id: call.id, content: capped });
         this.consecutiveToolErrors = result.ok ? 0 : this.consecutiveToolErrors + 1;
         if (this.consecutiveToolErrors >= this.opts.maxConsecutiveToolErrors) {
           // structured, greppable AND visible: the note carries what failed so
