@@ -2328,8 +2328,39 @@ const recent: string[] = [];
             [], // no tools — verdict only
           );
           const text = String(res.message.content ?? "");
-          const approved = /^APPROVED\b/i.test(text.trim());
-          const feedback = text.replace(/^(APPROVED|CHANGES-REQUIRED)\s*[:—-]?\s*/i, "").trim();
+          // #90: a reply that is NOT a verdict must not be read as a rejection.
+          //
+          // `/^APPROVED\b/i.test("")` is false, so an auditor that returned
+          // nothing — truncated, refused, or leaked provider tool-call markup —
+          // was scored `changes-required` with no reason. Seven times in one
+          // session: the worker was told to "address these gaps" while being
+          // given none, and the fallback text was the contract it had already
+          // read. A reason-less rejection carries no information and only
+          // teaches everyone that the audit is noise.
+          //
+          // So an unusable reply is treated as NO VERDICT, exactly like an
+          // auditor that threw — the `catch` below already fails open with the
+          // reasoning "a flaky provider can't trap work in an unauditable
+          // loop". The same situation reached by another route gets the same
+          // answer.
+          const verdictLine = text.trim();
+          // provider fallbacks for a message with no usable text; treating one
+          // of these as a "reason" is worse than treating it as nothing
+          const PLACEHOLDER = /^\((tool call|no content|no output)\)$/i;
+          const usable = verdictLine.length > 0 && !PLACEHOLDER.test(verdictLine);
+          const decided = usable && /^(APPROVED|CHANGES-REQUIRED)\b/i.test(verdictLine);
+          if (!decided) {
+            await this.log.append("system_note", this.currentSession, this.currentBranch, {
+              event: "audit-failed",
+              detail: usable
+                ? `auditor reply had no verdict: ${verdictLine.slice(0, 200)}`
+                : "auditor returned no verdict",
+            });
+            await this.setGoalStatus("done");
+            return;
+          }
+          const approved = /^APPROVED\b/i.test(verdictLine);
+          const feedback = verdictLine.replace(/^(APPROVED|CHANGES-REQUIRED)\s*[:—-]?\s*/i, "").trim();
           // #51: storing the literal "(no detail)" made the UI draw a card
           // whose whole content was the absence of a reason, and that same
           // string landed in goal.md for the right panel. An empty string is

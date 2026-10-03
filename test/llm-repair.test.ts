@@ -93,9 +93,12 @@ test("a restarted session does not replay the completion audit into the conversa
     let turn = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       const sys = String(messages[0]?.content ?? "");
-      // the auditor is a separate, tools-less call — identify it by shape
-      if (!messages.some((m: ChatMessage) => m.tool_calls?.length) &&
-          String(messages.at(-1)?.content ?? "").includes("independent completion AUDITOR")) {
+      // The auditor is a separate, tools-less call. Identify it by its PROMPT,
+      // not by the absence of tool calls: by the time the audit runs, the
+      // worker's own set_goal/finish calls are in the history, so the old
+      // "no tool calls anywhere" test never matched and the auditor fell
+      // through to a prose reply (#90).
+      if (String(messages.at(-1)?.content ?? "").includes("independent completion AUDITOR")) {
         return reply("APPROVED: the work is genuinely complete");
       }
       turn++;
