@@ -104,3 +104,44 @@ test("the stop timeout timer is cleared (#79)", () => {
     "the stop-timeout timer must be cleared (#79)",
   );
 });
+
+/* ---------- the server must HONOUR the pong (#75 mutation W2) ---------- */
+
+/**
+ * The existing tests asserted the CLIENT sends a pong. Nothing asserted the
+ * SERVER acts on it — and mutation testing broke
+ * `if (m?.kind === "pong") awaitingPong = false;` with all 7 tests green.
+ *
+ * That is not a cosmetic gap: the pong is what clears the reaper's flag. With it
+ * broken, `awaitingPong` stays true, the next interval tick sees an unanswered
+ * ping and closes the socket with 1011 — so the reaper disconnects EVERY real
+ * client roughly every 30 seconds.
+ */
+test("the server clears its reaper flag when a pong arrives (#79)", () => {
+  const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
+  assert.match(
+    api,
+    /if \(m\?\.kind === "pong"\) awaitingPong = false;/,
+    "a pong must clear the flag — without this the reaper kills every client (#79)",
+  );
+});
+
+test("the reaper only fires when a ping went UNANSWERED (#79)", () => {
+  const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
+  const at = api.indexOf("awaitingPong) {");
+  assert.notEqual(at, -1, "the reaper branch must exist (#79)");
+  const branch = api.slice(at, at + 260);
+  assert.match(branch, /ws\.close\(1011/, "and it must close the socket (#79)");
+  assert.match(branch, /unresponsive/, "with a reason (#79)");
+  // and the flag must be SET by the ping we send, so the check is meaningful
+  assert.match(api, /awaitingPong = true;/, "sending a ping must arm the probe (#79)");
+});
+
+test("the client pongs AND the server reaps — the pair is what makes it safe (#79)", () => {
+  // neither half is sufficient alone: a client that never pongs gets reaped
+  // (correct), and a server that ignores the pong reaps everyone (the bug).
+  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
+  assert.match(app, /kind: "pong"/, "the client must answer the probe (#79)");
+  assert.match(api, /awaitingPong = false/, "and the server must accept the answer (#79)");
+});

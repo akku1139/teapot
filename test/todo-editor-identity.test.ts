@@ -90,3 +90,58 @@ test("the smoke test asserts node identity, not just the draft text (#30)", () =
   );
   assert.match(smoke, /activeElement/);
 });
+
+/* ---------- EACH gate is keyed, not just one of them (#75 T5c/T5d) ---------- */
+
+/**
+ * The two assertions above were satisfied by the OUTER gate alone. Removing
+ * `keyed` from the session panel gate (:3378) or the FilesPanel gate (:3391)
+ * individually left all seven tests green — while the whole point of #30 is that
+ * each of these re-renders its subtree on every snapshot.
+ *
+ * The outer gate cannot mask that in practice: Solid rebuilds the nested JSX
+ * when the outer one re-runs, and a nested unkeyed gate is exactly what then
+ * thrashes. So each gate is pinned by its own surroundings.
+ */
+test("the session panel gate is keyed (#30/#75)", () => {
+  const at = app.indexOf('🎛 session');
+  assert.notEqual(at, -1, "the session panel must exist (#30)");
+  // walk back to the OPENING tag of the gate that wraps it. lastIndexOf("<Show")
+  // lands there, but the tag may extend past `at` via a fallback prop, so slice
+  // a window and take the tag itself.
+  const before = app.lastIndexOf("<Show", at);
+  const gate = app.slice(before, app.indexOf(">", before) + 1);
+  assert.match(
+    gate,
+    /when=\{sel\(\)[!?]\.id\}[^>]*\bkeyed\b/,
+    `the session panel's OWN gate must be keyed (#30/#75); got: ${gate}`,
+  );
+});
+
+test("the FilesPanel gate is keyed (#30/#75)", () => {
+  const at = app.indexOf("<FilesPanel");
+  assert.notEqual(at, -1, "FilesPanel must exist (#30)");
+  const before = app.lastIndexOf("<Show", at);
+  const gate = app.slice(before, app.indexOf(">", before) + 1);
+  assert.match(
+    gate,
+    /when=\{sel\(\)[!?]\.id\}[^>]*\bkeyed\b/,
+    `the FilesPanel gate must be keyed (#30/#75); got: ${gate}`,
+  );
+});
+
+test("every keyed gate keys on the agent ID, never the object (#30/#75)", () => {
+  // a blanket check, so a NEW panel cannot reintroduce the #30 regression by
+  // using the object where the id belongs
+  const gates = [...app.matchAll(/<Show when=\{sel\(\)[!?]?\.([a-z]+)\}([^>]*)>/g)].map((m) => ({
+    prop: m[2],
+    keyed: /\bkeyed\b/.test(m[3] ?? ""),
+  }));
+  assert.ok(gates.length > 0, "precondition: there are sel()-gated Shows (#30)");
+  const objectGates = gates.filter((g) => g.prop === "" && g.keyed);
+  assert.deepEqual(
+    objectGates,
+    [],
+    `no gate may key on the agent OBJECT (#30); found ${JSON.stringify(objectGates)}`,
+  );
+});
