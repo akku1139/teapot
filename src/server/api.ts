@@ -133,6 +133,17 @@ export function buildApp(master: Master): Hono {
   // per-agent terminal spawn guard
   const termCounts = new Map<string, number>();
 
+  /**
+   * Agent ids reserved by an in-flight create (#71).
+   *
+   * The uniqueness loop is a check, not a reservation, and `addAgent` only
+   * publishes the id after awaiting — so concurrent creates all computed the
+   * same "unique" id and all persisted an entry. Reserving before the first
+   * await closes the window. Entries are released as soon as the agent is
+   * published or the create fails, so this never grows.
+   */
+  const idReservations = new Set<string>();
+
   // keyed by CHILD, not agent: one agent may have up to 10 concurrent
   // terminals, each with its own size and its own foreground program
   const termSizes = new TermSizeTracker();
@@ -199,6 +210,12 @@ export function buildApp(master: Master): Hono {
     upgradeWebSocket((c) => {
       const agentId = c.req.param("id") ?? "";
       let child: ChildProcess | null = null;
+      // #70: whether THIS connection was admitted to the per-agent terminal
+      // budget. Declared per connection (not inside onOpen) because onClose is a
+      // sibling handler: a connection refused at the cap never incremented the
+      // counter, so onClose must not decrement for it — that asymmetry walked
+      // the counter below the live-shell count and disabled the cap entirely.
+      let admitted = false;
       const cleanup = () => {
         if (!child) return;
         try {
@@ -225,7 +242,12 @@ export function buildApp(master: Master): Hono {
             return;
           }
           termCounts.set(agentId, cur + 1);
+          admitted = true;
           if (!agent) {
+            // the slot was just taken and this connection owns it, so release
+            // it here rather than leaving onClose to work it out
+            termCounts.set(agentId, cur);
+            admitted = false;
             send({ kind: "exit", error: `no such agent: ${agentId}` });
             return;
           }
@@ -274,6 +296,10 @@ export function buildApp(master: Master): Hono {
           // drop the pending resize timer so we can't write into a dead child
           if (dead) termSizes.forget(dead);
           cleanup();
+          // #70: only an ADMITTED connection owns a slot. A connection refused
+          // at the cap never incremented, so decrementing for it is exactly
+          // what drove the counter negative and disabled the limit.
+          if (!admitted) return;
           const n = (termCounts.get(agentId) ?? 1) - 1;
           if (n <= 0) termCounts.delete(agentId);
           else termCounts.set(agentId, n);
@@ -309,19 +335,39 @@ export function buildApp(master: Master): Hono {
     let n = 2;
     // ids must be unique among RUNNING agents AND persisted config entries —
     // a config-only agent (not yet loaded) would otherwise collide on addAgent
-    while (master.agents.has(id) || master.config.agents.some((a) => a.id === id))
+    //
+    // #71: the loop below is a CHECK, not a RESERVATION, and addAgent only
+    // publishes the id after several awaits (mkdirSync, agent.init()). Every
+    // concurrent request therefore passed the check, computed the same "unique"
+    // id, and all persisted an entry — measured: 3 concurrent creates → 3 config
+    // entries, and with 5 concurrent spawns each minting its own session dir,
+    // `resolveSessionDir` binds to the first entry on restart and the rest are
+    // orphaned.
+    //
+    // So the id is RESERVED synchronously, before the first await. The set is
+    // per-process and only guards the window; a real agent arriving through
+    // another path still collides correctly via addAgent's own check.
+    while (
+      (master.agents.has(id) || master.config.agents.some((a) => a.id === id) || idReservations.has(id))
+    )
       id = `${base.slice(0, 38)}-${n++}`;
+    idReservations.add(id);
+    const releaseId = () => idReservations.delete(id);
     try {
+      // the reservation covers the awaits inside addAgent; once the agent is
+      // published the reservation is redundant and must be released
       const agent = await master.addAgent(
         { id, workspace: ws, provider: body.provider, model: body.model },
         { persist: true, fresh: true }, // new incarnation → never reuse old history
       );
+      releaseId();
       // NOTE: creation no longer auto-starts an LLM loop — the agent sits in
       // "stopped" (a lazy, zero-cost session) until the operator sends the
       // first prompt or presses ▶ start. The web UI relies on this.
       if (body.start === true) agent.start("created via web");
       return c.json({ ok: true, agent: agent.snapshot() });
     } catch (err) {
+      releaseId(); // never leak a reservation on failure
       return c.json({ error: (err as Error).message }, 400);
     }
   });
