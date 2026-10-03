@@ -86,34 +86,45 @@ And a constraint worth stating: **any strip logic needs the exact separator, not
 content. teapot's gutter is `` `${n.padStart(w)}| ` `` where `w` **varies per read
 window**, so the width cannot be assumed.
 
-## Recommendation for teapot
+## RETRACTED — measured afterwards, and it was wrong
 
-**Do not add fuzzy matching.** It is the single change that would make this
-worse, and teapot's existing loud failure is better than Zed's silent one.
+**Everything below this line was a recommendation I have since disproved.** Kept
+because the survey itself is sound and the retraction is the useful part.
 
-Two options, and the second is now clearly better informed than my earlier guess:
+I then measured 2,084 real `edit_file` calls from the session logs:
 
-**(a) Strip `N| ` prefixes from `old_text` in `edit_file`, guarded.** Try the
-stripped form first; fall back to the raw form. Narrow, ~10 lines, and it leaves
-`read_file`'s output format alone.
+| tool | calls | failure rate |
+|---|---|---|
+| edit_file | 2084 | 8.1% |
+| apply_patch | 501 | **21.8%** |
+| write_file | 934 | 3.2% |
+| bash | 31761 | 3.9% |
 
-**(b) Make hash anchors the default `read_file` output.** The research is what
-convinces me this is the better answer: ten of ten harnesses are stuck asking the
-model to strip a prefix by hand, and **none** has a verified anchor. teapot
-already built one for this exact reason. Making it default removes the failure
-mode instead of mitigating it.
+Of **168** `edit_file` failures, only **2 (1.2%)** had an `N| ` gutter pasted
+into `old_text`. 117 were plain "old_text not found", 22 tool errors, 18 empty
+`old_text`, 10 non-unique.
 
-The cost of (b) is real and is the reason to hesitate: it changes read output for
-every model and every skill written against `N| `, and `test/read-gutter.test.ts`
-encodes the current default. But (a) keeps a trap alive on the default path, and
-the trap is the reported problem.
+So both proposals above — stripping the gutter in `edit_file`, and making
+hashline the default — would have addressed **1.2% of the failures** while
+changing read output for every model and every skill. Neither was done.
 
-I'd do **(b)**, with the gutter kept available as an explicit opt-in. Worth
-saying plainly: I proposed (a) before this research, and the research moved me.
+The real cause is visible in the same data: bash mutates files **5980 times**
+against 2084 `edit_file` calls, at a *lower* failure rate (3.9% vs 8.1%). The
+model is not failing to use `edit_file`; it is rationally preferring the tool
+that works more often. That is an ergonomics problem, not a matching problem,
+and the lever is first-try success rate — not tolerance of sloppier input.
 
-## Not decided here
+What survives from the survey:
 
-Whether a model that has already drifted to `bash + python` will return to
-`edit_file` at all. Claude Code's history suggests prompt tuning moves the rate
-but does not eliminate the drift, so a fix here may reduce #83 rather than close
-it — worth measuring on a real long session before calling it done.
+- **Do not add fuzzy matching.** Zed's cascade silently edits the wrong span.
+  That finding is independent of #83 and stands on its own.
+- **The design space is genuinely poor** — ten of ten harnesses push this burden
+  onto the model, and none ships a verified anchor. If teapot ever revisits this,
+  the hashline anchors already built for #7/#4 are the strongest asset it has; the
+  timing just is not now.
+- **`apply_patch` fails more than twice as often as `edit_file`** (21.8%). It is
+  the one finding here that points at a real, separate defect.
+
+Not answered: whether the model's `old_text` is usually *wrong* or *right but for
+whitespace*. Those need opposite fixes and the aggregate log cannot distinguish
+them — that needs opening a few examples.
