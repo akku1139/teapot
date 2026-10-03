@@ -75,7 +75,26 @@ test("a request for a session the agent does NOT own is refused (#58)", () => {
 /* ---------- wiring ---------- */
 
 test("select() can be told which session to open (#58)", () => {
-  srcHas("select() must accept an explicit session (#58)", /select\([^)]*forceSession|select\([^)]*session\?/);
+  // #75: this matched `select\([^)]*forceSession`, which is satisfied by the
+  // function DECLARATION — so it could not tell a parameterised select from a
+  // plain one, and would have passed on any file that merely mentioned the name.
+  //
+  // The signature is now matched exactly, and a CALL SITE that actually passes
+  // the session is required too — a parameter nobody supplies is not a feature.
+  const decl = app.match(/(?:async\s+)?function\s+select\s*\([^)]*\)/);
+  assert.ok(decl, "select() must be declared as a function (#58)");
+  assert.match(
+    decl[0],
+    /forceSession\??\s*:\s*string/,
+    `select() must take an optional session parameter (#58); got ${decl[0]}`,
+  );
+  // and something must actually pass it
+  const calls = app.match(/select\([^)]*\)/g) ?? [];
+  const passesSession = calls.filter((c) => /,\s*(false|true),?\s*[A-Za-z_$]/.test(c) || /,\s*[A-Za-z_$][\w$]*\s*[,)]/.test(c));
+  assert.ok(
+    passesSession.length > 0,
+    `at least one call site must forward a session (#58); calls seen: ${JSON.stringify(calls.slice(0, 6))}`,
+  );
 });
 
 test("the deep link passes the URL's session through (#58)", () => {
