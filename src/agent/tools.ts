@@ -519,7 +519,53 @@ function clipText(s: string, max: number): string {
   return s.length <= n ? s : `${s.slice(0, n)}\n… [truncated, ${s.length} chars total]`;
 }
 
+/**
+ * Patterns that backtrack catastrophically (#93).
+ *
+ * A nested quantifier — a quantified group whose body is itself quantified, or
+ * alternation that can match the same text more than one way — makes the engine
+ * explore exponentially many splits. Measured on this codebase: `(a+)+b` against
+ * 28 characters of "a" took 3.8s, roughly DOUBLING per character added, and a
+ * 40-character line would run for days.
+ *
+ * There is no timeout on this path: `ctx.defaultTimeoutMs` guards `bash` only,
+ * so the scan is a synchronous `re.test(line)` with nothing able to interrupt it.
+ * The agent process blocks and takes the UI and every other agent with it.
+ *
+ * A model is poorly placed to reason about backtracking cost and nothing tells it
+ * not to try, so the pattern is checked rather than trusted. This rejects the
+ * SHAPE rather than trying to bound the runtime, because a synchronous regex
+ * cannot be abandoned once `test` starts — the only reliable protection is to
+ * never compile one.
+ */
+const BACKTRACKING_PATTERNS: { re: RegExp; why: string }[] = [
+  // (a+)+  (a*)*  (a+)*  (a?)* … — a quantifier wrapping another quantifier
+  { re: /\([^()]*[+*}][^()]*\)\s*[+*{]/, why: "a quantifier nested inside another quantifier" },
+  // (a|a)+ — alternation whose branches can match the SAME text. Distinct
+  // branches like (foo|bar)+ are fine and common, so this only fires when two
+  // branches are literally identical, which is the shape that explodes.
+  { re: /\(([^()|]*)\|\1\)\s*[+*{]/, why: "an alternation with identical branches inside a quantifier" },
+  // (.*)*  (.+)+ — a wildcard quantified inside a quantifier
+  { re: /\(\s*[.][*+]\s*\)\s*[+*{]/, why: "a wildcard quantified inside a quantifier" },
+];
+
+/** Above this, the O(lines x pattern) scan itself becomes the cost. */
+const MAX_PATTERN_LENGTH = 1000;
+
+/**
+ * Compile a model-supplied regex, refusing ones that can backtrack
+ * catastrophically.
+ *
+ * Returns an error STRING rather than a RegExp so every existing call site —
+ * which already handles that shape for an invalid pattern — needs no change.
+ */
 function compileRegex(pattern: string, ignoreCase: boolean): RegExp | string {
+  if (pattern.length > MAX_PATTERN_LENGTH)
+    return `pattern too long (${pattern.length} chars, max ${MAX_PATTERN_LENGTH}) — narrow it, or grep for a literal substring instead`;
+  for (const { re, why } of BACKTRACKING_PATTERNS) {
+    if (re.test(pattern))
+      return `pattern rejected: ${why} — that shape backtracks exponentially and would freeze the agent (e.g. "(a+)+b" against 28 characters takes 3.8s). Use a literal search, or simplify the pattern.`;
+  }
   try {
     return new RegExp(pattern, ignoreCase ? "i" : "");
   } catch (e) {
