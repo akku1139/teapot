@@ -186,6 +186,27 @@ Most session state is not injected into prompts — fetch it with tools instead:
   turn right after the call (a short "reported." is fine).
 - Be frugal: prefer small precise edits, avoid runaway loops.`;
 
+/**
+ * Placeholder text a provider adapter substitutes for a message with no usable
+ * content (`llm.ts`).
+ *
+ * #94: these are DISPLAY ARTIFACTS. They were reaching the parent inside a
+ * sub-agent's final report, where they occupied two of six entries while saying
+ * nothing — the parent was told "[assistant] (tool call)" as if it were content.
+ */
+export const PLACEHOLDER_TEXT = /^\((tool call|no content|no output)\)$/i;
+
+/**
+ * Harness acknowledgements — meta-lines about the run itself rather than the
+ * work ("decision recorded to decisions.md", "progress recorded", …).
+ *
+ * #94: these are addressed to the OPERATOR, not to whoever reads the next
+ * agent's report, and they consumed slots in a six-deep window that the parent
+ * reads as its only account of the work.
+ */
+export const HARNESS_ACK =
+  /^(decision recorded|progress recorded|goal saved|feedback saved|memory saved|todo saved|no skills yet|skills created|read_memory|memory|\(tool call\)|\(no content\)|\(no output\)|true|false|null|none)\b/i;
+
 export class Agent {
   readonly log: EventLog;
   readonly toolCtx: ToolContext;
@@ -2279,13 +2300,31 @@ export class Agent {
    * would — while emitting no `final: true`.
    */
   private async captureRecentTurns(): Promise<string[]> {
-const recent: string[] = [];
+    const recent: string[] = [];
     for (let i = this.messages.length - 1; i >= 0 && recent.length < 6; i--) {
       const m = this.messages[i]!;
       if (m.role === "user") continue; // prompts/noise — keep agent output only
-      if (m.role === "assistant" && !(m.content ?? "").trim()) continue;
+      const text = String(m.content ?? "").trim();
+      // #94: a message whose text is a PLACEHOLDER carries no information.
+      //
+      // `llm.ts` rewrites any assistant/tool message that has no usable text to
+      // the literal "(tool call)" or "(no content)". Those are display
+      // artifacts, and the parent's report was landing them verbatim — in the
+      // real log, TWO of the six entries in an accepted report were literally
+      // "[assistant] (tool call)", so half of what the parent was told about the
+      // work was a placeholder.
+      //
+      // A tool CALL is real work, but it is represented in the tool RESULT that
+      // follows, so dropping the placeholder loses nothing.
+      if (!text || PLACEHOLDER_TEXT.test(text)) continue;
+      // #94: a window this small must not be spent on BOOKKEEPING. The real log
+      // showed a 6-slot window where two 23-char "(tool call)" placeholders and a
+      // 40-char "decision recorded to decisions.md" took half the slots, pushing
+      // out the reasoning a parent would need to judge the work. Harness
+      // acknowledgements carry no findings, so they cost a slot for nothing.
+      if (HARNESS_ACK.test(text)) continue;
       const who = m.role === "tool" ? "tool" : m.role;
-      let line = `[${who}] ${(m.content ?? "").trim()}`;
+      let line = `[${who}] ${text}`;
       if (m.role === "tool") {
         // tool results are prefixed "(failed)" by the logger when they fail —
         // the raw content is what matters here, and cap hard: these can be huge
