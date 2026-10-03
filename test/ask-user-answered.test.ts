@@ -27,37 +27,20 @@ function srcHas(label: string, re: RegExp): void {
   if (!re.test(app)) assert.fail(`${label}\n  expected source to match: ${re}`);
 }
 
-/* ---------- the rule, as a pure function ---------- */
-
-type Ev = { id: string; seq: number; type: string; data: Record<string, unknown> };
+/* ---------- the rule — the SHIPPED one (#75) ---------- */
 
 /**
- * mirror of the shipped derivation, plus the optimistic override.
+ * This file used to carry a verbatim copy of the derivation, exported as
+ * `answeredQuestionIds`, and every test called THAT. Deleting either half of the
+ * real logic — the optimistic mark, or the log-wins rule — left all nine tests
+ * passing, because the copy still had both.
  *
- * `locallyAnswered` is the set of callIds the operator has answered in THIS tab
- * but whose prompt event has not arrived yet.
+ * The rule now lives in `frontend/question-answered.ts` and App.tsx calls it, so
+ * these tests drive the code that runs.
  */
-export function answeredQuestionIds(
-  events: Ev[],
-  locallyAnswered: Set<string> = new Set(),
-): Set<string> {
-  const set = new Set<string>();
-  let lastQuestionAt = -1;
-  let lastUserPromptAt = -1;
-  for (const e of events) {
-    if (e.type === "question") lastQuestionAt = e.seq;
-    else if (e.type === "prompt" && e.data?.source === "user") lastUserPromptAt = e.seq;
-    else if (e.type === "system_note" && e.data?.event === "prompt-delivered")
-      lastUserPromptAt = Math.max(lastUserPromptAt, e.seq);
-  }
-  if (lastQuestionAt >= 0 && lastUserPromptAt > lastQuestionAt) {
-    for (const e of events)
-      if (e.type === "question" && e.seq <= lastUserPromptAt) set.add(String(e.data?.callId ?? ""));
-  }
-  // the click has not reached the log yet — treat it as answered NOW
-  for (const id of locallyAnswered) set.add(id);
-  return set;
-}
+import { answeredQuestionIdsOf as answeredQuestionIds } from "../frontend/question-answered.ts";
+
+type Ev = { id: string; seq: number; type: string; data: Record<string, unknown> };
 
 const ev = (id: string, seq: number, type: string, data: Record<string, unknown> = {}): Ev => ({
   id, seq, type, data,
@@ -155,5 +138,25 @@ test("the row must read answered REACTIVELY, not from a snapshot (#55)", () => {
     block.slice(0, 1200),
     /answered\(\)|props\.answeredIds\?\.\(\)/,
     "the row must read answered through the accessor so it is reactive (#55)",
+  );
+});
+
+/* ---------- the component must still CALL the extracted rule (#75) ---------- */
+
+test("App.tsx calls the shared rule rather than re-deriving it (#75)", () => {
+  // Without this the extraction could silently stop being used, and the tests
+  // would keep passing against a module nothing imports — a replica one
+  // indirection further from the code, which is the failure mode this file was
+  // carrying all along.
+  srcHas("the shared rule must be imported (#75)", /from "\.\/question-answered"/);
+  assert.match(
+    app,
+    /answeredQuestionIdsOf\(events\(\)/,
+    "answeredQuestionIds must delegate to the shared rule (#75)",
+  );
+  assert.doesNotMatch(
+    app,
+    /let lastQuestionAt = -1/,
+    "the inline derivation must be gone, or it can drift again (#75)",
   );
 });

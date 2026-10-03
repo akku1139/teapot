@@ -12,6 +12,7 @@ import {
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { groupedWith, type RowLike } from "./row-grouping";
+import { answeredQuestionIdsOf, type QuestionEvent } from "./question-answered";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 import {
   treeRowsOf,
@@ -786,30 +787,12 @@ export default function App() {
   };
   /** a session switch must not carry one session's answers into another */
   const clearLocallyAnswered = () => setLocallyAnswered(new Set<string>());
-  const answeredQuestionIds = createMemo(() => {
-    const set = new Set<string>();
-    let lastQuestionAt = -1;
-    let lastUserPromptAt = -1;
-    for (const e of events()) {
-      if (e.type === "question") lastQuestionAt = e.seq;
-      else if (e.type === "prompt" && e.data?.source === "user") lastUserPromptAt = e.seq;
-      else if (
-        e.type === "system_note" &&
-        (e.data as any)?.event === "prompt-delivered"
-      )
-        lastUserPromptAt = Math.max(lastUserPromptAt, e.seq);
-    }
-    // any user reply after the latest open question closes ALL earlier
-    // questions of this session (the loop resumes on the first reply)
-    if (lastQuestionAt >= 0 && lastUserPromptAt > lastQuestionAt) {
-      for (const e of events())
-        if (e.type === "question" && e.seq <= lastUserPromptAt)
-          set.add(String((e.data as any)?.callId ?? ""));
-    }
-    // …plus anything answered in this tab whose reply has not been logged yet
-    for (const id of locallyAnswered()) set.add(id);
-    return set;
-  });
+  // extracted to ./question-answered so the rule can be tested against the code
+  // that runs — it used to live inline here, and the tests re-implemented it,
+  // which is why deleting either half left them all green (#75)
+  const answeredQuestionIds = createMemo(() =>
+    answeredQuestionIdsOf(events() as unknown as QuestionEvent[], locallyAnswered()),
+  );
   const chatEvents = createMemo(() => {
     const { consumed } = pairInfo();
     // Reasoning-only assistant turns (content empty, only 💭 reasoning) used
