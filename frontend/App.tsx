@@ -13,6 +13,7 @@ import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { groupedWith, type RowLike } from "./row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./question-answered";
+import { reconcilePending, type PendingEcho } from "./pending-echo";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 import {
   treeRowsOf,
@@ -204,6 +205,8 @@ const wsTokenQuery = () => {
 };
 
 /* ---------- app ---------- */
+
+
 export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [selected, setSelected] = createSignal<string | null>(null);
@@ -548,37 +551,19 @@ export default function App() {
   createEffect(() => {
     const queued = sel()?.pendingPrompts ?? 0;
     const liveIds = sel()?.pendingPromptIds;
-    setPendingMsgs((list) => {
-      if (queued >= list.length) return list;
-
-      // #78: match on IDENTITY. The comment here used to claim this and the code
-      // did `filter(!!promptId).slice(0, queued)` — which keeps the FIRST N by
-      // position, so every time the server's count dipped below the real queue
-      // (a mid-queue ✕ cancel, or the brief gap before drainPendingPrompts()
-      // settles) the NEWEST still-queued echoes were dropped. Because
-      // stillPendingIds is derived from this list, their undelivered log rows
-      // then showed up as settled "sent" rows — re-introducing the #19
-      // cancellation bug the block below exists to prevent.
-      //
-      // The server now publishes pendingPromptIds, so this can actually match:
-      // keep exactly the echoes the live queue can account for.
-      if (liveIds?.length) {
-        const live = new Set(liveIds);
-        const matched = list.filter((p) => p.promptId && live.has(p.promptId));
-        if (matched.length) {
-          // echoes with no id (predating tracking, or pre-reload) have no
-          // identity to match — keep them only if the ids alone cannot account
-          // for the queue, so they are never silently dropped
-          const unidentifiable = list.filter((p) => !p.promptId);
-          return unidentifiable.length ? [...matched, ...unidentifiable].slice(0, queued) : matched;
-        }
-      }
-      // No ids to match on at all (older server, or every echo predates promptId
-      // tracking): fall back to keeping the HEAD, which is correct for the plain
-      // front-to-back drain case.
-      return list.slice(0, queued);
-    });
+    const key = pendingKey();
+    // Reconcile THIS SESSION's echoes, read from the map rather than the signal.
+    // Reading the signal here was wrong once the list became per-session: the
+    // effect also re-runs on a session switch, and at that moment the signal
+    // still holds the OUTGOING session's echoes while `key` is already the
+    // incoming one — so it reconciled the old list against the new queue and
+    // wrote the result under the new key, dropping the echo (#87). The smoke
+    // test caught it: "undelivered log row leaked through as settled".
+    const mine = pendingFor(key);
+    const next = reconcilePending(mine, queued, liveIds);
+    if (next !== mine) writePending(key, next);
   });
+
   createEffect(() => {
     const id = selected();
     if (!id) return;
@@ -623,9 +608,28 @@ export default function App() {
     return set;
   });
   // optimistic echoes of prompts we just sent but haven't seen in the log yet
-  const [pendingMsgs, setPendingMsgs] = createSignal<
-    { id: string; text: string; at: number; promptId?: string; sent?: boolean; images?: string[] }[]
-  >([]);
+  /**
+   * Optimistic echoes, PER SESSION (#87).
+   *
+   * This was one global list cleared on every switch, while the other per-session
+   * stores here (liveByAgent, timelineCache, drafts) all survive one. So leaving
+   * a session with a queued message and coming back dropped its echoes: the top
+   * bar still counted it (that comes from the server's pendingPromptIds) while
+   * the timeline showed the log row as SETTLED — the two disagreed, and the
+   * timeline read as "already sent".
+   *
+   * Keyed by the same handle the timeline uses, so a switch saves and restores
+   * rather than discards.
+   */
+  const pendingBySession = new Map<string, PendingEcho[]>();
+  const [pendingMsgs, setPendingMsgs] = createSignal<PendingEcho[]>([]);
+  const pendingKey = (): string => timelineId() || selected() || "?";
+  const pendingFor = (key: string): PendingEcho[] => pendingBySession.get(key) ?? [];
+  const writePending = (key: string, next: PendingEcho[]): void => {
+    if (next.length === 0) pendingBySession.delete(key);
+    else pendingBySession.set(key, next);
+    if (pendingKey() === key) setPendingMsgs(next);
+  };
 
   /* ---------- notification center (in-app only; push later) ---------- */
   type Notif = {
@@ -1560,7 +1564,12 @@ export default function App() {
     setBranchFilter(null);
     setOlderDone(false);
     setLoadingOlder(false);
-    setPendingMsgs([]);
+    // #87: this used to CLEAR the list, so echoes were lost on every switch and
+    // a still-queued message came back looking settled. Save the outgoing
+    // session's echoes and restore the incoming session's, like the draft and
+    // the timeline cache above.
+    writePending(prevTid || prevId || "?", pendingMsgs());
+    setPendingMsgs(pendingFor(tid || id));
     localStorage.setItem("teapot.session", id);
     navigate(tid, push); // URL carries the internal session id, not the agent id
     // HYDRATE from cache first: rows paint immediately (no blank flash), and
@@ -1708,9 +1717,9 @@ export default function App() {
           // delivery = the message now belongs to the log row. REMOVE the echo
           // from the list (the display filter alone kept it forever, and any
           // filter regression resurfaced it as a duplicate row).
-          setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
+          writePending(pendingKey(), pendingMsgs().filter((p) => p.promptId !== ed.promptId));
         } else if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
-          setPendingMsgs((list) => list.filter((p) => p.promptId !== ed.promptId));
+          writePending(pendingKey(), pendingMsgs().filter((p) => p.promptId !== ed.promptId));
         }
         if (FEED_IRRELEVANT.has(et) && !NOTE_FEED_TYPES.has(et)) return;
         // notify the operator about notable moments from ANY session — that's
@@ -2330,8 +2339,8 @@ export default function App() {
       });
       // optimistic echo — replaced by the logged event once the feed catches up.
       // promptId links it to the later prompt-delivered note (real LLM payload).
-      setPendingMsgs((l) => [
-        ...l,
+      writePending(pendingKey(), [
+        ...pendingMsgs(),
         {
           id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
           text,
@@ -2940,7 +2949,7 @@ export default function App() {
                                 // the user has typed since sending it
                                 const back = String(r.text ?? "");
                                 saveDraft(draft() ? `${back}\n\n${draft()}` : back);
-                                setPendingMsgs((list) => list.filter((p) => p.promptId !== pid));
+                                writePending(pendingKey(), pendingMsgs().filter((p) => p.promptId !== pid));
                                 flashHint("message withdrawn — draft restored");
                               })
                               .catch(() => flashHint("withdraw failed — it may have already been sent"));

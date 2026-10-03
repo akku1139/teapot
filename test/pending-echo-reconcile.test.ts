@@ -24,28 +24,19 @@ import { readFileSync } from "node:fs";
 
 /* ---------- the rule, as implemented ---------- */
 
-interface Echo {
-  id: number;
-  text: string;
-  promptId?: string;
-}
+// the shipped shape, so the test cannot drift from it
+type Echo = PendingEcho;
 
-/** mirrors the component's reconciliation exactly */
-function reconcile(list: Echo[], queued: number, liveIds?: string[]): Echo[] {
-  if (queued >= list.length) return list;
-  if (liveIds?.length) {
-    const live = new Set(liveIds);
-    const matched = list.filter((p) => p.promptId && live.has(p.promptId));
-    if (matched.length) {
-      const unidentifiable = list.filter((p) => !p.promptId);
-      return unidentifiable.length ? [...matched, ...unidentifiable].slice(0, queued) : matched;
-    }
-  }
-  return list.slice(0, queued);
-}
+/**
+ * #87: this used to MIRROR the component's reconciliation. It is now the shipped
+ * function, so a change to the rule cannot leave this test passing against a
+ * stale copy — the same failure mode as `row-grouping` and
+ * `question-answered`.
+ */
+import { reconcilePending, type PendingEcho } from "../frontend/pending-echo.ts";
 
-const P = (id: number, text: string, promptId?: string): Echo => ({ id, text, promptId });
-const ids = (list: Echo[]) => list.map((p) => p.id).sort((a, b) => a - b);
+const P = (id: number | string, text: string, promptId?: string): Echo => ({ id: String(id), text, promptId, at: 0 });
+const ids = (list: Echo[]) => list.map((p) => Number(p.id)).sort((a, b) => a - b);
 
 /* ---------- the reported failure ---------- */
 
@@ -53,7 +44,7 @@ test("a mid-queue cancel does not drop the newest echoes (#78)", () => {
   // [A,B,C,D] with B cancelled -> the live queue is p1,p3,p4
   const list = [P(1, "first", "p1"), P(2, "second", "p2"), P(3, "third", "p3"), P(4, "fourth", "p4")];
   assert.deepEqual(
-    ids(reconcile(list, 3, ["p1", "p3", "p4"])),
+    ids(reconcilePending(list, 3, ["p1", "p3", "p4"])),
     [1, 3, 4],
     "the surviving echoes are the ones the live queue can account for (#78)",
   );
@@ -61,12 +52,12 @@ test("a mid-queue cancel does not drop the newest echoes (#78)", () => {
 
 test("a front cancel keeps the tail (#78)", () => {
   const list = [P(1, "a", "p1"), P(2, "b", "p2"), P(3, "c", "p3"), P(4, "d", "p4")];
-  assert.deepEqual(ids(reconcile(list, 2, ["p2", "p3", "p4"])), [2, 3, 4], "#78");
+  assert.deepEqual(ids(reconcilePending(list, 2, ["p2", "p3", "p4"])), [2, 3, 4], "#78");
 });
 
 test("a plain front-to-back drain keeps the tail (#78)", () => {
   const list = [P(1, "a", "p1"), P(2, "b", "p2"), P(3, "c", "p3"), P(4, "d", "p4")];
-  assert.deepEqual(ids(reconcile(list, 3, ["p2", "p3", "p4"])), [2, 3, 4], "#78");
+  assert.deepEqual(ids(reconcilePending(list, 3, ["p2", "p3", "p4"])), [2, 3, 4], "#78");
 });
 
 test("a count dip does not drop anything (#78)", () => {
@@ -74,7 +65,7 @@ test("a count dip does not drop anything (#78)", () => {
   // show everything is still queued. Positional slicing dropped the newest here.
   const list = [P(1, "a", "p1"), P(2, "b", "p2"), P(3, "c", "p3"), P(4, "d", "p4")];
   assert.deepEqual(
-    ids(reconcile(list, 2, ["p1", "p2", "p3", "p4"])),
+    ids(reconcilePending(list, 2, ["p1", "p2", "p3", "p4"])),
     [1, 2, 3, 4],
     "a stale count must not delete echoes the ids say are queued (#78)",
   );
@@ -82,7 +73,7 @@ test("a count dip does not drop anything (#78)", () => {
 
 test("nothing is dropped when the count cannot be trusted (#78)", () => {
   const list = [P(1, "a", "p1"), P(2, "b", "p2")];
-  assert.deepEqual(reconcile(list, 5, ["p1", "p2"]), list, "a count >= list length is a no-op (#78)");
+  assert.deepEqual(reconcilePending(list, 5, ["p1", "p2"]), list, "a count >= list length is a no-op (#78)");
 });
 
 /* ---------- the fallbacks must not regress the plain case ---------- */
@@ -92,23 +83,23 @@ test("with no ids available the head is kept (#78)", () => {
   // heuristic is CORRECT for a plain front-to-back drain, which is all it is
   // used for now
   const list = [P(1, "a", "p1"), P(2, "b", "p2"), P(3, "c", "p3")];
-  assert.deepEqual(ids(reconcile(list, 2, undefined)), [1, 2], "#78");
+  assert.deepEqual(ids(reconcilePending(list, 2, undefined)), [1, 2], "#78");
 });
 
 test("an echo with no promptId is not silently deleted (#78)", () => {
   // predates tracking / survived a reload — it has no identity, so it is kept
   // rather than filtered away by a `!!promptId` predicate
   const list = [P(0, "old", undefined), P(1, "a", "p1"), P(2, "b", "p2"), P(3, "c", "p3")];
-  const out = reconcile(list, 2, ["p3", "p4"]);
+  const out = reconcilePending(list, 2, ["p3", "p4"]);
   assert.ok(
-    out.some((p) => p.id === 0),
+    out.some((p) => p.promptId === undefined),
     `an unidentifiable echo must not be dropped (#78): ${JSON.stringify(ids(out))}`,
   );
 });
 
 test("no live ids at all leaves the list alone (#78)", () => {
   const list = [P(1, "a", "p1"), P(2, "b", "p2"), P(3, "c", "p3")];
-  assert.deepEqual(ids(reconcile(list, 2, [])), [1, 2], "an empty id list means 'no information' (#78)");
+  assert.deepEqual(ids(reconcilePending(list, 2, [])), [1, 2], "an empty id list means 'no information' (#78)");
 });
 
 /* ---------- the server must actually publish the ids ---------- */
