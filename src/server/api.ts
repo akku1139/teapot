@@ -1068,6 +1068,15 @@ const MAX_WS_CLIENTS = 64;
         body.text,
         body.tail === "summarize" ? "summarize" : "discard",
       );
+      // #96: the UI button is labelled "fork & RESEND", but nothing resent.
+      // `editPromptAt` rewrites history and returns, leaving the agent idle —
+      // so the edited prompt sat in the timeline looking sent while the model
+      // had never seen it, and the operator had to notice and press start.
+      //
+      // start() here rather than in the client: the route already knows the edit
+      // succeeded, and a client that failed to call it would leave the agent
+      // silently idle with no error anywhere.
+      a.start("edited prompt resent");
       return c.json({ ok: true, ...r });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 409);
