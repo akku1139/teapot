@@ -131,10 +131,12 @@ test("the goal-done tick carries a class so the row can spare it (#60)", () => {
 /* ---------- the badges the report names must still exist ---------- */
 
 test("the three badges from the report are all still rendered (#60)", () => {
-  // locate the row by its class, then take a generous window: the badges are
-  // several hundred lines apart once the caret gained an inline render
+  // Locate the row by its class, then take a generous window: the badges are
+  // ~110 lines apart. This was 6000 chars, which #81's longer comment pushed
+  // past — so the window is now generous enough that adding a comment cannot
+  // silently unpin a badge.
   const start = app.indexOf('class={"agent-item"');
-  const row = app.slice(start, start + 6000);
+  const row = app.slice(start, start + 12_000);
   assert.match(row, /notifbadge/, "the 🔔 unread badge must remain (#60)");
   assert.match(row, /subcount/, "the 🧩 sub-agent count must remain (#60)");
   assert.match(row, /goaldone/, "the ✓ goal tick must remain (#60)");

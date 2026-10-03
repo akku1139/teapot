@@ -88,7 +88,12 @@ test("the badge uses the recursive helper (#98)", () => {
   const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
   const at = app.indexOf('class={"subcount"');
   assert.notEqual(at, -1, "the badge must exist (#98)");
-  const block = app.slice(app.lastIndexOf("<Show when={collapsedSubs", at), at);
+  // anchor on the gate's position, not its exact text: #81 widened this gate to
+  // a multi-line expression, so searching for the old one-line form found nothing
+  // and the block came back empty — the test then failed on correct code
+  const show = app.lastIndexOf("<Show", at);
+  assert.notEqual(show, -1, "the badge gate must exist (#98)");
+  const block = app.slice(show, at);
   assert.match(block, /descendantsOf\(agents\(\), row\.a\.id\)/, "the badge must count DESCENDANTS (#98)");
   assert.doesNotMatch(
     block,

@@ -2808,9 +2808,21 @@ export default function App() {
                     🔔{subtreeUnread(row.a.id)}
                   </span>
                 </Show>
-                {/* collapsed tree: surface how many subs are still working so a
-                    busy parent doesn't look idle with its subtree hidden */}
-                <Show when={collapsedSubs().has(row.a.id)}>
+                {/* Collapsed tree: surface how many subs are hidden so a busy
+                    parent doesn't look idle with its subtree away (#81).
+                    #81: the gate was `collapsedSubs().has(id)` alone, but there
+                    are TWO ways a subtree gets hidden — collapsing the subs, or
+                    collapsing the CHAT — and the second is tracked by
+                    `chatCollapsed()`. So collapsing the chat hid every sub-agent
+                    with no count and no indicator, which is exactly the reported
+                    "a session that has sub-agents shows none of them".
+                    Either way, hide the badge only when nothing is hidden. */}
+                <Show
+                  when={
+                    collapsedSubs().has(row.a.id) ||
+                    (row.chatCollapsedGroup === true && chatCollapsed().has(`chat:${row.a.id}`))
+                  }
+                >
                   {(() => {
                     // #98: DESCENDANTS, not just direct children. A sub-agent
                     // that spawned its own was not counted at all, so the badge
