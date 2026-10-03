@@ -13,7 +13,7 @@
  * server sends before each call is NOT a valid boundary: it fires on every
  * RETRY too, so clearing on it would flash the bubble away mid-reply.
  */
-import { test } from "node:test";
+import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -21,6 +21,7 @@ import {
   clearLive,
   isTurnBoundary,
   isCoveredByLog,
+  pruneDeadLiveBuffers,
   type LiveBuf,
 } from "../frontend/live-buffer.ts";
 
@@ -140,4 +141,79 @@ test("isCoveredByLog drops a reasoning-only buffer when the agent stops (#40)", 
 
 test("isCoveredByLog handles a missing buffer (#40)", () => {
   assert.equal(isCoveredByLog(null, [], "running"), false);
+});
+/* ---------- pruning buffers whose agent is not live (#40) ---------- */
+
+/**
+ * The reported symptom was "agent2's message shows agent1's content, with a
+ * writing cursor". The buffer store is already per-agent and correctly keyed —
+ * so the duplication was not a key collision. It was a buffer that was never
+ * CLEARED: the pruning effect consulted only the SELECTED agent's status, so
+ * every other agent depended entirely on its turn-boundary event arriving over
+ * the WebSocket. Nothing replays missed events on reconnect, so a boundary lost
+ * across a reconnect left that text on screen with the streaming chrome still
+ * attached, until a reload (the buffers are memory-only).
+ */
+describe("pruneDeadLiveBuffers (#40)", () => {
+  const status = (m: Record<string, string>) => (id: string) => m[id];
+
+  test("drops an unselected agent's buffer once it goes idle", () => {
+    const bufs = new Map([
+      ["agent1", { text: "stale reply", reasoning: "", at: 1 }],
+      ["agent2", { text: "still writing", reasoning: "", at: 2 }],
+    ]);
+    // agent1 finished (idle), agent2 is mid-turn — and NEITHER is "selected"
+    // from the store's point of view
+    const out = pruneDeadLiveBuffers(bufs, status({ agent1: "idle", agent2: "running" }));
+    assert.equal(out.has("agent1"), false, "the idle agent's stale buffer must go (#40)");
+    assert.equal(out.get("agent2")?.text, "still writing", "the live agent's buffer must survive (#40)");
+  });
+
+  test("keeps a WAITING agent — a parked tool is still in flight", () => {
+    const bufs = new Map([["agent1", { text: "t", reasoning: "", at: 1 }]]);
+    const out = pruneDeadLiveBuffers(bufs, status({ agent1: "waiting" }));
+    assert.equal(out.has("agent1"), true, "waiting is not dead (#40)");
+  });
+
+  test("does NOT guess when an agent has no status", () => {
+    // absence of evidence is not evidence of completion: a snapshot we have not
+    // received yet must not be treated as idle, or a connecting client loses
+    // every buffer it has
+    const bufs = new Map([["agent1", { text: "t", reasoning: "", at: 1 }]]);
+    const out = pruneDeadLiveBuffers(bufs, status({}));
+    assert.equal(out.has("agent1"), true, "an unknown status must not prune (#40)");
+  });
+
+  test("preserves map identity when nothing is dead", () => {
+    // Solid skips re-rendering on referential equality, and this effect runs on
+    // every snapshot
+    const bufs = new Map([["agent1", { text: "t", reasoning: "", at: 1 }]]);
+    const out = pruneDeadLiveBuffers(bufs, status({ agent1: "running" }));
+    assert.equal(out.size, 1);
+    assert.equal(pruneDeadLiveBuffers(bufs, status({ agent1: "running" })), bufs, "no-op keeps identity (#40)");
+  });
+
+  test("prunes every dead buffer, not just the first", () => {
+    const bufs = new Map([
+      ["a", { text: "1", reasoning: "", at: 1 }],
+      ["b", { text: "2", reasoning: "", at: 2 }],
+      ["c", { text: "3", reasoning: "", at: 3 }],
+    ]);
+    const out = pruneDeadLiveBuffers(bufs, status({ a: "idle", b: "stopped", c: "running" }));
+    assert.deepEqual([...out.keys()], ["c"], "only the live agent remains (#40)");
+  });
+
+  test("App.tsx prunes by agent status, not by the selected session", () => {
+    const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+    assert.match(
+      app,
+      /pruneDeadLiveBuffers\(prev, statusOf\)/,
+      "the effect must sweep all agents (#40)",
+    );
+    assert.match(
+      app,
+      /agents\(\)\.find\(\(x\) => x\.id === id\)\?\.status/,
+      "status must come from the agent snapshot, per agent (#40)",
+    );
+  });
 });

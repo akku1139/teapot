@@ -1,7 +1,14 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { fmtDur } from "./format";
-import { applyDelta, clearLive, isTurnBoundary, isCoveredByLog, isOwnLiveWork } from "./live-buffer";
+import {
+  applyDelta,
+  clearLive,
+  isTurnBoundary,
+  isCoveredByLog,
+  isOwnLiveWork,
+  pruneDeadLiveBuffers,
+} from "./live-buffer";
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
@@ -484,15 +491,14 @@ export default function App() {
   // leaves running/waiting, any leftover live buffer is dead and must go.
   // (Reload "fixes" it today only because the buffer is memory-only.)
   createEffect(() => {
-    const st = sel()?.status;
-    if (st === "running" || st === "waiting") return;
-    const id = selected();
-    if (!id) return;
+    // #40: sweep EVERY agent's buffer against its own status, not just the
+    // selected one. Nothing replays missed events on reconnect, so an
+    // unselected agent's buffer could rely entirely on a turn-boundary event
+    // that never arrived — leaving stale text under the streaming chrome with
+    // the writing cursor attached, until a reload.
     setLiveByAgent((prev) => {
-      if (!prev.has(id)) return prev;
-      const m = new Map(prev);
-      m.delete(id);
-      return m; // new identity only when something was actually dropped
+      const statusOf = (id: string) => agents().find((x) => x.id === id)?.status;
+      return pruneDeadLiveBuffers(prev, statusOf);
     });
     setThinkStartedAt(0);
   });

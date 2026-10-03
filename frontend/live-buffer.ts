@@ -114,3 +114,40 @@ export function isOwnLiveWork(row: { data?: { actor?: unknown } } | null | undef
   const actor = row.data?.actor;
   return !(typeof actor === "string" && actor.length > 0);
 }
+
+/**
+ * Drop live buffers whose agent is no longer running or waiting (#40).
+ *
+ * The clearing effect in App.tsx used to consult only the SELECTED agent's
+ * status, so every OTHER agent's buffer depended entirely on its turn-boundary
+ * event arriving over the WebSocket. Nothing replays missed events on
+ * reconnect, so a boundary lost across a reconnect left that agent's text on
+ * screen indefinitely — reported as "agent2 shows agent1's message with a
+ * writing cursor", and surviving until a reload because the buffers are
+ * memory-only.
+ *
+ * Pure and extracted so the rule is testable: given the buffers and a status per
+ * agent, return the buffers worth keeping.
+ *
+ * An agent with no reported status is LEFT ALONE rather than treated as idle:
+ * absence of evidence is not evidence of completion, and the boundary event is
+ * still its other clearing path.
+ */
+export function pruneDeadLiveBuffers<T>(
+  buffers: ReadonlyMap<string, T>,
+  statusOf: (agentId: string) => string | undefined,
+): Map<string, T> {
+  // Only allocate when something is actually dead: Solid skips re-rendering on
+  // referential equality, and this runs on every snapshot the UI receives.
+  const doomed: string[] = [];
+  for (const id of buffers.keys()) {
+    const st = statusOf(id);
+    if (st === undefined) continue; // no snapshot: do not guess
+    if (st === "running" || st === "waiting") continue; // still live
+    doomed.push(id);
+  }
+  if (doomed.length === 0) return buffers as Map<string, T>;
+  const out = new Map(buffers);
+  for (const id of doomed) out.delete(id);
+  return out;
+}
