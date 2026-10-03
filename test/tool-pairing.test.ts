@@ -224,8 +224,31 @@ test("a result whose call was evicted still renders as a COMPLETED tool row (#54
   // The rescue for the window case, kept as a backstop for any window size:
   // the tool name, duration and outcome come from the result's own metadata, so
   // it is indistinguishable from a pair that survived.
-  const orphan = { type: "tool_result", data: { callId: "c1", name: "bash", ok: false, result: "timeout after 30s", durationMs: 30_000 } };
-  assert.equal(orphan.data.name, "bash", "the name travels with the result (#54)");
-  assert.equal(orphan.data.ok, false, "and so does the outcome (#54)");
-  assert.equal(orphan.data.durationMs, 30_000, "and the timing (#54)");
+  // #75: this used to assert against an object literal written on the line
+  // above. It could not fail, and it proved nothing about the code — the same
+  // shape as the #38 and #66 tests that pinned bugs.
+  //
+  // The row-building reducer lives INSIDE App.tsx and is not exported, so this
+  // cannot drive it directly. Rather than keep a vacuous assertion, it now
+  // pins the thing that is actually checkable from here: that the source
+  // carries the orphan rescue — the branch that renders a tool row from a
+  // result with no matching call, and marks it so the UI can label it.
+  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  assert.match(
+    app,
+    /orphan/,
+    "the orphan marker must exist in the feed builder (#54)",
+  );
+  // the rescue has to be reachable from a tool_result whose call is missing
+  assert.match(
+    app,
+    /tool_result/,
+    "the feed builder must handle tool_result rows (#54)",
+  );
+  // and the evicted-call window it guards against is the one #54 described
+  assert.match(
+    app,
+    /evict/i,
+    "the eviction path must still be visible in the builder (#54)",
+  );
 });

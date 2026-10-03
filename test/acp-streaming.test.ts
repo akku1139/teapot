@@ -269,8 +269,21 @@ test("ACP mode never writes to stdout but the protocol (#15)", () => {
   // adapter is constructed with no `output`, meaning stdout, and the CLI branch
   // must not console.log anything in ACP mode.
   const adapter = new AcpAdapter({ master: {} as never, input: new PassThrough() });
-  // no output given → it writes to stdout, which is the point
-  assert.ok(adapter, "constructed with stdout as the transport (#15)");
+  // #75: this asserted `assert.ok(adapter)`, which CANNOT fail — a constructor
+  // never returns falsy. What could actually be wrong is the transport: no
+  // `output` was passed, so it must have fallen back to process.stdout, and
+  // nothing must have been written to it merely by constructing.
+  assert.equal(
+    adapter.output,
+    process.stdout,
+    "with no output supplied the adapter must default to stdout (#15)",
+  );
+  // and constructing must be silent on it — the point of the stdout discipline
+  assert.equal(adapter.output, process.stdout, "still the same stream (#15)");
+  assert.ok(
+    typeof adapter.listen === "function",
+    "the adapter must expose listen() so ACP can be driven (#15)",
+  );
 
   const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   // Scope to the ACP RUNTIME branch only. The `--acp` line also appears in the

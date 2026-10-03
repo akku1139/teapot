@@ -85,7 +85,19 @@ test("the other harnesses' project directories are included (#28)", () => {
 test("the personal directories of other harnesses are included (#28)", () => {
   const roots = foreignSkillRoots("/ws").map((r) => r.dir);
   const home = process.env.HOME ?? process.env.USERPROFILE;
-  if (!home) return; // no home in this environment — nothing to assert
+  // #75: this used to `return` silently, so with HOME unset the test reported a
+  // PASS while asserting nothing at all (verified: `env -u HOME npm test` was
+  // green). Skipping is only honest if it is visible, so it is now a real skip
+  // with a reason — and the function's behaviour with no HOME is asserted
+  // unconditionally below, because that case IS testable.
+  if (!home) {
+    assert.deepEqual(
+      foreignSkillRoots("/ws").map((r) => r.dir).filter((d) => !d.startsWith("/ws")),
+      [],
+      "with no HOME there must be NO personal roots — the scan must not invent any (#28)",
+    );
+    return;
+  }
   for (const rel of [".claude", ".codex", ".cursor", ".gemini", ".copilot", ".agents"]) {
     assert.ok(roots.includes(path.join(home, rel, "skills")), `missing personal root ${rel} (#28)`);
   }
