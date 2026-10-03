@@ -11,6 +11,8 @@ import {
 } from "./live-buffer";
 import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
+// #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
+import { descendantsOf } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
 // own copy, and deleting the real execCommand fallback left them green.
 import { copyText } from "./clipboard";
@@ -2779,7 +2781,13 @@ export default function App() {
                     busy parent doesn't look idle with its subtree hidden */}
                 <Show when={collapsedSubs().has(row.a.id)}>
                   {(() => {
-                    const kids = agents().filter((x) => x.parent === row.a.id);
+                    // #98: DESCENDANTS, not just direct children. A sub-agent
+                    // that spawned its own was not counted at all, so the badge
+                    // understated the subtree and — because the `· ▶N` active
+                    // count had the same shape — a busy nested sub read as idle.
+                    // This is the same recursion `subtreeUnread` uses, so the
+                    // badge and the unread badge can no longer disagree.
+                    const kids = descendantsOf(agents(), row.a.id);
                     const running = kids.filter((k) => k.live ?? (k.status === "running" || k.status === "waiting")).length;
                     return kids.length > 0 ? (
                       <span

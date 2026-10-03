@@ -229,6 +229,35 @@ export function workspaceOf(agents: readonly TreeAgent[], id: string, seen = new
   return a.workspace || "";
 }
 
+/**
+ * Every DESCENDANT of `agentId`, at any depth (#98).
+ *
+ * #98: the sidebar's 🧩 badge counted only DIRECT children
+ * (`agents().filter(x => x.parent === agentId)`), so a sub-agent that spawned
+ * its own reported a smaller number than actually existed — and a busy nested
+ * subtree was invisible, because the `· ▶N` active count had the same shape.
+ *
+ * `subtreeUnread` in App.tsx already recurses for notifications, so the tree
+ * could disagree with the badge about the same subtree. This is the shared
+ * version; `seen` guards a cycle in `parent`, which would otherwise recurse
+ * forever.
+ */
+export function descendantsOf<T extends TreeAgent>(
+  agents: readonly T[],
+  agentId: string,
+  seen = new Set<string>(),
+): T[] {
+  const out: T[] = [];
+  const guard = new Set(seen);
+  for (const a of agents) {
+    if (a.parent !== agentId) continue;
+    if (guard.has(a.id)) continue; // cycle: a -> b -> a
+    guard.add(a.id);
+    out.push(a, ...descendantsOf(agents, a.id, guard));
+  }
+  return out;
+}
+
 /** The group a chat collapses under — resolved to its TOP-LEVEL ancestor. */
 export function chatGroupKeyOf(agents: readonly TreeAgent[], a: TreeAgent): string {
   let id = a.id;
