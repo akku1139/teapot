@@ -2267,6 +2267,39 @@ export class Agent {
     return sys;
   }
 
+  /**
+   * The last few conversation turns, for a parent's `final` report.
+   *
+   * Captured BEFORE the final marker is written so the parent gets real
+   * substance (findings, file paths, numbers), not just whatever the model
+   * typed into the finish() summary argument.
+   *
+   * Extracted as its own method because a REJECTED completion audit also needs
+   * it (#89) — the retry prompt should carry the same context an approved one
+   * would — while emitting no `final: true`.
+   */
+  private async captureRecentTurns(): Promise<string[]> {
+const recent: string[] = [];
+    for (let i = this.messages.length - 1; i >= 0 && recent.length < 6; i--) {
+      const m = this.messages[i]!;
+      if (m.role === "user") continue; // prompts/noise — keep agent output only
+      if (m.role === "assistant" && !(m.content ?? "").trim()) continue;
+      const who = m.role === "tool" ? "tool" : m.role;
+      let line = `[${who}] ${(m.content ?? "").trim()}`;
+      if (m.role === "tool") {
+        // tool results are prefixed "(failed)" by the logger when they fail —
+        // the raw content is what matters here, and cap hard: these can be huge
+        line = `[${who}] ${(m.content ?? "").trim().slice(0, 1200)}`;
+      }
+      // A generous cap, but not unbounded: one runaway turn must not blow up
+      // the parent's context. The old 1500 char clip cut findings in half —
+      // a review's conclusions routinely live past that mark (#42) — and this
+      // text is bounded by 6 turns, so the worst case is ~120k chars.
+      recent.unshift(line.slice(0, 20_000));
+    }
+    return recent;
+  }
+
   private async handleFinish(argsJson: string): Promise<void> {
     const args = safeParse(argsJson);
     if (args.goalComplete === true && this.goal.status !== "done") {
@@ -2329,6 +2362,19 @@ export class Agent {
               source: "harness",
               text: `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`,
             });
+            // #89: RETURN before the final message is written.
+            //
+            // Falling through emitted `final: true` while the goal was still
+            // active — and that is the event onChildEvent forwards to the
+            // parent. So a REJECTED completion told the parent the work was
+            // DONE, and the child then sat retrying against a parent that had
+            // already moved on and stopped listening.
+            //
+            // The goal stays active and the retry prompt is queued above, so
+            // the loop simply continues; the parent's notification is deferred
+            // until a finish that actually survives the audit.
+            await this.captureRecentTurns();
+            return;
           }
         } catch (err) {
           // auditor unavailable → fail open (record it, honor the finish) so a
@@ -2343,27 +2389,7 @@ export class Agent {
         await this.setGoalStatus("done");
       }
     }
-    // Capture the last few conversation turns BEFORE the final marker so the
-    // parent gets real substance (findings, file paths, numbers), not just
-    // whatever the model typed into the finish() summary argument.
-    const recent: string[] = [];
-    for (let i = this.messages.length - 1; i >= 0 && recent.length < 6; i--) {
-      const m = this.messages[i]!;
-      if (m.role === "user") continue; // prompts/noise — keep agent output only
-      if (m.role === "assistant" && !(m.content ?? "").trim()) continue;
-      const who = m.role === "tool" ? "tool" : m.role;
-      let line = `[${who}] ${(m.content ?? "").trim()}`;
-      if (m.role === "tool") {
-        // tool results are prefixed "(failed)" by the logger when they fail —
-        // the raw content is what matters here, and cap hard: these can be huge
-        line = `[${who}] ${(m.content ?? "").trim().slice(0, 1200)}`;
-      }
-      // A generous cap, but not unbounded: one runaway turn must not blow up
-      // the parent's context. The old 1500 char clip cut findings in half —
-      // a review's conclusions routinely live past that mark (#42) — and this
-      // text is bounded by 6 turns, so the worst case is ~120k chars.
-      recent.unshift(line.slice(0, 20_000));
-    }
+    const recent = await this.captureRecentTurns();
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
       final: true,
