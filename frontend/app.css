@@ -819,6 +819,13 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
    stays FIXED below the form (it used to be pushed offscreen by the grown
    textarea because .composer had no bottom padding room left). */
 .composer { display: flex; flex-direction: column; }
+/* #65: the hint's height must be IDENTICAL maximized or not. It was not: the
+   maximized block overrode line-height and margin-top, so its box was a couple
+   of px taller and the composer's bottom edge moved — first by 8px of padding,
+   then by ~3px once the padding matched. Both came from this one hint.
+
+   So nothing here is overridden for the maximized state. `flex-shrink: 0` is
+   what stops the growing form squeezing it, and it applies to both. */
 .composer .hint { flex-shrink: 0; }
 .composer.maximized {
   position: absolute; inset: 0; z-index: 5;
@@ -832,16 +839,6 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
 }
 /* maximized: the hint must keep its normal-flow slot under the form — the
    textarea's growth used to squeeze it and the text sat visibly off-grid */
-.composer.maximized .hint {
-  flex-shrink: 0;
-  margin-top: 5px; /* the normal .hint uses 5px — matching it keeps the gap */
-  /* #65: deliberately NOT nowrap+ellipsis. On a narrow screen the normal hint
-     WRAPS to two lines; maximizing switched it to a single clipped line ending
-     in "...", so the gap between the input and the text below it changed with
-     the viewport width. Letting it wrap keeps the block identical in both
-     states, which is what makes the bottom edge stable. */
-  line-height: 1.4;
-}
 /* hide the timeline by painting OVER it (visibility:hidden kept the feed's
    own scroll handler alive and it could steal the composer's clicks) */
 .composer.maximized::before {

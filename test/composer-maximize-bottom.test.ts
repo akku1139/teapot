@@ -146,21 +146,26 @@ test("the textarea fills the form instead of competing with it (#65)", () => {
 });
 
 test("the hint is pinned to the last row, not pushed by the form (#65)", () => {
-  const hint = lastRule(".composer.maximized .hint");
-  assert.match(hint, /flex-shrink:\s*0/, "the hint keeps its intrinsic height (#65)");
-  // it is the LAST in-flow child, so it takes the last row of the column. The
-  // other children (.jump, .cmds) are absolutely positioned and out of flow;
-  // a blanket flex constraint on them would break the suggestion panel, so
-  // their absence from the fix is deliberate and asserted here.
-  const hintIdx = css.indexOf(".composer.maximized .hint");
-  const formIdx = css.indexOf(".composer.maximized form {");
-  assert.ok(formIdx !== -1 && hintIdx !== -1, "both rules must exist (#65)");
+  // This used to require a `.composer.maximized .hint` rule. It no longer exists,
+  // deliberately: every property it set that affected HEIGHT was a source of
+  // drift (see the header). The pinning now comes entirely from the shared
+  // `.composer .hint` rule, which applies to both states — which is strictly
+  // better, because there is no longer a second place for the two to disagree.
+  assert.match(
+    lastRule(".composer .hint"),
+    /flex-shrink:\s*0/,
+    "the hint keeps its intrinsic height in BOTH states (#65)",
+  );
+  // the other children (.jump, .cmds) are absolutely positioned and out of flow;
+  // a blanket flex constraint on them would break the suggestion panel, so their
+  // absence is deliberate and asserted here.
   assert.match(
     lastRule(".composer"),
     /flex-direction:\s*column/,
     "the composer is a column, so DOM order IS visual order (#65)",
   );
 });
+
 
 /* ---------- the geometry that follows ---------- */
 
@@ -206,11 +211,89 @@ test("the maximize control and the class are still wired (#65)", () => {
  */
 
 
+
+/*
+ * #65, third pass. Two earlier fixes each moved the bottom edge by a different
+ * amount, and both came from ONE rule:
+ *
+ *   1. `.composer.maximized` used `padding-bottom: 10px` against the normal
+ *      composer's `18px` — 8px of drift.
+ *   2. `.composer.maximized .hint` then overrode `margin-top` AND `line-height`,
+ *      while the shared `.hint` sets neither. The extra line-height made the
+ *      hint's box ~2px taller, which surfaced as the reported residual
+ *      "3pxくらい上にシフトする".
+ *
+ * Matching values one property at a time kept finding a new one. So the rule is
+ * now structural: the maximized state must override NOTHING that affects the
+ * hint's height, and the hint is styled solely by the shared rule. That is what
+ * these assert — so a fourth override cannot be added without a test failing.
+ */
+
+/**
+ * Every rule whose body mentions the hint, with COMMENTS STRIPPED from the
+ * selector.
+ *
+ * The stripping matters: a naive `[^{}]+` selector capture swallows the comment
+ * block above each rule, so a rule about `.composer.maximized .hint` arrives
+ * with three paragraphs of prose glued to its name — and an `includes("hint")`
+ * then matches the COMMENT, not the selector. That made these tests pass against
+ * a stylesheet containing the exact rule they exist to forbid.
+ */
+function hintRules(src: string): { selector: string; body: string }[] {
+  const out: { selector: string; body: string }[] = [];
+  for (const m of src.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = stripComments(m[1]!).trim();
+    // select on the SELECTOR, not the body: a rule like
+    // `.composer.maximized .hint { line-height: 1.4 }` says "hint" only in its
+    // selector, and filtering on the body missed exactly the rule these tests
+    // exist to forbid.
+    if (selector.includes(".hint") || m[2]!.includes("hint"))
+      out.push({ selector, body: stripComments(m[2]!) });
+  }
+  return out;
+}
+
+test("the maximized state overrides NOTHING that changes the hint's height (#65)", () => {
+  // only rules that target the HINT ITSELF. `.composer.maximized`'s own padding
+  // is legitimate and is asserted separately.
+  const offenders = hintRules(css).filter(
+    (r) =>
+      r.selector.includes("maximized") &&
+      r.selector.includes("hint") &&
+      /line-height|margin-top|font-size|padding/.test(r.body),
+  );
+  assert.deepEqual(
+    offenders.map((o) => o.selector),
+    [],
+    `a maximized hint rule must not touch anything that changes its height (#65); found ${JSON.stringify(offenders)}`,
+  );
+});
+
+test("there is no separate maximized-hint rule at all (#65)", () => {
+  const maximizedHint = hintRules(css).filter(
+    (r) => r.selector.includes("maximized") && r.selector.includes("hint"),
+  );
+  assert.deepEqual(maximizedHint, [], "the maximized hint must be styled only by the shared rule (#65)");
+});
+
+test("the hint is still pinned to the last row (#65)", () => {
+  // the one thing needed: the growing form must not squeeze it. That comes from
+  // the shared rule, so it applies to both states.
+  assert.match(
+    lastRule(".composer .hint"),
+    /flex-shrink:\s*0/,
+    "the hint must not shrink when the form grows (#65)",
+  );
+  assert.match(
+    lastRule(".composer.maximized form"),
+    /min-height:\s*0/,
+    "and the form must absorb the leftover space (#65)",
+  );
+});
+
 test("the maximized composer keeps the normal bottom padding (#65)", () => {
-  // read both paddings and compare the BOTTOM value, rather than asserting a
-  // literal — the invariant is "they match", not "it is 18"
-  const normal = lastRule(".composer");
-  const maximized = lastRule(".composer.maximized");
+  // compare the BOTTOM value rather than asserting a literal — the invariant is
+  // "they match", not "it is 18"
   const bottomOf = (body: string): string | null => {
     const m = body.match(/padding:\s*([^;]+)/);
     if (m) {
@@ -221,44 +304,14 @@ test("the maximized composer keeps the normal bottom padding (#65)", () => {
     return b ? b[1]!.trim() : null;
   };
   assert.equal(
-    bottomOf(maximized),
-    bottomOf(normal),
-    `the maximized composer must anchor the hint at the SAME distance from the bottom (#65); ` +
-      `normal=${bottomOf(normal)} maximized=${bottomOf(maximized)}`,
+    bottomOf(lastRule(".composer.maximized")),
+    bottomOf(lastRule(".composer")),
+    `the maximized composer must anchor the hint at the SAME distance from the bottom (#65)`,
   );
 });
 
-test("the maximized hint wraps like the normal one (#65)", () => {
-  const maximized = lastRule(".composer.maximized .hint");
-  assert.doesNotMatch(
-    maximized,
-    /white-space:\s*nowrap/,
-    "nowrap makes a narrow-screen hint collapse to one clipped line (#65)",
-  );
-  assert.doesNotMatch(
-    maximized,
-    /text-overflow:\s*ellipsis/,
-    "and ellipsis is what produced the trailing '...' (#65)",
-  );
-});
-
-test("the maximized hint keeps the normal top margin (#65)", () => {
-  // the gap between input and hint is part of "the bottom edge looks fixed"
-  const normal = lastRule(".hint");
-  const maximized = lastRule(".composer.maximized .hint");
-  const m = (b: string) => (b.match(/margin-top:\s*([^;]+)/) ?? [])[1]?.trim() ?? null;
-  assert.equal(
-    m(maximized),
-    m(normal),
-    `the input-to-hint gap must not change on maximize (#65); normal=${m(normal)} maximized=${m(maximized)}`,
-  );
-});
-
-test("the form can still shrink — the first fix must not be undone (#65)", () => {
-  // guards the regression this second fix could have caused
-  assert.match(
-    lastRule(".composer.maximized form"),
-    /min-height:\s*0/,
-    "min-height:0 is still load-bearing (#65)",
-  );
+test("the shared hint rule carries no nowrap or ellipsis (#65)", () => {
+  const hint = lastRule(".hint");
+  assert.doesNotMatch(hint, /white-space:\s*nowrap/, "the hint must wrap (#65)");
+  assert.doesNotMatch(hint, /text-overflow:\s*ellipsis/, "and must not be clipped (#65)");
 });
