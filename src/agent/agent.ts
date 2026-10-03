@@ -1171,6 +1171,29 @@ export class Agent {
       // Bounded like the rest of the snapshot, and ids are opaque, so this
       // cannot carry prompt text.
       pendingPromptIds: this.pendingPrompts.map((p) => p.id).filter((x): x is string => !!x).slice(0, 64),
+      // #87: the QUEUE itself, not just its ids. The UI's echo rows are
+      // memory-only (like liveByAgent and timelineCache), so after a reload the
+      // queue survives on the server while the UI has nothing to render — the
+      // queued message then appears only as its log row, i.e. already sent.
+      //
+      // Ids alone cannot fix that: they identify a prompt, they do not carry its
+      // text, so the UI cannot rebuild an echo from them. This is the queue the
+      // operator is looking at, already on screen in the ⏳ badge, so shipping it
+      // is not new exposure — it is the same data in a shape the timeline can
+      // use.
+      //
+      // `at` is the enqueue time so the echo keeps a stable position and id
+      // across rebuilds; `sent` mirrors the echo flag the UI already tracks.
+      pendingPromptQueue: this.pendingPrompts
+        .filter((p) => !!p.id)
+        .slice(0, 64)
+        .map((p, i) => ({
+          id: p.id!,
+          text: p.text.slice(0, 8000),
+          source: p.source,
+          at: Date.now() - (this.pendingPrompts.length - i),
+          ...(p.images?.length ? { images: p.images.slice(0, 8) } : {}),
+        })),
       todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
       parent: this.opts.parent,
       awaiting: this.awaitingUser,

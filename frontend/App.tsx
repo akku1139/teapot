@@ -65,6 +65,8 @@ interface Agent {
   pendingPrompts?: number;
   /** #78: the ids of the still-queued prompts, so the UI can reconcile by IDENTITY */
   pendingPromptIds?: string[];
+  /** #87: the queue WITH its text, so echoes survive a reload */
+  pendingPromptQueue?: { id: string; text: string; source?: string; at?: number; images?: { url: string; name?: string }[] }[];
   todo?: string;
   parent?: string;
   autoContinue?: boolean;
@@ -562,6 +564,38 @@ export default function App() {
     const mine = pendingFor(key);
     const next = reconcilePending(mine, queued, liveIds);
     if (next !== mine) writePending(key, next);
+  });
+
+  /**
+   * Rebuild echoes the UI does not have for a queue it does (#87).
+   *
+   * Echo rows are memory-only, so after a reload — or opening a session in a
+   * new tab — the server still has a queued prompt while the UI has nothing to
+   * render for it. `reconcilePending` cannot help: ids identify a prompt, they do
+   * not carry its text, so there is no echo to reconcile and the queued message
+   * shows up as its log row alone, i.e. already sent.
+   *
+   * So the queue now arrives with its text and any prompt we do not already have
+   * an echo for is materialised here. Ids the UI already holds are SKIPPED, so
+   * this never rewrites a live echo's text, images or position.
+   */
+  createEffect(() => {
+    const queue = sel()?.pendingPromptQueue;
+    if (!queue?.length) return;
+    const key = pendingKey();
+    const have = new Set(pendingFor(key).map((p) => p.promptId).filter(Boolean));
+    const missing = queue.filter((q) => q.id && !have.has(q.id));
+    if (!missing.length) return;
+    writePending(key, [
+      ...missing.map((q) => ({
+        id: `p${q.id}`,
+        text: q.text,
+        at: Number(q.at) || Date.now(),
+        promptId: q.id,
+        images: q.images?.map((i) => i.url),
+      })),
+      ...pendingFor(key),
+    ]);
   });
 
   createEffect(() => {
