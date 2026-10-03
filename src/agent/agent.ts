@@ -126,6 +126,14 @@ export interface AgentOptions {
    */
   maxTurnsPerRound?: number;
   /**
+   * Safety valve for CONSECUTIVE rounds that neither call a tool nor finish
+   * (#106). `maxTurnsPerRound` cannot catch this: a root agent that ends on a
+   * bare message leaves its round after ONE turn, so the per-round cap is never
+   * reached and auto-continue spins forever. Any tool call resets the counter.
+   * 0 disables.
+   */
+  maxConsecutiveIdleRounds?: number;
+  /**
    * Retry policy for round-fatal API errors (rate limits, 5xx, provider
    * hiccups). "stop" (default) ends the loop with status=error. "retry"
    * keeps the goal alive: wait retryDelayMs, then start a fresh round —
@@ -294,6 +302,13 @@ export class Agent {
   private consecutiveToolErrors = 0;
   /** consecutive round-fatal API errors (drives the retry backoff) */
   private consecutiveApiErrors = 0;
+  /**
+   * Consecutive auto-continued rounds that did no work (#106).
+   *
+   * Reset by any tool call, any finish, a stop, or fresh operator input — only a
+   * round that produced neither a tool call nor a finish increments it.
+   */
+  private consecutiveIdleRounds = 0;
 
   constructor(opts: AgentOptions) {
     this.opts = {
@@ -309,6 +324,8 @@ export class Agent {
       supportedParameters: [],
       maxConsecutiveToolErrors: 5,
       maxTurnsPerRound: 200,
+      // generous: only a model that never acts and never finishes reaches it
+      maxConsecutiveIdleRounds: 50,
       onError: "stop",
       retryDelayMs: 60_000,
       contextTokenBudget: 96_000,
@@ -1601,6 +1618,10 @@ export class Agent {
             finished = true; // it IS finished now — don't auto-nudge a reporter
           }
         }
+        // #106: a round that did real work resets the idle counter. `finished`
+        // covers the finish() paths; a round that ran tool calls is caught by the
+        // turn counter below, which is checked before this point.
+        if (finished) this.consecutiveIdleRounds = 0;
         // auto-continue only makes sense with an active goal to continue toward
         if (
           finished ||
@@ -1614,6 +1635,39 @@ export class Agent {
         // "Continue working toward the current goal" made a forked sub-agent
         // re-read its inherited context and drift into one of the parent's
         // older tasks — it would keep going forever without ever finish()ing.
+        // #106: bound CONSECUTIVE auto-continued rounds.
+        //
+        // maxTurnsPerRound cannot bound this loop, and the reason is structural:
+        // a ROOT agent that answers with a bare message ends its round after ONE
+        // turn (`return finished` in runTurnsUntilIdle), so no single round ever
+        // reaches the per-round cap. `finished` stays false, the goal stays
+        // active, and auto-continue starts the next round — forever.
+        //
+        // Measured: maxTurnsPerRound=40 produced 997 turns and ZERO
+        // `round-turn-cap` notes, because the cap is only ever evaluated once a
+        // round ENDS, and these rounds end at turn 1. A tool-calling model does
+        // trip it (8 turns, 1 note) — the gap is specific to the talk-only shape.
+        //
+        // So the bound belongs here, where the real loop is: consecutive rounds
+        // that produced neither a finish() nor a tool call. Any tool call resets
+        // it — that is real work, not stalling — and so does a stop, a fresh
+        // user prompt, or an operator reply.
+        //
+        // This is a SAFETY VALVE, not a policy. It is deliberately generous
+        // (default 50) because a long autonomous stretch that keeps calling tools
+        // resets the counter on every turn and is never affected; only a model
+        // that never acts and never finishes trips it.
+        if (++this.consecutiveIdleRounds > this.opts.maxConsecutiveIdleRounds) {
+          this.consecutiveIdleRounds = 0;
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "auto-continue-bounded",
+            rounds: this.opts.maxConsecutiveIdleRounds,
+            detail:
+              "the agent produced no tool calls and no finish() across this many " +
+              "consecutive rounds — stopping the loop rather than letting it spin (#106)",
+          });
+          break;
+        }
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
         // #95: do NOT pair this with a progress request. Both fire at the turn
@@ -2190,6 +2244,8 @@ export class Agent {
           result = { ok: false, result: `tool could not run: ${(err as Error).message}` };
         }
         this.stats.toolCalls++;
+        // #106: a tool call is real work, so it clears the idle-round counter.
+        this.consecutiveIdleRounds = 0;
         await this.log.append("tool_result", this.currentSession, this.currentBranch, {
           callId: call.id,
           name: call.function.name,
