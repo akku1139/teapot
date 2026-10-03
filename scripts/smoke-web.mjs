@@ -410,6 +410,62 @@ console.log("deep render ok: feed rows present");
     fail("the free-text answer must disable with the options (#55)");
 
   console.log("deep render ok: an answered ask_user disables its options at once (#55)");
+
+  // #97 — an idle session must not leave "thinking…" at the bottom of the feed.
+  //
+  // The live bubble renders whenever `live()` is non-empty, and shows
+  // "thinking…" when the buffer has reasoning but no text. So a buffer that
+  // outlives its turn parks that row on screen with no cursor and no way to tell
+  // it from a live stream.
+  //
+  // #40's dead-code sweep is what clears it: the buffer is pruned once the agent
+  // is neither running nor waiting. This drives that through the REAL bundle,
+  // because a pure-helper test cannot see whether the sweep is wired up — which
+  // is exactly how the v0.26.1 fix shipped green while doing nothing.
+  {
+    const sock = MockWS.instances.at(-1);
+    // precondition: put a REASONING-ONLY buffer on the agent, which is what
+    // renders the bare "thinking…" row. Without this the check would pass
+    // vacuously — there would be nothing to clear.
+    sock.onmessage?.({
+      data: JSON.stringify({
+        kind: "llm-delta",
+        agentId: AGENT.id,
+        text: "",
+        reasoning: "weighing the options",
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 250));
+    const before = w.document.body.textContent.includes("thinking");
+    if (!before) {
+      console.error("#97 check could not create the thinking… row — the test would pass vacuously");
+      process.exit(1);
+    }
+    if (!sock?.onmessage) {
+      console.error("#97 check: no app socket to drive");
+      process.exit(1);
+    }
+    // push a snapshot that flips the agent to idle
+    sock.onmessage({
+      data: JSON.stringify({
+        kind: "agent-update",
+        agentId: AGENT.id,
+        snapshot: { ...AGENT, status: "idle" },
+      }),
+    });
+    // and a visibility event so any deferred refresh drains (this helper is
+    // defined later in the file, hence the inline dispatch)
+    w.document.dispatchEvent(new w.Event("visibilitychange"));
+    await new Promise((r) => setTimeout(r, 250));
+    const after = w.document.body.textContent.includes("thinking");
+    if (after) {
+      console.error("#97 REGRESSION: an idle agent still shows thinking… — the live buffer was not pruned");
+      process.exit(1);
+    }
+    console.log(
+      `idle session leaves no thinking… row (#97) — was ${before ? "present" : "absent"}, now ${after ? "PRESENT" : "gone"}`,
+    );
+  }
 }
 
 /* ---------- #58: a deep link must open the session it NAMES ----------------
