@@ -12,32 +12,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/sidebar-tree.ts";
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
-/** mirror of the shipped workspaceOf() so the rule itself is under test */
-function workspaceOf(agents: { id: string; parent: string; workspace: string }[], id: string, seen = new Set<string>()): string {
-  const a = agents.find((x) => x.id === id);
-  if (!a) return "";
-  if (!a.parent) return a.workspace || "";
-  if (seen.has(id)) return a.workspace || "";
-  seen.add(id);
-  return workspaceOf(agents, a.parent, seen) || a.workspace || "";
-}
+/**
+ * #75 — this file used to re-implement `workspaceOf` and the header annotation
+ * as local "mirrors of the shipped" functions, and asserted against THOSE. That
+ * is the failure mode mutation testing exposed: destroying the real grouping in
+ * `sidebar-tree.ts` left all 8 tests here passing, because a replica passes by
+ * construction — it can only ever agree with itself.
+ *
+ * Both are now the shipped functions. The tests below are unchanged in intent;
+ * what changed is that they can now fail.
+ */
 
-/** mirror of sidebarRows(): a header wherever the workspace changes */
-function annotate(rows: { a: { id: string; parent: string; workspace: string }; depth: number }[], agents: typeof rows[number]["a"][]) {
-  const out: { id: string; wsHeader?: string }[] = [];
-  let lastWs: string | null = null;
-  for (const r of rows) {
-    const ws = workspaceOf(agents, r.a.id);
-    const header = ws !== lastWs ? ws : undefined;
-    out.push({ id: r.a.id, wsHeader: header });
-    lastWs = ws;
-  }
-  return out;
-}
+/** the shipped rules, not a copy */
+const agentsOf = (rows: { id: string; parent: string; workspace: string }[]) => rows;
 
 /* ---------- the grouping rule ---------- */
 
@@ -48,7 +40,7 @@ test("a sub-agent groups with its PARENT's workspace (#18)", () => {
     { id: "root", parent: "", workspace: "/tmp/proj" },
     { id: "child", parent: "root", workspace: "" },
   ];
-  assert.equal(workspaceOf(agents, "child"), "/tmp/proj", "a sub-agent must inherit (#18)");
+  assert.equal(workspaceOf(agentsOf(agents), "child"), "/tmp/proj", "a sub-agent must inherit (#18)");
 });
 
 test("a parent cycle does not hang or return empty (#18)", () => {
@@ -56,7 +48,7 @@ test("a parent cycle does not hang or return empty (#18)", () => {
     { id: "a", parent: "b", workspace: "/x" },
     { id: "b", parent: "a", workspace: "" },
   ];
-  assert.equal(typeof workspaceOf(agents, "a"), "string");
+  assert.equal(typeof workspaceOf(agentsOf(agents), "a"), "string");
 });
 
 test("a header appears only when the workspace changes (#18)", () => {
@@ -65,8 +57,23 @@ test("a header appears only when the workspace changes (#18)", () => {
     { id: "a2", parent: "", workspace: "/p1" },
     { id: "b1", parent: "", workspace: "/p2" },
   ];
-  const got = annotate(agents.map((a) => ({ a, depth: 0 })), agents);
-  assert.deepEqual(got.map((g) => g.wsHeader), ["/p1", undefined, "/p2"], "(#18)");
+  const rows = sidebarRowsOf(
+    agentsOf(agents),
+    treeRowsOf(agentsOf(agents), new Set(), false, new Set()),
+    new Set(),
+  );
+  // #62 made the header its OWN row, so there are exactly two headers for three
+  // agents across two directories — and the agent id appears once each
+  assert.deepEqual(
+    rows.filter((r) => r.headerOnly).map((r) => r.wsHeader),
+    ["/p1", "/p2"],
+    "one header per directory, in first-seen order (#18)",
+  );
+  assert.deepEqual(
+    rows.filter((r) => !r.headerOnly).map((r) => r.a.id),
+    ["a1", "a2", "b1"],
+    "every agent still appears exactly once (#18)",
+  );
 });
 
 test("each project gets exactly one header (#18)", () => {
@@ -76,17 +83,47 @@ test("each project gets exactly one header (#18)", () => {
     { id: "b1", parent: "", workspace: "/p2" },
     { id: "c1", parent: "", workspace: "/p3" },
   ];
-  const got = annotate(agents.map((a) => ({ a, depth: 0 })), agents);
-  assert.equal(got.filter((g) => g.wsHeader !== undefined).length, 3, "three projects → three headers (#18)");
+  // since #62 the header is its OWN row, so headers are counted from the
+  // headerOnly rows rather than mapped onto every chat row
+  const rows = sidebarRowsOf(
+    agentsOf(agents),
+    treeRowsOf(agentsOf(agents), new Set(), false, new Set()),
+    new Set(),
+  );
+  assert.equal(
+    rows.filter((r) => r.headerOnly).length,
+    3,
+    `three projects → three headers (#18); got ${JSON.stringify(rows.filter((r) => r.headerOnly))}`,
+  );
+  assert.deepEqual(
+    rows.filter((r) => r.headerOnly).map((r) => r.wsHeader),
+    ["/p1", "/p2", "/p3"],
+    "in first-seen order, so the sidebar does not reshuffle (#62)",
+  );
 });
 
 test("an agent with no workspace does not get a stray header (#18)", () => {
-  const agents = [{ id: "x", parent: "", workspace: "" }];
-  const got = annotate(agents.map((a) => ({ a, depth: 0 })), agents);
-  assert.equal(got[0]!.wsHeader, "", "no workspace → no header row (#18)");
+  const agents = [
+    { id: "x", parent: "", workspace: "" },
+    { id: "y", parent: "", workspace: "/p" },
+  ];
+  const rows = sidebarRowsOf(
+    agentsOf(agents),
+    treeRowsOf(agentsOf(agents), new Set(), false, new Set()),
+    new Set(),
+  );
+  // the real rule: an agent with NO directory gets no header at all, rather
+  // than one labelled with the empty string
+  assert.deepEqual(
+    rows.filter((r) => r.headerOnly).map((r) => r.wsHeader),
+    ["/p"],
+    `no workspace -> no header row (#18); got ${JSON.stringify(rows.filter((r) => r.headerOnly))}`,
+  );
+  assert.ok(
+    rows.filter((r) => !r.headerOnly).some((r) => r.a.id === "x"),
+    "and the agent itself is still listed (#18)",
+  );
 });
-
-/* ---------- wiring ---------- */
 
 test("the sidebar renders through sidebarRows() (#18)", () => {
   assert.match(app, /each=\{sidebarRows\(\)\}/, "the For must use the grouped rows (#18)");

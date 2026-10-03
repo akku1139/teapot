@@ -12,6 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/sidebar-tree.ts";
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 // #58 moved the row-building rules into ./sidebar-tree so they could be unit
@@ -32,65 +33,31 @@ interface A {
   workspace: string;
 }
 
-/** mirror of the shipped workspaceOf(): sub-agents inherit their parent's */
-function workspaceOf(agents: A[], id: string, seen = new Set<string>()): string {
-  const a = agents.find((x) => x.id === id);
-  if (!a) return "";
-  if (!a.parent) return a.workspace || "";
-  if (seen.has(id)) return a.workspace || "";
-  seen.add(id);
-  return workspaceOf(agents, a.parent, seen) || a.workspace || "";
+/**
+ * #75 — this file re-implemented `workspaceOf`, `treeRows` and `sidebarRows` as
+ * local mirrors, and asserted against THOSE. Mutation testing proved the
+ * consequence: disabling directory collapse entirely
+ * (`if (false && collapsed.has(\`ws:${ws}\`))`) left all five behavioural tests
+ * here PASSING, because a replica can only ever agree with itself.
+ *
+ * All three are now the shipped functions. The tests are unchanged in intent;
+ * what changed is that they can fail.
+ */
+function rowsFor(agents: A[], collapsed: Set<string> = new Set()) {
+  return sidebarRowsOf(agents, treeRowsOf(agents, new Set(), false, new Set()), collapsed);
 }
 
-/** mirror of the shipped treeRows(): subs hang under their parent */
-function treeRows(agents: A[]): { a: A; depth: number }[] {
-  const byParent = new Map<string, A[]>();
-  const roots: A[] = [];
-  for (const a of agents) {
-    const isSub = a.parent && agents.some((p) => p.id === a.parent);
-    if (isSub) {
-      if (!byParent.has(a.parent!)) byParent.set(a.parent!, []);
-      byParent.get(a.parent!)!.unshift(a);
-    } else roots.push(a);
-  }
-  const rows: { a: A; depth: number }[] = [];
-  const walk = (nodes: A[], depth: number) => {
-    for (const a of nodes) {
-      rows.push({ a, depth });
-      walk(byParent.get(a.id) ?? [], depth + 1);
-    }
-  };
-  walk(roots, 0);
-  return rows;
-}
+/** the chat rows (headers excluded) */
+const chatIds = (agents: A[], collapsed?: Set<string>) =>
+  rowsFor(agents, collapsed)
+    .filter((r) => !r.headerOnly)
+    .map((r) => r.a.id);
 
-/** mirror of the fixed sidebarRows(): annotate headers, honour collapsed groups */
-function sidebarRows(agents: A[], collapsed: Set<string> = new Set()) {
-  const rows = treeRows(agents);
-  const out: { a: A; depth: number; wsHeader?: string }[] = [];
-  let lastWs: string | null = null;
-  for (const r of rows) {
-    const ws = workspaceOf(agents, r.a.id);
-    if (collapsed.has(ws)) {
-      // collapsed: the group keeps a header (so it can be reopened) but its
-      // chats are hidden — and the header is re-emitted for every hidden row
-      // so uncollapsing restores them in their original tree order
-      out.push({ ...r, wsHeader: ws });
-      continue;
-    }
-    const header = ws !== lastWs ? ws : undefined;
-    out.push({ ...r, wsHeader: header });
-    lastWs = ws;
-  }
-  // a fully collapsed group renders exactly ONE header, no agent rows
-  return out.filter((r, i) => {
-    if (r.wsHeader === undefined) return true;
-    const collapsedGroup = collapsed.has(r.wsHeader);
-    if (!collapsedGroup) return true;
-    // keep only the first header of a collapsed run
-    return i === 0 || out[i - 1]!.wsHeader !== r.wsHeader;
-  });
-}
+/** the header labels, in order */
+const headerLabels = (agents: A[], collapsed?: Set<string>) =>
+  rowsFor(agents, collapsed)
+    .filter((r) => r.headerOnly)
+    .map((r) => r.wsHeader);
 
 const agents: A[] = [
   { id: "alpha", parent: "", workspace: "/p/alpha" },
@@ -102,62 +69,51 @@ const agents: A[] = [
 /* ---------- the rule ---------- */
 
 test("a collapsed workspace group renders no chats (#18)", () => {
-  const closed = sidebarRows(agents, new Set(["/p/alpha"]));
-  // /p/alpha holds alpha, alpha-sub (sub-agent) and solo — all hidden, leaving
-  // exactly one header row for the group itself
-  const chatRows = closed.filter((r) => !isHeaderOf(closed, r));
+  // /p/alpha holds alpha, alpha-sub (a sub-agent) and solo — all hidden,
+  // leaving the one header row for the group itself
   assert.deepEqual(
-    chatRows.map((r) => r.a.id),
+    chatIds(agents, new Set(["ws:/p/alpha"])),
     ["beta"],
-    `collapsing /p/alpha must hide its 3 chats, leaving only beta visible (#18)`,
+    "collapsing /p/alpha must hide its 3 chats, leaving only beta visible (#18)",
   );
+  assert.deepEqual(headerLabels(agents, new Set(["ws:/p/alpha"])), ["/p/alpha", "/p/beta"]);
 });
 
-/** true when this row is the ONE header emitted for a collapsed group */
-function isHeaderOf(rows: { wsHeader?: string }[], r: { wsHeader?: string }): boolean {
-  return r.wsHeader !== undefined && /p\/alpha$/.test(r.wsHeader);
-}
-
 test("a collapsed group keeps its header so it can be reopened (#18)", () => {
-  const closed = sidebarRows(agents, new Set(["/p/alpha"]));
-  const headers = closed.map((r) => r.wsHeader).filter(Boolean);
+  const headers = headerLabels(agents, new Set(["ws:/p/alpha"]));
   assert.ok(headers.includes("/p/alpha"), "the collapsed group must still show its header (#18)");
   assert.ok(headers.includes("/p/beta"), "other groups are untouched (#18)");
 });
 
 test("collapsing one group does not collapse another (#18)", () => {
-  const closed = sidebarRows(agents, new Set(["/p/beta"]));
-  const betaRows = closed.filter((r) => workspaceOf(agents, r.a.id) === "/p/beta");
-  const alphaRows = closed.filter((r) => workspaceOf(agents, r.a.id) === "/p/alpha");
-  assert.equal(betaRows.length, 1, "only beta's header should remain (#18)");
-  assert.ok(alphaRows.length > 1, "alpha's chats must all still be visible (#18)");
+  assert.deepEqual(
+    chatIds(agents, new Set(["ws:/p/beta"])),
+    ["alpha", "alpha-sub", "solo"],
+    "collapsing /p/beta must hide ONLY beta (#18)",
+  );
+  assert.deepEqual(
+    headerLabels(agents, new Set(["ws:/p/beta"])),
+    ["/p/alpha", "/p/beta"],
+    "and both group headers survive, so either can be reopened (#18)",
+  );
 });
 
 test("collapsing a group hides the whole subtree under it (#18)", () => {
-  const closed = sidebarRows(agents, new Set(["/p/alpha"]));
-  const leaked = closed.filter(
-    (r) => r.wsHeader !== "/p/alpha" && workspaceOf(agents, r.a.id) === "/p/alpha",
+  const visible = chatIds(agents, new Set(["ws:/p/alpha"]));
+  assert.ok(
+    !visible.includes("alpha-sub"),
+    `a sub-agent must hide with its parent's group (#18); leaked ${JSON.stringify(visible)}`,
   );
-  assert.deepEqual(leaked, [], "a sub-agent must hide with its parent's group (#18)");
 });
 
 test("uncollapsing restores every row in tree order (#18)", () => {
-  const open = sidebarRows(agents);
-  const reopened = sidebarRows(agents, new Set());
-  assert.deepEqual(
-    reopened.map((r) => r.a.id),
-    open.map((r) => r.a.id),
-    "reopening must restore exactly the original tree order (#18)",
-  );
+  const open = chatIds(agents);
+  const reopened = chatIds(agents, new Set());
+  assert.deepEqual(reopened, open, "reopening must restore exactly the original tree order (#18)");
   assert.equal(reopened.length, 4, "all four chats visible again (#18)");
-  // …and a group that was never collapsed must come back byte-identical
-  const onlyBeta = sidebarRows(agents, new Set(["/p/alpha"]));
-  assert.deepEqual(
-    reopened.map((r) => r.wsHeader),
-    open.map((r) => r.wsHeader),
-    "headers must land back in the same place (#18)",
-  );
-  assert.ok(onlyBeta.length < reopened.length, "collapsing must actually shrink the list (#18)");
+  assert.deepEqual(headerLabels(agents, new Set()), headerLabels(agents), "headers land back identically (#18)");
+  const collapsed = chatIds(agents, new Set(["ws:/p/alpha"]));
+  assert.ok(collapsed.length < reopened.length, "collapsing must actually shrink the list (#18)");
 });
 
 /* ---------- wiring: the set must actually be READ ---------- */
