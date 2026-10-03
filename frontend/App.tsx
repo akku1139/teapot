@@ -2055,6 +2055,17 @@ export default function App() {
     // unread notification count in the tab title — "(2) linux · teapot"
     document.title = unreadCount() > 0 ? `(${unreadCount()}) ${base}` : base;
   });
+  /**
+   * Is any overlay open? Single source of truth for the keydown handler (#107).
+   *
+   * The Escape branch and the shortcut guard used to name overlays separately,
+   * and they drifted: Escape handled four plus the narrow drawer, while the
+   * shortcut guard knew only two — so `t` and `/` fired with the themes panel
+   * open, mutating the app behind a visible overlay.
+   */
+  const anyOverlayOpen = (): boolean =>
+    showNew() || showCfg() || showThemes() || editing() !== null || (isNarrow() && showRight());
+
   window.addEventListener("keydown", (e) => {
     const t = e.target as HTMLElement | null;
     const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
@@ -2063,6 +2074,8 @@ export default function App() {
       return;
     }
     if (e.key === "Escape") {
+      // #107: Escape closes overlays; the shortcut guard below reuses the same
+      // predicate so the two cannot disagree about what counts as an overlay.
       if (showNew()) { setShowNew(false); return; }
       if (showCfg()) { setShowCfg(false); return; }
       if (showThemes()) { setShowThemes(false); return; }
@@ -2082,7 +2095,17 @@ export default function App() {
       }
       return;
     }
-    if (showNew() || showCfg()) return;
+    // #107: a single-key shortcut must not fire while ANY overlay is up.
+    //
+    // This guard named only `showNew() || showCfg()`, but the Escape branch just
+    // above handles four overlays plus the narrow drawer — so the two lists could
+    // drift, and they had: with the themes panel open, `t` opened the terminal and
+    // `/` stole focus into the composer behind it. The app mutated state under a
+    // visible overlay.
+    //
+    // So both read from ONE list. Adding a modal now means adding it once, and
+    // forgetting cannot silently reintroduce the bug.
+    if (anyOverlayOpen()) return;
     if (e.key === "/") {
       e.preventDefault();
       document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus();
