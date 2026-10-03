@@ -331,6 +331,23 @@ function printAgentEvent(e: TeapotEvent): void {
   if (line) console.log(`${dim(ts)} ${who} ${line}`);
 }
 
+/**
+ * Reduce an agent id to a safe single path segment.
+ *
+ * Agent ids become directory names, so anything path-like in one is an escape
+ * from the sessions root (#72). Kept in step with the per-call-site
+ * `.replace(/[^\w.-]/g, "-")` calls, and applied in `addAgent` too so the
+ * guarantee holds for every caller.
+ */
+export function sanitizeAgentId(id: string): string {
+  const cleaned = String(id ?? "")
+    .replace(/[^\w.-]/g, "-")
+    // a leading dot would create a hidden dir; ".." would climb out
+    .replace(/^\.+/, "")
+    .slice(0, 60);
+  return cleaned || "agent";
+}
+
 export class Master {
   readonly agents = new Map<string, Agent>();
   /**
@@ -536,6 +553,21 @@ export class Master {
     ac: AgentConfig,
     opts: { persist?: boolean; fresh?: boolean } = {},
   ): Promise<Agent> {
+    // #72: an agent id becomes a DIRECTORY name (sessions/<id>-<hash>), so it
+    // must be a safe path segment. Every caller sanitised its own id — the HTTP
+    // route, spawnChildFor's child name — except the ACP adapter, which passed
+    // the raw client string through, so `session/load {"sessionId":"../../x"}`
+    // created an agent logged outside <dataDir>/sessions/.
+    //
+    // Sanitised HERE as well as at the call sites: this is the one place that
+    // guarantees the property, so a future caller cannot reintroduce the escape
+    // by forgetting. A caller that already sanitised is unaffected — the
+    // transform is idempotent on a safe id.
+    const safeId = sanitizeAgentId(ac.id);
+    if (safeId !== ac.id) {
+      console.warn(`[teapot] agent id ${JSON.stringify(ac.id)} contained unsafe characters; using ${JSON.stringify(safeId)}`);
+    }
+    ac = { ...ac, id: safeId };
     if (this.agents.has(ac.id)) throw new Error(`agent id already exists: ${ac.id}`);
     // provider resolution: inline overrides > named provider > legacy llm block
     const provName = ac.provider ?? this.config.defaultProvider ?? "openrouter";

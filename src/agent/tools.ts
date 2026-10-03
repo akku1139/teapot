@@ -3,7 +3,7 @@
  * Tool specs are plain JSON-schema function definitions — provider-agnostic.
  */
 import { spawn } from "node:child_process";
-import { existsSync, promises as fs, realpathSync } from "node:fs";
+import { existsSync, promises as fs, readlinkSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   discoverSkills,
@@ -133,13 +133,58 @@ export function safeJoin(cwd: string, p: string): string {
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error(`path escapes workspace: ${p}`);
   }
-  // symlinks inside the workspace can point anywhere — resolve the real
-  // target and confine THAT too (path.resolve alone doesn't follow links)
+  // symlinks inside the workspace can point anywhere — resolve the real target
+  // and confine THAT too (path.resolve alone doesn't follow links)
+  //
+  // #74: the old code resolved `abs` and swallowed a throw, treating failure as
+  // "fine". That is exactly backwards, and the failure is the NORMAL case:
+  // `realpathSync` throws ENOENT for a file that does not exist yet, which is
+  // every write_file creating something new. So `real` stayed as the LEXICAL
+  // path — which is inside the workspace — and the symlink guard never ran.
+  //
+  // Demonstrated: with `esc -> /outside` (a real directory), safeJoin allowed
+  // `esc/pwned.txt` and write_file wrote straight through it, landing outside
+  // the workspace. The dangling case happened to fail later with ENOTDIR, which
+  // is luck, not a control.
+  //
+  // So on ENOENT/ENOTDIR, resolve the nearest EXISTING ancestor instead of
+  // giving up. That still catches the escape — the ancestor IS the symlink —
+  // while allowing genuinely new files inside the workspace.
   let real = abs;
   try {
     real = realpathSync(abs);
-  } catch {
-    /* target may not exist yet (write_file) — lexical check above still holds */
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      // Walk up one component at a time. A component that is itself a SYMLINK
+      // must be resolved even when its target does not exist — realpathSync
+      // throws ENOENT for the dangling link itself, so naively walking to the
+      // first existing ancestor steps OVER the symlink and loses it. So read
+      // the link and check its target directly.
+      let probe = path.dirname(abs);
+      for (;;) {
+        try {
+          real = realpathSync(probe);
+          break;
+        } catch (inner) {
+          if ((inner as NodeJS.ErrnoException).code !== "ENOENT") break;
+          // this component is a dangling symlink: resolve where it POINTS
+          try {
+            const target = readlinkSync(probe);
+            real = path.isAbsolute(target) ? target : path.resolve(path.dirname(probe), target);
+            break;
+          } catch {
+            /* not a symlink after all — keep walking */
+          }
+          const next = path.dirname(probe);
+          if (next === probe) break; // reached the filesystem root
+          probe = next;
+        }
+      }
+      // keep the un-resolved tail so the comparison below sees the full path
+      const tail = path.relative(probe, abs);
+      if (tail && !tail.startsWith("..")) real = path.join(real, tail);
+    }
   }
   const relReal = path.relative(cwd, real);
   if (relReal.startsWith("..") || path.isAbsolute(relReal)) {
