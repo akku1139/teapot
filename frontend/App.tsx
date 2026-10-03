@@ -1355,6 +1355,17 @@ export default function App() {
    * size the pairing actually needs rather than a round number that undoes the
    * fix.
    */
+  // #54: measured, not guessed. The `/events` window must exceed the largest
+  // gap between a `tool_call` and its `tool_result`, or the call is evicted while
+  // the command runs and the row can only be rescued by the orphan path.
+  //
+  // Across every session log: the largest observed gap is **1284** events
+  // (wait_children; bash tops out at ~302). Headroom at the worst case is ~716
+  // events and **zero** gaps reach 2000, so eviction is not currently reachable.
+  //
+  // Recorded because this looks like a tuning knob worth "fixing" and is not:
+  // raising it costs a bigger fetch on every refresh. If a future session does
+  // produce a gap near 2000, that is the signal to raise it — not this comment.
   const FEED_PAGE = 2000;
 
   // null = show everything; otherwise only the chosen branch's events
