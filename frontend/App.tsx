@@ -11,6 +11,7 @@ import {
 } from "./live-buffer";
 import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
+import { groupedWith, type RowLike } from "./row-grouping";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 import {
   treeRowsOf,
@@ -4303,32 +4304,11 @@ function rawOf(e: Ev): string {
 function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
-  // Group consecutive rows from the same ACTOR. The actor for tool events is
-  // THE AGENT (they are its actions) — keying by tool name broke grouping as
-  // soon as two different tools ran back to back (bash→read_file→bash).
-  const actorKey = (ev: Ev): string => {
-    const d = ev.data ?? {};
-    if (ev.data?.actor) return `sub:${String(ev.data.actor)}`;
-    if (ev.type === "tool_call" || ev.type === "tool_result") return "agent-tools";
-    if (ev.type === "prompt") return `src:${String(d.source ?? "user")}`;
-    return `type:${ev.type}`;
-  };
-  // A PENDING (queued) message must NEVER group with the row above it (#49).
-  //
-  // The cancel affordance lives inside the msg-head, and that head is only
-  // rendered when !grouped — so a queued message that happened to follow a
-  // SENT user prompt (same actor key, same author) lost its ✕ entirely and
-  // could not be withdrawn. Since #37 deliberately places echoes BELOW settled
-  // rows, "sent → pending" is now the NORMAL case rather than an edge case.
-  const grouped =
-    props.prev &&
-    !e.data?.pending &&
-    !props.prev.data?.pending &&
-    !e.data?.cancelled &&
-    actorKey(props.prev) === actorKey(e) &&
-    authorOf(props.prev).name === a.name &&
-    e.session === props.prev.session &&
-    e.branch === props.prev.branch;
+  // Grouping is `groupedWith()` from ./row-grouping — extracted so the rule can
+  // be tested against the code that runs (#75). It used to live inline here,
+  // and the tests re-implemented it, which is why deleting the real #49 fix left
+  // them all green.
+  const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
 
   // non-chat-looking events become divider lines
   if (e.type === "fork") {

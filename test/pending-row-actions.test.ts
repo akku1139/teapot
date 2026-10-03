@@ -23,34 +23,18 @@ import { readFileSync } from "node:fs";
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
-/* ---------- mirror of MessageRow's grouping predicate ---------- */
-
-const actorKey = (type: string, d: Record<string, unknown>): string =>
-  d.actor
-    ? `sub:${String(d.actor)}`
-    : type === "tool_call" || type === "tool_result"
-      ? "agent-tools"
-      : type === "prompt"
-        ? `src:${String(d.source ?? "user")}`
-        : `type:${type}`;
-
-const authorOf = (type: string, d: Record<string, unknown>): string =>
-  type === "prompt" && d.source === "user" ? "you" : type === "message" ? "agent" : "harness";
-
-/** the predicate AS IT MUST BE after the fix */
-function groupedAfterFix(
-  prev: { type: string; data: Record<string, unknown> } | undefined,
-  e: { type: string; data: Record<string, unknown> },
-): boolean {
-  return !!(
-    prev &&
-    !e.data.pending &&
-    !prev.data.pending &&
-    !e.data.cancelled &&
-    actorKey(prev.type, prev.data) === actorKey(e.type, e.data) &&
-    authorOf(prev.type, prev.data) === authorOf(e.type, e.data)
-  );
-}
+/**
+ * #75 — this file re-implemented MessageRow's grouping predicate locally, and
+ * asserted against ITS OWN copy. The comment even said "the predicate AS IT
+ * MUST BE after the fix", which is an aspiration rather than the code.
+ *
+ * Deleting the real #49 fix left all four behavioural tests here PASSING,
+ * because the local mirror still had the fix in it.
+ *
+ * The predicate now lives in `frontend/row-grouping.ts` — the module the
+ * component itself calls — so these tests drive the code that runs.
+ */
+import { groupedWith, actorKeyOf, authorOf as groupedAuthorOf } from "../frontend/row-grouping.ts";
 
 const SENT = { type: "prompt", data: { source: "user", promptId: "u1" } };
 const PENDING = { type: "prompt", data: { source: "user", promptId: "u2", pending: true } };
@@ -60,7 +44,7 @@ const PENDING = { type: "prompt", data: { source: "user", promptId: "u2", pendin
 test("a queued message following a sent one does NOT group (#49)", () => {
   // the exact sequence from the report
   assert.equal(
-    groupedAfterFix(SENT, PENDING),
+    groupedWith(SENT, PENDING),
     false,
     "grouping hides the msg-head, which holds the ✕ cancel — the queued row " +
       "would be un-actionable (#49)",
@@ -75,7 +59,7 @@ test("a queued message never groups, whatever precedes it (#49)", () => {
   ];
   for (const prev of cases) {
     assert.equal(
-      groupedAfterFix(prev, PENDING),
+      groupedWith(prev, PENDING),
       false,
       `a queued row must never group (prev was ${prev.type}) (#49)`,
     );
@@ -86,7 +70,7 @@ test("an already-grouped sent row still groups with its neighbour (#49)", () => 
   // the fix must not disable grouping everywhere — consecutive SENT prompts
   // (e.g. after a reload) should still collapse as before
   assert.equal(
-    groupedAfterFix(SENT, { type: "prompt", data: { source: "user", promptId: "u3" } }),
+    groupedWith(SENT, { type: "prompt", data: { source: "user", promptId: "u3" } }),
     true,
     "normal grouping of settled rows must be preserved (#49)",
   );
@@ -94,7 +78,7 @@ test("an already-grouped sent row still groups with its neighbour (#49)", () => 
 
 test("a withdrawn row does not group either (#49)", () => {
   assert.equal(
-    groupedAfterFix(SENT, { type: "prompt", data: { source: "user", cancelled: true } }),
+    groupedWith(SENT, { type: "prompt", data: { source: "user", cancelled: true } }),
     false,
     "a withdrawn row keeps its own header (#49)",
   );
@@ -120,13 +104,33 @@ test("edit buttons are focusable and become visible on focus (#49)", () => {
 
 /* ---------- wiring ---------- */
 
-test("App.tsx guards the grouping predicate on pending/cancelled (#49)", () => {
-  const i = app.indexOf("const grouped =");
-  assert.ok(i > 0, "grouping predicate not found");
-  const block = app.slice(i, i + 520);
-  assert.match(block, /!e\.data\?\.pending/, "the pending row must be excluded (#49)");
-  assert.match(block, /!props\.prev\.data\?\.pending/, "a pending predecessor must break the group (#49)");
-  assert.match(block, /!e\.data\?\.cancelled/, "a withdrawn row must be excluded (#49)");
+test("the SHIPPED predicate excludes pending and cancelled rows (#49)", () => {
+  // #75: this used to grep App.tsx for the guard. The predicate has since moved
+  // to frontend/row-grouping.ts, so grepping the component was checking that a
+  // string still lived in a particular file rather than that the rule holds.
+  //
+  // The behavioural tests above now drive the real module, so this one only has
+  // to assert that the COMPONENT still calls it — otherwise the extraction could
+  // silently stop being used and the tests would keep passing against a module
+  // nothing imports.
+  assert.match(
+    app,
+    /groupedWith\(props\.prev/,
+    "MessageRow must call the shared predicate (#49/#75)",
+  );
+  const src = readFileSync(new URL("../frontend/row-grouping.ts", import.meta.url), "utf8");
+  assert.match(src, /!e\.data\?\.pending/, "the pending row must be excluded (#49)");
+  assert.match(src, /!prev\.data\?\.pending/, "a pending predecessor must break the group (#49)");
+  assert.match(src, /!e\.data\?\.cancelled/, "a withdrawn row must be excluded (#49)");
+});
+
+test("the shared predicate is imported, not re-declared in App.tsx (#75)", () => {
+  assert.match(app, /from "\.\/row-grouping"/, "the import must exist (#75)");
+  assert.doesNotMatch(
+    app,
+    /const actorKey = \(ev/,
+    "the local copy must be gone, or it can drift again (#75)",
+  );
 });
 
 test("the cancel button lives inside the header the group flag controls (#49)", () => {
