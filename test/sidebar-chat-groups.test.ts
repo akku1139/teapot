@@ -263,7 +263,7 @@ test("a collapsed chat is NEVER removed from the tree (#18)", () => {
   assert.ok(rows.some((r) => !r.headerOnly && r.a.id === "gamma"), "gamma stays (#18)");
 });
 
-test("a collapsed chat's row is still selectable (#18/#66)", () => {
+test("a collapsed chat's row is still selectable, and selects without expanding (#18/#66/#85)", () => {
   const app2 = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
   const css2 = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
@@ -272,18 +272,32 @@ test("a collapsed chat's row is still selectable (#18/#66)", () => {
   // report: with every chat collapsed you could not get into any of them,
   // because the only way back was the ~9px caret on a row that looked inert.
   //
-  // A collapsed chat is a normal chat that happens to be CLOSED. Clicking it now
-  // selects it and expands it — the first click does what the row obviously
-  // means — so a collapsed row can never become a dead end.
+  // A collapsed chat is a normal chat that happens to be CLOSED, and it must be
+  // selectable — what made it read as unselectable was its APPEARANCE
+  // (`opacity: .5` + `cursor: default`), fixed in the CSS.
+  assert.match(
+    app2,
+    /onclick=\{\(\) => select\(row\.a\.id\)\}/,
+    "a collapsed chat must be selectable (#66)",
+  );
   assert.doesNotMatch(
     app2,
     /onclick=\{\(\) => \{ if \(!row\.chatCollapsedGroup\) select\(row\.a\.id\); \}\}/,
     "a collapsed chat must not be a dead entry (#66)",
   );
+  // #85: and selecting must NOT force the subtree open. An earlier version of
+  // #66's fix did expand on select, which is the over-correction this corrects:
+  // the collapse state is the operator's, not the click's.
+  assert.doesNotMatch(
+    app2,
+    /if \(row\.chatCollapsedGroup\) toggleWsGroup/,
+    "the row click must not expand the chat (#85)",
+  );
+  // the caret is still the control that toggles it
   assert.match(
     app2,
-    /if \(row\.chatCollapsedGroup\) toggleWsGroup\(`chat:\$\{row\.a\.id\}`/,
-    "clicking it expands the chat (#66)",
+    /if \(isChat\) toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, off\)/,
+    "the caret must remain the expand control (#85)",
   );
 
   // it still READS as closed — via the caret, not by fading out (#66)

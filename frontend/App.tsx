@@ -2595,17 +2595,19 @@ export default function App() {
               <div
                 class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "") + (row.chatCollapsedGroup ? " collapsed" : "")}
                 style={row.depth > 0 ? `padding-left:${10 + row.depth * 14}px` : ""}
-                // #66: a COLLAPSED chat must still be selectable. The row is a
-                // normal chat that happens to be closed, and the report was that
-                // with every chat collapsed you could not get into any of them —
-                // the only way back was the ~9px caret, which nobody looks for
-                // on a row that looked inactive. Clicking it now selects the
-                // chat AND expands it, so the first click does what the row
-                // obviously means.
-                onclick={() => {
-                  if (row.chatCollapsedGroup) toggleWsGroup(`chat:${row.a.id}`, row.a.id, true);
-                  select(row.a.id);
-                }}
+                // #66: a COLLAPSED chat must be selectable. What made it read as
+                // unselectable was its APPEARANCE — `opacity: .5` plus
+                // `cursor: default`, so a collapsed parent looked greyed out and
+                // disabled. That was a styling bug, and it is fixed in the CSS:
+                // the name is full-contrast and the row keeps `cursor: pointer`.
+                //
+                // #85: an earlier version of this ALSO expanded the chat on
+                // select. That was my over-correction — the operator's collapse
+                // state is theirs, and forcing it open on every visit made the
+                // sub-agent list impossible to keep out of the way. Clicking the
+                // row now only selects; the CARET is the control that expands,
+                // and both directions remain reversible.
+                onclick={() => select(row.a.id)}
                 title={row.a.parent ? `sub-agent of @${row.a.parent}` : undefined}
               >
                 {/* A TOP-LEVEL CHAT is always collapsible, whether or not it has

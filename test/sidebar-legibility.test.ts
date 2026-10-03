@@ -118,11 +118,15 @@ test("a collapsed chat is NOT dimmed (#66)", () => {
 });
 
 test("a collapsed chat is still clickable (#66)", () => {
-  // #66's title is the real bug: "you cannot select from the chat list without
-  // expanding the sub-agent list". The row click was guarded so a collapsed chat
-  // could only be reopened through its ~9px caret — and on a row that looked
-  // inactive nobody looks for a control there. Clicking now selects the chat AND
-  // expands it, so the collapsed row is never a dead end.
+  // #66's title is "you cannot select from the chat list without expanding the
+  // sub-agent list", and what that actually described was the APPEARANCE: a
+  // collapsed parent rendered at `opacity: .5` with `cursor: default`, so it
+  // read as greyed-out and disabled. That was a styling bug and this is its fix
+  // — full-contrast name, pointer cursor, row still clickable.
+  //
+  // An earlier attempt also made the click EXPAND the chat. That was an
+  // over-correction (#85): the operator's collapse state is theirs, and forcing
+  // it open on every visit made the sub-agent list impossible to keep away.
   assert.match(
     lastRule(".agent-item.collapsed"),
     /cursor:\s*pointer/,
@@ -156,9 +160,21 @@ test("the collapsed caret is what shows the state (#66)", () => {
  * dead call is then dead in the model too, and the assertion fails.
  */
 function sidebarRowOnClick(src: string): string {
-  const anchor = 'onclick={() => {\n                  if (row.chatCollapsedGroup)';
-  const at = src.indexOf(anchor);
+  // The handler has been two shapes: a block (`onclick={() => { ... }}`) and a
+  // single expression (`onclick={() => select(row.a.id)}` — the current form,
+  // since #85 removed the expand). Both must be locatable, or the tests would
+  // silently stop finding it.
+  const block = src.indexOf("onclick={() => {\n                  if (row.chatCollapsedGroup)");
+  const expr = src.indexOf("onclick={() => select(row.a.id)");
+  const at = block !== -1 ? block : expr;
   assert.notEqual(at, -1, "the sidebar row must have a click handler (#66)");
+  if (block === -1) {
+    // expression form: up to the closing paren of the attribute
+    const arrow = src.indexOf("=>", at) + 2;
+    // the expression ends at the ")" that closes the JSX attribute
+    const end = src.indexOf(")", arrow);
+    return src.slice(arrow, end + 1);
+  }
   // walk braces from the block's opening to find its real end
   const open = src.indexOf("{", src.indexOf("=>", at));
   let depth = 0;
@@ -192,11 +208,12 @@ function statementsOf(body: string): string[] {
   return out;
 }
 
-test("clicking a collapsed chat selects it and expands it (#66)", () => {
+test("clicking a collapsed chat selects it WITHOUT expanding it (#66/#85)", () => {
   const body = sidebarRowOnClick(readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8"));
   const stmts = statementsOf(body);
 
-  // 1. selecting must be a TOP-LEVEL statement — not nested in any guard
+  // 1. selecting must be a TOP-LEVEL statement — not nested in any guard. A dead
+  //    select is the #66 bug, and a regex cannot see deadness.
   const selectStmt = stmts.find((x) => x.includes("select(row.a.id)"));
   assert.ok(selectStmt, `select(row.a.id) must appear (#66); got ${JSON.stringify(stmts)}`);
   assert.doesNotMatch(
@@ -205,27 +222,16 @@ test("clicking a collapsed chat selects it and expands it (#66)", () => {
     `select must NOT be inside a conditional — a dead select is the #66 bug (#66); got ${selectStmt}`,
   );
 
-  // 2. expanding must be guarded on exactly the collapsed case
-  const expandStmt = stmts.find((x) => x.includes("toggleWsGroup"));
-  assert.ok(expandStmt, "the expand must appear (#66)");
-  assert.match(
-    expandStmt,
-    /^if \(row\.chatCollapsedGroup\)/,
-    `the expand is guarded on the collapsed state (#66); got ${expandStmt}`,
-  );
-  assert.match(
-    expandStmt,
-    /toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, true\)/,
-    `and it passes isCollapsed=true so it EXPANDS rather than toggling shut (#66); got ${expandStmt}`,
+  // 2. #85: the row must NOT touch the collapse state. The operator's collapse
+  //    is theirs; forcing it open on every visit made the sub-agent list
+  //    impossible to keep out of the way. The caret is the only control.
+  assert.doesNotMatch(
+    body,
+    /toggleWsGroup|setWsCollapsed|chatCollapsed/,
+    `the row click must not expand or collapse anything (#85); got ${body}`,
   );
 
-  // 3. order matters: expand before select, so the chat is open when selected
-  assert.ok(
-    stmts.indexOf(expandStmt) < stmts.indexOf(selectStmt),
-    `expanding first means the chat is already open when it becomes selected (#66); got ${JSON.stringify(stmts)}`,
-  );
-
-  // 4. and the dead-end guard must be GONE — a collapsed row is never inert
+  // 3. and the dead-end guard must be gone entirely
   assert.doesNotMatch(
     body,
     /if \(!row\.chatCollapsedGroup\)/,
@@ -233,17 +239,32 @@ test("clicking a collapsed chat selects it and expands it (#66)", () => {
   );
 });
 
-test("the dead-end guard cannot hide inside any statement (#66)", () => {
-  // a second, cheap net: no branch anywhere in the handler may SKIP the select
-  const body = sidebarRowOnClick(readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8"));
-  const branches = body.match(/if\s*\([^)]*\)\s*(?!\{)/g) ?? [];
-  // every `if` in this handler must be the collapse guard itself
-  for (const b of branches) {
-    assert.match(
-      b,
-      /if\s*\(row\.chatCollapsedGroup\)/,
-      `the only conditional in this handler should be the collapse guard (#66); found ${b}`,
-    );
-  }
+test("the caret remains the control that expands (#85)", () => {
+  // The other half of #85: removing expand-on-select must not remove the ability
+  // to expand. The caret handler still toggles, in both directions.
+  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const caretAt = app.indexOf("if (isChat) toggleWsGroup");
+  assert.ok(caretAt > 0, "the caret must still toggle the chat group (#85)");
+  const around = app.slice(caretAt - 200, caretAt + 200);
+  assert.match(
+    around,
+    /toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, off\)/,
+    `the caret passes the current state, so it toggles both ways (#85); got ${around.slice(120, 260)}`,
+  );
 });
+
+
+test("the row handler has no conditional at all (#66/#85)", () => {
+  // The handler is now a single unconditional `select(...)`. A conditional here
+  // could only reintroduce either bug: guard it and the row becomes a dead end
+  // (#66), or branch on the collapsed state and it forces the subtree open
+  // (#85). So the assertion is simply "no branches".
+  const body = sidebarRowOnClick(readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8"));
+  assert.doesNotMatch(
+    body,
+    /\b(if|for|while|switch)\b/,
+    `the row handler must be unconditional (#66/#85); got ${body}`,
+  );
+});
+
 
