@@ -9,7 +9,7 @@ import {
   isOwnLiveWork,
   pruneDeadLiveBuffers,
 } from "./live-buffer";
-import { placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
+import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { groupedWith, type RowLike } from "./row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./question-answered";
@@ -994,9 +994,23 @@ export default function App() {
       // a marker, so it renders as withdrawn rather than as a sent message
       const cancelSeq = cancelledNotes.get(pid);
       if (cancelSeq !== undefined && e.data) (e.data as any).cancelled = true;
-      // move it down to whichever note comes LAST (delivery or cancellation) —
-      // that is where the model actually consumed (or dropped) it (#37)
-      visible[i] = resequenceToDelivery(e, Math.max(deliveredNotes.get(pid) ?? 0, cancelSeq ?? 0) || undefined);
+      // Move it down to wherever the model actually consumed (or dropped) it.
+      //
+      // #37: an UNDELIVERED prompt has no delivery note yet, so this left it at
+      // its original seq — which is the position where it was TYPED. The agent
+      // kept working meanwhile, so its later turns were logged at higher seqs
+      // and rendered BELOW the prompt that has not been sent yet. The model
+      // receives it after that work, so the timeline said the opposite.
+      //
+      // So an undelivered user prompt sits at the BOTTOM, just above the echo
+      // block: that is where it will be consumed, and the echo immediately below
+      // it is the same message. A delivered one still moves to its delivery
+      // note, which is more precise and unchanged.
+      const delivered = deliveredNotes.get(pid) ?? 0;
+      const settled = Math.max(delivered, cancelSeq ?? 0) || undefined;
+      visible[i] = settled !== undefined
+        ? resequenceToDelivery(e, settled)
+        : { ...e, seq: pendingFloor(visible) };
     }
     const pend = pendingMsgs().filter((p) => {
       if (!p.promptId) return true;
