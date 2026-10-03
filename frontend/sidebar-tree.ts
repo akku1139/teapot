@@ -78,7 +78,37 @@ export function treeRowsOf<T extends TreeAgent>(
   hideGhosts = false,
   collapsedChats: ReadonlySet<string> = new Set(),
 ): TreeRow<T>[] {
-  const list = hideGhosts ? agents.filter((a) => !a.workspaceMissing) : agents;
+  // #81: the ghost filter used to drop ghost sessions outright, BEFORE the
+  // parent-presence check below. A ghost PARENT with a live CHILD therefore
+  // orphaned that child: it became a root, and the directory grouping then put
+  // it under the ghost's directory as a separate group at the BOTTOM of the
+  // list, separated from everything it belongs with. That is the reported
+  // "a session that has sub-agents shows none of them".
+  //
+  // So a ghost is only dropped when nothing visible hangs under it. A ghost that
+  // still has live descendants stays in the list as the anchor they need — it is
+  // exactly the structure 👻 is meant to hide, but hiding the parent hides the
+  // children too.
+  const list = hideGhosts
+    ? agents.filter((a) => {
+        if (!a.workspaceMissing) return true;
+        // keep a ghost if anything NOT hidden descends from it
+        const stack = [a.id];
+        const seenIds = new Set<string>();
+        while (stack.length) {
+          const id = stack.pop()!;
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          for (const c of agents) if (c.parent === id && !seenIds.has(c.id)) stack.push(c.id);
+        }
+        // if every descendant is also a ghost, this ghost can go safely
+        for (const id of seenIds) {
+          const d = agents.find((x) => x.id === id);
+          if (d && !d.workspaceMissing) return true; // a live descendant needs this anchor
+        }
+        return false;
+      })
+    : agents;
   const byParent = new Map<string, T[]>();
   const roots: T[] = [];
   for (const a of list) {
@@ -97,12 +127,17 @@ export function treeRowsOf<T extends TreeAgent>(
       // the collapse actually hides. Dropping the row too is what strands a
       // chat: with the `chat:<id>` header gone, nothing else on screen controls
       // it and the stored key is never cleared.
+      //
+      // #81: this used to `continue`, which emitted the row here AND skipped the
+      // recursion — while sidebarRowsOf ALSO emits the row. So the chat appeared
+      // once (fine) but nothing marked it collapsed and, more importantly, the
+      // recursion into its children was skipped for a reason that had nothing to
+      // do with them. The row is emitted once, here, and the collapse simply
+      // stops DESCENDING — the sub-agents stay in the tree, hidden under their
+      // parent by sidebarRowsOf, which is what the 🧩 count has always implied.
       const chatOff = depth === 0 && collapsedChats.has(chatGroupKeyOf(list, a));
-      if (chatOff) {
-        rows.push({ a, depth });
-        continue;
-      }
       rows.push({ a, depth });
+      if (chatOff) continue;
       const kids = byParent.get(a.id);
       if (kids?.length && !collapsedSubs.has(a.id)) walk(kids, depth + 1);
     }
@@ -121,6 +156,10 @@ export function treeRowsOf<T extends TreeAgent>(
   const groupKeys: string[] = [];
   const groups = new Map<string, T[]>();
   for (const a of roots) {
+    // #81: an orphaned sub-agent (parent not in `list`) is handled in the
+    // dedicated pass below, which can resolve a workspace for it. Grouping it
+    // here as well would emit it twice.
+    if (a.parent) continue;
     const ws = workspaceOf(list, a.id);
     const g = groups.get(ws);
     if (g) g.push(a);
@@ -129,18 +168,65 @@ export function treeRowsOf<T extends TreeAgent>(
       groupKeys.push(ws);
     }
   }
+  // #81: a sub-agent whose parent is NOT in `list` is treated as a ROOT, and
+  // the grouping above then emits it BEFORE any header — so it rendered as a
+  // bare row outside its project, with nothing above it. Two real ways that
+  // happens: 👻 (hideGhosts) filters the list BEFORE the parent-presence check,
+  // and removing a parent deletes it without reparenting its children.
+  //
+  // The 🧩 badge counts against `agents()`, not this list, so an orphan was
+  // counted but not displayed — the badge and the tree disagreed, which is the
+  // reported symptom: a session that HAS sub-agents showing none of them.
+  //
+  // So an orphan is grouped under its parent's DIRECTORY (workspaceOf walks up
+  // through the missing parent), giving it the header it belongs to.
+  //
+  // An orphan with no resolvable directory gets a synthetic group rather than
+  // being dropped: #81 was "a session that HAS sub-agents shows none of them",
+  // and grouping silently is how it hid. These agents have no project to belong
+  // to, so they are collected under one, which keeps them listed and keeps every
+  // project group homogeneous — a header for them is honest ("no workspace")
+  // rather than a bare row floating above the list.
+  const ORPHANS = "";
+  for (const a of roots) {
+    if (!a.parent) continue;
+    const ws = workspaceOf(agents, a.id) || ORPHANS;
+    const g = groups.get(ws);
+    if (g) g.push(a);
+    else {
+      groups.set(ws, [a]);
+      groupKeys.push(ws);
+    }
+  }
+
   for (const ws of groupKeys) walk(groups.get(ws)!, 0);
   return rows;
 }
 
-/** The directory an agent belongs to; a sub-agent inherits its parent's. */
+/**
+ * The directory an agent belongs to; a sub-agent inherits its parent's.
+ *
+ * #81: an ORPHANED sub-agent — one whose parent is not in the list, which
+ * happens when 👻 (hideGhosts) filters the parent out or a parent is removed
+ * without reparenting — used to resolve to `""`, because the walk stops at an
+ * id it cannot find. That put it outside every group: no header above it, and
+ * no project. Its 🧩 badge still counted (that asks `agents()`), so the badge
+ * said 4 and the tree showed none.
+ *
+ * So when the parent cannot be resolved, fall back to this agent's OWN
+ * declared workspace. Many sub-agents carry one; and where it is empty too,
+ * the row still renders (just ungrouped) rather than vanishing.
+ */
 export function workspaceOf(agents: readonly TreeAgent[], id: string, seen = new Set<string>()): string {
   const a = agents.find((x) => x.id === id);
   if (!a) return "";
   if (!a.parent) return a.workspace || "";
   if (seen.has(id)) return a.workspace || ""; // cycle guard
   seen.add(id);
-  return workspaceOf(agents, a.parent, seen) || a.workspace || "";
+  const parentWs = workspaceOf(agents, a.parent, seen);
+  if (parentWs) return parentWs;
+  // parent unresolvable — use our own workspace rather than nothing
+  return a.workspace || "";
 }
 
 /** The group a chat collapses under — resolved to its TOP-LEVEL ancestor. */
