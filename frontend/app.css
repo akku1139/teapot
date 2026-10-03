@@ -916,3 +916,99 @@ h3 .filetoggle { margin-left: 0; }
   white-space: nowrap; flex-shrink: 0;
 }
 .agent-item.sel .notifbadge { background: var(--bg-darkest); }
+
+/* ---- #102: three native controls the dark themes never styled ----
+ *
+ * All three are the browser's own widget, so it paints with the UA default —
+ * which is light. `accent-color` (set above) covers only the CHECKED state of a
+ * checkbox, and none of them had any rule at all.
+ *
+ * Every colour is a theme token, so all ten appearances are fixed at once rather
+ * than per-theme.
+ */
+
+/* 1. an UNCHECKED checkbox: the box itself, not the tick.
+   accent-color colours the check mark once checked; the empty box stayed white. */
+input[type="checkbox"] {
+  background-color: var(--bg-darkest);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+/* Only when the browser supports it: appearance:none removes the native widget,
+   which is what lets the background show at all. Without support the rule is
+   ignored and the accent-color above still applies — so this degrades safely. */
+@supports (appearance: none) {
+  input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    display: inline-grid;
+    place-content: center;
+    cursor: pointer;
+  }
+  /* the tick, drawn rather than inherited from the UA */
+  input[type="checkbox"]:checked::before {
+    content: "✓";
+    font-size: 11px;
+    line-height: 1;
+    color: var(--bg-darkest);
+    font-weight: 700;
+  }
+  input[type="checkbox"]:checked {
+    background-color: var(--acc);
+    border-color: var(--acc);
+  }
+  input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--acc);
+    outline-offset: 1px;
+  }
+  /* disabled must not look interactive */
+  input[type="checkbox"]:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+}
+
+/* 2. the native number-input spinners. These are drawn by the UA in a colour it
+   picks for itself, so they stay white no matter what the field's background is.
+   Both the standard and the prefixed pseudo-elements are needed: Chromium wants
+   -webkit-, and -moz- for the value text keeps Firefox consistent. */
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* 3. the settings window's "+ add custom" / "+ add task" buttons. There was NO
+   rule for a bare <button> anywhere in the sheet — only .composer button and
+   .iconbtn — so these two rendered as unstyled UA buttons: white-on-white text
+   on a white box. Deliberately scoped to .modal so it cannot repaint the
+   composer or the icon buttons, which already have their own styling. */
+.modal > button,
+.modal button:not(.iconbtn):not([class]) {
+  background: var(--bg-light);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.modal > button:hover,
+.modal button:not(.iconbtn):not([class]):hover {
+  background: var(--bg-mid);
+  border-color: var(--acc);
+}
+.modal > button:focus-visible,
+.modal button:not(.iconbtn):not([class]):focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
+}
