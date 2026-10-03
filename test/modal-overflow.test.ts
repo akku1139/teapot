@@ -14,25 +14,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
-/** body of the rule whose selector list contains `token` */
+/**
+ * #75: this located a rule by `indexOf(token)` — the first textual mention — and
+ * returned the RAW body, so a declaration quoted in a comment could satisfy an
+ * assertion on it. Now the shared helper: comments stripped, selector matched
+ * exactly (or as one entry of a selector list).
+ */
 function ruleBody(token: string): string {
-  const i = css.indexOf(token);
-  assert.notEqual(i, -1, `no rule mentioning ${token} in app.css`);
-  const open = css.indexOf("{", i);
-  assert.notEqual(open, -1);
-  let depth = 0;
-  for (let j = open; j < css.length; j++) {
-    if (css[j] === "{") depth++;
-    else if (css[j] === "}") {
-      depth--;
-      if (depth === 0) return css.slice(open + 1, j);
-    }
-  }
-  throw new Error("unterminated rule");
+  return cssRuleBody(css, token);
 }
 
 test("modal controls may shrink below their content width (#36)", () => {

@@ -22,34 +22,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
-/** Body of the FIRST rule whose SELECTOR list contains `selector`. */
+/**
+ * #75: this scanned the stylesheet itself and returned the RAW rule body, so a
+ * declaration that lived only inside an explanatory comment satisfied any
+ * assertion made on it — the same class that left `attach-x-circle` and
+ * `composer-attach` passing with their entire fix deleted.
+ *
+ * Now the shared helper, which strips comments and matches the selector exactly.
+ */
 function firstRule(selector: string): string {
-  let i = 0;
-  for (;;) {
-    const open = css.indexOf("{", i);
-    if (open === -1) throw new Error(`no rule with selector ${selector}`);
-    const prevClose = css.lastIndexOf("}", open);
-    const selStart = prevClose === -1 ? 0 : prevClose + 1;
-    let depth = 0;
-    let close = -1;
-    for (let j = open; j < css.length; j++) {
-      if (css[j] === "{") depth++;
-      else if (css[j] === "}") {
-        depth--;
-        if (depth === 0) {
-          close = j;
-          break;
-        }
-      }
-    }
-    if (close === -1) throw new Error(`unterminated rule at ${open}`);
-    if (css.slice(selStart, open).includes(selector)) return css.slice(open + 1, close);
-    i = close + 1;
-  }
+  return cssRuleBody(css, selector);
 }
 
 /**

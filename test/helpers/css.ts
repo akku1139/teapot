@@ -65,22 +65,26 @@ export function cssRuleBody(
   opts: { last?: boolean } = {},
 ): string {
   const last = opts.last !== false;
+  // the REQUEST is trimmed too: several callers pass `".agent-item "` copied from
+  // a selector list, and rejecting that would push them back to an ad-hoc scanner
+  const want = selector.trim();
   let found: string | null = null;
   for (const r of rules(css)) {
-    if (r.selector.split(",").some((part) => part.trim() === selector)) {
+    if (r.selector.split(",").some((part) => part.trim() === want)) {
       if (found === null || last) found = r.body;
       if (!last) return found;
     }
   }
-  if (found === null) throw new Error(`no rule whose selector is exactly ${JSON.stringify(selector)}`);
+  if (found === null) throw new Error(`no rule whose selector is exactly ${JSON.stringify(want)}`);
   return found;
 }
 
 /** All rule bodies whose selector list contains `selector` as one entry. */
 export function cssRuleBodies(css: string, selector: string): string[] {
+  const want = selector.trim();
   const out: string[] = [];
   for (const r of rules(css)) {
-    if (r.selector.split(",").some((part) => part.trim() === selector)) out.push(r.body);
+    if (r.selector.split(",").some((part) => part.trim() === want)) out.push(r.body);
   }
   return out;
 }
