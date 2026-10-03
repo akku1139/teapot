@@ -1359,6 +1359,8 @@ export class Agent {
     const pendingStop = this.stopRequested;
     if (this.status === "running" && !pendingStop) return;
     this.stopRequested = false;
+    // claim the status against any stop write still queued behind us (#86)
+    this.stopSeq++;
     this.awaitingUser = false; // a fresh start answers/resumes past any ask_user
     void this.enqueue(async () => {
       await this.ensureReady(); // lazy restore before the loop touches history
@@ -1376,11 +1378,32 @@ export class Agent {
     this.abort?.abort();
     this.toolAbort.abort();
     this.wake?.();
+    // #86: the status write is DEFERRED onto the run chain, so it can land
+    // AFTER a start() that followed it. Observed: `idle -> stopped -> running ->
+    // running -> idle`. The agent did resume — but it flashed "stopped" on the
+    // way, and finished idle rather than running, so from the UI the operator's
+    // ▶ start looked like it had done nothing.
+    //
+    // `start()` clears stopRequested synchronously, which is what makes this
+    // detectable: by the time this task runs, a start has already claimed the
+    // agent and the stop no longer owns the status.
+    //
+    // So record WHEN the stop was requested, and let a start that came after it
+    // win. A stop issued while the agent is genuinely still running behaves
+    // exactly as before.
+    const stopSeq = ++this.stopSeq;
     void this.enqueue(() => {
+      // Only a start() that arrived AFTER this stop may claim the status. The
+      // seq check alone does that — no status test, because a genuinely running
+      // agent must still be reported "stopped" (#86).
+      if (this.stopSeq !== stopSeq) return Promise.resolve();
       this.setStatus("stopped", reason);
       return Promise.resolve();
     });
   }
+
+  /** monotonic counter: a start() bumps it, so a pending stop status write loses */
+  private stopSeq = 0;
 
   private setStatus(s: AgentStatus, reason = ""): void {
     // Update the field FIRST. log.append fires onEvent synchronously, and the
