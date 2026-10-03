@@ -679,9 +679,40 @@ export default function App() {
   const pendingKey = (): string => timelineId() || selected() || "?";
   const pendingFor = (key: string): PendingEcho[] => pendingBySession.get(key) ?? [];
   const writePending = (key: string, next: PendingEcho[]): void => {
-    if (next.length === 0) pendingBySession.delete(key);
-    else pendingBySession.set(key, next);
-    if (pendingKey() === key) setPendingMsgs(next);
+    // #100: at most ONE echo per promptId, enforced here because this is the
+    // single point every writer passes through.
+    //
+    // Two writers can add an echo for the same message: the #87 rebuild effect
+    // (which materialises an echo for any id in the server's queue) and the send
+    // path (which appends one when the POST resolves). The rebuild checks what it
+    // already holds, so whichever writes FIRST wins and the other appends a
+    // duplicate — and the snapshot carrying `pendingPromptQueue` can arrive
+    // before the POST resolves, so this is a genuine race, not a fixed order.
+    //
+    // `reconcilePending` cannot catch it: it trims to the server's queued COUNT,
+    // which is 1, so it never inspects two echoes that agree on a single id.
+    //
+    // Fixing either writer alone would leave the other; deduping on the id here
+    // holds however the race resolves, and catches any future third writer.
+    // The LAST occurrence wins, so a writer that has fresher text (the rebuild
+    // carries the server's copy) is not discarded by the earlier one.
+    const seen = new Set<string>();
+    const deduped: PendingEcho[] = [];
+    for (let i = next.length - 1; i >= 0; i--) {
+      const p = next[i]!;
+      const id = p.promptId;
+      if (!id) {
+        deduped.push(p); // no id: cannot be matched, keep it
+        continue;
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      deduped.push(p);
+    }
+    deduped.reverse();
+    if (deduped.length === 0) pendingBySession.delete(key);
+    else pendingBySession.set(key, deduped);
+    if (pendingKey() === key) setPendingMsgs(deduped);
   };
 
   /* ---------- notification center (in-app only; push later) ---------- */

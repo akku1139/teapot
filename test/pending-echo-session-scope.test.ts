@@ -55,9 +55,17 @@ test("every mutation of the echo list goes through the per-session writer (#87)"
   const writes = [...app.matchAll(/setPendingMsgs\(/g)].map((m) => m.index);
   for (const at of writes) {
     const line = app.slice(app.lastIndexOf("\n", at) + 1, app.indexOf("\n", at));
-    // the signal is only ever set directly by writePending and by the restore
-    const allowed =
-      /setPendingMsgs\(next\)/.test(line) || /setPendingMsgs\(pendingFor\(/.test(line) || /setPendingMsgs\(\[\]\)/.test(line);
+    // The allowed call sites are identified by WHERE they are, not by the local
+    // variable they happen to pass. This used to require the literal
+    // `setPendingMsgs(next)`, which broke when #100 renamed that local to
+    // `deduped` — so it asserted a VARIABLE NAME rather than the rule it meant
+    // to pin, and failed on correct code.
+    //
+    // The rule: either the call sits inside `writePending` (which keeps the map
+    // and the signal in step), or it is the session-restore read.
+    const insideWriter = app.lastIndexOf("const writePending =", at) > app.lastIndexOf("\n  };", at);
+    const isRestore = /setPendingMsgs\(pendingFor\(/.test(line);
+    const allowed = insideWriter || isRestore;
     assert.ok(
       allowed,
       `setPendingMsgs must go through writePending so the map stays in step (#87); got: ${line.trim()}`,
@@ -70,12 +78,17 @@ test("the echo set is not re-derived from the timeline on return (#87)", () => {
   // single source of truth for which echoes belong to a session
   assert.match(
     app,
-    /if \(next\.length === 0\) pendingBySession\.delete\(key\);/,
+    // `\w+` because the list is the DEDUPED one since #100 — the rule is
+    // "an empty list deletes the entry", not which local holds it
+    /if \(\w+\.length === 0\) pendingBySession\.delete\(key\);/,
     "an emptied session drops its entry rather than accumulating (#87)",
   );
   assert.match(
     app,
-    /else pendingBySession\.set\(key, next\);/,
+    // was `else pendingBySession.set(key, next)` — a literal that broke when
+    // #100 introduced the `deduped` local. The rule is "a non-empty list is
+    // stored under its session key", not which name the list has.
+    /else pendingBySession\.set\(key, \w+\);/,
     "and a session with echoes is remembered (#87)",
   );
 });
