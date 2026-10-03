@@ -1783,7 +1783,15 @@ export class Agent {
       }
 
       for (const call of m.tool_calls) {
-        if (this.stopRequested) return finished;
+        if (this.stopRequested) {
+          // #54: this returned straight out of the turn, SKIPPING the
+          // answerUnansweredToolCalls backstop below — so every remaining
+          // tool_call in this assistant message stayed logged with NO
+          // tool_result anywhere, and its row rendered as "waiting for
+          // output…" for the rest of the session.
+          await this.answerUnansweredToolCalls(m);
+          return finished;
+        }
         if (call.function.name === "finish") {
           this.pendingSubReport = ""; // the real summary supersedes it
           await this.handleFinish(call.function.arguments);
@@ -1874,6 +1882,13 @@ export class Agent {
           this.awaitingUser = true;
           this.setStatus("waiting", question.slice(0, 80));
           // control flow: park the loop; the operator's next prompt resumes it
+          //
+          // #54: answer the rest of this assistant batch BEFORE parking. The
+          // throw leaves the whole tool loop, so any EARLIER call in the same
+          // message that was logged but not yet run kept no tool_result — the
+          // comment on the backstop below says as much, and it is exactly the
+          // path that bites in practice because ask_user is common.
+          await this.answerUnansweredToolCalls(m);
           throw Object.assign(new Error("waiting for user"), { name: "WaitForUser" });
         }
         if (call.function.name === "get_todo") {
@@ -2014,8 +2029,22 @@ export class Agent {
         });
         const t0 = Date.now();
         // first filesystem touch creates a missing workspace (never at boot)
-        await this.ensureWorkspace();
-        const result = await executeTool(call.function.name, call.function.arguments, this.toolCtx);
+        // #54: this is awaited BETWEEN the tool_call append above and the
+        // tool_result append below, and `fs.mkdir` has no catch — so a failure
+        // propagated out of the whole loop, leaving the call logged with no
+        // result ANYWHERE, and its row read "waiting for output…" for good.
+        //
+        // The loop's own backstop could not save it: it sits at the bottom of
+        // the same loop, which a throw skips. So the tool_result is written in a
+        // `finally` — the call is answered whatever happens.
+        // the type is inferred from executeTool, so this cannot drift from it
+        let result: Awaited<ReturnType<typeof executeTool>>;
+        try {
+          await this.ensureWorkspace();
+          result = await executeTool(call.function.name, call.function.arguments, this.toolCtx);
+        } catch (err) {
+          result = { ok: false, result: `tool could not run: ${(err as Error).message}` };
+        }
         this.stats.toolCalls++;
         await this.log.append("tool_result", this.currentSession, this.currentBranch, {
           callId: call.id,

@@ -1615,11 +1615,30 @@ export default function App() {
   let onTabVisible: (() => void) | null = null;
   document.addEventListener("visibilitychange", () => onTabVisible?.());
   onCleanup(() => { onTabVisible = null; });
+  // the FIRST onopen must not double-load; every later one is a reconnect (#54)
+  let firstConnect = true;
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const sock = new WebSocket(`${proto}${location.host}/api/ws${wsTokenQuery()}`);
     ws = sock;
-    sock.onopen = () => setConnected(true);
+    // #54: a reconnect RESYNCS. The server delivers events only to live
+    // sockets and replays nothing, so anything logged while the socket was down
+    // — a bash tool_result above all — simply never arrived. The feed refresh
+    // is otherwise 100% dependent on an unbroken stream, which is why the
+    // ordinary HTTP path appeared to work and the socket path did not.
+    //
+    // The first connect is skipped: select() already loads events, and doing it
+    // twice would double every fetch on startup.
+    sock.onopen = () => {
+      setConnected(true);
+      if (!firstConnect) {
+        firstConnect = true;
+        return;
+      }
+      // a reconnect — drain anything missed, including a hidden-tab defer
+      pendingRefresh = true;
+      if (document.visibilityState === "visible") void runFeedRefresh();
+    };
     sock.onclose = () => {
       setConnected(false);
       setTimeout(connectWs, 1500); // reconnect with a fixed short backoff
