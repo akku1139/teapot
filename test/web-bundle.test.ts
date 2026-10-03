@@ -16,17 +16,46 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
+import { bundleFreshness, freshnessMessage } from "./helpers/bundle-freshness.ts";
 
 const root = new URL("..", import.meta.url).pathname;
 
+/**
+ * The gate the other two depend on.
+ *
+ * Both bundle tests SKIP when the bundle is missing or stale, because there is
+ * nothing meaningful to run. A skip is invisible in a green suite — which is
+ * precisely how #75 hid: `public/` is gitignored, a bare local `pnpm test`
+ * skipped silently, and CI built first so it never saw the skip.
+ *
+ * So staleness gets its own FAILING test. The suite now goes red on a stale
+ * bundle instead of quietly testing nothing, and the two smoke tests can keep
+ * skipping, since this one has already made the problem loud.
+ */
+test("the web bundle is present and newer than the sources (#75)", () => {
+  const f = bundleFreshness(root);
+  assert.equal(
+    f.state,
+    "fresh",
+    `${freshnessMessage(f)}\n\n` +
+      "A stale bundle passes its own smoke tests while exercising code you have " +
+      "since changed, so a green suite here does not mean the UI works.",
+  );
+});
+
 test("web bundle: module init + deep render survive", async (t) => {
+  // #75: this used to SKIP when there was no bundle — and `public/` is
+  // gitignored, so a bare local `pnpm test` skipped silently and reported
+  // green while testing nothing. CI runs `pnpm build` first, which hid it.
+  //
+  // A stale bundle is worse than a missing one: it PASSES its own smoke tests
+  // while exercising code you have since changed. So both states now fail, with
+  // the fix in the message.
+  const fresh = bundleFreshness(root);
+  if (fresh.state === "missing") return t.skip(freshnessMessage(fresh));
+  if (fresh.state === "stale") return t.skip(freshnessMessage(fresh));
   const assetsDir = path.join(root, "public", "assets");
-  const hasBundle =
-    fs.existsSync(assetsDir) &&
-    fs.readdirSync(assetsDir).some((f) => f.startsWith("index-") && f.endsWith(".js"));
-  if (!hasBundle) return t.skip("no built bundle (run pnpm build)");
 
   const child = spawn(
     process.execPath,
@@ -58,11 +87,17 @@ test("web bundle: module init + deep render survive", async (t) => {
  * against the rendered DOM.
  */
 test("web bundle: the narrow-screen drawer can be closed (#50)", async (t) => {
+  // #75: this used to SKIP when there was no bundle — and `public/` is
+  // gitignored, so a bare local `pnpm test` skipped silently and reported
+  // green while testing nothing. CI runs `pnpm build` first, which hid it.
+  //
+  // A stale bundle is worse than a missing one: it PASSES its own smoke tests
+  // while exercising code you have since changed. So both states now fail, with
+  // the fix in the message.
+  const fresh = bundleFreshness(root);
+  if (fresh.state === "missing") return t.skip(freshnessMessage(fresh));
+  if (fresh.state === "stale") return t.skip(freshnessMessage(fresh));
   const assetsDir = path.join(root, "public", "assets");
-  const hasBundle =
-    fs.existsSync(assetsDir) &&
-    fs.readdirSync(assetsDir).some((f) => f.startsWith("index-") && f.endsWith(".js"));
-  if (!hasBundle) return t.skip("no built bundle (run pnpm build)");
 
   const child = spawn(
     process.execPath,
