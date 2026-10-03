@@ -393,13 +393,20 @@ const MAX_WS_CLIENTS = 64;
 
   // create + start an agent on an arbitrary directory
   app.post("/api/agents", async (c) => {
-    const body = await c.req.json<{
+    // #110: `.catch(() => null)` like every other body read in this file. An
+    // unparseable body used to throw inside the handler and surface as a bare
+    // 500 — a client bug reported to the operator as a server fault, and it made
+    // the route's own `400 "workspace required"` unreachable.
+    const body = await c.req
+      .json<{
       workspace?: string;
       id?: string;
       provider?: string;
       model?: string;
       start?: boolean;
-    }>();
+    }>()
+      .catch(() => null);
+    if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (!body.workspace?.trim()) return c.json({ error: "workspace required" }, 400);
     const ws = resolveWorkspace(body.workspace, path.dirname(master.configPath));
     try {
@@ -780,7 +787,10 @@ const MAX_WS_CLIENTS = 64;
   app.post("/api/agents/:id/prompt", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    const body = await c.req.json<{ text?: string; start?: boolean; images?: { url: string; name?: string }[] }>();
+    const body = await c.req
+      .json<{ text?: string; start?: boolean; images?: { url: string; name?: string }[] }>()
+      .catch(() => null); // #110
+    if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (!body.text?.trim() && !body.images?.length)
       return c.json({ error: "text or images required" }, 400);
     // validate images: data URLs or http(s), size-capped (a 20MB base64 blob
@@ -803,7 +813,8 @@ const MAX_WS_CLIENTS = 64;
   app.post("/api/agents/:id/prompt/cancel", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    const body = await c.req.json<{ promptId?: string }>();
+    const body = await c.req.json<{ promptId?: string }>().catch(() => null); // #110
+    if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (!body.promptId) return c.json({ error: "promptId required" }, 400);
     const text = a.cancelPrompt(body.promptId);
     if (text === null) return c.json({ error: "not pending (already delivered?)" }, 409);
@@ -898,7 +909,9 @@ const MAX_WS_CLIENTS = 64;
       status?: "active" | "done" | "paused";
       notify?: boolean;
       verify?: string; // verification contract (pi-goal-x style completion audit)
-    }>();
+    }>()
+      .catch(() => null); // #110
+    if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (body.text) {
       await a.setGoal(body.text);
       if (typeof body.verify === "string" && body.verify.trim())
