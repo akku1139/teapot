@@ -820,16 +820,27 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
    textarea because .composer had no bottom padding room left). */
 .composer { display: flex; flex-direction: column; }
 .composer .hint { flex-shrink: 0; }
-.composer.maximized { position: absolute; inset: 0; z-index: 5; background: var(--bg-dark); padding: 16px; padding-bottom: 10px; }
+.composer.maximized {
+  position: absolute; inset: 0; z-index: 5;
+  background: var(--bg-dark);
+  /* #65: the BOTTOM padding must match the normal composer's 18px. It was 10px
+     here, so maximizing moved the hint 8px and the composer's bottom edge with
+     it — which is the whole complaint, and it survived the earlier min-height:0
+     fix because that fixed the form's GROWTH, not its position. The padding
+     here is the only thing anchoring the hint once the wrapper is inset:0. */
+  padding: 16px 16px 18px;
+}
 /* maximized: the hint must keep its normal-flow slot under the form — the
    textarea's growth used to squeeze it and the text sat visibly off-grid */
 .composer.maximized .hint {
   flex-shrink: 0;
-  margin-top: 8px;
+  margin-top: 5px; /* the normal .hint uses 5px — matching it keeps the gap */
+  /* #65: deliberately NOT nowrap+ellipsis. On a narrow screen the normal hint
+     WRAPS to two lines; maximizing switched it to a single clipped line ending
+     in "...", so the gap between the input and the text below it changed with
+     the viewport width. Letting it wrap keeps the block identical in both
+     states, which is what makes the bottom edge stable. */
   line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 /* hide the timeline by painting OVER it (visibility:hidden kept the feed's
    own scroll handler alive and it could steal the composer's clicks) */

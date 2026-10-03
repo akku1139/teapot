@@ -181,3 +181,84 @@ test("the maximize control and the class are still wired (#65)", () => {
   );
   assert.match(app, /composerMaximized\(\)/, "and be driven by state (#65)");
 });
+
+/* ---------- the BOTTOM EDGE, not just the growth (#65, second pass) ---------- */
+
+/*
+ * The first #65 fix added `min-height: 0` so the form would stop growing and
+ * push the hint down. That fixed the GROWTH but not the POSITION, and the
+ * complaint came back:
+ *
+ *   "下端は固定されていて欲しい … の位置もそれによってずれる"
+ *
+ * Two independent causes, both in the maximized overrides:
+ *
+ *  1. `.composer.maximized` used `padding-bottom: 10px` while the normal
+ *     `.composer` uses `18px`. The wrapper is `position:absolute; inset:0`, so
+ *     that padding is the ONLY thing anchoring the hint — and it differed by
+ *     8px between states. Maximizing therefore moved the composer's bottom
+ *     edge, which is precisely what was asked not to happen.
+ *
+ *  2. the maximized hint carried `white-space: nowrap` + `text-overflow:
+ *     ellipsis`, while the normal `.hint` wraps. On a narrow screen the normal
+ *     hint occupies two lines and the maximized one a single clipped line, so
+ *     the gap between the input and the text below changed with viewport width.
+ */
+
+
+test("the maximized composer keeps the normal bottom padding (#65)", () => {
+  // read both paddings and compare the BOTTOM value, rather than asserting a
+  // literal — the invariant is "they match", not "it is 18"
+  const normal = lastRule(".composer");
+  const maximized = lastRule(".composer.maximized");
+  const bottomOf = (body: string): string | null => {
+    const m = body.match(/padding:\s*([^;]+)/);
+    if (m) {
+      const parts = m[1]!.trim().split(/\s+/);
+      return parts.length === 3 ? parts[2]! : parts[1] ?? null;
+    }
+    const b = body.match(/padding-bottom:\s*([^;]+)/);
+    return b ? b[1]!.trim() : null;
+  };
+  assert.equal(
+    bottomOf(maximized),
+    bottomOf(normal),
+    `the maximized composer must anchor the hint at the SAME distance from the bottom (#65); ` +
+      `normal=${bottomOf(normal)} maximized=${bottomOf(maximized)}`,
+  );
+});
+
+test("the maximized hint wraps like the normal one (#65)", () => {
+  const maximized = lastRule(".composer.maximized .hint");
+  assert.doesNotMatch(
+    maximized,
+    /white-space:\s*nowrap/,
+    "nowrap makes a narrow-screen hint collapse to one clipped line (#65)",
+  );
+  assert.doesNotMatch(
+    maximized,
+    /text-overflow:\s*ellipsis/,
+    "and ellipsis is what produced the trailing '...' (#65)",
+  );
+});
+
+test("the maximized hint keeps the normal top margin (#65)", () => {
+  // the gap between input and hint is part of "the bottom edge looks fixed"
+  const normal = lastRule(".hint");
+  const maximized = lastRule(".composer.maximized .hint");
+  const m = (b: string) => (b.match(/margin-top:\s*([^;]+)/) ?? [])[1]?.trim() ?? null;
+  assert.equal(
+    m(maximized),
+    m(normal),
+    `the input-to-hint gap must not change on maximize (#65); normal=${m(normal)} maximized=${m(maximized)}`,
+  );
+});
+
+test("the form can still shrink — the first fix must not be undone (#65)", () => {
+  // guards the regression this second fix could have caused
+  assert.match(
+    lastRule(".composer.maximized form"),
+    /min-height:\s*0/,
+    "min-height:0 is still load-bearing (#65)",
+  );
+});
