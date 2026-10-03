@@ -287,6 +287,83 @@ export default function App() {
     onCleanup(() => window.removeEventListener("resize", onResize));
     onResize(); // a late load can land on the other side of the breakpoint
   });
+
+  /* #103: a resize must not move the operator's place in the timeline.
+   *
+   * `scrollTop` is a PIXEL offset into content whose height just changed. Narrow
+   * -> wide re-wraps every line, so the same text needs fewer rows and
+   * `scrollHeight` SHRINKS; the browser then clamps `scrollTop` to the new
+   * maximum. Nothing was added or removed, yet the view lands somewhere else:
+   *
+   *     before: content 2000, scrollTop 1500, at the bottom
+   *     after : content 1200, max scrollTop 700 -> clamped from 1500 to 700
+   *             => 800px further from the bottom than before
+   *
+   * Two guarantees, in order of what the operator asked for:
+   *
+   *   1. if they were FOLLOWING (at the bottom), keep following. Widening the
+   *      window while reading new output must not unpin it.
+   *   2. otherwise keep the topmost VISIBLE row in place. That is the only
+   *      stable thing across a re-wrap — a pixel offset is not, since the rows
+   *      above it changed height.
+   */
+  onMount(() => {
+    let raf = 0;
+    const onResize = () => {
+      // coalesce: a drag-resize fires this continuously, and each measurement
+      // forces layout. One pass per frame is enough.
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const f = feedEl();
+        if (!f) return;
+        // measured BEFORE the reflow settles is unreliable, so use the slack
+        // test that `nearBottom` uses rather than an exact offset
+        const wasFollowing = atBottom();
+        const anchorRow =
+          wasFollowing || !f.scrollHeight ? null : firstVisibleRow(f as HTMLElement);
+        if (!wasFollowing && !anchorRow) return;
+        // let the layout settle, then restore
+        requestAnimationFrame(() => {
+          if (!f.isConnected) return;
+          if (wasFollowing) {
+            f.scrollTop = f.scrollHeight;
+            setMissed(0);
+            return;
+          }
+          const el = anchorRow && f.querySelector<HTMLElement>(anchorRow.sel);
+          if (el) {
+            const delta = el.getBoundingClientRect().top - anchorRow.top;
+            if (delta) f.scrollTop += delta;
+          }
+        });
+      });
+    };
+    window.addEventListener("resize", onResize);
+    onCleanup(() => {
+      window.removeEventListener("resize", onResize);
+      if (raf) cancelAnimationFrame(raf);
+    });
+  });
+
+  /** A selector that identifies the topmost visible timeline row, plus its
+   *  viewport-relative top. Used as the anchor a resize must preserve (#103). */
+  function firstVisibleRow(
+    f: HTMLElement,
+  ): { sel: string; top: number } | null {
+    // rows already carry `data-eid` (their log event id), which is stable across
+    // a re-wrap — unlike a pixel offset or a row INDEX
+    const rows = f.querySelectorAll<HTMLElement>("[data-eid]");
+    const feedTop = f.getBoundingClientRect().top;
+    for (const el of rows) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > feedTop) {
+        const eid = el.dataset.eid ?? "";
+        return eid ? { sel: `[data-eid="${CSS.escape(eid)}"]`, top: r.top } : null;
+      }
+    }
+    return null;
+  }
   const [showRight, setShowRight] = createSignal(
     localStorage.getItem("teapot.panel") !== null
       ? localStorage.getItem("teapot.panel") === "1"
