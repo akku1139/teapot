@@ -1944,7 +1944,18 @@ export class Agent {
             this.goal.status === "done" ? "(goal complete)" : "(round ended)",
           );
           finished = true;
-          continue;
+          // #105: `continue` advanced the TOOL-CALL loop, so every later call in
+          // this same assistant message still executed — a model emitting
+          // finish() plus one more call got real filesystem writes AFTER it had
+          // reported `final: true` and the goal was already done. The parent was
+          // told the work finished while the workspace was still being mutated.
+          //
+          // So finish ends the BATCH: answer anything still outstanding (so no
+          // tool_call is left unpaired — the provider rejects the next request
+          // otherwise, #76) and leave the tool loop. The outer loop then returns
+          // on `finished`.
+          await this.answerUnansweredToolCalls(m);
+          return true;
         }
         if (call.function.name === "report_progress") {
           await this.recordProgress(call.function.arguments);
