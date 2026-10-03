@@ -464,6 +464,45 @@ export class Agent {
   }
 
   /**
+   * A context size we are willing to act on.
+   *
+   * #73: `lastUsage.input` is the provider's own count, so it is normally the
+   * most accurate number available — but a provider that under-reports (a proxy
+   * that omits the field's real value, a broken gateway, a model served through
+   * a shim) makes BOTH safety gates believe the context is nearly empty:
+   *
+   *     maybePrune()    est < budget * 0.6   -> 0 prunes, forever
+   *     maybeCompact()  before < budget       -> 0 compactions, forever
+   *
+   * Reproduced: ~40k characters of real conversation, provider reporting
+   * `prompt_tokens: 10` — zero prunes, zero compactions, and a gauge reading 10,
+   * so nothing looks wrong. The context then overflows for real, with the
+   * defence that exists to stop exactly that switched off.
+   *
+   * So the reported number is used, but never as the ONLY number: it is floored
+   * against the local estimate. The estimate is a heuristic; the point is that
+   * `??` was the wrong way to combine a measurement with a floor — it only falls
+   * back when the value is ABSENT, so a confidently wrong value was trusted more
+   * than the guess.
+   *
+   * The floor is a HALF of the local estimate. A quarter was tried first and
+   * was too weak to clear the 0.6-of-budget threshold for a realistic session
+   * (estimate 5108 → floored 1277 against a 3600 bar), so the guard still would
+   * not have fired. Half keeps the intent — catch "reported 10 when the real
+   * prompt is large" — without arguing with a provider whose tokenizer
+   * legitimately differs from ours, since a provider within 2x of the estimate
+   * is not the failure mode being defended against.
+   */
+  private contextSizeForBudgeting(): number {
+    const estimated = this.estimateTokens();
+    const reported = this.lastUsage?.input;
+    if (reported === undefined) return estimated;
+    // a provider reporting nothing at all is a different bug; treat it as unknown
+    if (!Number.isFinite(reported) || reported <= 0) return estimated;
+    return Math.max(reported, Math.floor(estimated / 2));
+  }
+
+  /**
    * Is this agent doing work that `stop()` would actually stop?
    *
    * `status` cannot answer this on its own. Three states count as live:
@@ -1294,7 +1333,20 @@ export class Agent {
 
   /** Start (or resume) autonomous operation toward the goal. */
   start(reason = "start"): void {
-    if (this.status === "running") return;
+    // #76: a stop() immediately followed by start() USED TO BE SILENTLY LOST.
+    //
+    // `stop()` only flips the status via an ENQUEUED task, so between the two
+    // calls the status is still "running" and the guard below returned early —
+    // before `stopRequested = false` could run. The stop then landed, the loop
+    // exited, and the agent ended "stopped" with the restart discarded. The same
+    // window made a stop+restart abort the new round's first tool.
+    //
+    // So a pending stop is not a reason to refuse a start. The loop's own
+    // guards (`stopRequested` re-checked after every await) keep the old turn
+    // from running on, and enqueue() serialises the two tasks, so the restart
+    // is ordered after the stop rather than racing it.
+    const pendingStop = this.stopRequested;
+    if (this.status === "running" && !pendingStop) return;
     this.stopRequested = false;
     this.awaitingUser = false; // a fresh start answers/resumes past any ask_user
     void this.enqueue(async () => {
@@ -1502,6 +1554,12 @@ export class Agent {
         this.abort = null;
         const name = (err as Error).name;
         if (name === "StopRequested" || name === "AbortError" || this.stopRequested) throw err;
+        // #76: a context-overflow error is the caller's to handle, not ours to
+        // retry. Retrying the SAME oversized request four times with 5s/5s/30s
+        // waits cannot succeed, and it delays the compact-and-retry that would
+        // — so the overflow path never even ran. This is the same
+        // "present, correct, and inert" shape as #54.
+        if (isContextOverflow(err)) throw err;
         if (attempt >= maxAttempts) throw err;
         const waitMs = waits[Math.min(attempt - 1, waits.length - 1)]!;
         await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -1951,11 +2009,54 @@ export class Agent {
           );
         }
       }
+      // #76: every tool_call an assistant message issued must have a matching
+      // tool result, or the provider REJECTS the next request — which is the
+      // "`200 with no choices`" shape #50 traced to a malformed history.
+      //
+      // Two exits could leave some unanswered: `stopRequested` returns early
+      // mid-batch, and a handler that throws (ask_user parking the loop is the
+      // one that bites in practice) propagates out of the whole loop. Restore
+      // has a hole-filler for exactly this; the LIVE array did not, so a session
+      // that hit it produced an invalid next request and then failed with
+      // something that looked like a provider fault.
+      //
+      // So the invariant is enforced here rather than at each exit: whatever
+      // happened, answer what is still outstanding before moving on.
+      await this.answerUnansweredToolCalls(m);
       if (finished) return true;
     }
     // cap reached — loop() logs the note, asks for a progress report and
     // nudges the model; this round simply ends (no hard error)
     return finished;
+  }
+
+  /**
+   * Append a tool result for every tool_call in `m` that has not been answered.
+   *
+   * Scans the tail of `messages` for `tool_call_id`s, so it is correct whichever
+   * path left the batch unfinished — a stop, a throw, or a normal completion
+   * where a handler returned early. Answered calls are left alone.
+   */
+  private async answerUnansweredToolCalls(m: ChatMessage): Promise<void> {
+    const calls = m.tool_calls ?? [];
+    if (!calls.length) return;
+    const answered = new Set<string>();
+    for (const existing of this.messages) {
+      if (existing.role === "tool" && existing.tool_call_id) answered.add(existing.tool_call_id);
+    }
+    for (const call of calls) {
+      if (answered.has(call.id)) continue;
+      const content = "(not completed — the tool did not run)";
+      this.messages.push({ role: "tool", tool_call_id: call.id, content });
+      await this.log.append("tool_result", this.currentSession, this.currentBranch, {
+        callId: call.id,
+        name: call.function.name,
+        ok: false,
+        durationMs: 0,
+        result: content,
+        synthesized: true,
+      });
+    }
   }
 
   private buildMessages(): ChatMessage[] {
@@ -2344,7 +2445,7 @@ export class Agent {
    * protected so current work never loses its footing.
    */
   private maybePrune(): number {
-    const est = this.lastUsage?.input ?? this.estimateTokens();
+    const est = this.contextSizeForBudgeting(); // floored — see #73
     const budget = this.opts.contextTokenBudget;
     if (!budget || est < budget * 0.6) return 0; // prune only when it matters
     // protect the recent tail (~half the budget in chars) from any pruning
@@ -2404,7 +2505,7 @@ export class Agent {
     // for providers that omit usage
     // stage 1: clip oversized old tool outputs before considering a summarize
     this.maybePrune();
-    const before = this.lastUsage?.input ?? this.estimateTokens();
+    const before = this.contextSizeForBudgeting(); // floored — see #73
     if (!force && before < this.opts.contextTokenBudget) return;
     if (!force && this.opts.autoCompact === false) return;
     // a forced pass on an already-tiny history would just summarize the
