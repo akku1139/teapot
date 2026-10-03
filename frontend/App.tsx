@@ -1578,20 +1578,34 @@ export default function App() {
   onCleanup(() => { onTabVisible = null; });
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    ws = new WebSocket(`${proto}${location.host}/api/ws${wsTokenQuery()}`);
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => {
+    const sock = new WebSocket(`${proto}${location.host}/api/ws${wsTokenQuery()}`);
+    ws = sock;
+    sock.onopen = () => setConnected(true);
+    sock.onclose = () => {
       setConnected(false);
       setTimeout(connectWs, 1500); // reconnect with a fixed short backoff
     };
-    ws.onerror = () => ws?.close();
+    sock.onerror = () => sock.close();
     // event types that don't change the feed — refreshing on every one of
     // these would hammer /events several times per turn for nothing
     const FEED_IRRELEVANT = new Set(["state", "usage", "session_start"]);
     // (live buffers are keyed per agent in liveByAgent — see the App body)
-    ws.onmessage = (m) => {
+    sock.onmessage = (m) => {
       const msg = JSON.parse(m.data);
-      if (msg.kind === "ping" || msg.kind === "pong") return;
+      // #79: the server's ping doubles as a liveness probe — a client that has
+      // stopped answering is reaped, because its send buffer grows without
+      // bound while it is not reading. So the reply is now MANDATORY, not
+      // optional politeness: silently dropping the ping would get every real
+      // client disconnected after two intervals.
+      if (msg.kind === "ping") {
+        try {
+          sock.send(JSON.stringify({ kind: "pong" }));
+        } catch {
+          /* socket already closing */
+        }
+        return;
+      }
+      if (msg.kind === "pong") return;
       if (msg.kind === "event" && isTurnBoundary(msg.event)) {
         // TURN BOUNDARY (#40). The agent's `status` does not change between
         // tool calls inside one round, so a completed reply's live buffer was

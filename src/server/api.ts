@@ -117,6 +117,15 @@ function mimeFor(rel: string, kind: "image" | "video" | "audio"): string {
 export function buildApp(master: Master): Hono {
   const app = new Hono();
 
+/**
+ * Cap on concurrent `/api/ws` event-stream clients (#79).
+ *
+ * Each one holds a listener on the global bus and receives every agent's
+ * events, so this bounds real fan-out. 64 is far above any plausible number of
+ * open tabs on a LAN and low enough that a runaway client cannot exhaust memory.
+ */
+const MAX_WS_CLIENTS = 64;
+
   // Optional bearer auth for LAN exposure — TEAPOT_API_TOKEN env wins, else
   // the config's `password` field. Static files stay public; only /api/* is
   // gated. WebSocket handshakes can't send headers → they accept ?token=.
@@ -132,6 +141,17 @@ export function buildApp(master: Master): Hono {
 
   // per-agent terminal spawn guard
   const termCounts = new Map<string, number>();
+
+  /**
+   * Live `/api/ws` event-stream connections (#79).
+   *
+   * Every one of these receives EVERY agent's events, so the count is a direct
+   * multiplier on fan-out, and `bus.setMaxListeners(1000)` only silences a
+   * warning — it does not bound anything. Capped so a stuck or hostile client
+   * cannot pin unbounded memory, and paired with a liveness check below so a
+   * client that stops reading is reaped rather than buffered for ever.
+   */
+  let wsClients = 0;
 
   /**
    * Agent ids reserved by an in-flight create (#71).
@@ -160,8 +180,29 @@ export function buildApp(master: Master): Hono {
     upgradeWebSocket(() => {
       let onUpdate: ((ev: unknown) => void) | null = null;
       let ka: ReturnType<typeof setInterval> | null = null;
+      // set by onOpen, cleared by a pong. Declared at the connection's scope
+      // because onMessage is a SIBLING handler and cannot see a local in onOpen.
+      let awaitingPong = false;
+      let counted = false;
       return {
         onOpen(_evt, ws) {
+          // #79: refuse beyond the cap rather than accepting and buffering.
+          // Each connection costs a listener on the global bus and receives
+          // every agent's events, so this bounds real memory, not just a count.
+          if (wsClients >= MAX_WS_CLIENTS) {
+            try {
+              ws.send(JSON.stringify({ kind: "error", error: `too many event-stream clients (max ${MAX_WS_CLIENTS})` }));
+              ws.close(1013, "too many clients");
+            } catch {
+              /* already gone */
+            }
+            return;
+          }
+          wsClients++;
+          counted = true;
+          // a client that stops reading makes ws.send buffer without bound; the
+          // app-level ping doubles as a liveness probe — if a ping goes
+          // unanswered the socket is reaped instead of accumulating
           const send = (data: unknown) => {
             try {
               ws.send(JSON.stringify(data));
@@ -182,14 +223,29 @@ export function buildApp(master: Master): Hono {
             send(ev);
           };
           bus.on("update", onUpdate);
-          // app-level liveness ping every 30s
-          ka = setInterval(() => send({ kind: "ping" }), 30_000);
+          // app-level liveness ping every 30s, and a reaper for a client that
+          // has stopped answering (#79)
+          ka = setInterval(() => {
+            if (awaitingPong) {
+              // the previous ping went unanswered: the client is not reading,
+              // so its send buffer is growing. Reap it.
+              try {
+                ws.close(1011, "unresponsive");
+              } catch {
+                /* already gone */
+              }
+              return;
+            }
+            awaitingPong = true;
+            send({ kind: "ping" });
+          }, 30_000);
         },
         onMessage(evt, ws) {
           // clients may send {"kind":"ping"} — nothing else to do today
           try {
             const m = JSON.parse(String(evt.data));
             if (m?.kind === "ping") ws.send(JSON.stringify({ kind: "pong" }));
+            if (m?.kind === "pong") awaitingPong = false;
           } catch {
             /* ignore junk */
           }
@@ -197,6 +253,9 @@ export function buildApp(master: Master): Hono {
         onClose() {
           if (ka) clearInterval(ka);
           if (onUpdate) bus.off("update", onUpdate);
+          // only a connection that was actually admitted owns a slot — a
+          // refused one must not decrement one it never took (#70's lesson)
+          if (counted) wsClients = Math.max(0, wsClients - 1);
         },
       };
     }),

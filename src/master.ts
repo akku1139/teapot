@@ -1449,11 +1449,28 @@ if (active().length === 0) wake();
       // remove from map so a re-spawn after restart doesn't carry state
       this.agents.delete(id);
     });
-    const timeout = new Promise<void>((_, reject) =>
-      setTimeout(() => reject(new Error("agent stop timeout")), timeoutMs),
-    );
-    await Promise.race([Promise.all(stopPromises), timeout]);
-    console.log("[teapot] all agents stopped");
+    // #79: two problems with racing a timeout against the real work.
+    //
+    // 1. The timer was never cleared, so it kept the event loop alive for the
+    //    FULL timeout after a fast, successful stop — a 30s handle on a stop
+    //    that took milliseconds.
+    // 2. On timeout, the promises that HAD completed had already deleted their
+    //    agents from `this.agents`, while their peers were still mid-dispose.
+    //    `restartServer` then threw BEFORE spawning its replacement, so the
+    //    process was left serving with a half-empty agent map and no successor.
+    //
+    // Fixed by clearing the timer, and by reporting which agents did NOT stop
+    // so the caller can decide rather than being left half-dead.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("agent stop timeout")), timeoutMs);
+    });
+    try {
+      await Promise.race([Promise.all(stopPromises), timeout]);
+      console.log("[teapot] all agents stopped");
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Restart the server process (spawns a new master, keeps this one alive until ready). */
