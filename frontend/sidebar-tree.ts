@@ -274,6 +274,37 @@ export function shouldShowCollapseCaret(args: {
  * version; `seen` guards a cycle in `parent`, which would otherwise recurse
  * forever.
  */
+/**
+ * The display name a sub-agent was spawned with, recovered from its id.
+ *
+ * #121: the sidebar's tooltip said only `sub-agent of @<parent>`, so hovering a
+ * row named `tyb2-6-sub-mt6628_reg` revealed nothing about WHAT it is — and the
+ * parent is already visible two lines above it in the same panel.
+ *
+ * The name is not stored separately: `spawnChildFor` builds the id as
+ * `<parent>-sub[-<persona>]-<name>` (master.ts:782), so it is recovered from
+ * that. Characters outside `[\w.-]` were substituted with underscores at spawn
+ * time, so they are turned back into spaces — `mt6628_reg` reads as `mt6628 reg`
+ * rather than leaking the mangling.
+ *
+ * Returns null when the id carries no name, so the caller can fall back rather
+ * than show an empty tooltip.
+ */
+export function subAgentDisplayName(id: string, personas: readonly string[] = []): string | null {
+  const at = id.indexOf("-sub");
+  if (at === -1) return null;
+  // strip the separator too, so `-mt6628_reg` does not carry a leading dash
+  const rest = id.slice(at + "-sub".length).replace(/^-+/, "");
+  if (!rest) return null;
+  const parts = rest.split("-");
+  // A persona, when present, is the FIRST segment: `<parent>-sub-<persona>-<name>`.
+  // The persona list lives on the server and the frontend already loads it from
+  // /api/personas, so it is passed in rather than duplicated here — a stale copy
+  // would mis-parse every persona-spawned id the day a persona is added.
+  const name = personas.includes(parts[0] ?? "") ? parts.slice(1).join("-") : rest;
+  return name.replace(/_/g, " ").trim() || null;
+}
+
 export function descendantsOf<T extends TreeAgent>(
   agents: readonly T[],
   agentId: string,

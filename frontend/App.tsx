@@ -12,7 +12,7 @@ import {
 import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
-import { descendantsOf, shouldShowCollapseCaret } from "./sidebar-tree";
+import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
 // own copy, and deleting the real execCommand fallback left them green.
 import { copyText } from "./clipboard";
@@ -2907,7 +2907,19 @@ export default function App() {
                 // row now only selects; the CARET is the control that expands,
                 // and both directions remain reversible.
                 onclick={() => select(row.a.id)}
-                title={row.a.parent ? `sub-agent of @${row.a.parent}` : undefined}
+                title={
+                  row.a.parent
+                    ? // #121: the name is what the operator needs; the parent is
+                      // already visible in the row above. Fall back to the old
+                      // wording when the id carries no recoverable name.
+                      (() => {
+                        const named = subAgentDisplayName(row.a.id, personas().map((p) => p.key));
+                        return named
+                          ? `sub-agent of @${row.a.parent} — "${named}"`
+                          : `sub-agent of @${row.a.parent}`;
+                      })()
+                    : undefined
+                }
               >
                 {/* A TOP-LEVEL CHAT is always collapsible, whether or not it has
                     sub-agents. It is its own group — that is what #18 needed
