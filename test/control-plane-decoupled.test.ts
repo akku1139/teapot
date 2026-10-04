@@ -225,3 +225,42 @@ test("no test file anchors on a raw newline inside a search string (#126)", asyn
     `these anchor on a raw newline without readSource, so they fail on a CRLF checkout (#126): ${unsafe.join(", ")}`,
   );
 });
+
+
+/**
+ * #126: a PORTABLE test must not hand a POSIX device path to anything that reads
+ * the filesystem.
+ *
+ * The #130 test I added copied the codebase's `"/dev/null"` config-path
+ * convention. That passes on Linux — where the file need not exist — but on
+ * Windows "/dev/null" resolves RELATIVE TO THE CURRENT DRIVE as "D:\dev\null",
+ * and `spawnChildFor` READS it, so the test failed there with ENOENT.
+ *
+ * Scanned by explicit name rather than "every file except this one": a
+ * directory scan means the guard has to reason about its own source, and an
+ * earlier version of it flagged itself three times because it necessarily
+ * CONTAINS the pattern it searches for. Naming the files it checks removes that
+ * whole class of self-reference.
+ */
+test("no PORTABLE test passes a POSIX device path as a config path (#126)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath: f2p } = await import("node:url");
+  const dir = f2p(new URL(".", import.meta.url));
+  // the two files that run on Windows AND construct a Master
+  const CHECKED = ["spawn-no-spurious-idle.test.ts", "subagent-reasoning-effort.test.ts"];
+  const needle = `"/dev/${"null"}"`; // assembled so this line cannot match itself
+  // strip comments: a file may legitimately DISCUSS the pattern, and the #130
+  // test explains the old form in prose
+  const offenders = CHECKED.filter((f) =>
+    readFileSync(path.join(dir, f), "utf8")
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("//"))
+      .join("\n")
+      .includes(needle),
+  );
+  assert.deepEqual(
+    offenders,
+    [],
+    `these run on Windows but pass a POSIX device path (#126): ${offenders.join(", ")}`,
+  );
+});

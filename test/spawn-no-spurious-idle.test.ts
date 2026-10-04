@@ -48,7 +48,11 @@ async function spawnAndCollectPrompts() {
       providers: {},
       agents: [],
     },
-    "/dev/null",
+    // #126: NOT "/dev/null". Every existing test passes that, and it works on Linux
+    // because the file need not exist — but on Windows "/dev/null" resolves
+    // RELATIVE TO THE CURRENT DRIVE as "D:\dev\null", and spawnChildFor reads it,
+    // so the test failed there with ENOENT. A real per-test path is portable.
+    path.join(dataDir, "config.json"),
   );
   const parent = await m.addAgent({ id: "p1", workspace: ws }, { persist: false });
   const prompts: string[] = [];
