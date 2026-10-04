@@ -6,8 +6,6 @@
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/akku1139/teapot)
 
-[日本語版はこちら](README.ja.md)
-
 ---
 
 ## 🚀 Quick start
@@ -167,7 +165,7 @@ Agents can run `bash` and rewrite files — including `rm` and `npm install`.
 
 - Designed to run under a **dedicated Linux user**
 - `git commit` before handing over a repo you care about
-- File operations outside the workspace are rejected (`safeJoin`)
+- File operations outside the workspace are rejected (`safeJoin`), but agents can use `bash` outside of the worktree
 - teapot listens on localhost only by default. If you expose it, set **both** `--host 0.0.0.0` and an API token (`TEAPOT_API_TOKEN` env or config `password`):
 
 ```sh
