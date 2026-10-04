@@ -1847,6 +1847,11 @@ export default function App() {
   // the FIRST onopen must not double-load; every later one is a reconnect (#54)
   let firstConnect = true;
   function connectWs() {
+    // #54: `firstConnect` belongs to a SOCKET, not to the page. Reset it per
+    // connection, or a reconnect that itself dropped would be mistaken for the
+    // first connect and the resync skipped again — reintroducing the original
+    // bug after a single bounce.
+    firstConnect = true;
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const sock = new WebSocket(`${proto}${location.host}/api/ws${wsTokenQuery()}`);
     ws = sock;
@@ -1858,13 +1863,21 @@ export default function App() {
     //
     // The first connect is skipped: select() already loads events, and doing it
     // twice would double every fetch on startup.
+    //
+    // #54: this flag was NEVER SET TO FALSE, so `!firstConnect` was always false
+    // and the early return never ran — the code refreshed on the FIRST open,
+    // which is precisely what the comment above says it must not do. The test
+    // that "covered" it asserted the source text, so it passed on broken code
+    // (#75's exact failure mode).
     sock.onopen = () => {
       setConnected(true);
-      if (!firstConnect) {
-        firstConnect = true;
+      if (firstConnect) {
+        // first open of THIS socket: select() already loaded the feed
+        firstConnect = false;
         return;
       }
-      // a reconnect — drain anything missed, including a hidden-tab defer
+      // every later open is a reconnect — drain anything missed, including a
+      // hidden-tab defer
       pendingRefresh = true;
       if (document.visibilityState === "visible") void runFeedRefresh();
     };

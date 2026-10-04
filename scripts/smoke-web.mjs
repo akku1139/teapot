@@ -445,7 +445,24 @@ console.log("deep render ok: feed rows present");
       console.error("#97 check: no app socket to drive");
       process.exit(1);
     }
-    // push a snapshot that flips the agent to idle
+    // #54: flip the agent to RUNNING first. `AGENT` is already idle, so pushing
+    // `status:"idle"` produced a snapshot IDENTICAL to the one the app holds —
+    // and `setAgents` keeps the old object when nothing changed, so the #40
+    // sweep effect never re-ran and the buffer was never pruned.
+    //
+    // This check only ever passed because the FIRST socket open called
+    // `runFeedRefresh()`, which re-read the feed and re-ran the effect
+    // indirectly. With `firstConnect` fixed, the first open correctly does NOT
+    // refresh — so the check has to drive a real transition instead.
+    sock.onmessage({
+      data: JSON.stringify({
+        kind: "agent-update",
+        agentId: AGENT.id,
+        snapshot: { ...AGENT, status: "running" },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    // …and now to idle, which is a genuine change and must trigger the sweep
     sock.onmessage({
       data: JSON.stringify({
         kind: "agent-update",
@@ -453,8 +470,6 @@ console.log("deep render ok: feed rows present");
         snapshot: { ...AGENT, status: "idle" },
       }),
     });
-    // and a visibility event so any deferred refresh drains (this helper is
-    // defined later in the file, hence the inline dispatch)
     w.document.dispatchEvent(new w.Event("visibilitychange"));
     await new Promise((r) => setTimeout(r, 250));
     const after = w.document.body.textContent.includes("thinking");

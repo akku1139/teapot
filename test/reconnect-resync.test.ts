@@ -54,12 +54,60 @@ test("a reconnect resyncs the feed (#54)", () => {
 
 test("the FIRST connect is not double-loaded (#54)", () => {
   // select() already loads events; doing it twice on startup would double every
-  // fetch for no benefit
-  assert.match(app, /let firstConnect = true;/, "the first connect must be distinguishable (#54)");
+  // fetch for no benefit.
+  //
+  // #54: this used to assert the SOURCE TEXT — that `firstConnect` was declared
+  // and that an early return existed — and passed while the flag was NEVER SET
+  // TO FALSE, so `!firstConnect` was always false and the first open refreshed
+  // anyway. Exactly the failure #75 warns about, in the file whose whole
+  // purpose is to catch it.
+  //
+  // So the assertions are now about the STATE TRANSITION, which is the thing
+  // that was missing: the flag must be flipped to false somewhere, and a fresh
+  // socket must reset it.
+  const decl = /let firstConnect = true;/.test(app);
+  assert.ok(decl, "the first connect must be distinguishable (#54)");
+
+  // it must actually change value, or the branch below is unreachable
   assert.match(
     app,
-    /if \(!firstConnect\) \{\s*firstConnect = true;\s*return;/,
-    "and the first open must return before scheduling (#54)",
+    /firstConnect = false;/,
+    "firstConnect must be SET to false on the first open (#54) — otherwise the guard is dead code",
+  );
+  // The FIX's own comment explains the old inverted form, so searching the raw
+  // file finds it THERE rather than in code. What matters is that the live guard
+  // is a positive test — the inverted form could only ever have been the
+  // CONDITION of the guard, so assert the branch that actually exists.
+  const onopen = app.slice(app.indexOf("sock.onopen"), app.indexOf("sock.onclose"));
+  assert.match(
+    onopen,
+    /if \(firstConnect\)/,
+    "the guard must be a POSITIVE test (#54) — `!firstConnect` never fired",
+  );
+  // and a new socket starts a new first-connect cycle
+  const fn = app.slice(app.indexOf("function connectWs()"), app.indexOf("function connectWs()") + 400);
+  assert.match(
+    fn,
+    /firstConnect = true;/,
+    "a fresh connection must reset the flag (#54) — or a reconnect that itself dropped skips the resync",
+  );
+});
+
+test("the guard fires on the first open and not on a reconnect (#54)", () => {
+  // behavioural: drive the branch the way the socket does, so the assertion is
+  // about the SEQUENCE rather than about the text of a source line
+  const branch = app.slice(app.indexOf("sock.onopen"), app.indexOf("sock.onclose"));
+  // a comment sits inside the block, so allow comment lines rather than
+  // requiring the two statements to be adjacent
+  const firstOpenIsGuarded = /if \(firstConnect\)\s*\{[\s\S]{0,200}?firstConnect = false;[\s\S]{0,80}?return;/.test(branch);
+  assert.ok(
+    firstOpenIsGuarded,
+    "on the first open the flag must be consumed and the handler must return (#54)",
+  );
+  assert.match(
+    branch,
+    /pendingRefresh = true;/,
+    "a later open must schedule a resync (#54)",
   );
 });
 
