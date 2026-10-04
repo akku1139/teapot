@@ -1067,6 +1067,11 @@ const MAX_WS_CLIENTS = 64;
         `[harness] The operator updated the task list:\n\n${body.text}\n\nWork through it (get_todo() always has the latest).`,
         "harness",
       );
+      // #123: an idle agent must actually START on the queued prompt. The goal
+      // route above learned this (the queued prompt sat forever otherwise); the
+      // todo route did not, so saving a task list on an idle session looked like
+      // it had been ignored.
+      if (a.status !== "running") a.start("todo set");
     return c.json({ ok: true });
   });
 

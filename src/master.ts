@@ -1026,11 +1026,18 @@ if (active().length === 0) wake();
         `[harness] Sub-agent ${ac.id} finished. Final report:\n${report || "(no summary)"}`,
         "harness",
       );
+      // #123: a parent's report is delivered INTO a live agent — queueing it is
+      // not enough. If the parent is idle (finished, or parked) the report sat in
+      // the queue until something else started the loop, so the operator saw a
+      // finished sub-agent and a parent that never reacted.
+      if (parent.status !== "running") parent.start(`sub-agent ${ac.id} finished`);
     } else if (e.type === "error") {
       parent.enqueuePrompt(
         `[harness] Sub-agent ${ac.id} hit an error: ${String((e.data as { message?: string }).message ?? "").slice(0, 500)}`,
         "harness",
       );
+      // #123: same for an error report
+      if (parent.status !== "running") parent.start(`sub-agent ${ac.id} error`);
     }
 
     // #63: a child's activity is NOT mirrored into the parent's log.
