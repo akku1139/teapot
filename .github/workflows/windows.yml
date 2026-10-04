@@ -112,7 +112,12 @@ jobs:
           New-Item -ItemType Directory -Path $probe -Force | Out-Null
           Push-Location $probe
           try {
-            if (Test-Path '~') {
+            # #110: Test-Path '~' is ALWAYS true on PowerShell — '~' is its HOME
+            # provider shortcut and resolves to the profile, not to a directory
+            # named ~. Join the literal name onto the cwd instead, which is the
+            # thing the bug actually created.
+            $literalTilde = Join-Path (Get-Location) ([string][char]126)
+            if (Test-Path -LiteralPath $literalTilde) {
               Write-Error "FAIL: a directory literally named ~ was created (#110)"
               exit 1
             }
