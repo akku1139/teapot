@@ -107,7 +107,12 @@ jobs:
             # Resolve the module through the workspace, not a hardcoded runner
             # path — the previous attempt did that and failed with MODULE_NOT_FOUND,
             # which the step then mis-reported as "a ~ directory was created".
-            $repo = $env:GITHUB_WORKSPACE.Replace('\\', '/')
+            # #110: do NOT hand-roll the separator swap. Written as
+            # `.Replace('\\','/')` the backslashes were mis-escaped and nothing was
+            # replaced, giving "file:///D:aeapoteapot/src/home.ts" ->
+            # ERR_MODULE_NOT_FOUND. [System.Uri] does the conversion correctly and
+            # needs no escaping at all.
+            $repo = ([System.Uri]("$env:GITHUB_WORKSPACE/")).AbsoluteUri.TrimEnd('/')
             # `$ErrorActionPreference='Stop'` meant a node failure surfaced as
             # "FAIL: a directory literally named ~ was created" — a probe fault
             # reported as a product fault. Exit on node's own code instead.
@@ -115,14 +120,20 @@ jobs:
             # $HOME as a READ-ONLY constant, so assigning to it threw
             # "Cannot overwrite variable HOME" and the step failed before any of
             # its own assertions ran.
-            $homeDir = node --input-type=module -e "import {homeDir} from 'file:///$repo/src/home.ts'; process.stdout.write(String(homeDir()));"
+            # $repo is already a file:// URI, so pass it straight through.
+            $homeDir = node --input-type=module -e "import {homeDir} from '$repo/src/home.ts'; process.stdout.write(String(homeDir()));"
             if ($LASTEXITCODE -ne 0) {
               Write-Error "probe could not run (node exit $LASTEXITCODE) — this is a WORKFLOW fault, not a product one"
               exit 1
             }
             Write-Host "homeDir() with HOME unset -> '$homeDir'"
             if ([string]::IsNullOrEmpty($homeDir)) { Write-Error "FAIL: homeDir returned nothing"; exit 1 }
-            if ($homeDir -eq '~' -or $homeDir -match '(^|[\\/])~(?:$|[\\/])') {
+            # No backslash-escaping in this step at all — it has caused three
+            # separate false failures. `$bs = [char]92` builds the separator
+            # without a literal backslash, so no layer can mangle it.
+            $bs = [char]92
+            $segments = $homeDir.Split(@($bs, '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
+            if ($segments -contains '~') {
               Write-Error "FAIL: homeDir resolved to a literal ~ ('$homeDir')"
               exit 1
             }
