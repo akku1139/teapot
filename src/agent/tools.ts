@@ -14,6 +14,7 @@ import {
   type SkillDef,
 } from "./skills.ts";
 import { isReasoningEffort } from "../model-meta.ts";
+import { killTree, describeKill } from "./kill.ts";
 
 export interface ToolContext {
   cwd: string;
@@ -430,22 +431,19 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
 
-    const killGroup = () => {
-      try {
-        if (child.pid) process.kill(-child.pid, "SIGKILL"); // whole group
-      } catch {
-        /* already gone */
-      }
-    };
+    // #110: the kill REPORTS whether it worked. It used to swallow every failure
+    // as "already gone", and on Windows a group kill throws ALWAYS — so a timeout
+    // would report `TIMEOUT after …ms` for a process that was still running, and
+    // shutdown would leave it alive. A timeout that claims success is worse than
+    // a crash, because nothing afterwards looks wrong.
+    const killGroup = () => killTree(child);
 
     const timer = setTimeout(() => {
-      killReason = `TIMEOUT after ${timeoutMs}ms`;
-      killGroup();
+      killReason = `TIMEOUT after ${timeoutMs}ms — ${describeKill(killGroup())}`;
     }, timeoutMs);
     // harness shutdown must not wait out a long-running command
     const onAbort = () => {
-      killReason = "ABORTED (harness shutdown)";
-      killGroup();
+      killReason = `ABORTED (harness shutdown) — ${describeKill(killGroup())}`;
     };
     if (ctx.signal) {
       if (ctx.signal.aborted) onAbort();
@@ -1580,12 +1578,9 @@ export const TOOLS: ToolDef[] = [
             `jobs are per-workspace and forgotten on harness restart`,
         };
       if (str(args.action) === "kill") {
-        if (!sh.exited) {
-          try {
-            if (sh.child.pid) process.kill(-sh.child.pid, "SIGKILL");
-          } catch { /* already gone */ }
-        }
-        const note = sh.exited ? "(already exited)" : "killed";
+        // #110: same swallowed-kill bug — this reported "killed" and dropped the
+        // job from the map while the process kept running, now untrackable.
+        const note = sh.exited ? "(already exited)" : describeKill(killTree(sh.child));
         map.delete(sh.id);
         return { ok: true, result: `job ${sh.id} ${note}. Output so far:\n${clip(sh.out, 4000)}` };
       }
