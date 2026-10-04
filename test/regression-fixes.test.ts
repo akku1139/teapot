@@ -474,8 +474,15 @@ test("regression: Enter during IME composition must not send the message", async
   // the reset must be deferred a frame so that keydown still sees the flag
   assert.match(src, /oncompositionend[\s\S]{0,320}requestAnimationFrame/);
   // and the send path must consult our flag, not e.isComposing
-  const send = src.slice(src.indexOf('if (e.key === "Enter" && !e.shiftKey && !imeInProgress)'));
-  assert.match(send.slice(0, 200), /void send\(e\)/);
+  const send = src.slice(src.indexOf('if (e.key === "Enter" && !e.shiftKey && !imeInProgress'));
+  // #126: a 200-char window was exactly enough until #134 added
+  // `&& !composerMaximized()` to this condition and pushed `void send(e)` past it.
+  // Bound by the statement, not a width.
+  assert.match(
+    send.slice(0, send.indexOf("}") + 2),
+    /void send\(e\)/,
+    "Enter in the normal composer must still send (#134 kept this, just gated it)",
+  );
   assert.doesNotMatch(
     src,
     /if \(e\.key === "Enter" && !e\.shiftKey && !e\.isComposing\)/,

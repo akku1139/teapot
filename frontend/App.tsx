@@ -1989,8 +1989,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           const r = String(msg.reasoning ?? "");
           const t = String(msg.text ?? "");
           if (r && !t) {
+            // #131: arm on the first reasoning chunk. Guarded so a mid-stream
+            // delta that arrives with NEITHER text nor reasoning cannot re-arm it,
+            // which would restart the elapsed time mid-thought.
             if (!thinkStartedAt()) setThinkStartedAt(Date.now());
-          } else if (t || (!r && thinkStartedAt())) {
+          } else if (t) {
+            // #131: reset only when real TEXT arrives. The old second clause was
+            // `t || (!r && thinkStartedAt())`, and a delta carrying neither text
+            // nor reasoning — which the provider sends between chunks — zeroed the
+            // clock, so the readout flickered back to nothing mid-thought.
             setThinkStartedAt(0);
           }
         }
@@ -2762,10 +2769,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
     saveDraft("");
     await sendText(text);
-    // sending from a maximized composer restores the normal view — the whole
-    // point of maximize is composing long text, and staying maximized after
-    // send hid the timeline for no reason
-    if (composerMaximized()) setComposerMaximized(false);
+    // #134: this USED to restore the normal view on send. The rationale was that
+    // "staying maximized hid the timeline for no reason" — but that reason only
+    // applies if you cannot see the reply. With Enter no longer sending (above),
+    // a maximized composer is a deliberate writing mode you use for a whole
+    // message, and collapsing it mid-message discarded the mode you asked for.
+    //
+    // The button beside the toggle is still there to restore it.
   };
 
   const executeSlash = async (name: string, arg: string): Promise<void> => {
@@ -3621,7 +3631,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   // IME composition: Enter confirms the conversion, never sends.
                   // Test our own flag, not e.isComposing — Safari has already
                   // ended composition by the time this keydown arrives.
-                  if (e.key === "Enter" && !e.shiftKey && !imeInProgress) {
+                  // #134: a MAXIMIZED composer takes Enter as a newline.
+                  //
+                  // Maximize exists for composing long text — a pasted stack trace,
+                  // a multi-paragraph question — and in that mode Enter has to mean
+                  // "new line" or the text cannot be written at all. Shift+Enter
+                  // inserts a newline in the normal composer, so the expanded one is
+                  // strictly more permissive, not inconsistent: what changed is only
+                  // that Enter no longer SHORTCUTS to a send.
+                  //
+                  // Sending is still one keystroke away (the send button), so nothing
+                  // becomes unreachable.
+                  if (e.key === "Enter" && !e.shiftKey && !imeInProgress && !composerMaximized()) {
                     e.preventDefault();
                     void send(e);
                   }
@@ -4449,6 +4470,15 @@ function ThinkingTimer(props: { startedAt: number }) {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
+  // #131: `startedAt` is 0 whenever the clock has not been armed — which is the
+  // state immediately after a session switch, before the first reasoning delta of
+  // the new selection lands. Rendering `now() - 0` then displayed the elapsed time
+  // since the EPOCH: "thinking 497531h 23m", for a few hundred milliseconds,
+  // before the first delta corrected it. Self-correcting, hence "数秒で治る".
+  //
+  // 0 is a sentinel meaning "not started", never a real timestamp, so render
+  // nothing until it is armed.
+  if (!props.startedAt) return null;
   return <span class="thinktimer">{fmtDur(Math.max(0, now() - props.startedAt))}</span>;
 }
 
