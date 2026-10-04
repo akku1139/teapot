@@ -181,9 +181,18 @@ test("the fallback covers an older server that does not send `live` (#59)", () =
 });
 
 test("isLive() is the single source of truth on the agent (#59)", () => {
-  assert.match(
-    agentSrc,
-    /isLive\(\): boolean \{\s*return this\.status === "running" \|\| this\.parkedByTool \|\| this\.pendingPrompts\.length > 0;/,
-    "live must cover all three states: running, parked, queued (#59)",
-  );
+  // #127: this matched the WHOLE definition on one line, so adding the fourth
+  // clause (a compaction in flight) broke a passing test. Match each clause
+  // instead, inside isLive() — a rule, not a line.
+  const at = agentSrc.indexOf("isLive(): boolean {");
+  assert.notEqual(at, -1, "isLive must exist (#59)");
+  const block = agentSrc.slice(at, at + 1600);
+  for (const [clause, why] of [
+    ['this\\.status === "running"', "running (#59)"],
+    ["this\\.parkedByTool", "parked (#59)"],
+    ["this\\.pendingPrompts\\.length > 0", "queued (#59)"],
+    ['this\\.compactPhase !== ""', "a manual compaction in flight (#127)"],
+  ] as const) {
+    assert.match(block, new RegExp(clause), `isLive must cover ${why}`);
+  }
 });

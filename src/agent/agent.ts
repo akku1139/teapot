@@ -567,7 +567,21 @@ export class Agent {
    * (#59) — the same trap #38 documented for editing history.
    */
   isLive(): boolean {
-    return this.status === "running" || this.parkedByTool || this.pendingPrompts.length > 0;
+    // #127: a MANUAL compaction on an idle agent was rewriting `messages` — a
+    // large, non-cancellable operation — while `isLive()` reported false, so the
+    // UI offered "start". Measured DURING the summarizer call:
+    //
+    //   status = idle   live = false   ctx.compacting = "summarizing"
+    //
+    // `ctx.compacting` was already published, so the information existed and only
+    // the live-state calculation ignored it. `start()` during that window would
+    // compact the array the agent is about to resume into (#38's failure mode).
+    return (
+      this.status === "running" ||
+      this.parkedByTool ||
+      this.pendingPrompts.length > 0 ||
+      this.compactPhase !== ""
+    );
   }
 
   /**
@@ -3126,14 +3140,39 @@ export class Agent {
 
   /** Ask the model for dense continuation notes over the compacted range. */
   private async summarize(old: ChatMessage[], onDelta?: (text: string) => void): Promise<string> {
-    const transcript = old
+    const full = old
       .map((m) => {
         const who = m.role === "tool" ? "tool" : m.role;
         const tc = m.tool_calls?.map((t) => `\n[calls ${t.function.name}(${t.function.arguments})]`).join("");
         return `${who}: ${m.content ?? ""}${tc}`;
       })
-      .join("\n\n")
-      .slice(-120_000);
+      .join("\n\n");
+    // #127: this was a bare `.slice(-120_000)` — the TAIL only.
+    //
+    // The question the issue raises is the right one: when a compaction starts,
+    // the context window opens dramatically, and the summarizer saw only the last
+    // 120k characters of what it was asked to summarise. Anything older was not
+    // summarised and not kept — it was silently DISCARDED. So the original user
+    // requirement, which sits at the very front of the history, was the single
+    // most likely thing to be lost, and losing it is the one failure compaction
+    // cannot recover from: the summary is now the only record.
+    //
+    // Head + tail, with the seam marked so the model can tell a gap from a
+    // boundary. The head is where the goal, the constraints and the original ask
+    // live; the tail is where the recent state and any in-flight error do.
+    const BUDGET = 120_000;
+    const HEAD = Math.floor(BUDGET * 0.35);
+    const TAIL = BUDGET - HEAD;
+    let transcript: string;
+    if (full.length <= BUDGET) {
+      transcript = full;
+    } else {
+      transcript = [
+        full.slice(0, HEAD),
+        `\n\n[... ${full.length - BUDGET} characters elided from the middle of this history ...]\n\n`,
+        full.slice(full.length - TAIL),
+      ].join("");
+    }
     const fn = this.opts.chatFn ?? chat;
     // Structured sections (Claude Code style): fixed headings survive MULTIPLE
     // successive compactions far better than free-form prose — each pass knows
