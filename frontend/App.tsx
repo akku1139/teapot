@@ -3339,7 +3339,19 @@ export default function App() {
                       e.type === "prompt" &&
                       e.data?.source === "user" &&
                       !(e.data?.pending && e.data?.sent !== true) &&
-                      !e.data?.cancelled
+                      !e.data?.cancelled &&
+                      // #129: do NOT offer the editor while the agent is live.
+                      //
+                      // `editPromptAt` refuses a running agent ("agent is running —
+                      // stop it before editing history"), so the button opened a modal
+                      // whose only possible submission was a 409. The modal then sat
+                      // over the controls: Escape closed the MODAL rather than stopping
+                      // the agent (that ordering is deliberate, #107), so the operator
+                      // pressing stop appeared to do nothing until a reload.
+                      //
+                      // The server-side guard is correct and stays; this just stops
+                      // offering an action that cannot succeed.
+                      !isSelLive()
                         ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
                         : undefined
                     }
