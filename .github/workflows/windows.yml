@@ -4,141 +4,116 @@
 # things that break here: process-group kills, `HOME` being unset, and which
 # shell a command lands in.
 #
-# ## Why this runs a SUBSET, not `pnpm test`
+# ## Why this does not run `pnpm test`
 #
-# The suite shells out extensively (10 test files drive the `bash` tool, which
-# still spawns `/bin/bash` — item 2 is unfixed pending a decision). Running the
-# whole suite here would fail on ~10 files for a KNOWN reason and bury anything
-# real. So this job runs the platform-independent tests, and `pnpm test` stays the
-# Linux gate.
+# The suite shells out extensively — 28 of 116 files need a POSIX shell, POSIX
+# paths, or POSIX permissions — so the whole suite would fail on Windows for a
+# KNOWN reason and bury anything real. `pnpm test` stays the Linux gate.
 #
-# The split is made mechanically — `test/helpers/posix-only.ts` gates on
-# `process.platform` — so a test opts OUT rather than being silently skipped by a
-# filename pattern. Nothing is excluded by name here, which is what would let a
-# genuine Windows failure hide.
+# The split is made mechanically: `test/helpers/posix-only.ts` gates on
+# `process.platform`, so a test opts OUT with one greppable line rather than
+# becoming invisible through a filename pattern.
 #
-# ## The fixed list below
+# ## Why there is no typecheck here (#113)
 #
-# These are the tests that carry the platform-independent half of the Windows
-# work, so they must not rot while the CI is new:
-#
-#   windows-tilde-expansion  — the `~` folder bug (#110 item 3)
-#   kill-tree-windows        — timeout/abort reporting success wrongly (#110)
-#
-# They are asserted individually so a failure names the file, and so removing
-# one is a visible diff rather than a silent hole.
+# `test.yml` runs typecheck + typecheck-web + lint + build on every push and
+# every PR, and tsc is cross-platform — so repeating it on a second runner costs
+# minutes and finds nothing. This workflow is only the part that genuinely needs
+# Windows: `pnpm build` (vite writing a bundle there) and the tests.
 name: Windows
 
 on:
   push:
     branches: [main]
   pull_request:
-  # manual, while the platform support is still partial — see the note above
   workflow_dispatch:
 
 jobs:
-  # Gate 1: does the project even BUILD on Windows? tsc is cross-platform, so
-  # this is a real check and not a formality.
-  build:
-    name: build + typecheck (windows)
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm typecheck
-      - run: pnpm typecheck-web
-
-      - run: pnpm build
-
-  # Gate 2: the platform-independent tests, plus the two Windows-specific ones
-  # called out above.
   test:
     name: test (windows)
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      # #113: pnpm/setup installs pnpm AND Node in one step, reading both from
+      # package.json (packageManager: pnpm@11.3.0, engines.node: >=24). That
+      # replaces pnpm/action-setup + actions/setup-node — and, unlike
+      # setup-node's `cache: pnpm`, it cannot fall out of step with the lockfile.
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      # #113: pnpm/setup installs pnpm AND Node in one step, reading pnpm from
+      # `packageManager`. Node must be pinned EXPLICITLY: the action falls back to
+      # `devEngines.runtime`, then a version file, then `lts` — and this repo has
+      # none of the first two, so omitting `runtime` would silently build the
+      # release on whatever LTS happens to be, rather than the node >=24 that
+      # package.json's `engines` requires.
+      - uses: pnpm/setup@v3
         with:
-          node-version: 24
-          cache: pnpm
+          runtime: node@24
 
       - run: pnpm install --frozen-lockfile
 
-      # The bundle tests read public/assets/, so they need a build. The first run
-      # failed three of them with "no built web bundle" — a gap in this workflow,
-      # not a product bug.
+      # The bundle tests read public/assets/, so the bundle must exist here. The
+      # first run failed three of them with "no built web bundle".
       - run: pnpm build
 
+      # Named individually so a failure points at the file rather than a list.
+      # These two carry the platform-independent half of the Windows work.
       - name: windows-specific tests
-        run: |
-          pnpm exec node --test test/windows-tilde-expansion.test.ts test/kill-tree-windows.test.ts
+        run: >
+          pnpm exec node --test
+          test/windows-tilde-expansion.test.ts
+          test/kill-tree-windows.test.ts
 
       - name: platform-independent tests
         run: pnpm run test:portable
 
       # #110: the bug that started this was a `~` directory. Assert the real
-      # invariant on the real platform rather than trusting a unit test: with
-      # HOME unset, no directory literally named `~` may appear under the cwd.
-      - name: no literal ~ directory is created (#110)
+      # invariant on the real platform rather than trusting a unit test: with HOME
+      # unset, homeDir() must still find a home, and no directory literally named
+      # `~` may appear.
+      #
+      # #110: this step contains NO literal backslash. Backslash-escaping has
+      # caused three separate false failures here — `.Replace('\\','/')` matched a
+      # literal DOUBLE backslash and produced
+      # "file:///D:aeapoteapot/src/home.ts" — and each one failed before reaching
+      # its own assertions, so every run blamed the product for a workflow bug.
+      # `$bs = [char]92` builds the separator without a literal, so no layer
+      # between the YAML and PowerShell can mangle it.
+      - name: home directory resolves without HOME (#110)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $bs = [char]92
+          # HOME is normally UNSET on a Windows runner; remove it either way,
+          # since that is the exact condition the bug needed.
+          Remove-Item Env:HOME -ErrorAction SilentlyContinue
+
+          $repo = ([System.Uri]("$env:GITHUB_WORKSPACE/")).AbsoluteUri.TrimEnd('/')
+          $homeDir = node --input-type=module -e "import {homeDir} from '$repo/src/home.ts'; process.stdout.write(String(homeDir()));"
+          # A probe fault must not be reported as a product fault.
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "probe could not run (node exit $LASTEXITCODE) - WORKFLOW fault, not product"
+            exit 1
+          }
+          Write-Host "homeDir() with HOME unset -> '$homeDir'"
+
+          if ([string]::IsNullOrEmpty($homeDir)) {
+            Write-Error "FAIL: homeDir returned nothing (#110)"
+            exit 1
+          }
+          $segments = $homeDir.Split(@($bs, '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
+          if ($segments -contains '~') {
+            Write-Error "FAIL: homeDir resolved to a literal ~ ('$homeDir') (#110)"
+            exit 1
+          }
+
+          # …and the symptom itself, in a scratch directory.
           $probe = Join-Path $env:RUNNER_TEMP 'tilde-probe'
-          New-Item -ItemType Directory -Path $probe | Out-Null
+          New-Item -ItemType Directory -Path $probe -Force | Out-Null
           Push-Location $probe
           try {
-            # HOME is normally UNSET on Windows runners; make sure of it either
-            # way, since that is the exact condition the bug needed.
-            Remove-Item Env:HOME -ErrorAction SilentlyContinue
-            # Resolve the module through the workspace, not a hardcoded runner
-            # path — the previous attempt did that and failed with MODULE_NOT_FOUND,
-            # which the step then mis-reported as "a ~ directory was created".
-            # #110: do NOT hand-roll the separator swap. Written as
-            # `.Replace('\\','/')` the backslashes were mis-escaped and nothing was
-            # replaced, giving "file:///D:aeapoteapot/src/home.ts" ->
-            # ERR_MODULE_NOT_FOUND. [System.Uri] does the conversion correctly and
-            # needs no escaping at all.
-            $repo = ([System.Uri]("$env:GITHUB_WORKSPACE/")).AbsoluteUri.TrimEnd('/')
-            # `$ErrorActionPreference='Stop'` meant a node failure surfaced as
-            # "FAIL: a directory literally named ~ was created" — a probe fault
-            # reported as a product fault. Exit on node's own code instead.
-            # #110: the variable must NOT be called `$home` — PowerShell exposes
-            # $HOME as a READ-ONLY constant, so assigning to it threw
-            # "Cannot overwrite variable HOME" and the step failed before any of
-            # its own assertions ran.
-            # $repo is already a file:// URI, so pass it straight through.
-            $homeDir = node --input-type=module -e "import {homeDir} from '$repo/src/home.ts'; process.stdout.write(String(homeDir()));"
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "probe could not run (node exit $LASTEXITCODE) — this is a WORKFLOW fault, not a product one"
-              exit 1
-            }
-            Write-Host "homeDir() with HOME unset -> '$homeDir'"
-            if ([string]::IsNullOrEmpty($homeDir)) { Write-Error "FAIL: homeDir returned nothing"; exit 1 }
-            # No backslash-escaping in this step at all — it has caused three
-            # separate false failures. `$bs = [char]92` builds the separator
-            # without a literal backslash, so no layer can mangle it.
-            $bs = [char]92
-            $segments = $homeDir.Split(@($bs, '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
-            if ($segments -contains '~') {
-              Write-Error "FAIL: homeDir resolved to a literal ~ ('$homeDir')"
-              exit 1
-            }
             if (Test-Path '~') {
-              Write-Error "FAIL: a directory literally named ~ was created"
+              Write-Error "FAIL: a directory literally named ~ was created (#110)"
               exit 1
             }
             Write-Host "OK: no literal ~ directory (cwd=$(Get-Location))"

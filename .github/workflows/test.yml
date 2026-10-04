@@ -11,14 +11,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
-
-      - uses: actions/setup-node@v4
+      # #113: pnpm/setup installs pnpm AND Node in one step, reading pnpm from
+      # `packageManager`. Node must be pinned EXPLICITLY: the action falls back to
+      # `devEngines.runtime`, then a version file, then `lts` — and this repo has
+      # none of the first two, so omitting `runtime` would silently build the
+      # release on whatever LTS happens to be, rather than the node >=24 that
+      # package.json's `engines` requires.
+      - uses: pnpm/setup@v3
         with:
-          node-version: 24
-          cache: pnpm
+          runtime: node@24
 
       - run: pnpm install --frozen-lockfile
 
