@@ -7,6 +7,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSy
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
+import { expandTilde, homeDir } from "./home.ts";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Agent } from "./agent/agent.ts";
@@ -76,7 +77,9 @@ function readAppVersion(): string {
  * `~` is expanded for both forms; absolute paths pass through untouched.
  */
 export function resolveWorkspace(input: string, base: string): string {
-  const expanded = input.trim().replace(/^~(?=$|\/|\\)/, process.env.HOME ?? "~");
+  // #110: `~` must not expand to the LITERAL "~" — that is how a directory named
+  // `~` got created on Windows, where process.env.HOME is unset. See src/home.ts.
+  const expanded = expandTilde(input.trim());
   if (path.isAbsolute(expanded)) return path.normalize(expanded);
   return path.resolve(base, expanded);
 }

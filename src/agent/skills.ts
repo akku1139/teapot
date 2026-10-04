@@ -18,6 +18,7 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { homeDir } from "../home.ts";
 
 export const SKILL_FILE = "SKILL.md";
 
@@ -162,7 +163,9 @@ function unquote(v: string): string {
  * directories are skipped silently, and nothing is read unless it exists.
  */
 export function foreignSkillRoots(workspace?: string): { dir: string; source: string }[] {
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  // #110: the shared helper also covers HOMEDRIVE/HOMEPATH, which is how
+  // Windows reports a home when USERPROFILE is absent.
+  const home = homeDir();
   const out: { dir: string; source: string }[] = [];
   const add = (dir: string) => {
     if (dir && !out.some((r) => r.dir === dir)) out.push({ dir, source: "foreign" });

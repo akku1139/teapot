@@ -11,6 +11,7 @@ import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
 import { TermSizeTracker } from "./term-size.ts";
+import { expandTilde, homeDir } from "../home.ts";
 import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
 import type { ProviderConfig } from "../master.ts";
@@ -471,8 +472,11 @@ const MAX_WS_CLIENTS = 64;
 
   // ---- filesystem browsing (read-only, for the workspace picker) ----
   app.get("/api/fs", async (c) => {
-    let p = c.req.query("path") || process.env.HOME || "/";
-    p = path.resolve(p.replace(/^~/, process.env.HOME ?? "~"));
+    // #110: read the home directory through the shared helper. `process.env.HOME`
+    // is unset on Windows, which made the old fallback yield the literal "~" —
+    // and /api/fs would then browse a directory named ~.
+    let p = c.req.query("path") || homeDir() || path.parse(process.cwd()).root;
+    p = path.resolve(expandTilde(p));
     try {
       const entries = await fs.readdir(p, { withFileTypes: true });
       return c.json({
