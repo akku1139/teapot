@@ -74,7 +74,7 @@ jobs:
       #
       # The Node-20 deprecation warning stays on this one workflow until the OIDC
       # path is verified; a warning is better than a release that cannot ship.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
