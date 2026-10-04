@@ -204,9 +204,8 @@ test("no test file anchors on a raw newline inside a search string (#126)", asyn
   for (const f of readdirSync(dir)) {
     if (!f.endsWith(".test.ts")) continue;
     const src = readSource(path.join(dir, f));
-    for (const m of src.matchAll(/(?:indexOf|lastIndexOf)\(\s*"[^"]*\\n/g)) {
+    if (/(?:indexOf|lastIndexOf)\(\s*"[^"]*\\n/.test(src)) {
       offenders.push(f);
-      break;
     }
   }
   // Anchoring on "\n" is fine ONLY if the text came through readSource, which

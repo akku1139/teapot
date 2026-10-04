@@ -25,6 +25,8 @@ import {
 
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 const MAX_SPAWN_DEPTH = 3;
+/** statuses that mean a child has finished working, for #130 */
+const SETTLED: ReadonlySet<string> = new Set(["idle", "stopped", "waiting", "error"]);
 
 /**
  * Skills shipped with the package — resolved relative to this module so it
@@ -382,6 +384,14 @@ export class Master {
     lastRunAt?: number;
   }[] = [];
   private childWaiters = new Map<string, Set<(note: string) => void>>();
+  /**
+   * Children that have actually started, for #130.
+   *
+   * A child is `idle` between `addAgent` and `start()`, and that is its FIRST
+   * status transition — so without this the parent is told a brand-new sub-agent is
+   * idle before it has done anything.
+   */
+  private reportedRunning = new Set<string>();
   private startedAt = Date.now();
   readonly config: TeapotConfig;
   readonly configPath: string;
@@ -693,11 +703,28 @@ export class Master {
       // the waiter re-checks whether ITS targets are all settled, so waking on
       // every movement is correct and cheap
       this.wakeParentWaiters(ac.parent);
-      if (status === "idle" || status === "stopped" || status === "waiting" || status === "error")
+      // #130: only report a SETTLED child, never its birth.
+      //
+      // A freshly spawned child is `idle` for a moment before `start()` runs, and
+      // the FIRST status transition it ever makes is therefore idle->running via
+      // that idle. Reporting it told the parent "[harness] @kid is now idle" the
+      // instant the child existed — before it had done anything at all. Measured:
+      // transitions after a spawn are ["idle","running","idle"], so the first is
+      // always the spurious one.
+      //
+      // So the message waits for a child that has actually STARTED. A real
+      // completion still reports (it goes running -> idle), and the wake above is
+      // unconditional, so `wait_children` is unaffected either way.
+      // #130: a spawned child is `idle` until start() runs, and that lazy-load
+      // flip is its FIRST transition — so requiring a prior `running` is what stops
+      // the parent being told the child settled before it began.
+      if (this.reportedRunning.has(agentId) && SETTLED.has(status))
         parent.enqueuePrompt(
           `[harness] @${agentId} is now ${status}. Continue your task, or finish() if the work is done.`,
           "harness",
         );
+      if (status === "running") this.reportedRunning.add(agentId);
+      else if (SETTLED.has(status)) this.reportedRunning.delete(agentId);
     };
     // sub-agent management hooks — only when this agent can legally spawn
     if (myDepth < this.maxSpawnDepth()) {
