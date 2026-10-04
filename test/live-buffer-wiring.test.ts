@@ -90,9 +90,12 @@ test("the helper itself still refuses to guess an unknown status (#40)", () => {
     /if \(st === undefined\) continue;/,
     "an unknown status must not prune — absence of evidence is not completion (#40)",
   );
+  // #40: this was a literal match on `st === "running" || st === "waiting"`, which
+  // broke when that expression moved into the shared `isLiveStatus()` predicate —
+  // the predicate is what makes the two call sites agree, so match on THAT.
   assert.match(
     lb,
-    /if \(st === "running" \|\| st === "waiting"\) continue;/,
+    /if \(isLiveStatus\(st\)\) continue;/,
     "a live or parked agent keeps its buffer (#40)",
   );
 });

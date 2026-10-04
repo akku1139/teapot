@@ -8,6 +8,7 @@ import {
   isCoveredByLog,
   isOwnLiveWork,
   pruneDeadLiveBuffers,
+  reconcileLiveBuffer,
 } from "./live-buffer";
 import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
@@ -1279,23 +1280,31 @@ export default function App() {
     return { total, done };
   });
 
+/**
+ * Merge a fresh snapshot list, keeping object identity for unchanged agents.
+ *
+ * #40: the server re-serialises every agent on every poll and WS frame, and a new
+ * object identity re-ran EVERY expression bound to `sel()*.x` — the "right panel
+ * flashes" effect. Three call sites needed this and each had its own copy, so the
+ * rule lives here once.
+ */
+function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
+  const prevById = new Map(prev.map((a) => [a.id, a]));
+  return next.map((a) => {
+    const p = prevById.get(a.id);
+    return p && JSON.stringify(p) === JSON.stringify(a) ? p : a;
+  });
+}
+
   const refreshAgents = () =>
     api("/api/agents")
       .then((d) => {
         let agentSetChanged = false;
         setAgents((prev) => {
-          // Reference-stabilize snapshots: the server re-serializes every
-          // agent on each poll, and new object identities made Solid re-run
-          // EVERY expression bound to sel()*.x (the "whole panel flashes"
-          // effect). Reuse the previous object when the snapshot is equal,
-          // so unchanged panels skip their fine-grained updates entirely.
-          const prevById = new Map(prev.map((a) => [a.id, a]));
           if (prev.length !== (d.agents ?? []).length) agentSetChanged = true;
-          return (d.agents ?? []).map((a: Agent) => {
-            const p = prevById.get(a.id);
-            if (!p) agentSetChanged = true;
-            return p && JSON.stringify(p) === JSON.stringify(a) ? p : a;
-          });
+          if ((d.agents ?? []).some((a: Agent) => !prev.some((p) => p.id === a.id)))
+            agentSetChanged = true;
+          return mergeAgentSnapshots(prev, d.agents ?? []);
         });
         // the session index is ONE request for ALL agents — only needed when
         // the agent set actually changes, not on every poll
@@ -1824,6 +1833,24 @@ export default function App() {
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id, tid);
     if (selected() !== id) return; // another switch won while we were loading
+    // #40: RECONCILE this agent's live buffer against the timeline just loaded.
+    //
+    // The pruning effect depends on `agents()` alone, so it cannot fire for a
+    // session switch — and if the agent was already idle at the switch, the
+    // snapshot did not change either, so nothing pruned. Returning to the session
+    // then re-displayed stale stream text WITH the writing cursor.
+    //
+    // Runs after the fetch so `events()` is the real timeline, and it keeps a
+    // genuine in-flight stream (the log does not have it yet).
+    setLiveByAgent((prev) => {
+      const cur = prev.get(id) ?? null;
+      const next = reconcileLiveBuffer(cur, events(), sel()?.status);
+      if (next === cur) return prev;
+      const m = new Map(prev);
+      if (next) m.set(id, next);
+      else m.delete(id);
+      return m;
+    });
     // the freshly fetched snapshot is authoritative: a compaction may be
     // mid-flight on this session (missed bus events while another tab/agent
     // was selected) — seed the banner from ctx.compacting
@@ -1912,6 +1939,24 @@ export default function App() {
         return;
       }
       if (msg.kind === "pong") return;
+      // #40: the server sends an AUTHORITATIVE snapshot the moment the socket
+      // opens (api.ts:236), and the frontend discarded it — so a reconnect learned
+      // agent state only from the REST poll that followed, and the WS and REST
+      // paths could disagree in the meantime. That is the dual-state problem the
+      // whole event architecture is meant to avoid.
+      //
+      // Apply it through the same merge, so identity handling is identical to the
+      // other two snapshot paths.
+      if (msg.kind === "hello" && Array.isArray(msg.agents)) {
+        setAgents((prev) => mergeAgentSnapshots(prev, msg.agents as Agent[]));
+        // a fresh authoritative snapshot can settle agents the buffers outlived,
+        // so run the same prune the REST path would have triggered
+        const list = agents();
+        setLiveByAgent((prev) =>
+          pruneDeadLiveBuffers(prev, (id) => list.find((x) => x.id === id)?.status),
+        );
+        return;
+      }
       if (msg.kind === "event" && isTurnBoundary(msg.event)) {
         // TURN BOUNDARY (#40). The agent's `status` does not change between
         // tool calls inside one round, so a completed reply's live buffer was
@@ -1964,11 +2009,10 @@ export default function App() {
           // content-equal → keep the OLD object: a new identity for unchanged
           // data re-ran every expression bound to that agent and was the last
           // source of the rare right-panel flash
-          const cur = prev[i]!;
-          const same =
-            JSON.stringify(cur) === JSON.stringify(next);
-          if (same) return prev;
-          return prev.map((a, j) => (j === i ? next : a));
+          return mergeAgentSnapshots(
+            prev,
+            prev.map((a, j) => (j === i ? msg.snapshot : a)),
+          );
         });
         return; // snapshot IS the update; no feed refresh needed for it alone
       }

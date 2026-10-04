@@ -69,14 +69,18 @@ export function isTurnBoundary(ev: unknown): boolean {
  * is definitionally stale. Otherwise the log must contain an assistant message
  * whose text is exactly what the bubble is showing.
  */
+export function isLiveStatus(status: string | undefined): boolean {
+  return status === "running" || status === "waiting";
+}
+
 export function isCoveredByLog(
   buf: LiveBuf | null | undefined,
   events: { type?: string; data?: { role?: string; content?: string } }[],
   status: string | undefined,
 ): boolean {
   if (!buf) return false;
-  if (!buf.text) return status !== "running";
-  if (status !== "running") return true;
+  if (!buf.text) return !isLiveStatus(status);
+  if (!isLiveStatus(status)) return true;
   const body = buf.text.trim();
   return events.some(
     (e) =>
@@ -143,11 +147,34 @@ export function pruneDeadLiveBuffers<T>(
   for (const id of buffers.keys()) {
     const st = statusOf(id);
     if (st === undefined) continue; // no snapshot: do not guess
-    if (st === "running" || st === "waiting") continue; // still live
+    if (isLiveStatus(st)) continue; // still live (one definition)
     doomed.push(id);
   }
   if (doomed.length === 0) return buffers as Map<string, T>;
   const out = new Map(buffers);
   for (const id of doomed) out.delete(id);
   return out;
+}
+
+/**
+ * Reconcile one agent's live buffer against the timeline it is about to show.
+ *
+ * #40: the pruning effect runs only when `agents()` changes, so a buffer could
+ * outlive the state that justified it. `select()` clears `events()` but never
+ * touched `liveByAgent`, and if the agent was ALREADY idle at the switch the
+ * snapshot did not change either — so nothing pruned, and returning to the
+ * session re-displayed stale stream text WITH the writing cursor.
+ *
+ * Three rules: not live -> drop; already in the log -> drop; otherwise KEEP.
+ * The third is what stops this becoming the opposite bug.
+ */
+export function reconcileLiveBuffer(
+  buf: LiveBuf | null | undefined,
+  events: { type?: string; data?: { role?: string; content?: string } }[],
+  status: string | undefined,
+): LiveBuf | null {
+  if (!buf) return null;
+  if (!isLiveStatus(status)) return null;
+  if (isCoveredByLog(buf, events, status)) return null;
+  return buf;
 }
