@@ -32,18 +32,33 @@ import path from "node:path";
 
 const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
 
-/** the expansion resolveWorkspace does, with the env it reads */
+/**
+ * The expansion `resolveWorkspace` performs, with the env it reads.
+ *
+ * This mirrors the PRODUCTION rule rather than calling it, so the env can be
+ * supplied — on Windows `HOME` is unset, and that is the condition under test.
+ *
+ * The Windows CI job caught an earlier version of this helper asserting POSIX
+ * separators: `path.normalize` on win32 turns `/home/dev` into `\\home\dev`,
+ * which is CORRECT for that platform. So the expected values are built with
+ * `path.join`/`path.normalize` too, rather than hardcoded slashes.
+ */
 function expand(input: string, env: { HOME?: string; USERPROFILE?: string }): string {
-  const raw = (input.trim().replace(/^~(?=$|\/|\\)/, env.HOME ?? env.USERPROFILE ?? "~") as string);
-  return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve("/base", raw);
+  const raw = input.trim().replace(/^~(?=$|\/|\\)/, env.HOME ?? env.USERPROFILE ?? "~");
+  return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(path.parse(process.cwd()).root, raw);
 }
 
+/** the platform's own spelling of a path, so expectations are not POSIX-only */
+const at = (...parts: string[]) => path.join(...parts);
+
 test("a bare ~ expands to the home directory (#110)", () => {
-  assert.equal(expand("~", { HOME: "/home/dev", USERPROFILE: "/home/dev" }), "/home/dev");
+  const home = at(path.parse(process.cwd()).root === "\\" ? "C:" : path.sep, "home", "dev");
+  assert.equal(expand("~", { HOME: home, USERPROFILE: home }), path.normalize(home));
 });
 
 test("~/path expands under the home directory (#110)", () => {
-  assert.equal(expand("~/work", { HOME: "/home/dev", USERPROFILE: "/home/dev" }), "/home/dev/work");
+  const home = at(path.parse(process.cwd()).root === "\\" ? "C:" : path.sep, "home", "dev");
+  assert.equal(expand("~/work", { HOME: home, USERPROFILE: home }), path.normalize(at(home, "work")));
 });
 
 test("a Windows env — no HOME, only USERPROFILE — does not yield a literal ~ (#110)", () => {
@@ -78,7 +93,7 @@ test("when neither HOME nor USERPROFILE exists, the ~ is left ALONE (#110)", () 
 
 test("homeDir handles every env shape Windows can present (#110)", async () => {
   const { homeDir: real } = await import("../src/home.ts");
-  assert.equal(real({ HOME: "/home/dev" }), "/home/dev", "POSIX (#110)");
+  assert.equal(real({ HOME: "/home/dev" }), "/home/dev", "HOME is used verbatim (#110)");
   assert.equal(real({ USERPROFILE: "C:\\Users\\dev" }), "C:\\Users\\dev", "USERPROFILE (#110)");
   assert.equal(
     real({ HOMEDRIVE: "C:", HOMEPATH: "\\Users\\dev" }),

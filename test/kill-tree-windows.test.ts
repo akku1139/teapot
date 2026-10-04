@@ -34,12 +34,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { killTree, describeKill, canKillProcessGroup } from "../src/agent/kill.ts";
 import { spawn } from "node:child_process";
-import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: this file deliberately does NOT call markPosixOnly. The Windows CI job
+// exists BECAUSE of it — these are the win32/posix reporting branches, and
+// skipping the whole file on Windows would delete the only coverage of the
+// platform being tested.
+//
+// The individual cases that spawn `sleep`/`true`, or drive the bash tool (which
+// still hardcodes /bin/bash — item 2, unfixed), skip themselves with
+// `{ skip: isWindows }` / `{ skip: !isWindows }`. Marking the file would have
+// been exactly the "a real platform failure hides" outcome the marker exists to
+// prevent.
+const isWindows = process.platform === "win32";
 
 // #110: POSIX-only — spawns a POSIX binary; runs POSIX commands through the bash tool.
 // The Windows CI job skips this file; see test/helpers/posix-only.ts for why
 // opting out is explicit rather than by filename.
-markPosixOnly("spawns a POSIX binary; runs POSIX commands through the bash tool");
 
 /* ---------- the platform distinction ---------- */
 
@@ -79,7 +89,7 @@ test("a kill that could not run is reported, not assumed (#110)", () => {
   assert.match(describeKill(out), /no process handle/i, "described for the operator (#110)");
 });
 
-test("win32 never claims the whole tree died (#110)", () => {
+test("win32 never claims the whole tree died (#110)", { skip: !isWindows }, () => {
   // pid 0 is falsy, so it short-circuits at the no-pid guard and never REACHES the
   // platform branch — which is why an earlier version of this test passed even
   // with the win32 branch deleted. Drive a real pid instead.
@@ -93,7 +103,7 @@ test("win32 never claims the whole tree died (#110)", () => {
   );
 });
 
-test("win32 falls back to the direct child when there is no group (#110)", () => {
+test("win32 falls back to the direct child when there is no group (#110)", { skip: !isWindows }, () => {
   // the branch that the pid-0 test missed: a REAL pid on win32 must still kill
   // what it can, and report that the tree is not covered
   const child = spawn("sleep", ["30"], { stdio: "ignore" });
@@ -104,7 +114,7 @@ test("win32 falls back to the direct child when there is no group (#110)", () =>
 
 /* ---------- the timeout path, driven end to end ---------- */
 
-test("a timeout says whether anything was actually killed (#110)", async () => {
+test("a timeout says whether anything was actually killed (#110)", { skip: isWindows }, async () => {
   // The mutation that must fail: reporting "TIMEOUT after …ms" with no statement
   // about the kill. That is the original bug — a timeout that claims success
   // while the process runs on.
@@ -164,7 +174,7 @@ test("the description distinguishes a partial kill (#110)", () => {
 
 /* ---------- against a real process, on the platform we can test ---------- */
 
-test("killing a real child on POSIX reports a whole-tree kill (#110)", async () => {
+test("killing a real child on POSIX reports a whole-tree kill (#110)", { skip: isWindows }, async () => {
   const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
   await new Promise((r) => setTimeout(r, 120));
   const out = killTree(child, "linux");
@@ -181,7 +191,7 @@ test("killing a real child on POSIX reports a whole-tree kill (#110)", async () 
   assert.equal(alive, false, "the process must really be dead (#110)");
 });
 
-test("killing an already-dead pid reports already-gone, not success (#110)", async () => {
+test("killing an already-dead pid reports already-gone, not success (#110)", { skip: isWindows }, async () => {
   const child = spawn("true", [], { stdio: "ignore" });
   await new Promise((r) => setTimeout(r, 400));
   const out = killTree(child, "linux");
