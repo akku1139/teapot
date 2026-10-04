@@ -716,6 +716,9 @@ export default function App() {
         at: Number(q.at) || Date.now(),
         promptId: q.id,
         images: q.images?.map((i) => i.url),
+        // #122: the snapshot already carries `source`; dropping it made every
+        // harness prompt render as a user one
+        ...(q.source ? { source: q.source } : {}),
       })),
       ...pendingFor(key),
     ]);
@@ -1191,7 +1194,7 @@ export default function App() {
   // letting it flash to the top of the viewport). Cache by id; only the
   // pending→sent flip builds a new object.
   const echoCache = new Map<string, Ev>();
-  function echoEv(p: { id: string; text: string; at: number; promptId?: string; sent?: boolean; images?: string[] }): Ev {
+  function echoEv(p: PendingEcho): Ev {
     const key = `${p.id}:${p.sent ? "s" : "p"}`;
     const hit = echoCache.get(key);
     if (hit) return hit;
@@ -1207,7 +1210,9 @@ export default function App() {
       parent: null,
       type: "prompt",
       data: {
-        source: "user",
+        // #122: was hardcoded "user", so a harness prompt looked like an operator
+        // one — no queued marker of its own, and a ✕/✎ that cannot work on it
+        source: p.source ?? "user",
         text: p.text,
         pending: !p.sent,
         ...(p.images?.length ? { images: p.images } : {}),
@@ -3355,6 +3360,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     }
                     onResize={() => { if (atBottom()) requestAnimationFrame(() => scrollBottom(true)); }}
                     onCancel={
+                      // #122: only an OPERATOR prompt can be withdrawn. A harness
+                      // prompt has no composer draft to return to — cancelling it
+                      // would discard a system message the operator never wrote.
+                      e.data?.source === "user" &&
                       e.data?.pending && e.data?.promptId && e.data?.sent !== true
                         ? () => {
                             const pid = String(e.data.promptId);

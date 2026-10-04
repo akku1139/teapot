@@ -8,7 +8,25 @@
  */
 
 /** an optimistic echo row awaiting its log entry */
-export type PendingEcho = { id: string; text: string; at: number; promptId?: string; sent?: boolean; images?: string[] };
+/**
+ * One optimistic echo of a queued prompt.
+ *
+ * `source` matters: a HARNESS prompt (the operator's goal/todo save, or a
+ * sub-agent report) cannot be cancelled or edited by hand — there is no composer
+ * draft to return it to and no user text to fork from (#122). Without carrying the
+ * source here, every echo rendered as `source:"user"` and grew a ✕ that would have
+ * failed.
+ */
+export type PendingEcho = {
+  id: string;
+  text: string;
+  at: number;
+  promptId?: string;
+  sent?: boolean;
+  images?: string[];
+  /** "user" for an operator prompt, "harness" for one the system injected */
+  source?: string;
+};
 
 /**
  * Reconcile the local echoes against the live queue (#78).
