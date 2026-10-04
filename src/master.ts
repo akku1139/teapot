@@ -676,6 +676,29 @@ export class Master {
       bus.emit("update", { kind: "event", agentId: e.agent, event: e } satisfies BusEvent);
       this.onChildEvent(ac, e);
     };
+    // #126: the CONTROL PLANE, separate from the event pipeline above.
+    //
+    // `onChildEvent` used to be what woke a parent's `wait_children`, and it runs
+    // after the event is persisted. So a failed or slow write left the parent
+    // parked forever — measured with every write failing, the wake never fired.
+    //
+    // A status change is CONTROL FLOW, not an observation, so it gets its own
+    // immediate path. `onChildEvent` keeps its other job (mirroring the child's
+    // activity into the parent's timeline, forwarding its final report), which
+    // legitimately belongs to the event stream.
+    agent.onControlStatusChange = (agentId, status) => {
+      if (!ac.parent) return;
+      const parent = this.agents.get(ac.parent);
+      if (!parent) return;
+      // the waiter re-checks whether ITS targets are all settled, so waking on
+      // every movement is correct and cheap
+      this.wakeParentWaiters(ac.parent);
+      if (status === "idle" || status === "stopped" || status === "waiting" || status === "error")
+        parent.enqueuePrompt(
+          `[harness] @${agentId} is now ${status}. Continue your task, or finish() if the work is done.`,
+          "harness",
+        );
+    };
     // sub-agent management hooks — only when this agent can legally spawn
     if (myDepth < this.maxSpawnDepth()) {
       const self = agent;

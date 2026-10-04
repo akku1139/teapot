@@ -35,6 +35,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,14 +75,21 @@ test("a notified event is already readable (#54)", async () => {
 });
 
 test("notification happens after the write, not before (#54)", async () => {
-  // the invariant, stated directly rather than only through the reload
+  // The invariant stated DIRECTLY.
+  //
+  // #126: the previous version of this test read the file with ASYNC readFile
+  // inside the observer. That cannot prove ordering — `await readFile()` yields,
+  // so the write can complete during the yield and the old implementation would
+  // still pass. `readFileSync` samples the file at the exact instant `onEvent`
+  // runs, which is the property under test.
   const dir = mkdtempSync(path.join(os.tmpdir(), "s54b-"));
   const file = path.join(dir, "chat.jsonl");
   const log = new EventLog(file, "a");
   await log.load();
   let ordered = true;
-  log.onEvent = async (e) => {
-    const txt = await readFile(file, "utf8").catch(() => "");
+  log.onEvent = (e) => {
+    // SYNCHRONOUS sample — no await between onEvent and the read
+    const txt = readFileSync(file, "utf8");
     if (!txt.includes(e.id)) ordered = false;
   };
   await log.append("message", "s", "br0", { role: "assistant", content: "x" });

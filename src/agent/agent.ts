@@ -1573,9 +1573,26 @@ export class Agent {
   /** #95: set when this round already injected a harness progress request */
   private progressRequestedThisRound = false;
 
+  /**
+   * CONTROL PLANE: fired on every status change, immediately, independent of the
+   * log.
+   *
+   * #126: `wait_children` wakeups used to ride `EventLog.onEvent`, so a status
+   * change reached the parent only AFTER the write completed. After the
+   * write-before-notify fix that meant a FAILED or slow write left a parked parent
+   * waiting forever — persistence latency became control flow. Measured with every
+   * write failing: `onEvent fired: 0`, so no wakeup at all.
+   *
+   * Control flow must not depend on durability, so this is separate from the
+   * event pipeline. The log's `onEvent` now means "persisted, tell the world";
+   * this means "my state changed, react now".
+   */
+  onControlStatusChange: ((agentId: string, status: AgentStatus) => void) | null = null;
+
   private setStatus(s: AgentStatus, reason = ""): void {
-    // Update the field FIRST. log.append fires onEvent synchronously, and the
-    // master's child-event hook wakes parked wait_children callers — those
+    // Update the field FIRST. The control-plane hook fires synchronously below
+    // (see onControlStatusChange), and it is what wakes parked wait_children
+    // callers — those
     // re-check agent.status at that instant. Updating after the append made
     // every waiter observe the OLD status ("running"), conclude "someone is
     // still working", and stay parked until timeout even though the child had
@@ -1584,6 +1601,14 @@ export class Agent {
     this.status = s;
     this.statusReason = reason;
     if (prev !== s) {
+      // #126: control plane FIRST, and not via the log. A parent's wait_children
+      // must wake on the status change itself, not on the durability of the write
+      // that records it.
+      try {
+        this.onControlStatusChange?.(this.opts.id, s);
+      } catch {
+        /* a control-plane listener must never break a status change */
+      }
       void this.log.append("state", this.currentSession, this.currentBranch, {
         from: prev,
         to: s,
