@@ -113,10 +113,22 @@ test("queued prompts make a STOPPED agent live (#59)", async () => {
       1,
       "the prompt is held, not delivered (#59)",
     );
+    // #133: this asserted `true`, on the reasoning that held prompts are "pending
+    // work — the user must be able to stop/clear". But `live` drives ONE control:
+    //
+    //     onclick={isSelLive() ? act("/stop") : act("/start")}   (App.tsx:3863)
+    //
+    // and a STOPPED agent pressing "stop" is a no-op that leaves the button showing
+    // stop forever. So the reasoning does not hold: it made the single toggle
+    // unusable, and #59's actual requirement — that the prompt be WITHDRAWABLE —
+    // is met independently, by the ✕ on the row itself, which posts to
+    // /api/agents/:id/prompt/cancel and never consults `isSelLive`.
+    //
+    // `pendingPrompts.length` is still asserted above, so the prompt is still held.
     assert.equal(
       agent.isLive(),
-      true,
-      "held prompts are pending work — the user must be able to stop/clear (#59)",
+      false,
+      "a stopped agent is not live, whatever it is holding (#133) — the toggle must offer start",
     );
     await agent.dispose();
   });

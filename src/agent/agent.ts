@@ -569,13 +569,19 @@ export class Agent {
   isLive(): boolean {
     // #127: a MANUAL compaction on an idle agent was rewriting `messages` — a
     // large, non-cancellable operation — while `isLive()` reported false, so the
-    // UI offered "start". Measured DURING the summarizer call:
+    // UI offered "start".
     //
-    //   status = idle   live = false   ctx.compacting = "summarizing"
+    // #133: and the reverse — after a STOP with prompts still queued, `live` stayed
+    // true forever, so the controls kept offering "stop" for an agent that was
+    // already stopped, and no amount of reloading helped. Measured:
     //
-    // `ctx.compacting` was already published, so the information existed and only
-    // the live-state calculation ignored it. `start()` during that window would
-    // compact the array the agent is about to resume into (#38's failure mode).
+    //   after stop : status = stopped   live = true   pendingPrompts = 1
+    //
+    // A queued prompt is not work in progress: it is waiting for the operator to
+    // press start. #9 settled that a stop must neither deliver nor silently
+    // DISCARD those prompts, so they are kept — but keeping them must not make the
+    // agent read as running. A stop outranks them.
+    if (this.stopRequested) return false;
     return (
       this.status === "running" ||
       this.parkedByTool ||
