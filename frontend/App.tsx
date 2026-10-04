@@ -1279,7 +1279,18 @@ export default function App() {
   // sidebar tree: subs hang under their parent, collapsible per parent
   const [collapsedSubs, setCollapsedSubs] = createSignal<Set<string>>((() => {
     try {
-      return new Set(JSON.parse(localStorage.getItem("teapot.collapsed") ?? "[]"));
+      const keys: string[] = JSON.parse(localStorage.getItem("teapot.collapsed") ?? "[]");
+      // #81: a TOP-LEVEL chat id in this set is a leftover, not a choice.
+      //
+      // A chat's caret writes `chat:<id>` into `teapot.wsCollapsed`; nothing in
+      // the current UI writes a bare top-level id here. An entry like that can
+      // only predate it — and `treeRowsOf` honours this set (sidebar-tree.ts:142),
+      // so it silently hid the whole subtree while the caret pointed open and the
+      // 🧩 badge kept counting. That is the reported DOM.
+      //
+      // Sub-agent ids are untouched: a sub-agent's caret DOES write here, and
+      // those entries are the operator's own collapse state.
+      return new Set(keys.filter((k) => typeof k === "string" && !k.startsWith("chat:")));
     } catch { return new Set(); }
   })());
   const toggleCollapse = (id: string) => {
@@ -2899,8 +2910,25 @@ export default function App() {
                 >
                   {(() => {
                     const isChat = !row.a.parent;
+                    // #81: a top-level chat's subtree is hidden by TWO different
+                    // sets, and the caret must agree with both.
+                    //
+                    //   - `chat:<id>` in wsCollapsed  (what this caret writes)
+                    //   - the bare id in `teapot.collapsed` (what treeRowsOf
+                    //     checks at sidebar-tree.ts:142 to hide the children)
+                    //
+                    // Reading only chatCollapsed() is what produced the reported
+                    // DOM: an expanded caret (▾), a 🧩N badge, and no child rows at
+                    // all — because a stale `teapot.collapsed` entry hid the
+                    // subtree while the caret claimed it was open. The badge uses
+                    // descendantsOf() and never consults either set, so it kept
+                    // counting children that were hidden.
+                    //
+                    // So `off` is true if EITHER set says collapsed, and clicking
+                    // clears both — otherwise the caret could point open at a
+                    // hidden subtree, or clear one key and leave the other.
                     const off = isChat
-                      ? chatCollapsed().has(`chat:${row.a.id}`)
+                      ? chatCollapsed().has(`chat:${row.a.id}`) || collapsedSubs().has(row.a.id)
                       : collapsedSubs().has(row.a.id);
                     return (
                       <span
@@ -2919,8 +2947,17 @@ export default function App() {
                           // top-level chats share the persisted group set, so a
                           // reload keeps them collapsed; sub-agent collapse is
                           // its own set, as before
-                          if (isChat) toggleWsGroup(`chat:${row.a.id}`, row.a.id, off);
-                          else toggleCollapse(row.a.id);
+                          if (isChat) {
+                            // clear the OTHER set too, or the subtree stays hidden
+                            // while the caret now claims to be open
+                            if (collapsedSubs().has(row.a.id)) {
+                              const next = new Set(collapsedSubs());
+                              next.delete(row.a.id);
+                              setCollapsedSubs(next);
+                              localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
+                            }
+                            toggleWsGroup(`chat:${row.a.id}`, row.a.id, off);
+                          } else toggleCollapse(row.a.id);
                         }}
                       >{off ? "▸" : "▾"}</span>
                     );

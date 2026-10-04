@@ -243,7 +243,9 @@ test("the caret remains the control that expands (#85)", () => {
   // The other half of #85: removing expand-on-select must not remove the ability
   // to expand. The caret handler still toggles, in both directions.
   const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  const caretAt = app.indexOf("if (isChat) toggleWsGroup");
+  // #81 wrapped the toggle in a block that also clears the second collapse store,
+  // so the literal prefix is gone. Assert the call, which is the actual rule.
+  const caretAt = app.indexOf("toggleWsGroup(`chat:${row.a.id}`, row.a.id, off)");
   assert.ok(caretAt > 0, "the caret must still toggle the chat group (#85)");
   const around = app.slice(caretAt - 200, caretAt + 200);
   assert.match(
