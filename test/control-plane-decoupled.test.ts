@@ -163,3 +163,66 @@ test("the stale synchronous-onEvent comment is gone (#126)", async () => {
     "onEvent is no longer synchronous — the comment must not claim it is (#126)",
   );
 });
+/* ---------- #126: source anchors must survive a CRLF checkout ---------- */
+
+test("readSource makes an anchor behave identically on LF and CRLF (#126)", async () => {
+  // The Windows CI failed on a test that searched for a literal "\n": git checks
+  // out CRLF there, so the anchor missed and the test failed while passing on
+  // Linux — the third time this shape has broken a test in this project.
+  //
+  // Rather than fix each test (there were ten with the same pattern), every
+  // source-reading test goes through this helper, and this asserts the property
+  // that makes them safe.
+  const { readSource } = await import("./helpers/source.ts");
+  const { writeFileSync } = await import("node:fs");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "s126c-"));
+  const lf = "title={\n  row.a.parent\n}\n";
+  const lfPath = path.join(dir, "lf.ts");
+  const crlfPath = path.join(dir, "crlf.ts");
+  writeFileSync(lfPath, lf);
+  writeFileSync(crlfPath, lf.replace(/\n/g, "\r\n"));
+  const fromLf = readSource(lfPath);
+  const fromCrlf = readSource(crlfPath);
+  assert.equal(fromLf, fromCrlf, "readSource must normalise line endings (#126)");
+  assert.ok(
+    fromCrlf.includes("row.a.parent\n"),
+    "a CRLF checkout must still match an LF anchor (#126)",
+  );
+});
+
+test("no test file anchors on a raw newline inside a search string (#126)", async () => {
+  // the structural guard, so the pattern cannot come back one file at a time
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const { readSource } = await import("./helpers/source.ts");
+  // #126: `.pathname` on a file: URL yields "/D:/a/…" on Windows — the leading
+  // slash makes it a POSIX-absolute path that does not resolve. The same mistake
+  // `windows-tilde-expansion.test.ts` made, which is why that test could never
+  // have passed on the runner it was written for.
+  const { fileURLToPath } = await import("node:url");
+  const dir = fileURLToPath(new URL(".", import.meta.url));
+  const offenders: string[] = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".test.ts")) continue;
+    const src = readSource(path.join(dir, f));
+    for (const m of src.matchAll(/(?:indexOf|lastIndexOf)\(\s*"[^"]*\\n/g)) {
+      offenders.push(f);
+      break;
+    }
+  }
+  // Anchoring on "\n" is fine ONLY if the text came through readSource, which
+  // normalises CRLF. So the check is not "does it anchor" but "does it anchor on
+  // RAW file text".
+  const unsafe: string[] = [];
+  for (const f of offenders) {
+    const src = readSource(path.join(dir, f));
+    const raw = readFileSync(path.join(dir, f), "utf8");
+    if (raw !== src) continue;                       // already normalised
+    if (/readSource/.test(raw)) continue;            // routed, anchor is safe
+    unsafe.push(f);
+  }
+  assert.deepEqual(
+    unsafe,
+    [],
+    `these anchor on a raw newline without readSource, so they fail on a CRLF checkout (#126): ${unsafe.join(", ")}`,
+  );
+});

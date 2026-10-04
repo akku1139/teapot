@@ -17,8 +17,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
 
 test("pending echoes are stored per session, not globally (#87)", () => {
   assert.match(

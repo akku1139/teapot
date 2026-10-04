@@ -28,9 +28,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 import { HARNESS_ACK, PLACEHOLDER_TEXT } from "../src/agent/agent.ts";
 
-const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
+const src = readSource(new URL("../src/agent/agent.ts", import.meta.url));
 
 /**
  * The SHIPPED rules, imported — not re-typed. A copy could drift from the code

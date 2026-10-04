@@ -26,8 +26,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
 
 /** the body of the pruning effect */
 function pruneEffect(): string {
@@ -82,7 +84,7 @@ test("the sweep covers EVERY agent, not just the selected one (#40)", () => {
 test("the helper itself still refuses to guess an unknown status (#40)", () => {
   // belt and braces on the pure behaviour the wiring depends on: an agent with
   // no snapshot is left alone rather than treated as idle
-  const lb = readFileSync(new URL("../frontend/live-buffer.ts", import.meta.url), "utf8");
+  const lb = readSource(new URL("../frontend/live-buffer.ts", import.meta.url));
   assert.match(
     lb,
     /if \(st === undefined\) continue;/,

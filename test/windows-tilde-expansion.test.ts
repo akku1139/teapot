@@ -28,9 +28,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 import path from "node:path";
 
-const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
+const master = readSource(new URL("../src/master.ts", import.meta.url));
 
 /**
  * The expansion `resolveWorkspace` performs, with the env it reads.
@@ -142,8 +144,8 @@ test("every ~ expansion in src/ has a non-POSIX fallback (#110)", () => {
   // the same mistake is easy to make again; skills.ts:165 already does it right
   const files: [string, string][] = [
     ["src/master.ts", master],
-    ["src/server/api.ts", readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8")],
-    ["src/agent/skills.ts", readFileSync(new URL("../src/agent/skills.ts", import.meta.url), "utf8")],
+    ["src/server/api.ts", readSource(new URL("../src/server/api.ts", import.meta.url))],
+    ["src/agent/skills.ts", readSource(new URL("../src/agent/skills.ts", import.meta.url))],
   ];
   for (const [name, src] of files) {
     for (const m of src.matchAll(/(?:process\.env\.HOME|~\/\^~)[^\n]*/g)) {

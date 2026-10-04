@@ -17,8 +17,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
 
 /* ---------- the gate ---------- */
 
@@ -82,7 +84,7 @@ test("the editor keeps its id, handler and view toggle (#30)", () => {
 /* ---------- the real check lives in the bundle smoke test ---------- */
 
 test("the smoke test asserts node identity, not just the draft text (#30)", () => {
-  const smoke = readFileSync(new URL("../scripts/smoke-web.mjs", import.meta.url), "utf8");
+  const smoke = readSource(new URL("../scripts/smoke-web.mjs", import.meta.url));
   assert.match(
     smoke,
     /after !== box/,

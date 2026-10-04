@@ -23,8 +23,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+const css = readSource(new URL("../frontend/app.css", import.meta.url));
 
 /** Body of the LAST rule whose selector list contains `selector` exactly. */
 function lastRule(selector: string): string {
@@ -143,7 +145,7 @@ test("a collapsed chat is still clickable (#66)", () => {
 test("the collapsed caret is what shows the state (#66)", () => {
   // the caret glyph flips ▾/▸ in the component; this asserts the row still
   // renders it, so "collapsed" is never conveyed by opacity alone
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
   assert.match(app, /\{off \? "▸" : "▾"\}/, "the caret must reflect the collapsed state (#66)");
 });
 
@@ -209,7 +211,7 @@ function statementsOf(body: string): string[] {
 }
 
 test("clicking a collapsed chat selects it WITHOUT expanding it (#66/#85)", () => {
-  const body = sidebarRowOnClick(readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8"));
+  const body = sidebarRowOnClick(readSource(new URL("../frontend/App.tsx", import.meta.url)));
   const stmts = statementsOf(body);
 
   // 1. selecting must be a TOP-LEVEL statement — not nested in any guard. A dead
@@ -242,7 +244,7 @@ test("clicking a collapsed chat selects it WITHOUT expanding it (#66/#85)", () =
 test("the caret remains the control that expands (#85)", () => {
   // The other half of #85: removing expand-on-select must not remove the ability
   // to expand. The caret handler still toggles, in both directions.
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
   // #81 wrapped the toggle in a block that also clears the second collapse store,
   // so the literal prefix is gone. Assert the call, which is the actual rule.
   const caretAt = app.indexOf("toggleWsGroup(`chat:${row.a.id}`, row.a.id, off)");
@@ -261,7 +263,7 @@ test("the row handler has no conditional at all (#66/#85)", () => {
   // could only reintroduce either bug: guard it and the row becomes a dead end
   // (#66), or branch on the collapsed state and it forces the subtree open
   // (#85). So the assertion is simply "no branches".
-  const body = sidebarRowOnClick(readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8"));
+  const body = sidebarRowOnClick(readSource(new URL("../frontend/App.tsx", import.meta.url)));
   assert.doesNotMatch(
     body,
     /\b(if|for|while|switch)\b/,

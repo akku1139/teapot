@@ -23,6 +23,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 
 interface Row {
   eid: string;
@@ -104,7 +106,7 @@ test("the fix keeps the topmost visible row (#103)", () => {
 });
 
 test("the resize handler re-pins rather than trusting scrollTop (#103)", () => {
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
   const at = app.indexOf("#103: a resize must not move the operator's place");
   assert.notEqual(at, -1, "the handler must exist (#103)");
   const block = app.slice(at, app.indexOf("onCleanup(", at));
@@ -121,7 +123,7 @@ test("the resize handler re-pins rather than trusting scrollTop (#103)", () => {
 test("the anchor is a stable row id, not a pixel offset or an index (#103)", () => {
   // a row INDEX would shift if rows were prepended; a pixel offset is exactly
   // what does not survive a re-wrap
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
   assert.match(
     app,
     /data-eid/,
@@ -135,7 +137,7 @@ test("the anchor is a stable row id, not a pixel offset or an index (#103)", () 
 });
 
 test("the listener is cleaned up (#103)", () => {
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
   const at = app.indexOf("#103: a resize must not move the operator's place");
   const block = app.slice(at, app.indexOf("});", app.indexOf("onCleanup", at)));
   assert.match(block, /removeEventListener\("resize"/, "a leaked listener would fire per remount (#103)");

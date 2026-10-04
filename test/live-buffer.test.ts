@@ -16,6 +16,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// #126: normalises CRLF so source anchors behave the same on Windows
+import { readSource } from "./helpers/source.ts";
 import {
   applyDelta,
   clearLive,
@@ -89,7 +91,7 @@ test("App.tsx clears on the turn boundary, not on the per-attempt reset (#40)", 
   // Guards against "fixing" this by clearing on the empty llm-delta the server
   // emits before EVERY call — that fires on retries too and would blank the
   // bubble mid-reply.
-  const src = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+  const src = readSource(new URL("../frontend/App.tsx", import.meta.url));
   assert.match(src, /isTurnBoundary\(msg\.event\)/, "turn-boundary check must be wired in");
   const handler = src.slice(src.indexOf('if (msg.kind === "llm-delta")'));
   const boundaryBlock = handler.slice(0, handler.indexOf('if (msg.kind === "llm-delta")'));
@@ -211,7 +213,7 @@ describe("pruneDeadLiveBuffers (#40)", () => {
     // The wiring is now asserted in test/live-buffer-wiring.test.ts, which
     // checks the dependency is read OUTSIDE the updater (the thing that actually
     // makes the effect subscribe) and that nothing else has the same bug.
-    const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+    const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
     const at = app.indexOf("pruneDeadLiveBuffers(prev");
     const start = app.lastIndexOf("createEffect(", at);
     const body = app.slice(start, app.indexOf("\n  });", at));
