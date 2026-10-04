@@ -100,7 +100,10 @@ test("saveSkill writes frontmatter file and it is rediscoverable", async () => {
   await useTempDir("teapot-skills-save-", async (base) => {
       const wsRoot = path.join(base, "skills");
     const filePath = await saveSkill(wsRoot, "coffee", "how to brew", "# Brew\nboil water");
-    assert.match(filePath, /skills\/coffee\/SKILL\.md$/);
+    // #110: a regex hardcoding "/" — on Windows the path is
+    // "skills\coffee\SKILL.md" and this never matched. Accept either separator
+    // rather than asserting a platform's spelling.
+    assert.match(filePath, /skills[\\/]coffee[\\/]SKILL\.md$/);
     const text = await readFile(filePath, "utf8");
     assert.match(text, /^---\nname: coffee\ndescription: how to brew\n---/);
     const skills = await discoverSkills([{ dir: wsRoot, source: "workspace" }]);
