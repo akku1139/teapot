@@ -19,6 +19,12 @@ import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 import { AcpAdapter, updateForEvent } from "../src/acp/adapter.ts";
 import { Agent } from "../src/agent/agent.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — runs POSIX commands through the bash tool; POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("runs POSIX commands through the bash tool; POSIX filesystem paths");
 
 /* ---------- the mapping, in isolation ---------- */
 

@@ -18,6 +18,12 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { useTempDir } from "./helpers/tmp.ts";
 import { executeTool, repairToolInput } from "../src/agent/tools.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("runs POSIX commands through the bash tool");
 
 /* ---------- aliases (#17) ---------- */
 

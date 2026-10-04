@@ -33,6 +33,12 @@ import { chat, chatStream, type ChatMessage, type LlmConfig } from "../src/agent
 import { isContextOverflow } from "../src/agent/tools.ts";
 import { Agent } from "../src/agent/agent.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("runs POSIX commands through the bash tool");
 
 const cfg = (baseUrl: string): LlmConfig => ({ baseUrl, apiKey: "k", model: "m" } as any);
 const MSGS: ChatMessage[] = [{ role: "user", content: "hi" }];

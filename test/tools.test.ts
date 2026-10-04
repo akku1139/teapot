@@ -6,6 +6,12 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 import { useTempDir } from "./helpers/tmp.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — runs POSIX commands through the bash tool; POSIX file modes.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("runs POSIX commands through the bash tool; POSIX file modes");
 
 async function withCtx(fn: (ctx: ToolContext) => Promise<void>): Promise<void> {
   await useTempDir("teapot-tools-", async (dir) => {

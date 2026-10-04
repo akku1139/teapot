@@ -29,6 +29,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { isOwnLiveWork } from "../frontend/live-buffer.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("runs POSIX commands through the bash tool");
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 

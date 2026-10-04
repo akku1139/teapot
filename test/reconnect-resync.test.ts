@@ -32,6 +32,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("runs POSIX commands through the bash tool");
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const agent = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");

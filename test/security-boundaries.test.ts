@@ -23,6 +23,12 @@ import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
 import path from "node:path";
 import { executeTool, safeJoin } from "../src/agent/tools.ts";
 import { sanitizeAgentId } from "../src/master.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("POSIX filesystem paths");
 
 /* ---------- #74: workspace containment ---------- */
 

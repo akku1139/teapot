@@ -170,6 +170,12 @@ test("a torn line is skipped even when it lands INSIDE the read window (#59)", a
 
 import { Master, type TeapotConfig } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("POSIX filesystem paths");
 
 function mkMaster(dataDir: string): Master {
   return new Master(

@@ -209,3 +209,10 @@ test("the snapshot reports effort support so the UI can gate the control (#47)",
     await m.stopAllAgents(2_000);
   });
 });
+
+
+// #110: POSIX-only — POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+import { markPosixOnly } from "./helpers/posix-only.ts";
+markPosixOnly("POSIX filesystem paths");

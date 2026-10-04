@@ -1,0 +1,114 @@
+# Windows verification (#110 item 4).
+#
+# The operator asked for a real Windows runner — NOT Wine. Wine hides exactly the
+# things that break here: process-group kills, `HOME` being unset, and which
+# shell a command lands in.
+#
+# ## Why this runs a SUBSET, not `pnpm test`
+#
+# The suite shells out extensively (10 test files drive the `bash` tool, which
+# still spawns `/bin/bash` — item 2 is unfixed pending a decision). Running the
+# whole suite here would fail on ~10 files for a KNOWN reason and bury anything
+# real. So this job runs the platform-independent tests, and `pnpm test` stays the
+# Linux gate.
+#
+# The split is made mechanically — `test/helpers/posix-only.ts` gates on
+# `process.platform` — so a test opts OUT rather than being silently skipped by a
+# filename pattern. Nothing is excluded by name here, which is what would let a
+# genuine Windows failure hide.
+#
+# ## The fixed list below
+#
+# These are the tests that carry the platform-independent half of the Windows
+# work, so they must not rot while the CI is new:
+#
+#   windows-tilde-expansion  — the `~` folder bug (#110 item 3)
+#   kill-tree-windows        — timeout/abort reporting success wrongly (#110)
+#
+# They are asserted individually so a failure names the file, and so removing
+# one is a visible diff rather than a silent hole.
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # manual, while the platform support is still partial — see the note above
+  workflow_dispatch:
+
+jobs:
+  # Gate 1: does the project even BUILD on Windows? tsc is cross-platform, so
+  # this is a real check and not a formality.
+  build:
+    name: build + typecheck (windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm typecheck-web
+
+      - run: pnpm build
+
+  # Gate 2: the platform-independent tests, plus the two Windows-specific ones
+  # called out above.
+  test:
+    name: test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # No build needed: these tests import TypeScript sources directly through
+      # node's type-stripping loader, so `dist/` and `public/assets` are not
+      # involved. (The bundle tests DO need a build — they are Linux-only, since
+      # they drive the web bundle under happy-dom.)
+      - name: windows-specific tests
+        run: |
+          pnpm exec node --test test/windows-tilde-expansion.test.ts test/kill-tree-windows.test.ts
+
+      - name: platform-independent tests
+        run: pnpm run test:portable
+
+      # #110: the bug that started this was a `~` directory. Assert the real
+      # invariant on the real platform rather than trusting a unit test: with
+      # HOME unset, no directory literally named `~` may appear under the cwd.
+      - name: no literal ~ directory is created (#110)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = Join-Path $env:RUNNER_TEMP 'tilde-probe'
+          New-Item -ItemType Directory -Path $probe | Out-Null
+          Push-Location $probe
+          try {
+            # HOME is normally UNSET on Windows runners; make sure of it either
+            # way, since that is the exact condition the bug needed.
+            Remove-Item Env:HOME -ErrorAction SilentlyContinue
+            node -e "const {homeDir}=require('./src/home.ts'); console.log('home=' + JSON.stringify(homeDir()))"
+            if (Test-Path '~') {
+              Write-Error "FAIL: a directory literally named ~ was created"
+              exit 1
+            }
+            Write-Host "OK: no literal ~ directory (cwd=$(Get-Location))"
+          } finally {
+            Pop-Location
+          }

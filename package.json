@@ -39,7 +39,8 @@
     "start": "node dist/index.js",
     "dev": "node src/index.ts",
     "dev-web": "vite",
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "test:portable": "node scripts/run-portable-tests.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",

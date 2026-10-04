@@ -6,6 +6,12 @@ import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
 import { readEvents } from "../src/log/events.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("POSIX filesystem paths");
 
 const LLM = { baseUrl: "http://mock", apiKey: "mock", model: "mock-model" };
 

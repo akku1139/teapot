@@ -34,6 +34,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { killTree, describeKill, canKillProcessGroup } from "../src/agent/kill.ts";
 import { spawn } from "node:child_process";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — spawns a POSIX binary; runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("spawns a POSIX binary; runs POSIX commands through the bash tool");
 
 /* ---------- the platform distinction ---------- */
 

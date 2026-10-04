@@ -13,6 +13,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/sidebar-tree.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+markPosixOnly("POSIX filesystem paths");
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
