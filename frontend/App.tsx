@@ -5327,19 +5327,23 @@ function TodoEditor(props: {
     <Show
       when={props.viewMode}
       fallback={
-        /* rendered checklist — the default view; markdown + real checkboxes */
-        <div class="content mdpreview" style="max-height:40vh;padding:8px 10px" innerHTML={renderMarkdownCached(props.draft)} />
+        /* rendered checklist — the default view; markdown + real checkboxes.
+           #124: this was `max-height:40vh` while the editor was `rows={5}`, so
+           the two views had DIFFERENT defaults and toggling between them jumped
+           the panel — and 40vh on a tall window was far more than 5 rows, so the
+           preview started much bigger than the editor it replaced. Both now take
+           their height from `.todopane`, so they cannot drift again. */
+        <div class="content mdpreview todopane" innerHTML={renderMarkdownCached(props.draft)} />
       }
     >
       <textarea
         id="todo-input"
-        class="mono"
+        class="mono todopane-edit"
         rows={5}
         placeholder={"- task one\n- task two"}
         value={props.draft}
         oninput={(e) => props.onDraft(e.currentTarget.value)}
         title="shared with the agent \u2014 it may check items off via set_todo; your unsaved edits win until you save"
-        style="width:100%;background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;resize:vertical"
       />
     </Show>
   );

@@ -1009,3 +1009,37 @@ input[type="number"] {
   outline: 2px solid var(--acc);
   outline-offset: 1px;
 }
+
+/* ---- #124: the task list renders and edits at the SAME height ----
+ *
+ * The preview was `max-height:40vh` and the editor `rows={5}`, so toggling
+ * between them resized the panel — and on a tall window the preview started far
+ * larger than the editor it replaced, which made the list hard to read and the
+ * toggle feel like a jump rather than a view change.
+ *
+ * One class owns the height for both, so they cannot drift again. `rows={5}`
+ * stays on the textarea as its intrinsic minimum; the CSS pins the rendered box
+ * so the two agree.
+ */
+.todopane,
+.todopane-edit {
+  /* every property the removed inline style carried, so nothing was lost when
+     the styling moved into the sheet — checked one by one */
+  height: 11.5em;
+  max-height: 40vh;
+  min-height: 7em;
+  overflow-y: auto;
+  box-sizing: border-box;
+  border-radius: 6px;
+  display: block;
+  width: 100%;
+  background: var(--bg-darkest);
+  border: none;
+  padding: 6px 8px;
+  color: var(--fg);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
