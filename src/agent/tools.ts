@@ -1345,7 +1345,19 @@ export const TOOLS: ToolDef[] = [
       if (stale) return stale;
       let oldText = str(args.old_text);
       const newText = str(args.new_text);
-      if (!oldText) return { ok: false, result: "old_text is required" };
+      // #126: the single most common edit_file failure in the real logs (22
+      // occurrences) said only "old_text is required", while the tool's own
+      // schema already documents the better form. Name it and say what to do —
+      // the pattern master.ts uses for "not your sub-agent" (master.ts:979),
+      // which turned a confusing refusal into a re-addressable one.
+      if (!oldText)
+        return {
+          ok: false,
+          result:
+            "old_text is required — pass the exact text to replace, or read with " +
+            '`read_file({line_ids:"hash"})` and pass that block VERBATIM as old_text. ' +
+            "Do NOT copy read_file's `N| ` line-number prefixes.",
+        };
       const replaceAll = args.replace_all === true;
       // #7/#4: accept a block copied straight out of read_file's hashline
       // output. When the anchors do not verify we FAIL with the specific reason

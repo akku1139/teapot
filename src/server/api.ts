@@ -2,6 +2,7 @@
  * REST + SSE API on Hono, plus static file serving for the web UI.
  */
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { serve, upgradeWebSocket } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import { readFileSync, existsSync } from "node:fs";
@@ -550,13 +551,17 @@ const MAX_WS_CLIENTS = 64;
   // ---- workspace file tree (read-only, powers the 🗂 files panel) ----
   app.get("/api/agents/:id/tree", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const rel = c.req.query("path") || ".";
     let abs: string;
     try {
       abs = safeJoin(a.workspace, rel);
     } catch (err) {
-      return c.json({ error: (err as Error).message }, 400);
+      // #126: safeJoin's message embeds the RESOLVED absolute path
+      // ("path escapes workspace: /home/user/secret/project/…"), so returning it
+      // verbatim hands the caller the server's directory layout. The rejection is
+      // correct; the disclosure was not. Echo back the path AS GIVEN.
+      return c.json({ error: `path is outside the workspace: ${rel}` }, 400);
     }
     let dirents;
     try {
@@ -602,7 +607,7 @@ const MAX_WS_CLIENTS = 64;
   // small text-file preview for the tree (binary-safe guard, hard cap)
   app.get("/api/agents/:id/file", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const rel = c.req.query("path") ?? "";
     if (!rel.trim()) return c.json({ error: "path required" }, 400);
     let abs: string;
@@ -630,7 +635,7 @@ const MAX_WS_CLIENTS = 64;
   // every other agent route, workspace-confined, served with the right MIME
   app.get("/api/agents/:id/raw", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const rel = c.req.query("path") ?? "";
     if (!rel.trim()) return c.json({ error: "path required" }, 400);
     let abs: string;
@@ -669,7 +674,7 @@ const MAX_WS_CLIENTS = 64;
   // agent). Optional baseContent enables optimistic-concurrency checking.
   app.put("/api/agents/:id/file", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const rel = c.req.query("path") ?? "";
     if (!rel.trim()) return c.json({ error: "path required" }, 400);
     const body = await c.req.json<{ content?: string; baseContent?: string }>().catch(() => null);
@@ -777,20 +782,20 @@ const MAX_WS_CLIENTS = 64;
 
   app.get("/api/agents/:id", (c) => {
     const a = master.agents.get(c.req.param("id"));
-    return a ? c.json(a.snapshot()) : c.json({ error: "not found" }, 404);
+    return a ? c.json(a.snapshot()) : notFound(c, "agent", c.req.param("id"));
   });
 
   // lazy session load: stopped (not restored) → idle, history rebuilt from the log
   app.post("/api/agents/:id/load", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     await a.load();
     return c.json({ ok: true, agent: a.snapshot() });
   });
 
   app.post("/api/agents/:id/prompt", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req
       .json<{ text?: string; start?: boolean; images?: { url: string; name?: string }[] }>()
       .catch(() => null); // #110
@@ -816,7 +821,7 @@ const MAX_WS_CLIENTS = 64;
   // Withdraw a still-pending prompt; returns its text for the composer draft.
   app.post("/api/agents/:id/prompt/cancel", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req.json<{ promptId?: string }>().catch(() => null); // #110
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (!body.promptId) return c.json({ error: "promptId required" }, 400);
@@ -827,7 +832,7 @@ const MAX_WS_CLIENTS = 64;
 
   app.post("/api/agents/:id/start", (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     a.start("api start");
     return c.json({ ok: true });
   });
@@ -900,14 +905,14 @@ const MAX_WS_CLIENTS = 64;
 
   app.post("/api/agents/:id/stop", (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     a.stop("stopped via api");
     return c.json({ ok: true });
   });
 
   app.post("/api/agents/:id/goal", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req.json<{
       text?: string;
       status?: "active" | "done" | "paused";
@@ -940,7 +945,7 @@ const MAX_WS_CLIENTS = 64;
   // skills visible to an agent (workspace + global + bundled roots)
   app.get("/api/agents/:id/skills", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     try {
       const list = await currentSkills(a.toolCtx);
       return c.json({
@@ -954,7 +959,7 @@ const MAX_WS_CLIENTS = 64;
   // force a context compaction pass (slash command /compact)
   app.post("/api/agents/:id/compact", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     try {
       return c.json({ ok: true, ...(await a.compactNow()) });
     } catch (err) {
@@ -987,7 +992,7 @@ const MAX_WS_CLIENTS = 64;
   // per-agent auto-continue toggle (loops toward an active goal)
   app.post("/api/agents/:id/auto-continue", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req.json<{ value?: boolean }>().catch(() => null);
     if (!body || typeof body.value !== "boolean")
       return c.json({ error: "boolean value required" }, 400);
@@ -1002,7 +1007,7 @@ const MAX_WS_CLIENTS = 64;
   // per-agent auto-compact toggle (auto-summarize when context exceeds budget)
   app.post("/api/agents/:id/auto-compact", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req.json<{ value?: boolean }>().catch(() => null);
     if (!body || typeof body.value !== "boolean")
       return c.json({ error: "boolean value required" }, 400);
@@ -1024,7 +1029,7 @@ const MAX_WS_CLIENTS = 64;
   // spawn a sub-agent from the UI (@mention flow / manual)
   app.post("/api/agents/:id/spawn", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req
       .json<{ task?: string; context?: string; name?: string; persona?: string }>()
       .catch(() => null);
@@ -1045,7 +1050,7 @@ const MAX_WS_CLIENTS = 64;
   // bulk-stop a parent's sub-agents (descendants included by default)
   app.post("/api/agents/:id/stop-children", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req.json<{ ids?: string[] }>().catch(() => ({ ids: undefined }));
     try {
       const r = await master.stopChildrenFor(c.req.param("id"), body.ids);
@@ -1058,7 +1063,7 @@ const MAX_WS_CLIENTS = 64;
   // operator-maintained task list (todo.md) with optional agent notification
   app.post("/api/agents/:id/todo", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req.json<{ text?: string; notify?: boolean }>().catch(() => null);
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     await a.setTodo(body.text ?? "");
@@ -1078,7 +1083,7 @@ const MAX_WS_CLIENTS = 64;
   // edit a previously-sent prompt: forks there, optionally summarizes the tail
   app.post("/api/agents/:id/edit-prompt", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req
       .json<{ eventId?: string; text?: string; tail?: string }>()
       .catch(() => null);
@@ -1107,7 +1112,7 @@ const MAX_WS_CLIENTS = 64;
 
   app.post("/api/agents/:id/fork", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req.json<{ fromEvent?: string | null }>().catch(() => ({ fromEvent: null }));
     const r = await a.fork(body.fromEvent ?? null);
     return c.json({ ok: true, ...r });
@@ -1134,7 +1139,7 @@ const MAX_WS_CLIENTS = 64;
   }
   app.get("/api/agents/:id/events", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     // #54: the frontend pairs a tool_call with its tool_result by walking the
     // events it holds, so a window that can contain a result WITHOUT its call
     // strands the bash row at "waiting for output…" forever — the call scrolled
@@ -1150,7 +1155,8 @@ const MAX_WS_CLIENTS = 64;
     const sessionId = c.req.query("session");
     if (sessionId) {
       const rec = master.sessionById(sessionId);
-      if (!rec || rec.agentId !== c.req.param("id")) return c.json({ error: "not found" }, 404);
+      if (!rec || rec.agentId !== c.req.param("id"))
+        return notFound(c, "session (or it belongs to another agent)", sessionId);
       filePath = path.join(rec.dir, "chat.jsonl");
     }
     // #59: the plain "latest N" request is what the UI polls every ~120 ms for
@@ -1190,13 +1196,13 @@ const MAX_WS_CLIENTS = 64;
     // (a stopped/lazy agent must keep its timeline reachable)
     const known = master.agents.has(id) || master.config.agents.some((a) => a.id === id);
     const owned = master.sessionsOf(id);
-    if (!known && owned.length === 0) return c.json({ error: "not found" }, 404);
+    if (!known && owned.length === 0) return notFound(c, "agent", id);
     return c.json({ sessions: owned });
   });
 
   app.get("/api/agents/:id/branches", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return c.json({ error: "not found" }, 404);
+    if (!a) return notFound(c, "agent", c.req.param("id"));
     // cached like /events — this used to bypass it and re-read the whole log
     const events = await readEventsCached(a.log.filePath);
     const branches = new Map<string, { branch: string; events: number; forkedFrom?: unknown }>();
@@ -1228,6 +1234,18 @@ const MAX_WS_CLIENTS = 64;
   app.get("/api/metrics", (c) => c.json(master.metrics()));
 
   // current server version (for live-update polling)
+  /**
+   * A 404 that says WHICH thing was missing.
+   *
+   * #126: there were 24 hand-copied `c.json({ error: "not found" }, 404)` lines.
+   * From a client they are indistinguishable — a typo in an agent id, a deleted
+   * session, or a bad route all produce the same three words, and none carries
+   * the id that was looked up. The id is the first thing anyone debugging this
+   * needs, and it is already in hand.
+   */
+  const notFound = (c: Context, what: string, id: string) =>
+    c.json({ error: `${what} not found: ${id || "(no id given)"}` }, 404);
+
   app.get("/api/version", (c) => c.json({ version: master.getVersion() }));
 
   // trigger a full server restart (agents stopped gracefully, new process spawned)
