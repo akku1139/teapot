@@ -1822,11 +1822,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "message_agent",
     description:
-      "Send a message to a specific sub-agent (steer it mid-flight or answer its ask_user question).",
+      "Send a message to another agent. Use it to steer a sub-agent mid-flight, to answer its " +
+      "ask_user question, or to message your OWN PARENT (pass its id) — a sub-agent may ask its " +
+      "parent a question or hand back a partial result, which is how you report progress without " +
+      "ending your turn. You may NOT message a sibling or an unrelated agent.",
     parameters: {
       type: "object",
       properties: {
-        id: { type: "string", description: "sub-agent id" },
+        id: { type: "string", description: "sub-agent id, or your parent's id" },
         text: { type: "string" },
       },
       required: ["id", "text"],

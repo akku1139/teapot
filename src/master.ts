@@ -1023,8 +1023,32 @@ if (active().length === 0) wake();
     let targetId = childId;
     const owned = this.sessionById(childId);
     if (owned) targetId = owned.agentId;
-    const cfg = this.config.agents.find((a) => a.id === targetId);
-    if (!cfg || cfg.parent !== parentId) {
+
+    // #132: a sub-agent must be able to message its OWN PARENT.
+    //
+    // The rule below only ever permitted parent -> child, so a child asking its
+    // parent a question was refused with the actively misleading
+    //
+    //     not your sub-agent: p1. no such sub-agent exists.
+    //
+    // — naming the parent as nonexistent, when it is the caller's own parent and
+    // plainly listed in config.agents. The parent link is the trust boundary: a
+    // child may address its parent, a parent may address its children, and
+    // NOTHING may address a sibling or an unrelated agent.
+    const caller = this.config.agents.find((a) => a.id === parentId);
+    const target = this.config.agents.find((a) => a.id === targetId);
+    const childToParent = target?.parent === parentId;
+    if (target && caller?.parent === targetId) {
+      const p = this.agents.get(targetId);
+      if (!p) throw new Error(`sub-agent not running: ${targetId}`);
+      // mirrored wording, so the recipient knows who is writing
+      p.enqueuePrompt(`[harness] Message from sub-agent @${parentId}:\n\n${text}`, "harness");
+      if (p.status !== "running") p.start(`message from sub-agent ${parentId}`);
+      return;
+    }
+
+    const cfg = target;
+    if (!cfg || (!childToParent && cfg.parent !== parentId)) {
       // Scoping is correct — only the DIRECT parent may message a child, so a
       // grandchild is rightly refused. But "not your sub-agent: <id>" reads
       // like a bug when the agent simply guessed the wrong level of the tree.
