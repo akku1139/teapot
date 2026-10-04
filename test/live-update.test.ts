@@ -25,6 +25,10 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — spawns a detached server and tears it down with a POSIX process-group kill (ECONNRESET on windows-latest).
+markPosixOnly("spawns a detached server and tears it down with a POSIX process-group kill (ECONNRESET on windows-latest)");
 
 // #110: `.pathname` on a file: URL yields "/C:/..." on Windows, so every path
 // built from it was wrong. `fileURLToPath` is the platform-correct conversion.

@@ -111,14 +111,24 @@ test("foreign roots never duplicate (#28)", () => {
 test("foreign roots degrade when there is no workspace or home (#28)", () => {
   const savedHome = process.env.HOME;
   const savedUser = process.env.USERPROFILE;
+  // #110: Windows ALSO reports a home as HOMEDRIVE + HOMEPATH, which is how
+  // `homeDir()` finds it when USERPROFILE is absent. Deleting only the first two
+  // left a home behind on the runner, so "no home" was never actually tested
+  // there — the test asserted a premise that did not hold.
+  const savedDrive = process.env.HOMEDRIVE;
+  const savedPath = process.env.HOMEPATH;
   delete process.env.HOME;
   delete process.env.USERPROFILE;
+  delete process.env.HOMEDRIVE;
+  delete process.env.HOMEPATH;
   try {
     assert.deepEqual(foreignSkillRoots(undefined), [], "no home and no workspace → no roots (#28)");
     assert.deepEqual(foreignSkillRoots(""), [], "an empty workspace is not a root (#28)");
   } finally {
     if (savedHome !== undefined) process.env.HOME = savedHome;
     if (savedUser !== undefined) process.env.USERPROFILE = savedUser;
+    if (savedDrive !== undefined) process.env.HOMEDRIVE = savedDrive;
+    if (savedPath !== undefined) process.env.HOMEPATH = savedPath;
   }
 });
 

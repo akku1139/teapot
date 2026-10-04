@@ -98,7 +98,10 @@ test("every bundle input is considered (#75)", async () => {
   writeFileSync(path.join(root, "index.html"), "h");
   writeFileSync(path.join(root, "vite.config.ts"), "v");
   writeFileSync(path.join(root, "frontend", "deep", "App.tsx"), "a");
-  const inputs = bundleInputs(root).map((p) => path.relative(root, p));
+  // #110: `path.relative` returns the PLATFORM separator, so on Windows these are
+  // "frontend\\deep\\App.tsx" and every assertion below failed there while
+  // passing on Linux. Normalise to "/" before comparing.
+  const inputs = bundleInputs(root).map((p) => path.relative(root, p).split(path.sep).join("/"));
   assert.ok(inputs.includes("frontend/deep/App.tsx"), "nested sources count (#75)");
   assert.ok(inputs.includes("index.html"), "index.html counts (#75)");
   assert.ok(inputs.includes("vite.config.ts"), "the vite config counts (#75)");
