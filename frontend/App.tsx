@@ -4035,7 +4035,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </Show>
           <TodoEditor
             draft={todoDraft()}
-            viewMode={todoViewMode()}
+            preview={todoViewMode()}
             onDraft={(text: string) => {
               setTodoDraft(text);
               setTodoDirty(true);
@@ -4043,8 +4043,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           />
           <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px">
             <IconBtn
-              icon={todoViewMode() ? "👁" : "✎"}
-              title={todoViewMode() ? "rendered checklist" : "edit markdown"}
+              icon={todoViewMode() ? "✎" : "👁"}
+              title={todoViewMode() ? "edit markdown" : "rendered checklist"}
               onClick={() => setTodoViewMode(!todoViewMode())}
             />
             <label
@@ -5385,31 +5385,39 @@ const fileUiFor = (agentId: string): FileUiState => {
  */
 function TodoEditor(props: {
   draft: string;
-  viewMode: boolean;
+  preview: boolean;
   onDraft: (text: string) => void;
 }) {
+  // #88: these two branches were INVERTED. `<Show when={viewMode}>` rendered the
+  // TEXTAREA and the rendered checklist was the `fallback` — so `viewMode: true`
+  // meant "editor". `saveTodo` set `true` to switch to the preview after saving
+  // (the original #88 fix) and therefore did the exact opposite, which is why the
+  // report said "not fixed" on v0.26.14.
+  //
+  // The icon compounded it: `viewMode ? "👁" : "✎"` showed the eye WHILE in the
+  // editor, reading as "click here for the rendered view" at the moment the editor
+  // was already showing.
+  //
+  // Renamed to `preview` and the branches swapped, so the name states what renders.
   return (
     <Show
-      when={props.viewMode}
+      when={props.preview}
       fallback={
-        /* rendered checklist — the default view; markdown + real checkboxes.
-           #124: this was `max-height:40vh` while the editor was `rows={5}`, so
-           the two views had DIFFERENT defaults and toggling between them jumped
-           the panel — and 40vh on a tall window was far more than 5 rows, so the
-           preview started much bigger than the editor it replaced. Both now take
-           their height from `.todopane`, so they cannot drift again. */
-        <div class="content mdpreview todopane" innerHTML={renderMarkdownCached(props.draft)} />
+        /* the markdown editor — the default view */
+        <textarea
+          id="todo-input"
+          class="mono todopane-edit"
+          rows={5}
+          placeholder={"- task one\n- task two"}
+          value={props.draft}
+          oninput={(e) => props.onDraft(e.currentTarget.value)}
+          title="shared with the agent \u2014 it may check items off via set_todo; your unsaved edits win until you save"
+        />
       }
     >
-      <textarea
-        id="todo-input"
-        class="mono todopane-edit"
-        rows={5}
-        placeholder={"- task one\n- task two"}
-        value={props.draft}
-        oninput={(e) => props.onDraft(e.currentTarget.value)}
-        title="shared with the agent \u2014 it may check items off via set_todo; your unsaved edits win until you save"
-      />
+      {/* rendered checklist; #124: both views take their height from `.todopane`,
+          so they cannot drift again */}
+      <div class="content mdpreview todopane" innerHTML={renderMarkdownCached(props.draft)} />
     </Show>
   );
 }

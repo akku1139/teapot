@@ -765,7 +765,7 @@ console.log("deep render ok: feed rows present");
     toggle.click();
     await new Promise((r) => setTimeout(r, 80));
   }
-  const box = w.document.getElementById("todo-input");
+  let box = w.document.getElementById("todo-input");
   if (!box) {
     console.error("#30: tasks editor (todo-input) never rendered");
     process.exit(1);
@@ -785,6 +785,29 @@ console.log("deep render ok: feed rows present");
   if (!saveBtn) { console.error("#30: no 'save tasks' button"); process.exit(1); }
   saveBtn.click();
   await new Promise((r) => setTimeout(r, 120));
+
+  // #88: saving now switches to the RENDERED CHECKLIST, so #todo-input is gone by
+  // design at this point. This check is about the editor NODE surviving an
+  // agent-update, so it has to be looking at an editor — click the toggle back.
+  // (Before #88 the branches were inverted and the save left the editor showing,
+  // which is why this never had to.)
+  if (!w.document.getElementById("todo-input")) {
+    const toggle = [...w.document.querySelectorAll("button")].find((b) =>
+      (b.getAttribute("title") ?? "") === "edit markdown",
+    );
+    if (!toggle) {
+      console.error("#30: no toggle to return to the editor after saving (#88)");
+      process.exit(1);
+    }
+    toggle.click();
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  const boxAfterSave = w.document.getElementById("todo-input");
+  if (!boxAfterSave) {
+    console.error("#30: the editor did not come back after toggling from the preview (#88)");
+    process.exit(1);
+  }
+  box = boxAfterSave;
 
   const TYPED = "- half-typed task that must survive";
   box.focus();

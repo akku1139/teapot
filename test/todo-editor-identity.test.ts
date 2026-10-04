@@ -63,7 +63,7 @@ test("the tasks editor is its own component with primitive props (#30)", () => {
   const body = app.slice(i, app.indexOf("\n}\n", i));
   // primitive props only — an object prop would change identity every render
   assert.match(body, /draft: string/, "draft must be a string prop (#30)");
-  assert.match(body, /viewMode: boolean/, "viewMode must be a boolean prop (#30)");
+  assert.match(body, /preview: boolean/, "preview must be a boolean prop (#30)");
   assert.match(body, /onDraft: \(text: string\) => void/, "onDraft must be a function prop (#30)");
   assert.doesNotMatch(body, /agent: Agent|sel\(\)/, "no agent-object props (#30)");
 });
@@ -77,8 +77,34 @@ test("the editor keeps its id, handler and view toggle (#30)", () => {
   const body = app.slice(i, app.indexOf("\n}\n", i));
   assert.match(body, /id="todo-input"/, "the editor must keep #todo-input (tests + styles) (#30)");
   assert.match(body, /oninput=\{\(e\) => props\.onDraft\(e\.currentTarget\.value\)\}/, "input still reports up (#30)");
-  assert.match(body, /when=\{props\.viewMode\}/, "the view toggle still switches modes (#30)");
+  assert.match(body, /when=\{props\.preview\}/, "the view toggle still switches modes (#30)");
   assert.match(body, /renderMarkdownCached\(props\.draft\)/, "the checklist preview still renders (#30)");
+});
+
+test("preview=TRUE renders the checklist, not the editor (#88)", () => {
+  // #88: the two branches were INVERTED — `<Show when={viewMode}>` held the
+  // TEXTAREA and the checklist was the `fallback`, so `true` meant "editor" and
+  // the post-save flip did the opposite of what it intended. The report read
+  // "not fixed" on v0.26.14 because of exactly this.
+  //
+  // Polarity is asserted, not just the presence of a toggle: `when` must open the
+  // CHECKLIST and `fallback` must open the textarea.
+  const i = app.indexOf("function TodoEditor(");
+  const body = app.slice(i, app.indexOf("\n}\n", i));
+  const showAt = body.indexOf("when={props.preview}");
+  assert.notEqual(showAt, -1, "the toggle must exist (#88)");
+  const afterWhen = body.indexOf(">", showAt);
+  const fallbackAt = body.indexOf("fallback={");
+  const textareaAt = body.indexOf("<textarea");
+  const checklistAt = body.indexOf("mdpreview todopane");
+  assert.ok(
+    checklistAt > afterWhen,
+    "the CHECKLIST must be the `when` branch, so preview=true shows it (#88)",
+  );
+  assert.ok(
+    fallbackAt < textareaAt,
+    "the textarea must be the `fallback`, so preview=false shows the editor (#88)",
+  );
 });
 
 /* ---------- the real check lives in the bundle smoke test ---------- */
