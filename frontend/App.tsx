@@ -521,6 +521,32 @@ export default function App() {
   createEffect(() => {
     if (!compacting()) setLive((l) => (l?.text.startsWith("[compact] ") ? null : l));
   });
+  // #108: re-pin the feed when the compaction banner appears or disappears.
+  //
+  // The banner renders INSIDE the feed, so a pass changes the scroll height
+  // twice — taller when the phase starts, shorter when it ends — and the live
+  // follow effect cannot cover the second one. On `phase: done` two things land
+  // together: `setCompacting(null)` removes the banner, and the effect above
+  // clears the `[compact] ` live text. So the follow effect's own guard now
+  // reads `if (!txt && !rsn) return;` and bails on precisely the frame that
+  // needed pinning. The feed got shorter and the reader was left above the
+  // bottom, with follow mode still `true` in the signal — nothing looked wrong.
+  //
+  // Nothing else fires on that transition: the per-row `onResize` only runs when
+  // the OPERATOR opens a `<details>` (App.tsx:4563), and a compaction nobody
+  // touched is exactly the case that broke.
+  createEffect(() => {
+    // key on the banner's presence, in BOTH directions
+    void compacting();
+    if (!atBottom()) return;
+    //
+    // two frames: one for the banner to enter/leave the flow, one to paint
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (atBottom()) scrollBottom(true);
+      }),
+    );
+  });
   // ONE live buffer PER AGENT. The old single slot was clobbered by every
   // session switch (setLive(null) on select) and by the feed refresh's
   // stillStreaming heuristic — a streaming reply visibly blinked out and
