@@ -59,21 +59,25 @@ test("each unguarded route is one of the four named in the report (#110)", () =>
   assert.deepEqual(unguarded, [], `no unguarded body reads may remain (#110); got ${JSON.stringify(unguarded)}`);
 });
 
-test("an unparseable body answers 400 with a message, not 500 (#110)", () => {
-  // the behaviour itself: the guard must produce the documented 400 shape
-  assert.match(
-    api,
-    /if \(!body\) return c\.json\(\{ error: "invalid JSON" \}, 400\);/,
-    `the guarded shape must exist (#110)`,
-  );
-});
-
-test("the four routes still validate their own fields after the guard (#110)", () => {
-  // the fix must not swallow the real 400s that already worked
-  for (const msg of ["workspace required", "text or images required", "not found"]) {
-    assert.ok(api.includes(msg), `${msg} must still be returned (#110)`);
-  }
-});
+/*
+ * REMOVED, and replaced by test/api-contract-behaviour.test.ts.
+ *
+ *   "an unparseable body answers 400 with a message, not 500" — matched the SOURCE
+ *   for the 400 line. Mutation proved it blind: rewriting that line to return
+ *   200 left the whole suite green. The test was named "the behaviour itself" and
+ *   never issued a request.
+ *
+ *   "the four routes still validate their own fields" — asserted three error
+ *   STRINGS appear somewhere in a 1,000-line file. Rewriting the guard so an empty
+ *   prompt is accepted also left the suite green.
+ *
+ * Both now make real requests, and each mutation fails 1-2 assertions.
+ *
+ * The two tests that remain below — the sweep for unguarded `c.req.json()` reads,
+ * and the check that no `app.onError` masks the status — are STRUCTURAL on purpose:
+ * they exist to catch a NEW unguarded read anywhere in the file, which a
+ * hand-written behavioural test for four known routes cannot do.
+ */
 
 test("no app.onError was masking this as a 500 (#110)", () => {
   // if one is ever added, the four routes become lower priority — but they would
