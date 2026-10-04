@@ -1400,25 +1400,48 @@ export class Agent {
       }
       if (p.source === "user") {
         const id = p.id ?? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-        this.deliveredPrompts.push(id);
-        // cap: UI only needs recent confirmations
-        if (this.deliveredPrompts.length > 64) this.deliveredPrompts.shift();
-        void this.log
-          .append("system_note", this.currentSession, this.currentBranch, {
-            event: "prompt-delivered",
-            promptId: id,
-            preview: p.text.slice(0, 80),
-          })
-          .then(() =>
-            bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
-          )
-          .catch(() => {});
+        // #37: queued here, MARKED at the request boundary instead — see
+        // markDeliveredPrompts(). Text is kept so the marker can carry the same
+        // preview the UI shows.
+        this.undeliveredPrompts.push({ id, preview: p.text.slice(0, 80) });
       }
     }
   }
 
   /** ids of user prompts that have entered an LLM call payload (recent first-capped) */
   private deliveredPrompts: string[] = [];
+  /**
+   * User prompts consumed from the queue but not yet MARKED as delivered (#37).
+   *
+   * They are drained at a turn boundary, but the `prompt-delivered` marker must
+   * wait until the request that carries them actually starts — which is later,
+   * and after `maybeCompact()`, which can itself call the LLM.
+   */
+  private undeliveredPrompts: { id: string; preview: string }[] = [];
+
+  /**
+   * Log `prompt-delivered` for every prompt whose outbound request is starting.
+   *
+   * #37: the marker's meaning is "the request carrying this prompt has begun".
+   * It used to fire in drainPendingPrompts, i.e. before the request, so the
+   * timeline reordered by a moment the API never saw.
+   */
+  private async markDeliveredPrompts(): Promise<void> {
+    if (this.undeliveredPrompts.length === 0) return;
+    const pending = this.undeliveredPrompts;
+    this.undeliveredPrompts = [];
+    for (const { id, preview } of pending) {
+      this.deliveredPrompts.push(id);
+      // cap: the UI only needs recent confirmations
+      if (this.deliveredPrompts.length > 64) this.deliveredPrompts.shift();
+      await this.log.append("system_note", this.currentSession, this.currentBranch, {
+        event: "prompt-delivered",
+        promptId: id,
+        preview,
+      });
+    }
+    bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+  }
 
   /**
    * Background jobs that exited since the last LLM call. Their outcomes are
@@ -1780,6 +1803,26 @@ export class Agent {
           text: "",
           reasoning: "",
         } satisfies BusEvent);
+      // #37: `prompt-delivered` must mean "the outbound request CARRYING this
+      // prompt has started", not "the prompt moved from the queue into
+      // `this.messages`".
+      //
+      // It used to be logged in drainPendingPrompts, which runs BEFORE
+      // refreshSkills, maybeRequestProgress and — critically — maybeCompact. So
+      // the marker preceded the request, and `maybeCompact()` can itself make an
+      // LLM call, which meant the timeline claimed a delivery order the API never
+      // saw. Measured before the fix:
+      //
+      //     LLM CALL #1
+      //       seq=5  prompt-delivered("first prompt")
+      //       seq=6  llm turn start
+      //
+      // The UI reorders by this marker (resequenceToDelivery), so the semantics
+      // were the bug — not timeline-order.ts.
+      //
+      // Emitted ONCE per request, not per attempt: a retry sends the same payload,
+      // so re-emitting would move the marker after a later event on each try.
+      if (attempt === 1) await this.markDeliveredPrompts();
       try {
         return await this.callLlm(messages, tools, onDelta);
       } catch (err) {

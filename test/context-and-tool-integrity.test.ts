@@ -173,7 +173,15 @@ test("stop() then start() is not silently lost (#76)", async () => {
 
 test("a context-overflow error is not retried before recovery sees it (#76)", () => {
   const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  const llmCall = src.slice(src.indexOf("private async llmCall("), src.indexOf("private async llmCall(") + 2400);
+  // Anchor on the FLOW, not a fixed-width slice. The window was 2400 chars from
+  // `llmCall`, and #37 added a comment block inside it that pushed this line
+  // past the edge — so a correct check silently matched nothing. Rather than just
+  // widening it again, find the line itself.
+  const at = src.indexOf("if (isContextOverflow(err)) throw err;");
+  assert.notEqual(at, -1, "overflow must bypass the retry loop (#76)");
+  // `at + 64` so the line itself is inside the slice — a slice ENDING at the
+  // match excludes the very text it is about to assert on
+  const llmCall = src.slice(src.indexOf("private async llmCall("), at + 64);
   assert.match(
     llmCall,
     /if \(isContextOverflow\(err\)\) throw err;/,
