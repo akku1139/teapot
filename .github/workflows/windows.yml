@@ -104,7 +104,24 @@ jobs:
             # HOME is normally UNSET on Windows runners; make sure of it either
             # way, since that is the exact condition the bug needed.
             Remove-Item Env:HOME -ErrorAction SilentlyContinue
-            node -e "const {homeDir}=require('./src/home.ts'); console.log('home=' + JSON.stringify(homeDir()))"
+            # Resolve the module through the workspace, not a hardcoded runner
+            # path — the previous attempt did that and failed with MODULE_NOT_FOUND,
+            # which the step then mis-reported as "a ~ directory was created".
+            $repo = $env:GITHUB_WORKSPACE.Replace('\\', '/')
+            # `$ErrorActionPreference='Stop'` meant a node failure surfaced as
+            # "FAIL: a directory literally named ~ was created" — a probe fault
+            # reported as a product fault. Exit on node's own code instead.
+            $home = node --input-type=module -e "import {homeDir} from 'file:///$repo/src/home.ts'; process.stdout.write(String(homeDir()));"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "probe could not run (node exit $LASTEXITCODE) — this is a WORKFLOW fault, not a product one"
+              exit 1
+            }
+            Write-Host "homeDir() with HOME unset -> '$home'"
+            if ([string]::IsNullOrEmpty($home)) { Write-Error "FAIL: homeDir returned nothing"; exit 1 }
+            if ($home -eq '~' -or $home -match '(^|[\\/])~(?:$|[\\/])') {
+              Write-Error "FAIL: homeDir resolved to a literal ~ ('$home')"
+              exit 1
+            }
             if (Test-Path '~') {
               Write-Error "FAIL: a directory literally named ~ was created"
               exit 1
