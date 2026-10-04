@@ -124,11 +124,25 @@ export class EventLog {
       data,
     };
     this.lastByBranch.set(branch, evt.id);
-    try {
-      this.onEvent?.(evt);
-    } catch {
-      /* observer must never break the log */
-    }
+    // #54: WRITE FIRST, then notify.
+    //
+    // The observer used to fire BEFORE the write. The frontend receives a
+    // `kind:"event"` frame and — by design — treats it as "something changed"
+    // and re-reads `/events`. So the reload could read the log BEFORE this
+    // event reached disk, and the reload would simply not contain it.
+    //
+    // Measured against a real EventLog, reloading on every notification:
+    //
+    //     appends: 30   WS-triggered reloads that MISSED the event: 30
+    //
+    // The 120ms debounce usually hides this, which is exactly why #54 felt
+    // random: a slow write misses, a fast one lands. Notifying after the write
+    // makes the event visible to any reader the observer triggers.
+    // `written` distinguishes a REAL write from the post-close drop path, which
+    // also resolves. #54: announcing a dropped event would tell the frontend to
+    // reload for something that will never appear — the row would flicker in and
+    // straight back out.
+    let written = false;
     const p = new Promise<TeapotEvent>((resolve, reject) => {
       this.chain = this.chain.then(() => {
         if (!this.stream) {
@@ -137,15 +151,31 @@ export class EventLog {
           console.error(`[teapot] event dropped after log close (${this.agentId}): ${type}`);
           return resolve(evt);
         }
-        this.stream.write(JSON.stringify(evt) + "\n", "utf8", (err) =>
-          err ? reject(err) : resolve(evt),
-        );
+        this.stream.write(JSON.stringify(evt) + "\n", "utf8", (err) => {
+          if (err) return reject(err);
+          written = true;
+          resolve(evt);
+        });
       }, () => resolve(evt));
     });
     this.chain = this.chain.then(
       () => {},
       () => {},
     );
+    // notify once the write is handed to the OS, so a reload the observer
+    // triggers can actually see this event
+    void p
+      .then(() => {
+        if (!written) return; // dropped after close: nothing on disk to announce
+        try {
+          this.onEvent?.(evt);
+        } catch {
+          /* observer must never break the log */
+        }
+      })
+      .catch(() => {
+        /* a failed write must not notify — the event is not on disk */
+      });
     return p;
   }
 
