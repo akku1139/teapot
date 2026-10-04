@@ -58,5 +58,27 @@ jobs:
       - name: Ensure npm supports trusted publishing (>= 11.5.1)
         run: npm install -g npm@latest
 
+      # #113: `actions/setup-node` carried a `registry-url` input, and its side
+      # effect was writing the `.npmrc` that points npm at the registry. Swapping
+      # it for `pnpm/setup` removed that file, and publish then failed with:
+      #
+      #     npm error code ENEEDAUTH
+      #     npm error need auth This command requires you to be logged in to
+      #                         https://registry.npmjs.org/
+      #
+      # Trusted publishing (OIDC) supplies the CREDENTIAL, but npm still needs to
+      # know WHICH REGISTRY to publish to. Written out explicitly rather than
+      # reintroducing setup-node for one field.
+      #
+      # Deliberately NO `_authToken` line: with OIDC the token is obtained
+      # internally, and writing a placeholder into .npmrc would risk npm using it
+      # INSTEAD of the exchange — turning a missing-registry error into a
+      # confusing auth error. Only the registry is set.
+      - name: Configure the npm registry
+        run: |
+          npm config set registry "https://registry.npmjs.org/"
+          test -f "$HOME/.npmrc" || npm config set userconfig "$HOME/.npmrc"
+          echo "registry=$(npm config get registry)"
+
       - name: Publish
         run: npm publish --provenance --access public
