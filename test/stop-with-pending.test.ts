@@ -131,10 +131,16 @@ test("the tooltip says nothing will run until start (#9)", () => {
 });
 
 test("the two tooltip branches are genuinely different (#9)", () => {
-  // a single string used for both states would satisfy either match alone
-  const at = app.indexOf('title={\n                  sel()!.status === "stopped"');
+  // A single string used for both states would satisfy either match alone.
+  //
+  // #110: this searched for a hardcoded "\n" between two tokens. Git checks out
+  // CRLF on Windows, so the literal never matched and the test failed there while
+  // passing on Linux. Anchor on the tokens themselves instead of the whitespace.
+  const titleAt = app.indexOf("title={");
+  assert.notEqual(titleAt, -1, "the tooltip must exist (#9)");
+  const at = app.indexOf('sel()!.status === "stopped"', titleAt);
   assert.notEqual(at, -1, "the tooltip must branch on status (#9)");
-  const block = app.slice(at, app.indexOf("}", app.indexOf("</span>", at)));
+  const block = app.slice(at, app.indexOf("</span>", at));
   assert.match(block, /stopped[\s\S]*nothing will run[\s\S]*handed to the model at its next turn boundary/,
     "stopped and running must say different things (#9)");
 });

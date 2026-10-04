@@ -18,8 +18,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { bundleFreshness, freshnessMessage } from "./helpers/bundle-freshness.ts";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+// #110: `.pathname` on a file: URL yields "/C:/..." on Windows (#110).
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * The gate the other two depend on.

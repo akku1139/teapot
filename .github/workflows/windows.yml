@@ -78,10 +78,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # No build needed: these tests import TypeScript sources directly through
-      # node's type-stripping loader, so `dist/` and `public/assets` are not
-      # involved. (The bundle tests DO need a build — they are Linux-only, since
-      # they drive the web bundle under happy-dom.)
+      # The bundle tests read public/assets/, so they need a build. The first run
+      # failed three of them with "no built web bundle" — a gap in this workflow,
+      # not a product bug.
+      - run: pnpm build
+
       - name: windows-specific tests
         run: |
           pnpm exec node --test test/windows-tilde-expansion.test.ts test/kill-tree-windows.test.ts

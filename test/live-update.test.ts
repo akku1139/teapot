@@ -24,8 +24,11 @@ import { createServer } from "node:net";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+// #110: `.pathname` on a file: URL yields "/C:/..." on Windows, so every path
+// built from it was wrong. `fileURLToPath` is the platform-correct conversion.
+const root = fileURLToPath(new URL("..", import.meta.url));
 const entry = path.join(root, "src", "index.ts");
 
 interface Boot {

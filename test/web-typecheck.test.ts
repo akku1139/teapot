@@ -15,8 +15,10 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+// #110: `.pathname` on a file: URL yields "/C:/..." on Windows (#110).
+const root = fileURLToPath(new URL("..", import.meta.url));
 // the real JS entry (node_modules/.bin/* is a shell wrapper — not spawnable via execPath)
 const tsc = path.join(root, "node_modules", "typescript", "bin", "tsc");
 const tsconfig = path.join(root, "tsconfig.frontend.json");

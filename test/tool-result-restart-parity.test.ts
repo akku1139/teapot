@@ -25,6 +25,10 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// #110: POSIX-only — drives the bash tool, which still spawns /bin/bash (#110 item 2).
+markPosixOnly("drives the bash tool, which still spawns /bin/bash (#110 item 2)");
 
 const LOG_RESULT_CAP = 8000;
 
