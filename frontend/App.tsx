@@ -1023,6 +1023,12 @@ export default function App() {
         e.type === "tool_call" || e.type === "tool_result" ? String(e.data?.name ?? "") : "";
       if (metaToolName === "report_progress") return false;
       if (metaToolName === "ask_user") return false;
+      // #107: `record_decision` is fully rendered by its own 📌 decision card.
+      // The tool handler appends BOTH a `decision` event and the usual
+      // tool_call/tool_result pair, so without this the timeline showed the
+      // decision twice — the card, then a meta row that just said the tool had
+      // been called. Same treatment as report_progress above.
+      if (metaToolName === "record_decision") return false;
       // paired tool results live inside their call's merged row
       if (e.type === "tool_result") return !consumed.has(e.id);
       // tool-call carrier turns have no visible payload — the ToolRow below
