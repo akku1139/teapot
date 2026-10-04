@@ -96,20 +96,51 @@ function supervise(pid: number): void {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function main(): Promise<void> {
-  // CLI: teapot [--port N] [-p N] [--config file] [-c file] [config.json]
+/**
+ * Parse `teapot [--port N] [-p N] [--host addr] [--config file] [config.json]`.
+ *
+ * Extracted from main() and exported so it can be tested. It was inline before,
+ * which left `index.ts` at 48% branch coverage with NO test importing it at all —
+ * the parser decides which config file is read and which port is bound, so a
+ * regression here starts the wrong server on the wrong port with no error anyone
+ * would read.
+ *
+ * The bare-word rule keeps the FIRST positional as the config path: a later bare
+ * word is a stray argument, not an override, and silently replacing the config
+ * with it would be worse than ignoring it.
+ */
+export function parseArgs(argv: string[]): {
+  cfgArg?: string;
+  portOverride?: number;
+  hostOverride?: string;
+  help: boolean;
+} {
   let cfgArg: string | undefined;
   let portOverride: number | undefined;
   let hostOverride: string | undefined;
-  const args = process.argv.slice(2);
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!;
-    if (a === "--port" || a === "-p") portOverride = Number(args[++i]);
-    else if (a === "--host") hostOverride = args[++i];
-    else if (a === "--config" || a === "-c") cfgArg = args[++i];
-    else if (!cfgArg && !a.startsWith("-")) cfgArg = a;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--port" || a === "-p") {
+      const raw = argv[++i];
+      const n = Number(raw);
+      // NaN is dropped rather than applied: `config.port = NaN` would fall through
+      // to the listen call and produce a far more confusing failure than ignoring
+      // a mistyped flag
+      if (!Number.isNaN(n)) portOverride = n;
+    } else if (a === "--host") {
+      hostOverride = argv[++i];
+    } else if (a === "--config" || a === "-c") {
+      cfgArg = argv[++i];
+    } else if (!a.startsWith("-") && cfgArg === undefined) {
+      cfgArg = a;
+    }
   }
-  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  return { cfgArg, portOverride, hostOverride, help: argv.includes("--help") || argv.includes("-h") };
+}
+
+async function main(): Promise<void> {
+  const { cfgArg, portOverride, hostOverride, help } = parseArgs(process.argv.slice(2));
+  if (help) {
     console.log("teapot [--port N] [--host addr] [--config file.json] [config.json]");
     console.log("  --host 127.0.0.1 (default) · 0.0.0.0 exposes the UI to your network");
     console.log("  --acp  speak the Agent Client Protocol on stdio instead of serving HTTP (#15)");
@@ -235,4 +266,15 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-void main();
+// Only when RUN, not when imported. `void main()` at module scope meant importing
+// this file for `parseArgs` started a whole server — which is why index.ts had no
+// test importing it and sat at 48% branch coverage. The check is the standard
+// ESM "am I the entry point" test, and `node --experimental-strip-types src/index.ts`
+// and `node dist/index.js` both still take this branch.
+const isEntry =
+  process.argv[1] !== undefined &&
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (process.argv[1] === new URL(import.meta.url).pathname ||
+    process.argv[1].endsWith("/index.js") ||
+    process.argv[1].endsWith("/index.ts"));
+if (isEntry) void main();
