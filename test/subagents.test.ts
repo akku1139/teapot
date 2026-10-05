@@ -254,8 +254,17 @@ test("a sub-agent can message its own child, but not a grandchild (#11)", async 
     const msg = (m as any).messageChild.bind(m);
 
     // direct parent → its own child: allowed
+    //
+    // #141: this asserted `pendingPrompts >= 0`, which is true of every number
+    // there is — it could not fail, and it did not check that the message
+    // arrived. Assert the delivery instead: the child's queue grows by one.
+    const before = grandchild.snapshot().pendingPrompts;
     await msg(b.id, c.id, "hi from B");
-    assert.equal(grandchild.snapshot().pendingPrompts >= 0, true);
+    assert.equal(
+      grandchild.snapshot().pendingPrompts,
+      before + 1,
+      "a parent messaging its own child must QUEUE the prompt (#11/#141)",
+    );
 
     // root → its direct child: allowed
     await msg("root", b.id, "hi from root");
