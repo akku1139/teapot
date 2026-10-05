@@ -1866,6 +1866,8 @@ export class Agent {
         bus.emit("update", {
           kind: "llm-delta",
           agentId: this.opts.id,
+          // #146: the bubble is session-scoped, so the stream must say which session
+          sessionId: this.currentSession,
           text: "",
           reasoning: "",
         } satisfies BusEvent);
@@ -1955,6 +1957,7 @@ export class Agent {
           bus.emit("update", {
             kind: "llm-delta",
             agentId: this.opts.id,
+            sessionId: this.currentSession, // #146
             text: s.text,
             reasoning: s.reasoning,
           } satisfies BusEvent);
@@ -3039,6 +3042,8 @@ export class Agent {
         bus.emit("update", {
           kind: "llm-delta",
           agentId: this.opts.id,
+          // #146: the bubble is session-scoped, so the stream must say which session
+          sessionId: this.currentSession,
           text: `[compact] ${text}`,
           reasoning: "",
         } satisfies BusEvent);

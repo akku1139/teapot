@@ -756,6 +756,32 @@ export default function App() {
     if (!a) return false;
     return a.live ?? (a.status === "running" || a.status === "waiting");
   };
+  /**
+   * Is the TIMELINE BEING DISPLAYED the one that is live?
+   *
+   * #146: `isSelLive()` answers "is this AGENT working", but the timeline is
+   * per SESSION. With the agent working on session S2 while the user reads S1,
+   * `isSelLive()` is true, so every S1 tool row that has lost its `tool_result`
+   * reads "running…" — because `ToolRow` closes a stranded call via
+   * `!agentActive && !res`.
+   *
+   * So activity must be attributed to the DISPLAYED session. The agent's snapshot
+   * carries the session it is currently on; when that equals the timeline we are
+   * showing, the agent-wide live flag is the right answer.
+   *
+   * Falls back to the agent's own live flag when the agent has no recorded
+   * session (a brand-new agent), because then there is no second session to
+   * confuse it with.
+   */
+  const isTimelineLive = (): boolean => {
+    if (!isSelLive()) return false;
+    const a = sel();
+    const shown = timelineId();
+    if (!a || !shown) return true;
+    const running = (a as { session?: string }).session;
+    if (!running) return true; // no recorded session — nothing to be confused with
+    return running === shown;
+  };
   // prompt being edited → edit-prompt fork dialog. SETTLED user prompts only:
   // a pending (queued, not yet delivered) message offers ✕ cancel instead —
   // editing implies the model may have seen it, which is false while queued.
@@ -2046,6 +2072,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return; // the feed refresh below handles the actual row
       }
       if (msg.kind === "llm-delta") {
+        // #146: the bubble lives INSIDE a session-scoped timeline, so the delta
+        // must belong to the displayed session — not merely to the same agent.
+        //
+        // An agent id alone cannot decide this: one agent has many internal
+        // sessions, and the user can be looking at a PAST one. Without the session
+        // check the current session's text and writing cursor appear on a
+        // historical timeline, which is #40's report verbatim.
+        if (msg.sessionId && timelineId() && msg.sessionId !== timelineId()) return;
         // update THIS agent's buffer only — other sessions keep streaming in
         // the background and their bubble must survive session switches
         setLiveByAgent((prev) => applyDelta(prev, msg.agentId, msg));
@@ -2118,6 +2152,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // only the affected session's feed needs updating — other sessions'
         // timelines are fetched on switch, not eagerly
         if (msg.event?.agent !== selected()) return;
+        // #146: and the SESSION must match too. The timeline is per session —
+        // `loadEvents` fetches `?session=<timelineId>` and `select()` sets it — so
+        // merging an event from a sibling session of the SAME agent puts one
+        // session's rows inside another's timeline. No agent check can catch that,
+        // because both belong to the same agent.
+        //
+        // The notification centre is session-independent and already ran above,
+        // so a cross-session event still notifies; it just never enters this feed.
+        if (
+          timelineId() &&
+          typeof (msg.event as { session?: string } | undefined)?.session === "string" &&
+          (msg.event as { session: string }).session !== timelineId()
+        )
+          return;
 
         // #54: USE THE EVENT.
         //
@@ -3547,7 +3595,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     // parent's live chrome ("writing…", the running blink)
                     // just because the parent happens to be running.
                     agentActive={
-                      isSelLive() && isOwnLiveWork(e)
+                      // #146: the DISPLAYED session must be the live one, not
+                      // merely the same agent (#120, #133)
+                      isTimelineLive() && isOwnLiveWork(e)
                     }
                     onResize={() => { if (atBottom()) requestAnimationFrame(() => scrollBottom(true)); }}
                     onCancel={

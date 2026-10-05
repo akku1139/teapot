@@ -210,10 +210,21 @@ test("a legacy `sub` row is still rendered, attributed to its actor (#63)", () =
 /* ---------- wiring: the gate must still be in place ---------- */
 
 test("agentActive consults the provenance gate (#40)", () => {
+  // #146: the provenance gate must survive, but it now sits behind a
+  // SESSION check as well. `isSelLive()` alone answers "is this AGENT working",
+  // while the timeline is per session — so an agent working on S2 would mark S1's
+  // stranded tool rows "running…".
   assert.match(
     app,
-    /agentActive=\{\s*isSelLive\(\) && isOwnLiveWork\(e\)\s*\}/,
-    "the gate must survive (#40)",
+    // comments may sit inside the braces (they did when #146 added its note), so
+    // match the expression rather than the surrounding punctuation
+    /agentActive=\{[\s\S]{0,200}?isTimelineLive\(\) && isOwnLiveWork\(e\)/,
+    "the gate must survive, now session-scoped (#40/#146)",
+  );
+  assert.match(
+    app,
+    /const isTimelineLive = \(\): boolean =>/,
+    "and the session-scoped liveness must exist (#146)",
   );
   assert.match(app, /if \(e\.data\?\.actor\) return \{ name: `@\$\{String\(e\.data\.actor\)\}`/, "and the author must be shown (#40)");
 });
