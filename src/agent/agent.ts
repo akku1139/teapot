@@ -29,11 +29,36 @@ import { bus, type BusEvent } from "../bus.ts";
  *    every requested report appeared TWICE on the timeline.
  */
 export const AUTO_CONTINUE_NUDGE =
+  // #136: prefixed `[harness]` like every other injected instruction. Without it
+  // the nudge was indistinguishable from something the operator typed, so the model
+  // read "Continue working toward the current goal" as a request to reply rather
+  // than as harness bookkeeping — then answered in prose, which ends the round
+  // without finishing, which starts the next one.
+  "[harness] " +
   "Continue working toward the current goal. If you are blocked, explain why briefly. " +
   // name the tool explicitly, the way the sub-agent nudge already does
   "When the goal is genuinely met — or truly blocked — call finish() " +
   "(finish(goalComplete=true) when met, finish(goalComplete=false) when blocked) " +
   "instead of replying in prose; prose here does not stop the loop.";
+
+/**
+ * The auto-continue nudge with the CURRENT GOAL restated.
+ *
+ * #136: the nudge said "the current goal" and never said what it was. The sub-agent
+ * variant has always included its task text for exactly this reason — a forked
+ * child otherwise drifts back into the inherited conversation and keeps going
+ * forever (#106) — but the ROOT nudge had no such reminder, so a root agent that
+ * had lost the thread had nothing to re-anchor on and simply continued until the
+ * `maxConsecutiveIdleRounds` valve tripped.
+ *
+ * The goal is clipped like the sub-agent's: a 20k-character goal would otherwise
+ * re-enter the context on EVERY round.
+ */
+export function autoContinueNudge(goalText: string): string {
+  const goal = goalText.trim();
+  if (!goal) return AUTO_CONTINUE_NUDGE;
+  return `${AUTO_CONTINUE_NUDGE}\nCurrent goal:\n=====\n${goal.slice(0, 1500)}\n=====`;
+}
 
 export const PROGRESS_REQUEST =
   // The leading sentence is kept VERBATIM: it is what existing harness prompts,
@@ -1771,9 +1796,13 @@ export class Agent {
           break;
         }
         const isSub = !!this.opts.parent;
+        // #136: the ROOT nudge now restates the goal too, exactly as the sub-agent
+        // one always has. Both branches need it — a child drifts back into the
+        // inherited conversation, a root agent loses the thread, and in both cases
+        // "continue toward the current goal" is unactionable without the goal text.
         const nudge = isSub
           ? `[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
-          : AUTO_CONTINUE_NUDGE;
+          : autoContinueNudge(this.goal.text);
         await this.log.append("prompt", this.currentSession, this.currentBranch, {
           source: "harness",
           text: nudge,

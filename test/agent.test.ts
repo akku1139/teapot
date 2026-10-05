@@ -472,10 +472,20 @@ test("progress prompts wait for real output, not just elapsed time", async (t) =
     assert.ok(Number.isFinite(harnessedAt), "a progress request should happen once output flows");
     assert.ok(harnessedAt >= bigAt, "progress request must not precede sufficient output");
     const events = await readEvents(agent.log.filePath);
+    // Count the PROGRESS REQUEST specifically. This used to match on the
+    // "[harness]" prefix alone, which stopped being equivalent in #136: the
+    // auto-continue nudge now carries that prefix too, so this filter started
+    // counting those as well — 26 turns produced 25 nudges plus the one real ask,
+    // and the assertion read `26 !== 1`.
+    //
+    // The intent is "exactly one progress request", so match the request's own
+    // wording (#45) rather than a prefix several instructions share.
     const asks = events.filter(
-      (e) => e.type === "prompt" && String((e.data as Record<string, unknown>).text ?? "").includes("[harness]"),
+      (e) =>
+        e.type === "prompt" &&
+        String((e.data as Record<string, unknown>).text ?? "").includes("progress report"),
     );
-    assert.equal(asks.length, 1);
+    assert.equal(asks.length, 1, "exactly ONE progress request (#45)");
     await agent.dispose();
   });
 });

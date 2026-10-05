@@ -48,8 +48,24 @@ test("the nudge still tells it to keep working (#43)", () => {
   assert.match(AUTO_CONTINUE_NUDGE, /Continue working toward the current goal/i);
 });
 
-test("agent.ts actually sends the shared nudge (#43)", () => {
-  assert.match(src, /: AUTO_CONTINUE_NUDGE;/, "the root branch must use AUTO_CONTINUE_NUDGE (#43)");
+test("agent.ts actually sends the shared nudge (#43, #136)", () => {
+  // #136: the root branch now goes through `autoContinueNudge(this.goal.text)`,
+  // which BUILDS ON AUTO_CONTINUE_NUDGE — so the shared instruction still reaches
+  // the model, plus the goal it refers to. The intent of this assertion is
+  // "the root branch must not invent its own nudge", which the builder satisfies.
+  assert.match(
+    src,
+    /: autoContinueNudge\(this\.goal\.text\);/,
+    "the root branch must use the shared nudge, with the goal (#136)",
+  );
+  // and prove the builder really is built on the constant, so the wording cannot
+  // drift into a second copy
+  const fn = src.slice(src.indexOf("export function autoContinueNudge"));
+  assert.match(
+    fn,
+    /return `\$\{AUTO_CONTINUE_NUDGE\}/,
+    "the builder must compose the shared constant, not restate it (#136)",
+  );
 });
 
 test("both the root and the sub-agent nudge mention finish() (#43)", () => {
