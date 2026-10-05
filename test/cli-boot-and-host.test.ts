@@ -113,13 +113,26 @@ test("the entry-point check resolves a bin SYMLINK (#140)", () => {
   );
 });
 
-test("the published bin actually starts (#140)", async () => {
+test("the published bin actually starts (#140)", async (t) => {
   // end-to-end: spawn the way npm does, THROUGH a symlink named `teapot`
   await useTempDirs(["t140a-"], async ([dataDir]) => {
     const binDir = mkdtempSync(path.join(os.tmpdir(), "t140bin-"));
     const link = path.join(binDir, "teapot");
     const { symlinkSync } = await import("node:fs");
-    symlinkSync(path.join(repo, "dist", "index.js"), link);
+    try {
+      symlinkSync(path.join(repo, "dist", "index.js"), link);
+    } catch (e) {
+      // #141: Windows runners commonly lack the privilege to create a symlink, and
+      // the throw happened at LOAD — killing the whole file with
+      // `✖ test/cli-boot-and-host.test.ts (238ms)` and no diagnostic.
+      //
+      // Skipping is honest: the symlink is the mechanism, and where the OS forbids
+      // it, `realpathSync` resolution cannot be exercised. The non-symlink boot
+      // below still runs on every platform, and the source-level assertion that
+      // `realpathSync` is used at all is platform-independent.
+      t.skip(`cannot create a symlink here: ${(e as Error).message.slice(0, 60)}`);
+      return;
+    }
     const port = await freePort();
     const proc = spawn(link, ["--port", String(port)], {
       env: { ...process.env, TEAPOT_DATA_DIR: dataDir!, TEAPOT_PORT: String(port) },
@@ -144,6 +157,44 @@ test("the published bin actually starts (#140)", async () => {
         });
       });
       assert.ok(ok, `the symlinked bin must boot (#140); it printed nothing and exited`);
+    } finally {
+      proc.kill("SIGTERM");
+    }
+  });
+});
+
+test("the built entry point boots when run DIRECTLY, on every platform (#140)", async () => {
+  // #141: the symlink test above skips where the OS forbids symlinks (Windows
+  // runners usually do), so without this the platform most likely to have the
+  // problem would have no end-to-end boot coverage at all. `node dist/index.js`
+  // is the other documented way to start the product, and it needs no privilege.
+  await useTempDirs(["t140d-"], async ([dataDir]) => {
+    const entry = path.join(repo, "dist", "index.js");
+    assert.ok(existsSync(entry), "precondition: dist is built");
+    const port = await freePort();
+    const proc = spawn(process.execPath, [entry, "--port", String(port)], {
+      env: { ...process.env, TEAPOT_DATA_DIR: dataDir!, TEAPOT_PORT: String(port) },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const ok = await new Promise<boolean>((resolve) => {
+        let log = "";
+        const timer = setTimeout(() => resolve(false), 30_000);
+        const onData = (d: Buffer) => {
+          log += d.toString();
+          if (log.includes("master listening on")) {
+            clearTimeout(timer);
+            resolve(true);
+          }
+        };
+        proc.stdout?.on("data", onData);
+        proc.stderr?.on("data", onData);
+        proc.on("exit", () => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+      });
+      assert.ok(ok, `node dist/index.js must boot (#140); it printed nothing and exited`);
     } finally {
       proc.kill("SIGTERM");
     }
