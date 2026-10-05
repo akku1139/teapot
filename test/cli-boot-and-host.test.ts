@@ -33,6 +33,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
 import { useTempDirs } from "./helpers/tmp.ts";
+import { freePort } from "./helpers/free-port.ts";
 import { readSource } from "./helpers/source.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -51,10 +52,10 @@ function lanAddress(): string | null {
 }
 
 /** run the built CLI and resolve once it prints the listening line */
-function startServer(args: string[], dataDir: string): Promise<{ proc: import("node:child_process").ChildProcess; port: number; log: string }> {
+async function startServer(args: string[], dataDir: string): Promise<{ proc: import("node:child_process").ChildProcess; port: number; log: string }> {
   const entry = path.join(repo, "dist", "index.js");
   assert.ok(existsSync(entry), "precondition: dist is built");
-  const port = 8900 + Math.floor(Math.random() * 90);
+  const port = await freePort();
   const proc = spawn(process.execPath, [entry, "--port", String(port), ...args], {
     env: { ...process.env, TEAPOT_DATA_DIR: dataDir, TEAPOT_PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
@@ -119,7 +120,7 @@ test("the published bin actually starts (#140)", async () => {
     const link = path.join(binDir, "teapot");
     const { symlinkSync } = await import("node:fs");
     symlinkSync(path.join(repo, "dist", "index.js"), link);
-    const port = 8990 + Math.floor(Math.random() * 8);
+    const port = await freePort();
     const proc = spawn(link, ["--port", String(port)], {
       env: { ...process.env, TEAPOT_DATA_DIR: dataDir!, TEAPOT_PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"],
