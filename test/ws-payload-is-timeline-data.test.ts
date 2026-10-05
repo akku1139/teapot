@@ -69,13 +69,28 @@ test("inserting the event does not also trigger the old reload (#54)", () => {
   );
 });
 
-test("the reload timer is now only for non-event frames (#54)", () => {
-  // the debounce existed solely to collapse a burst of "reload" signals; with the
-  // payload carrying the data there is nothing left to collapse
-  const timer = app.indexOf("timer = setTimeout(runFeedRefresh, 120)");
-  assert.notEqual(timer, -1, "the fallback reload must remain for error paths (#54)");
+test("a socket event merges AND schedules a refresh (#54, #145)", () => {
+  // This asserted NO refresh on the event path, which was the #54 fix as I first
+  // wrote it — and it REGRESSED every tool row into a permanent "running…".
+  //
+  // #145: the `return` skipped runFeedRefresh, which does two things a merge
+  // cannot: `refreshAgents()` (so `agentActive` updates) and `loadEvents()` (so
+  // the feed is re-derived). ToolRow only closes a stranded call via
+  // `!agentActive && !res`, so a live-looking agent never closed it.
+  //
+  // The corrected rule: merge for immediacy, AND refresh for correctness.
   const b = eventBranch();
-  assert.doesNotMatch(b, /setTimeout\(runFeedRefresh/, "but not on the event path (#54)");
+  assert.match(b, /mergeEvents\(\[/, "the payload is merged immediately (#54)");
+  assert.match(
+    b,
+    /setTimeout\(runFeedRefresh/,
+    "and a refresh is scheduled, or tool rows never close (#145)",
+  );
+  assert.doesNotMatch(
+    b,
+    /setTimeout\(runFeedRefresh, 120\)/,
+    "the debounce is shortened: the refresh is now the correctness path (#145)",
+  );
 });
 
 test("mergeEvents is idempotent, which is what makes the socket safe (#54)", () => {

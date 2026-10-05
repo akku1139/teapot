@@ -3,7 +3,19 @@
  * Agents are in-process async loops (I/O bound only); all CPU-heavy work is
  * delegated to subprocesses managed by the bash tool with hard timeouts.
  */
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, renameSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+  renameSync,
+  unlinkSync,
+  openSync,
+  closeSync,
+  fsyncSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
@@ -284,6 +296,24 @@ export function loadConfig(configPath: string): TeapotConfig {
 }
 
 /** Raw parsed user config (for lossless persistence of web edits). */
+/**
+ * Can this path be replaced by an atomic rename?
+ *
+ * #144: `/dev/null`, a fifo, or a directory are all legitimate values for
+ * `configPath`, and `rename` over them either fails outright (EACCES for a temp
+ * beside `/dev/null`) or is not what the caller wants. Only a regular file gets
+ * the write-temp-then-rename treatment.
+ */
+function isRegularFileTarget(p: string): boolean {
+  try {
+    const st = statSync(p);
+    return st.isFile();
+  } catch {
+    // does not exist yet — the parent decides; a real config path will be created
+    return true;
+  }
+}
+
 export function loadedRaw(): Record<string, unknown> {
   return masterRawConfig;
 }
@@ -417,8 +447,30 @@ export class Master {
     this.configPath = configPath;
   }
 
-  /** Persist current logical config back to disk (lossless via raw user config). */
+  /**
+   * Persist current logical config back to disk (lossless via raw user config).
+   *
+   * #144: this was a bare `writeFileSync`, which TRUNCATES the target before it
+   * writes. config.json holds every agent, provider and scheduled task, so any
+   * interruption during the write — SIGINT, a crash, a full disk — left a ZERO-LENGTH
+   * file, and the next boot read `{}` and came up empty.
+   *
+   * Boot made this far more likely than it sounds: every agent that mints a
+   * session calls `recordSession` → `saveConfig`, so a machine with 30 configured
+   * agents rewrites the whole file 30 times before the server listens. A user
+   * pressing Ctrl-C during that window lost the lot.
+   *
+   * Now: write a sibling temp file, fsync it, then `rename` over the target.
+   * `rename` is atomic within a filesystem, so the file is either the old content
+   * or the new — never empty. A crash mid-write leaves the temp file behind and
+   * the real config untouched.
+   */
   saveConfig(): void {
+    // #144: during boot, mark dirty instead of writing; flushed once at the end
+    if (this.deferConfigWrites) {
+      this.configDirty = true;
+      return;
+    }
     this.raw.agents = this.config.agents;
     this.raw.providers = this.config.providers;
     this.raw.defaultProvider = this.config.defaultProvider;
@@ -427,7 +479,75 @@ export class Master {
       this.raw.progressIntervalMs = this.config.progressIntervalMs;
     if (this.raw.progressMinChars === undefined && this.config.progressMinChars !== undefined)
       this.raw.progressMinChars = this.config.progressMinChars;
-    writeFileSync(this.configPath, JSON.stringify(this.raw, null, 2) + "\n");
+    this.writeConfigAtomic(JSON.stringify(this.raw, null, 2) + "\n");
+  }
+
+  /**
+   * Coalesce config writes. #144.
+   *
+   * Boot calls `addAgent` for every configured agent, and any agent whose recorded
+   * session is gone mints a new one — which calls `recordSession` → `saveConfig`.
+   * A machine with 30 agents therefore rewrote the whole file 30 times before the
+   * server listened, and each was a window in which the file could be truncated.
+   *
+   * With the write now atomic that is no longer dangerous, but it is still 30
+   * unnecessary writes of a 148KB file. During boot, saves are marked dirty and
+   * flushed ONCE at the end. Outside boot (an edit, a spawn, a rename) behaviour is
+   * unchanged: synchronous and immediate.
+   */
+  private deferConfigWrites = false;
+  private configDirty = false;
+
+  /** write once and clear the dirty flag — used at the end of a batched section */
+  private flushConfig(): void {
+    this.configDirty = false;
+    this.saveConfig();
+  }
+
+  /** write-and-rename, so config.json is never observed empty or half-written */
+  private writeConfigAtomic(body: string): void {
+    // #144: `/dev/null` is a real, intentional value here — many callers (and
+    // every test that does not care about persistence) pass it as "no config
+    // file". The old `writeFileSync("/dev/null", …)` succeeded and discarded.
+    //
+    // Atomic writing cannot honour that: the temp file would be
+    // `/dev/.config.json.tmp-…`, which is EACCES for a normal user, so 22 tests
+    // failed with a bare 400 from POST /api/agents. Keep the old behaviour for a
+    // non-regular target, and only do write-rename where rename means something.
+    if (!isRegularFileTarget(this.configPath)) {
+      writeFileSync(this.configPath, body);
+      return;
+    }
+    const dir = path.dirname(this.configPath);
+    // same directory as the target, so rename() stays within one filesystem
+    const tmp = path.join(dir, `.config.json.tmp-${process.pid}-${Date.now()}`);
+    let fd: number | undefined;
+    try {
+      fd = openSync(tmp, "w");
+      writeFileSync(fd, body);
+      // fsync BEFORE the rename: without it the rename can land while the data is
+      // still in the page cache, which is the same data-loss window on a crash
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      renameSync(tmp, this.configPath);
+    } catch (err) {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* already closed */
+        }
+      }
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* nothing to clean up */
+      }
+      // Losing the new state is survivable; losing the file is not, so rethrow
+      // rather than pretending the save succeeded
+      throw err;
+    }
   }
   private raw: Record<string, unknown> = loadedRaw();
 
@@ -482,26 +602,44 @@ export class Master {
 
   async start(): Promise<void> {
     mkdirSync(this.config.dataDir, { recursive: true });
-    for (const ac of this.config.agents) {
-      try {
-        await this.addAgent(ac);
-      } catch (err) {
-        // one bad entry (duplicate id, unknown provider, …) must not take the
-        // whole master down — skip it loudly and keep serving the rest
-        console.error(`[teapot] skipping agent "${ac.id}": ${(err as Error).message}`);
+    // #144: ONE config write for the whole boot instead of one per agent.
+    //
+    // Every agent whose recorded session is gone mints a new one, and minting
+    // calls recordSession → saveConfig. With ~30 configured agents the user's log
+    // showed ~30 "session … is gone" lines, and therefore ~30 full rewrites of a
+    // 148KB config.json — all before the server ever listened. That is the window
+    // in which Ctrl-C emptied the file.
+    //
+    // `finally` so a throw mid-boot still flushes what it already changed: a
+    // deferred write that never flushes would leave config.json describing the PREVIOUS
+    // boot, which is its own silent data loss.
+    this.deferConfigWrites = true;
+    this.configDirty = false;
+    try {
+      for (const ac of this.config.agents) {
+        try {
+          await this.addAgent(ac);
+        } catch (err) {
+          // one bad entry (duplicate id, unknown provider, …) must not take the
+          // whole master down — skip it loudly and keep serving the rest
+          console.error(`[teapot] skipping agent "${ac.id}": ${(err as Error).message}`);
+        }
       }
-    }
-    for (const t of this.config.tasks ?? []) {
-      try {
-        this.tasks.push({
-          task: t,
-          schedule: parseSchedule(t.schedule),
-          lastRunMin: t.lastRunMin ?? -1,
-        });
-      } catch (err) {
-        // a hand-edited schedule typo must not stop the server from listening
-        console.error(`[teapot] skipping task "${t.id}": ${(err as Error).message}`);
+      for (const t of this.config.tasks ?? []) {
+        try {
+          this.tasks.push({
+            task: t,
+            schedule: parseSchedule(t.schedule),
+            lastRunMin: t.lastRunMin ?? -1,
+          });
+        } catch (err) {
+          // a hand-edited schedule typo must not stop the server from listening
+          console.error(`[teapot] skipping task "${t.id}": ${(err as Error).message}`);
+        }
       }
+    } finally {
+      this.deferConfigWrites = false;
+      if (this.configDirty) this.flushConfig();
     }
     // single low-frequency tick for everything periodic (idle cost ≈ 0)
     setInterval(() => void this.tick(), 15_000).unref();

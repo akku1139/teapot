@@ -2131,11 +2131,31 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         //
         // So the payload IS the data. `mergeEvents` dedupes by id and sorts by
         // seq, so a REST page and a socket event can arrive in any order.
-        if (msg.event) {
-          mergeEvents([msg.event as Ev]);
-          void refreshMetrics();
-          return;
-        }
+        //
+        // #145: this used to `return` here, skipping runFeedRefresh entirely —
+        // which regressed every tool row into a permanent "running…". runFeedRefresh
+        // does two things mergeEvents cannot:
+        //
+        //   await refreshAgents()     // the agent's live STATUS
+        //   await loadEvents(...)     // re-derive the feed from the log
+        //
+        // Without refreshAgents, `agentActive` never changes, and ToolRow only
+        // closes a stranded call via `!agentActive && !res` — so a live-looking
+        // agent kept the row spinning until a reload. That is the #54 report:
+        // "all bash execution stays running unless reloaded via the API".
+        //
+        // And merging alone cannot pair an out-of-order result: pairInfo walks
+        // events() in order and only matches a call it has already seen, so a
+        // result delivered first becomes an orphan row while the call keeps
+        // spinning (#40: agent -> bash -> waiting on the LLM API).
+        //
+        // So: merge for immediacy, AND refresh for correctness. The payload stays
+        // the data — it just no longer REPLACES the pass that makes it coherent.
+        mergeEvents([msg.event as Ev]);
+        pendingRefresh = true;
+        if (document.visibilityState !== "visible") return;
+        if (timer) return;
+        timer = setTimeout(runFeedRefresh, 60);
       }
       // hidden tab: defer feed work until the tab is visible again — layout
       // is paused anyway, so fetching + re-rendering now is pure waste. The

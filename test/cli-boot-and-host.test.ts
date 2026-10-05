@@ -41,6 +41,16 @@ const repo = path.join(here, "..");
 const indexSrc = readSource(path.join(repo, "src", "index.ts"));
 const masterSrc = readSource(path.join(repo, "src", "master.ts"));
 
+/**
+ * How long a spawned server gets to print its listening line.
+ *
+ * #144: 30s was not enough under full-suite load — `node --test` runs files in
+ * parallel, and this file spawns THREE real servers, so it lost the race and the
+ * file reported `✖ (30043ms)`. The standalone run takes ~4.4s, so this is a
+ * scheduling margin, not a timeout that was doing useful work.
+ */
+const BOOT_TIMEOUT_MS = 60_000;
+
 /** a non-loopback IPv4 address, if this host has one */
 function lanAddress(): string | null {
   for (const addrs of Object.values(networkInterfaces())) {
@@ -62,7 +72,7 @@ async function startServer(args: string[], dataDir: string): Promise<{ proc: imp
   });
   return new Promise((resolve, reject) => {
     let log = "";
-    const t = setTimeout(() => reject(new Error(`server did not start:\n${log}`)), 30_000);
+    const t = setTimeout(() => reject(new Error(`server did not start:\n${log}`)), BOOT_TIMEOUT_MS);
     const onData = (d: Buffer) => {
       log += d.toString();
       if (log.includes("master listening on")) {
@@ -152,7 +162,7 @@ test("the published bin actually starts (#140)", async (t) => {
     try {
       const ok = await new Promise<boolean>((resolve) => {
         let log = "";
-        const t = setTimeout(() => resolve(false), 30_000);
+        const t = setTimeout(() => resolve(false), BOOT_TIMEOUT_MS);
         const onData = (d: Buffer) => {
           log += d.toString();
           if (log.includes("master listening on")) {
@@ -190,7 +200,7 @@ test("the built entry point boots when run DIRECTLY, on every platform (#140)", 
     try {
       const ok = await new Promise<boolean>((resolve) => {
         let log = "";
-        const timer = setTimeout(() => resolve(false), 30_000);
+        const timer = setTimeout(() => resolve(false), BOOT_TIMEOUT_MS);
         const onData = (d: Buffer) => {
           log += d.toString();
           if (log.includes("master listening on")) {
