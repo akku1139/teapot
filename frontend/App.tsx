@@ -2212,12 +2212,45 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     };
     runFeedRefreshRef = runFeedRefresh;
     onTabVisible = () => {
-      if (document.visibilityState === "visible" && pendingRefresh) {
+      if (document.visibilityState !== "visible") return;
+      // #139: returning to a VISIBLE tab must verify, not assume.
+      //
+      // This only refetched when `pendingRefresh` was already set, and that flag
+      // is set by the hidden-tab branch of the WS handler. A machine waking from
+      // SLEEP is a different case: the tab was never hidden, so no event arrived
+      // to set the flag, and the handler did nothing at all.
+      //
+      // Whether the socket recovers is luck: if the server's 30s liveness reaper
+      // closed it, `onclose` reconnects and `catchUpAfterReconnect` fetches the
+      // gap. But a sleep often leaves the TCP connection apparently alive, so no
+      // close fires, no reconnect happens, and the timeline stays frozen at
+      // whatever it held when the lid shut. Reloading fixed it because that
+      // reloads the log from scratch.
+      //
+      // So: on every return to visible, ask for what we are missing. The cursor
+      // makes it proportional — a tab that slept for a minute and missed nothing
+      // costs one cheap request that returns empty.
+      const id = selected();
+      if (!id) return;
+      if (pendingRefresh) {
         pendingRefresh = false;
         // refresh IMMEDIATELY on return — the old 150ms delay made every
         // homecoming show a stale tail until the next beat
         void runFeedRefresh();
+        return;
       }
+      const cursor = events().at(-1)?.id;
+      if (!cursor) {
+        // nothing to anchor on (a session switch while away) — a full load is the
+        // only correct answer
+        pendingRefresh = true;
+        void runFeedRefresh();
+        return;
+      }
+      // Same call whether or not the socket is alive, and that is deliberate: a
+      // socket that LOOKS connected after a sleep is the failure case, so it does
+      // not get to decide that nothing is needed.
+      void catchUpAfterReconnect();
     };
   }
 
