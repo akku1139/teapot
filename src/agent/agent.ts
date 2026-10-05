@@ -29,10 +29,8 @@ import { bus, type BusEvent } from "../bus.ts";
  *    every requested report appeared TWICE on the timeline.
  */
 export const AUTO_CONTINUE_NUDGE =
-  // #136: prefixed `[harness]` like every other injected instruction. Without it
-  // the nudge was indistinguishable from something the operator typed, so the model
-  // read "Continue working toward the current goal" as a request to reply rather
-  // than as harness bookkeeping — then answered in prose, which ends the round
+  // #136: the prefix marks this as harness text, not something the operator typed.
+  // Unprefixed, the model read it as a request to reply — and prose ends the round
   // without finishing, which starts the next one.
   "[harness] " +
   "Continue working toward the current goal. If you are blocked, explain why briefly. " +
@@ -1845,12 +1843,6 @@ export class Agent {
     // would let auto-continue nag) and not stopped
     if (!this.stopRequested && !this.awaitingUser) this.setStatus("idle", "round complete");
   }
-
-  /**
-   * One LLM call with a fresh abort controller so stop() can interrupt it
-   * immediately, plus loop-level retries for provider flakiness (the SDK
-   * already backsoff 429/5xx; this covers exhausted rate limits and 400s).
-   */
   /**
    * One LLM call with a fresh abort controller so stop() can interrupt it
    * immediately, plus loop-level retries for provider flakiness (the SDK

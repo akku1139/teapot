@@ -9,7 +9,7 @@
  *
  * ## What exists
  *
- * The composer accepts a paste or a 📎 attach (`App.tsx:3506`), and
+ * The composer accepts a paste or a 📎 attach, and
  * `POST /api/agents/:id/prompt` takes `images: [{url, name}]`. `drainPendingPrompts`
  * turns them into OpenAI content parts, text first:
  *
@@ -18,7 +18,7 @@
  *
  * ## What does not
  *
- * **A filesystem path is silently DROPPED.** The validator at `api.ts:803` keeps
+ * **A filesystem path is silently DROPPED.** The `/prompt` image filter keeps
  * only `data:image/…` under ~9MB and `http(s)://`; anything else — including a
  * path and a `file://` URL — is filtered out with no error, so the prompt is sent
  * as text alone and the operator is told nothing.
@@ -34,7 +34,7 @@ const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8
 const agent = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
 const tools = readFileSync(new URL("../src/agent/tools.ts", import.meta.url), "utf8");
 
-/** the image filter as api.ts:803 implements it */
+/** the image filter as the /prompt route implements it */
 function accepted(url: string): boolean {
   if (url.startsWith("data:image/")) return url.length < 12_000_000;
   return /^https?:\/\//.test(url);

@@ -61,11 +61,6 @@ export interface SidebarRow<T extends TreeAgent = TreeAgent> {
  * Flatten the agent forest into display order: each agent followed by its
  * sub-agents, newest sub first (a freshly spawned agent is what you want to
  * see), with collapsed subtrees omitted entirely.
- */
-/**
- * Flatten the agent forest into display order: each agent followed by its
- * sub-agents, newest sub first (a freshly spawned agent is what you want to
- * see), with collapsed subtrees omitted entirely.
  *
  * `collapsed` holds agent ids whose SUBTREE is hidden. A top-level chat's row
  * is collapsible too — it is a group in its own right, because its sub-agents
@@ -282,7 +277,7 @@ export function shouldShowCollapseCaret(args: {
  * parent is already visible two lines above it in the same panel.
  *
  * The name is not stored separately: `spawnChildFor` builds the id as
- * `<parent>-sub[-<persona>]-<name>` (master.ts:782), so it is recovered from
+ * `<parent>-sub[-<persona>]-<name>` (master.ts `spawnChildFor`), so it is recovered from
  * that. Characters outside `[\w.-]` were substituted with underscores at spawn
  * time, so they are turned back into spaces — `mt6628_reg` reads as `mt6628 reg`
  * rather than leaking the mangling.

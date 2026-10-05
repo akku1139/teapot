@@ -116,7 +116,8 @@ test("queued prompts make a STOPPED agent live (#59)", async () => {
     // #133: this asserted `true`, on the reasoning that held prompts are "pending
     // work — the user must be able to stop/clear". But `live` drives ONE control:
     //
-    //     onclick={isSelLive() ? act("/stop") : act("/start")}   (App.tsx:3863)
+    //     onclick={isSelLive() ? act("/stop") : act("/start")}   (the composer's
+    //     control button)
     //
     // and a STOPPED agent pressing "stop" is a no-op that leaves the button showing
     // stop forever. So the reasoning does not hold: it made the single toggle

@@ -534,7 +534,7 @@ export default function App() {
   // bottom, with follow mode still `true` in the signal — nothing looked wrong.
   //
   // Nothing else fires on that transition: the per-row `onResize` only runs when
-  // the OPERATOR opens a `<details>` (App.tsx:4563), and a compaction nobody
+  // the OPERATOR opens a `<details>` (the reasoning block in MessageRow), and a compaction nobody
   // touched is exactly the case that broke.
   createEffect(() => {
     // key on the banner's presence, in BOTH directions
@@ -1330,7 +1330,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       //
       // A chat's caret writes `chat:<id>` into `teapot.wsCollapsed`; nothing in
       // the current UI writes a bare top-level id here. An entry like that can
-      // only predate it — and `treeRowsOf` honours this set (sidebar-tree.ts:142),
+      // only predate it — and `treeRowsOf` honours this set (`collapsedSubs`),
       // so it silently hid the whole subtree while the caret pointed open and the
       // 🧩 badge kept counting. That is the reported DOM.
       //
@@ -1945,7 +1945,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       }
       if (msg.kind === "pong") return;
       // #40: the server sends an AUTHORITATIVE snapshot the moment the socket
-      // opens (api.ts:236), and the frontend discarded it — so a reconnect learned
+      // opens (`kind:"hello"` in the WS route), and the frontend discarded it — so a reconnect
       // agent state only from the REST poll that followed, and the WS and REST
       // paths could disagree in the meantime. That is the dual-state problem the
       // whole event architecture is meant to avoid.
@@ -2730,18 +2730,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         },
       ]);
       setPendingImages([]);
-      // #134/#138: restore the normal composer after a send from a maximized one.
-      //
-      // #134 removed this with the rationale that "staying maximized hid the
-      // timeline for no reason" — but maximizing IS `position:absolute; inset:0`
-      // over the whole column, so it hides the timeline ENTIRELY (app.css:840).
-      // That was the whole point of the mode, and the reason is now visible: with
-      // Enter no longer sending (#134), a maximized composer is how you write a long
-      // message, so the send button is the way out — and it left the timeline
-      // covered with no explanation.
-      //
-      // Restoring here rather than only on toggle, so every send path (the button,
-      // and any future programmatic one) exits the mode consistently.
+      // #138: a send exits the maximized composer. It is `position:absolute;
+      // inset:0` over the whole column, so leaving it maximized leaves the timeline
+      // hidden — and since #134 stopped Enter sending, this is the only way out.
+      // Autosize on the next frame: the tall height comes from `.maximized`, so
+      // dropping the class alone would leave the textarea expanded.
       if (composerMaximized()) {
         setComposerMaximized(false);
         requestAnimationFrame(() => autosizeComposer());
@@ -3081,7 +3074,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     //
                     //   - `chat:<id>` in wsCollapsed  (what this caret writes)
                     //   - the bare id in `teapot.collapsed` (what treeRowsOf
-                    //     checks at sidebar-tree.ts:142 to hide the children)
+                    //     checks `collapsedSubs` to hide the children)
                     //
                     // Reading only chatCollapsed() is what produced the reported
                     // DOM: an expanded caret (▾), a 🧩N badge, and no child rows at
@@ -4520,14 +4513,9 @@ function ThinkingTimer(props: { startedAt: number }) {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
-  // #131: `startedAt` is 0 whenever the clock has not been armed — which is the
-  // state immediately after a session switch, before the first reasoning delta of
-  // the new selection lands. Rendering `now() - 0` then displayed the elapsed time
-  // since the EPOCH: "thinking 497531h 23m", for a few hundred milliseconds,
-  // before the first delta corrected it. Self-correcting, hence "数秒で治る".
-  //
-  // 0 is a sentinel meaning "not started", never a real timestamp, so render
-  // nothing until it is armed.
+  // #131: `startedAt` is 0 until a reasoning delta arms the clock, which is the
+  // state right after a session switch. `now() - 0` is elapsed since the EPOCH, so
+  // it flashed "thinking 497531h". 0 is a sentinel, never a timestamp.
   if (!props.startedAt) return null;
   return <span class="thinktimer">{fmtDur(Math.max(0, now() - props.startedAt))}</span>;
 }
@@ -5468,17 +5456,14 @@ function TodoEditor(props: {
   preview: boolean;
   onDraft: (text: string) => void;
 }) {
-  // #88: these two branches were INVERTED. `<Show when={viewMode}>` rendered the
-  // TEXTAREA and the rendered checklist was the `fallback` — so `viewMode: true`
-  // meant "editor". `saveTodo` set `true` to switch to the preview after saving
-  // (the original #88 fix) and therefore did the exact opposite, which is why the
-  // report said "not fixed" on v0.26.14.
+  // #88: these two branches were INVERTED — `<Show when={…}>` rendered the TEXTAREA
+  // and the checklist was the `fallback`, so `true` meant "editor". `saveTodo` set
+  // `true` to reach the preview and therefore did the opposite.
   //
-  // The icon compounded it: `viewMode ? "👁" : "✎"` showed the eye WHILE in the
-  // editor, reading as "click here for the rendered view" at the moment the editor
-  // was already showing.
-  //
-  // Renamed to `preview` and the branches swapped, so the name states what renders.
+  // The prop is named `preview`, not `viewMode`, because there is an unrelated
+  // `viewMode` signal in this file (the file-viewer's code/md/media mode) and the
+  // two were being confused. The branches are also swapped, so the name states what
+  // actually renders.
   return (
     <Show
       when={props.preview}

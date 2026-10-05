@@ -10,7 +10,8 @@
  *     an instruction to the PARENT — but the parent did not spawn this child to
  *     make progress on its OWN goal, and when the child DID call `finish()` the
  *     parent already receives a proper `Sub-agent X finished. Final report: …`
- *     (master.ts:1100). So the nudge restated as an instruction what the report
+ *     (`finished. Final report:` in master.ts). So the nudge restated as an
+ * instruction what the report
  *     already stated as fact, and invited the parent to `finish()` its own goal
  *     over a child's status change.
  *

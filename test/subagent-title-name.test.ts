@@ -14,7 +14,8 @@
  * ## Why the id is parsed rather than a field being added
  *
  * The name is not stored. `spawnChildFor` builds the id as
- * `<parent>-sub[-<persona>]-<name>` (master.ts:782), so that is where it lives.
+ * `<parent>-sub[-<persona>]-<name>` (master.ts `spawnChildFor`), so that is
+ * where it lives.
  *
  * The persona list is passed IN rather than duplicated: the frontend already
  * loads it from `/api/personas`, and a copied list would mis-parse every

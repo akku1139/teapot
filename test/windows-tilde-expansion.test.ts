@@ -14,7 +14,7 @@
  *
  * `os.homedir()` is the cross-platform answer: on Windows Node resolves it from
  * `USERPROFILE`, so it is never the literal `~`. Note that teapot already gets
- * this right in ONE place — `src/agent/skills.ts:165` falls back to
+ * this right in ONE place — `src/agent/skills.ts` falls back to
  * `process.env.USERPROFILE` — so the fix is to make the other sites consistent
  * with existing code rather than to invent a new mechanism.
  *
@@ -141,7 +141,7 @@ test("resolveWorkspace does not read HOME alone (#110)", () => {
 });
 
 test("every ~ expansion in src/ has a non-POSIX fallback (#110)", () => {
-  // the same mistake is easy to make again; skills.ts:165 already does it right
+  // the same mistake is easy to make again; skills.ts already does it right
   const files: [string, string][] = [
     ["src/master.ts", master],
     ["src/server/api.ts", readSource(new URL("../src/server/api.ts", import.meta.url))],

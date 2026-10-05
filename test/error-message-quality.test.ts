@@ -7,7 +7,7 @@
  * ## 1. `old_text is required` — hit 22 times in the logs
  *
  * The single most common `edit_file` failure said only that a field was missing,
- * while the tool's own schema already documents the better form. `master.ts:979`
+ * while the tool's own schema already documents the better form. master's
  * had already solved this shape of problem for "not your sub-agent" by naming the
  * real cause and what to do instead; `edit_file` never got the same treatment.
  *
@@ -143,4 +143,66 @@ test("the fix follows the pattern master.ts already uses (#126)", () => {
     "the precedent must still hold (#126)",
   );
   assert.match(master, /message @\$\{actual\} instead/, "which names what to do (#126)");
+});
+/* ---------- #139: comments must not cite line numbers ---------- */
+
+test("no source comment cites a bare file:line (#139)", async () => {
+  // Every one of these had rotted. Verified against the code:
+  //
+  //     master.ts:1100  ->  if (parentId) this.wakeParentWaiters(parentId);
+  //     master.ts:979   ->  ids: string[] | undefined,
+  //     master.ts:782   ->  }
+  //     api.ts:803      ->  (a different filter than the one described)
+  //     agent.ts:570    ->  (isLive() had moved to 592)
+  //
+  // i.e. they pointed at unrelated code and nobody noticed, because a wrong line
+  // number in a comment fails silently — unlike a wrong assertion.
+  //
+  // Anchors are now SYMBOLS (`master.ts spawnChildFor`), which move with the code
+  // they describe. One exception is allowed: a `src/...ts:42` that appears inside a
+  // string literal is TEST DATA, not a citation.
+  const { readdirSync } = await import("node:fs");
+  const { fileURLToPath: f2p } = await import("node:url");
+  const { readSource } = await import("./helpers/source.ts");
+
+  const files: string[] = [];
+  for (const dir of ["../src", "../frontend", "."]) {
+    const base = f2p(new URL(`${dir}/`, import.meta.url));
+    const walk = (d: string): string[] => {
+      const out: string[] = [];
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = `${d}/${e.name}`;
+        if (e.isDirectory()) {
+          if (e.name === "helpers" || e.name === "node_modules") continue;
+          out.push(...walk(p));
+        } else if (/\.tsx?$/.test(e.name)) out.push(p);
+      }
+      return out;
+    };
+    files.push(...walk(base));
+  }
+  assert.ok(files.length > 10, `precondition: the scan found source (#139); ${files.length} files`);
+
+  const offenders: string[] = [];
+  const cite = /`?\b([a-zA-Z][\w.-]*\.tsx?):(\d+)\b/g;
+  // this file necessarily contains the pattern it searches for
+  const SELF = "error-message-quality.test.ts";
+  for (const f of files) {
+    if (f.endsWith(SELF)) continue;
+    readSource(f)
+      .split("\n")
+      .forEach((l, i) => {
+        const t = l.trim();
+        if (!t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*")) return;
+        // strip string literals: data inside them is not a citation
+        const noStrings = t.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, '""');
+        if (cite.test(noStrings)) offenders.push(`${f.replace(/^.*\/(src|frontend|test)\//, "$1/")}:${i + 1}`);
+        cite.lastIndex = 0;
+      });
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `these comments cite a line number, which rots silently (#139): ${offenders.join(", ")}`,
+  );
 });

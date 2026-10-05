@@ -142,7 +142,7 @@ test("the agent stops being live once the prompt takes over (#120)", async () =>
 
 test("a parked agent IS live, so its rows are not stale (#120)", async () => {
   // The precondition that makes the bug possible: while parked, `isLive()` is
-  // true (agent.ts:570 counts parkedByTool), so an unresolved row is NOT marked
+  // true (isLive() counts parkedByTool), so an unresolved row is NOT marked
   // stale. If that ever stopped holding, a row mid-park would read "done" while
   // the wait was still running.
   await useTempDirs(["t120e-", "t120f-"], async ([ws, sd]) => {

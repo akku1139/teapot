@@ -1348,7 +1348,8 @@ export const TOOLS: ToolDef[] = [
       // #126: the single most common edit_file failure in the real logs (22
       // occurrences) said only "old_text is required", while the tool's own
       // schema already documents the better form. Name it and say what to do —
-      // the pattern master.ts uses for "not your sub-agent" (master.ts:979),
+      // the pattern master.ts uses for "not your sub-agent" (its
+      // `messageChild`),
       // which turned a confusing refusal into a re-addressable one.
       if (!oldText)
         return {

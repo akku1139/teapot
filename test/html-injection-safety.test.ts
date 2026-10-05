@@ -2,7 +2,7 @@
  * Both places the app inserts generated HTML via `innerHTML`:
  *
  *   1. `renderMarkdown` — timeline text, tool output, assistant messages
- *   2. shiki's `hastToHtml` — file-preview code blocks (App.tsx:5617 inserts
+ *   2. shiki's `hastToHtml` — file-preview code blocks (the preview inserts
  *      `props.html` RAW, so this path had no coverage at all)
  *
  * The existing markdown test asserts on the STRING — that `<script` is absent.

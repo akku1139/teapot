@@ -14,7 +14,7 @@
  * `status` was right, so nothing looked wrong server-side, and `live` is the one
  * field the single toggle button reads:
  *
- *     onclick={isSelLive() ? act("/stop") : act("/start")}   (App.tsx:3863)
+ *     onclick={isSelLive() ? act("/stop") : act("/start")}   (the composer control)
  *
  * so the button stayed "■ stop". Pressing it again was a no-op — the agent was
  * already stopped — and a reload could not help, because the state was real, not

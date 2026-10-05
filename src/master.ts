@@ -723,7 +723,8 @@ export class Master {
       // "Continue your task, or finish() if the work is done" was addressed to the
       // PARENT — but the parent did not spawn this child for its own sake, and
       // when the child DID call finish() the parent already receives a proper
-      // "Sub-agent X finished. Final report: …" (master.ts:1100). So the nudge
+      // "Sub-agent X finished. Final report: …" (the `finished. Final report:`
+      // prompt below). So the nudge
       // restated as an instruction what the report already stated as fact, and
       // invited the parent to `finish()` ITS OWN goal over a child's status.
       //

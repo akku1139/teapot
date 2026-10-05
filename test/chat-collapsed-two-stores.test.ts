@@ -17,7 +17,7 @@
  *
  *   - `chat:<id>` in `teapot.wsCollapsed` — what this caret WRITES;
  *   - the bare id in `teapot.collapsed` (`collapsedSubs`) — what `treeRowsOf`
- *     checks at sidebar-tree.ts:142 to hide the children.
+ *     checks `collapsedSubs` to hide the children.
  *
  * Nothing in the current UI writes a bare top-level id into `teapot.collapsed`,
  * so such an entry can only predate it. `treeRowsOf` honoured it anyway, so a

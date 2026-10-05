@@ -3,13 +3,13 @@
  *
  * ## Cause
  *
- * The compaction banner renders INSIDE the feed (App.tsx:3211), so the pass
+ * The compaction banner renders INSIDE the feed, so the pass
  * changes the feed's height twice:
  *
  *   phase start  -> banner APPEARS  -> feed taller by one row
  *   phase done   -> banner REMOVED  -> feed shorter by one row
  *
- * While the summarizer streams, the follow effect at App.tsx:616 keeps the bottom
+ * While the summarizer streams, the follow effect keeps the bottom
  * pinned — it keys on `liveText()` / `live().reasoning`, and the `[compact] …`
  * bubble makes both non-empty.
  *
@@ -26,7 +26,7 @@
  *
  * A `ResizeObserver` on the feed would catch both directions; the existing
  * per-row `onResize` cannot, because it only fires when the operator opens a
- * `<details>` (App.tsx:4563), and a compaction the operator never touched is
+ * `<details>`, and a compaction the operator never touched is
  * exactly the case that breaks.
  */
 import { test } from "node:test";
