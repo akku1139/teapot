@@ -20,6 +20,8 @@ import { copyText } from "./clipboard";
 import { groupedWith, type RowLike } from "./row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./question-answered";
 import { reconcilePending, type PendingEcho } from "./pending-echo";
+// #141: pure + exported, so the session switcher is testable rather than re-implemented
+import { resolveTimelineSession } from "./session-index";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 import {
   treeRowsOf,
@@ -1753,17 +1755,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * the list is a directory scan, so a stale dir with a newer chat.jsonl won
    * and the operator's view and the agent's actual timeline disagreed.
    */
-  function latestSessionOf(agentId: string, requested?: string | null): string | null {
-    // #58: an EXPLICIT request (a deep link, browser Back/Forward, or the
-    // session switcher) is authoritative — it used to be discarded here, so
-    // /session/<id> silently opened whatever session was bound and then
-    // REWROTE the URL to match. Honoured only when this agent really owns the
-    // session, so a crafted URL cannot cross into another agent's timeline.
-    if (requested && sessionsByAgent().get(agentId)?.includes(requested)) return requested;
-    const bound = agents().find((a) => a.id === agentId)?.session;
-    if (bound && sessionsByAgent().get(agentId)?.includes(bound)) return bound;
-    return sessionsByAgent().get(agentId)?.[0] ?? null;
-  }
+  // #141: extracted to a pure, exported function so it can be TESTED.
+  //
+  // `test/session-switcher.test.ts` used to re-implement this logic in the test
+  // file and assert against that copy — three tests, ZERO coverage of shipped
+  // code. The logic is pure in (owned sessions, bound session, requested), so
+  // there was no reason for it to be a closure.
+  const latestSessionOf = (agentId: string, requested?: string | null): string | null =>
+    resolveTimelineSession(
+      sessionsByAgent().get(agentId),
+      agents().find((a) => a.id === agentId)?.session,
+      requested,
+    );
 
   async function select(id: string, push = true, forceSession?: string | null) {
     const prevId = selected();

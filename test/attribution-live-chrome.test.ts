@@ -40,9 +40,27 @@ const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8"
 
 /** FEED_TYPES, read from the real source so the test cannot drift from it */
 function feedTypes(): Set<string> {
-  const block = app.slice(app.indexOf("const FEED_TYPES"), app.indexOf("const FEED_TYPES") + 500);
-  const body = block.slice(block.indexOf("["), block.indexOf("]"));
-  return new Set([...body.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]!));
+  // #141: this window was 500 chars and the closing `]` sits at 664, so
+  // `indexOf("]")` returned -1 and `slice(0, -1)` read the WHOLE REST of the
+  // block — including the comment that literally says `"sub" is deliberately NOT
+  // here`. The scraper therefore believed `sub` WAS a feed type, and the test
+  // below asserted the OPPOSITE of shipped behaviour (and of #63).
+  //
+  // Parse the literal instead: stop at the first `]`, and require that one to
+  // exist at all rather than silently scanning to end-of-file.
+  const at = app.indexOf("const FEED_TYPES");
+  assert.notEqual(at, -1, "FEED_TYPES must exist");
+  const block = app.slice(at);
+  const open = block.indexOf("[");
+  const close = block.indexOf("]", open);
+  assert.ok(close !== -1, `the FEED_TYPES array must be terminated (found \`]\` at ${close})`);
+  const body = block.slice(open + 1, close);
+  // The body DOES carry an explanatory comment, and it quotes `"sub"` — which is
+  // exactly how the old scraper came to believe `sub` was a member. Strip
+  // comments before reading the literal, so prose can never be mistaken for code.
+  const code = body.replace(/\/\/[^\n]*/g, "");
+  assert.doesNotMatch(code, /\/\//, "every comment must have been stripped");
+  return new Set([...code.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]!));
 }
 
 /** the `real` filter, as it behaves: non-FEED_TYPES rows are dropped */
@@ -74,62 +92,79 @@ function mixedLog() {
 
 /* ---------- the defect ---------- */
 
-test("mirrored sub-agent rows survive the feed filter (#40)", () => {
-  // THE regression. `sub` missing from FEED_TYPES meant the mirroring the
-  // master performs was silently discarded by the UI.
-  assert.ok(
+test("a `sub` row is NOT a feed type — #63 removed child mirroring (#40, #63)", () => {
+  // #141: this test asserted the OPPOSITE, and passed.
+  //
+  // Its scraper used a 500-char window while the closing `]` sits at 664, so
+  // `indexOf("]")` was -1 and `slice(0, -1)` read the whole rest of the block —
+  // including the comment that says `"sub" is deliberately NOT here`. The quoted
+  // "sub" in that prose is what the scraper picked up.
+  //
+  // #63 stopped mirroring child activity into the parent log entirely, so `sub`
+  // MUST NOT be a feed type; a legacy log that still contains one is handled by
+  // the expansion below, which is what the sibling test covers.
+  assert.equal(
     feedTypes().has("sub"),
-    `"sub" must be in FEED_TYPES or mirrored child activity never renders (#40): got [${[...feedTypes()].join(", ")}]`,
+    false,
+    `"sub" must not be a feed type since #63 (#40/#63); got [${[...feedTypes()].join(", ")}]`,
   );
-  for (const e of mixedLog()) {
-    assert.ok(passesFilter(e), `a ${e.type} row must pass the filter (#40)`);
+});
+
+test("every REAL feed type passes the filter (#40)", () => {
+  // the part of the original test that was right: a row the timeline is supposed
+  // to render must not be filtered out
+  for (const t of ["prompt", "message", "tool_call", "tool_result"]) {
+    assert.ok(feedTypes().has(t), `${t} must be a feed type (#40)`);
+    assert.ok(passesFilter({ type: t }), `a ${t} row must pass the filter (#40)`);
   }
 });
 
-test("a child's rows are rendered AND attributed to the child (#40)", () => {
-  const rows = expand(mixedLog().filter(passesFilter));
-  const actors = rows.map((r) => r.data?.actor ?? null);
+test("a child's rows are dropped by the filter, since #63 (#40)", () => {
+  // #141: this asserted the mirrored rows SURVIVE. They do not, and must not —
+  // #63 removed child mirroring from the parent's log because those rows flooded
+  // the timeline. The old scraper made it look otherwise.
+  const survivors = mixedLog().filter(passesFilter);
   assert.deepEqual(
-    actors,
-    [null, null, "kid", "kid"],
-    `only the mirrored rows carry an actor (#40): ${JSON.stringify(actors)}`,
-  );
-  // the child's own text is now visible in the parent's feed, which is the
-  // feature the master was written for
-  assert.ok(
-    rows.some((r) => String(r.data?.content ?? "").includes("CHILD TEXT")),
-    `the child's message must render in the parent's feed (#40): ${JSON.stringify(rows)}`,
+    survivors.map((e) => e.id),
+    ["e1", "e2"],
+    `only the parent's own rows survive the filter (#63); got ${JSON.stringify(survivors.map((e) => e.id))}`,
   );
 });
 
-test("a child's row is NOT the selected agent's own live work (#40)", () => {
-  // the gate b150cae added, finally with something to judge
-  const rows = expand(mixedLog().filter(passesFilter));
+test("a legacy `sub` row is not the selected agent's own live work (#40, #63)", () => {
+  // the gate still has to work, but the input is a LEGACY log: one that still
+  // carries `sub` rows from before #63. They are expanded for display, and must
+  // not be mistaken for the parent's own in-flight work — otherwise a child's
+  // output wears the parent's streaming chrome, which is #40 exactly.
+  const rows = expand(mixedLog()); // deliberately NOT filtered
   const own = rows.map(isOwnLiveWork);
   assert.deepEqual(
     own,
     [true, true, false, false],
-    `the parent's own rows stay live; the child's do not (#40): ${JSON.stringify(own)}`,
+    `the parent's own rows stay live; a child's do not (#40): ${JSON.stringify(own)}`,
   );
 });
 
 test("the gate is no longer a no-op on a REAL feed (#40)", () => {
-  // The previous test only grepped the source for the expansion line, so it
-  // passed while the path was dead. This one asserts the gate CHANGES an
-  // outcome on real data: with `sub` filtered out, every row is "own" and the
-  // gate does nothing at all.
-  const withSub = expand(mixedLog().filter(passesFilter));
-  const withoutSub = expand(mixedLog().filter((e) => e.type !== "sub"));
-  assert.equal(
-    withoutSub.every((r) => isOwnLiveWork(r)),
-    true,
-    "precondition: without `sub` rows the gate is inert (#40)",
+  // anti-vacuity: the check must be able to distinguish the two cases, so vary the
+  // selected agent and require the answer to change
+  // `isOwnLiveWork(row)` takes ONE argument — it reads `data.actor` — so my first
+  // version of this passed a second one and the two maps were IDENTICAL, which is
+  // precisely the vacuity this test exists to catch.
+  //
+  // The real anti-vacuity check: the gate must actually distinguish the two kinds
+  // of row in the fixture, or it is a no-op for everything that matters.
+  const rows = expand(mixedLog());
+  const own = rows.map(isOwnLiveWork);
+  assert.ok(
+    own.some((v) => v === true) && own.some((v) => v === false),
+    `the gate must answer BOTH ways on this fixture, or it decides nothing (#40/#141); got ${JSON.stringify(own)}`,
   );
-  assert.equal(
-    withSub.some((r) => !isOwnLiveWork(r)),
-    true,
-    "with them it must actually gate something (#40)",
-  );
+  // and it must key on the actor, not on position or count
+  assert.equal(isOwnLiveWork({ data: { actor: "kid" } }), false, "an actor means NOT own work (#40)");
+  assert.equal(isOwnLiveWork({ data: {} }), true, "no actor means own work (#40)");
+  assert.equal(isOwnLiveWork({ data: { actor: "" } }), true, "an empty actor is not an attribution (#40)");
+  assert.equal(isOwnLiveWork(null), false, "a null row is not own work (#40)");
 });
 
 /* ---------- the mirroring contract itself ---------- */

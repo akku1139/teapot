@@ -224,7 +224,18 @@ const DATA_DIR =
 
 const DEFAULT_CONFIG: TeapotConfig = {
   port: Number(process.env.TEAPOT_PORT ?? 7788),
-  host: process.env.TEAPOT_HOST,
+  // #140: this was `process.env.TEAPOT_HOST`, i.e. UNDEFINED when unset — and an
+  // undefined hostname makes `@hono/node-server` bind every interface. So the
+  // default was the opposite of the documented one: `--help` says
+  // "127.0.0.1 (default) · 0.0.0.0 exposes the UI to your network", and yet the
+  // default WAS "expose to your network".
+  //
+  // Measured: with no --host the server answered on the machine's LAN address as
+  // well as loopback.
+  //
+  // Loopback is the right default for something holding API tokens and agent
+  // workspaces; exposing it has to be a deliberate act.
+  host: process.env.TEAPOT_HOST ?? "127.0.0.1",
   dataDir: DATA_DIR,
   llm: {
     baseUrl: process.env.TEAPOT_BASE_URL ?? "https://openrouter.ai/api/v1",
@@ -943,28 +954,42 @@ When this task is done (or truly blocked), call finish() with a summary for @${p
   /** Stop direct children (and their descendants by default) of an agent. */
   async stopChildrenFor(parentId: string, ids?: string[]): Promise<{ stopped: string[] }> {
     const stopped: string[] = [];
-    const walk = (pid: string) => {
+    // `inScope` is true once we are INSIDE a subtree we were asked to stop, and
+    // stays true all the way down.
+    //
+    // #142: the old walk passed `ids` down unchanged, so after matching an
+    // explicit id every DESCENDANT failed `ids.includes(id)` and was skipped —
+    // which is why the explicit branch hand-rolled its own one-level loop, and
+    // why that loop could not reach a great-grandchild.
+    const walk = (pid: string, inScope: boolean) => {
       for (const { id, agent } of this.childrenOf(pid)) {
-        if (ids && !ids.includes(id)) {
-          // still descend: stopping a parent implies stopping its subtree
-          walk(id);
+        const take = inScope || !ids || ids.includes(id);
+        if (!take) {
+          // out of scope, but its own subtree may hold something in scope
+          walk(id, false);
           continue;
         }
         agent.stop("stopped by parent agent");
         stopped.push(id);
-        if (ids) {
-          // explicit id → also take its subtree
-          const sub = this.childrenOf(id);
-          for (const { id: gid, agent: g } of sub) {
-            g.stop("stopped with parent");
-            stopped.push(gid);
-          }
-        } else {
-          walk(id); // full-subtree default
-        }
+        // #142: RECURSE for both modes.
+        //
+        // The explicit-id branch used to iterate `childrenOf(id)` exactly once, so
+        // a great-grandchild was never reached — stopping a child left its
+        // grandchild's child running, indefinitely, still holding a model
+        // connection and billing tokens:
+        //
+        //     root-sub           stopped
+        //     root-sub-sub       stopped
+        //     root-sub-sub-sub   running     <-- orphaned
+        //
+        // `walk` already means "this subtree", and it stops every node it visits,
+        // so one code path serves both cases. The only difference between the two
+        // modes is the `ids && !ids.includes(id)` test at the top, which decides
+        // whether a node is in scope — not how deep the walk goes.
+        walk(id, true);
       }
     };
-    walk(parentId);
+    walk(parentId, false);
     return { stopped };
   }
 

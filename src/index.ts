@@ -5,8 +5,9 @@
  * Config may also come from TEAPOT_* env vars (see src/master.ts).
  * First run (no config file): boot anyway and finish setup in the web UI.
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 import { loadConfig, resolveConfigPath, Master } from "./master.ts";
 import { buildApp, serveApp } from "./server/api.ts";
 
@@ -271,10 +272,32 @@ async function main(): Promise<void> {
 // test importing it and sat at 48% branch coverage. The check is the standard
 // ESM "am I the entry point" test, and `node --experimental-strip-types src/index.ts`
 // and `node dist/index.js` both still take this branch.
-const isEntry =
-  process.argv[1] !== undefined &&
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (process.argv[1] === new URL(import.meta.url).pathname ||
-    process.argv[1].endsWith("/index.js") ||
-    process.argv[1].endsWith("/index.ts"));
-if (isEntry) void main();
+function isEntryPoint(): boolean {
+  const arg = process.argv[1];
+  if (!arg) return false;
+  // `npm i -g teapot-coding-agent` puts a SYMLINK at node_modules/.bin/teapot, and
+  // npm invokes the target THROUGH it. So `process.argv[1]` is the symlink path
+  // (…/node_modules/.bin/teapot), NOT the file it points at — which matched none
+  // of the checks below, `main()` never ran, and the installed command exited 0
+  // in silence. Reporting `teapot` did nothing and needing `node dist/index.js`
+  // was the only symptom. `realpathSync` is what resolves it.
+  try {
+    const self = realpathSync(fileURLToPath(import.meta.url));
+    const entry = realpathSync(arg);
+    if (self === entry) return true;
+    // `self === entry` is the ONLY correct test: it is the definition of being the
+    // entry point. The suffix checks that used to follow were a fallback for the
+    // symlink case, and they were far too loose — `endsWith("/index.ts")` is true
+    // for EVERY test file that imports this module, so importing it booted a real
+    // server on port 7788 and `cli-args.test.ts` failed with EADDRINUSE.
+    //
+    // Keep a basename check as a safety net for a bundler that rewrites paths, but
+    // require BOTH that we are the module AND that nothing else is: an argv[1] that
+    // resolves to a DIFFERENT file is by definition not this module's entry.
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) void main();

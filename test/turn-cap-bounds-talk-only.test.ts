@@ -101,9 +101,17 @@ test("a talk-only model is stopped instead of spinning forever (#106)", async ()
       bounded,
       "the idle-round valve must fire for a model that never acts (#106)",
     );
-    assert.ok(
-      turns <= 12,
-      `turns must stay near the valve, got ${turns} for a cap of 6 (#106)`,
+    // #141: this was `turns <= 12` for a cap of 6 — loose enough to hide an
+    // off-by-one. Mutation-verified: changing `>` to `>=` on the valve (so it
+    // fires one round early) left the whole suite green.
+    //
+    // The valve fires when consecutiveIdleRounds EXCEEDS the cap, so a talk-only
+    // model gets exactly `cap + 1` rounds before it stops. Assert the exact number
+    // so the boundary is pinned from both sides.
+    assert.equal(
+      turns,
+      7,
+      `a cap of 6 must allow exactly 7 rounds — the valve fires on exceeding it (#106/#141); got ${turns}`,
     );
   });
 });

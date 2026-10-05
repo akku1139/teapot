@@ -161,12 +161,25 @@ test("the FilesPanel gate is keyed (#30/#75)", () => {
 test("every keyed gate keys on the agent ID, never the object (#30/#75)", () => {
   // a blanket check, so a NEW panel cannot reintroduce the #30 regression by
   // using the object where the id belongs
+  // #141: this read `m[3]`, but the regex has only TWO capture groups — m[1] is
+  // the field name and m[2] the rest of the tag. So `m[3]` was ALWAYS undefined,
+  // `keyed` was ALWAYS false, and `objectGates` was always empty: the assertion
+  // could not fail. Reintroducing the exact #30 regression stayed green.
+  //
+  // Verified against the real source: 3 gates match, and the `keyed` attribute
+  // lives in m[2].
   const gates = [...app.matchAll(/<Show when=\{sel\(\)[!?]?\.([a-z]+)\}([^>]*)>/g)].map((m) => ({
-    prop: m[2],
-    keyed: /\bkeyed\b/.test(m[3] ?? ""),
+    field: m[1],
+    keyed: /\bkeyed\b/.test(m[2] ?? ""),
   }));
   assert.ok(gates.length > 0, "precondition: there are sel()-gated Shows (#30)");
-  const objectGates = gates.filter((g) => g.prop === "" && g.keyed);
+  // anti-vacuity: the scan must be able to SEE a keyed gate, or it proves nothing
+  assert.ok(
+    gates.some((g) => g.keyed),
+    `at least one sel()-gated Show must be keyed (#30/#141), or this check cannot detect a regression; found ${JSON.stringify(gates)}`,
+  );
+  // the rule: a gate keyed on the agent must key on its ID, never the object
+  const objectGates = gates.filter((g) => g.field !== "id" && g.keyed);
   assert.deepEqual(
     objectGates,
     [],
