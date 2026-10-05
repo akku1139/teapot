@@ -2730,6 +2730,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         },
       ]);
       setPendingImages([]);
+      // #134/#138: restore the normal composer after a send from a maximized one.
+      //
+      // #134 removed this with the rationale that "staying maximized hid the
+      // timeline for no reason" — but maximizing IS `position:absolute; inset:0`
+      // over the whole column, so it hides the timeline ENTIRELY (app.css:840).
+      // That was the whole point of the mode, and the reason is now visible: with
+      // Enter no longer sending (#134), a maximized composer is how you write a long
+      // message, so the send button is the way out — and it left the timeline
+      // covered with no explanation.
+      //
+      // Restoring here rather than only on toggle, so every send path (the button,
+      // and any future programmatic one) exits the mode consistently.
+      if (composerMaximized()) {
+        setComposerMaximized(false);
+        requestAnimationFrame(() => autosizeComposer());
+      }
       // scroll to bottom after our message appears. The composer is shrinking
       // (autosize) in the same frame — wait two frames so the scroll target is
       // computed against the SETTLED layout, not the still-expanded input.
