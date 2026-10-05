@@ -25,12 +25,3 @@ export function freePort(): Promise<number> {
     });
   });
 }
-
-/** true if something is listening on `port` */
-export async function portInUse(port: number, host = "127.0.0.1"): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = createServer();
-    sock.once("error", () => resolve(true));
-    sock.listen(port, host, () => sock.close(() => resolve(false)));
-  });
-}
