@@ -1884,6 +1884,63 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   onCleanup(() => { onTabVisible = null; });
   // the FIRST onopen must not double-load; every later one is a reconnect (#54)
   let firstConnect = true;
+  /**
+   * After a socket reconnect, fetch only the events we missed (#54).
+   *
+   * Asks `/events?after=<last id we hold>` and merges the result. Three outcomes,
+   * and the distinction matters:
+   *
+   *  - events returned      → merge them; the gap is closed
+   *  - `gap: true`          → our cursor is not a prefix of the log (rotated,
+   *                           compacted, or a session switch happened while the
+   *                           socket was down). The server already fell back to a
+   *                           full tail, so replace rather than merge.
+   *  - nothing returned     → we were already current; do NOT re-read
+   *
+   * `refreshAgents` still runs because the AGENT's status can have changed with no
+   * event of its own (a stop, a status transition the log does not carry).
+   */
+  // `runFeedRefresh` is a `const` declared further down. It is initialised before
+  // any socket can open, so a lazy reference is safe; this keeps the type checker
+  // happy without reordering the file.
+  let runFeedRefreshRef: (() => Promise<void>) | null = null;
+
+  async function catchUpAfterReconnect(): Promise<void> {
+    const id = selected();
+    const cursor = events().at(-1)?.id;
+    const tid = timelineId();
+    const hidden = document.visibilityState === "hidden";
+    if (!id || !cursor) {
+      // nothing to anchor on — a full load is the only option
+      pendingRefresh = true;
+      if (!hidden) void runFeedRefreshRef?.();
+      return;
+    }
+    try {
+      const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
+      const bf = branchFilter();
+      const q = `/api/agents/${id}/events?after=${encodeURIComponent(cursor)}${sessQ}${
+        bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""
+      }`;
+      const r = (await api(q)) as { events?: Ev[]; gap?: boolean };
+      const got = r.events ?? [];
+      if (r.gap) {
+        // our cursor is not in the log: a full tail came back, so REPLACE
+        setEvents(stabilize(got));
+        setEventsTotal(got.length);
+      } else if (got.length) {
+        mergeEvents(got);
+        setEventsTotal((n) => n + got.length);
+      }
+      await refreshAgents();
+      if (got.length && !hidden) void refreshMetrics();
+    } catch {
+      // a failed catch-up must not wedge the reconnect loop; the next socket
+      // open retries, and the periodic refresh still runs meanwhile
+      pendingRefresh = true;
+    }
+  }
+
   function connectWs() {
     // #54: `firstConnect` belongs to a SOCKET, not to the page. Reset it per
     // connection, or a reconnect that itself dropped would be mistaken for the
@@ -1914,10 +1971,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         firstConnect = false;
         return;
       }
-      // every later open is a reconnect — drain anything missed, including a
-      // hidden-tab defer
-      pendingRefresh = true;
-      if (document.visibilityState === "visible") void runFeedRefresh();
+      // #54: a RECONNECT asks only for what it missed.
+      //
+      // It used to set `pendingRefresh` and re-read the whole tail — 2,000 events
+      // by default — to learn about the handful that arrived while the socket was
+      // down. That is the cost of REST being the source of truth.
+      //
+      // Now the cursor makes recovery proportional: ask for everything after the
+      // last event we already hold. A reconnect that missed two events transfers
+      // two events.
+      void catchUpAfterReconnect();
     };
     sock.onclose = () => {
       setConnected(false);
@@ -2049,9 +2112,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // the point of the notification center (progress / finish / question /
         // error), even when the timeline isn't being watched
         maybeNotify(msg.agentId, msg.event);
-        // only the affected session's feed needs reloading — other sessions'
+        // only the affected session's feed needs updating — other sessions'
         // timelines are fetched on switch, not eagerly
         if (msg.event?.agent !== selected()) return;
+
+        // #54: USE THE EVENT.
+        //
+        // The socket carries the full event — the same object that was written to
+        // the JSONL log, because `EventLog.onEvent` fires after the write (#54).
+        // It was being discarded in favour of "something changed, re-read
+        // /events", which made REST the timeline's source of truth and the socket
+        // a notification bell. That is the dual-model problem the issue describes,
+        // and it is why a dropped socket could strand a row: nothing the client
+        // already held could close the gap.
+        //
+        // So the payload IS the data. `mergeEvents` dedupes by id and sorts by
+        // seq, so a REST page and a socket event can arrive in any order.
+        if (msg.event) {
+          mergeEvents([msg.event as Ev]);
+          void refreshMetrics();
+          return;
+        }
       }
       // hidden tab: defer feed work until the tab is visible again — layout
       // is paused anyway, so fetching + re-rendering now is pure waste. The
@@ -2126,6 +2207,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           // removed only after the turn actually consumed it).
         }
     };
+    runFeedRefreshRef = runFeedRefresh;
     onTabVisible = () => {
       if (document.visibilityState === "visible" && pendingRefresh) {
         pendingRefresh = false;

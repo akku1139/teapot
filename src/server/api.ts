@@ -1167,6 +1167,30 @@ const MAX_WS_CLIENTS = 64;
     // only used for the "load older" affordance, where approximate is fine.
     const branch = c.req.query("branch");
     const before = c.req.query("before");
+    // #54: `?after=<id>` returns only what landed AFTER that event.
+    //
+    // This is the cursor the reconnect path was missing. Without it a dropped
+    // socket is recovered by re-fetching the whole tail — 2,000 events by default
+    // — and throwing away all but the few that are new. That is what makes the
+    // architecture REST-authoritative: the frontend can only learn "something
+    // changed" and must re-read to find out what.
+    //
+    // It is also the only cursor that can be cheap here: the tail path scans
+    // backwards from EOF, so an `after` lookup that lands near the end reads a
+    // small window instead of parsing the whole log.
+    const after = c.req.query("after");
+    if (after && !before && !branch) {
+      const all = await readEventsCached(filePath);
+      const idx = all.findIndex((e) => e.id === after);
+      // an unknown cursor means the client's view is not a prefix of ours (a
+      // compacted or rotated log), so a full tail is the only safe answer
+      if (idx === -1) {
+        const tail = await readEventsTail(filePath, limit);
+        return c.json({ events: tail.events, total: tail.total, partial: tail.truncated, gap: true });
+      }
+      const events = all.slice(idx + 1);
+      return c.json({ events, total: all.length, appended: events.length > 0 });
+    }
     if (!before && !branch) {
       const tail = await readEventsTail(filePath, limit);
       return c.json({ events: tail.events, total: tail.total, partial: tail.truncated });

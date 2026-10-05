@@ -44,11 +44,36 @@ const agent = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "u
 
 /* ---------- 1: the client resyncs on reconnect ---------- */
 
-test("a reconnect resyncs the feed (#54)", () => {
+test("a reconnect closes the gap (#54)", () => {
+  // #54: this used to require `runFeedRefresh()` inside `onopen` — a specific
+  // MECHANISM. The mechanism changed (a reconnect now asks for `?after=<cursor>`
+  // rather than re-reading a 2,000-event tail), so what is asserted is now the
+  // RULE: a later open must do something that recovers missed events, and it must
+  // not be the full reload.
+  const at = app.indexOf("sock.onopen = () => {");
+  assert.notEqual(at, -1, "onopen must exist (#54)");
+  const block = app.slice(at, app.indexOf("sock.onclose", at));
+  assert.match(
+    block,
+    /catchUpAfterReconnect\(\)/,
+    "a reconnect must recover what it missed (#54)",
+  );
+});
+
+test("recovery is proportional — a cursor, not a full re-read (#54)", () => {
+  // the reason the reconnect was expensive: `runFeedRefresh` re-reads the whole
+  // tail to learn about the handful of events that arrived while down
   assert.match(
     app,
-    /sock\.onopen = \(\) => \{[\s\S]{0,400}?runFeedRefresh\(\)/,
-    "onopen must resync — nothing else fetches events after a gap (#54)",
+    /events\?after=\$\{encodeURIComponent\(cursor\)\}/,
+    "recovery must use the after= cursor (#54)",
+  );
+  const at = app.indexOf("sock.onopen = () => {");
+  const block = app.slice(at, app.indexOf("sock.onclose", at));
+  assert.doesNotMatch(
+    block,
+    /runFeedRefresh\(\)/,
+    "a plain full reload is what we are replacing (#54)",
   );
 });
 
@@ -106,20 +131,32 @@ test("the guard fires on the first open and not on a reconnect (#54)", () => {
   );
   assert.match(
     branch,
-    /pendingRefresh = true;/,
-    "a later open must schedule a resync (#54)",
+    /catchUpAfterReconnect\(\)/,
+    "a later open must recover the gap (#54)",
   );
 });
 
 test("a reconnect drains a hidden-tab defer too (#54)", () => {
   // a tab that was hidden when the socket dropped has pendingRefresh set by the
   // hidden-tab path as well; onopen must not leave it stranded
-  const onopen = app.slice(app.indexOf("sock.onopen = () => {"), app.indexOf("sock.onopen = () => {") + 600);
-  assert.match(onopen, /pendingRefresh = true;/, "onopen must mark a pending refresh (#54)");
+  // The RULE: a reconnect must still run its recovery while hidden — deferring
+  // the whole thing until the tab is visible is what stranded rows in the first
+  // place, because the events kept arriving for a feed nobody was reloading.
+  const at = app.indexOf("sock.onopen = () => {");
+  const onopen = app.slice(at, app.indexOf("sock.onclose", at));
+  assert.match(onopen, /catchUpAfterReconnect\(\)/, "onopen must recover (#54)");
+  const fn = app.slice(app.indexOf("async function catchUpAfterReconnect"));
+  assert.doesNotMatch(
+    fn.slice(0, fn.indexOf("function connectWs")),
+    /visibilityState[^\n]*return/,
+    "a hidden tab must NOT skip recovery outright (#54)",
+  );
+  // fetching while hidden is cheap and the DOM is not laid out; only the
+  // metrics/scroll follow-up needs the tab visible
   assert.match(
-    onopen,
-    /document\.visibilityState === "visible"\) void runFeedRefresh\(\)/,
-    "and run it when the tab is visible (#54)",
+    fn,
+    /if \(got\.length && !hidden\) void refreshMetrics\(\);/,
+    "the expensive follow-up is what waits for visibility (#54)",
   );
 });
 
