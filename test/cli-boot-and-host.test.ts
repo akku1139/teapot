@@ -134,7 +134,18 @@ test("the published bin actually starts (#140)", async (t) => {
       return;
     }
     const port = await freePort();
-    const proc = spawn(link, ["--port", String(port)], {
+    // #141: spawn `node <link>`, NOT `<link>`.
+    //
+    // Executing the file directly relies on its `#!/usr/bin/env node` shebang,
+    // which Windows does not honour — `spawn(link)` there fails immediately, and
+    // because the failure happened before the first assertion the whole FILE was
+    // reported as `✖ (249ms)` with no diagnostic.
+    //
+    // Passing the link as an ARGUMENT reproduces what npm actually does — argv[1]
+    // is the symlink path — and needs no shebang support, so the mechanism under
+    // test (#140: argv[1] must be resolved through the symlink) is exercised on
+    // every platform.
+    const proc = spawn(process.execPath, [link, "--port", String(port)], {
       env: { ...process.env, TEAPOT_DATA_DIR: dataDir!, TEAPOT_PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"],
     });
