@@ -2339,6 +2339,32 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setPaneR((p) => (p === -1 ? -1 : Math.min(shift(p), rest.length - 1)));
   }
 
+  /** Re-apply the active theme's terminal palette to a live xterm session (#137). */
+  function retintTerminal(s: TermSession): void {
+    const want = themeColors();
+    const cur = s.term.options.theme;
+    // the effect below runs on any theme signal read, so an unconditional write
+    // would churn on unrelated re-renders
+    if (cur && cur.background === want.background && cur.foreground === want.foreground) return;
+    // assigning `options.theme` is xterm's documented way to re-theme a live
+    // terminal; it does not disturb the scrollback or the buffer contents
+    s.term.options.theme = want;
+  }
+
+  // #137: re-theme terminals ALREADY OPEN when the theme changes. The reuse path
+  // only helps once a terminal is remounted, and an open one never is — so without
+  // this the user changes theme and sees nothing happen at all.
+  createEffect(() => {
+    // read the signals that resolve the active theme; the sibling effect writes
+    // `data-theme` on <html>, which repaints every CSS-driven surface
+    void themeAuto();
+    void fixedTheme();
+    void sysPrefersLight();
+    void sysLightTheme();
+    void sysDarkTheme();
+    for (const [, s] of liveTerms) retintTerminal(s);
+  });
+
   function disposeAllTerms() {
     for (const [, s] of liveTerms) {
       s.ro?.disconnect();
@@ -2351,6 +2377,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   /** create (and mount) a session lazily; moving panes just re-appends its el */
   function ensureSession(tab: TermTab, host: HTMLElement): TermSession {
     let s = liveTerms.get(tab.key);
+    // #137: a terminal created under a DARK theme kept its palette after the
+    // operator switched to a light one, so `--term-fg` became near-black while the
+    // shell prompt stayed the dark theme's light grey — invisible on white.
+    //
+    // xterm CACHES the palette passed to its constructor, so the CSS variables
+    // updating is not enough. Re-apply it on every reuse: this is the path taken
+    // when the panel is closed and reopened, and on any re-render landing here.
+    if (s) retintTerminal(s);
     if (!s) {
       const el = document.createElement("div");
       el.className = "termsession";

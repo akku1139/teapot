@@ -718,9 +718,30 @@ export class Master {
       // #130: a spawned child is `idle` until start() runs, and that lazy-load
       // flip is its FIRST transition — so requiring a prior `running` is what stops
       // the parent being told the child settled before it began.
+      // #135: reworded, because the old line was wrong in two ways.
+      //
+      // "Continue your task, or finish() if the work is done" was addressed to the
+      // PARENT — but the parent did not spawn this child for its own sake, and
+      // when the child DID call finish() the parent already receives a proper
+      // "Sub-agent X finished. Final report: …" (master.ts:1100). So the nudge
+      // restated as an instruction what the report already stated as fact, and
+      // invited the parent to `finish()` ITS OWN goal over a child's status.
+      //
+      // The new wording says what happened and what to do about it, and points at
+      // the report when there is one:
+      //
+      //   child gave a summary  -> "…returned without calling finish(); its final
+      //                             message follows." (the report arrives separately)
+      //   child said nothing     -> "…went idle without reporting. If that is
+      //                             unexpected, message it or re-spawn it."
       if (this.reportedRunning.has(agentId) && SETTLED.has(status))
         parent.enqueuePrompt(
-          `[harness] @${agentId} is now ${status}. Continue your task, or finish() if the work is done.`,
+          `[harness] Sub-agent @${agentId} is now ${status} without having called finish(), so it has not reported a result.` +
+            (status === "error"
+              ? ` Check its last output before deciding whether to re-spawn it.`
+              : status === "stopped"
+                ? ` It may have been stopped mid-task; message it to resume, or re-spawn it.`
+                : ` If you expected a result, message it or re-spawn it.`),
           "harness",
         );
       if (status === "running") this.reportedRunning.add(agentId);

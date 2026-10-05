@@ -71,12 +71,23 @@ test("the todo start is conditional, so a running agent is not restarted (#123)"
 });
 
 test("a finished sub-agent's report starts an idle parent (#123)", () => {
-  const block = after(master, "finished. Final report:", 900);
-  assert.match(block, /parent\.enqueuePrompt\(/, "the report is queued (#123)");
+  assert.match(after(master, "finished. Final report:", 900), /parent\.enqueuePrompt\(/, "the report is queued (#123)");
+  // #126/#135: the `start()` is 18,149 chars away from the report — a fixed window
+  // over both is not a window, it is a coincidence that happened to work until
+  // #135 reworded an unrelated nudge elsewhere in the file. Anchor each on its own
+  // symbol and relate them by POSITION, not by adjacency.
+  const startAt = master.indexOf("parent.start(`sub-agent");
+  assert.notEqual(startAt, -1, "the parent must be started (#123)");
+  const reportAt = master.indexOf("finished. Final report:");
+  const startBlock = master.slice(master.lastIndexOf("parent.enqueuePrompt(", startAt), startAt + 90);
   assert.match(
-    block,
-    /if \(parent\.status !== "running"\) parent\.start\(`sub-agent \$\{ac\.id\} finished`\);/,
+    startBlock,
+    /if \(parent\.status !== "running"\)/,
     "an idle parent must START, or the report sits forever (#123)",
+  );
+  assert.ok(
+    startAt > reportAt,
+    "the start() must follow the report it accompanies (#123)",
   );
 });
 
