@@ -157,6 +157,11 @@ export interface AgentOptions {
    */
   maxConsecutiveIdleRounds?: number;
   /**
+   * Consecutive completion audits that may REJECT before the loop gives up (#128).
+   * Defaults to 3. Reaching it leaves the goal ACTIVE and logs `audit-retry-cap`.
+   */
+  maxAuditRejects?: number;
+  /**
    * Retry policy for round-fatal API errors (rate limits, 5xx, provider
    * hiccups). "stop" (default) ends the loop with status=error. "retry"
    * keeps the goal alive: wait retryDelayMs, then start a fresh round —
@@ -332,6 +337,23 @@ export class Agent {
    * round that produced neither a tool call nor a finish increments it.
    */
   private consecutiveIdleRounds = 0;
+  /**
+   * Consecutive completion audits that REJECTED, #128.
+   *
+   * Measured before this existed: a model that finishes, is rejected, finishes
+   * again, is rejected again… ran 381 audit calls in one turn. Nothing bounded it:
+   *
+   *  - `maxConsecutiveIdleRounds` counts IDLE rounds, and a rejected audit is not
+   *    idle — the agent is actively working
+   *  - `maxTurnsPerRound` only LOGS `round-turn-cap`; it does not break, and it is
+   *    evaluated per round, while a reject never ends the round
+   *
+   * So the agent can spend unbounded provider spend re-finishing. When the cap is
+   * hit the goal is marked as needing attention rather than left looping: silently
+   * marking it done would be #128's fail-open problem all over again, and silently
+   * stopping would strand the operator with no signal.
+   */
+  private consecutiveAuditRejects = 0;
 
   constructor(opts: AgentOptions) {
     this.opts = {
@@ -347,6 +369,7 @@ export class Agent {
       supportedParameters: [],
       maxConsecutiveToolErrors: 5,
       maxTurnsPerRound: 200,
+      maxAuditRejects: 3, // #128: bound the reject loop
       // generous: only a model that never acts and never finishes reaches it
       maxConsecutiveIdleRounds: 50,
       onError: "stop",
@@ -1697,6 +1720,24 @@ export class Agent {
         }
         if (this.stopRequested) break;
         // fresh user input arrived while we were finishing up — another round now
+        // #128: bound consecutive audit rejections.
+        //
+        // A rejected audit queues a retry prompt, so the round CONTINUES — and
+        // neither existing valve applies: maxConsecutiveIdleRounds counts IDLE
+        // rounds (a rejection is not idle), and maxTurnsPerRound only logs. Measured
+        // before this cap: 381 audit calls in a single turn.
+        //
+        // Deliberately NOT "mark the goal done": #128's whole complaint is that
+        // "could not be audited" silently became "passed". The goal is left ACTIVE
+        // and a loud note is logged, so the operator sees the loop and decides.
+        if (this.consecutiveAuditRejects > (this.opts.maxAuditRejects ?? 3)) {
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "audit-retry-cap",
+            rejects: this.consecutiveAuditRejects,
+            detail: "the completion audit rejected the same goal repeatedly — stopping to avoid an unbounded retry loop (#128)",
+          });
+          break;
+        }
         if (this.pendingPrompts.length) continue;
         // A round that parked its work on a background bash (dev server,
         // watcher, long build) ENDED ON PURPOSE — the job's exit notification
@@ -2109,6 +2150,24 @@ export class Agent {
         }
         if (call.function.name === "finish") {
           this.pendingSubReport = ""; // the real summary supersedes it
+          // #128: answer the tool_call BEFORE the audit runs.
+          //
+          // handleFinish() calls the auditor with `buildMessages()`, and at that
+          // moment the history ended at an assistant message carrying
+          // `tool_calls: [finish]` with NO matching `tool` message. Measured, the
+          // auditor received exactly that:
+          //
+          //     assistant(tool_calls=[finish])
+          //     user(audit prompt)          <-- no tool(tool_call_id=…)
+          //
+          // OpenAI-compatible providers require every tool_call to be answered,
+          // and a strict one rejects the request outright — so a CHANGES-REQUIRED
+          // audit would fail with a protocol error rather than a verdict, and
+          // #128's fail-open would then mark the goal done.
+          //
+          // Answering first also makes the log honest: the call really was
+          // completed, it simply did not end the round.
+          await this.answerMeta(call, "(completion submitted for audit)");
           await this.handleFinish(call.function.arguments);
           // surface still-running children so the operator knows work may
           // continue after this agent goes idle
@@ -2740,6 +2799,7 @@ export class Agent {
               ? `✅ completion audit: APPROVED — ${feedback}`
               : `🔍 completion audit: CHANGES REQUIRED — ${feedback}`,
           });
+          if (approved) this.consecutiveAuditRejects = 0;
           if (!approved) {
             // hand the gaps back to the worker as its next instruction.
             // #51: with the "(no detail)" placeholder gone, an empty verdict
@@ -2752,6 +2812,9 @@ export class Agent {
               source: "harness",
               text: `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`,
             });
+            // #128: count consecutive rejections so a model that cannot satisfy
+            // the auditor cannot loop forever. See consecutiveAuditRejects.
+            this.consecutiveAuditRejects++;
             // #89: RETURN before the final message is written.
             //
             // Falling through emitted `final: true` while the goal was still

@@ -34,35 +34,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-
-/** the event-scoping rule the client must apply */
-export function eventBelongsOnTimeline(
-  ev: { agent?: string; session?: string },
-  selectedAgent: string | null,
-  timelineSession: string | null,
-): boolean {
-  if (!selectedAgent) return false;
-  if (ev.agent !== selectedAgent) return false;
-  // #146: a timeline IS a session. An event from a sibling session of the same
-  // agent is not ours, and merging it is the bug.
-  if (timelineSession && ev.session !== timelineSession) return false;
-  return true;
-}
-
-/** a live delta from `agentId`/`sessionId` */
-export function deltaBelongsToTimeline(
-  d: { agentId?: string; sessionId?: string | null },
-  selectedAgent: string | null,
-  timelineSession: string | null,
-): boolean {
-  if (!selectedAgent) return false;
-  if (d.agentId !== selectedAgent) return false;
-  // A delta carries NO session id on the wire today, so it can never be attributed.
-  // `undefined` therefore must NOT be treated as a match.
-  if (!d.sessionId) return false;
-  if (timelineSession && d.sessionId !== timelineSession) return false;
-  return true;
-}
+// #146: these were DEFINED IN THIS FILE, which is #75 again — a test-local copy of
+// the rule passes while production is broken. They now live in
+// frontend/session-scope.ts and the handler imports the same module.
+import {
+  eventBelongsOnTimeline,
+  deltaBelongsToTimeline,
+  rowIsStillActive,
+} from "../frontend/session-scope.ts";
 
 const EV = (agent: string, session: string) => ({ agent, session });
 
@@ -113,6 +92,25 @@ test("a live delta with NO session id is NOT attributed (#146)", () => {
   );
 });
 
+test("a missing sessionId is rejected even with NO timeline (#146)", () => {
+  // #141: removing the `if (!d.sessionId) return false;` guard alone did NOT fail
+  // the suite, because with a timeline present the later `d.sessionId ===
+  // timelineSession` catches `undefined` anyway. So that line looked redundant.
+  //
+  // It is not: with `timelineSession` null it is the ONLY thing standing between
+  // an unattributable stream and a bubble. This case isolates it.
+  assert.equal(
+    deltaBelongsToTimeline({ agentId: "A", sessionId: undefined }, "A", null),
+    false,
+    "an unattributable delta must never be shown (#146)",
+  );
+  assert.equal(
+    deltaBelongsToTimeline({ agentId: "A", sessionId: "" }, "A", null),
+    false,
+    "an empty sessionId is no better (#146)",
+  );
+});
+
 test("a live delta from the displayed session is shown (#146)", () => {
   assert.equal(deltaBelongsToTimeline({ agentId: "A", sessionId: "s1" }, "A", "s1"), true);
 });
@@ -120,18 +118,14 @@ test("a live delta from the displayed session is shown (#146)", () => {
 /* ---------- ToolRow activity must be session-aware ---------- */
 
 test("a tool row's activity must be scoped to the DISPLAYED session (#120, #133)", () => {
-  // ToolRow closes a stranded call via `!agentActive && !res`. If agentActive is
-  // the agent's CURRENT live state, then:
-  //   displaying S1, S1 has an unpaired tool_call, S2 is running
-  // makes S1's row read "running…" forever.
-  const agentActive = (sessionRunning: boolean, displayedIsCurrent: boolean) =>
-    // agent-wide truth AND that the displayed session is the running one
-    sessionRunning && displayedIsCurrent;
-  assert.equal(agentActive(true, true), true, "the current session running (#120)");
+  // S1 displayed, S1 has an unpaired tool_call, S2 is running
   assert.equal(
-    agentActive(true, false),
+    rowIsStillActive({ data: {} }, /*agentLive*/ true, /*displayedIsLive*/ false),
     false,
     "another session running must NOT make a historical row look live (#120/#146)",
   );
-  assert.equal(agentActive(false, false), false);
+  assert.equal(rowIsStillActive({ data: {} }, true, true), true, "the current session running (#120)");
+  assert.equal(rowIsStillActive({ data: {} }, false, true), false);
+  // a child's row is never the selected agent's own work
+  assert.equal(rowIsStillActive({ data: { actor: "kid" } }, true, true), false, "provenance (#40)");
 });

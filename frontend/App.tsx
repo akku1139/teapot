@@ -22,6 +22,9 @@ import { answeredQuestionIdsOf, type QuestionEvent } from "./question-answered";
 import { reconcilePending, type PendingEcho } from "./pending-echo";
 // #141: pure + exported, so the session switcher is testable rather than re-implemented
 import { resolveTimelineSession } from "./session-index";
+// #146: the scope predicates are PRODUCTION, so the tests can assert the same code
+// the handler runs — a test-local copy proves nothing (#75)
+import { deltaBelongsToTimeline } from "./session-scope";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 import {
   treeRowsOf,
@@ -2079,7 +2082,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // sessions, and the user can be looking at a PAST one. Without the session
         // check the current session's text and writing cursor appear on a
         // historical timeline, which is #40's report verbatim.
-        if (msg.sessionId && timelineId() && msg.sessionId !== timelineId()) return;
+        // #146: once a timeline is resolved, ANY mismatch is a rejection —
+        // including `undefined` and `""`.
+        //
+        // The previous `msg.sessionId && …` form let a missing id pass, which
+        // contradicted the REQUIRED `sessionId` in src/bus.ts and the assertion in
+        // session-isolation.test.ts. A delta with no session cannot be attributed,
+        // and showing it on some session's timeline is exactly the #40 bug.
+        if (!deltaBelongsToTimeline(msg, selected(), timelineId())) return;
         // update THIS agent's buffer only — other sessions keep streaming in
         // the background and their bubble must survive session switches
         setLiveByAgent((prev) => applyDelta(prev, msg.agentId, msg));
@@ -3652,7 +3662,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   />
                 )}
               </For>
-              <Show when={live()}>
+              // #146: the bubble must belong to the DISPLAYED session.
+              //
+              // The socket filter stops an S2 delta being STORED while S1 is shown,
+              // but `live()` is keyed by AGENT, so the S2 buffer saved earlier is
+              // still there and still rendered — S1's timeline wearing S2's
+              // streaming text and cursor. That is #40's recurrence.
+              //
+              // The deeper inconsistency is that timeline, events, pending echoes
+              // and the cache are all session-scoped while only the live buffer is
+              // agent-scoped; re-keying it is the real fix, but the gate closes the
+              // reported hole now and is what `isTimelineLive` already exists for.
+              <Show when={isTimelineLive() && live()}>
                 <div class="msg live">
                   <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">🫖</div>
                   <div class="msg-body">

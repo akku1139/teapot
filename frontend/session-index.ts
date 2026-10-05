@@ -23,5 +23,9 @@ export function resolveTimelineSession(
   const mine = owned ?? [];
   if (requested && mine.includes(requested)) return requested;
   if (bound && mine.includes(bound)) return bound;
+  // #146: if we have a bound session and no explicit request, that bound session
+  # IS the one the agent is currently on — use it instead of the agent id.
+  // (The alternative is the agent ID, which is NOT a session and will mismatch.)
+  if (!requested && bound) return bound;
   return mine[0] ?? null;
 }

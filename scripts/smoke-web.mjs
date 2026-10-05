@@ -424,6 +424,17 @@ console.log("deep render ok: feed rows present");
   // is exactly how the v0.26.1 fix shipped green while doing nothing.
   {
     const sock = MockWS.instances.at(-1);
+    // #146: the bubble is gated on the DISPLAYED SESSION being live, so an idle
+    // agent shows nothing — correct, and the reason this check must make the
+    // agent live first. It used to pass only because that gate did not exist.
+    sock.onmessage?.({
+      data: JSON.stringify({
+        kind: "agent-update",
+        agentId: AGENT.id,
+        snapshot: { ...AGENT, status: "running" },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 150));
     // precondition: put a REASONING-ONLY buffer on the agent, which is what
     // renders the bare "thinking…" row. Without this the check would pass
     // vacuously — there would be nothing to clear.
@@ -431,6 +442,10 @@ console.log("deep render ok: feed rows present");
       data: JSON.stringify({
         kind: "llm-delta",
         agentId: AGENT.id,
+        // #146: sessionId is REQUIRED by the bus type. This bundle boots with no
+        // resolved session, so timelineId() falls back to the agent id — the frame
+        // must carry the SAME id, or the client correctly drops it as unattributable.
+        sessionId: "alpha",
         text: "",
         reasoning: "weighing the options",
       }),
