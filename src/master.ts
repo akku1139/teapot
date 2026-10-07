@@ -558,6 +558,7 @@ export class Master {
     progressIntervalMs?: number;
     progressMinChars?: number;
     contextTokenBudget?: number | null;
+    contextWindowTokens?: number | null;
     maxSpawnDepth?: number;
     maxTurnsPerRound?: number;
     onError?: "stop" | "retry";
@@ -588,6 +589,25 @@ export class Master {
     if (patch.maxTurnsPerRound !== undefined) this.config.maxTurnsPerRound = patch.maxTurnsPerRound;
     if (patch.onError !== undefined) this.config.onError = patch.onError;
     if (patch.retryDelayMs !== undefined) this.config.retryDelayMs = patch.retryDelayMs;
+    // #PUT-config: an explicit null clears a saved window pin → back to
+    // per-model inference; a positive number pins it (same contract as
+    // contextTokenBudget above)
+    if (patch.contextWindowTokens !== undefined) {
+      this.config.contextWindowTokens =
+        (patch.contextWindowTokens ?? 0) > 0 ? patch.contextWindowTokens! : undefined;
+    }
+    // persist the scalar edits: saveConfig only mirrors agents/providers/etc.
+    // into raw, so these would otherwise pass validation, live for one
+    // process, and silently vanish from the file (a restart resurrected the
+    // old values). undefined DELETES the key so a null-clear also persists.
+    for (const k of [
+      "contextTokenBudget", "contextWindowTokens", "maxSpawnDepth",
+      "maxTurnsPerRound", "onError", "retryDelayMs",
+    ] as const) {
+      const v = this.config[k];
+      if (v === undefined) delete this.raw[k];
+      else this.raw[k] = v;
+    }
     if (patch.tasks) {
       this.config.tasks = patch.tasks;
       // rebuild schedule table live
@@ -1150,11 +1170,13 @@ When this task is done (or truly blocked), call finish() with a summary for @${p
     if (targets.length === 0)
       return Promise.resolve({ note: "no live sub-agents to wait for" });
 
-    const active = () =>
-      targets.filter((id) => {
-        const s = this.agents.get(id)?.status;
-        return s === "running" || s === "waiting";
-      });
+    // isBusy(), not the raw status: parkForTool overwrites a parked child's
+    // status to "idle" (spinner suppression) while its loop is very much
+    // alive — the raw check counted that child as settled and let the parent
+    // resume over unfinished work. isBusy() sees parked tools, compactions
+    // and an open ask_user; queued prompts are DORMANT (isLive()'s "stop vs
+    // start" extra) and must not hold the wait. A stop request reads settled.
+    const active = () => targets.filter((id) => this.agents.get(id)?.isBusy());
 
     const first = active();
     if (first.length === 0)

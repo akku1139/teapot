@@ -25,6 +25,7 @@ import { resolveTimelineSession } from "./session-index";
 // #146: the scope predicates are PRODUCTION, so the tests can assert the same code
 // the handler runs — a test-local copy proves nothing (#75)
 import { deltaBelongsToTimeline } from "./session-scope";
+import { retintTerminal, themeColors } from "./terminal-theme";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 import {
   treeRowsOf,
@@ -138,18 +139,6 @@ const THEMES: ThemeMeta[] = [
   { key: "strawberry", label: "Strawberry", mode: "light", sw: ["#fbe4ea", "#fffafb", "#e05575"] },
   { key: "ramune", label: "Ramune", mode: "light", sw: ["#ddeff7", "#fbfeff", "#1d86ae"] },
 ];
-
-/** xterm palette pulled from the active theme's CSS variables (fallback: dark) */
-function themeColors(): { background: string; foreground: string } {
-  let bg = "";
-  let fg = "";
-  try {
-    const cs = getComputedStyle(document.documentElement);
-    bg = cs.getPropertyValue("--term-bg").trim();
-    fg = cs.getPropertyValue("--term-fg").trim();
-  } catch { /* non-DOM context */ }
-  return { background: bg || "#0d0e12", foreground: fg || "#dcdee4" };
-}
 
 /** author for an event — mirrored sub-agent rows act under their own id */
 const authorOf = (e: Ev) => {
@@ -2535,17 +2524,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setPaneR((p) => (p === -1 ? -1 : Math.min(shift(p), rest.length - 1)));
   }
 
-  /** Re-apply the active theme's terminal palette to a live xterm session (#137). */
-  function retintTerminal(s: TermSession): void {
-    const want = themeColors();
-    const cur = s.term.options.theme;
-    // the effect below runs on any theme signal read, so an unconditional write
-    // would churn on unrelated re-renders
-    if (cur && cur.background === want.background && cur.foreground === want.foreground) return;
-    // assigning `options.theme` is xterm's documented way to re-theme a live
-    // terminal; it does not disturb the scrollback or the buffer contents
-    s.term.options.theme = want;
-  }
+  // (retintTerminal lives in ./terminal-theme — #137: it now compares the
+  // cursor fields too, so a light-theme caret cannot stay dark-theme-stale)
 
   // #137: re-theme terminals ALREADY OPEN when the theme changes. The reuse path
   // only helps once a terminal is remounted, and an open one never is — so without
@@ -2558,7 +2538,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     void sysPrefersLight();
     void sysLightTheme();
     void sysDarkTheme();
-    for (const [, s] of liveTerms) retintTerminal(s);
+    for (const [, s] of liveTerms) retintTerminal(s.term);
   });
 
   function disposeAllTerms() {
@@ -2580,7 +2560,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // xterm CACHES the palette passed to its constructor, so the CSS variables
     // updating is not enough. Re-apply it on every reuse: this is the path taken
     // when the panel is closed and reopened, and on any re-render landing here.
-    if (s) retintTerminal(s);
+    if (s) retintTerminal(s.term);
     if (!s) {
       const el = document.createElement("div");
       el.className = "termsession";
@@ -3502,16 +3482,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <span class="hash">#</span>
             <span class="title">{sel()!.id}</span>
             <span class={`badge ${sel()!.status}`}>{sel()!.status}</span>
-            <Show when={(sel()!.pendingPrompts ?? 0) > 0}>
+            <Show when={(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 0}>
               <span
                 class="badge queued"
                 title={
                   sel()!.status === "stopped"
-                    ? `${sel()!.pendingPrompts} message${(sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you are still queued, but this agent is STOPPED — nothing will run until you press start (or it is resumed). Each can be withdrawn with ✕ cancel while it is still queued.`
-                    : `${sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you waiting in the queue. They will be handed to the model at its next turn boundary — the timeline shows them as "pending (queued)…" until then, and each can be withdrawn with ✕ cancel while it's still queued.`
+                    ? `${sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you are still queued, but this agent is STOPPED — nothing will run until you press start (or it is resumed). Each can be withdrawn with ✕ cancel while it is still queued.`
+                    : `${sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you waiting in the queue. They will be handed to the model at its next turn boundary — the timeline shows them as "pending (queued)…" until then, and each can be withdrawn with ✕ cancel while it's still queued.`
                 }
               >
-                ⏳ {sel()!.pendingPrompts} of yours queued{sel()!.status === "stopped" ? " (stopped)" : ""}
+                ⏳ {sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts} of yours queued{sel()!.status === "stopped" ? " (stopped)" : ""}
               </span>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>

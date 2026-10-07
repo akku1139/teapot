@@ -49,23 +49,36 @@ export async function skillRootsFingerprint(
       continue;
     }
     parts.push(`${st.mtimeMs}:${st.size}`);
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await fs.readdir(root.dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) {
-      if (!e.isDirectory() || e.name.startsWith(".")) continue;
-      try {
-        const s = await fs.stat(path.join(root.dir, e.name, SKILL_FILE));
-        parts.push(`${e.name}=${s.mtimeMs}:${s.size}`);
-      } catch {
-        parts.push(`${e.name}=none`);
-      }
-    }
+    // stamp every SKILL.md the discovery walk could adopt (same depth bound):
+    // the one-level stat missed a NESTED skill's add/edit entirely, so the
+    // stamp never changed, refreshSkills early-returned, and the skill stayed
+    // invisible/stale in list_skills and the system-prompt catalogue
+    await stampSkillFiles(root.dir, 0, parts);
   }
   return parts.join("|");
+}
+
+/** recursive fingerprint walk — mirrors walkSkills' bound and containment rules */
+async function stampSkillFiles(dir: string, depth: number, parts: string[]): Promise<void> {
+  if (depth > MAX_SKILL_DEPTH) return;
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith(".")) continue;
+    const full = path.join(dir, e.name);
+    if (!e.isDirectory()) continue;
+    try {
+      const s = await fs.stat(path.join(full, SKILL_FILE));
+      parts.push(`${full}=${s.mtimeMs}:${s.size}`);
+    } catch {
+      // not a skill dir itself — still a container to descend into
+    }
+    await stampSkillFiles(full, depth + 1, parts);
+  }
 }
 
 export interface SkillDef {

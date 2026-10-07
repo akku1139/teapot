@@ -131,7 +131,14 @@ const MAX_WS_CLIENTS = 64;
   // Optional bearer auth for LAN exposure — TEAPOT_API_TOKEN env wins, else
   // the config's `password` field. Static files stay public; only /api/* is
   // gated.
-  const apiToken = process.env.TEAPOT_API_TOKEN || master.config.password || "";
+  // Optional bearer auth for LAN exposure — TEAPOT_API_TOKEN env wins, else
+  // the config's `password` field. Static files stay public; only /api/* is
+  // gated.
+  //
+  // Read DYNAMICALLY: the first-run wizard sets `config.password` through
+  // /api/setup AFTER buildApp ran — a const captured here once meant a
+  // freshly-set-up server stayed wide open until the next process restart.
+  const apiToken = () => process.env.TEAPOT_API_TOKEN || master.config.password || "";
 
   /**
    * Routes where `?token=` is accepted (#79).
@@ -150,17 +157,18 @@ const MAX_WS_CLIENTS = 64;
   const tokenInQueryOk = (path: string): boolean =>
     path === "/api/ws" || /^\/api\/agents\/[^/]+\/term$/.test(path);
 
-  if (apiToken)
-    app.use("/api/*", async (c, next) => {
-      const h = c.req.header("authorization");
-      const provided = h?.startsWith("Bearer ") ? h.slice(7) : undefined;
-      if (provided && provided === apiToken) return next();
-      if (tokenInQueryOk(c.req.path)) {
-        const q = c.req.query("token");
-        if (q && q === apiToken) return next();
-      }
-      return c.json({ error: "unauthorized" }, 401);
-    });
+  app.use("/api/*", async (c, next) => {
+    const want = apiToken();
+    if (!want) return next(); // nothing configured yet — the API stays open
+    const h = c.req.header("authorization");
+    const provided = h?.startsWith("Bearer ") ? h.slice(7) : undefined;
+    if (provided && provided === want) return next();
+    if (tokenInQueryOk(c.req.path)) {
+      const q = c.req.query("token");
+      if (q && q === want) return next();
+    }
+    return c.json({ error: "unauthorized" }, 401);
+  });
 
   // per-agent terminal spawn guard
   const termCounts = new Map<string, number>();
@@ -771,6 +779,12 @@ const MAX_WS_CLIENTS = 64;
         progressIntervalMs: patch.progressIntervalMs,
         progressMinChars: patch.progressMinChars,
         contextTokenBudget: patch.contextTokenBudget,
+        // these four were validated (200 ok) and then DROPPED — the settings
+        // modal's context window never reached the config at all
+        contextWindowTokens: patch.contextWindowTokens,
+        maxTurnsPerRound: patch.maxTurnsPerRound,
+        onError: patch.onError,
+        retryDelayMs: patch.retryDelayMs,
         maxSpawnDepth: patch.maxSpawnDepth,
         tasks: patch.tasks,
       });
@@ -1067,16 +1081,22 @@ const MAX_WS_CLIENTS = 64;
     const body = await c.req.json<{ text?: string; notify?: boolean }>().catch(() => null);
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     await a.setTodo(body.text ?? "");
-    if (body.notify !== false && body.text?.trim())
+    // #123: a notification-bearing save must actually WAKE the idle agent (the
+    // queued prompt used to sit forever).
+    //
+    // #123 residual: but the START follows the NOTIFICATION, not the save. The
+    // original fix left `a.start(...)` outside the gate — a brace-less if only
+    // gates the enqueue — so `notify:false` (whose entire meaning is "save
+    // silently") booted a stopped agent, and so did an EMPTY list. A todo save
+    // is note-taking; booting an incarnation is a side effect.
+    const shouldNotify = body.notify !== false && !!body.text?.trim();
+    if (shouldNotify) {
       a.enqueuePrompt(
         `[harness] The operator updated the task list:\n\n${body.text}\n\nWork through it (get_todo() always has the latest).`,
         "harness",
       );
-      // #123: an idle agent must actually START on the queued prompt. The goal
-      // route above learned this (the queued prompt sat forever otherwise); the
-      // todo route did not, so saving a task list on an idle session looked like
-      // it had been ignored.
       if (a.status !== "running") a.start("todo set");
+    }
     return c.json({ ok: true });
   });
 
