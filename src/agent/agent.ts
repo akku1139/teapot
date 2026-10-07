@@ -1787,15 +1787,21 @@ export class Agent {
         // rounds (a rejection is not idle), and maxTurnsPerRound only logs. Measured
         // before this cap: 381 audit calls in a single turn.
         //
-        // Deliberately NOT "mark the goal done": #128's whole complaint is that
+// Deliberately NOT "mark the goal done": #128's whole complaint is that
         // "could not be audited" silently became "passed". The goal is left ACTIVE
         // and a loud note is logged, so the operator sees the loop and decides.
-        if (this.consecutiveAuditRejects > (this.opts.maxAuditRejects ?? 3)) {
+        // `>=` (not `>`): the JSDoc says REACHING 3 stops — `>` allowed a 4th
+        // audit before breaking (off-by-one). The retry prompt is no longer
+        // queued AT the cap (see handleFinish), so the break strands nothing.
+        // The counter resets so ONE capped stretch doesn't brick every future
+        // round-end until setGoal — a fixed model gets a fresh count.
+        if (this.consecutiveAuditRejects >= (this.opts.maxAuditRejects ?? 3)) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "audit-retry-cap",
             rejects: this.consecutiveAuditRejects,
-            detail: "the completion audit rejected the same goal repeatedly — stopping to avoid an unbounded retry loop (#128)",
+            detail: "the completion audit rejected the same goal repeatedly ? stopping to avoid an unbounded retry loop (#128)",
           });
+          this.consecutiveAuditRejects = 0;
           break;
         }
         if (this.pendingPrompts.length) continue;
@@ -2871,6 +2877,11 @@ export class Agent {
           // the honest value: the auditor returned a verdict and no reason,
           // which every consumer can already render as "label only".
           await this.setGoalAudit(approved ? "approved" : "changes-required", feedback);
+          // a real verdict lands: the no-verdict streak restarts either way —
+          // the streak's own JSDoc promises "reset by any real verdict", and
+          // without this a flaky auditor (2 unusable, then a real verdict,
+          // then 1 unusable) hit the cap far too early
+          this.auditUnavailableStreak = 0;
           if (approved) {
             this.consecutiveAuditRejects = 0;
             // #91/#94: the final will carry WHAT was approved, on WHICH attempt,
@@ -2914,12 +2925,21 @@ export class Agent {
             const gaps = feedback.trim()
               ? feedback.slice(0, 2000)
               : `The auditor returned no specific gaps. Re-read the verification contract above and re-run it yourself, item by item, before finishing again:\n\n${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
-            this.pendingPrompts.push({
-              source: "harness",
-              text: `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`,
-            });
+            const retryText = `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`;
             // #128: counted above (consecutiveAuditRejects++ at the verdict) so
-            // a model that cannot satisfy the auditor cannot loop forever.
+            // a model that cannot satisfy the auditor cannot loop forever — the
+            // retry prompt is queued only while the bound is NOT yet reached,
+            // so the loop's cap break strands nothing (a prompt queued AT the
+            // cap would live on as an invisible no-id entry: no badge, no log
+            // row, but isLive() true). Log the row too: a push-only prompt is
+            // invisible on the timeline and lost to a restart otherwise.
+            if (this.consecutiveAuditRejects < (this.opts.maxAuditRejects ?? 3)) {
+              this.pendingPrompts.push({ source: "harness", text: retryText });
+              await this.log.append("prompt", this.currentSession, this.currentBranch, {
+                source: "harness",
+                text: retryText,
+              });
+            }
             // #89: RETURN before the final message is written.
             //
             // Falling through emitted `final: true` while the goal was still
@@ -2970,14 +2990,17 @@ export class Agent {
    * worker re-checks the contract itself instead of being told to fix nothing.
    */
   private queueAuditUnavailableRetry(): void {
-    this.pendingPrompts.push({
-      source: "harness",
-      text:
-        `[harness] The completion audit could not run (the auditor returned no verdict). ` +
-        `Do NOT treat the work as verified: re-check the verification contract yourself, item by item, ` +
-        `then finish with goalComplete=true again.\n\n` +
-        `${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`,
-    });
+    const text =
+      `[harness] The completion audit could not run (the auditor returned no verdict). ` +
+      `Do NOT treat the work as verified: re-check the verification contract yourself, item by item, ` +
+      `then finish with goalComplete=true again.\n\n` +
+      `${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
+    this.pendingPrompts.push({ source: "harness", text });
+    // log the row: a push-only prompt is invisible on the timeline and lost to
+    // a restart (rebuildMessagesFrom replays prompt rows) — same as enqueuePrompt
+    void this.log
+      .append("prompt", this.currentSession, this.currentBranch, { source: "harness", text })
+      .catch(() => {});
   }
 
   /** The `final: true` event — the parent's notification (#89: never before the goal settles). */
@@ -3122,6 +3145,11 @@ export class Agent {
     call: { id: string; function: { name: string; arguments?: string } },
     content: string,
   ): Promise<void> {
+    // one tool_call gets ONE answer: the finish path answers before the audit
+    // (#128) AND at round end — a second answerMeta for the same id would push
+    // a duplicate `tool` message AND a duplicate log row, and strict
+    // OpenAI-compatible providers reject two responses for one call with a 400.
+    if (this.messages.some((m) => m.role === "tool" && m.tool_call_id === call.id)) return;
     const raw = call.function.arguments ?? "{}";
     this.messages.push({ role: "tool", tool_call_id: call.id, content });
     // log the call AND its answer so restores replay byte-exact sequences
@@ -3306,8 +3334,7 @@ export class Agent {
             event: "context-compaction-skipped",
             reason: "summarize failed and no safe prefix to truncate",
           });
-          bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
-          return; // the finally clears the phase
+          return; // the finally clears the phase and tells the UI it ended
         }
         droppedCount = halfCut;
         this.messages = this.messages.slice(halfCut);
@@ -3400,9 +3427,13 @@ export class Agent {
         dropped: droppedCount,
         mode,
       });
-      bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
     } finally {
       this.compactPhase = "";
+      // the end signal lives in the FINALLY: a compaction that dies mid-flight
+      // (a log write rejecting on disk-full) used to leave the phase cleared
+      // server-side while the UI banner stayed "summarizing" forever — the
+      // client never got the done event. Emitting here covers every exit.
+      bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
     }
   }
 

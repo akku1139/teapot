@@ -765,13 +765,19 @@ export default function App() {
    * session (a brand-new agent), because then there is no second session to
    * confuse it with.
    */
-  const isTimelineLive = (): boolean => {
+const isTimelineLive = (): boolean => {
     if (!isSelLive()) return false;
     const a = sel();
     const shown = timelineId();
     if (!a || !shown) return true;
+    // timelineId === the agent id is the FALLBACK view (pre-index / an
+    // unresolvable deep link): the newest tail IS the agent's current session,
+    // so live output belongs here — otherwise the fallback view could never
+    // show a live bubble (`running === shown` compares a session id with an
+    // agent id)
+    if (shown === a.id) return true;
     const running = (a as { session?: string }).session;
-    if (!running) return true; // no recorded session — nothing to be confused with
+    if (!running) return true; // no recorded session ? nothing to be confused with
     return running === shown;
   };
   // prompt being edited → edit-prompt fork dialog. SETTLED user prompts only:

@@ -7,9 +7,18 @@
  * placed — and placing it wrongly is #40's report: agent2's message carrying
  * agent1's content, with a writing cursor.
  *
- * These live in PRODUCTION, not in the test file. A predicate that only the tests
- * import proves nothing about the app, which is precisely how `pruneDeadLiveBuffers`
- * ended up "fully unit-tested" while its wiring was dead code (#40/#75).
+ * WIRING STATUS (be honest here — a predicate that only the tests import proves
+ * nothing about the app, which is precisely how `pruneDeadLiveBuffers` ended up
+ * "fully unit-tested" while its wiring was dead code (#40/#75)):
+ *
+ * - `deltaBelongsToTimeline` IS production-wired (App.tsx llm-delta branch).
+ * - `eventBelongsOnTimeline` and `rowIsStillActive` are the REFERENCE
+ *   predicates pinned by tests; App.tsx carries the equivalent inline forms.
+ *   Known divergence: the inline event gate LETS a session-less event through
+ *   where this predicate would drop it — a session-less event cannot be
+ *   attributed, and today's events always carry one, so the difference is
+ *   deliberate leniency for malformed frames. Do not cite this module as
+ *   "wired" without checking App.tsx.
  */
 /** a socket `event` frame */
 export function eventBelongsOnTimeline(

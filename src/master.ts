@@ -10,6 +10,7 @@ import {
   writeFileSync,
   readdirSync,
   statSync,
+  lstatSync,
   renameSync,
   unlinkSync,
   openSync,
@@ -306,8 +307,14 @@ export function loadConfig(configPath: string): TeapotConfig {
  */
 function isRegularFileTarget(p: string): boolean {
   try {
-    const st = statSync(p);
-    return st.isFile();
+    // lstat, not stat: a SYMLINK must take the plain-write path. statSync
+    // follows the link, so a symlink→regular-file passed this check and the
+    // atomic rename then REPLACED THE LINK with a real file — the link's
+    // target (a dotfile repo, stow/chezmoi) kept the old value and a restart
+    // resurrected it. Same reasoning covers hardlinks (rename splits the
+    // inode; the write must go through the existing directory entry).
+    const st = lstatSync(p);
+    return st.isFile() && !st.isSymbolicLink();
   } catch {
     // does not exist yet — the parent decides; a real config path will be created
     return true;

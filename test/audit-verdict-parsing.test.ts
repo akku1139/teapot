@@ -16,11 +16,13 @@
  * #128 SUPERSEDES the original fail-open decision: "the audit could not run"
  * must NOT complete the goal (the old path marked `done` on an unverified
  * contract). An unusable reply now fails CLOSED — the goal stays active and
- * the worker is asked to self-verify — with a bounded streak (3 consecutive
- * unavailable audits honor the finish UNVERIFIED, so a broken auditor cannot
- * trap the worker either). The assertions below check exactly that contract;
- * the retry-prompt COUNT is deliberately not asserted (a stub that keeps
- * finishing re-audits, and the exact count is an artifact of the stub).
+ * the worker is asked to self-verify — with a bounded streak: after 3
+ * consecutive unavailable audits the retrying STOPS with a loud
+ * `audit-unavailable-cap` note and the goal stays ACTIVE for the operator to
+ * decide (the same philosophy as upstream's reject bound — the finish is
+ * never honored, verified or not). The assertions below check exactly that
+ * contract; the retry-prompt COUNT is deliberately not asserted (a stub that
+ * keeps finishing re-audits, and the exact count is an artifact of the stub).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

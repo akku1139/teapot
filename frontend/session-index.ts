@@ -23,9 +23,14 @@ export function resolveTimelineSession(
   const mine = owned ?? [];
   if (requested && mine.includes(requested)) return requested;
   if (bound && mine.includes(bound)) return bound;
-  // #146: if we have a bound session and no explicit request, that bound session
-  // IS the one the agent is currently on — use it instead of the agent id.
+  // #146: the session INDEX may not have landed yet (a brand-new agent whose
+  // first session dir is not scanned): with NO ownership data, the bound
+  // session is the best guess — it is the session the agent is attached to.
   // (The alternative is the agent ID, which is NOT a session and will mismatch.)
-  if (!requested && bound) return bound;
+  // But once ownership data EXISTS, a bound session outside it is STALE — its
+  // directory is gone, and opening it yields an empty timeline that looks like
+  // lost history (the three session-switcher tests pin this invariant: the
+  // result is always one the agent owns, or null).
+  if (!requested && bound && mine.length === 0) return bound;
   return mine[0] ?? null;
 }

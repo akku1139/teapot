@@ -32,9 +32,11 @@ function branch(kind: string): string {
 
 test("a live delta from ANOTHER session is dropped (#146)", () => {
   const b = branch("llm-delta");
+  // the check now lives in frontend/session-scope.ts (deltaBelongsToTimeline):
+  // assert the HANDLER consults it — deleting the guard still fails here
   assert.match(
     b,
-    /msg\.sessionId && timelineId\(\) && msg\.sessionId !== timelineId\(\)/,
+    /deltaBelongsToTimeline\(msg, selected\(\), timelineId\(\)\)/,
     "the delta must be attributed to the DISPLAYED session, not just the agent (#146)",
   );
 });
@@ -103,7 +105,9 @@ test("ToolRow activity is session-scoped (#120, #133, #146)", () => {
   );
   assert.match(
     app,
-    /const isTimelineLive = \(\): boolean => \{[\s\S]{0,600}?return running === shown;/,
+    // the body also carries the #146-fallback branch (timelineId === agent id
+    // = the newest tail is live), so the window is wider than the bare compare
+    /const isTimelineLive = \(\): boolean => \{[\s\S]{0,800}?return running === shown;/,
     "and that liveness must compare the agent's session with the displayed one (#146)",
   );
 });
