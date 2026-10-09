@@ -52,9 +52,15 @@ export interface ToolContext {
    * Park/unpark the agent UI while a tool blocks for a long time
    * (wait_children). While parked the agent displays as idle-with-reason,
    * and any user prompt/stop wakes it immediately.
+   *
+   * Returns whether the park was GRANTED. #140: a park must be refused while
+   * a prompt is already queued — a park over a pending prompt strands the
+   * operator's message until the child settles.
    */
-  onIdlePark?: (reason: string) => void;
+  onIdlePark?: (reason: string) => boolean;
   onIdleUnpark?: () => void;
+  /** #140: is a user/harness prompt waiting for the next turn boundary? */
+  hasPendingPrompts?: () => boolean;
   /** re-arm the progress-report gate (waiting on children is not activity) */
   onProgressGateReset?: () => void;
   /**
@@ -1803,9 +1809,32 @@ export const TOOLS: ToolDef[] = [
       if (!sa) return { ok: false, result: "sub-agents are not available here" };
       const ids = Array.isArray(args.ids) ? args.ids.map(String) : undefined;
       const ms = Math.min(Math.max(num(args.timeout_ms, 300_000), 1_000), 3_600_000);
+      // #140: a prompt ALREADY in the queue must be consumed FIRST. The
+      // enqueue-time wake only fires for prompts arriving DURING the park —
+      // one queued before the park is invisible to it, and parking over it
+      // strands the operator's message ("idle" display, nothing processed)
+      // until a child settles. Stand down and let the next turn boundary
+      // drain it; the model can call wait_children again afterwards.
+      if (ctx.hasPendingPrompts?.()) {
+        ctx.onProgressGateReset?.();
+        return {
+          ok: true,
+          result:
+            "A prompt is already queued for you — handle it first, then call wait_children again if you still need to wait.",
+        };
+      }
       // park VISIBLY: the UI shows idle ("waiting on sub-agents") instead of a
       // running spinner, and any user prompt / stop wakes us instantly
-      ctx.onIdlePark?.(`waiting on sub-agent${ids?.length === 1 ? ` ${ids[0]}` : "s"}`);
+      const parked = ctx.onIdlePark?.(`waiting on sub-agent${ids?.length === 1 ? ` ${ids[0]}` : "s"}`);
+      if (parked === false) {
+        // the agent refused the park (a prompt raced in) — same answer as above
+        ctx.onProgressGateReset?.();
+        return {
+          ok: true,
+          result:
+            "A prompt arrived while you were about to wait — handle it first, then call wait_children again if you still need to wait.",
+        };
+      }
       // the child's report is about to land in our mailbox — a progress report
       // right after it would be pure noise, so re-arm the gate here
       ctx.onProgressGateReset?.();

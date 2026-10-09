@@ -11,10 +11,18 @@
  * reason-less rejections, 424 tool calls, 8 FINAL messages. The worker's own
  * summaries say it: *"Seven rejections with no stated gap."*
  *
- * A reason-less rejection carries no information. It is now treated as NO
- * VERDICT and fails open — the same treatment the `catch` already gives an
- * auditor that threw, for the same reason: a flaky provider must not be able to
- * trap work in an unauditable loop.
+ * A reason-less rejection carries no information. It is treated as NO VERDICT.
+ *
+ * #128 SUPERSEDES the original fail-open decision: "the audit could not run"
+ * must NOT complete the goal (the old path marked `done` on an unverified
+ * contract). An unusable reply now fails CLOSED — the goal stays active and
+ * the worker is asked to self-verify — with a bounded streak: after 3
+ * consecutive unavailable audits the retrying STOPS with a loud
+ * `audit-unavailable-cap` note and the goal stays ACTIVE for the operator to
+ * decide (the same philosophy as upstream's reject bound — the finish is
+ * never honored, verified or not). The assertions below check exactly that
+ * contract; the retry-prompt COUNT is deliberately not asserted (a stub that
+ * keeps finishing re-audits, and the exact count is an artifact of the stub).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -95,8 +103,9 @@ test("an empty auditor reply is NOT a rejection (#90)", async () => {
   await useTempDirs(["av1-", "av2-"], async ([ws, sd]) => {
     const r = await auditWith(ws!, sd!, "");
     assert.equal(r.verdict, undefined, `no verdict may be recorded (#90); got ${r.verdict}`);
-    assert.equal(r.auditFailed, 1, "and it must be recorded as audit-failed (#90)");
-    assert.equal(r.queued, 0, "no reason-less retry may be queued (#90)");
+    assert.ok(r.auditFailed >= 1, "and it must be recorded as audit-failed (#90)");
+    assert.equal(r.status, "active", "and it must NOT complete the goal (#128)");
+    assert.equal(r.finals, 0, "and no final reaches the parent without a verdict (#128)");
   });
 });
 
@@ -104,7 +113,8 @@ test("whitespace-only is not a verdict (#90)", async () => {
   await useTempDirs(["av3-", "av4-"], async ([ws, sd]) => {
     const r = await auditWith(ws!, sd!, "   \n  ");
     assert.equal(r.verdict, undefined, "#90");
-    assert.equal(r.auditFailed, 1, "#90");
+    assert.ok(r.auditFailed >= 1, "#90");
+    assert.equal(r.status, "active", "#128");
   });
 });
 
@@ -116,8 +126,8 @@ test("provider placeholder text is not a verdict (#90)", async () => {
     await useTempDirs(["av5-", "av6-"], async ([ws, sd]) => {
       const r = await auditWith(ws!, sd!, junk);
       assert.equal(r.verdict, undefined, `${junk} must not be scored as a verdict (#90)`);
-      assert.equal(r.auditFailed, 1, `${junk} must record audit-failed (#90)`);
-      assert.equal(r.queued, 0, `${junk} must not queue a retry (#90)`);
+      assert.ok(r.auditFailed >= 1, `${junk} must record audit-failed (#90)`);
+      assert.equal(r.status, "active", `${junk} must not complete the goal (#128)`);
     });
   }
 });
@@ -150,6 +160,7 @@ test("a reply with text but no verdict keyword is not a verdict (#90)", async ()
   await useTempDirs(["av11-", "av12-"], async ([ws, sd]) => {
     const r = await auditWith(ws!, sd!, "I think the work looks fine overall.");
     assert.equal(r.verdict, undefined, "prose is not a verdict (#90)");
-    assert.equal(r.auditFailed, 1, "#90");
+    assert.ok(r.auditFailed >= 1, "#90");
+    assert.equal(r.status, "active", "and the goal is NOT completed by prose (#128)");
   });
 });

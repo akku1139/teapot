@@ -62,9 +62,21 @@ test("a request for a session the agent does NOT own is refused (#58)", () => {
   );
 });
 
-test("no sessions at all → null (#58)", () => {
-  assert.equal(resolveTimelineSession([], "alpha-s2"), null, "an unbound agent with no sessions (#58)");
+test("a bound session before the index lands is trusted; truly nothing is null (#58, #146)", () => {
+  // #146: with NO ownership data (the index scan has not landed for a
+  // brand-new agent), the bound session is the one the agent is attached to —
+  // the alternative is returning null, which falls timelineId back to the
+  // AGENT id, and a timeline handle that is an agent id drops every WS event
+  // (a session id never equals an agent id). This reversed the v0.28.1
+  // expectation and the three old assertions sat failing on upstream main;
+  // the ownership-index-present + stale-bound cases still fall to the newest.
+  assert.equal(
+    resolveTimelineSession([], "alpha-s2"),
+    "alpha-s2",
+    "#146: pre-index, the bound session IS the agent's session",
+  );
   assert.equal(resolveTimelineSession(undefined, undefined), null, "an unknown agent (#58)");
+  assert.equal(resolveTimelineSession([], undefined), null, "no bound and no sessions (#58)");
 });
 
 /* ---------- the properties that are easy to break ---------- */

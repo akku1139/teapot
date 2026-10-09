@@ -76,6 +76,32 @@ test("forget() cancels a pending resize so it can't hit a dead child (#20)", asy
   t.disposeAll();
 });
 
+test("output that CONTINUES past the first deadline keeps deferring the write", async () => {
+  // the inverse of the deferral test above: the resize was queued FIRST and
+  // the program STARTED STREAMING afterwards. markBusy extends busyUntil, but
+  // the pending timer kept its original deadline and fired into the program —
+  // the exact keystroke-injection the deferral exists to prevent.
+  const t = new TermSizeTracker();
+  const child = fakeChild();
+  const seen: string[] = [];
+  const write = (r: number, c: number) => seen.push(`${r}x${c}`);
+
+  t.request(child, 40, 120, write);
+  await sleep(50); // the debounce is already counting down…
+  t.markBusy(child, 600); // …and now the child starts streaming output
+  await sleep(TERM_RESIZE_DEBOUNCE_MS + 100); // well past the original deadline
+  assert.deepEqual(
+    seen,
+    [],
+    "a child that is STILL producing output must not receive stty, even past the first deadline",
+  );
+
+  // once it falls quiet the deferred resize lands
+  await sleep(700);
+  assert.deepEqual(seen, ["40x120"], "and lands once the program is quiet");
+  t.disposeAll();
+});
+
 test("two terminals of one agent keep independent sizes (#20)", async () => {
   const t = new TermSizeTracker();
   const a = fakeChild();

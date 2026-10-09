@@ -87,12 +87,14 @@ export function matches(schedule: Schedule, d: Date): boolean {
 
 /**
  * Next fire time after `from`, scanning minute by minute (cheap: a handful of
- * integer compares per minute). Returns null when nothing fires within ~31
- * days (e.g. a Feb-29-only cron in August).
+ * integer compares per minute). Returns null when nothing fires within a year
+ * — annual crons (a December date seen in August) used to fall outside the old
+ * 31-day horizon and showed `next: null` in the UI even though they fire.
+ * A Feb-29-only cron can still legitimately report null most of the year.
  */
 export function nextFireAt(schedule: Schedule, from = new Date()): string | null {
   const startMinute = Math.floor(from.getTime() / 60_000) + 1; // next whole minute
-  const horizon = 60 * 24 * 31;
+  const horizon = 60 * 24 * 366;
   for (let i = 0; i < horizon; i++) {
     const d = new Date((startMinute + i) * 60_000);
     if (matches(schedule, d)) return d.toISOString();

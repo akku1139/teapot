@@ -66,7 +66,7 @@ test("the light theme's terminal text is dark enough to read (#137)", () => {
 });
 
 test("an already-open terminal is re-themed on a theme change (#137)", () => {
-  const at = app.indexOf("for (const [, s] of liveTerms) retintTerminal(s);");
+  const at = app.indexOf("for (const [, s] of liveTerms) retintTerminal(s.term);");
   assert.notEqual(at, -1, "an effect must re-theme open terminals (#137)");
   // it must be inside a createEffect that READS the theme signals, or it will
   // never re-run
@@ -80,16 +80,21 @@ test("an already-open terminal is re-themed on a theme change (#137)", () => {
 
 test("reusing a session re-themes it too (#137)", () => {
   // closing and reopening the panel must not resurrect the old palette
-  const at = app.indexOf("if (s) retintTerminal(s);");
+  const at = app.indexOf("if (s) retintTerminal(s.term);");
   assert.notEqual(at, -1, "the reuse path must re-theme (#137)");
 });
 
-test("retintTerminal assigns options.theme (#137)", () => {
-  const at = app.indexOf("function retintTerminal");
-  assert.notEqual(at, -1, "the helper must exist (#137)");
-  const body = app.slice(at, app.indexOf("\n  }\n", at));
-  assert.match(body, /s\.term\.options\.theme = want;/, "xterm re-themes via options.theme (#137)");
-  // and it must not write when nothing changed — the effect runs on every theme
-  // signal read, so an unconditional write would churn on unrelated re-renders
-  assert.match(body, /if \(cur && cur\.background === want\.background/, "skip when unchanged (#137)");
+test("the re-theming helper is the shared, cursor-aware module (#137/#75)", () => {
+  // the helper LIVES in ./terminal-theme and is imported — an inline copy here
+  // would drift (the #75 failure mode: tests anchored to a copy, not the code)
+  assert.match(
+    app,
+    /import \{ retintTerminal, themeColors \} from "\.\/terminal-theme"/,
+    "App must use the shared module (#137)",
+  );
+  assert.doesNotMatch(
+    app,
+    /function retintTerminal/,
+    "no inline copy may shadow the module (#75)",
+  );
 });

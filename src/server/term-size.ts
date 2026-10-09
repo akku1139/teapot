@@ -58,16 +58,28 @@ export class TermSizeTracker {
     if (st.rows === rows && st.cols === cols) return;
 
     const wait = Math.max(0, st.busyUntil - Date.now());
+    const apply = () => {
+      st.timer = null;
+      st.rows = rows;
+      st.cols = cols;
+      try {
+        write(rows, cols);
+      } catch {
+        /* child exited mid-debounce */
+      }
+    };
     st.timer = setTimeout(
       () => {
-        st.timer = null;
-        st.rows = rows;
-        st.cols = cols;
-        try {
-          write(rows, cols);
-        } catch {
-          /* child exited mid-debounce */
+        // output may have CONTINUED past the deadline this timer was computed
+        // from (markBusy only extends busyUntil — it cannot reach an already
+        // pending timer). Writing now would type stty into a running program,
+        // so defer to whatever busy window remains.
+        const remain = st.busyUntil - Date.now();
+        if (remain > 0) {
+          st.timer = setTimeout(apply, remain);
+          return;
         }
+        apply();
       },
       wait > 0 ? wait : TERM_RESIZE_DEBOUNCE_MS,
     );

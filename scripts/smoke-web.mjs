@@ -442,14 +442,32 @@ console.log("deep render ok: feed rows present");
       data: JSON.stringify({
         kind: "llm-delta",
         agentId: AGENT.id,
-        // #146: sessionId is REQUIRED by the bus type. This bundle boots with no
-        // resolved session, so timelineId() falls back to the agent id — the frame
-        // must carry the SAME id, or the client correctly drops it as unattributable.
+        // #146: sessionId is REQUIRED by the bus type and the frame must
+        // carry the session the timeline resolved to. WHICH id that is depends
+        // on whether /api/sessions had landed when the app selected the agent
+        // (pre-index → the agent id; post-index → alpha-s1): the driver cannot
+        // see internals, so it sprays the candidates — the client's gate drops
+        // every frame whose session does not match the DISPLAYED timeline, so
+        // exactly one lands (and a wrong spray still makes the check fail
+        // vacuously, which is the point).
         sessionId: "alpha",
         text: "",
         reasoning: "weighing the options",
       }),
     });
+    // the other candidates: exactly the frame whose session matches the
+    // DISPLAYED timeline lands — the client's gate drops the rest
+    for (const sid of ["alpha-s1", "alpha-s2"]) {
+      sock.onmessage?.({
+        data: JSON.stringify({
+          kind: "llm-delta",
+          agentId: AGENT.id,
+          sessionId: sid,
+          text: "",
+          reasoning: "weighing the options",
+        }),
+      });
+    }
     await new Promise((r) => setTimeout(r, 250));
     const before = w.document.body.textContent.includes("thinking");
     if (!before) {
