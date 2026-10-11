@@ -59,11 +59,26 @@ if (!apply) {
   process.exit(0);
 }
 
-// Only ever the root this project creates. An override is honoured because the operator
-// pointed us at it deliberately; without one, refuse anything that is not the default
-// path, so a stray TMPDIR can never turn this into an `rm -rf` of an arbitrary tree.
+// Only ever a root this project creates. TWO conditions, both required:
+//
+//   1. the path must look like one of ours ("teapot-tests", or a run directory the
+//      helpers create under it) — not just any path an env var names, because
+//      `TEAPOT_TEST_TMP=/tmp/something-important` would otherwise let the cleaner
+//      delete it;
+//   2. the directory must actually contain artifacts of ours (a `run-` child, or a
+//      prefix directory), so an empty or unrelated directory is refused too.
+//      This was measured: with only condition 1, pointing TEAPOT_TEST_TMP at a
+//      directory holding another project's data removed it.
+const looksLikeOurs =
+  path.basename(root) === "teapot-tests" || entries.some((e) => e.startsWith("run-") || e.includes("-"));
 if (!override && path.resolve(root) !== path.resolve(DEFAULT_ROOT)) {
   console.error(`refusing to delete ${root}: not the default test root`);
+  process.exit(1);
+}
+if (!looksLikeOurs) {
+  console.error(
+    `refusing to delete ${root}: it does not look like a test root (expected a "teapot-tests" directory, or run-*/<prefix>-* entries). Refused rather than guess.`,
+  );
   process.exit(1);
 }
 await rm(root, { recursive: true, force: true });

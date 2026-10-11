@@ -73,6 +73,19 @@ To only run what a platform can support (Windows CI), use
 `pnpm test:portable`. POSIX-only suites opt out explicitly with
 `markPosixOnly("reason")` from `test/helpers/posix-only.ts` — never by filename.
 
+Test artifacts all live under ONE root (`<TMPDIR>/teapot-tests`, or `$TEAPOT_TEST_TMP`):
+
+```sh
+pnpm test:tmp      # report what is there (dry run)
+pnpm test:clean    # delete it
+```
+
+Never create a fixture with a bare `mkdtemp(path.join(os.tmpdir(), …))` — use
+`mkdtempInRoot(prefix)` / `mkdtempInRootSync(prefix)` from
+`test/helpers/tmp-root.ts`. Scattering artifacts across `/tmp` is what makes them
+impossible to clean up without guessing by name, and guessing is how a tidying
+script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
+
 ## Testing
 
 - Put pure logic in a `.ts` helper next to `App.tsx` (e.g.
@@ -91,6 +104,11 @@ To only run what a platform can support (Windows CI), use
 - Strip CSS comments before asserting on a rule body (`cssRuleBody` already
   does) — declarations quoted in a rule's own explanatory comment otherwise
   satisfy the assertion (#75).
+- **Never slice source by a fixed width** (`src.slice(at, at + 1600)`). It is a
+  guess about how long the code will be, and it goes red as soon as someone adds a
+  comment — and only on Windows, because CRLF makes the block longer. That has now
+  happened three times (#126, #130, #152). Use `blockFrom(src, anchor)` from
+  `test/helpers/source.ts`, which walks to the matching close brace.
 - **Do not add a test per assertion.** Prefer one test that would fail for the
   real reason over five that pin incidental strings. Delete tests that no
   longer protect anything; a suite that grows without bound gets ignored.
