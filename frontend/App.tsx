@@ -34,6 +34,7 @@ import {
   chatGroupKeyOf,
   wsChatCountsOf,
 } from "./sidebar-tree";
+import { modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -3479,7 +3480,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       </nav>
 
       {/* ---------- channel ---------- */}
-      <section class="channel">
+      <section class="channel" style={{ "--termh": `${termHeight()}px` } as any}>
         {/* keyed on the agent id: an agent-update snapshot replaces the agent OBJECT, and an
             object-gated Show would rebuild the whole layout (and every focused
             control in it) on every poll (#30). */}
@@ -3648,17 +3649,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   />
                 )}
               </For>
-              // #146: the bubble must belong to the DISPLAYED session.
-              //
-              // The socket filter stops an S2 delta being STORED while S1 is shown,
-              // but `live()` is keyed by AGENT, so the S2 buffer saved earlier is
-              // still there and still rendered — S1's timeline wearing S2's
-              // streaming text and cursor. That is #40's recurrence.
-              //
-              // The deeper inconsistency is that timeline, events, pending echoes
-              // and the cache are all session-scoped while only the live buffer is
-              // agent-scoped; re-keying it is the real fix, but the gate closes the
-              // reported hole now and is what `isTimelineLive` already exists for.
+              {/* #146: `live()` is keyed by AGENT, so a buffer saved while another
+                  session of the same agent was on screen would still render here.
+                  Show the bubble only for the session actually being displayed. */}
               <Show when={isTimelineLive() && live()}>
                 <div class="msg live">
                   <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">🫖</div>
@@ -3713,7 +3706,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </div>
 
           <Show when={termOpen()}>
-            <div class="termdrawer" style={{ height: `${termHeight()}px`, "--termh": `${termHeight()}px` } as any}>
+            <div class="termdrawer" style={{ height: `${termHeight()}px` } as any}>
               <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
               <div class="termbar">
                 <div class="termtabs">
@@ -4007,7 +4000,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <div class="modelbox">
             <select
               value={modelProvider()}
-              onchange={(e) => { setModelProvider(e.currentTarget.value); loadModels(e.currentTarget.value); }}
+              onchange={(e) => {
+                // #3: switching provider must SELECT that provider's default
+                // model. The draft used to keep the previous provider's value,
+                // so apply carried a foreign model id to the new endpoint.
+                const next = e.currentTarget.value;
+                setModelProvider(next);
+                setModelDraft(
+                  modelOnProviderSwitch(
+                    cfg().providers,
+                    next,
+                    agents().find((a) => a.id === selected()),
+                  ),
+                );
+                loadModels(next);
+              }}
               title="provider (OpenAI-compatible endpoint)"
             >
               <For each={providerList()}>{(p) => <option value={p}>{p}{p === cfg().defaultProvider ? " ★" : ""}</option>}</For>
@@ -4016,7 +4023,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <input
                 type="text"
                 list="model-list"
-                placeholder={sel()!.model}
+                placeholder={modelPlaceholderFor(cfg().providers, modelProvider(), sel())}
                 value={modelDraft()}
                 oninput={(e) => setModelDraft(e.currentTarget.value)}
                 style="flex:1;min-width:0"

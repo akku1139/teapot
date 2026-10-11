@@ -479,15 +479,29 @@ details.reasoning .thinkscroll {
   padding: 6px 14px; cursor: pointer; font-size: 12.5px; font-weight: 600;
   box-shadow: 0 4px 14px #0008; z-index: 2;
 }
-/* terminal drawer open → park the pill just above the drawer instead of
-   over it. The drawer height is dynamic, so the app publishes it as a CSS
-   variable (--termh) and the pill offsets by that amount. The extra 56px
-   covers the composer's own chrome so a taller input never slides the pill
-   back under the drawer. */
-body:has(.termdrawer) .jump {
+/* #142: terminal drawer open → the pill must sit just ABOVE the drawer, not
+   on top of it.
+
+   `bottom` is measured from the pill's containing block, the composer, whose
+   top edge IS the drawer's bottom edge (both are children of the .channel
+   flex column). `100%` resolves to the composer's own height, so the offset
+   is "composer + drawer" whatever the input's current line count — the fixed
+   56px that used to stand in for the composer was shorter than a composer
+   with an expanded input or a hint, and the pill slid down under the drawer
+   by exactly that difference. `--termh` is published on .channel (App.tsx)
+   because a custom property inherits DOWN the tree: set on .termdrawer it
+   never reached this sibling's subtree. */
+.channel:has(.termdrawer) .composer:not(.maximized) .jump {
   top: auto;
-  bottom: calc(var(--termh, 300px) + 56px);
+  bottom: calc(var(--termh, 300px) + 100% + 6px);
   left: 50%;
+}
+/* maximized, the composer IS the whole column and the drawer is painted over
+   by it, so there is no feed edge to sit on — `bottom` from the drawer height
+   would throw the pill off-screen. Park it top-right (over the textarea, z
+   above the form) where the form's own buttons are not. */
+.channel:has(.termdrawer) div.composer.maximized .jump {
+  top: 10px; bottom: auto; left: auto; right: 16px; transform: none;
 }
 
 .divider-msg { display: flex; align-items: center; gap: 10px; padding: 4px 18px; color: var(--dim); font-size: 11.5px; }
