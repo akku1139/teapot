@@ -4,6 +4,13 @@
   --acc: #5865f2; --ok: #3ba55d; --warn: #faa81a; --err: #ed4245; --tool: #3ba0c9;
   --term-bg: #0d0e12; --term-fg: #dcdee4;
   font-family: "gg sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* #102: `color-scheme` is what tells the browser to paint its OWN widgets in the
+     theme's palette — the unchecked checkbox box, the number spinners, scrollbars,
+     the select popup, autofill. `accent-color` (set below) only tints the CHECKED
+     state, and `background-color` cannot reach the UA's internal painting at all,
+     which is why the empty checkbox stayed white through every previous attempt at
+     this. `:root` is the dark theme, so this is the dark default. */
+  color-scheme: dark;
 }
 
 /* ---- themes (set via <html data-theme="…">; :root above IS the dark theme) ---- */
@@ -55,6 +62,7 @@
   --fg: #24272f; --dim: #5d6470; --line: #d8dbe4;
   --acc: #4757d8; --ok: #2b8a4b; --warn: #b97a0f; --err: #d83c3f; --tool: #2278a8;
   --term-bg: #ffffff; --term-fg: #24272f;
+  color-scheme: light;
 }
 
 [data-theme="strawberry"] {
@@ -62,6 +70,7 @@
   --fg: #4a2733; --dim: #96707e; --line: #f0ccd6;
   --acc: #e05575; --ok: #4d9e63; --warn: #c98a2d; --err: #d43d51; --tool: #b05687;
   --term-bg: #fff5f8; --term-fg: #4a2733;
+  color-scheme: light;
 }
 
 [data-theme="ramune"] {
@@ -69,6 +78,7 @@
   --fg: #173342; --dim: #5b7d90; --line: #c2e2ef;
   --acc: #1d86ae; --ok: #3a9e6e; --warn: #cf9a2a; --err: #d64f5c; --tool: #3a9db8;
   --term-bg: #f4fbfd; --term-fg: #173342;
+  color-scheme: light;
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }

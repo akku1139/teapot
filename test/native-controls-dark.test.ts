@@ -16,6 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { cssRuleBodies } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
@@ -179,5 +180,62 @@ test("no hardcoded white was introduced (#102)", () => {
     mine,
     /#fff\b|#ffffff\b/i,
     "the fix must use theme tokens, or the other nine appearances regress (#102)",
+  );
+});
+
+/* ---------- 4. color-scheme: the property that makes the UA paint its widgets ---------- */
+
+/**
+ * #102, second pass. The operator reported the checkbox box was STILL white after the
+ * first pass. The three rules above set `background-color` / `accent-color`, but neither
+ * can reach the browser's own widget painting: that is what `color-scheme` controls
+ * (the empty box, the number spinners, scrollbars, the select popup, autofill).
+ *
+ * It was declared NOWHERE in the sheet, so every native control kept the UA's light
+ * palette however the surrounding colours were set.
+ */
+test("the sheet declares color-scheme so UA widgets follow the theme (#102)", () => {
+  const decls = css.match(/color-scheme:\s*(dark|light)/g) ?? [];
+  assert.ok(
+    decls.some((d) => /dark/.test(d)),
+    "the dark default must be declared — without it every native control paints light (#102)",
+  );
+});
+
+test("the LIGHT themes override color-scheme, or their widgets would stay dark (#102)", () => {
+  // declared IN each theme's own block, not as a separate shared rule: a theme
+  // describes itself, which is how every other variable here works — and a shared
+  // `[data-theme="light"], [data-theme="strawberry"], …` rule sitting between a
+  // selector and its own block makes any regex that reads "the block for this theme"
+  // match the WRONG one (that broke #137's tests when this was first written).
+  const light = ["light", "strawberry", "ramune"];
+  for (const t of light) {
+    const block = new RegExp(`\\[data-theme="${t}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+    assert.match(
+      block,
+      /color-scheme:\s*light/,
+      `the ${t} theme must set color-scheme: light inside its own block (#102)`,
+    );
+  }
+});
+
+test("the dark themes do NOT set color-scheme: light (#102)", () => {
+  // the mirror: a dark theme declaring light would render its widgets wrong the other way
+  for (const t of ["midnight", "tea", "coffee", "matcha", "matrix", "sunset"]) {
+    const block = new RegExp(`\\[data-theme="${t}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+    assert.doesNotMatch(block, /color-scheme:\s*light/, `${t} is dark (#102)`);
+  }
+});
+
+test("every theme either declares color-scheme or inherits the dark default (#102)", () => {
+  // Nine `[data-theme]` blocks; `:root` is the dark default and carries no attribute, so
+  // the light three must each opt in. Derived from backgroud luminance, not guessed.
+  const themes = [...new Set([...css.matchAll(/\[data-theme="([a-z]+)"\]/g)].map((m) => m[1]!))];
+  assert.equal(themes.length, 9, `theme count changed — re-check which are light: ${themes.join(", ")}`);
+  const light = ["light", "strawberry", "ramune"];
+  assert.deepEqual(
+    themes.filter((t) => light.includes(t)).sort(),
+    [...light].sort(),
+    "the light set must exactly match the themes that declare color-scheme: light",
   );
 });
