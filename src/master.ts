@@ -1400,10 +1400,53 @@ if (active().length === 0) wake();
     return { owner: best?.id ?? null, hadManifest: false };
   }
 
+  /**
+   * Who does this session directory really belong to, according to its LOG?
+   *
+   * The manifest is a CACHE; the log is the truth. Every event carries the
+   * `agent` that wrote it, and only that agent ever appends — so the first
+   * event's value cannot be stale or wrong.
+   *
+   * This matters because ownership decided from the manifest ALONE is how a
+   * whole data directory gets abandoned. A manifest that is missing, unreadable,
+   * or simply wrong made `inferSessionOwner` reject every directory the agent
+   * owned, `findLatestSessionDir` return null, and the boot mint a fresh empty
+   * session — REWRITING the agent's pointer in config.json. Nothing warned, and
+   * the real history was left on disk, orphaned and unreachable.
+   *
+   * Measured after an accidental in-place `addAgent()` run had rewritten 813
+   * manifests: 493 agents were silently moved to empty sessions, and the
+   * mapping back was only recoverable from these `agent` fields.
+   */
+  private logOwner(dirName: string): string | null {
+    try {
+      const first = readFileSync(path.join(this.sessionsRoot(), dirName, "chat.jsonl"), "utf8")
+        .split("\n")
+        .find((l) => l.trim());
+      if (!first) return null;
+      const parsed = JSON.parse(first) as { agent?: unknown };
+      return typeof parsed.agent === "string" && parsed.agent ? parsed.agent : null;
+    } catch {
+      return null; // no log / unreadable head — cannot prove anything
+    }
+  }
+
   private writeSessionManifest(dirPath: string, agentId: string): void {
     try {
       const file = path.join(dirPath, "session.json");
-      if (existsSync(file)) return; // never clobber an existing manifest
+      if (existsSync(file)) {
+        // A WRONG manifest must be repairable, or the mistake is permanent: the
+        // old code returned here unconditionally, so one bad value kept every
+        // later boot from recognising the directory (see logOwner()).
+        const current = this.readSessionOwner(path.basename(dirPath));
+        if (current === agentId) return;
+        const proven = this.logOwner(path.basename(dirPath));
+        if (proven !== agentId) return; // not provably ours — leave it alone
+        console.log(
+          `[teapot] repairing session manifest for ${path.basename(dirPath)}: ` +
+            `${JSON.stringify(current)} → ${JSON.stringify(agentId)} (the log says ${JSON.stringify(agentId)})`,
+        );
+      }
       writeFileSync(file, `${JSON.stringify({ v: 1, agentId }, null, 2)}\n`);
     } catch {
       /* best-effort metadata */
@@ -1425,7 +1468,13 @@ if (active().length === 0) wake();
       const empty: { d: string; m: number }[] = [];
       for (const d of readdirSync(this.sessionsRoot())) {
         const { owner } = this.inferSessionOwner(d, candidateIds);
-        if (owner !== agentId) continue;
+        // A wrong manifest must not hide a directory: consult the LOG before
+        // rejecting. Without this, one bad manifest value made every dir the
+        // agent owned invisible here, so the caller minted a fresh session and
+        // rewrote config — silently orphaning the real history.
+        const mineByLog = owner !== agentId && this.logOwner(d) === agentId;
+        if (owner !== agentId && !mineByLog) continue;
+        if (mineByLog) this.writeSessionManifest(path.join(this.sessionsRoot(), d), agentId);
         const dirPath = path.join(this.sessionsRoot(), d);
         const m = this.sessionMtime(dirPath);
         // an EMPTY chat.jsonl means the session was never really used — but it
@@ -1482,12 +1531,24 @@ if (active().length === 0) wake();
     const recorded = this.config.agents.find((a) => a.id === agentId)?.session;
     if (!fresh && recorded) {
       const dir = path.join(root, recorded);
-      // only trust it when it is really THIS agent's dir (ownership comes from
-      // the manifest; a renamed/reused dir must not resurrect a ghost)
+      // Trust it when it exists and is really THIS agent's dir. Ownership comes
+      // from the manifest, but the LOG is consulted too: a wrong/absent manifest
+      // must not make teapot abandon history it can plainly see (see logOwner).
       const owner = this.readSessionOwner(recorded);
-      if (existsSync(dir) && (owner === null || owner === agentId)) return dir;
-      // the recorded dir is gone (deleted) — fall through and mint a new one
-      console.log(`[teapot] session ${recorded} for ${agentId} is gone; starting a new one`);
+      const mineByManifest = owner === null || owner === agentId;
+      const mineByLog = owner !== agentId && this.logOwner(recorded) === agentId;
+      if (existsSync(dir) && (mineByManifest || mineByLog)) {
+        if (mineByLog) this.writeSessionManifest(dir, agentId); // repair it
+        return dir;
+      }
+      // the recorded dir is gone, or provably belongs to someone else — fall
+      // through and mint a new one. Say WHICH, and do not do it quietly: this
+      // line is the only trace that an agent changed session.
+      console.log(
+        `[teapot] session ${recorded} for ${agentId} is unusable ` +
+          `(${existsSync(dir) ? `manifest owner ${JSON.stringify(owner)}` : "directory missing"}); ` +
+          `starting a new one`,
+      );
     }
 
     // Prefer the LATEST session directory that actually carries history.

@@ -30,6 +30,14 @@ docs/           design notes and surveys
 4. **Do not rewrite a file you did not read.** Prefer small, precise edits.
 5. **Commit only what the task asked for.** Unrelated reformatting buries the
    real change and makes review worthless.
+6. **Never run the server against the operator's real data dir to measure or
+   debug.** `Master.start()`/`addAgent()` WRITE: they resolve session directories,
+   write `session.json` manifests, and rewrite session pointers in
+   `config.json`. Running a probe in place once reassigned 493 agents to empty
+   sessions and orphaned 377 MB of history (recoverable only because each
+   `chat.jsonl` carries its own `agent` field — see
+   `scripts/recover-session-pointers.mjs`). Copy the config AND the sessions tree
+   into a temp dir, point `dataDir` at it, and measure there.
 
 ## Before you say "done"
 

@@ -21,9 +21,29 @@ export interface ModelMeta {
   supportedParameters?: string[];
 }
 
-const cache = new Map<string, { at: number; list: ModelMeta[] }>();
+const cache = new Map<string, { at: number; list: ModelMeta[]; negative?: boolean }>();
 const inFlight = new Map<string, Promise<ModelMeta[]>>();
 const TTL = 10 * 60_000;
+
+/**
+ * How long a FAILED lookup is remembered.
+ *
+ * A failure used to be dropped on the floor (the `catch` returned `[]` without
+ * caching), so a dead, unauthorised, or simply slow endpoint was re-fetched for
+ * EVERY agent pointed at it. `addAgent` awaits this twice per agent and races it
+ * against a 1.5 s timeout, so with 493 agents across a handful of providers the
+ * same failing request — and its timeout — repeated hundreds of times. MEASURED
+ * at boot: 1883 ms of the 4.6 s was idle, waiting on exactly this.
+ *
+ * Negative results expire much sooner than positive ones: a provider coming back
+ * up should be usable within a minute, not locked out for ten.
+ */
+const NEGATIVE_TTL = 30_000;
+
+/** is this cached entry still valid? (failures expire sooner) */
+function fresh(entry: { at: number; negative?: boolean }): boolean {
+  return Date.now() - entry.at < (entry.negative ? NEGATIVE_TTL : TTL);
+}
 
 /** Fetch GET /models from an OpenAI-compatible endpoint (cached ~10 min). */
 export async function fetchModelList(
@@ -32,7 +52,7 @@ export async function fetchModelList(
 ): Promise<ModelMeta[]> {
   const root = baseUrl.replace(/\/+$/, "");
   const hit = cache.get(root);
-  if (hit && Date.now() - hit.at < TTL) return hit.list;
+  if (hit && fresh(hit)) return hit.list;
   // An in-flight lookup is SHARED: without this, two callers racing for the
   // same endpoint each paid the full timeout, and `newSession` in ACP mode
   // blocked on it before it could even reply to the editor (#15).
@@ -93,6 +113,9 @@ export async function fetchModelList(
     cache.set(root, { at: Date.now(), list });
     return list;
   } catch {
+    // Remember the FAILURE (briefly). Dropping it meant every agent on this
+    // endpoint paid the fetch — and up to the 1.5 s race timeout — again.
+    cache.set(root, { at: Date.now(), list: [], negative: true });
     return []; // unreachable provider — caller treats as "unknown"
   }
   })();

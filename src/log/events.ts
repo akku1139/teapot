@@ -98,11 +98,50 @@ export class EventLog {
     this.agentId = agentId;
   }
 
+  /**
+   * Bytes read from the END of the log to rebuild the in-memory head.
+   *
+   * `load()` used to `readFile()` the ENTIRE log and `JSON.parse` every event,
+   * only to learn two things: the highest `seq`, and the last event id per
+   * branch. MEASURED on a real 813-session data dir (369 MB of logs): that read
+   * was the single largest boot cost — 1603 ms of `load()` against 493 agents,
+   * plus the GC pressure of holding one whole log as a string and its `split`
+   * array (~50 MB of temporary garbage for a 23 MB log).
+   *
+   * Both facts live at the END of an append-only file:
+   *   - `seq` is assigned monotonically, so the last complete line holds the max
+   *   - `lastEventId()` is only ever called for the CURRENT branch (fork/spawn),
+   *     which is by definition the most recently written one
+   *
+   * So the tail is both sufficient and exact. A branch that has been dormant for
+   * more than WINDOW bytes loses its in-memory head; that only affects
+   * `parent:` on the next append to that stale branch, and the paths that matter
+   * (`fork`, child spawn) re-seed explicitly through `seedBranch()`.
+   */
+  private static readonly LOAD_TAIL_BYTES = 512 * 1024;
+
   async load(): Promise<void> {
     mkdirSync(path.dirname(this.filePath), { recursive: true });
     try {
-      const { readFile } = await import("node:fs/promises");
-      const text = await readFile(this.filePath, "utf8");
+      const { readFile, stat, open } = await import("node:fs/promises");
+      const st = await stat(this.filePath);
+      let text: string;
+      if (st.size <= EventLog.LOAD_TAIL_BYTES) {
+        text = await readFile(this.filePath, "utf8"); // small log: read it all
+      } else {
+        const start = st.size - EventLog.LOAD_TAIL_BYTES;
+        const fh = await open(this.filePath, "r");
+        try {
+          const buf = Buffer.alloc(EventLog.LOAD_TAIL_BYTES);
+          const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+          text = buf.subarray(0, bytesRead).toString("utf8");
+        } finally {
+          await fh.close();
+        }
+        // the window starts mid-line: drop the partial first line
+        const nl = text.indexOf("\n");
+        text = nl === -1 ? "" : text.slice(nl + 1);
+      }
       for (const line of text.split("\n")) {
         if (!line.trim()) continue;
         try {
