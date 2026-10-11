@@ -10,7 +10,7 @@ import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from 
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
-import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, type ToolContext } from "./tools.ts";
+import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, killBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
@@ -835,6 +835,15 @@ export class Agent {
       this.pendingPrompts.length > 0 ||
       this.compactPhase !== "" ||
       this.retrySleeping ||
+      // #158: a BACKGROUND job is work in flight, and `stop()` now ends it. The
+      // round that started it deliberately ended (the loop breaks rather than
+      // nagging — see hasRunningBgShells in loop()), so the status reads "idle"
+      // while a dev server / watcher / long build is still running. Without this
+      // the UI offered "▶ start" and there was no stop control for the one thing
+      // the operator most needs to stop. Note this is checked AFTER stopRequested:
+      // once stopped, the jobs are already dead, so `live` must go false or the
+      // button would offer stop forever (#133).
+      hasRunningBgShells(this.toolCtx.cwd) ||
       // ask_user: the loop is parked on the operator's answer — stoppable work
       // in flight, not idleness. Without this the UI offered "start", and
       // pressing it cleared awaitingUser, silently discarding the open question
@@ -1880,6 +1889,13 @@ export class Agent {
     // without aborting toolCtx.signal the park ran to its full timeout
     this.abort?.abort();
     this.toolAbort.abort();
+    // #158: and the BACKGROUND shells, which neither signal above reaches. A job
+    // spawned with `background: true` is `detached` and its spawning tool returned
+    // long ago, so `toolAbort` has nothing on the stack to abort: the agent parked
+    // in its "wait for the job" idle state, the job kept running, and `stop()` —
+    // the control the operator pressed for exactly this — ended nothing. MEASURED:
+    // `sleep 300` outlived both stop() and dispose().
+    killBgShells(this.toolCtx.cwd);
     this.wake?.();
     // #86: the status write is DEFERRED onto the run chain, so it can land
     // AFTER a start() that followed it. Observed: `idle -> stopped -> running ->
@@ -3891,6 +3907,29 @@ export class Agent {
         ? (s: { text: string; reasoning: string }) => onDelta(s.text)
         : undefined,
     );
+    // Record what the summarizer itself cost, especially `cachedInputTokens`.
+    //
+    // This is the ONLY way to observe the property the whole replay-the-prefix shape
+    // exists for: the summarizer is supposed to be served from the provider's KV
+    // cache because its input is a byte-identical prefix of the request the
+    // conversation just made. Without this line the claim was UNVERIFIABLE — a
+    // compaction event reported tokensBefore/tokensAfter (the CONVERSATION's size)
+    // and nothing at all about the call that produced the summary, so a shape that
+    // silently stopped sharing the prefix would look identical in the log.
+    //
+    // MEASURED on the session that prompted this: the 12k-line history had 2342
+    // usage events, none of them the summarizer's.
+    if (res.usage) {
+      const u = res.usage;
+      this.stats.inputTokens += u.inputTokens ?? 0;
+      this.stats.outputTokens += u.outputTokens ?? 0;
+      this.stats.cachedInputTokens += u.cachedInputTokens ?? 0;
+      await this.log.append("usage", this.currentSession, this.currentBranch, {
+        ...u,
+        // distinguishes it from a conversation turn when reading the log back
+        kind: "summarize",
+      });
+    }
     return this.formatCompactSummary(res.message.content ?? "");
   }
 

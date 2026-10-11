@@ -415,6 +415,34 @@ export function hasRunningBgShells(cwd: string): boolean {
   return false;
 }
 
+/**
+ * Kill every background shell for one workspace and forget the jobs (#158).
+ *
+ * `stop()` left these running. They are spawned `detached: true` for group-killing
+ * and are NOT covered by `toolAbort` (that signal only reaches a tool that is
+ * still on the stack), so pressing stop on an agent that had parked its round on
+ * a background job killed nothing: the loop sat in its deliberate "wait for the
+ * job" idle state while the job kept burning CPU, and no control could end it.
+ *
+ * MEASURED: `sleep 300` outlived both `stop()` and `dispose()`.
+ *
+ * Returns how many were actually killed, so a caller can report it.
+ */
+export function killBgShells(cwd: string): number {
+  const m = bgShellsByWs.get(cwd);
+  if (!m) return 0;
+  let killed = 0;
+  for (const [id, sh] of m) {
+    if (!sh.exited) {
+      describeKill(killTree(sh.child));
+      killed++;
+    }
+    bgReadCursors.delete(id);
+  }
+  m.clear();
+  return killed;
+}
+
 /** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {

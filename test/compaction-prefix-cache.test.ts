@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { Agent } from "../src/agent/agent.ts";
 import type { ChatMessage, LlmResult } from "../src/agent/llm.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
+import { readEvents } from "../src/log/events.ts";
 
 const tc = (id: string, name: string, args: unknown) => ({
   id,
@@ -117,6 +118,74 @@ test("no summarizer request introduces a DIFFERENT system prompt (#150)", async 
       systems.size,
       1,
       `every request must share one system prompt, or the prefix cache is defeated per call: ${systems.size} distinct`,
+    );
+  } finally {
+    await agent.dispose();
+  }
+});
+
+test("the summarizer's own usage is LOGGED, so cache reuse is observable (#150)", async () => {
+  // The shape above is asserted on the request. Whether the provider actually
+  // SERVED that prefix from its cache is only visible in the response's
+  // `cachedInputTokens` — and teapot used to throw the summarizer's usage away, so
+  // the claim could not be checked at all. MEASURED on the 12k-event session that
+  // prompted this: 2342 usage events, none of them the summarizer's.
+  //
+  // A number no log line carries cannot be verified, and an unverifiable claim is
+  // how a shape silently stops being a prefix extension without anyone noticing.
+  const ws = mkdtempInRootSync("pcu-");
+  const sd = mkdtempInRootSync("pcus-");
+  let n = 0;
+  let summarizerCalls = 0;
+  const chatFn = async (_c: unknown, messages: ChatMessage[]): Promise<LlmResult> => {
+    const last = String(messages[messages.length - 1]?.content ?? "");
+    if (last.includes("You compress a coding agent's conversation")) {
+      summarizerCalls++;
+      // the provider's answer for a cacheable prefix: most of the prompt served
+      return {
+        message: { role: "assistant", content: "## Current work\n- notes" },
+        usage: { inputTokens: 5000, outputTokens: 40, cachedInputTokens: 4800 },
+      };
+    }
+    return {
+      message: {
+        role: "assistant",
+        content: "working",
+        tool_calls: [tc(`u${n++}`, "write_file", { path: `u${n}.txt`, content: "e".repeat(200) })],
+      },
+      usage: { inputTokens: 100, outputTokens: 10, cachedInputTokens: 0 },
+    };
+  };
+  const agent = new Agent({
+    id: "t",
+    workspace: ws,
+    sessionDir: sd,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn,
+    contextTokenBudget: 8000,
+    autoContinue: false,
+  } as never);
+  await agent.init();
+  try {
+    for (let i = 0; i < 6; i++) {
+      agent.enqueuePrompt(`step ${i} ${"y".repeat(12_000)}`);
+      agent.start("t");
+      await agent.settled();
+    }
+    assert.ok(summarizerCalls >= 1, "the fixture must reach the summarizer");
+    const usage = await readEvents(agent.log.filePath);
+    const sumUsage = usage.filter((e) => e.type === "usage" && (e.data as { kind?: string }).kind === "summarize");
+    assert.equal(
+      sumUsage.length,
+      summarizerCalls,
+      "every summarizer call must log its usage, or cache reuse stays unverifiable (#150)",
+    );
+    const d = sumUsage[0]!.data as { inputTokens?: number; cachedInputTokens?: number };
+    assert.equal(d.inputTokens, 5000);
+    assert.equal(
+      d.cachedInputTokens,
+      4800,
+      "the cached share is THE measurement of prefix reuse — it must survive into the log",
     );
   } finally {
     await agent.dispose();

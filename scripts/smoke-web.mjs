@@ -778,6 +778,61 @@ console.log("deep render ok: feed rows present");
     }
     console.log("deep render ok: delivered prompt sits in true context order");
   }
+
+  /* ---------- #40: a persisted reply must not also render as a live bubble ---
+   * "tool call を発行するタイミングで一瞬2重になります" — the reply renders TWICE for
+   * a moment: once as the settled log row (merged synchronously from the socket
+   * frame) and once as the live bubble still showing the same text with its
+   * writing cursor. The buffer was revalidated only inside the debounced
+   * `runFeedRefresh` (60 ms + a fetch), so the duplicate lived in that window.
+   *
+   * This drives the REAL bundle: the duplicate is a WIRING defect between the
+   * socket branch and the render, and a helper test passes against the old code
+   * because the helper was always right — #40's lesson.
+   */
+  {
+    const sock = MockWS.instances.at(-1);
+    if (!sock?.onmessage) {
+      console.error("#40 check: no app socket to drive");
+      process.exit(1);
+    }
+    // make the agent live and put the FULL reply text on the live buffer with the
+    // agent still running — the in-flight state the report describes (status does
+    // not change between tool calls inside one round)
+    sock.onmessage({ data: JSON.stringify({
+      kind: "agent-update", agentId: AGENT.id,
+      snapshot: { ...RUNNING_AGENT, session: "alpha-s1" },
+    }) });
+    for (const sid of ["alpha", "alpha-s1", "alpha-s2"]) {
+      sock.onmessage({ data: JSON.stringify({
+        kind: "llm-delta", agentId: AGENT.id, sessionId: sid,
+        text: "tool-call reply body", reasoning: "",
+      }) });
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    if (!bodyText().includes("tool-call reply body")) {
+      console.error("#40 check could not put the text in the live bubble — the test would pass vacuously");
+      process.exit(1);
+    }
+    // the reply is PERSISTED and arrives over the socket while the agent is still
+    // running: exactly the tool-call moment
+    pushEvent({
+      id: "e40", seq: 40, ts: "2026-01-01T10:01:00Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "message",
+      data: { role: "assistant", content: "tool-call reply body" },
+    });
+    // do NOT wait for the debounced refresh: the duplicate must be gone the
+    // instant the frame is merged, not 60ms later
+    await new Promise((r) => setTimeout(r, 0));
+    const n40 = bodyText().split("tool-call reply body").length - 1;
+    if (n40 !== 1) {
+      console.error(
+        `#40 REGRESSION: the persisted reply renders ${n40}x (expected 1x) — the live bubble outlived the log row`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a persisted reply does not double as a live bubble (#40)");
+  }
 }
 
 /* ---------- #30: an in-progress todo edit must survive a panel re-render ----------

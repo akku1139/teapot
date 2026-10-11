@@ -4,6 +4,7 @@ import { fmtDur } from "./format";
 import {
   applyDelta,
   clearLive,
+  isCoveredByLog,
   isTurnBoundary,
   isOwnLiveWork,
   pruneDeadLiveBuffers,
@@ -2127,6 +2128,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // `agentActive` comes from refreshAgents. So merge for immediacy AND
         // refresh for coherence — see the #145 note that follows.
         mergeEvents([msg.event as Ev]);
+        // #40: a LOGGED assistant reply covers the live bubble the INSTANT it is
+        // merged — `mergeEvents` is synchronous and `isCoveredByLog` compares the
+        // whole text. But the buffer used to be revalidated only inside the
+        // debounced `runFeedRefresh` below (60 ms, plus the fetch), so for that
+        // window the same reply rendered TWICE: once as the settled log row and
+        // once as the live bubble with its writing cursor. Reported as "tool call
+        // を発行するタイミングで一瞬2重になる" — it is most visible there because the
+        // tool rows land immediately after, so the duplicate is sandwiched between
+        // rows that belong and reads as a glitch rather than a stream.
+        //
+        // A PARTIAL stream is untouched: `isCoveredByLog` needs the full text, so
+        // the bubble survives until the reply it is showing is actually persisted.
+        if (msg.event?.type === "message" && (msg.event.data as { role?: string })?.role === "assistant") {
+          const buf = live();
+          if (buf && isCoveredByLog(buf, events(), sel()?.status)) setLive(null);
+        }
         pendingRefresh = true;
         if (document.visibilityState !== "visible") return;
         if (timer) return;
