@@ -3,7 +3,6 @@
  * Used to auto-populate contextWindowTokens so compaction budgets derive
  * from the real window instead of the safe default.
  */
-import fs from "node:fs";
 import { providerHeaders } from "./agent/llm.ts";
 
 export interface ModelMeta {
@@ -193,10 +192,4 @@ export function resolveReasoningEffort(opts: {
   if (!meta?.supportedParameters) return undefined;
   if (!meta.supportedParameters.includes("reasoning_effort")) return undefined;
   return opts.effort;
-}
-
-/** test hook */
-export function clearModelListCache(): void {
-  cache.clear();
-  void fs;
 }

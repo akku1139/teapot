@@ -677,6 +677,17 @@ export class Agent {
    * that wait would hang. isLive() answers "stop vs start" (#59/#133); this
    * answers "is work in flight".
    */
+  /**
+   * The text of every prompt still waiting for a turn boundary.
+   *
+   * Read-only view for callers that need to know WHAT is queued, not just how
+   * many — a delivery assertion has to see the text, or "the message arrived"
+   * degrades into "something is queued".
+   */
+  pendingPromptTexts(): string[] {
+    return this.pendingPrompts.map((p) => p.text);
+  }
+
   isBusy(): boolean {
     if (this.stopRequested) return false;
     return (

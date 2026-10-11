@@ -99,30 +99,50 @@ async function allowed(from: string, to: string): Promise<{ ok: boolean; msg: st
   }
 }
 
-test("a sub-agent CAN message its parent (#132)", async () => {
-  const { m, kids, stop } = await tree();
-  try {
-    await (m as unknown as { messageChild(a: string, b: string, t: string): Promise<void> }).messageChild(
-      kids[0]!,
-      "p1",
-      "question for you",
-    );
-  } finally {
-    await stop();
-  }
+/**
+ * Did the message actually REACH the target's queue?
+ *
+ * The two "is allowed" tests below used to assert nothing at all: they called
+ * `messageChild` and passed as long as it did not throw. A message delivered to
+ * the WRONG agent, or silently dropped, satisfied them — so they proved only that
+ * the call was not refused, which the sibling test already covers.
+ *
+ * The meaningful assertion is that the text is in the recipient's pending
+ * prompts. `pendingPrompts` is the same queue `drainPendingPrompts` consumes, so
+ * this is the real delivery, not a side effect.
+ */
+function queuedFor(agentId: string, text: string): boolean {
+  const a = SHARED?.m.agents.get(agentId);
+  if (!a) return false;
+  return a.snapshot().pendingPrompts > 0 && a.pendingPromptTexts().some((t) => t.includes(text));
+}
+
+test("a sub-agent CAN message its parent, and the text ARRIVES (#132)", async () => {
+  const { m, kids } = await tree();
+  const text = "question for you #132";
+  await (m as unknown as { messageChild(a: string, b: string, t: string): Promise<void> }).messageChild(
+    kids[0]!,
+    "p1",
+    text,
+  );
+  assert.ok(
+    queuedFor("p1", text),
+    "the parent must actually RECEIVE the message — a call that merely does not throw proves nothing (#132)",
+  );
 });
 
-test("a parent can still message its child (#132)", async () => {
-  const { m, kids, stop } = await tree();
-  try {
-    await (m as unknown as { messageChild(a: string, b: string, t: string): Promise<void> }).messageChild(
-      "p1",
-      kids[0]!,
-      "keep going",
-    );
-  } finally {
-    await stop();
-  }
+test("a parent can still message its child, and the text ARRIVES (#132)", async () => {
+  const { m, kids } = await tree();
+  const text = "keep going #132";
+  await (m as unknown as { messageChild(a: string, b: string, t: string): Promise<void> }).messageChild(
+    "p1",
+    kids[0]!,
+    text,
+  );
+  assert.ok(
+    queuedFor(kids[0]!, text),
+    "the child must actually RECEIVE the message (#132)",
+  );
 });
 
 test("a sub-agent still CANNOT message a sibling (#132)", async () => {
