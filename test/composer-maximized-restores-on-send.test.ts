@@ -25,7 +25,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { readSource, stripSourceComments } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -105,4 +105,48 @@ test("Enter still does not send from a maximized composer (#134, #138)", () => {
   assert.notEqual(at, -1, "the Enter branch must exist (#134)");
   const line = app.slice(app.lastIndexOf("\n", at) + 1, app.indexOf("\n", at));
   assert.match(line, /!composerMaximized\(\)/, "Enter still yields when maximized (#134/#138)");
+});
+
+/**
+ * Sending a long message left the composer at its full multi-line height with
+ * nothing in it.
+ *
+ * `autosizeComposer()` sets `style.height` from `scrollHeight`, so it must run
+ * AFTER the DOM text is synced. It had its OWN effect, declared before the one
+ * that writes the value — so on the frame a send cleared the draft, it measured
+ * the OLD (long) content and pinned the box to the tall height. The box was then
+ * empty and still 8 lines high.
+ *
+ * Measured in the built bundle with a `scrollHeight` that tracks the textarea's
+ * own content (happy-dom lays nothing out): 8 lines typed → 160px; after send,
+ * the pre-fix build held 160px with an empty box, and the fixed build returns to
+ * one line (20px).
+ *
+ * The two must therefore be ONE effect, with the write before the measure.
+ */
+test("autosize runs after the value is written, not in an effect of its own (#composer)", () => {
+  const at = app.indexOf("const v = draft(); // re-run on typing AND after send() clears the draft");
+  assert.notEqual(at, -1, "the composer sync effect must exist");
+  // bounded by the effect's own close (6-space indent), not the first `});`
+  // which lands on the nested `if` inside it
+  // comments STRIPPED before measuring: the explanatory note above the code names
+  // `autosizeComposer()` itself, so a raw search finds the prose first — the
+  // #75 trap this repo keeps hitting (see stripSourceComments).
+  const eff = stripSourceComments(app.slice(at, app.indexOf("\n  });", at)));
+  const write = eff.indexOf("composerEl.value = v"); // inside the changed-check
+  const measure = eff.indexOf("autosizeComposer()");
+  assert.notEqual(write, -1, "the effect must write the value (#composer)");
+  assert.notEqual(
+    measure,
+    -1,
+    "and re-measure in the SAME effect: a separate one runs before the write and " +
+      "measures the old content, leaving a long message's height behind after send",
+  );
+  assert.ok(write < measure, "measure AFTER the DOM is updated (#composer)");
+  // and the old standalone autosize effect must be gone
+  assert.doesNotMatch(
+    app,
+    /createEffect\(\(\) => \{\s*draft\(\); \/\/ [^\n]*\n\s*autosizeComposer\(\);\s*\}\);/,
+    "the standalone `draft(); autosizeComposer()` effect is the bug",
+  );
 });

@@ -78,9 +78,34 @@ test("pending seqs sit strictly below the last settled row (#37)", () => {
 
 /* ---------- no echoes / empty timeline ---------- */
 
-test("no pending messages leaves the timeline untouched (#37)", () => {
+test("no pending messages still SORTS, because a delivered prompt moved (#37)", () => {
+  // This used to assert `placeEchoesBelow(visible, []) === visible` — an identity
+  // return that read like a harmless shortcut. It was the bug: a DELIVERED
+  // prompt's seq is rewritten to its DELIVERY note (resequenceToDelivery), and
+  // with no echoes to append nothing applied that new seq, so the prompt kept its
+  // original slot. A message sent while the agent worked rendered ABOVE the
+  // output that preceded its delivery. Reproduced from a real log: prompt e3228
+  // (delivery note e3234) rendered before the e3230 message.
+  //
+  // The rows are handed over in LOG order with the prompt's seq already moved
+  // DOWN to 9 (its delivery), exactly as the caller does.
+  const early = row(1, "early");
+  const tool = row(2, "tool");
+  const prompt = row(9, "queued"); // typed at ~0, delivered after the tool row
+  const reply = row(10, "reply");
+  const out = placeEchoesBelow([early, prompt, tool, reply], []);
+  assert.deepEqual(
+    out.map((e) => e.id),
+    ["early", "tool", "queued", "reply"],
+    "the resequenced prompt must land between the earlier output and the reply (#37)",
+  );
+});
+
+test("rows are not reordered when their seqs are already in order (#37)", () => {
+  // the common case must stay a no-op in EFFECT, or every render that sorts would
+  // risk shuffling equal-seq rows
   const visible = [row(1, "a"), row(2, "b")];
-  assert.equal(placeEchoesBelow(visible, []), visible, "returns the SAME array when there is nothing to place");
+  assert.deepEqual(placeEchoesBelow(visible, []).map((e) => e.id), ["a", "b"]);
 });
 
 test("a pending message on an empty timeline still lands (#37)", () => {

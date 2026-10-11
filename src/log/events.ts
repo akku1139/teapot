@@ -50,6 +50,26 @@ export interface TeapotEvent {
   data: unknown;
 }
 
+/**
+ * How long an idle write stream is kept open (#143).
+ *
+ * The stream used to be opened in `load()` and closed only by `close()`, which
+ * runs on dispose and shutdown. A loaded agent therefore held a file descriptor
+ * for the whole process lifetime — MEASURED on a real master: 493 agents in
+ * config meant 493 open `chat.jsonl` descriptors, ~300 MB RSS, growing with
+ * every session the operator creates.
+ *
+ * The log is append-only, so a stream is never needed to keep state: reopening
+ * with `flags: "a"` continues exactly where the last write stopped. Closing it
+ * is therefore free, and re-opening on the next append costs one `open()` per
+ * burst of activity rather than one per session forever.
+ *
+ * 15s, because a working agent appends many times per second — holding the
+ * stream across that activity means file rotation / inspection outside the app
+ * still sees a quiet, closed file, and a burst of tool calls costs ONE open.
+ */
+const IDLE_CLOSE_MS = 15_000;
+
 export class EventLog {
   private stream: WriteStream | null = null;
   private seq = 0;
@@ -58,6 +78,14 @@ export class EventLog {
   private lastByBranch = new Map<string, string>();
   /** optional observer (e.g. console logger wired by the master) */
   onEvent: ((e: TeapotEvent) => void) | null = null;
+  /** #143: timer that closes the stream once this log goes quiet */
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * #143: set by close() so an append that resumes afterwards knows the log was
+   * DISPOSED rather than merely idle — an idle log must reopen, a disposed one
+   * must keep dropping (and saying so), which is the pre-existing contract.
+   */
+  private disposed = false;
 
   readonly filePath: string;
   readonly agentId: string;
@@ -103,9 +131,64 @@ export class EventLog {
     } catch {
       /* file may not exist yet */
     }
-    this.stream = createWriteStream(this.filePath, { flags: "a" });
-    this.stream.on("error", (err) => {
+    // #143: NO stream here. Opening it in load() is what held a descriptor per
+    // loaded agent for the lifetime of the process (measured: 493 of them).
+    // `load()` still reads and repairs the file — it just does not keep it open.
+  }
+
+  /**
+   * Open the append stream if it is not already open (#143).
+   *
+   * Called from the write chain so an append cannot race a close: both run
+   * inside `this.chain`, which is a promise queue.
+   */
+  private openStream(): WriteStream {
+    if (this.stream) return this.stream;
+    const s = createWriteStream(this.filePath, { flags: "a" });
+    s.on("error", (err) => {
       console.error(`[teapot] log write error (${this.filePath}):`, err.message);
+    });
+    this.stream = s;
+    return s;
+  }
+
+  /** #143: close the stream once this log has been quiet for IDLE_CLOSE_MS. */
+  private scheduleIdleClose(): void {
+    if (this.idleTimer) return; // already armed; the existing deadline stands
+    this.idleTimer = setTimeout(() => this.fireIdleClose(), IDLE_CLOSE_MS);
+    // the timer must never be the reason a process cannot exit
+    this.idleTimer.unref?.();
+  }
+
+  /**
+   * What the idle timer does — separated so it can be driven directly.
+   *
+   * Clears the deadline FIRST so `releaseIdleStream` can tell "nothing new
+   * arrived" (close) from "an append re-armed it while I waited" (defer).
+   */
+  private fireIdleClose(): void {
+    this.idleTimer = null;
+    void this.releaseIdleStream();
+  }
+
+  /**
+   * Close the stream after a quiet period.
+   *
+   * Runs behind `chain`, so it cannot interleave with a queued write. An append
+   * that arrived while this was pending re-armed the timer, and that newer
+   * deadline owns the close — hence the check on `idleTimer` AFTER draining,
+   * not before.
+   */
+  private async releaseIdleStream(): Promise<void> {
+    await this.chain.catch(() => {});
+    if (this.disposed) return;
+    if (!this.stream) return;
+    // a later append re-armed the timer — let that deadline own the close
+    if (this.idleTimer) return;
+    const s = this.stream;
+    this.stream = null;
+    await new Promise<void>((res) => s.end(res)).catch(() => {
+      /* the write error handler already reported it */
     });
   }
 
@@ -145,19 +228,26 @@ export class EventLog {
     let written = false;
     const p = new Promise<TeapotEvent>((resolve, reject) => {
       this.chain = this.chain.then(() => {
-        if (!this.stream) {
-          // log closed (dispose) — resolve so callers don't await forever,
-          // but say so: silent drops made post-shutdown writes look logged
+        if (this.disposed) {
+          // log DISPOSED (not merely idle) — resolve so callers don't await
+          // forever, but say so: silent drops made post-shutdown writes look
+          // logged. #143: this is a distinct state from an idle stream, which
+          // must reopen instead of dropping.
           console.error(`[teapot] event dropped after log close (${this.agentId}): ${type}`);
           return resolve(evt);
         }
-        this.stream.write(JSON.stringify(evt) + "\n", "utf8", (err) => {
+        // #143: open on demand — an idle log keeps no descriptor
+        this.openStream().write(JSON.stringify(evt) + "\n", "utf8", (err) => {
           if (err) return reject(err);
           written = true;
           resolve(evt);
         });
       }, () => resolve(evt));
     });
+    // #143: re-arm the idle close for every append. Set here rather than inside
+    // the write callback: the timer measures quiet time from the last APPEND, and
+    // a long write must not count as activity after the fact.
+    this.scheduleIdleClose();
     this.chain = this.chain.then(
       () => {},
       () => {},
@@ -198,6 +288,14 @@ export class EventLog {
   }
 
   async close(): Promise<void> {
+    // #143: mark DISPOSED before draining, so an append queued behind us drops
+    // loudly instead of reopening the log we are shutting down. This is the
+    // difference between "idle" (reopen on the next write) and "closed".
+    this.disposed = true;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     await this.chain.catch(() => {});
     if (!this.stream) return;
     const s = this.stream;

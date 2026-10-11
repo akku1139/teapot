@@ -31,10 +31,20 @@ export interface SeqRow {
  * own, and mutating them here would corrupt the event cache.
  */
 export function placeEchoesBelow<T extends SeqRow>(visible: T[], echoes: T[]): T[] {
-  if (!echoes.length) return visible;
+  // #37: a DELIVERED prompt's seq is rewritten to its delivery note (see
+  // `resequenceToDelivery`), and echoes get seqs above the log's max. Either way
+  // the caller has handed us rows whose order is no longer the array order, so
+  // the result must be SORTED.
+  //
+  // This used to return `visible` unchanged when there were no echoes, which
+  // looked like a harmless shortcut and was not: the resequenced prompt kept its
+  // original slot, so a message sent while the agent was working rendered ABOVE
+  // the agent output that preceded its delivery instead of below it. Reproduced
+  // from a real log — prompt e3228 (delivery note e3234) rendered before e3230.
+  if (!echoes.length) return [...visible].sort((a, b) => a.seq - b.seq);
   const maxSeq = visible.reduce((m, e) => Math.max(m, e.seq), 0);
   const placed = echoes.map((e, i) => ({ ...e, seq: maxSeq + 1 + i }));
-  return [...visible, ...placed];
+  return [...visible, ...placed].sort((a, b) => a.seq - b.seq);
 }
 
 /**

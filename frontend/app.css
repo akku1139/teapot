@@ -735,6 +735,24 @@ details.reasoning .thinkscroll {
   border-radius: 6px; padding: 7px 10px; cursor: pointer; font-size: 13px;
 }
 .presetbtn.active { background: var(--acc); color: #fff; }
+/* #144: the model chooser. With no pre-filled default this list IS the control,
+   so it needs to read as one — scrollable rather than pushing the form down, and
+   each row shows its ctx/price so the choice is informed. */
+.wizmodels {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 190px; overflow-y: auto;
+  /* the fieldset/legend below must not be shifted by a 400-model endpoint */
+  border: 1px solid var(--bg-light); border-radius: 6px; padding: 4px;
+  background: var(--bg-darkest);
+}
+.wizmodel {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
+  background: none; border: 1px solid transparent; border-radius: 4px;
+  color: var(--fg); padding: 4px 7px; cursor: pointer; font-size: 12.5px;
+}
+.wizmodel:hover { background: var(--bg-light); }
+.wizmodel.active { border-color: var(--acc); }
+.wizmodel .muted { font-size: 11px; margin-left: auto; white-space: nowrap; }
 .forkchip {
   display: flex; align-items: center; gap: 4px; white-space: nowrap;
   color: var(--dim); font-size: 11.5px; cursor: pointer;

@@ -1248,8 +1248,10 @@ const isTimelineLive = (): boolean => {
   // operator task list draft — seeded per selected agent; while the user
   // hasn't touched it, it follows server updates (the agent edits it too)
   const [todoDraft, setTodoDraft] = createSignal("");
-  // false = rendered checklist (default), true = raw markdown editor
-  const [todoViewMode, setTodoViewMode] = createSignal(false);
+  // false = raw markdown editor, true = rendered checklist (the default).
+  // Reading a task list is the common case; the editor is one click away, and
+  // a textarea as the landing view made the panel look like a form to fill in.
+  const [todoViewMode, setTodoViewMode] = createSignal(true);
   const [todoDirty, setTodoDirty] = createSignal(false);
   let todoSeededFor = "";
   createEffect(() => {
@@ -2794,20 +2796,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let userScrolledUp = false;
   let lastScrollSample: { gap: number; top: number } | undefined;
   createEffect(() => {
-    draft(); // re-run on typing AND after send() clears the draft
-    autosizeComposer();
-  });
-  // The composer is a controlled input, but the DOM write must NOT happen while
-  // an IME composition is in flight: assigning `.value` mid-composition ends the
-  // composition and throws away the kana typed so far (measured: Solid wrote it
-  // twice per input event, both during a simulated composition). `compositionend`
-  // commits the result through saveDraft(), so a write deferred here is never a
-  // write lost.
-  createEffect(() => {
-    const v = draft();
+    const v = draft(); // re-run on typing AND after send() clears the draft
+    // #the RESIZE must happen AFTER the DOM text is synced, not before. This
+    // effect used to run first and call autosizeComposer() straight away, which
+    // measured `scrollHeight` of the OLD content: sending a long message left the
+    // box at its full multi-line height with nothing in it. `send()` clears the
+    // signal, so the order is: write the value, then measure.
     if (!composerEl) return;
     if (!shouldWriteComposerValue(imeInProgress)) return;
     if (composerValueChanged(composerEl.value, v)) composerEl.value = v;
+    autosizeComposer();
   });
 
   /** post a raw prompt (used by composer AND question-option taps) */
@@ -6137,17 +6135,23 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     key: "openrouter",
     label: "OpenRouter",
     url: "https://openrouter.ai/api/v1",
-    model: "anthropic/claude-sonnet-4",
+    model: "",
     hint: "400+ models behind one key — teapot sends app-attribution headers automatically",
   },
   {
     key: "orcarouter",
     label: "OrcaRouter",
     url: "https://api.orcarouter.ai/v1",
-    model: "orcarouter/auto",
+    model: "",
     hint: "zero-markup routing gateway — 'orcarouter/auto' grades each prompt and picks the model",
   },
-  { key: "openai", label: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  {
+    key: "openai",
+    label: "OpenAI",
+    url: "https://api.openai.com/v1",
+    model: "",
+    hint: "your account's models — pick from the list once the endpoint answers",
+  },
   {
     key: "llamacpp",
     label: "llama.cpp server",
@@ -6228,9 +6232,28 @@ function SetupWizard(props: { onDone: () => void }) {
     return parts.join(" · ");
   };
   const modelSpec = () => specOf(model());
+  /** the fetched catalogue narrowed by what is typed (empty query = all) */
+  const filteredModels = () => {
+    const q = model().trim().toLowerCase();
+    if (!q) return models();
+    return models().filter((m) => m.id.toLowerCase().includes(q));
+  };
 
   const submit = async (e: Event) => {
-    e.preventDefault(); setErr(""); setBusy(true);
+    e.preventDefault(); setErr("");
+    // #144: the model is the operator's choice, so it must be made explicitly
+    // rather than pre-filled by a preset. Say so here instead of letting the
+    // server's generic "baseUrl and model are required" come back after a round
+    // trip.
+    if (!model().trim()) {
+      setErr(
+        models().length
+          ? "pick a model — choose one from the list, or type its id"
+          : "pick a model — type its id (the endpoint has not listed any yet)",
+      );
+      return;
+    }
+    setBusy(true);
     try {
       await api("/api/setup", {
         method: "POST",
@@ -6284,30 +6307,50 @@ function SetupWizard(props: { onDone: () => void }) {
             </datalist>
           </label>
           <label>api key <input type="password" class="w100" value={apiKey()} oninput={(e) => setApiKey(e.currentTarget.value)} placeholder="(local providers may not need one)" /></label>
-          <label>default model
+          <label>model
             <input
               type="text"
               class="w100 mono"
               list="wiz-model-list"
               value={model()}
               oninput={(e) => setModel(e.currentTarget.value)}
-              placeholder={preset().key === "llamacpp" ? "(any name — serves whichever gguf is loaded)" : "(type to filter models from the endpoint)"}
+              placeholder={preset().key === "llamacpp" ? "(any name — serves whichever gguf is loaded)" : "(pick from the list below, or type an id)"}
             />
             <datalist id="wiz-model-list">
               {models().map((m) => <option value={m.id} />)}
             </datalist>
           </label>
+          {/* #144: with no pre-filled default the list has to be an obvious
+              CHOICE, not just autocomplete fodder. Narrowed by what is typed, and
+              capped so a 400-model endpoint cannot push the rest of the form off
+              screen. */}
           <Show
-            when={models().length > 0}
+            when={filteredModels().length > 0}
             fallback={
               <div class="muted" style="font-size:11.5px;margin-top:-8px">
-                models appear here automatically once the endpoint answers GET /models
+                {models().length
+                  ? "no model matches that — clear the field to see them all"
+                  : "models appear here automatically once the endpoint answers GET /models"}
               </div>
             }
           >
-            <div class="muted" style="font-size:11.5px;margin-top:-8px">
-              {models().length} models found at this endpoint
-              <Show when={modelSpec()}> · <span style="color:var(--fg)">{modelSpec()}</span></Show>
+            <div class="wizmodels">
+              {filteredModels().slice(0, 40).map((m) => (
+                <button
+                  type="button"
+                  class={"wizmodel" + (model() === m.id ? " active" : "")}
+                  title={specOf(m.id) || m.id}
+                  onclick={() => setModel(m.id)}
+                >
+                  <span class="mono">{m.id}</span>
+                  <Show when={specOf(m.id)}><span class="muted">{specOf(m.id)}</span></Show>
+                </button>
+              ))}
+            </div>
+            <div class="muted" style="font-size:11.5px;margin-top:-6px">
+              {filteredModels().length} model{filteredModels().length > 1 ? "s" : ""}
+              <Show when={filteredModels().length > 40}> (showing the first 40 — keep typing to narrow)</Show>
+              <Show when={modelSpec()}> · selected: <span style="color:var(--fg)">{modelSpec()}</span></Show>
             </div>
           </Show>
           <fieldset>
