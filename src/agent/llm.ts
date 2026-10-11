@@ -465,6 +465,27 @@ function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
  * matching (and the retry notes operators have learned to read) still works; the
  * diagnosis follows after a colon.
  */
+/**
+ * The chain-of-thought text a provider attached, whichever field it used (#153).
+ *
+ * MEASURED against commandcode / deepseek-v4.1-flash: the reasoning arrives as
+ * `reasoning_content` (115 chars non-streaming, 181 via the stream) and teapot read only
+ * `reasoning`, so the thinking was received and DISCARDED — the reported "全然think
+ * しない". DeepSeek Harness shows it because it reads the field this provider actually
+ * sends.
+ *
+ * Both spellings are accepted because the endpoints in use disagree: OpenRouter uses
+ * `reasoning`, DeepSeek/commandcode use `reasoning_content`. Neither is in the OpenAI SDK's
+ * types, so both arrive as extra fields and must be read defensively.
+ */
+function reasoningTextOf(m: Record<string, unknown> | undefined): string | undefined {
+  for (const key of ["reasoning", "reasoning_content"]) {
+    const v = m?.[key];
+    if (typeof v === "string" && v) return v;
+  }
+  return undefined;
+}
+
 function noChoicesDetail(res: unknown): string {
   const base = "LLM API returned no choices";
   // a gateway that answers 200 with an error object instead of failing: the
@@ -562,7 +583,7 @@ export async function chat(
       role: "assistant",
       content: typeof rm.content === "string" ? rm.content : "",
     };
-    const reasoning = typeof rm.reasoning === "string" && rm.reasoning ? rm.reasoning : undefined;
+    const reasoning = reasoningTextOf(rm);
     const calls = rm.tool_calls as
       | { id?: string; function?: { name?: string; arguments?: string } }[]
       | undefined;
@@ -688,7 +709,10 @@ export async function chatStream(
       const c = ch.choices?.[0];
       const d = c?.delta;
       if (d?.content) text += d.content;
-      if (d?.reasoning) reasoning += d.reasoning;
+      // both spellings: OpenRouter streams `reasoning`, DeepSeek/commandcode stream
+      // `reasoning_content` (#153 — reading only the first discarded the thinking).
+      // The helper takes a loose record because neither field is in the SDK's types.
+      reasoning += reasoningTextOf(d as Record<string, unknown> | undefined) ?? "";
       for (const tc of d?.tool_calls ?? []) {
         const i = tc.index ?? 0;
         calls[i] ??= { id: "", name: "", args: "" };
