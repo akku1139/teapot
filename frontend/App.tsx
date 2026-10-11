@@ -24,7 +24,7 @@ import { reconcilePending, type PendingEcho } from "./pending-echo";
 import { resolveTimelineSession } from "./session-index";
 // #146: the scope predicates are PRODUCTION, so the tests can assert the same code
 // the handler runs — a test-local copy proves nothing (#75)
-import { deltaBelongsToTimeline } from "./session-scope";
+import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./session-scope";
 import { retintTerminal, themeColors } from "./terminal-theme";
 import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
 import {
@@ -777,19 +777,10 @@ export default function App() {
    * confuse it with.
    */
 const isTimelineLive = (): boolean => {
-    if (!isSelLive()) return false;
-    const a = sel();
-    const shown = timelineId();
-    if (!a || !shown) return true;
-    // timelineId === the agent id is the FALLBACK view (pre-index / an
-    // unresolvable deep link): the newest tail IS the agent's current session,
-    // so live output belongs here — otherwise the fallback view could never
-    // show a live bubble (`running === shown` compares a session id with an
-    // agent id)
-    if (shown === a.id) return true;
-    const running = (a as { session?: string }).session;
-    if (!running) return true; // no recorded session ? nothing to be confused with
-    return running === shown;
+    // the FALLBACK view (timelineId === the agent id) is handled by the shared
+    // rule — it used to be spelled out here, in the event gate and in the delta
+    // gate separately, and the three drifted (#54).
+    return timelineIsLive(sel() as { id: string; session?: string } | undefined, timelineId(), isSelLive());
   };
   // prompt being edited → edit-prompt fork dialog. SETTLED user prompts only:
   // a pending (queued, not yet delivered) message offers ✕ cancel instead —
@@ -2168,19 +2159,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // only the affected session's feed needs updating — other sessions'
         // timelines are fetched on switch, not eagerly
         if (msg.event?.agent !== selected()) return;
-        // #146: and the SESSION must match too. The timeline is per session —
-        // `loadEvents` fetches `?session=<timelineId>` and `select()` sets it — so
-        // merging an event from a sibling session of the SAME agent puts one
-        // session's rows inside another's timeline. No agent check can catch that,
-        // because both belong to the same agent.
-        //
-        // The notification centre is session-independent and already ran above,
-        // so a cross-session event still notifies; it just never enters this feed.
-        if (
-          timelineId() &&
-          typeof (msg.event as { session?: string } | undefined)?.session === "string" &&
-          (msg.event as { session: string }).session !== timelineId()
-        )
+        // #146/#54: and the SESSION must match too — via the SHARED rule, so this
+        // gate cannot disagree with `isTimelineLive()` and `deltaBelongsToTimeline`
+        // about the fallback view. See frontend/session-scope.ts: while no session
+        // is resolved, `timelineId()` is the AGENT ID, and comparing it against an
+        // event's real session dropped EVERY frame — the socket went silent and
+        // only REST moved the feed, which is the #54 report verbatim.
+        if (!eventBelongsOnTimeline(msg.event as { agent?: string; session?: string }, selected(), timelineId()))
           return;
 
         // #54: USE THE EVENT.
@@ -4761,21 +4746,39 @@ function ThinkingTimer(props: { startedAt: number }) {
 
 function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
-  const res = props.res;
+  // #54: `props.res` must be read REACTIVELY, not captured.
+  //
+  // `<For each={chatEvents()}>` passes `res={pairInfo().resFor.get(e.id)}`, so the
+  // row is built while its result has not arrived yet (`undefined`). When the
+  // result lands, pairInfo is recomputed and the prop changes — but a destructured
+  // `const res = props.res` was bound ONCE at creation, so the row kept rendering
+  // the pre-result branch forever: "running… · waiting for output…" until the row
+  // was destroyed and rebuilt, which is exactly what re-selecting the session (or
+  // reloading via the API) did.
+  //
+  // Measured in the built bundle: with the result present in BOTH the log and the
+  // socket frame, the row stayed `embed running` and showed no output; making this
+  // ONE accessor reactive flipped exactly the class to `embed done` while the
+  // captured-`res` body still said "running…" — proving the prop updates and the
+  // destructured copy does not.
+  //
+  // A getter rather than a signal: the compiler already tracks `props.x` reads, so
+  // every existing use below becomes reactive with no other change.
+  const res = () => props.res;
   // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
   // cannot still be in flight (its result event was missed — e.g. logged while
   // the tab was hidden). Rendering it forever as "running…" was exactly that:
   // switching sessions and back "fixed" it because that reloaded the log.
-  const staleDone = !props.agentActive && !res;
+  //
+  // #54: this must be a FUNCTION, not a value. Computed once in the component
+  // body it captured `props.agentActive` as it was when the row was BUILT — i.e.
+  // `true`, because a row only exists because the agent was working — so the
+  // guard could never fire. It was written to close exactly this bug and could
+  // not, which is why the issue kept coming back.
+  const staleDone = () => !props.agentActive && !res();
   const d = e.data ?? {};
   const name = String(d.name ?? "tool");
-  const out = () => (res ? String(res.data?.result ?? "") : "");
-
-  // per-tool summary line: [icon, label, hint]
-  let icon = "⚙";
-  let label = name;
-  let hint: string | null = "";
-  let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
+  const out = () => String(res()?.data?.result ?? "");
 
   const argStr = (k: string) => String(d.args?.[k] ?? "");
   // best-effort "what was run" text per tool: bash→the command, others→path/args
@@ -4794,16 +4797,18 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
     <pre class="mono toolbody">{truncate(text, max)}</pre>
   );
   const resultBlock = (max = 4000) =>
-    res ? (
+    (() => {
+      const r = res();
+      return r ? (
       <>
         {codeBlock(out(), max)}
         <div class="meta">
-          {fmtDur(res.data?.durationMs)}
+          {fmtDur(r.data?.durationMs)}
           {/* #46: a killed shell said nothing here beyond a generic · FAILED, so
               a TIMED OUT command still read as an ordinary completed run. */}
           {name === "bash"
-            ? outcomeMarker(shellOutcome(res.data?.ok, String(res.data?.result ?? "")))
-            : res.data?.ok === false
+            ? outcomeMarker(shellOutcome(r.data?.ok, String(r.data?.result ?? "")))
+            : r.data?.ok === false
               ? " · FAILED"
               : ""}
           <CopyBtn text={out()} />
@@ -4812,7 +4817,18 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
     ) : (
       <div class="meta">waiting for output…</div>
     );
+    })();
 
+  // #54: this whole derivation depends on the result, so it must be a MEMO. It used to
+  // run once in the component body, which is why a row created before its result
+  // arrived kept the pre-result label and body for good: only the class (re-read
+  // from the prop) changed. See the note on `res` above.
+  const derived = createMemo(() => {
+  // per-tool summary line: [icon, label, hint]
+  let icon = "⚙";
+  let label = name;
+  let hint: string | null = "";
+  let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
   try {
     switch (name) {
       case "bash": {
@@ -4827,11 +4843,12 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
         // #46: a command the harness KILLED used to render as
         // `300ms · timeout 1s` — indistinguishable from a fast success, so the
         // row never read as finished. Name the outcome on the summary line.
-        const outcome = shellOutcome(res?.data?.ok, res ? String(res.data?.result ?? "") : "");
-        hint = res
+        const r = res();
+        const outcome = shellOutcome(r?.data?.ok, r ? String(r.data?.result ?? "") : "");
+        hint = r
           ? isBg
             ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutMs ? ` · timeout ${Math.round(timeoutMs / 1000)}s` : ""}`
-            : shellHint({ outcome, durationMs: res.data?.durationMs, timeoutMs, fmtDur })
+            : shellHint({ outcome, durationMs: r.data?.durationMs, timeoutMs, fmtDur })
           : null; // live elapsed renders in the summary (below)
         body = (
           <>
@@ -4869,7 +4886,7 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
           <>
             {codeBlock(content, 1500)}
             {content.length > 1500 ? <div class="meta muted">{fmtK(content.length)} bytes — open it from 🗂 files for the full view</div> : null}
-            {res ? <div class="meta">{oneLine(out(), 160)}</div> : <div class="meta">writing…</div>}
+            {res() ? <div class="meta">{oneLine(out(), 160)}</div> : <div class="meta">writing…</div>}
           </>
         );
         break;
@@ -4881,9 +4898,9 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
           <>
             <pre class="mono toolbody del">{truncate("- " + argStr("old_text"), 900)}</pre>
             <pre class="mono toolbody add">{"+ " + truncate(argStr("new_text"), 900)}</pre>
-            {res ? (
+            {res() ? (
               <div class="meta">
-                {oneLine(out(), 120)} · {fmtDur(res.data?.durationMs)}
+                {oneLine(out(), 120)} · {fmtDur(res()!.data?.durationMs)}
               </div>
             ) : (
               <div class="meta">applying…</div>
@@ -4911,7 +4928,7 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
               })}
               {patchLines.length > MAX_PATCH_LINES ? <div class="pline meta">… {patchLines.length - MAX_PATCH_LINES} more lines</div> : null}
             </pre>
-            {res ? <div class="meta">{oneLine(out().split("\n")[0] ?? "", 140)}{res.data?.ok === false ? " · FAILED" : ""}</div> : <div class="meta">validating…</div>}
+            {res() ? <div class="meta">{oneLine(out().split("\n")[0] ?? "", 140)}{res()!.data?.ok === false ? " · FAILED" : ""}</div> : <div class="meta">validating…</div>}
           </>
         );
         break;
@@ -4953,10 +4970,10 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
       case "load_skill": {
         label = `skill: ${argStr("name")}`;
         const mdBody = out().replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ""); // strip frontmatter
-        body = res ? (
+        body = res() ? (
           <>
             <div class="content" innerHTML={renderMarkdown(mdBody)} />
-            <div class="meta">{fmtDur(res.data?.durationMs)}</div>
+            <div class="meta">{fmtDur(res()!.data?.durationMs)}</div>
           </>
         ) : (
           <div class="meta">loading…</div>
@@ -4970,7 +4987,7 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
         body = (
           <>
             {files.length ? <div class="meta">bundled: {files.join(", ")}</div> : null}
-            {res ? <div class="meta">{oneLine(out(), 160)} · {fmtDur(res.data?.durationMs)}</div> : <div class="meta">saving…</div>}
+            {res() ? <div class="meta">{oneLine(out(), 160)} · {fmtDur(res()!.data?.durationMs)}</div> : <div class="meta">saving…</div>}
           </>
         );
         break;
@@ -4979,11 +4996,13 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
   } catch {
     /* fall back to the generic view on anything unexpected */
   }
+    return { icon, label, hint, body };
+  });
 
   return (
     <details
-      class={"embed" + (res ? (res.data?.ok === false ? " fail" : " done") : staleDone ? " done" : " running")}
-      title={`${name}${hint ? " — " + hint : ""}`}
+      class={"embed" + (res() ? (res()!.data?.ok === false ? " fail" : " done") : staleDone() ? " done" : " running")}
+      title={`${name}${derived().hint ? " — " + derived().hint : ""}`}
       onToggle={(ev: ToggleEvent) => {
         // expanding/collapsing changes the feed height; while following, the
         // bottom line must stay pinned instead of drifting out of view
@@ -4991,14 +5010,14 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
       }}
     >
       <summary>
-        <b>{icon} {label}</b>
+        <b>{derived().icon} {derived().label}</b>
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
         </Show>
         <span class="meta">
-          {res
-            ? hint || ""
-            : staleDone
+          {res()
+            ? derived().hint || ""
+            : staleDone()
               ? "(result missed)"
               : name === "bash" || effTimeout()
                 ? // any tool with a timeout shows live elapsed + its cap
@@ -5010,12 +5029,12 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
             and its output each have their own button */}
         <span class="toolcopy">
           <CopyBtn text={cmdText()} label="⧉ cmd" title={`copy the ${name} arguments`} />
-          <Show when={res}>
+          <Show when={res()}>
             <CopyBtn text={out()} label="⧉ out" title="copy this tool's full output" />
           </Show>
         </span>
       </summary>
-      {body}
+      {derived().body}
     </details>
   );
 }

@@ -41,17 +41,23 @@ test("a live delta from ANOTHER session is dropped (#146)", () => {
   );
 });
 
-test("an event from ANOTHER session is never merged (#146)", () => {
+test("an event from ANOTHER session is never merged (#146, #54)", () => {
   const b = branch("event");
+  // #146: the check now lives in frontend/session-scope.ts — assert the HANDLER
+  // consults it, because deleting the call still has to fail here.
+  // #54: it must be the SHARED predicate. The inline form read `timelineId()`
+  // directly, and that is exactly what broke: with no session resolved yet
+  // `timelineId()` is the AGENT ID, so comparing it against an event's real
+  // session dropped EVERY frame and only REST moved the feed.
   assert.match(
     b,
-    /timelineId\(\)/,
-    "the event filter must consult the session (#146)",
+    /eventBelongsOnTimeline\(/,
+    "the event filter must go through the shared session predicate (#146)",
   );
-  assert.match(
+  assert.doesNotMatch(
     b,
     /session !== timelineId\(\)/,
-    "and reject an event whose session differs (#146)",
+    "the inline comparison IS #54 — the fallback view must be exempt (#54)",
   );
 });
 
@@ -60,7 +66,7 @@ test("the session check comes AFTER the notification, so cross-session still not
   // still raise a notification, it just must not enter the feed
   const b = branch("event");
   const notify = b.indexOf("maybeNotify");
-  const sessionCheck = b.indexOf("session !== timelineId()");
+  const sessionCheck = b.indexOf("eventBelongsOnTimeline(");
   assert.ok(notify !== -1, "maybeNotify must run (#79/#106)");
   assert.ok(
     sessionCheck === -1 || notify < sessionCheck,
@@ -97,7 +103,7 @@ test("every llm-delta emitter supplies its session (#146)", async () => {
   );
 });
 
-test("ToolRow activity is session-scoped (#120, #133, #146)", () => {
+test("ToolRow activity is session-scoped (#120, #133, #146, #54)", () => {
   assert.match(
     app,
     /agentActive=\{[\s\S]{0,200}?isTimelineLive\(\) && isOwnLiveWork\(e\)/,
@@ -105,9 +111,9 @@ test("ToolRow activity is session-scoped (#120, #133, #146)", () => {
   );
   assert.match(
     app,
-    // the body also carries the #146-fallback branch (timelineId === agent id
-    // = the newest tail is live), so the window is wider than the bare compare
-    /const isTimelineLive = \(\): boolean => \{[\s\S]{0,800}?return running === shown;/,
-    "and that liveness must compare the agent's session with the displayed one (#146)",
+    // #54: the rule moved to frontend/session-scope.ts so the three gates that
+    // share it cannot drift again — this pins the DELEGATION, not the body.
+    /const isTimelineLive = \(\): boolean => \{[\s\S]{0,400}?timelineIsLive\(/,
+    "and that liveness must be the shared rule (#54)",
   );
 });

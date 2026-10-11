@@ -121,14 +121,19 @@ test("a socket event still re-derives the feed (#145)", () => {
 });
 
 test("a tool row CAN fall back to staleDone when its result is missed (#145)", () => {
-  const at = app.indexOf("const staleDone = !props.agentActive && !res;");
+  const at = app.indexOf("const staleDone = () => !props.agentActive && !res();");
   assert.notEqual(at, -1, "the stale-run guard must exist (#40)");
   const block = app.slice(at, at + 200);
   assert.match(
     block,
-    /!props\.agentActive && !res/,
+    /!props\.agentActive && !res\(\)/,
     "a row closes when the agent is not live and no result arrived (#40/#145)",
   );
+  // #54: it must be a FUNCTION. As a plain value it captured `props.agentActive`
+  // from the moment the row was BUILT — which is always `true` for a row that
+  // exists at all — so the guard could never fire, and this test passed over the
+  // dead guard by pinning that very line.
+  assert.match(block, /\(\)/, "the guard must re-read its props, not capture them (#54)");
 });
 
 test("an orphaned result still renders with its output (#54)", () => {

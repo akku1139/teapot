@@ -207,7 +207,7 @@ test("the timeline's stale-run guard is what a reload relies on (#120)", () => {
   const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
   assert.match(
     app,
-    /const staleDone = !props\.agentActive && !res;/,
+    /const staleDone = \(\) => !props\.agentActive && !res\(\);/,
     "an unresolved row must read done once the agent is not live (#120)",
   );
 });
