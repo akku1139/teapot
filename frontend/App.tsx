@@ -34,7 +34,8 @@ import {
   chatGroupKeyOf,
   wsChatCountsOf,
 } from "./sidebar-tree";
-import { modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
+import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
+import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -474,6 +475,13 @@ export default function App() {
   // doesn't work" bug). Clear draft / sync provider only when the selected
   // agent actually changes.
   let _prevModelAgent: string | null = null;
+  // #3: set when the operator works the provider dropdown themselves. The
+  // re-sync in the branch below exists for an EXTERNAL change (another tab, a
+  // restart) and must not undo a deliberate pick: choosing a provider that has
+  // no configured default model leaves the draft empty, and without this the
+  // next poll reads "empty draft" as "not mid-edit" and pulls the dropdown back
+  // before `apply` can be pressed.
+  let providerTouched = false;
   createEffect(() => {
     const id = selected();
     if (!id) return;
@@ -482,6 +490,7 @@ export default function App() {
     if (!a) return;
     if (id !== _prevModelAgent) {
       _prevModelAgent = id;
+      providerTouched = false; // a new session's own provider is the right default
       // sync provider to the newly selected agent's provider
       if (untrack(() => modelProvider()) !== prov) {
         setModelProvider(prov);
@@ -492,10 +501,11 @@ export default function App() {
     } else {
       // same agent — keep user's draft/provider edits intact; only
       // re-sync if the server's provider changed externally and the user
-      // isn't actively editing (draft empty means not mid-type)
+      // isn't actively editing (draft empty means not mid-type) or has not
+      // touched the dropdown (#3)
       const curProv = untrack(() => modelProvider());
       const curDraft = untrack(() => modelDraft());
-      if (!curDraft && curProv !== prov) {
+      if (!curDraft && curProv !== prov && mayResyncProvider(providerTouched)) {
         setModelProvider(prov);
         loadModels(prov);
       }
@@ -2870,6 +2880,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     draft(); // re-run on typing AND after send() clears the draft
     autosizeComposer();
   });
+  // The composer is a controlled input, but the DOM write must NOT happen while
+  // an IME composition is in flight: assigning `.value` mid-composition ends the
+  // composition and throws away the kana typed so far (measured: Solid wrote it
+  // twice per input event, both during a simulated composition). `compositionend`
+  // commits the result through saveDraft(), so a write deferred here is never a
+  // write lost.
+  createEffect(() => {
+    const v = draft();
+    if (!composerEl) return;
+    if (!shouldWriteComposerValue(imeInProgress)) return;
+    if (composerValueChanged(composerEl.value, v)) composerEl.value = v;
+  });
 
   /** post a raw prompt (used by composer AND question-option taps) */
   // image attachments staged for the next prompt (data URLs; capped count)
@@ -3807,10 +3829,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 </div>
               </Show>
               <textarea
-                ref={composerEl}
+                // NOT `value={draft()}`: Solid writes the node's `value` on every
+                // change of the signal, and a write during an IME composition ends
+                // the composition and discards the kana typed so far — the
+                // "入力中にメッセージが消える" report. Measured: two DOM writes per
+                // input event, both mid-composition. The value is synced by the
+                // effect below instead, which stands down while composing.
+                ref={(el) => {
+                  composerEl = el;
+                  el.value = draft();
+                }}
                 rows={1}
                 placeholder={`message #${sel()!.id} — / for commands · paste or 📎 to attach images`}
-                value={draft()}
                 oncompositionstart={() => {
                   imeInProgress = true;
                 }}
@@ -3821,6 +3851,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   requestAnimationFrame(() => {
                     imeInProgress = false;
                   });
+                  // the composition's RESULT must reach the signal, or the next
+                  // sync would overwrite the converted text with the pre-edit
+                  // draft
+                  saveDraft(composerEl?.value ?? "");
                 }}
                 onpaste={(e) => {
                   // screenshots land on the clipboard as files — stage them
@@ -4005,6 +4039,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 // model. The draft used to keep the previous provider's value,
                 // so apply carried a foreign model id to the new endpoint.
                 const next = e.currentTarget.value;
+                providerTouched = true;
                 setModelProvider(next);
                 setModelDraft(
                   modelOnProviderSwitch(
@@ -4023,7 +4058,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <input
                 type="text"
                 list="model-list"
-                placeholder={modelPlaceholderFor(cfg().providers, modelProvider(), sel())}
+                placeholder={modelPlaceholderFor(cfg().providers, modelProvider(), sel(), effectiveProviderOf(sel(), cfg().providers, cfg().defaultProvider))}
                 value={modelDraft()}
                 oninput={(e) => setModelDraft(e.currentTarget.value)}
                 style="flex:1;min-width:0"
