@@ -21,6 +21,8 @@ export interface RowLike {
   session?: string;
   branch?: string;
   data?: {
+    /** the tool name, used to single out a skill load (#149) */
+    name?: unknown;
     actor?: unknown;
     source?: unknown;
     pending?: unknown;
@@ -42,11 +44,25 @@ function authorBucketOf(ev: RowLike): string {
   return "harness";
 }
 
-/** The grouping key for a row. Tool events all belong to the agent. */
+/**
+ * The grouping key for a row.
+ *
+ * Tool events all share the AGENT's key: keying by tool NAME split a run as soon as
+ * two different tools ran back to back.
+ *
+ * `load_skill` is the exception (#149). It renders as an EXPANDED panel of prose
+ * (the skill body), so a following row grouping under it reads as part of that
+ * prose rather than as the next action — reported as "the bash after load_skill is
+ * hanging under it". It gets its own key, which still groups the call with its
+ * result (one visual unit) but not with an ordinary tool row after it.
+ */
 function actorKeyOf(ev: RowLike): string {
   const d = ev.data ?? {};
   if (ev.data?.actor) return `sub:${String(ev.data.actor)}`;
-  if (ev.type === "tool_call" || ev.type === "tool_result") return "agent-tools";
+  if (ev.type === "tool_call" || ev.type === "tool_result") {
+    const name = typeof d.name === "string" ? d.name : "";
+    return name === "load_skill" ? "agent-skill" : "agent-tools";
+  }
   if (ev.type === "prompt") return `src:${String(d.source ?? "user")}`;
   return `type:${ev.type}`;
 }

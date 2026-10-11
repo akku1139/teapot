@@ -21,10 +21,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { cssRuleBodies } from "./helpers/css.ts";
-import { readSource } from "./helpers/source.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
+const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 test("the open-state pill is placed from the drawer height plus the composer's own (#142)", () => {
   const bodies = cssRuleBodies(css, ".channel:has(.termdrawer) .composer:not(.maximized) .jump");

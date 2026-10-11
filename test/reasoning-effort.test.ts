@@ -58,10 +58,18 @@ test("every documented level is accepted (#47)", () => {
 /* ---------- the guards that matter ---------- */
 
 test("nothing is sent to a non-OpenRouter endpoint (#47)", () => {
-  // a vendor-specific body field must never leak to an arbitrary base URL
+  // a vendor-specific body field must never leak to an arbitrary base URL.
+  // #150 added an explicit opt-in for gateways that accept the field without
+  // advertising it, so this pins the DEFAULT: without that opt-in, still nothing.
   assert.deepEqual(effortForRequest(cfg({ baseUrl: OPENAI })), {});
   assert.deepEqual(effortForRequest(cfg({ baseUrl: "https://api.anthropic.com" })), {});
   assert.deepEqual(effortForRequest(cfg({ baseUrl: "http://localhost:1234/v1" })), {});
+  // and the opt-in is the ONLY way in — it is not inherited from the catalogue
+  assert.deepEqual(
+    effortForRequest(cfg({ baseUrl: "https://api.anthropic.com", reasoningEffortOptIn: false })),
+    {},
+    "an explicit false must stay off",
+  );
 });
 
 test("nothing is sent when the model does not advertise support (#47)", () => {

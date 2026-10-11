@@ -35,13 +35,15 @@ export interface LlmConfig {
   model: string;
   timeoutMs?: number;
   /**
-   * Reasoning effort for models that support it (#47). Only ever SENT when the
-   * endpoint is OpenRouter and the model advertises `reasoning_effort` — see
+   * Reasoning effort for models that support it (#47, #150). Sent when the model
+   * advertises `reasoning_effort` OR the provider is explicitly opted in — see
    * effortForRequest(). Absent means "provider default".
    */
   reasoningEffort?: string;
   /** per-model capabilities from the endpoint catalogue; gates the above */
   supportedParameters?: string[];
+  /** the provider opted in to `reasoning_effort` without a catalogue to prove it (#150) */
+  reasoningEffortOptIn?: boolean;
   /**
    * A one-off call whose prompt will never be sent again (the compaction
    * summarizer). Providers that cache on a byte-identical prefix charge a WRITE
@@ -67,13 +69,25 @@ export interface LlmResult {
 const clients = new WeakMap<LlmConfig, OpenAI>();
 
 /**
- * Reasoning effort for a request body (#47).
+ * Reasoning effort for a request body (#47, #150).
  *
- * Kept local and deliberately conservative: the setting is only honoured when
- * the endpoint is OpenRouter, the value is one OpenRouter documents, and the
- * catalogue says this model advertises `reasoning_effort`. Support is far from
- * universal (verified against the live /models endpoint: 196 of 462 models),
- * so an unsent field is much safer than a wrong one.
+ * MEASURED against the live endpoints in use (one probe per provider, `max_tokens:
+ * 3` with `reasoning_effort: "low"`):
+ *
+ *   openrouter          — documented, catalogue advertises the field
+ *   commandcode-goat    — 200 OK and the reply carried `reasoning_content`
+ *   google              — 400 "Thinking level is not supported for this model"
+ *   orcarouter / opencode / experientiallabs — refused before reaching the field
+ *
+ * So "OpenRouter only" was too narrow (#150: `commandcode-goat` offers no options
+ * at all), but "send it everywhere" would break Google, which REJECTS the field
+ * with a 400 rather than ignoring it. The gate therefore stays opt-in:
+ *
+ *   1. the configured value must be a level the API documents, AND
+ *   2. EITHER the endpoint's catalogue advertises `reasoning_effort` (OpenRouter
+ *      and compatible gateways), OR the provider is explicitly marked
+ *      `reasoningEffort: true` in the config for an endpoint that accepts the field
+ *      but publishes no catalogue capability list (#150).
  *
  * Implemented here rather than via model-meta to avoid an import cycle —
  * model-meta already imports providerHeaders from this file.
@@ -84,9 +98,18 @@ export function effortForRequest(
 ): { reasoning_effort?: Effort } {
   const e = cfg.reasoningEffort;
   if (!e || !(REASONING_EFFORTS as readonly string[]).includes(e)) return {};
-  if (!isOpenRouterEndpoint(cfg.baseUrl)) return {};
-  if (!supported?.includes("reasoning_effort")) return {};
-  return { reasoning_effort: e as Effort };
+  // the catalogue is a capability claim from a GATEWAY, so trust it only where the
+  // gateway format is the one that carries it. MEASURED: of the endpoints in use,
+  // only OpenRouter-family ones publish `supported_parameters` at all — google,
+  // commandcode, orcarouter and opencode all return 0 models with the field, so
+  // this cannot silently widen the blast radius.
+  if (supported?.includes("reasoning_effort") && isOpenRouterEndpoint(cfg.baseUrl)) {
+    return { reasoning_effort: e as Effort };
+  }
+  // #150: an endpoint that ACCEPTS the field but publishes no capability list needs
+  // the provider to say so explicitly (provider.reasoningEffort: true in config).
+  if (cfg.reasoningEffortOptIn === true) return { reasoning_effort: e as Effort };
+  return {};
 }
 
 function isOpenRouterEndpoint(baseUrl: string | undefined): boolean {

@@ -21,9 +21,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 
-const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
+const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 /** the provider preset table */
 function presets(): string {
@@ -70,6 +70,6 @@ test("submitting with no model explains itself instead of failing server-side (#
 });
 
 test("the example config does not ship a stale model either (#144)", () => {
-  const ex = readSource(new URL("../teapot.config.example.json", import.meta.url).pathname);
+  const ex = readSourceUrl(new URL("../teapot.config.example.json", import.meta.url));
   assert.doesNotMatch(ex, /gpt-4o/, "the example still advertised the stale model (#144)");
 });

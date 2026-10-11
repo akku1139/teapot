@@ -124,6 +124,12 @@ export interface AgentOptions {
   reasoningEffort?: string;
   /** the endpoint catalogue's per-model capabilities; gates the effort field */
   supportedParameters?: string[];
+  /**
+   * The PROVIDER accepts `reasoning_effort` even though its catalogue publishes no
+   * capability list, so the gate above cannot detect it (#150). Opt-in only: some
+   * endpoints reject the field with a 400 instead of ignoring it.
+   */
+  reasoningEffortOptIn?: boolean;
   maxConsecutiveToolErrors?: number;
   /** estimated-token budget; older history is compacted when exceeded */
   /** estimated-token budget; older history is compacted when exceeded */
@@ -433,6 +439,7 @@ export class Agent {
       // effort field is then never sent, which is the safe default
       reasoningEffort: "",
       supportedParameters: [],
+      reasoningEffortOptIn: false,
       maxConsecutiveToolErrors: 5,
       maxTurnsPerRound: 200,
       maxAuditRejects: 3, // #128: bound the reject loop
@@ -1436,9 +1443,11 @@ export class Agent {
       stats: { ...this.stats, costUsd: this.modelPricing ? this.stats.costUsd : undefined },
       model: this.opts.llm.model,
       provider: this.opts.provider,
-      // #47: the effort in force, and whether this model can take one at all
+      // #47/#150: the effort in force, and whether this model can take one at all
       ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
-      effortSupported: (this.opts.supportedParameters ?? []).includes("reasoning_effort"),
+      effortSupported:
+        (this.opts.supportedParameters ?? []).includes("reasoning_effort") ||
+        this.opts.reasoningEffortOptIn === true,
       sessionDir: this.opts.sessionDir,
       ctx: {
         usedTokens: this.lastUsage?.input ?? this.estimateTokens(),

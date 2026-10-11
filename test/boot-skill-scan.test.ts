@@ -18,10 +18,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource, stripSourceComments } from "./helpers/source.ts";
+import { readSourceUrl, stripSourceComments } from "./helpers/source.ts";
 
-const agent = stripSourceComments(readSource(new URL("../src/agent/agent.ts", import.meta.url).pathname));
-const skills = stripSourceComments(readSource(new URL("../src/agent/skills.ts", import.meta.url).pathname));
+const agent = stripSourceComments(readSourceUrl(new URL("../src/agent/agent.ts", import.meta.url)));
+const skills = stripSourceComments(readSourceUrl(new URL("../src/agent/skills.ts", import.meta.url)));
 
 /** the body of init() */
 function initBody(): string {

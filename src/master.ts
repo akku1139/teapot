@@ -184,6 +184,12 @@ export interface ProviderConfig {
   apiKey?: string;
   /** optional default model for this provider */
   model?: string;
+  /**
+   * This endpoint accepts `reasoning_effort` (#150). Set it for gateways that take
+   * the field but publish no capability list, so the catalogue check cannot detect
+   * support. Off by default: some endpoints reject the field with a 400.
+   */
+  reasoningEffort?: boolean;
 }
 
 export interface AgentConfig {
@@ -963,6 +969,9 @@ export class Master {
       ...(modelMeta?.supportedParameters
         ? { supportedParameters: modelMeta.supportedParameters }
         : {}),
+      // #150: the provider opts in explicitly when its catalogue does not carry
+      // capability metadata, so the gate above cannot see the support
+      ...(prov?.reasoningEffort ? { reasoningEffortOptIn: true } : {}),
     });
     // pricing metadata (USD/token) for the runtime cost estimate — best
     // effort: providers without pricing in /models simply show no cost
@@ -1847,7 +1856,7 @@ if (active().length === 0) wake();
     const effortList = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => [] as ModelMeta[]);
     const meta = effortList.find((m) => m.id === (model || llm.model));
     const opts = agent as unknown as {
-      opts: { reasoningEffort: string; supportedParameters: string[] };
+      opts: { reasoningEffort: string; supportedParameters: string[]; reasoningEffortOptIn?: boolean };
     };
     if (reasoningEffort !== undefined) {
       // validated here so an unsupported value never reaches the request body;
@@ -1857,6 +1866,10 @@ if (active().length === 0) wake();
       if (cfgEntry) cfgEntry.reasoningEffort = opts.opts.reasoningEffort || undefined;
     }
     opts.opts.supportedParameters = meta?.supportedParameters ?? [];
+    // #150: keep the explicit provider opt-in in step with the (possibly new)
+    // provider, so switching to an opted-in gateway enables the dropdown at once
+    const nowProv = this.config.providers?.[effectiveProvider];
+    opts.opts.reasoningEffortOptIn = nowProv?.reasoningEffort === true;
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
     if (!llm.baseUrl) throw new Error("no baseUrl resolved");
     agent.setLlmConfig(llm);

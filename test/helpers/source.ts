@@ -14,6 +14,24 @@
  * tests that assert on runtime behaviour never read the file at all.
  */
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Read a SOURCE file next to a test, given a `new URL(..., import.meta.url)`.
+ *
+ * Use this instead of `readSource(new URL("...", import.meta.url).pathname)`.
+ * `URL.pathname` is a URL path, not a filesystem path: on Windows it yields
+ * `/D:/a/teapot/src/agent/agent.ts`, and handing that to `readFileSync` makes Node
+ * treat it as a RELATIVE path with a drive letter in it, searching
+ * `D:\D:\a\teapot\...`. Nine files did exactly that, and every one of them failed
+ * on the Windows runner only — which is the platform where nobody can iterate.
+ *
+ * `fileURLToPath` performs the conversion correctly on both platforms, and taking
+ * the URL (not a string) means the mistake cannot be written here at all.
+ */
+export function readSourceUrl(url: URL): string {
+  return readSource(fileURLToPath(url));
+}
 
 export function readSource(path: string): string {
   return readFileSync(path, "utf8").replace(/\r\n/g, "\n");

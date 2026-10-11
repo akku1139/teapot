@@ -29,10 +29,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 import { isScrollingAway } from "../frontend/scroll-follow.ts";
 
-const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
+const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 test("content growing below a bottom-pinned reader is not a scroll away", () => {
   const bottom = { gap: 0, top: 1000 };

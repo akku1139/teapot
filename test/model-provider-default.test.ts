@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 import {
   mayResyncProvider,
   modelOnProviderSwitch,
@@ -59,12 +59,12 @@ test("the poll-driven re-sync must not undo a deliberate provider choice (#3)", 
   // the next poll reads that as "not mid-edit" and pulls the dropdown back
   assert.equal(mayResyncProvider(true), false, "a touched dropdown is the operator's");
   assert.equal(mayResyncProvider(false), true, "an untouched one still follows an external change");
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
+  const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
   assert.match(app, /mayResyncProvider\(providerTouched\)/, "and it must be wired (#3)");
 });
 
 test("the provider dropdown is wired to the rule (#3)", () => {
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
+  const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
   const select = app.indexOf("modelOnProviderSwitch(");
   assert.notEqual(select, -1, "the provider onchange must consult modelOnProviderSwitch (#3)");
   const from = app.lastIndexOf("onchange", select);

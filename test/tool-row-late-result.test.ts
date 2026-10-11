@@ -27,10 +27,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 import { eventBelongsOnTimeline } from "../frontend/session-scope.ts";
 
-const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
+const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 /* ---------- 1: the fallback timeline must accept frames ---------- */
 
