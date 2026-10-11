@@ -19,8 +19,8 @@ import { fileURLToPath } from "node:url";
 /**
  * Read a SOURCE file next to a test, given a `new URL(..., import.meta.url)`.
  *
- * Use this instead of `readSource(new URL("...", import.meta.url).pathname)`.
- * `URL.pathname` is a URL path, not a filesystem path: on Windows it yields
+ * Use this instead of building a path from a URL's `pathname` property, which is a
+ * URL path and not a filesystem path: on Windows it yields
  * `/D:/a/teapot/src/agent/agent.ts`, and handing that to `readFileSync` makes Node
  * treat it as a RELATIVE path with a drive letter in it, searching
  * `D:\D:\a\teapot\...`. Nine files did exactly that, and every one of them failed

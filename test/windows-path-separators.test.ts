@@ -36,11 +36,16 @@ test("no test reads a file via URL.pathname — it breaks on Windows (#126, #110
   for (const f of testFiles(here)) {
     if (path.basename(f) === "windows-path-separators.test.ts") continue; // this file
     const src = readFileSync(f, "utf8");
-    src.split("\n").forEach((line, i) => {
-      // the shape that broke: a URL immediately followed by `.pathname`, with the
-      // result used as a path. A commented-out or prose mention does not count.
-      const code = line.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, "");
-      if (/new URL\([^)]*\)\s*\.pathname/.test(code)) offenders.push(`${path.relative(here, f)}:${i + 1}`);
+    // COMMENTS MUST BE STRIPPED before scanning. The first version of this guard did
+    // not, so the helper's own documentation — which quotes the forbidden pattern to
+    // explain why it is wrong — failed the test on Windows.
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ""))
+      .split("\n")
+      .map((l) => l.replace(/\/\/.*$/, ""))
+      .join("\n");
+    code.split("\n").forEach((line, i) => {
+      if (/new URL\([^)]*\)\s*\.pathname/.test(line)) offenders.push(`${path.relative(here, f)}:${i + 1}`);
     });
   }
   assert.deepEqual(
@@ -50,17 +55,16 @@ test("no test reads a file via URL.pathname — it breaks on Windows (#126, #110
   );
 });
 
-test("fileURLToPath is the conversion that is correct on both platforms (#126)", () => {
+test("fileURLToPath is the conversion to use for a file URL (#126)", () => {
   // NOTE on what is assertable here. `fileURLToPath` is PLATFORM-DEPENDENT: on
   // Windows it converts `file:///D:/a/x.ts` to `D:\a\x.ts`, while on Linux (this
-  // runner) it legitimately leaves the same URL as `/D:/a/x.ts` — Linux has no
-  // drives, so it cannot be asked to produce one. Asserting the Windows output here
-  // would therefore be asserting something false about the platform running the
-  // test.
+  // runner) the same URL legitimately stays `/D:/a/x.ts` — Linux has no drives, so
+  // it cannot be asked to produce one. Asserting the Windows output here would be
+  // asserting something false about the platform running the test.
   //
-  // What IS checkable anywhere: the function resolves to a path rather than leaving
-  // a URL, and it agrees with `pathname` on POSIX — which is exactly why the
-  // `.pathname` mistake stays invisible on Linux and only ever shows up on Windows.
+  // What IS checkable anywhere: it resolves a proper file URL to a path, and on
+  // POSIX it agrees with `pathname` — which is exactly why the `.pathname` mistake
+  // stays invisible on Linux and only ever shows up on the Windows job.
   const posixUrl = new URL("file:///home/dev/x.ts");
   assert.equal(fileURLToPath(posixUrl), "/home/dev/x.ts", "a POSIX file URL resolves to its path");
   assert.equal(
@@ -68,11 +72,9 @@ test("fileURLToPath is the conversion that is correct on both platforms (#126)",
     posixUrl.pathname,
     "and it EQUALS pathname on POSIX — the reason the bug is Windows-only",
   );
-  // on Windows this same call returns a drive-absolute path; the assertion lives in
-  // the Windows CI job's own run of this file, not in a hard-coded shape here
   assert.match(
-    fileURLToPath(new URL("file:./relative.ts")),
-    /relative\.ts$/,
-    "and a relative file URL still resolves (no URL left behind)",
+    fileURLToPath(new URL("../src/agent/agent.ts", import.meta.url)),
+    /agent[\\/]agent\.ts$/,
+    "and a test-relative URL resolves to a real path on both platforms",
   );
 });
