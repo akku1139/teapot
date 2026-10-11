@@ -113,6 +113,28 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   several long-lived bugs (#40, #146).
 - The server sends authoritative snapshots over the WebSocket; REST is a
   fallback/resync path. Prefer extending the socket payload over adding a poll.
+- **The intended timeline architecture** (and the direction to move in): every
+  logged event is broadcast over the WebSocket and MERGED client-side, so REST
+  is needed only when switching session and when returning from sleep, where
+  the gap genuinely cannot be reconstructed locally.
+  - The socket already carries the full event (`kind:"event"`, the object the log
+    wrote), and `mergeEvents` dedupes by id and sorts by seq, so a socket frame
+    and a REST page can arrive in either order.
+  - The drift, MEASURED: with synthetic geometry and counters around `fetch`, one
+    ordinary socket event costs a FULL `/events` read (the read count goes 1 → 2
+    while a message is merely rendered). The event branch merges the payload and
+    then schedules `runFeedRefresh`, which re-reads the whole log.
+  - What that pass must keep providing, and where it already exists:
+    `refreshAgents()` (the `status`/`live` that drives tool-row chrome) — every
+    status transition in `src/agent/agent.ts` already emits `kind:"agent-update"`,
+    and the WS route attaches a fresh snapshot to each one, so the socket can
+    carry it. `catchUpAfterReconnect()` (`?after=<cursor>`) is ALREADY the
+    proportional, socket-shaped path; the live branch could use the same call
+    instead of a full re-read.
+  - Why this is not a quick change: it is the area #54 came from, where the
+    socket was made authoritative BEFORE the status path moved with it and every
+    tool row broke. Do it as a measured step (count the `/events` reads before and
+    after) with the tool-row closure re-verified, not as a tidy-up.
 - Agent status (`status`) and "is work in flight" (`live`) are different
   things: a parked tool or a queued prompt is live while the status reads
   `idle`. Use `live`/`isBusy` for control decisions.
