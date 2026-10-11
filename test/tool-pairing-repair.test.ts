@@ -42,6 +42,15 @@ function pairingErrors(msgs: ChatMessage[]): string[] {
     for (const t of m.tool_calls ?? []) if (!answered.has(t.id)) errs.push(`unanswered call ${t.id}`);
   }
   if (msgs[0]?.role === "tool") errs.push("starts with a tool result");
+  // a provider also refuses a duplicate answer and a result before its call —
+  // both were measured to return the same "invalid request error" (#152)
+  const answers = msgs.filter((m) => m.role === "tool" && m.tool_call_id).map((m) => m.tool_call_id!);
+  if (new Set(answers).size !== answers.length) errs.push("duplicate tool result");
+  const issued = new Set<string>();
+  for (const m of msgs) {
+    if (m.role === "tool" && m.tool_call_id && !issued.has(m.tool_call_id)) errs.push("result before its call");
+    for (const t of m.tool_calls ?? []) if (t.id) issued.add(t.id);
+  }
   return errs;
 }
 
@@ -96,4 +105,33 @@ test("an empty history, and one with no tool calls at all, pass through (#152)",
   assert.deepEqual(repairToolPairing([]), []);
   const plain: ChatMessage[] = [user("hi"), { role: "assistant", content: "hello" }];
   assert.equal(repairToolPairing(plain), plain);
+});
+
+/* ---------- the two shapes the first version still let through (#152) ---------- */
+
+/**
+ * MEASURED against the live provider: the repair's first version dropped only
+ * unattributable results, and TWO shapes still came back 400 even after it ran —
+ * a duplicate answer, and a result placed BEFORE its call. A guard that reports success
+ * on a request the provider refuses is worse than no guard, because it hides the cause.
+ */
+test("a SECOND answer to one call is dropped (#152)", () => {
+  // strict providers refuse two responses for one call
+  const fixed = repairToolPairing([user("go"), call("c1"), result("c1", "first"), result("c1", "second")]);
+  assert.deepEqual(pairingErrors(fixed), []);
+  const answers = fixed.filter((m) => m.role === "tool" && m.tool_call_id === "c1");
+  assert.equal(answers.length, 1, `exactly one answer must survive (#152): ${JSON.stringify(fixed)}`);
+  assert.equal(answers[0]!.content, "first", "and it must be the first, not the last");
+});
+
+test("a result placed BEFORE its call is repaired (#152)", () => {
+  // measured as the same rejection; the ordering is part of the contract
+  const fixed = repairToolPairing([user("go"), result("c1", "out"), call("c1")]);
+  assert.deepEqual(pairingErrors(fixed), []);
+  const idx = (pred: (m: ChatMessage) => boolean) => fixed.findIndex(pred);
+  assert.ok(
+    idx((m) => (m.tool_calls ?? []).some((t) => t.id === "c1")) <
+      idx((m) => m.role === "tool" && m.tool_call_id === "c1"),
+    `the call must PRECEDE its result (#152): ${JSON.stringify(fixed)}`,
+  );
 });

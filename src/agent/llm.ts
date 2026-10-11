@@ -363,40 +363,74 @@ function looksMangled(name: string): boolean {
  * nothing and the prompt stays byte-identical for prefix caching.
  */
 export function repairToolPairing(messages: ChatMessage[]): ChatMessage[] {
-  const calls = new Set<string>();
-  for (const m of messages) for (const t of m.tool_calls ?? []) if (t.id) calls.add(t.id);
-  const answered = new Set<string>();
-  for (const m of messages) if (m.role === "tool" && m.tool_call_id) answered.add(m.tool_call_id);
+  // which call ids exist, in the order they are issued
+  const callOrder = new Map<string, number>();
+  for (const m of messages) for (const t of m.tool_calls ?? []) if (t.id && !callOrder.has(t.id)) callOrder.set(t.id, callOrder.size);
 
-  // fast path: nothing to do
+  // nothing to repair when every result follows its own call exactly once and every
+  // call is answered — checked first so the common path returns the SAME array and the
+  // prompt stays byte-identical for prefix caching
+  const seen = new Set<string>();
   let ok = true;
   for (const m of messages) {
-    if (m.role === "tool" && (!m.tool_call_id || !calls.has(m.tool_call_id))) ok = false;
-    for (const t of m.tool_calls ?? []) if (t.id && !answered.has(t.id)) ok = false;
+    if (m.role === "tool") {
+      const id = m.tool_call_id;
+      if (!id || !callOrder.has(id) || seen.has(id)) ok = false;
+      else seen.add(id);
+      continue;
+    }
+    // a call must not be answered before it is issued
+    for (const t of m.tool_calls ?? []) if (t.id && seen.has(t.id)) ok = false;
   }
-  if (ok) return messages;
+  if (ok && seen.size === callOrder.size) return messages;
 
+  // Rebuild. Rules, in the order they are applied:
+  //   - a result with no call, or for a call not yet issued, is DROPPED (it cannot be
+  //     attributed; a result placed BEFORE its call is the same defect and the
+  //     provider refuses both with the same "invalid request error")
+  //   - a second result for one call is DROPPED (a call gets exactly one answer)
+  //   - an unanswered call gets a placeholder, so the exchange survives
+  // MEASURED: dropping only the unattributable ones left two shapes still failing, and
+  // reporting success on a request the provider refuses is the worst outcome for a guard.
   const out: ChatMessage[] = [];
+  const answered = new Set<string>();
   for (const m of messages) {
-    // a result whose call is gone cannot be attributed to anything — drop it
-    if (m.role === "tool" && (!m.tool_call_id || !calls.has(m.tool_call_id))) continue;
+    if (m.role !== "tool") {
+      out.push(m);
+      continue;
+    }
+    const id = m.tool_call_id;
+    if (!id || !callOrder.has(id) || answered.has(id)) continue; // unattributable or duplicate
+    if (!issuedBefore(messages, m)) continue; // out of order
+    answered.add(id);
     out.push(m);
-    // an unanswered call would be rejected; answer it so the exchange survives
+  }
+  // answer every call that no result covered, right after its call
+  const filled: ChatMessage[] = [];
+  for (const m of out) {
+    filled.push(m);
     for (const t of m.tool_calls ?? []) {
-      if (t.id && !answered.has(t.id)) {
-        out.push({
-          role: "tool",
-          tool_call_id: t.id,
-          content: "(not completed — the tool did not run)",
-        });
-      }
+      if (!t.id || answered.has(t.id)) continue;
+      filled.push({
+        role: "tool",
+        tool_call_id: t.id,
+        content: "(not completed — the tool did not run)",
+      });
     }
   }
-  // and drop a leading run of tool messages: a prefix drop can leave the kept tail
-  // starting on one, which no preceding call can justify
-  let start = 0;
-  while (start < out.length && out[start]!.role === "tool") start++;
-  return start ? out.slice(start) : out;
+  // a prefix drop can leave the kept tail starting on a result, which nothing justifies
+  let first = 0;
+  while (first < filled.length && filled[first]!.role === "tool") first++;
+  return first ? filled.slice(first) : filled;
+}
+
+/** was this result's call issued earlier in the array? */
+function issuedBefore(messages: ChatMessage[], result: ChatMessage): boolean {
+  for (const m of messages) {
+    if (m === result) return false;
+    if ((m.tool_calls ?? []).some((t) => t.id === result.tool_call_id)) return true;
+  }
+  return false;
 }
 
 function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
