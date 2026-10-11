@@ -36,6 +36,7 @@ import {
 } from "./sidebar-tree";
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
+import { isScrollingAway } from "./scroll-follow";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -1801,7 +1802,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // been scrolled (the pill only disappears once a real scroll lands)
       setAtBottom(true);
       userScrolledUp = false;
-      lastScrollGap = undefined;
+      lastScrollSample = undefined;
     }
     setSelected(id);
     setTimelineId(tid);
@@ -2795,7 +2796,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let suppressScrollEval = false;
   // user-scroll lock state (see the feed onscroll handler)
   let userScrolledUp = false;
-  let lastScrollGap: number | undefined;
+  let lastScrollSample: { gap: number; top: number } | undefined;
   createEffect(() => {
     draft(); // re-run on typing AND after send() clears the draft
     autosizeComposer();
@@ -3464,25 +3465,33 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             if (suppressScrollEval) return; // programmatic resize, not user
             const el = e.currentTarget;
             const nb = nearBottom();
-            // USER-SCROLL LOCK: while streaming, new content grows the feed and
-            // fires scroll events whose nearBottom() still reads true (the
-            // growth hasn't been laid out yet) — atBottom flipped back on, the
-            // follow effect yanked the reader down mid-scroll, and the view
-            // fought the user ("ガタガタ"). An upward scroll of >24px from the
-            // bottom locks follow off until the reader returns to the tail.
+            // USER-SCROLL LOCK. Two jobs, and the discriminator is `scrollTop`:
+            //
+            //  - a DELIBERATE scroll up must switch follow off, and the view
+            //    must not fight the reader ("ガタガタ");
+            //  - content ARRIVING BELOW must NOT, even though it grows the gap
+            //    by exactly as much. `scrollTop` does not move when the browser
+            //    appends below the viewport, and the old gap-only heuristic took
+            //    that for a scroll: a +30px tool result turned follow off by
+            //    itself, which is the reported "sometimes stops following".
+            //
+            // See frontend/scroll-follow.ts — the rule is extracted because the
+            // thresholds and the sample are the whole bug.
             const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-            if (!nb && lastScrollGap !== undefined && gap > lastScrollGap + 8 && gap > 24) {
-              userScrolledUp = true;
-            } else if (nb) {
-              userScrolledUp = false;
-            }
-            lastScrollGap = gap;
+            const top = el.scrollTop;
+            // ONE decision, taken from the sample. It must be read BEFORE the
+            // sample is overwritten, and it must drive BOTH the lock and the
+            // follow flag — they are the same question.
+            const movingAway = isScrollingAway({ gap, top }, lastScrollSample);
+            lastScrollSample = { gap, top };
+            if (nb) userScrolledUp = false;
+            else if (movingAway) userScrolledUp = true;
             // reached the top → pull the next older page (infinite scroll up).
             // MUST run before the follow-lock return: the lock exists to stop
             // follow mode from fighting the reader, and a reader at the very
             // top is by definition not at the bottom — returning here silently
             // swallowed every loadOlder trigger ("past logs never loaded").
-            if (el.scrollTop <= 4 && selected() && !loadingOlder() && !olderDone() && events().length > 0) {
+            if (top <= 4 && selected() && !loadingOlder() && !olderDone() && events().length > 0) {
               void loadOlder();
             }
             if (userScrolledUp && !nb) {
@@ -3490,7 +3499,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               return; // locked: don't re-evaluate follow mode until back at tail
             }
             if (nb && missed()) setMissed(0);
-            setAtBottom(nb);
+            // The follow flag follows the SAME decision, not one raw measurement.
+            // `setAtBottom(nb)` here was the second half of the bug: content
+            // appended below grows the gap, `nearBottom()` reads false for that
+            // frame, and follow switched itself off with the pill appearing while
+            // the operator watched a live stream. Measured: +30px of growth, no
+            // input at all.
+            if (nb) setAtBottom(true);
+            else if (movingAway) setAtBottom(false);
           }}>
             <Show when={compacting()}>
               {(c) => (
