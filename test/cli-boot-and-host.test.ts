@@ -27,6 +27,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { isolatedBootEnv } from "./helpers/isolated-boot.ts";
 import { mkdtempSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -66,8 +67,12 @@ async function startServer(args: string[], dataDir: string): Promise<{ proc: imp
   const entry = path.join(repo, "dist", "index.js");
   assert.ok(existsSync(entry), "precondition: dist is built");
   const port = await freePort();
+  // #143: isolate BOTH paths — see isolatedBootEnv. Redirecting only the data dir
+  // rewrites a developer's real config (every configured agent mints a session in
+  // the temp dir and persists that pointer into the real file).
+  const boot = isolatedBootEnv(dataDir, port);
   const proc = spawn(process.execPath, [entry, "--port", String(port), ...args], {
-    env: { ...process.env, TEAPOT_DATA_DIR: dataDir, TEAPOT_PORT: String(port) },
+    env: { ...process.env, ...boot.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
@@ -156,7 +161,7 @@ test("the published bin actually starts (#140)", async (t) => {
     // test (#140: argv[1] must be resolved through the symlink) is exercised on
     // every platform.
     const proc = spawn(process.execPath, [link, "--port", String(port)], {
-      env: { ...process.env, TEAPOT_DATA_DIR: dataDir!, TEAPOT_PORT: String(port) },
+      env: { ...process.env, ...isolatedBootEnv(dataDir!, port).env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -194,7 +199,7 @@ test("the built entry point boots when run DIRECTLY, on every platform (#140)", 
     assert.ok(existsSync(entry), "precondition: dist is built");
     const port = await freePort();
     const proc = spawn(process.execPath, [entry, "--port", String(port)], {
-      env: { ...process.env, TEAPOT_DATA_DIR: dataDir!, TEAPOT_PORT: String(port) },
+      env: { ...process.env, ...isolatedBootEnv(dataDir!, port).env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {

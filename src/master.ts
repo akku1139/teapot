@@ -38,6 +38,38 @@ import {
 } from "./model-meta.ts";
 
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
+/**
+ * Did the effective data dir come from an ENV OVERRIDE that disagrees with the
+ * config file's own `dataDir`? (#143)
+ *
+ * When it does, the config's session pointers are meaningless: they name
+ * directories under the OLD root, and this process is looking at a different
+ * one. Every agent therefore mints a fresh session — and `recordSession` writes
+ * those new pointers back into the config, destroying the real mapping. The
+ * caller then throws the new root away (a test's temp dir), leaving a config that
+ * points at sessions that never existed.
+ *
+ * That is not hypothetical: `test/cli-boot-and-host.test.ts` spawns the built CLI
+ * with `TEAPOT_DATA_DIR=<temp>` but NO config override, so `pnpm test` on a
+ * developer machine rewrote their real config and orphaned 493 sessions' pointers
+ * — twice, before this guard. On CI it is invisible, because CI has no config
+ * file to damage.
+ *
+ * So: a mismatched root makes session resolution READ-ONLY. The boot still works
+ * (agents get working sessions in the new root) — it just does not rewrite a
+ * config that is describing somebody else's data dir.
+ */
+function dataDirOverrideMismatch(configFilePath: string, effective: string): boolean {
+  if (!process.env.TEAPOT_DATA_DIR) return false; // not an override: the file is the truth
+  try {
+    const raw = JSON.parse(readFileSync(configFilePath, "utf8")) as { dataDir?: unknown };
+    if (typeof raw.dataDir !== "string" || !raw.dataDir) return false;
+    return path.resolve(raw.dataDir) !== path.resolve(effective);
+  } catch {
+    return false; // unreadable/new config — nothing to protect
+  }
+}
+
 const MAX_SPAWN_DEPTH = 3;
 /**
  * How long boot waits for an endpoint's model catalogue (#143).
@@ -463,6 +495,18 @@ export class Master {
   ) {
     this.config = config;
     this.configPath = configPath;
+    // #143: an env data-dir override that disagrees with the config file means
+    // this config describes a DIFFERENT data dir — its session pointers cannot be
+    // valid here, so rewriting them would destroy the real mapping. See
+    // dataDirOverrideMismatch().
+    this.sessionsReadOnly = dataDirOverrideMismatch(configPath, config.dataDir);
+    if (this.sessionsReadOnly) {
+      console.warn(
+        `[teapot] TEAPOT_DATA_DIR (${config.dataDir}) disagrees with the config's own dataDir; ` +
+          `sessions will be resolved in the override but NOT written back to ${configPath}. ` +
+          `Set TEAPOT_CONFIG to an isolated config to silence this.`,
+      );
+    }
   }
 
   /**
@@ -525,6 +569,11 @@ export class Master {
    * idle, for a single request.
    */
   private metaWaited = new Set<string>();
+  /**
+   * #143: `TEAPOT_DATA_DIR` points somewhere other than the config's own dataDir,
+   * so session pointers must not be written back (see dataDirOverrideMismatch).
+   */
+  private sessionsReadOnly = false;
 
   /** write once and clear the dirty flag — used at the end of a batched section */
   private flushConfig(): void {
@@ -1038,6 +1087,10 @@ export class Master {
     const entry = this.config.agents.find((a) => a.id === ac.id);
     if (!entry) return; // not a configured agent — nothing to persist yet
     entry.session = sessionId;
+    // #143: never write session pointers into a config that is describing another
+    // data dir — every one of them would be wrong, and the correct mapping is
+    // destroyed. The in-memory session above still works for this process.
+    if (this.sessionsReadOnly) return;
     this.saveConfig();
   }
 
