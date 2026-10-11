@@ -38,7 +38,12 @@ test("a session switch saves the outgoing echoes and restores the incoming (#87)
     /setPendingMsgs\(\[\]\)/,
     "the switch must not CLEAR the echoes (#87) — that is the whole bug",
   );
-  const sw = app.slice(app.indexOf("#87: this used to CLEAR the list"), app.indexOf("#87: this used to CLEAR the list") + 400);
+  // Anchored on the CODE, not on an explanatory comment. It used to search for
+  // the comment's text, which made the test fail the moment the prose was
+  // reworded while the code was untouched — a comment is not a contract.
+  const at = app.indexOf("writePending(prevTid || prevId");
+  assert.notEqual(at, -1, "the switch must save the outgoing echoes (#87)");
+  const sw = app.slice(at, at + 400);
   assert.match(
     sw,
     /writePending\(prevTid \|\| prevId/,

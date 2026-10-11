@@ -24,12 +24,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { readSource, stripSourceComments } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const app = readSource(path.join(here, "..", "frontend", "App.tsx"));
+// comments are STRIPPED: an assertion can otherwise be satisfied by prose
+const app = stripSourceComments(readSource(path.join(here, "..", "frontend", "App.tsx")));
 
 /** the body of the `kind === "event"` WS branch */
 function eventBranch(): string {
@@ -56,17 +57,21 @@ test("the WS event payload is inserted into the timeline (#54)", () => {
   );
 });
 
-test("inserting the event does not also trigger the old reload (#54)", () => {
-  // both would be correct individually and wrong together: the reload would
-  // clobber the inserted row and make the socket path pointless
+test("inserting the event also schedules the refresh that makes it coherent (#54)", () => {
   const b = eventBranch();
   const insert = b.indexOf("mergeEvents([msg.event as Ev])");
-  const reload = b.indexOf("runFeedRefresh");
   assert.notEqual(insert, -1, "precondition: the payload is inserted (#54)");
-  assert.ok(
-    reload === -1 || reload < insert,
-    "a socket event must not also schedule a full reload (#54)",
-  );
+  // The rule: the branch must reach its scheduled refresh AFTER merging, rather
+  // than ending on a bare `return` (that regression is #145).
+  //
+  // Search AFTER the merge. Searching the whole branch used to match the
+  // explanatory comment, so this assertion held while the code did not — and the
+  // early `return`s that legitimately sit between the merge and the timer (a
+  // hidden tab defers, an already-armed timer collapses) mean the statement to
+  // pin is the TIMER, not the absence of returns.
+  const after = b.indexOf("runFeedRefresh", insert);
+  assert.notEqual(after, -1, "the branch must schedule its refresh after merging (#54)");
+  assert.match(b.slice(insert, after), /pendingRefresh = true/, "and mark the feed dirty (#54)");
 });
 
 test("a socket event merges AND schedules a refresh (#54, #145)", () => {

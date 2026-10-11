@@ -1,22 +1,22 @@
 /**
- * 入力中のメッセージが消失する — the composer dropped text on a Japanese
- * keyboard, and the cause is the controlled `value={draft()}` binding.
+ * 入力中のメッセージが消失する — the composer dropped text on a Japanese keyboard,
+ * and the cause is the controlled `value={draft()}` binding.
  *
- * Solid writes the textarea's `value` every time the bound signal changes.
+ * Solid writes the textarea's `value` on every change of the bound signal.
  * During an IME composition the browser OWNS that textarea's contents: the
  * pre-edit kana live in the composition, not in `value`. Assigning `.value`
- * mid-composition ends it, and what was typed so far goes with it.
+ * mid-composition ends it, and what was typed goes with it.
  *
- * Measured, not reasoned: an instrumented bundle driven in happy-dom (same
- * fixture as scripts/smoke-web.mjs) counted FOUR `.value` writes across a
- * simulated four-step composition, and ZERO after the fix:
+ * Measured with an instrumented `value` setter on the built bundle in happy-dom
+ * (the fixture approach of scripts/smoke-web.mjs), over a four-step composition
+ * "に → にほ → にほん → にほんご":
  *
- *   pre-fix : framework write "に" / "にほ" / "にほん" / "にほんご"
- *   post-fix: (none)
+ *   pre-fix : framework write "に", "にほ", "にほん", "にほんご"   (4 writes)
+ *   post-fix: (none)                                              (0 writes)
  *
- * The DOM count is what matters — a "did the text change?" check inside the
- * component cannot see it, because the browser cannot tell a redundant
- * assignment from a real one, and both disturb the composition.
+ * Both builds returned the same final text in this harness — happy-dom has no
+ * IME, so the browser-side cancellation cannot show — which is why the DOM-write
+ * COUNT is the signal, not the resulting string.
  *
  * The rule lives in frontend/composer-ime.ts so it is testable without a DOM;
  * the WIRING is asserted on App.tsx, because a helper only the tests import
@@ -29,53 +29,36 @@ import { composerValueChanged, shouldWriteComposerValue } from "../frontend/comp
 
 const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
 
-/** the composer textarea's opening tag */
-function composerTag(): string {
-  const at = app.indexOf("ref={(el) => {\n                  composerEl = el;");
-  assert.notEqual(at, -1, "the composer textarea must seed its own value (#IME)");
-  return app.slice(at, app.indexOf("onpaste=", at));
-}
-
-test("no write reaches the DOM while a composition is in progress", () => {
+test("no write reaches the DOM while a composition is in progress (#IME)", () => {
   assert.equal(shouldWriteComposerValue(true), false, "a mid-composition write cancels the conversion");
   assert.equal(shouldWriteComposerValue(false), true, "outside a composition the sync must run");
-});
-
-test("an unchanged value is not rewritten", () => {
-  // a redundant assignment still ends a composition, so the check is on the
+  // a redundant assignment still disturbs a composition, so the check is on the
   // VALUE, not on whether the signal was "set"
   assert.equal(composerValueChanged("same", "same"), false);
-  assert.equal(composerValueChanged("", "x"), true);
   assert.equal(composerValueChanged("x", ""), true, "clearing after send must reach the DOM");
 });
 
-test("the composer is a controlled input, but the write is gated (#IME)", () => {
-  const tag = composerTag();
+test("the composer syncs its value through the gate, and commits the composition (#IME)", () => {
+  const at = app.indexOf("shouldWriteComposerValue(imeInProgress)");
+  assert.notEqual(at, -1, "the sync effect must consult the gate (#IME)");
+  const eff = app.slice(app.lastIndexOf("createEffect", at), at + 400);
+  assert.match(eff, /const v = draft\(\)/, "reading the draft subscribes the effect (#IME)");
+  assert.match(eff, /composerValueChanged\(composerEl\.value, v\)/, "and skips a no-op write (#IME)");
+
+  const tag = app.slice(app.indexOf("el.value = draft()"), app.indexOf("onpaste=", app.indexOf("el.value = draft()")));
   assert.doesNotMatch(
     tag,
     /^\s*value=\{draft\(\)\}/m,
     "`value={draft()}` writes the DOM on every keystroke — the disappearing-text bug",
   );
-  assert.match(tag, /el\.value = draft\(\)/, "the initial value must still be seeded from the draft");
-  assert.match(tag, /oncompositionstart/, "the composition must be tracked");
-  assert.match(tag, /oncompositionend/, "and its end handled");
-  // the RESULT must be committed to the signal, or the next sync overwrites it.
-  // Order within the handler is not the point (the deferred flag reset and the
-  // commit are independent), so this looks at the handler as a whole.
-  const end = app.slice(app.indexOf("oncompositionend"), app.indexOf("onpaste=", app.indexOf("oncompositionend")));
-  assert.match(end, /saveDraft\(composerEl\?\.value/, "the composition's result must be committed (#IME)");
-});
-
-test("the sync effect that replaced the binding stands down while composing (#IME)", () => {
-  const at = app.indexOf("shouldWriteComposerValue(imeInProgress)");
-  assert.notEqual(at, -1, "the sync effect must consult the gate (#IME)");
-  const eff = app.slice(app.lastIndexOf("createEffect", at), at + 400);
-  assert.match(eff, /composerValueChanged\(composerEl\.value, v\)/, "and skip a no-op write (#IME)");
-  // the draft must be a DEPENDENCY, or the effect would never re-run on typing
-  assert.match(eff, /const v = draft\(\)/, "reading the draft is what subscribes the effect (#IME)");
-});
-
-test("Enter during a composition still confirms instead of sending (#12)", () => {
-  // the sibling rule this must not break: the send path consults the SAME flag
+  // the composition's RESULT must reach the signal, or the next sync overwrites
+  // it. Bound by the next handler rather than a fixed width.
+  const end = tag.slice(tag.indexOf("oncompositionend"), tag.indexOf("onpaste=", tag.indexOf("oncompositionend")));
+  assert.match(
+    end,
+    /saveDraft\(composerEl\?\.value/,
+    "the composition's RESULT must reach the signal, or the next sync overwrites it (#IME)",
+  );
+  // the sibling rule this must not break: Enter during a composition confirms
   assert.match(app, /!imeInProgress/, "the send guard must still check the flag (#12)");
 });

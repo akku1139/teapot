@@ -1,69 +1,54 @@
 /**
- * #54 — "while streaming, a bash row sometimes never finishes. Reloading
- * through the API completes it."
+ * #54 — "while streaming, a bash row sometimes never finishes. Reloading through
+ * the API completes it." Declared fixed three times, reopened each time, because
+ * every previous attempt reasoned about the code instead of driving it. These
+ * assertions come from MEASURING the built bundle in happy-dom (the fixture
+ * approach of scripts/smoke-web.mjs).
  *
- * TWO causes, both MEASURED against the built bundle (happy-dom, the same
- * fixture approach as scripts/smoke-web.mjs), because this issue has been
- * declared fixed three times and reopened each time. Reasoning about it produced
- * a wrong conclusion every time; driving it produced the answer immediately.
+ * TWO causes, both silent:
  *
- * ## 1. The session gate silently dropped every socket frame
+ * 1. The #146 session gate dropped EVERY socket frame.
  *
- * `timelineId()` is the AGENT ID until the session index lands (`select()` does
- * `latestSessionOf(id) ?? id`). The #146 event gate compared an event's real
- * `session` against that agent id, so in that window EVERY event mismatched and
- * `mergeEvents` was never reached. Only `runFeedRefresh`'s REST re-read moved the
- * feed — the report, verbatim: the API path completes the row, the socket does
- * not.
+ *    `timelineId()` is the AGENT ID until the session index lands (`select()`
+ *    does `latestSessionOf(id) ?? id`). The gate compared an event's real
+ *    `session` against that agent id, so every frame mismatched, `mergeEvents`
+ *    was never reached, and only the REST re-read moved the feed — exactly the
+ *    reported asymmetry. Measured A/B: the same frame rendered when its session
+ *    was the agent id and vanished when it was the real session id.
  *
- * Measured: the SAME frame rendered when its `session` was the agent id and was
- * dropped when it was the real session id. Both gates checked independently.
+ * 2. `ToolRow` captured its props instead of reading them.
  *
- * ## 2. `ToolRow` captured its result prop instead of reading it
- *
- * `<For each={chatEvents()}>` builds the row while `pairInfo().resFor.get(e.id)`
- * is still `undefined`. When the result arrives, pairInfo recomputes and the prop
- * changes — but `const res = props.res` was bound ONCE, so the row kept the
- * pre-result branch (`running…`, `waiting for output…`) until it was rebuilt.
- *
- * Measured, and this is the decisive one: changing ONE accessor to read
- * `props.res` directly flipped the row's class to `embed done`, while the body —
- * still using the captured copy — went on saying "running…". The prop updates;
- * the destructured copy does not.
- *
- * The fix makes `res` a getter and moves the label/hint/body derivation into a
- * memo, so a late result re-renders the row.
+ *    `<For each={chatEvents()}>` builds a row while its `res` is still
+ *    undefined, and `const res = props.res` was bound once — so a row never
+ *    learned its result and kept saying "running…". The stale-run guard was
+ *    disabled the same way: `staleDone` captured `agentActive` as it was when the
+ *    row was built, which is always `true` for a row that exists, so the guard
+ *    written to close this bug could never fire.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readSource } from "./helpers/source.ts";
-import { eventBelongsOnTimeline, timelineAcceptsSession } from "../frontend/session-scope.ts";
+import { eventBelongsOnTimeline } from "../frontend/session-scope.ts";
 
 const app = readSource(new URL("../frontend/App.tsx", import.meta.url).pathname);
 
-/* ---------- 1: the fallback view must accept frames ---------- */
+/* ---------- 1: the fallback timeline must accept frames ---------- */
 
 test("the fallback timeline (shown = the agent id) accepts a real session's frame (#54)", () => {
-  // the exact shape that broke: index not landed yet, so the displayed handle is
-  // the agent id while the event names a session
+  // the exact shape that broke: index not landed, so the displayed handle is the
+  // agent id while the event names a session
   assert.equal(
     eventBelongsOnTimeline({ agent: "alpha", session: "alpha-s1" }, "alpha", "alpha"),
     true,
     "the newest tail IS the agent's current session — dropping it is #54",
   );
-});
-
-test("a genuinely cross-session frame is still rejected (#146)", () => {
-  // the rule that must NOT be lost while fixing the above
+  // and the rule that must NOT be lost while fixing it (#146)
   assert.equal(eventBelongsOnTimeline({ agent: "alpha", session: "alpha-s1" }, "alpha", "alpha-s2"), false);
   assert.equal(eventBelongsOnTimeline({ agent: "beta", session: "beta-s1" }, "alpha", "alpha-s1"), false);
-  // the displayed session's own frame is accepted
   assert.equal(eventBelongsOnTimeline({ agent: "alpha", session: "alpha-s1" }, "alpha", "alpha-s1"), true);
-  // and the agent id is never compared AS a session id
-  assert.equal(timelineAcceptsSession("alpha-s1", "alpha", "alpha"), true);
 });
 
-test("the handler delegates to the shared predicate rather than comparing inline (#54)", () => {
+test("the event gate delegates to the shared predicate, never an inline compare (#54)", () => {
   const at = app.indexOf('if (msg.kind === "event") {');
   assert.notEqual(at, -1, "the event branch must exist");
   const b = app.slice(at, app.indexOf('if (msg.kind === "llm-delta")', at));
@@ -71,13 +56,18 @@ test("the handler delegates to the shared predicate rather than comparing inline
   assert.doesNotMatch(
     b,
     /session !== timelineId\(\)/,
-    "the inline compare is the bug — it cannot know the fallback view (#54)",
+    "the inline compare cannot know the fallback view — that was the bug (#54)",
   );
+  // the three gates that share the decision must all still consult it, or one
+  // can drift again exactly as it did before
+  for (const use of ["timelineIsLive(", "deltaBelongsToTimeline(", "eventBelongsOnTimeline("]) {
+    assert.ok(app.includes(use), `${use} must stay wired (#54)`);
+  }
 });
 
 /* ---------- 2: the row must react to a late result ---------- */
 
-test("ToolRow reads its result prop reactively (#54)", () => {
+test("ToolRow reads its result prop reactively, and its derivation is a memo (#54)", () => {
   const at = app.indexOf("function ToolRow(props:");
   assert.notEqual(at, -1, "ToolRow must exist");
   const body = app.slice(at, app.indexOf("/** The un-rendered source text", at));
@@ -86,27 +76,29 @@ test("ToolRow reads its result prop reactively (#54)", () => {
     /^\s*const res = props\.res;/m,
     "capturing the prop binds it once — the row then never learns its result (#54)",
   );
-  assert.match(
-    body,
-    /const res = \(\) => props\.res;/,
-    "the result must be read through the prop on every render (#54)",
-  );
-});
-
-test("the label/hint/body derivation is a MEMO, so a late result re-renders them (#54)", () => {
-  const at = app.indexOf("function ToolRow(props:");
-  const body = app.slice(at, app.indexOf("/** The un-rendered source text", at));
-  assert.match(body, /const derived = createMemo\(/, "the derivation depends on the result (#54)");
-  // the mutable `let` bindings must live INSIDE the memo, not in the component
-  // body — otherwise they are computed once and only their first value is shown
-  const beforeMemo = body.slice(0, body.indexOf("const derived = createMemo("));
+  assert.match(body, /const res = \(\) => props\.res;/, "the result must be read per render (#54)");
+  // the mutable bindings must live INSIDE the memo; computed outside it they are
+  // built once and only their first value is ever shown
+  const memoAt = body.indexOf("const derived = createMemo(");
+  assert.notEqual(memoAt, -1, "the derivation depends on the result, so it must be a memo (#54)");
   assert.doesNotMatch(
-    beforeMemo,
+    body.slice(0, memoAt),
     /^\s*let (icon|label|hint|body)\b/m,
-    "the derived values must be built inside the memo, not captured outside it (#54)",
+    "the derived values must be built inside the memo (#54)",
   );
-  // and the rendered output must come from the memo
   for (const use of ["derived().icon", "derived().body"]) {
     assert.ok(body.includes(use), `the row must render ${use} (#54)`);
   }
+});
+
+test("the stale-run guard re-reads its props, so it can actually fire (#54)", () => {
+  // as a captured value it was permanently false — this is the guard that was
+  // meant to close #54
+  assert.match(
+    app,
+    /const staleDone = \(\) => !props\.agentActive && !res\(\);/,
+    "the guard must be a function over the current props (#40/#54)",
+  );
+  const tag = app.slice(app.indexOf("function ToolRow(props:"), app.indexOf("/** The un-rendered source text", app.indexOf("function ToolRow(props:")));
+  assert.match(tag, /staleDone\(\) ?\?/, "and its call sites must invoke it (#54)");
 });

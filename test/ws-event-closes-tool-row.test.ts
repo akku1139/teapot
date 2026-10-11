@@ -33,12 +33,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { readSource, stripSourceComments } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const app = readSource(path.join(here, "..", "frontend", "App.tsx"));
+// comments are STRIPPED — see stripSourceComments for why (#75)
+const app = stripSourceComments(readSource(path.join(here, "..", "frontend", "App.tsx")));
 
 /** the body of the `kind === "event"` branch */
 function eventBranch(): string {
@@ -66,11 +67,18 @@ function eventBranch(): string {
 }
 
 test("a socket event still refreshes the agent's live status (#145)", () => {
-  // the regression: `agentActive` never updates, so `staleDone` is never reached
+  // The rule: the event path must SCHEDULE the refresh, because that is what
+  // re-reads the agent's status — without it `agentActive` never changes and a
+  // stranded tool row never closes.
+  //
+  // The pattern used to be /refreshAgents\(\)|runFeedRefresh\(\)/, which cannot
+  // match the call the code makes (`setTimeout(runFeedRefresh, 60)`): the test
+  // passed only because `refreshAgents()` appeared in the explanatory COMMENT.
+  // Comments are stripped here now, so it asserts the real invocation.
   assert.match(
     eventBranch(),
-    /refreshAgents\(\)|runFeedRefresh\(\)/,
-    "the event path must refresh agent status, or a stranded tool row never closes (#145)",
+    /runFeedRefresh\b/,
+    "the event path must reach the refresh that refreshes agent status (#145)",
   );
 });
 
@@ -118,22 +126,6 @@ test("a socket event still re-derives the feed (#145)", () => {
     /\n\s*\n\s*return;\s*$/,
     "the branch must not END on a return (#145)",
   );
-});
-
-test("a tool row CAN fall back to staleDone when its result is missed (#145)", () => {
-  const at = app.indexOf("const staleDone = () => !props.agentActive && !res();");
-  assert.notEqual(at, -1, "the stale-run guard must exist (#40)");
-  const block = app.slice(at, at + 200);
-  assert.match(
-    block,
-    /!props\.agentActive && !res\(\)/,
-    "a row closes when the agent is not live and no result arrived (#40/#145)",
-  );
-  // #54: it must be a FUNCTION. As a plain value it captured `props.agentActive`
-  // from the moment the row was BUILT — which is always `true` for a row that
-  // exists at all — so the guard could never fire, and this test passed over the
-  // dead guard by pinning that very line.
-  assert.match(block, /\(\)/, "the guard must re-read its props, not capture them (#54)");
 });
 
 test("an orphaned result still renders with its output (#54)", () => {

@@ -94,10 +94,12 @@ test("the feed re-pins after a compaction pass, in both directions (#108)", () =
 });
 
 test("the re-pin respects a reader who had scrolled away (#108)", () => {
-  // anchor on the #108 marker, then take the effect that follows it
-  const at = app.indexOf("#108: re-pin the feed");
+  // anchor on the CODE (the banner-presence read), not on the comment above it:
+  // a comment is not a contract, and rewording it must not fail a test whose
+  // behaviour is unchanged.
+  const at = app.indexOf("void compacting();");
   assert.notEqual(at, -1, "the fix must be present (#108)");
-  const start = app.indexOf("createEffect", at);
+  const start = app.lastIndexOf("createEffect", at);
   const block = app.slice(start, app.indexOf("});", app.indexOf("scrollBottom(true)", start)) + 4);
   assert.match(
     block,

@@ -35,7 +35,6 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
-import { readFileSync } from "node:fs";
 
 /**
  * Park the agent in wait_children with ONE live child, then send a prompt.
@@ -199,15 +198,4 @@ test("a parked agent IS live, so its rows are not stale (#120)", async () => {
     a.stop("end");
     await a.settled();
   });
-});
-
-test("the timeline's stale-run guard is what a reload relies on (#120)", () => {
-  // structural: the reload path works because it re-reads the log, so the guard
-  // must exist for a missed live event to recover at all
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(
-    app,
-    /const staleDone = \(\) => !props\.agentActive && !res\(\);/,
-    "an unresolved row must read done once the agent is not live (#120)",
-  );
 });

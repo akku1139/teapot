@@ -529,18 +529,12 @@ export default function App() {
   });
   // #108: re-pin the feed when the compaction banner appears or disappears.
   //
-  // The banner renders INSIDE the feed, so a pass changes the scroll height
-  // twice — taller when the phase starts, shorter when it ends — and the live
-  // follow effect cannot cover the second one. On `phase: done` two things land
-  // together: `setCompacting(null)` removes the banner, and the effect above
-  // clears the `[compact] ` live text. So the follow effect's own guard now
-  // reads `if (!txt && !rsn) return;` and bails on precisely the frame that
-  // needed pinning. The feed got shorter and the reader was left above the
-  // bottom, with follow mode still `true` in the signal — nothing looked wrong.
-  //
-  // Nothing else fires on that transition: the per-row `onResize` only runs when
-  // the OPERATOR opens a `<details>` (the reasoning block in MessageRow), and a compaction nobody
-  // touched is exactly the case that broke.
+  // The banner lives INSIDE the feed, so a pass changes its height twice — and
+  // on `phase: done` the live-text effect above clears the bubble in the same
+  // frame, tripping its own `if (!txt && !rsn) return;` guard. The feed got
+  // shorter with follow still `true` and the reader was left above the bottom.
+  // Nothing else fires on that transition: per-row `onResize` only runs when the
+  // OPERATOR opens a `<details>`.
   createEffect(() => {
     // key on the banner's presence, in BOTH directions
     void compacting();
@@ -612,25 +606,17 @@ export default function App() {
   // leaves running/waiting, any leftover live buffer is dead and must go.
   // (Reload "fixes" it today only because the buffer is memory-only.)
   createEffect(() => {
-    // #40: sweep EVERY agent's buffer against its own status, not just the
-    // selected one. Nothing replays missed events on reconnect, so an
-    // unselected agent's buffer could rely entirely on a turn-boundary event
-    // that never arrived — leaving stale text under the streaming chrome with
-    // the writing cursor attached, until a reload.
+    // #40: sweep EVERY agent's buffer against its OWN status, not the selected
+    // one — nothing replays missed events on reconnect, so a background agent's
+    // buffer could depend on a turn-boundary event that never arrived and leave
+    // stale text under a writing cursor until a reload.
     //
-    // #40 (second pass): this sweep was DEAD CODE, so the report kept
-    // reproducing. `agents()` was read INSIDE the signal updater, and
-    // `liveByAgent` is an empty Map on the first run — so `pruneDeadLiveBuffers`
-    // looped over nothing, never called `statusOf`, and the effect subscribed
-    // to NO signal at all. It ran exactly once, at mount.
-    //
-    // Proven with an instrumented bundle: "effect runs: 1, statusOf calls: 0".
-    // The helper was correct and fully unit-tested; only the WIRING was wrong,
-    // which is why the pure-helper tests passed and the bug shipped.
-    //
-    // Solid does track reads inside an updater (a minimal repro confirms it) —
-    // the empty map at mount is what prevented the first read. Reading the
-    // dependency here, outside the updater, subscribes the effect properly.
+    // `agents()` must be read HERE, outside the updater. Read inside it, the
+    // effect subscribed to no signal at all: `liveByAgent` is an empty Map on the
+    // first run, so `pruneDeadLiveBuffers` looped over nothing and never called
+    // `statusOf`. That is how this sweep shipped as dead code — measured as
+    // "effect runs: 1, statusOf calls: 0" — with the (correct, fully unit-tested)
+    // helper underneath it.
     const list = agents();
     setLiveByAgent((prev) =>
       pruneDeadLiveBuffers(prev, (id) => list.find((x) => x.id === id)?.status),
@@ -1399,33 +1385,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const raw = JSON.parse(localStorage.getItem("teapot.wsCollapsed") ?? "[]");
       const keys = Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
 
-      // #81: MIGRATE keys written by the #18 chat-header era.
+      // #81: migrate keys left by the deleted #18 chat-header row, which wrote
+      // `chat:<id>` here when clicked. That row is gone, so the keys are
+      // UNREACHABLE — nothing can clear them, and each one collapses a chat the
+      // operator never collapsed, hiding sub-agents the sidebar still badges.
       //
-      // In that build each top-level chat had its OWN header row, and clicking
-      // that header COLLAPSED the chat — writing `chat:<id>` into this same
-      // localStorage key. #18's follow-up (adaef8e) deleted the header row to
-      // fix the double-rendering, and with it the only control that could CLEAR
-      // those keys. They were not merely stale: they were unreachable, and they
-      // outlived several releases.
-      //
-      // The symptom reads as data loss rather than as a collapsed folder. A
-      // captured DOM showed ten of fifteen chats collapsed, five of them
-      // displaying a 🧩 badge (4, 1, 2, 8, 2 sub-agents) with none of those
-      // children rendered — so the sidebar claimed sub-agents existed and showed
-      // none. Nothing errored, and every row still had a working ▸ caret, which
-      // is why it looked like a bug in the tree rather than leftover state.
-      //
-      // Each one is individually recoverable by clicking. But "click 10 carets to
-      // undo something a previous version did to you" is not a reasonable ask,
-      // and the operator cannot tell which keys are theirs and which are ours.
-      //
-      // So: keys carrying a VERSION marker from the header era are dropped on
-      // load. Deliberately narrow — it only removes collapse keys this app
-      // wrote while the header existed, and leaves `ws:` keys and any key the
-      // current UI created untouched, so a real grouping the operator set up
-      // still survives a reload.
-      //
-      // The migration is one-shot: `teapot.wsCollapsed.v` records that it ran.
+      // Narrow and one-shot: only `chat:<id>` entries are dropped, so `ws:` keys
+      // and anything the current UI wrote survive; `teapot.wsCollapsed.v`
+      // records that the pass ran.
       const VERSION = 2;
       const marker = Number(localStorage.getItem("teapot.wsCollapsed.v") ?? "0");
       if (marker < VERSION) {
@@ -2072,20 +2039,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return; // the feed refresh below handles the actual row
       }
       if (msg.kind === "llm-delta") {
-        // #146: the bubble lives INSIDE a session-scoped timeline, so the delta
-        // must belong to the displayed session — not merely to the same agent.
+        // #146: the bubble lives INSIDE a session-scoped timeline, so the delta must
+        // belong to the DISPLAYED session, not merely to the same agent — one
+        // agent has many sessions and the reader may be on a past one.
         //
-        // An agent id alone cannot decide this: one agent has many internal
-        // sessions, and the user can be looking at a PAST one. Without the session
-        // check the current session's text and writing cursor appear on a
-        // historical timeline, which is #40's report verbatim.
-        // #146: once a timeline is resolved, ANY mismatch is a rejection —
-        // including `undefined` and `""`.
-        //
-        // The previous `msg.sessionId && …` form let a missing id pass, which
-        // contradicted the REQUIRED `sessionId` in src/bus.ts and the assertion in
-        // session-isolation.test.ts. A delta with no session cannot be attributed,
-        // and showing it on some session's timeline is exactly the #40 bug.
+        // A missing id is a rejection too, not a pass: it cannot be attributed,
+        // and `sessionId` is REQUIRED by the bus type (src/bus.ts).
         if (!deltaBelongsToTimeline(msg, selected(), timelineId())) return;
         // update THIS agent's buffer only — other sessions keep streaming in
         // the background and their bubble must survive session switches
@@ -2168,38 +2127,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (!eventBelongsOnTimeline(msg.event as { agent?: string; session?: string }, selected(), timelineId()))
           return;
 
-        // #54: USE THE EVENT.
+        // #54: the socket payload IS the data — it is the same object the log
+        // wrote, and `mergeEvents` dedupes by id and sorts by seq, so a REST page
+        // and a socket event can arrive in either order.
         //
-        // The socket carries the full event — the same object that was written to
-        // the JSONL log, because `EventLog.onEvent` fires after the write (#54).
-        // It was being discarded in favour of "something changed, re-read
-        // /events", which made REST the timeline's source of truth and the socket
-        // a notification bell. That is the dual-model problem the issue describes,
-        // and it is why a dropped socket could strand a row: nothing the client
-        // already held could close the gap.
-        //
-        // So the payload IS the data. `mergeEvents` dedupes by id and sorts by
-        // seq, so a REST page and a socket event can arrive in any order.
-        //
-        // #145: this used to `return` here, skipping runFeedRefresh entirely —
-        // which regressed every tool row into a permanent "running…". runFeedRefresh
-        // does two things mergeEvents cannot:
-        //
-        //   await refreshAgents()     // the agent's live STATUS
-        //   await loadEvents(...)     // re-derive the feed from the log
-        //
-        // Without refreshAgents, `agentActive` never changes, and ToolRow only
-        // closes a stranded call via `!agentActive && !res` — so a live-looking
-        // agent kept the row spinning until a reload. That is the #54 report:
-        // "all bash execution stays running unless reloaded via the API".
-        //
-        // And merging alone cannot pair an out-of-order result: pairInfo walks
-        // events() in order and only matches a call it has already seen, so a
-        // result delivered first becomes an orphan row while the call keeps
-        // spinning (#40: agent -> bash -> waiting on the LLM API).
-        //
-        // So: merge for immediacy, AND refresh for correctness. The payload stays
-        // the data — it just no longer REPLACES the pass that makes it coherent.
+        // It must not be the ONLY path, though: `pairInfo` walks events() in
+        // order and can only pair a result with a call it has already seen, and
+        // `agentActive` comes from refreshAgents. So merge for immediacy AND
+        // refresh for coherence — see the #145 note that follows.
         mergeEvents([msg.event as Ev]);
         pendingRefresh = true;
         if (document.visibilityState !== "visible") return;

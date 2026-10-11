@@ -107,7 +107,9 @@ test("the fix keeps the topmost visible row (#103)", () => {
 
 test("the resize handler re-pins rather than trusting scrollTop (#103)", () => {
   const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  const at = app.indexOf("#103: a resize must not move the operator's place");
+  // Anchored on the CODE. It used to search for the explanatory comment's text,
+  // so rewording the prose failed the test while the behaviour was unchanged.
+  const at = app.indexOf("const onResize = () => {");
   assert.notEqual(at, -1, "the handler must exist (#103)");
   const block = app.slice(at, app.indexOf("onCleanup(", at));
   assert.match(block, /addEventListener\("resize"/, "it must listen for resize (#103)");
@@ -138,7 +140,8 @@ test("the anchor is a stable row id, not a pixel offset or an index (#103)", () 
 
 test("the listener is cleaned up (#103)", () => {
   const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  const at = app.indexOf("#103: a resize must not move the operator's place");
+  const at = app.indexOf("const onResize = () => {");
+  assert.notEqual(at, -1, "the handler must exist (#103)");
   const block = app.slice(at, app.indexOf("});", app.indexOf("onCleanup", at)));
   assert.match(block, /removeEventListener\("resize"/, "a leaked listener would fire per remount (#103)");
 });
