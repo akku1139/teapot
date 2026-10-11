@@ -248,8 +248,10 @@ an agent may still pin its own `model` to override the preset's.
 }
 ```
 
-Anything OpenAI-compatible works: OpenRouter / OpenAI / Ollama / vLLM / llama.cpp.
-Requests to openrouter.ai automatically carry app-attribution headers.
+Anything OpenAI-compatible works: OpenRouter / OpenAI / OpenCode Go / Ollama / vLLM / llama.cpp.
+Requests to openrouter.ai automatically carry app-attribution headers; requests to
+opencode.ai carry a stable `x-opencode-session`, which OpenCode Go refuses to route
+a conversation without.
 
 Model context windows are inferred from `/v1/models` at startup and drive the runtime gauge plus the derived compaction budget (manual override supported).
 

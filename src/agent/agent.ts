@@ -643,6 +643,17 @@ export class Agent {
     }
   }
 
+  /**
+   * Request config for a call made in THIS conversation: the session id rides
+   * along so OpenCode's endpoints can route and prompt-cache the turn (without
+   * it they answer 400 — see providerHeaders()). Read from `currentSession`
+   * rather than copied onto opts.llm, because a fork/incarnation switch moves
+   * the agent to a new conversation while the endpoint settings stay put.
+   */
+  private requestConfig(extra: Partial<LlmConfig> = {}): LlmConfig {
+    return { ...this.opts.llm, sessionId: this.currentSession, ...extra };
+  }
+
   private callLlm(
     messages: ChatMessage[],
     tools: ReturnType<typeof toolSpecs>,
@@ -653,13 +664,12 @@ export class Agent {
     // the request config. chat() applies effortForRequest(), which sends the
     // field ONLY for OpenRouter endpoints whose catalogue lists support.
     return fn(
-      {
-        ...this.opts.llm,
+      this.requestConfig({
         ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
         ...(this.opts.supportedParameters
           ? { supportedParameters: this.opts.supportedParameters }
           : {}),
-      },
+      }),
       messages,
       tools,
       this.abort?.signal,
@@ -3834,7 +3844,9 @@ export class Agent {
     // conversation sends `allToolSpecs()`'s 29, so the obvious call was wrong — the
     // exact array the main loop uses is what must ride along.
     const res = await fn(
-      { ...this.opts.llm, oneOff: true }, // one-off prompt: ask the provider not to retain it
+      // one-off prompt: ask the provider not to retain it — but it is still the
+      // SAME conversation, so it carries the same session id
+      this.requestConfig({ oneOff: true }),
       [
         ...prefix,
         {

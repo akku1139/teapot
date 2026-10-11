@@ -6119,6 +6119,13 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     hint: "your account's models — pick from the list once the endpoint answers",
   },
   {
+    key: "opencode-go",
+    label: "OpenCode Go",
+    url: "https://opencode.ai/zen/go/v1",
+    model: "",
+    hint: "OpenCode's open-model subscription — teapot sends the required x-opencode-session header; choose a chat/completions model",
+  },
+  {
     key: "llamacpp",
     label: "llama.cpp server",
     url: "http://localhost:8080/v1",
