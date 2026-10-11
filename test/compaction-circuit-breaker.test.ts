@@ -46,7 +46,7 @@ async function failingSummarizer(rounds: number) {
             {
               id: `t${n}`,
               type: "function" as const,
-              function: { name: "bash", arguments: JSON.stringify({ cmd: `echo ${"e".repeat(300)}` }) },
+              function: { name: "write_file", arguments: JSON.stringify({ path: `g${n}.txt`, content: "e".repeat(300) }) },
             },
           ],
         },

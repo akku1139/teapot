@@ -71,7 +71,7 @@ test("a summarizer request that is TOO LARGE shrinks and retries (#127, #150)", 
             {
               id: `t${n}`,
               type: "function" as const,
-              function: { name: "bash", arguments: JSON.stringify({ cmd: "echo e" }) },
+              function: { name: "write_file", arguments: JSON.stringify({ path: `f${n}.txt`, content: "e".repeat(200) }) },
             },
           ],
         },

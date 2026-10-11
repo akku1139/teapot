@@ -79,7 +79,7 @@ async function compactingAgent(opts: {
       message: {
         role: "assistant",
         content: "working",
-        tool_calls: [tc(`w${n++}`, "bash", { cmd: `echo ${"e".repeat(200)}` })],
+        tool_calls: [tc(`w${n++}`, "write_file", { path: `f${n}.txt`, content: "e".repeat(200) })],
       },
     };
   };
@@ -172,7 +172,7 @@ test("the previous notes are in the summarizer's INPUT, not just its instruction
       message: {
         role: "assistant",
         content: "working",
-        tool_calls: [tc(`w${n}`, "bash", { cmd: "echo x" })],
+        tool_calls: [tc(`w${n}`, "write_file", { path: `h${n}.txt`, content: "x".repeat(200) })],
       },
     };
   };
@@ -212,7 +212,7 @@ test("dropping history tells the model, so a gap is not mistaken for a fact", as
       message: {
         role: "assistant",
         content: "working",
-        tool_calls: [tc(`w${n++}`, "bash", { cmd: `echo ${"e".repeat(200)}` })],
+        tool_calls: [tc(`w${n++}`, "write_file", { path: `f${n}.txt`, content: "e".repeat(200) })],
       },
     };
   };

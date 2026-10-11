@@ -51,7 +51,7 @@ async function drive(budget = 8000, rounds = 6) {
       message: {
         role: "assistant",
         content: "working",
-        tool_calls: [tc(`w${n++}`, "bash", { cmd: `echo ${"e".repeat(200)}` })],
+        tool_calls: [tc(`w${n++}`, "write_file", { path: `f${n}.txt`, content: "e".repeat(200) })],
       },
     };
   };
