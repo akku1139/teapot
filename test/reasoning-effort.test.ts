@@ -12,9 +12,19 @@
  *
  * So support is far from universal, and sending the parameter to a model that
  * does not advertise it is how a request gets rejected or a setting silently
- * ignored. The field is therefore sent ONLY when the endpoint is OpenRouter
- * AND the catalogue lists support — an unsent field is far safer than a wrong
- * one, and "absent" already means "provider default".
+ * ignored.
+ *
+ * #150 then measured the OTHER end of this: the endpoints that need the control
+ * are the ones that publish NO capability list at all (commandcode, google — both
+ * return only id/name/context_length), so requiring an advertisement hid the
+ * control exactly where it would have worked. The rule is now:
+ *
+ *   - a catalogue that NAMES its parameters and omits `reasoning_effort` => do not
+ *     send (a definite no, and no point provoking a 400);
+ *   - a catalogue that is silent => send, and drop the field with one retry if the
+ *     endpoint refuses it (see isEffortUnsupported).
+ *
+ * "Absent" still means "provider default" for the value itself.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -57,19 +67,17 @@ test("every documented level is accepted (#47)", () => {
 
 /* ---------- the guards that matter ---------- */
 
-test("nothing is sent to a non-OpenRouter endpoint (#47)", () => {
-  // a vendor-specific body field must never leak to an arbitrary base URL.
-  // #150 added an explicit opt-in for gateways that accept the field without
-  // advertising it, so this pins the DEFAULT: without that opt-in, still nothing.
-  assert.deepEqual(effortForRequest(cfg({ baseUrl: OPENAI })), {});
-  assert.deepEqual(effortForRequest(cfg({ baseUrl: "https://api.anthropic.com" })), {});
-  assert.deepEqual(effortForRequest(cfg({ baseUrl: "http://localhost:1234/v1" })), {});
-  // and the opt-in is the ONLY way in — it is not inherited from the catalogue
-  assert.deepEqual(
-    effortForRequest(cfg({ baseUrl: "https://api.anthropic.com", reasoningEffortOptIn: false })),
-    {},
-    "an explicit false must stay off",
-  );
+test("a vendor field is not sent when the catalogue names its parameters (#47, #150)", () => {
+  // The original concern was a vendor-specific body field leaking to an arbitrary
+  // base URL. #150 refined WHERE the line is: a catalogue that lists what it
+  // supports and does not list this is a definite no, whatever the host.
+  for (const baseUrl of [OPENAI, "https://api.anthropic.com", "http://localhost:1234/v1"]) {
+    assert.deepEqual(
+      effortForRequest(cfg({ baseUrl, supportedParameters: ["temperature"] })),
+      {},
+      `an explicit capability list without reasoning_effort must stay a no: ${baseUrl}`,
+    );
+  }
 });
 
 test("nothing is sent when the model does not advertise support (#47)", () => {
@@ -77,9 +85,14 @@ test("nothing is sent when the model does not advertise support (#47)", () => {
   assert.deepEqual(effortForRequest(cfg({ supportedParameters: ["temperature"] })), {});
 });
 
-test("nothing is sent when the catalogue is unknown (#47)", () => {
-  // no catalogue ⇒ cannot verify ⇒ do not guess
-  assert.deepEqual(effortForRequest(cfg({ supportedParameters: undefined })), {});
+test("a SILENT catalogue now sends it — measured, because the endpoints that need it are silent (#150)", () => {
+  // `undefined` means the endpoint published no capability list at all. Both
+  // endpoints measured for #150 are in this state while one accepts the field
+  // (commandcode) and one refuses it (google) — so the refusal is handled by the
+  // retry, and the control is not hidden from the case that works.
+  assert.deepEqual(effortForRequest(cfg({ supportedParameters: undefined })), { reasoning_effort: "high" });
+  // an EMPTY list is different: a catalogue that reports no parameters at all is
+  // still a report, and it does not include this one
   assert.deepEqual(effortForRequest(cfg({ supportedParameters: [] })), {});
 });
 
@@ -159,12 +172,38 @@ test("the catalogue parse keeps supported_parameters (#47)", async () => {
   assert.ok(Array.isArray(list), "fetchModelList must degrade to [] on failure");
 });
 
-test("the agent defaults to no effort and no catalogue (#47)", async () => {
-  const src = await import("node:fs").then((fs) =>
-    fs.readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8"),
-  );
-  assert.match(src, /reasoningEffort:\s*""/, "default must be unset (#47)");
-  assert.match(src, /supportedParameters:\s*\[\]/, "default must be empty (#47)");
+test("the agent defaults to no effort chosen, and NO catalogue claim (#47, #150)", async () => {
+  // Behavioural, not a source match. The old version asserted the literal
+  // `supportedParameters: []` — which was itself the #150 bug: an empty array reads
+  // as "the endpoint published a list without this parameter", so every silent
+  // endpoint looked like an explicit refusal.
+  const { Agent } = await import("../src/agent/agent.ts");
+  const { useTempDirs } = await import("./helpers/tmp.ts");
+  await useTempDirs(["e47d-", "e47e-"], async ([ws, sessionDir]) => {
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sessionDir!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async () => ({ message: { role: "assistant" as const, content: "ok" } }),
+      autoContinue: false,
+    } as never);
+    await a.init();
+    try {
+      const opts = (a as unknown as { opts: { reasoningEffort?: string; supportedParameters?: string[] } })
+        .opts;
+      assert.equal(opts.reasoningEffort, "", "no level chosen by default (#47)");
+      assert.equal(
+        opts.supportedParameters,
+        undefined,
+        "and NO capability claim: undefined means 'published nothing', which is worth trying; [] would mean 'published, excludes it' (#150)",
+      );
+      // the consequence the operator sees
+      assert.equal(a.snapshot().effortSupported, true, "so the control is offered (#150)");
+    } finally {
+      await a.dispose();
+    }
+  });
 });
 /* ---------- the API + master surface the UI drives ---------- */
 

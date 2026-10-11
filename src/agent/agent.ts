@@ -11,6 +11,7 @@ import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, type ToolContext } from "./tools.ts";
+import { effortChoosable } from "./llm.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
@@ -124,12 +125,6 @@ export interface AgentOptions {
   reasoningEffort?: string;
   /** the endpoint catalogue's per-model capabilities; gates the effort field */
   supportedParameters?: string[];
-  /**
-   * The PROVIDER accepts `reasoning_effort` even though its catalogue publishes no
-   * capability list, so the gate above cannot detect it (#150). Opt-in only: some
-   * endpoints reject the field with a 400 instead of ignoring it.
-   */
-  reasoningEffortOptIn?: boolean;
   maxConsecutiveToolErrors?: number;
   /** estimated-token budget; older history is compacted when exceeded */
   /** estimated-token budget; older history is compacted when exceeded */
@@ -328,7 +323,14 @@ export class Agent {
     costUsd: 0 as number | undefined,
   };
 
-  private opts: Required<Omit<AgentOptions, "chatFn">> & { chatFn?: ChatFn };
+  /**
+   * Everything has a default EXCEPT `supportedParameters`, which must stay optional:
+   * `undefined` means "the endpoint published no capability list", and that is a
+   * different answer from an empty list ("published, and excludes it") — #150 turns
+   * on that distinction.
+   */
+  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters">> &
+    Pick<AgentOptions, "supportedParameters"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   /**
    * User prompts waiting for the next turn boundary. Deliberately NOT queued
@@ -438,8 +440,13 @@ export class Agent {
       // #47: no effort and no catalogue entry means "provider default" — the
       // effort field is then never sent, which is the safe default
       reasoningEffort: "",
-      supportedParameters: [],
-      reasoningEffortOptIn: false,
+      // undefined, NOT []: "the endpoint published no capability list" and "the
+      // endpoint published a list that excludes this parameter" are different
+      // answers, and only the second is a definite no (#150). An empty array here
+      // would make every silent endpoint look like an explicit refusal — measured:
+      // commandcode and google publish no list at all, so `[]` hid the very control
+      // #150 was about.
+      supportedParameters: undefined as string[] | undefined,
       maxConsecutiveToolErrors: 5,
       maxTurnsPerRound: 200,
       maxAuditRejects: 3, // #128: bound the reject loop
@@ -1445,9 +1452,7 @@ export class Agent {
       provider: this.opts.provider,
       // #47/#150: the effort in force, and whether this model can take one at all
       ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
-      effortSupported:
-        (this.opts.supportedParameters ?? []).includes("reasoning_effort") ||
-        this.opts.reasoningEffortOptIn === true,
+      effortSupported: effortChoosable(this.opts.supportedParameters),
       sessionDir: this.opts.sessionDir,
       ctx: {
         usedTokens: this.lastUsage?.input ?? this.estimateTokens(),

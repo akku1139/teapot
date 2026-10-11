@@ -771,9 +771,6 @@ const MAX_WS_CLIENTS = 64;
           baseUrl: p.baseUrl ?? "",
           apiKey: masked ? prev[name]?.apiKey : p.apiKey,
           ...(p.model ? { model: p.model } : {}),
-          // #150: the opt-in must survive a config PUT, or saving anything else
-          // would silently disable the effort dropdown for that provider
-          ...(p.reasoningEffort ? { reasoningEffort: true } : {}),
         };
       }
       master.updateConfig({

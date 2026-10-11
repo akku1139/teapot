@@ -42,8 +42,6 @@ export interface LlmConfig {
   reasoningEffort?: string;
   /** per-model capabilities from the endpoint catalogue; gates the above */
   supportedParameters?: string[];
-  /** the provider opted in to `reasoning_effort` without a catalogue to prove it (#150) */
-  reasoningEffortOptIn?: boolean;
   /**
    * A one-off call whose prompt will never be sent again (the compaction
    * summarizer). Providers that cache on a byte-identical prefix charge a WRITE
@@ -71,26 +69,34 @@ const clients = new WeakMap<LlmConfig, OpenAI>();
 /**
  * Reasoning effort for a request body (#47, #150).
  *
- * MEASURED against the live endpoints in use (one probe per provider, `max_tokens:
- * 3` with `reasoning_effort: "low"`):
+ * MEASURED against the live endpoints (one probe each, `max_tokens: 3` with
+ * `reasoning_effort: "low"`):
  *
- *   openrouter          — documented, catalogue advertises the field
- *   commandcode-goat    — 200 OK and the reply carried `reasoning_content`
- *   google              — 400 "Thinking level is not supported for this model"
- *   orcarouter / opencode / experientiallabs — refused before reaching the field
+ *   commandcode-goat   200 OK, reply carried `reasoning_content`   -> accepts
+ *   google             400 "Thinking level is not supported for this model."
+ *   openrouter         documented, catalogue advertises the field
  *
- * So "OpenRouter only" was too narrow (#150: `commandcode-goat` offers no options
- * at all), but "send it everywhere" would break Google, which REJECTS the field
- * with a 400 rather than ignoring it. The gate therefore stays opt-in:
+ * and — the fact that decides the design — what each endpoint PUBLISHES in
+ * `/models`:
  *
- *   1. the configured value must be a level the API documents, AND
- *   2. EITHER the endpoint's catalogue advertises `reasoning_effort` (OpenRouter
- *      and compatible gateways), OR the provider is explicitly marked
- *      `reasoningEffort: true` in the config for an endpoint that accepts the field
- *      but publishes no catalogue capability list (#150).
+ *   openrouter         `supported_parameters: [… "reasoning_effort" …]` per model
+ *   commandcode-goat   only `id`, `name`, `context_length`, `supported_endpoints`
+ *   google             no capability list either
  *
- * Implemented here rather than via model-meta to avoid an import cycle —
- * model-meta already imports providerHeaders from this file.
+ * So for a gateway that publishes nothing there is NO per-model signal to gate on,
+ * and the only honest way to find out whether it accepts the field is to TRY it.
+ * A wrong guess is cheap to recover from: the endpoint answers 400 with a
+ * recognisable message, and `isEffortUnsupported()` + the retry in `chat()` drop
+ * the field for that request. That is better than a config flag the operator has to
+ * know about, and better than hiding the control behind a capability list most
+ * endpoints do not publish.
+ *
+ * Consequences, in order:
+ *   1. a catalogue that explicitly EXCLUDES `reasoning_effort` is respected (no
+ *      point provoking a 400 for a model that tells us up front it will refuse);
+ *   2. a catalogue that INCLUDES it, or publishes no capability list at all, gets
+ *      the field — and self-corrects on refusal;
+ *   3. an invalid or absent level is never sent, whatever the endpoint says.
  */
 export function effortForRequest(
   cfg: LlmConfig,
@@ -98,18 +104,40 @@ export function effortForRequest(
 ): { reasoning_effort?: Effort } {
   const e = cfg.reasoningEffort;
   if (!e || !(REASONING_EFFORTS as readonly string[]).includes(e)) return {};
-  // the catalogue is a capability claim from a GATEWAY, so trust it only where the
-  // gateway format is the one that carries it. MEASURED: of the endpoints in use,
-  // only OpenRouter-family ones publish `supported_parameters` at all — google,
-  // commandcode, orcarouter and opencode all return 0 models with the field, so
-  // this cannot silently widen the blast radius.
-  if (supported?.includes("reasoning_effort") && isOpenRouterEndpoint(cfg.baseUrl)) {
-    return { reasoning_effort: e as Effort };
-  }
-  // #150: an endpoint that ACCEPTS the field but publishes no capability list needs
-  // the provider to say so explicitly (provider.reasoningEffort: true in config).
-  if (cfg.reasoningEffortOptIn === true) return { reasoning_effort: e as Effort };
-  return {};
+  // a catalogue that names the parameter it supports and does NOT list this one is
+  // a definite "no" — only the ones that omit the question are worth a probe
+  if (supported && !supported.includes("reasoning_effort")) return {};
+  return { reasoning_effort: e as Effort };
+}
+
+/**
+ * Did the endpoint refuse `reasoning_effort` as an unsupported PARAMETER? (#150)
+ *
+ * Google's wording is "Thinking level is not supported for this model."; other
+ * gateways phrase it as an unknown/unsupported parameter or field. Matched
+ * narrowly: a retry that drops the field is only correct when THIS is the
+ * complaint, and misreading an unrelated 400 as one would silently discard the
+ * operator's choice instead of surfacing the real error.
+ */
+export function isEffortUnsupported(err: unknown): boolean {
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "");
+  if (!/reasoning_effort|thinking level|effort/i.test(msg)) return false;
+  return /not supported|unsupported|unknown (parameter|field)|invalid/i.test(msg);
+}
+
+/**
+ * Is this model OFFERED a reasoning-effort control? (#150)
+ *
+ * The right panel shows the row when it can do something. A model whose catalogue
+ * says it does not take the parameter hides it; one whose catalogue is silent
+ * still shows it, because the endpoints that publish nothing (measured: commandcode,
+ * google) accept the field for some models and refuse it for others, and a silent
+ * 400 with an automatic retry is a better experience than a control that is missing
+ * where it would have worked.
+ */
+export function effortChoosable(supported: string[] | undefined): boolean {
+  if (!supported) return true; // no capability list published: worth a try
+  return supported.includes("reasoning_effort");
 }
 
 function isOpenRouterEndpoint(baseUrl: string | undefined): boolean {
@@ -397,6 +425,11 @@ export async function chat(
         : undefined,
     };
   } catch (err) {
+    // #150: retry ONCE without the effort field when the endpoint says it does not
+    // take it, so a level that a particular model refuses never costs a turn
+    if (!signal?.aborted && isEffortUnsupported(err) && effortForRequest(cfg).reasoning_effort) {
+      return chat({ ...cfg, reasoningEffort: "" }, messages, tools, signal);
+    }
     const e = err as { status?: number; message?: string; error?: { message?: string } };
     // #50: our own shape-diagnosis reads as a full sentence but carries no HTTP
     // status (the request SUCCEEDED — that is the whole problem), so the generic
@@ -537,6 +570,12 @@ export async function chatStream(
     // Everything else — 5xx, an error frame, a mid-stream failure — is the ANSWER,
     // rethrown untouched so overflow recovery can see it.
     const status = (err as { status?: unknown })?.status;
+    // #150: the endpoint refused `reasoning_effort` itself. Retry ONCE without it,
+    // so choosing a level never costs a turn — this is what makes the control safe
+    // to offer on an endpoint whose capabilities cannot be known in advance.
+    if (!signal?.aborted && isEffortUnsupported(err) && effortForRequest(cfg).reasoning_effort) {
+      return chatStream({ ...cfg, reasoningEffort: "" }, messages, tools, signal, onDelta);
+    }
     const rejectedByProvider =
       typeof status === "number" && STREAM_REJECTED_STATUS.has(status);
     const emptyStream = (err as { emptyStream?: boolean })?.emptyStream === true;

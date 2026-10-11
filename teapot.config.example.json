@@ -35,9 +35,7 @@
     "local": {
       "baseUrl": "http://localhost:8080/v1",
       "apiKey": "llama.cpp",
-      "model": "local",
-      "//reasoningEffort": "set true if THIS endpoint accepts a reasoning_effort field (#150). Off by default because some providers reject the field with a 400 (Google does: 'Thinking level is not supported for this model'). Gateways that publish supported_parameters in /models need no flag.",
-      "reasoningEffort": false
+      "model": "local"
     }
   },
   "defaultProvider": "openrouter",

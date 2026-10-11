@@ -12,15 +12,6 @@ export const ProviderSchema = z.object({
   baseUrl: z.union([z.string().url("baseUrl must be a valid URL"), z.literal("")]).optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),
-  /**
-   * Does this endpoint accept `reasoning_effort`? (#150)
-   *
-   * Needed for gateways that ACCEPT the field but publish no capability list in
-   * their /models response, so the gateway-style catalogue check cannot see it.
-   * Off by default because some endpoints (Google) reject the field with a 400
-   * rather than ignoring it — an unset field is safer than a wrong one.
-   */
-  reasoningEffort: z.boolean().optional(),
 });
 
 export const AgentEntrySchema = z.object({
