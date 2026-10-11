@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,26 +55,26 @@ test("no test reads a file via URL.pathname — it breaks on Windows (#126, #110
   );
 });
 
-test("fileURLToPath is the conversion to use for a file URL (#126)", () => {
-  // NOTE on what is assertable here. `fileURLToPath` is PLATFORM-DEPENDENT: on
-  // Windows it converts `file:///D:/a/x.ts` to `D:\a\x.ts`, while on Linux (this
-  // runner) the same URL legitimately stays `/D:/a/x.ts` — Linux has no drives, so
-  // it cannot be asked to produce one. Asserting the Windows output here would be
-  // asserting something false about the platform running the test.
+test("the conversion yields a path that EXISTS — which is the actual bug (#126)", () => {
+  // The failure this whole file is about was ENOENT: the path did not exist. So
+  // assert exactly that, using a test-relative URL like every call site does.
   //
-  // What IS checkable anywhere: it resolves a proper file URL to a path, and on
-  // POSIX it agrees with `pathname` — which is exactly why the `.pathname` mistake
-  // stays invisible on Linux and only ever shows up on the Windows job.
-  const posixUrl = new URL("file:///home/dev/x.ts");
-  assert.equal(fileURLToPath(posixUrl), "/home/dev/x.ts", "a POSIX file URL resolves to its path");
-  assert.equal(
-    fileURLToPath(posixUrl),
-    posixUrl.pathname,
-    "and it EQUALS pathname on POSIX — the reason the bug is Windows-only",
+  // NO hard-coded path shapes here. `fileURLToPath` is PLATFORM-DEPENDENT — on
+  // Windows it returns a drive path (`D:\a\...`) and on POSIX a `/…` path, and even
+  // a premise as simple as "a POSIX-style file URL converts to /home/..." is false on
+  // Windows. Two earlier versions of this test failed on the Windows runner for
+  // asserting platform-specific shapes instead of the property that matters.
+  const url = new URL("../src/agent/agent.ts", import.meta.url);
+  const resolved = fileURLToPath(url);
+  assert.ok(
+    existsSync(resolved),
+    `the conversion must produce a path that exists, or every caller gets ENOENT (#126): ${resolved}`,
   );
-  assert.match(
-    fileURLToPath(new URL("../src/agent/agent.ts", import.meta.url)),
-    /agent[\\/]agent\.ts$/,
-    "and a test-relative URL resolves to a real path on both platforms",
+  assert.match(resolved, /agent[\\/]agent\.ts$/, "and it must point at the file the URL named");
+  // and it agrees with path resolution of the same target
+  assert.equal(
+    resolved,
+    path.resolve(fileURLToPath(new URL("..", import.meta.url)), "src", "agent", "agent.ts"),
+    "the converted URL and a resolved relative path must name the same file",
   );
 });
