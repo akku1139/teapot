@@ -726,22 +726,30 @@ test("session cost accumulates from usage when pricing is set", async () => {
 });
 
 test("compaction keys off the API's prompt_tokens, not the char estimate", async () => {
+  // The history must be genuinely LONG as well as reported-large. A 3-message
+  // history has nothing worth summarizing: the recent-keep boundary lands on the
+  // tool result, safeCut backs the cut up to index 1, and the summarizable prefix
+  // is the opening prompt alone (~9 tokens) — so the cost gate correctly truncates.
+  // Each round therefore adds a big tool result, making the older half substantial.
+  const big = "z".repeat(12_000);
   const mock = mkMock((req): LlmResult => {
     const sys = String(req.messages[0]?.content ?? "");
     if (sys.includes("compress")) return reply("- notes from earlier");
-    const base = req.n === 0
-      ? reply("working", [tc("w", "write_file", { path: "f.txt", content: "x" })])
-      : reply("done");
-    // provider reports a huge prefix while the text itself is tiny — the old
-    // char heuristic would never have triggered on this history
-    return { ...base, usage: { inputTokens: 5000, outputTokens: 2 } };
+    // provider reports a huge prefix while the TEXT is modest — the old char
+    // heuristic alone would never have triggered on this history
+    return {
+      ...reply("working", [tc(`w${req.n}`, "bash", { cmd: `echo ${"e".repeat(40)}` })]),
+      usage: { inputTokens: 40_000, outputTokens: 2 },
+    };
   });
-  await withAgent({ chatFn: mock.chat, contextTokenBudget: 4000, autoContinue: false }, async (agent) => {
+  await withAgent({ chatFn: mock.chat, contextTokenBudget: 8000, autoContinue: false }, async (agent) => {
     await agent.setGoal("exercise compaction");
-    agent.enqueuePrompt("go");
-    agent.start("t");
-    await agent.settled();
-    assert.equal(agent.stats.compactions, 1, "usage above budget must compact");
+    for (let i = 0; i < 5; i++) {
+      agent.enqueuePrompt(`go ${i} ${big}`);
+      agent.start("t");
+      await agent.settled();
+    }
+    assert.ok(agent.stats.compactions >= 1, "usage above budget must compact");
     assert.match(agent.messages[0]!.content ?? "", /Context was compacted/);
     await agent.dispose();
   });
@@ -770,25 +778,33 @@ test("compactNow forces a pass and reports whether it ran", async () => {
 /* ---------- context compaction ---------- */
 
 test("compaction summarizes old turns when the budget is exceeded", async () => {
-  const big = "x".repeat(1000);
   const mock = mkMock((req): LlmResult => {
     const sys = String(req.messages[0]?.content ?? "");
-    if (sys.includes("compress")) return reply("- made big.txt with filler\n- next: verify");
-    if (req.n === 0)
-      return reply("creating file", [tc("w1", "write_file", { path: "big.txt", content: big })]);
-    return reply("verified, done");
+    if (sys.includes("compress")) return reply("- SUMMARY: made big.txt with filler; next: verify");
+    // A large tool call EVERY round. A short history cannot reach the summarizer at
+    // all: the recent-keep boundary lands on the tool result, safeCut backs the cut
+    // up to index 1, and the summarizable prefix collapses to the opening prompt
+    // (measured ~9 tokens) — so the cost gate correctly chooses truncation. The
+    // fixture has to be long enough that the OLDER half is worth summarizing.
+    return reply("writing", [tc(`w${req.n}`, "bash", { cmd: `echo ${"e".repeat(200)}` })]);
   });
-  await withAgent({ chatFn: mock.chat, contextTokenBudget: 200, autoContinue: false }, async (agent) => {
-    agent.enqueuePrompt("make the file");
-    agent.start("test");
-    await agent.settled();
+  await withAgent({ chatFn: mock.chat, contextTokenBudget: 8000, autoContinue: false }, async (agent) => {
+    for (let i = 0; i < 6; i++) {
+      agent.enqueuePrompt(`step ${i} ${"y".repeat(12_000)}`);
+      agent.start("test");
+      await agent.settled();
+    }
 
     assert.equal(agent.status, "idle");
-    assert.equal(agent.stats.compactions, 1);
+    // >= 1, not == 1: a deliberately long history compacts repeatedly as it grows,
+    // and pinning the exact count would make the test fail on an unrelated change to
+    // how eagerly the budget is enforced. What it asserts is that the SUMMARIZE path
+    // ran — the note carries the summarizer's text, which truncation never produces.
+    assert.ok(agent.stats.compactions >= 1, `expected a compaction, got ${agent.stats.compactions}`);
     const note = agent.messages[0]!;
     assert.equal(note.role, "user");
     assert.match(note.content ?? "", /Context was compacted/);
-    assert.match(note.content ?? "", /made big\.txt/);
+    assert.match(note.content ?? "", /made big\.txt/, `the summary text must be the summarizer's, not a truncation notice: ${String(note.content).slice(0, 80)}`);
     // kept tail still starts at a valid boundary and contains the exchange
     assert.equal(agent.messages[1]!.role, "assistant");
     const events = await readEvents(agent.log.filePath);

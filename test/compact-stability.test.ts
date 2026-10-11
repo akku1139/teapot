@@ -105,9 +105,17 @@ test("compaction leaves no dangling tool results when the summarizer FAILS (#8)"
     // and the context was still over budget, guaranteeing the next provider
     // call overflowed. Truncation must always make progress.
     assert.equal(agent.stats.compactions, 1, "compaction ran despite the summarizer failing");
+    // Progress means the HISTORY shrank, not that the array is short: the truncate
+    // path now prepends a marker saying the prefix was dropped (a silent cut is
+    // undetectable by the model), so counting messages would measure the marker.
     assert.ok(
-      (agent.messages as ChatMessage[]).length < 4,
+      (agent.messages as ChatMessage[]).length < 5,
       `truncation must drop messages, got ${(agent.messages as ChatMessage[]).length}`,
+    );
+    assert.match(
+      String((agent.messages as ChatMessage[])[0]!.content ?? ""),
+      /DROPPED, not summarized/,
+      "the model must be TOLD its prefix was dropped, not left to guess (#8)",
     );
     assertPaired(agent.messages as ChatMessage[], "truncate fallback");
     await agent.dispose();

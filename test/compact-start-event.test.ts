@@ -53,7 +53,7 @@ function compactingAgent(
   sessionDir: string,
   onSummarize?: () => Promise<string[]> | string[],
 ) {
-  const big = "x".repeat(2000);
+  const big = "x".repeat(12_000);
   let n = 0;
   const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
     n++;
@@ -61,8 +61,12 @@ function compactingAgent(
       if (onSummarize) await onSummarize();
       return reply("- summary of earlier work");
     }
-    if (n === 1) return reply("writing", [tc("w1", "write_file", { path: "big.txt", content: big })]);
-    return reply("done");
+    // every round emits a large tool call, as a real session does. A ONE-round
+    // history cannot exercise the summarizer at all: the recent-keep boundary lands
+    // on the tool result, safeCut backs it up to index 1, and the summarizable
+    // prefix collapses to the opening prompt (measured) — so the cost gate
+    // correctly routes it to truncation instead.
+    return reply("writing", [tc(`w${n}`, "read_file", { path: "big.txt" })]);
   };
   return new Agent({
     id: "t",
@@ -70,18 +74,25 @@ function compactingAgent(
     sessionDir,
     llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
     chatFn,
-    contextTokenBudget: 200,
+    contextTokenBudget: 2000,
     autoContinue: false,
   } as any);
+}
+
+/** drive enough rounds, with big prompts, to make a genuinely compactable history */
+async function fill(agent: Agent, rounds = 6): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    agent.enqueuePrompt(`step ${i} ${"y".repeat(4000)}`);
+    agent.start("t");
+    await agent.settled();
+  }
 }
 
 test("a compaction pass announces itself BEFORE it runs (#56)", async () => {
   await useTempDirs(["c56a-", "c56b-"], async ([ws, sessionDir]) => {
     const agent = compactingAgent(ws!, sessionDir!);
     await agent.init();
-    agent.enqueuePrompt("go");
-    agent.start("t");
-    await agent.settled();
+    await fill(agent);
 
     const events = await readEvents(agent.log.filePath);
     const names = noteEvents(events);
@@ -112,7 +123,13 @@ test("the start note is on disk WHILE the summarizer is still running (#56)", as
   // only way to prove the record exists during that gap.
   await useTempDirs(["c56c-", "c56d-"], async ([ws, sessionDir]) => {
     let duringPass: string[] = [];
+    let captured = false;
     const agent = compactingAgent(ws!, sessionDir!, async () => {
+      // the FIRST summarize call is the one that proves the point: later passes
+      // run after earlier ones completed, so their log already holds a completion
+      // note and would fail the "not there yet" assertion for the wrong reason
+      if (captured) return;
+      captured = true;
       // read the FILE, not in-memory state — the operator only ever sees
       // events that have been APPENDED to the log
       const text = await readFile(agent.log.filePath, "utf8");
@@ -124,9 +141,7 @@ test("the start note is on disk WHILE the summarizer is still running (#56)", as
         .map((e: TeapotEvent) => String((e.data as any)?.event ?? ""));
     });
     await agent.init();
-    agent.enqueuePrompt("go");
-    agent.start("t");
-    await agent.settled();
+    await fill(agent);
 
     assert.ok(
       duringPass.includes("context-compaction-started"),
@@ -144,9 +159,7 @@ test("the start note carries only figures known at announce time (#56)", async (
   await useTempDirs(["c56e-", "c56f-"], async ([ws, sessionDir]) => {
     const agent = compactingAgent(ws!, sessionDir!);
     await agent.init();
-    agent.enqueuePrompt("go");
-    agent.start("t");
-    await agent.settled();
+    await fill(agent);
 
     const events = await readEvents(agent.log.filePath);
     const start = notesOf(events, "context-compaction-started")[0]!;
@@ -168,9 +181,7 @@ test("a forced /compact is labelled manual, an automatic one is not (#56)", asyn
   await useTempDirs(["c56g-", "c56h-"], async ([ws, sessionDir]) => {
     const agent = compactingAgent(ws!, sessionDir!);
     await agent.init();
-    agent.enqueuePrompt("go");
-    agent.start("t");
-    await agent.settled();
+    await fill(agent);
     // the run above compacted because it blew the budget → automatic
     const events = await readEvents(agent.log.filePath);
     const start = notesOf(events, "context-compaction-started")[0]!;

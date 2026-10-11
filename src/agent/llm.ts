@@ -42,6 +42,14 @@ export interface LlmConfig {
   reasoningEffort?: string;
   /** per-model capabilities from the endpoint catalogue; gates the above */
   supportedParameters?: string[];
+  /**
+   * A one-off call whose prompt will never be sent again (the compaction
+   * summarizer). Providers that cache on a byte-identical prefix charge a WRITE
+   * premium to populate the cache, and a one-off prompt is never read back — so
+   * the premium is pure loss. Setting this asks the endpoint not to retain the
+   * request where the API can express that; see cacheControlForRequest().
+   */
+  oneOff?: boolean;
 }
 
 export interface LlmResult {
@@ -87,6 +95,26 @@ function isOpenRouterEndpoint(baseUrl: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Ask the endpoint NOT to retain a one-off request (Pi does the same with
+ * `cacheRetention: "none"`; its docs say "summarization requests disable
+ * prompt-cache writes because these one-off prompts are unlikely to be reused").
+ *
+ * Sent ONLY to OpenRouter, which is the one endpoint in use here that both
+ * accepts the field and documents it. Every other OpenAI-compatible endpoint gets
+ * nothing: an unrecognised body field is a 400 on strict providers, and "send
+ * nothing" is exactly today's behaviour, so this can only ever add a saving.
+ *
+ * `24h` is the value that means "do not retain beyond this request's lifetime" for
+ * an organisation with zero-data-retention off; with ZDR on the default is already
+ * `in_memory` and this is a no-op.
+ */
+export function cacheControlForRequest(cfg: LlmConfig): { prompt_cache_retention?: "24h" } {
+  if (!cfg.oneOff) return {};
+  if (!isOpenRouterEndpoint(cfg.baseUrl)) return {};
+  return { prompt_cache_retention: "24h" };
 }
 
 const REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
@@ -276,6 +304,7 @@ export async function chat(
         messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         ...(tools.length ? { tools } : {}),
         ...effortForRequest(cfg),
+        ...cacheControlForRequest(cfg),
       },
       { signal },
     );
@@ -381,6 +410,7 @@ export async function chatStream(
         messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         ...(tools.length ? { tools } : {}),
         ...effortForRequest(cfg),
+        ...cacheControlForRequest(cfg),
         stream: true,
         // ask providers to include the final usage chunk in streaming mode
         // (OpenAI-compatible; harmless where unsupported)

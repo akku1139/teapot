@@ -183,6 +183,47 @@ export interface AgentOptions {
  * meta tools instead. The cache rationale itself stays HERE in a comment —
  * the model does not need our cost-engineering notes every turn.
  */
+/**
+ * Recent context kept VERBATIM through a compaction, in tokens.
+ *
+ * Pi defaults `keepRecentTokens` to 20000 and opencode to `keep: 15000` for the
+ * same reason: the newest exchanges are what the model needs to continue
+ * accurately, and a verbatim copy beats a summary of them.
+ */
+const KEEP_RECENT_TOKENS = 15_000;
+
+/**
+ * The summarize call is skipped when the summarizable prefix is a small share of
+ * the budget, because the call cannot reuse any prefix cache (its system prompt is
+ * its instructions) and so re-bills the whole history uncached. Below this share,
+ * dropping the prefix outright reclaims the budget for free and the model can
+ * recover the details by re-reading the goal or the files.
+ *
+ * A SHARE rather than an absolute token count: what counts as "a lot to lose"
+ * scales with the window a session is configured for. An absolute constant
+ * calibrated for the 96k default would disable summarization entirely for a
+ * session with a small budget (measured: a 200-token budget with a 654-token
+ * history is over every bar, yet its prefix is a few hundred tokens).
+ *
+ * Manual compaction and overflow recovery bypass this — those are not cost
+ * decisions.
+ */
+const SUMMARIZE_MIN_SHARE = 0.02;
+
+/** the absolute floor for the bar above (see the note where it is applied) */
+const SUMMARIZE_MIN_TOKENS = 2_000;
+
+/**
+ * How much of the budget to KEEP on each successive overflow recovery.
+ *
+ * An overflow means the estimate was too low, so a single fixed cut can still
+ * leave the request too large — and the old code turned that second failure into a
+ * hard error. opencode uses the same shape (`SHRINK_STEPS [0.7, 0.5, 0.35]`): each
+ * retry keeps less, so the request shrinks even when the first attempt did not
+ * shrink it enough. The last entry repeats for any further attempt.
+ */
+const OVERFLOW_SHRINK_STEPS = [0.5, 0.35, 0.2] as const;
+
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
 Most session state is not injected into prompts — fetch it with tools instead:
@@ -456,6 +497,17 @@ export class Agent {
   private skillsCache: SkillDef[] = [];
   /** fingerprint of the roots that produced skillsCache ("" = not scanned yet) */
   private skillsStamp = "";
+  /**
+   * The notes the LAST compaction produced, if any.
+   *
+   * Compaction UPDATES these rather than re-deriving notes from scratch: a fresh
+   * summary each pass loses whatever the previous one distilled (every
+   * implementation surveyed — opencode, Kilo, Pi — updates for this reason).
+   * Recovered from the log so the continuity survives a restart.
+   */
+  private lastCompactSummary?: string;
+  /** overflow recoveries used in the current turn; reset when a turn succeeds */
+  private overflowRecoveries = 0;
 
   /**
    * Rescan skill roots — but only when something actually changed (#14).
@@ -1003,6 +1055,11 @@ export class Agent {
       } else if (e.type === "system_note") {
         const d = e.data as { event?: string };
         if (d.event === "context-compacted") this.stats.compactions++;
+      } else if (e.type === "compaction") {
+        // keep the NEWEST notes: they are what the next compaction updates, and
+        // without this a restart would silently fall back to re-summarizing
+        const d = e.data as { summary?: unknown };
+        if (typeof d.summary === "string" && d.summary) this.lastCompactSummary = d.summary;
       }
     }
     // newest usage event seeds the context gauge right after reload —
@@ -2109,20 +2166,27 @@ export class Agent {
             detail: "stopped before any output arrived",
           });
         }
-        // Provider context overflow → compact ONCE and retry the turn
-        // (OpenCode-style overflow recovery). even with autoCompact off, an
-        // actual overflow is proof the estimate missed; a second overflow is
-        // returned as a real error instead of looping.
+        // Provider context overflow → compact and retry (OpenCode-style recovery).
+        // Even with autoCompact off, an actual overflow is proof the estimate
+        // missed. Staged rather than single-shot (opencode: SHRINK_STEPS
+        // [0.7, 0.5, 0.35]): one fixed cut can still be too shallow, and the old
+        // code returned the second overflow as a hard error even though cutting
+        // deeper would have worked.
         if (isContextOverflow(err) && !this.stopRequested) {
+          const attempt = (this.overflowRecoveries += 1);
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "overflow-recovery",
+            attempt,
             detail: String((err as Error).message).slice(0, 200),
           });
           const before = this.stats.compactions;
-          await this.maybeCompact(true);
+          // each retry cuts deeper: 1x, then the staged fractions of the budget
+          const shrink = OVERFLOW_SHRINK_STEPS[Math.min(attempt - 1, OVERFLOW_SHRINK_STEPS.length - 1)]!;
+          await this.maybeCompact(true, shrink);
           if (this.stats.compactions > before) {
             await this.log.append("system_note", this.currentSession, this.currentBranch, {
               event: "overflow-recovered",
+              attempt,
             });
             guard--; // the retry does not count against this round's cap
             continue;
@@ -2130,6 +2194,9 @@ export class Agent {
         }
         throw err;
       }
+      // a request the provider accepted: the current depth is enough, so the next
+      // overflow starts its staircase over rather than cutting from the deepest step
+      this.overflowRecoveries = 0;
       if (res.usage) {
         const inTok = res.usage.inputTokens ?? 0;
         const cached = res.usage.cachedInputTokens ?? 0;
@@ -3119,7 +3186,7 @@ export class Agent {
    * token/char — the old flat /4 underestimated Japanese sessions ~4x.
    * Adds a small per-message overhead for role/framing tokens.
    */
-  private estimateTokens(): number {
+  private estimateTokens(msgs: ChatMessage[] = this.messages): number {
     let ascii = 0;
     let wide = 0;
     const count = (s: string) => {
@@ -3128,14 +3195,14 @@ export class Agent {
         else ascii++;
       }
     };
-    for (const m of this.messages) {
+    for (const m of msgs) {
       count(m.content ?? "");
       for (const t of m.tool_calls ?? []) {
         count(t.function.name);
         count(t.function.arguments);
       }
     }
-    return Math.ceil(ascii / 4 + wide * 1.2 + this.messages.length * 8);
+    return Math.ceil(ascii / 4 + wide * 1.2 + msgs.length * 8);
   }
 
   /**
@@ -3245,8 +3312,13 @@ export class Agent {
     return count;
   }
 
-  /** Compact history when the real prompt size exceeds the budget. */
-  private async maybeCompact(force = false): Promise<void> {
+  /**
+   * Compact history when the real prompt size exceeds the budget.
+   *
+   * @param keepFraction share of the budget to keep verbatim; the overflow path
+   *                     lowers it on each retry so a too-shallow cut is not fatal
+   */
+  private async maybeCompact(force = false, keepFraction?: number): Promise<void> {
     // prefer the provider's own count from the last response — it is exactly
     // what would overflow the window; the char heuristic is only a fallback
     // for providers that omit usage
@@ -3261,12 +3333,27 @@ export class Agent {
     this.lastUsage = undefined; // stale after compaction — re-armed next turn
 
     // keep roughly the most recent quarter of the budget as live context
-    const keepCharBudget = (this.opts.contextTokenBudget / 4) * 4;
-    let keepChars = 0;
+    // Keep the most recent stretch VERBATIM, as every implementation surveyed
+    // does (Pi: keepRecentTokens 20000, opencode: keep 15000). Recency is what the
+    // model needs to continue accurately, and verbatim beats a summary of it.
+    //
+    // Size: a quarter of the budget, but never less than KEEP_RECENT_TOKENS — a
+    // small budget would otherwise keep so little that the model loses the turn it
+    // is in the middle of. Measured in TOKENS rather than characters, so the choice
+    // matches the published defaults instead of depending on the char heuristic.
+    const keepTokens = keepFraction !== undefined
+      // an explicit retry (overflow recovery): shrink toward a share of the budget
+      ? Math.max(1, Math.floor(this.opts.contextTokenBudget * keepFraction))
+      // otherwise keep the newest stretch verbatim, but never more than a quarter
+      // of the budget — a fixed floor GREATER than the budget would keep everything
+      // and compaction would never fire at all (measured: a 500-token budget kept
+      // a 7.5k-token history intact)
+      : Math.min(KEEP_RECENT_TOKENS, Math.max(1, Math.floor(this.opts.contextTokenBudget / 4)));
     let cut = -1;
     for (let i = this.messages.length - 1; i >= 1; i--) {
-      keepChars += (this.messages[i]!.content?.length ?? 0) + JSON.stringify(this.messages[i]!.tool_calls ?? "").length;
-      if (keepChars > keepCharBudget) break;
+      // token-aware boundary, using the SAME estimate the budget uses — a raw char
+      // ratio would disagree with it for wide (CJK) text and per-message overhead
+      if (this.estimateTokens(this.messages.slice(i)) > keepTokens) break;
       cut = i;
     }
     cut = this.safeCut(cut);
@@ -3274,10 +3361,62 @@ export class Agent {
 
     const old = this.messages.slice(0, cut);
     const oldCount = old.length;
+    // The prefix's share of the size the budget check ACTED on (which floors our
+    // estimate against the provider's reported prompt_tokens). Scaling by character
+    // share rather than message count: messages vary hugely in size, and the point
+    // is to avoid treating an unmeasurably large context as small.
+    const totalChars = this.messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+    const oldChars = old.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+    const oldShareOfBefore = totalChars > 0 ? Math.round((before * oldChars) / totalChars) : 0;
     let summary = "";
     let mode: "summarize" | "truncate" = "summarize";
     let summarizedCount = oldCount;
     let droppedCount = 0;
+    // COST GATE (measured). The summarize call shares NO cacheable prefix with the
+    // main loop: the summarizer's system prompt IS its instructions, so message[0]
+    // differs and the entire history is re-prefilled and re-billed at full size.
+    // Sharing the prefix would mean gutting the summarizer's role, so the lever is
+    // not to PAY for a shallow saving.
+    //
+    // The criterion is the ABSOLUTE amount of context the cut would discard, not
+    // how far over the budget we are. A ratio test gets it backwards: a small
+    // window overflowing slightly is exactly the case where a full-history call
+    // buys almost nothing (there is little knowledge to lose), while a large
+    // window overflowing slightly still has a lot to lose. `oldTokens` is the
+    // summarizable prefix — the thing the call is actually paid for.
+    //
+    // Below the threshold the DROP alone reclaims the budget, for free.
+    //
+    // MANUAL is exempt: an explicit /compact is a user command, not a cost
+    // decision, and opencode draws the line in the same place ("only the user
+    // compacts when automatic compaction is off"). An overflow recovery is exempt
+    // too — the provider just told us the prompt was too big, so the question is
+    // not whether the saving is worth a call.
+    // Use BOTH sizes. `oldTokens` is our estimate of the prefix being summarized;
+    // `before` is the size the budget check acted on, which already floors that
+    // estimate against the provider's REPORTED prompt_tokens. Gating on the local
+    // estimate alone would silently truncate a context the provider says is large
+    // but we cannot measure (caught by a test: provider reports 5000 tokens for a
+    // 300-token local estimate). The provider tokenizes for real; our count is a
+    // guess, so the larger of the two is the honest figure.
+    const oldTokens = Math.max(this.estimateTokens(old), oldShareOfBefore);
+    // The bar is a SHARE of the budget with an absolute floor, so it scales with a
+    // realistic window while never sitting above a small session's entire history
+    // (measured: a budget of 200 made a pure-share bar 10 tokens, while the whole
+    // summarizable prefix in that fixture was an 8-token prompt — summarization
+    // would have been silently disabled).
+    //
+    // Below the bar the prefix is a turn or two, and dropping it costs the model
+    // nothing it cannot recover by re-reading the goal or the files; a full-history
+    // LLM call to preserve that is not worth its price.
+    const summarizeBar = Math.max(SUMMARIZE_MIN_TOKENS, this.opts.contextTokenBudget * SUMMARIZE_MIN_SHARE);
+    const worthSummarizing = force || oldTokens >= summarizeBar;
+    // UPDATE mode: carry the previous notes forward instead of re-deriving them.
+    // Every implementation surveyed (opencode, Kilo, Pi) updates rather than
+    // re-summarizes, because a fresh summary each time loses whatever the previous
+    // pass had already distilled. Recovered from the LAST compaction event, so it
+    // survives a restart.
+    const previousSummary = this.lastCompactSummary;
     // progress is visible: announce the phase up front, then stream the
     // summarizer's output as it generates (a long summarize used to look like
     // the agent silently hung — hundreds of thousands of tokens take a while)
@@ -3311,18 +3450,35 @@ export class Agent {
         tokensBefore: before,
         messages: oldCount,
         reason: force ? "manual" : "auto",
+        worthSummarizing, // makes the cost decision auditable
+        updating: Boolean(previousSummary),
       });
       try {
-        summary = await this.summarize(old, (text) => {
-          bus.emit("update", {
-            kind: "llm-delta",
-            agentId: this.opts.id,
-            // #146: the bubble is session-scoped, so the stream must say which session
-            sessionId: this.currentSession,
-            text: `[compact] ${text}`,
-            reasoning: "",
-          } satisfies BusEvent);
-        });
+        if (worthSummarizing) {
+          summary = await this.summarize(
+            old,
+            (text) => {
+              bus.emit("update", {
+                kind: "llm-delta",
+                agentId: this.opts.id,
+                // #146: the bubble is session-scoped, so the stream must say which session
+                sessionId: this.currentSession,
+                text: `[compact] ${text}`,
+                reasoning: "",
+              } satisfies BusEvent);
+            },
+            previousSummary,
+          );
+        } else {
+          // shallow saving: truncation reclaims the budget for free, so skip the
+          // one full-history LLM call the summary would cost
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "context-compaction-skipped-summarize",
+            reason: "shallow: truncation reclaims the budget without a full-history LLM call",
+            tokensBefore: before,
+            budget: this.opts.contextTokenBudget,
+          });
+        }
         this.compactPhase = "harvesting";
         bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "harvesting" } satisfies BusEvent);
         if (summary) await this.harvestLessons(summary); // durable knowledge → memory.md
@@ -3353,7 +3509,24 @@ export class Agent {
           return; // the finally clears the phase and tells the UI it ended
         }
         droppedCount = halfCut;
-        this.messages = this.messages.slice(halfCut);
+        // Tell the model its history was cut. Dropping a prefix SILENTLY is the
+        // one failure it cannot detect or work around: it would see a conversation
+        // that simply starts mid-way and could not distinguish "I forgot this" from
+        // "this never happened", then confidently act on a gap. Truncation is now
+        // the COMMON path (the cost gate keeps the summarize call for deep cuts
+        // only), which makes this the difference between a known gap and a wrong
+        // belief. The dropped text stays in the log — nothing durable is lost.
+        this.messages = [
+          {
+            role: "user",
+            content:
+              `[harness] ${droppedCount} earlier messages were DROPPED, not summarized (no room to ` +
+              "summarize, or the saving would not have justified the call). Your earlier work is " +
+              "in the session log but is NOT in your context any more: re-read files or the goal " +
+              "before assuming what happened, and do not rely on memory of the dropped part.",
+          },
+          ...this.messages.slice(halfCut),
+        ];
       } else {
         this.messages = [
           {
@@ -3435,6 +3608,8 @@ export class Agent {
         mode,
         ...(summary ? { summary: String(summary).slice(0, 20_000) } : {}),
       });
+      // remember the notes for the NEXT compaction to update (and for a restore)
+      if (summary) this.lastCompactSummary = summary;
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-compacted",
         tokensBefore: before,
@@ -3454,7 +3629,11 @@ export class Agent {
   }
 
   /** Ask the model for dense continuation notes over the compacted range. */
-  private async summarize(old: ChatMessage[], onDelta?: (text: string) => void): Promise<string> {
+  private async summarize(
+    old: ChatMessage[],
+    onDelta?: (text: string) => void,
+    previousSummary?: string,
+  ): Promise<string> {
     const full = old
       .map((m) => {
         const who = m.role === "tool" ? "tool" : m.role;
@@ -3495,12 +3674,25 @@ export class Agent {
     // merges away. The <analysis> scratchpad gives the model a thinking space;
     // it is stripped from the stored summary (formatCompactSummary).
     const res = await fn(
-      this.opts.llm,
+      { ...this.opts.llm, oneOff: true }, // one-off prompt: ask the provider not to retain it
       [
         {
           role: "system",
           content:
+            // Both variants OPEN with the same sentence. Tests (and any future caller)
+            // identify the summarizer by this text, and a shared prefix keeps that
+            // detection working across the initial/update split — the first version of
+            // update mode changed it to "You UPDATE…", which silently made every
+            // update pass look like an ordinary turn.
             "You compress a coding agent's conversation into dense notes for it to continue working.\n\n" +
+            (previousSummary
+              ? "This is an UPDATE: the current notes are under `## Current notes`. They are your\n" +
+                "output from an earlier compaction and are the ONLY record of everything before the\n" +
+                "messages you are about to read — so carry them forward. PRESERVE what is still\n" +
+                "true, ADD what the new messages establish, and REMOVE only what they resolve or\n" +
+                "supersede. Never drop a constraint or a user request just because the new\n" +
+                "messages do not repeat it: an unanswered request stays, an answered one goes.\n\n"
+              : "") +
             "First think inside an <analysis> block: what mattered, what changed, what is unresolved.\n" +
             "Then output ONLY the following sections, each starting with its exact heading:\n\n" +
             "## Primary request and intent\n" +
@@ -3518,7 +3710,15 @@ export class Agent {
             'Durable lessons lists reusable insights worth keeping forever (gotchas, preferences, what worked); omit the section if empty. ' +
             "The <analysis> block is discarded before your notes are stored, so think freely there.",
         },
-        { role: "user", content: `Conversation:\n\n${transcript}\n\nWrite the continuation notes now.` },
+        {
+          role: "user",
+          content:
+            (previousSummary ? `## Current notes\n\n${previousSummary}\n\n` : "") +
+            `## Conversation\n\n${transcript}\n\n` +
+            (previousSummary
+              ? "Update the current notes to cover this conversation as well. Return the FULL updated notes."
+              : "Write the continuation notes now."),
+        },
       ],
       [],
       undefined, // never abortable by stop(): losing the summary would lose history
