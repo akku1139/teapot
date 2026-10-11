@@ -13,12 +13,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Master } from "../src/master.ts";
 import { buildApp, serveApp } from "../src/server/api.ts";
 import { freePort } from "./helpers/free-port.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
@@ -47,7 +46,7 @@ function call(port: number, method: string, p: string, token?: string, body?: un
 }
 
 test("a password set through /api/setup gates /api/* in the SAME process (setup auth)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "auth1-"));
+  const dataDir = mkdtempInRootSync("auth1-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   // the first-boot state: no config file was read (index.ts sets this from the
   // filesystem; a direct construction keeps the default true)

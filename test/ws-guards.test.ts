@@ -16,6 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { blockFrom } from "./helpers/source.ts";
 
 const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
@@ -130,7 +131,7 @@ test("the reaper only fires when a ping went UNANSWERED (#79)", () => {
   const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
   const at = api.indexOf("awaitingPong) {");
   assert.notEqual(at, -1, "the reaper branch must exist (#79)");
-  const branch = api.slice(at, at + 260);
+  const branch = blockFrom(api, 'awaitingPong) {');
   assert.match(branch, /ws\.close\(1011/, "and it must close the socket (#79)");
   assert.match(branch, /unresponsive/, "with a reason (#79)");
   // and the flag must be SET by the ping we send, so the check is meaningful

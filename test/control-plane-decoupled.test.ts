@@ -44,17 +44,18 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { Agent } from "../src/agent/agent.ts";
 import { EventLog } from "../src/log/events.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
+import { blockFrom } from "./helpers/source.ts";
 
 /* ---------- 1. the ordering test must be synchronous ---------- */
 
 test("onEvent sees the event ALREADY on disk, sampled synchronously (#126)", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "s126a-"));
+  const dir = mkdtempInRootSync("s126a-");
   const file = path.join(dir, "chat.jsonl");
   const log = new EventLog(file, "a");
   await log.load();
@@ -94,7 +95,7 @@ test("the ordering test would FAIL against the old notify-first code (#126)", as
 /* ---------- 2. control flow must not depend on persistence ---------- */
 
 test("a status change fires the control plane with EVERY WRITE FAILING (#126)", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "s126b-"));
+  const dir = mkdtempInRootSync("s126b-");
   const a = new Agent({
     id: "child",
     workspace: dir,
@@ -147,7 +148,7 @@ test("the master wakes parents from the control plane (#126)", async () => {
     "master must subscribe to the control plane (#126)",
   );
   const at = master.indexOf("agent.onControlStatusChange");
-  const block = master.slice(at, at + 700);
+  const block = blockFrom(master, 'agent.onControlStatusChange');
   assert.match(
     block,
     /this\.wakeAncestorWaiters\(ac\.parent\);/,
@@ -176,7 +177,7 @@ test("readSource makes an anchor behave identically on LF and CRLF (#126)", asyn
   // that makes them safe.
   const { readSource } = await import("./helpers/source.ts");
   const { writeFileSync } = await import("node:fs");
-  const dir = mkdtempSync(path.join(os.tmpdir(), "s126c-"));
+  const dir = mkdtempInRootSync("s126c-");
   const lf = "title={\n  row.a.parent\n}\n";
   const lfPath = path.join(dir, "lf.ts");
   const crlfPath = path.join(dir, "crlf.ts");
@@ -226,7 +227,6 @@ test("no test file anchors on a raw newline inside a search string (#126)", asyn
     `these anchor on a raw newline without readSource, so they fail on a CRLF checkout (#126): ${unsafe.join(", ")}`,
   );
 });
-
 
 /**
  * #126: a PORTABLE test must not hand a POSIX device path to anything that reads

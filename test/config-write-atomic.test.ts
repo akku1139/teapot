@@ -32,10 +32,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
-import os from "node:os";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { Master, type AgentConfig } from "../src/master.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 /**
  * write a config file with `n` agents, and return { path, agents }
@@ -90,7 +90,7 @@ function master(cfgPath: string, dataDir: string, agents: AgentConfig[]): Master
 /* ---------- the file is never left empty ---------- */
 
 test("saveConfig leaves a complete, parseable file (#144)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t144a-"));
+  const dataDir = mkdtempInRootSync("t144a-");
   const { path: p, agents } = cfg(dataDir, 5);
   const m = master(p, dataDir, agents);
   m.saveConfig();
@@ -103,7 +103,7 @@ test("saveConfig leaves a complete, parseable file (#144)", async () => {
 test("the write is atomic — a new inode, not an in-place rewrite (#144)", async () => {
   // rename() lands a DIFFERENT inode; an in-place truncate+write keeps the same
   // one, which is exactly what leaves a window for an empty file
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t144b-"));
+  const dataDir = mkdtempInRootSync("t144b-");
   const { path: p, agents } = cfg(dataDir, 3);
   const m = master(p, dataDir, agents);
   const before = statSync(p).ino;
@@ -116,7 +116,7 @@ test("the write is atomic — a new inode, not an in-place rewrite (#144)", asyn
 });
 
 test("no temp files are left behind (#144)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t144c-"));
+  const dataDir = mkdtempInRootSync("t144c-");
   const { path: p, agents } = cfg(dataDir, 3);
   const m = master(p, dataDir, agents);
   m.saveConfig();
@@ -128,8 +128,8 @@ test("no temp files are left behind (#144)", async () => {
 /* ---------- boot writes once, not once per agent ---------- */
 
 test("booting N agents performs ONE write, not N (#144)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t144d-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t144w-"));
+  const dataDir = mkdtempInRootSync("t144d-");
+  const ws = mkdtempInRootSync("t144w-");
   const { path: p, agents } = cfg(dataDir, 6);
   const m = master(p, dataDir, agents);
 
@@ -160,8 +160,8 @@ test("booting N agents performs ONE write, not N (#144)", async () => {
 test("the flushed config still describes this boot (#144)", async () => {
   // a deferred write that never flushes would leave config.json describing the
   // PREVIOUS boot — silent data loss of a different kind
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t144e-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t144x-"));
+  const dataDir = mkdtempInRootSync("t144e-");
+  const ws = mkdtempInRootSync("t144x-");
   const { path: p, agents } = cfg(dataDir, 3);
   const m = master(p, dataDir, agents);
   await m.start();
@@ -180,7 +180,7 @@ test("the flushed config still describes this boot (#144)", async () => {
 
 test("a deferred write is dropped once boot ends (#144)", async () => {
   // outside boot a save must be immediate, or an operator's rename would be lost
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t144f-"));
+  const dataDir = mkdtempInRootSync("t144f-");
   const { path: p, agents } = cfg(dataDir, 2);
   const m = master(p, dataDir, agents);
   await m.start();

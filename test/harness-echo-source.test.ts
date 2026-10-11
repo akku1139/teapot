@@ -26,7 +26,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { blockFrom, readSource } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +38,7 @@ test("the queue -> echo mapping keeps source (#122)", () => {
   // the snapshot already sends it; the mapping was the thing that dropped it
   const at = app.indexOf("const missing = queue.filter");
   assert.notEqual(at, -1, "the queue effect must exist (#122)");
-  const block = app.slice(at, at + 800);
+  const block = blockFrom(app, 'const missing = queue.filter');
   assert.match(block, /q\.source/, "source must survive the mapping (#122)");
   assert.match(block, /source: q\.source/, "and land on the echo (#122)");
 });
@@ -46,7 +46,7 @@ test("the queue -> echo mapping keeps source (#122)", () => {
 test("echoEv uses the real source instead of hardcoding user (#122)", () => {
   const at = app.indexOf("function echoEv");
   assert.notEqual(at, -1, "echoEv must exist (#122)");
-  const block = app.slice(at, at + 1100);
+  const block = blockFrom(app, 'function echoEv');
   assert.doesNotMatch(
     block,
     /source: "user"/,
@@ -63,7 +63,7 @@ test("cancel is offered ONLY for an operator prompt (#122)", () => {
   // the serious half: a ✕ on a harness prompt would discard a system message
   const at = app.indexOf("onCancel={");
   assert.notEqual(at, -1, "the cancel affordance must exist (#122)");
-  const block = app.slice(at, at + 400);
+  const block = blockFrom(app, 'onCancel={');
   assert.match(
     block,
     /e\.data\?\.source === "user"/,
@@ -74,7 +74,7 @@ test("cancel is offered ONLY for an operator prompt (#122)", () => {
 test("edit is offered ONLY for an operator prompt (#122)", () => {
   const at = app.indexOf("onEdit={");
   assert.notEqual(at, -1, "the edit affordance must exist (#122)");
-  const block = app.slice(at, at + 600);
+  const block = blockFrom(app, 'onEdit={');
   assert.match(
     block,
     /e\.data\?\.source === "user"/,

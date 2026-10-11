@@ -14,12 +14,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
-import { mkdtempSync, readFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 import { Master } from "../src/master.ts";
 import { buildApp, serveApp } from "../src/server/api.ts";
 import { freePort } from "./helpers/free-port.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
@@ -39,7 +38,7 @@ function call(port: number, method: string, p: string, body?: unknown): Promise<
 }
 
 test("PUT /api/config persists the fields it validates (context window, rounds, error policy)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "cfg1-"));
+  const dataDir = mkdtempInRootSync("cfg1-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   const app = buildApp(m);
   const port = await freePort();
@@ -73,7 +72,7 @@ test("PUT /api/config persists the fields it validates (context window, rounds, 
 });
 
 test("contextWindowTokens: null clears the pin (same contract as contextTokenBudget)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "cfg2-"));
+  const dataDir = mkdtempInRootSync("cfg2-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   const app = buildApp(m);
   const port = await freePort();

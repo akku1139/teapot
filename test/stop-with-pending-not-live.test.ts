@@ -33,20 +33,20 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { blockFrom, readSource } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../src/agent/agent.ts";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = readSource(path.join(here, "..", "frontend", "App.tsx"));
 
 /** an agent parked mid-LLM-call with a second prompt queued behind it */
 async function stopWithPending() {
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t133w-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "t133s-"));
+  const ws = mkdtempInRootSync("t133w-");
+  const sd = mkdtempInRootSync("t133s-");
   let release: () => void = () => {};
   const gate = new Promise<void>((r) => {
     release = r;
@@ -100,8 +100,8 @@ test("a start consumes the queued prompt and goes live again (#133)", async () =
   // turn completes in single-digit milliseconds here, so `live` was already false
   // again and the test read as a failure. What matters is that the queued prompt is
   // CONSUMED and the agent runs a turn: assert that, not a momentary flag.
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t133x-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "t133y-"));
+  const ws = mkdtempInRootSync("t133x-");
+  const sd = mkdtempInRootSync("t133y-");
   let calls = 0;
   const a = new Agent({
     id: "t",
@@ -145,7 +145,7 @@ test("withdrawal does not depend on isLive (#59, #133)", async () => {
   // #126: a 400-char window contained neither string, and bounding by `onResize`
   // made it WORSE — `onResize` appears BEFORE `onCancel`, so the window was
   // negative. Take a fixed 1200 forward from the handler.
-  const block = app.slice(at, at + 1200);
+  const block = blockFrom(app, 'onCancel={');
   assert.doesNotMatch(
     block,
     /isSelLive\(\)/,

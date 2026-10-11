@@ -21,6 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { pendingFloor, resequenceToDelivery } from "../frontend/timeline-order.ts";
+import { blockFrom } from "./helpers/source.ts";
 
 interface Row {
   id: string;
@@ -92,7 +93,7 @@ test("the component uses the floor only when nothing settled (#37)", () => {
   const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
   const at = app.indexOf("const settled = Math.max(delivered, cancelSeq");
   assert.notEqual(at, -1, "the branch must exist (#37)");
-  const around = app.slice(at, at + 260);
+  const around = blockFrom(app, 'const settled = Math.max(delivered, cancelSeq');
   assert.match(
     around,
     /settled !== undefined[\s\S]{0,120}?resequenceToDelivery\(e, settled\)[\s\S]{0,120}?pendingFloor\(visible\)/,

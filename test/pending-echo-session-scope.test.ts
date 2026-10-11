@@ -16,9 +16,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
+import { blockFrom, readSource } from "./helpers/source.ts";
 
 const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
 
@@ -43,7 +43,7 @@ test("a session switch saves the outgoing echoes and restores the incoming (#87)
   // reworded while the code was untouched — a comment is not a contract.
   const at = app.indexOf("writePending(prevTid || prevId");
   assert.notEqual(at, -1, "the switch must save the outgoing echoes (#87)");
-  const sw = app.slice(at, at + 400);
+  const sw = blockFrom(app, 'writePending(prevTid || prevId');
   assert.match(
     sw,
     /writePending\(prevTid \|\| prevId/,

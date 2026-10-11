@@ -21,11 +21,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { markPosixOnly } from "./helpers/posix-only.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 // #110: POSIX-only — spawns a detached server and tears it down with a POSIX process-group kill (ECONNRESET on windows-latest).
 markPosixOnly("spawns a detached server and tears it down with a POSIX process-group kill (ECONNRESET on windows-latest)");
@@ -82,7 +82,7 @@ function killTree(proc: ChildProcess): void {
 }
 
 async function boot(tag: string, port: number, extraEnv: NodeJS.ProcessEnv = {}): Promise<Boot> {
-  const dir = mkdtempSync(path.join(tmpdir(), `teapot-live-${tag}-`));
+  const dir = mkdtempInRootSync(`teapot-live-${tag}-`);
   const cfg = path.join(dir, "config.json");
   writeFileSync(
     cfg,

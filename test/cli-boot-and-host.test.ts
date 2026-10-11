@@ -28,14 +28,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { isolatedBootEnv } from "./helpers/isolated-boot.ts";
-import { mkdtempSync, existsSync } from "node:fs";
-import os from "node:os";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { freePort } from "./helpers/free-port.ts";
 import { readSource } from "./helpers/source.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -131,7 +131,7 @@ test("the entry-point check resolves a bin SYMLINK (#140)", () => {
 test("the published bin actually starts (#140)", async (t) => {
   // end-to-end: spawn the way npm does, THROUGH a symlink named `teapot`
   await useTempDirs(["t140a-"], async ([dataDir]) => {
-    const binDir = mkdtempSync(path.join(os.tmpdir(), "t140bin-"));
+    const binDir = mkdtempInRootSync("t140bin-");
     const link = path.join(binDir, "teapot");
     const { symlinkSync } = await import("node:fs");
     try {

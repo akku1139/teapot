@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 test("an agent parked on ask_user is LIVE (stoppable), not idle (#D4)", async () => {
   await useTempDirs(["d4a-", "d4b-"], async ([ws, sd]) => {
@@ -46,13 +47,10 @@ test("an agent parked on ask_user is LIVE (stoppable), not idle (#D4)", async ()
 });
 
 test("an agent parked on ask_user counts as ACTIVE for waitChildren (kept)", async () => {
-  const { mkdtempSync } = await import("node:fs");
-  const os = await import("node:os");
-  const path = await import("node:path");
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "d4c-"));
+  const dataDir = mkdtempInRootSync("d4c-");
   const { Master } = await import("../src/master.ts");
   const m = new Master({ port: 0, dataDir, llm: { baseUrl: "http://x", apiKey: "k", model: "m" }, providers: {}, agents: [] }, `${dataDir}/config.json`);
-  const ws = mkdtempSync(path.join(os.tmpdir(), "d4w-"));
+  const ws = mkdtempInRootSync("d4w-");
   const child = await m.addAgent({ id: "c", parent: "p", workspace: ws, chatFn: async () => ({ message: { role: "assistant" as const, content: "x" } }) }, { persist: false });
   try {
     // the child asks the operator a question: awaitingUser + waiting

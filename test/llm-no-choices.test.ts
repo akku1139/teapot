@@ -242,7 +242,6 @@ test("an ordinary 'no choices' is still NOT an overflow (#50)", async () => {
 /* ---------- 4: restore must not un-prune ---------- */
 
 
-
 /* ---------- wiring ---------- */
 
 test("the bare message is no longer the only thing thrown (#50)", () => {

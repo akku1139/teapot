@@ -40,7 +40,9 @@
     "dev": "node src/index.ts",
     "dev-web": "vite",
     "test": "node --test test/*.test.ts",
-    "test:portable": "node scripts/run-portable-tests.mjs"
+    "test:portable": "node scripts/run-portable-tests.mjs",
+    "test:clean": "node scripts/clean-test-tmp.mjs --apply",
+    "test:tmp": "node scripts/clean-test-tmp.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.4",

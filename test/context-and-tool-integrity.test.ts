@@ -73,8 +73,6 @@ test("a provider reporting a tiny prompt size still triggers compaction (#73)", 
 
 
 
-
-
 test("a plausible provider report is still trusted (#73)", async () => {
   // the floor is loose on purpose — it must not argue with a real measurement
   await useTempDirs(["p73c-", "p73d-"], async ([ws, sd]) => {

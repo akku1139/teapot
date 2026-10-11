@@ -16,18 +16,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
+import { mkdtempInRoot } from "./helpers/tmp-root.ts";
 
 const reply: LlmResult = { message: { role: "assistant", content: "ok" } };
 
 /** a workspace + session dir that survive between "incarnations" */
 async function fixture(agentsMd?: string, skill?: { name: string; description: string }) {
-  const ws = await mkdtemp(path.join(tmpdir(), "p64-ws-"));
-  const sd = await mkdtemp(path.join(tmpdir(), "p64-sd-"));
+  const ws = await mkdtempInRoot("p64-ws-");
+  const sd = await mkdtempInRoot("p64-sd-");
   if (agentsMd !== undefined) await writeFile(path.join(ws, "AGENTS.md"), agentsMd, "utf8");
   if (skill) {
     await mkdir(path.join(ws, "skills", skill.name), { recursive: true });

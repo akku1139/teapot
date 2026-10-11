@@ -101,7 +101,6 @@ test("the filter explains that it now SHOWS the inherited history (#38)", () => 
 
 /* ---------- session switching keeps its own behaviour ---------- */
 
-
 /* ---------- session switching keeps its own behaviour ---------- */
 
 test("session switching still bumps the generation and clears rows (#38)", () => {

@@ -12,15 +12,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { skillRootsFingerprint } from "../src/agent/skills.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 test("adding a NESTED skill changes the fingerprint (cache invalidation)", async () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "skf-"));
+  const root = mkdtempInRootSync("skf-");
   const dir = path.join(root, "skills");
   await (await import("node:fs/promises")).mkdir(path.join(dir, "one"), { recursive: true });
   await (await import("node:fs/promises")).writeFile(

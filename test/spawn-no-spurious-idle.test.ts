@@ -30,16 +30,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { Master } from "../src/master.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
+import { blockFrom } from "./helpers/source.ts";
 
 const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
 
 async function spawnAndCollectPrompts() {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t130a-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t130w-"));
+  const dataDir = mkdtempInRootSync("t130a-");
+  const ws = mkdtempInRootSync("t130w-");
   const m = new Master(
     {
       port: 0,
@@ -99,7 +100,7 @@ test("the wakeup itself is NOT gated — only the message is (#130)", async () =
 test("a settled report requires the child to have run (#130)", async () => {
   const at = master.indexOf("this.reportedRunning.has(agentId)");
   assert.notEqual(at, -1, "the gate must exist (#130)");
-  const block = master.slice(at, at + 400);
+  const block = blockFrom(master, 'this.reportedRunning.has(agentId)');
   assert.match(block, /SETTLED\.has\(status\)/, "and only for a settled status (#130)");
   // the gate must be ARMED when the child starts, or a real completion never reports
   assert.match(

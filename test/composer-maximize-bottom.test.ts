@@ -166,7 +166,6 @@ test("the hint is pinned to the last row, not pushed by the form (#65)", () => {
   );
 });
 
-
 /* ---------- the geometry that follows ---------- */
 
 test("the composer is a flex column, which is what makes this layout meaningful (#65)", () => {
@@ -209,7 +208,6 @@ test("the maximize control and the class are still wired (#65)", () => {
  *     hint occupies two lines and the maximized one a single clipped line, so
  *     the gap between the input and the text below changed with viewport width.
  */
-
 
 
 /*

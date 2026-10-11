@@ -36,14 +36,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { EventLog } from "../src/log/events.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 /** open a log, reload on every notification, count the reloads that miss */
 async function reloadMisses(n: number): Promise<{ seen: number; missed: number; log: EventLog; file: string }> {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "s54-"));
+  const dir = mkdtempInRootSync("s54-");
   const file = path.join(dir, "chat.jsonl");
   const log = new EventLog(file, "a");
   await log.load();
@@ -82,7 +82,7 @@ test("notification happens after the write, not before (#54)", async () => {
   // so the write can complete during the yield and the old implementation would
   // still pass. `readFileSync` samples the file at the exact instant `onEvent`
   // runs, which is the property under test.
-  const dir = mkdtempSync(path.join(os.tmpdir(), "s54b-"));
+  const dir = mkdtempInRootSync("s54b-");
   const file = path.join(dir, "chat.jsonl");
   const log = new EventLog(file, "a");
   await log.load();
@@ -104,7 +104,7 @@ test("notification happens after the write, not before (#54)", async () => {
 test("a failed write does NOT notify (#54)", async () => {
   // announcing an event that is not on disk would tell the frontend to reload
   // for something that will never appear
-  const dir = mkdtempSync(path.join(os.tmpdir(), "s54c-"));
+  const dir = mkdtempInRootSync("s54c-");
   const log = new EventLog(path.join(dir, "chat.jsonl"), "a");
   await log.load();
   let notified = 0;
@@ -118,7 +118,7 @@ test("a failed write does NOT notify (#54)", async () => {
 });
 
 test("the observer still cannot break the log (#54)", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "s54d-"));
+  const dir = mkdtempInRootSync("s54d-");
   const file = path.join(dir, "chat.jsonl");
   const log = new EventLog(file, "a");
   await log.load();

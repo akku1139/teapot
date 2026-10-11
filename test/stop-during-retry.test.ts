@@ -17,16 +17,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Agent } from "../src/agent/agent.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 /** an agent whose LLM always answers the report's 400, so it retries forever */
 function retryingAgent(retryDelayMs: number) {
-  const ws = mkdtempSync(path.join(os.tmpdir(), "stop-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "stops-"));
+  const ws = mkdtempInRootSync("stop-");
+  const sd = mkdtempInRootSync("stops-");
   let calls = 0;
   const a = new Agent({
     id: "t",
@@ -135,8 +134,8 @@ test("stop() during that backoff stops it promptly and for good (#152)", async (
 
 test("stop() also lands mid-call, while the provider is still thinking (#152)", async () => {
   // the other half: a slow request in flight must be aborted, not waited out
-  const ws = mkdtempSync(path.join(os.tmpdir(), "inflight-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "inflights-"));
+  const ws = mkdtempInRootSync("inflight-");
+  const sd = mkdtempInRootSync("inflights-");
   let aborted = false;
   const a = new Agent({
     id: "t",

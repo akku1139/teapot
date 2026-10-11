@@ -156,3 +156,46 @@ function regexCanStartAfter(prev: string): boolean {
   if (!prev) return true; // start of file
   return "(,=:[!&|?{};+-*%^~<>".includes(prev) || prev === "\n";
 }
+
+/**
+ * The source from `anchor` to the end of the block it starts.
+ *
+ * A fixed-width window (`slice(at, at + 400)`) is a GUESS about how long the code will
+ * be, and it fails as prose grows: #126 and #130 recorded the trap twice, then #152 hit
+ * it a third time in different files — a comment added to `isLive()` pushed an asserted
+ * clause past a 1600-char window on Windows (CRLF makes the block longer) while Linux
+ * stayed green.
+ *
+ * Walking to the matching close brace removes the guess: the window is exactly the
+ * construct under test, however it is written or formatted. Falls back to `fallback`
+ * characters when no brace is found, so a test still gets a bounded slice rather than
+ * the whole file.
+ */
+export function blockFrom(src: string, anchor: string, fallback = 2000): string {
+  const at = src.indexOf(anchor);
+  if (at === -1) return "";
+  // Only walk braces when the anchor actually OPENS a block. An anchor can be a plain
+  // expression (e.g. `const off = isChat`), and then the next `{` belongs to some later
+  // construct — walking it would silently return the wrong region, which is how a
+  // mechanical conversion of these slices broke three tests.
+  const lineEnd = src.indexOf("\n", at);
+  const segment = src.slice(at, lineEnd === -1 ? src.length : lineEnd);
+  if (!segment.includes("{")) {
+    // not a block opener: take enough lines for a multi-line expression, stopping at
+    // the first blank line so neighbouring constructs are not swept in
+    const rest = src.slice(at, at + fallback);
+    const stop = rest.search(/\n\s*\n/);
+    return stop === -1 ? rest : rest.slice(0, stop);
+  }
+  const open = src.indexOf("{", at);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return src.slice(at, i + 1);
+    }
+  }
+  return src.slice(at, at + fallback);
+}

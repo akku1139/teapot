@@ -16,11 +16,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Agent } from "../src/agent/agent.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 test("a summarizer request that is TOO LARGE shrinks and retries (#127, #150)", async () => {
   // The replayed prefix is normally the head of a request that already succeeded, so
@@ -34,8 +33,8 @@ test("a summarizer request that is TOO LARGE shrinks and retries (#127, #150)", 
   // behaves — and `autoCompact: false` lets the history grow past it first, since
   // leaving auto-compaction on keeps trimming the history below the limit and the
   // condition would never arise.
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t127x-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "t127y-"));
+  const ws = mkdtempInRootSync("t127x-");
+  const sd = mkdtempInRootSync("t127y-");
   const LIMIT = 60_000;
   const sizes: number[] = [];
   let n = 0;

@@ -33,7 +33,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource, stripSourceComments } from "./helpers/source.ts";
+import { blockFrom, readSource, stripSourceComments } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -132,7 +132,7 @@ test("an orphaned result still renders with its output (#54)", () => {
   // so a result whose call is out of the window is not simply lost
   const at = app.indexOf("const pairInfo = createMemo");
   assert.notEqual(at, -1, "pairInfo must exist (#54)");
-  const block = app.slice(at, at + 1200);
+  const block = blockFrom(app, 'const pairInfo = createMemo');
   assert.match(block, /orphanCalls\.set\(e\.id, e\)/, "an unpairable result is synthesised (#54)");
 });
 

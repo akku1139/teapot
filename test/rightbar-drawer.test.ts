@@ -218,7 +218,6 @@ test("the drawer is ONE fixed box again (#50)", () => {
   );
 });
 
-
 /* ---------- 1a: the panel's first heading must stay flush ---------- */
 
 test("the panel's first heading keeps margin-top:0 (#50)", () => {

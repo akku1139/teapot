@@ -97,7 +97,6 @@ test("bash runs with pwd == the workspace (#34)", async () => {
   });
 });
 
-
 /**
  * Temporarily point $HOME at a directory holding a `.bash_profile` that cds
  * to `/`. A login shell (`bash -lc`) sources it and leaves the workspace;

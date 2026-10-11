@@ -25,7 +25,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource, stripSourceComments } from "./helpers/source.ts";
+import { blockFrom, readSource, stripSourceComments } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -64,7 +64,7 @@ test("the restore re-runs autosize, or the textarea keeps the tall height (#138)
   // class without re-measuring leaves the box at its maximized size
   const at = app.indexOf("setComposerMaximized(false);");
   assert.notEqual(at, -1, "the restore must exist (#138)");
-  const block = app.slice(at, at + 300);
+  const block = blockFrom(app, 'setComposerMaximized(false);');
   assert.match(
     block,
     /autosizeComposer\(\)/,

@@ -14,17 +14,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 /** an agent whose summarizer always fails and whose history keeps growing */
 async function failingSummarizer(rounds: number) {
-  const ws = mkdtempSync(path.join(os.tmpdir(), "cb-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "cbs-"));
+  const ws = mkdtempInRootSync("cb-");
+  const sd = mkdtempInRootSync("cbs-");
   let summarizerCalls = 0;
   let n = 0;
   const a = new Agent({

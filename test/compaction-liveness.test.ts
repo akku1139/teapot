@@ -36,8 +36,8 @@ import { readSource } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../src/agent/agent.ts";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const agentSrc = readSource(path.join(here, "..", "src", "agent", "agent.ts"));
@@ -46,8 +46,8 @@ const agentSrc = readSource(path.join(here, "..", "src", "agent", "agent.ts"));
 
 /** an idle agent with real logged history, held open inside the summarizer */
 async function agentCompacting() {
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t127w-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "t127s-"));
+  const ws = mkdtempInRootSync("t127w-");
+  const sd = mkdtempInRootSync("t127s-");
   let release: () => void = () => {};
   const gate = new Promise<void>((r) => {
     release = r;

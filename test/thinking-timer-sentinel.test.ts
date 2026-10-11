@@ -25,7 +25,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
+import { blockFrom, readSource } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -88,6 +88,6 @@ test("the sweep still zeroes the clock when agents() changes (#131)", () => {
   // reason the readout must tolerate 0
   const at = app.indexOf("pruneDeadLiveBuffers(prev");
   assert.notEqual(at, -1, "the sweep must exist (#131)");
-  const block = app.slice(at, at + 300);
+  const block = blockFrom(app, 'pruneDeadLiveBuffers(prev');
   assert.match(block, /setThinkStartedAt\(0\);/, "the sweep still resets it (#131)");
 });

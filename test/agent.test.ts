@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
@@ -9,6 +8,7 @@ import type { ChatFn, ChatMessage, LlmConfig, LlmResult, ToolSpec } from "../src
 import { readEvents } from "../src/log/events.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
+import { testTmpRoot } from "./helpers/tmp-root.ts";
 
 // #110: POSIX-only — runs POSIX commands through the bash tool.
 // The Windows CI job skips this file; see test/helpers/posix-only.ts for why
@@ -1303,7 +1303,7 @@ test("reload restores session stats and seeds the context gauge", async () => {
 
 test("boot no longer creates a missing workspace; first tool run does", async () => {
   const { existsSync } = await import("node:fs");
-  const missing = path.join(tmpdir(), `teapot-ghost-${Date.now()}`);
+  const missing = path.join(testTmpRoot(), `teapot-ghost-${Date.now()}`);
   await useTempDir("teapot-ghost-sd-", async (sessionDir) => {
       const agent = new Agent({
         id: "g",

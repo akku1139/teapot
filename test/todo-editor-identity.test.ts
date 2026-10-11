@@ -54,7 +54,6 @@ test("the outermost panel gate is null-safe (#30)", () => {
   );
 });
 
-
 /* ---------- the editor component ---------- */
 
 test("the tasks editor is its own component with primitive props (#30)", () => {

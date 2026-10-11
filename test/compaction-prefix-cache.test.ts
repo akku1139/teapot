@@ -16,11 +16,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Agent } from "../src/agent/agent.ts";
 import type { ChatMessage, LlmResult } from "../src/agent/llm.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const tc = (id: string, name: string, args: unknown) => ({
   id,
@@ -36,8 +35,8 @@ interface Recorded {
 
 /** drive an agent until it compacts, recording every request it makes */
 async function drive(budget = 8000, rounds = 6) {
-  const ws = mkdtempSync(path.join(os.tmpdir(), "pc-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "pcs-"));
+  const ws = mkdtempInRootSync("pc-");
+  const sd = mkdtempInRootSync("pcs-");
   const seen: Recorded[] = [];
   let n = 0;
   const chatFn = async (_c: unknown, messages: ChatMessage[], tools: unknown[]): Promise<LlmResult> => {

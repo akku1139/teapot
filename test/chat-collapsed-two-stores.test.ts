@@ -34,6 +34,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { treeRowsOf, sidebarRowsOf, descendantsOf } from "../frontend/sidebar-tree.ts";
+import { blockFrom } from "./helpers/source.ts";
 
 interface A {
   id: string;
@@ -138,6 +139,6 @@ test("clicking the caret clears both stores (#81)", () => {
 test("a SUB-AGENT's caret still reads only collapsedSubs (#81)", () => {
   // narrowing the fix to top-level chats: a sub-agent has no chat:<id> group
   const at = app.indexOf("const off = isChat");
-  const block = app.slice(at, at + 260);
+  const block = blockFrom(app, 'const off = isChat');
   assert.match(block, /: collapsedSubs\(\)\.has\(row\.a\.id\);/, "the sub-agent branch (#18)");
 });

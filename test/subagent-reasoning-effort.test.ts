@@ -29,6 +29,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { blockFrom } from "./helpers/source.ts";
 
 const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
 const tools = readFileSync(new URL("../src/agent/tools.ts", import.meta.url), "utf8");
@@ -83,7 +84,7 @@ test("the effort is NOT omitted the way it was (#105)", () => {
   // the original bug, pinned so it cannot come back
   const at = master.indexOf("const child = await this.addAgent(");
   assert.notEqual(at, -1, "the child config block must exist (#105)");
-  const block = master.slice(at, at + 700);
+  const block = blockFrom(master, 'const child = await this.addAgent(');
   // the bug was the gap between `model` and `parent`, with nothing effort-shaped
   // in between. Pin that something effort-shaped IS there now.
   const between = block.slice(

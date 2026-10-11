@@ -32,12 +32,12 @@
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { readSource } from "./helpers/source.ts";
 import { fileURLToPath } from "node:url";
 import { Master } from "../src/master.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 // #126: URL.pathname yields "/D:/a/…" on Windows, which does not resolve
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -68,8 +68,8 @@ async function tree() {
 }
 
 async function buildTree() {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t132a-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t132w-"));
+  const dataDir = mkdtempInRootSync("t132a-");
+  const ws = mkdtempInRootSync("t132w-");
   const m = new Master(
     { port: 0, dataDir, llm: { baseUrl: "http://x", apiKey: "k", model: "m" }, providers: {}, agents: [] },
     path.join(dataDir, "config.json"),

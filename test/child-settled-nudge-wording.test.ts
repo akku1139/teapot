@@ -23,20 +23,20 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { readSource } from "./helpers/source.ts";
 import { fileURLToPath } from "node:url";
 import { Master } from "../src/master.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const master = readSource(path.join(here, "..", "src", "master.ts"));
 
 /** a parent with one child; returns the prompts the parent receives */
 async function tree() {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t135a-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t135w-"));
+  const dataDir = mkdtempInRootSync("t135a-");
+  const ws = mkdtempInRootSync("t135w-");
   const m = new Master(
     { port: 0, dataDir, llm: { baseUrl: "http://x", apiKey: "k", model: "m" }, providers: {}, agents: [] },
     path.join(dataDir, "config.json"),

@@ -32,17 +32,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Master } from "../src/master.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
 /** a root with `depth` nested children (depth 0 = just the root) */
 async function tree(depth: number, extraSiblings = 0) {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t142a-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t142w-"));
+  const dataDir = mkdtempInRootSync("t142a-");
+  const ws = mkdtempInRootSync("t142w-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   await m.addAgent({ id: "root", workspace: ws }, { persist: true });
   const spawn = (parentId: string, task: string) =>

@@ -18,10 +18,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { EventLog } from "../src/log/events.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const ORIGINAL = "IMPORTANT-ORIGINAL-REQUEST-xyz";
 
@@ -37,14 +37,14 @@ async function damagedLog(file: string, data: Record<string, unknown>): Promise<
 }
 
 async function restoredText(data: Record<string, unknown>): Promise<string> {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "hb-"));
+  const dir = mkdtempInRootSync("hb-");
   const file = path.join(dir, "chat.jsonl");
   await damagedLog(file, data);
   // drive the REAL restore path through the log reader + agent rebuild
   const { Agent } = await import("../src/agent/agent.ts");
   const a = new Agent({
     id: "t",
-    workspace: mkdtempSync(path.join(os.tmpdir(), "hbw-")),
+    workspace: mkdtempInRootSync("hbw-"),
     sessionDir: dir,
     llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
     chatFn: async () => ({ message: { role: "assistant" as const, content: "ok" } }),

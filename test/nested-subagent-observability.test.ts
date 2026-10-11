@@ -25,19 +25,18 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Master } from "../src/master.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 const chatFn = async () => ({ message: { role: "assistant" as const, content: "ok" } });
 
 function mkMaster(): Master {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "nest-"));
+  const dataDir = mkdtempInRootSync("nest-");
   return new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
 }
-const ws = () => mkdtempSync(path.join(os.tmpdir(), "nestw-"));
+const ws = () => mkdtempInRootSync("nestw-");
 
 /** mark an agent as mid-work without running its loop */
 function makeBusy(a: { parkedByTool?: boolean; status?: string }): void {

@@ -26,20 +26,19 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { WebSocket } from "ws";
 import { Master } from "../src/master.ts";
 import { buildApp, serveApp } from "../src/server/api.ts";
 import { freePort } from "./helpers/free-port.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
 /** a real HTTP+WS server, with one agent */
 async function liveServer() {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t143a-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t143w-"));
+  const dataDir = mkdtempInRootSync("t143a-");
+  const ws = mkdtempInRootSync("t143w-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   const app = buildApp(m);
   const agent = await m.addAgent({ id: "ev", workspace: ws }, { persist: false });

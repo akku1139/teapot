@@ -11,18 +11,17 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Master } from "../src/master.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 const chatFn = async () => ({ message: { role: "assistant" as const, content: "ok" } });
 
 test("a PARKED child must count as active for waitChildren (not settled)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "wcp-"));
+  const dataDir = mkdtempInRootSync("wcp-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
-  const ws = mkdtempSync(path.join(os.tmpdir(), "wcpw-"));
+  const ws = mkdtempInRootSync("wcpw-");
   const c1 = await m.addAgent({ id: "c1", parent: "p", workspace: ws, chatFn }, { persist: false });
   const c2 = await m.addAgent({ id: "c2", parent: "p", workspace: ws, chatFn }, { persist: false });
   try {
@@ -53,9 +52,9 @@ test("a PARKED child must count as active for waitChildren (not settled)", async
 });
 
 test("a child parked and then UNPARKED keeps the wait holding (no false wake)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "wcp2-"));
+  const dataDir = mkdtempInRootSync("wcp2-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
-  const ws = mkdtempSync(path.join(os.tmpdir(), "wcp2w-"));
+  const ws = mkdtempInRootSync("wcp2w-");
   const c1 = await m.addAgent({ id: "c1", parent: "p", workspace: ws, chatFn }, { persist: false });
   try {
     // parked, then the tool finished and the loop resumed (unpark restores

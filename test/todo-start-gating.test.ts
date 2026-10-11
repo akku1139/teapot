@@ -24,12 +24,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Master } from "../src/master.ts";
 import { buildApp, serveApp } from "../src/server/api.ts";
 import { freePort } from "./helpers/free-port.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 const chatFn = async () => ({ message: { role: "assistant" as const, content: "ok" } });
@@ -50,8 +49,8 @@ function post(port: number, body: unknown): Promise<number> {
 }
 
 async function server() {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t123-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t123w-"));
+  const dataDir = mkdtempInRootSync("t123-");
+  const ws = mkdtempInRootSync("t123w-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   const app = buildApp(m);
   const agent = await m.addAgent({ id: "t", workspace: ws, chatFn, autoContinue: false }, { persist: false });

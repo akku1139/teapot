@@ -23,17 +23,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { Master } from "../src/master.ts";
 import { bus } from "../src/bus.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
 test("a kind:\"event\" frame carries the whole logged event (#141)", async () => {
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t141a-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t141w-"));
+  const dataDir = mkdtempInRootSync("t141a-");
+  const ws = mkdtempInRootSync("t141w-");
   const m = new Master(
     { port: 0, dataDir, llm: LLM, providers: {}, agents: [] },
     `${dataDir}/config.json`,
@@ -81,8 +80,8 @@ test("a kind:\"event\" frame carries the whole logged event (#141)", async () =>
 test("the client's merge is viable against a real frame (#141)", async () => {
   // the point of the payload: two events arrive with distinct ids and increasing
   // seqs, which is exactly what mergeEvents needs to keep both and order them
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "t141b-"));
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t141x-"));
+  const dataDir = mkdtempInRootSync("t141b-");
+  const ws = mkdtempInRootSync("t141x-");
   const m = new Master(
     { port: 0, dataDir, llm: LLM, providers: {}, agents: [] },
     `${dataDir}/config.json`,

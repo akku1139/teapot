@@ -257,7 +257,6 @@ test("the caret remains the control that expands (#85)", () => {
   );
 });
 
-
 test("the row handler has no conditional at all (#66/#85)", () => {
   // The handler is now a single unconditional `select(...)`. A conditional here
   // could only reintroduce either bug: guard it and the row becomes a dead end
@@ -270,5 +269,4 @@ test("the row handler has no conditional at all (#66/#85)", () => {
     `the row handler must be unconditional (#66/#85); got ${body}`,
   );
 });
-
 

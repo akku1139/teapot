@@ -21,14 +21,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+
 import { cacheControlForRequest, type LlmConfig } from "../src/agent/llm.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const OR: LlmConfig = { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", model: "m" };
 const OTHER: LlmConfig = { baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m" };
@@ -65,8 +64,8 @@ async function compactingAgent(opts: {
   rounds: number;
   promptChars: number;
 }) {
-  const ws = mkdtempSync(path.join(os.tmpdir(), "ci-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "cis-"));
+  const ws = mkdtempInRootSync("ci-");
+  const sd = mkdtempInRootSync("cis-");
   let summaries = 0;
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
@@ -155,8 +154,8 @@ test("the previous notes are in the summarizer's INPUT, not just its instruction
   // opencode/Kilo/Pi all pass the prior summary as input. If only the prompt said
   // "update the notes" without including them, the model would have nothing to
   // update and the section would silently become a fresh summary.
-  const ws = mkdtempSync(path.join(os.tmpdir(), "cu-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "cus-"));
+  const ws = mkdtempInRootSync("cu-");
+  const sd = mkdtempInRootSync("cus-");
   let sawPriorNotes = false;
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
@@ -203,8 +202,8 @@ test("the previous notes are in the summarizer's INPUT, not just its instruction
 test("dropping history tells the model, so a gap is not mistaken for a fact", async () => {
   // The sharpest failure of a silent cut: the model sees a conversation starting
   // mid-way and cannot tell "I forgot" from "this never happened".
-  const ws = mkdtempSync(path.join(os.tmpdir(), "ct-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "cts-"));
+  const ws = mkdtempInRootSync("ct-");
+  const sd = mkdtempInRootSync("cts-");
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
     if (isSummarizerRequest(messages)) throw new Error("summarizer down — force the truncate path");
