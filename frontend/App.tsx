@@ -5,7 +5,6 @@ import {
   applyDelta,
   clearLive,
   isTurnBoundary,
-  isCoveredByLog,
   isOwnLiveWork,
   pruneDeadLiveBuffers,
   reconcileLiveBuffer,
@@ -2169,31 +2168,28 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           const beforeTotal = eventsTotal();
           const fetchStartedAt = Date.now();
           await loadEvents(selected()!);
+          // #40: the bubble is reconciled on EVERY pass — NOT inside the
+          // "did the newest id change" test below, which is where it used to sit.
+          //
+          // The socket handler merges the event BEFORE it schedules this refresh
+          // (`mergeEvents([msg.event])` then `setTimeout(runFeedRefresh, 60)`), so
+          // by the time this runs the newest id is ALREADY in `events()` and that
+          // test reads false. The whole block was skipped, the bubble was never
+          // cleaned, and a reply that was already persisted stayed on screen a
+          // second time as a live bubble with a cursor — for as long as the agent
+          // stayed running (a tool call is enough: no turn boundary, no idle).
+          //
+          // Reported from a real DOM: the same assistant text rendered once as a
+          // settled row and once as `.msg.live`, with the bash row still running.
+          // It disappears on reload only because select() reconciles directly.
+          //
+          // The staleness test itself is unchanged, and still content-based: drop
+          // the buffer only when the log now covers its text, or the agent is no
+          // longer live. Time-based heuristics raced the stream's natural pauses
+          // and cleared a LIVE bubble mid-reply.
+          const buf = live();
+          if (buf && !reconcileLiveBuffer(buf, events(), sel()?.status)) setLive(null);
           if (events().at(-1)?.id !== beforeId) {
-            // The bubble is stale ONLY when a persisted assistant message now
-            // covers what it was showing. Time-based heuristics (delta after
-            // fetch start) raced the stream's natural pauses and cleared a
-            // LIVE bubble mid-reply — the "output flashes, then disappears"
-            // bug. Compare content instead: drop the buffer only when the
-            // log caught up with it (or the agent went idle with nothing new).
-            const buf = live();
-            if (buf && buf.text) {
-              // covered = ANY persisted assistant message already carries this
-              // text. Checking only the LAST message missed the common case
-              // where tool turns landed after it — the bubble then lingered
-              // forever as a duplicate "streaming…" row above its own copy.
-              const body = buf.text.trim();
-              const covered = isCoveredByLog(
-                { text: body, reasoning: "", at: buf.at },
-                events(),
-                sel()?.status,
-              );
-              if (covered) setLive(null);
-            } else if (buf && !buf.text) {
-              // reasoning-only buffer with no text: drop as soon as the agent
-              // stops streaming (no text will ever persist for it)
-              if (sel()?.status !== "running") setLive(null);
-            }
             // trust atBottom() (flipped only by real user scrolling). The old
             // nearBottom() re-check measured AFTER new rows (state events like
             // idle→running, tool rows…) had already grown the feed — the

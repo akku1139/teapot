@@ -99,3 +99,54 @@ test("the helper itself still refuses to guess an unknown status (#40)", () => {
     "a live or parked agent keeps its buffer (#40)",
   );
 });
+
+/**
+ * #40, the third occurrence — a reply that was ALREADY persisted still rendered
+ * a second time as a live bubble with a cursor.
+ *
+ * Reported from a real DOM (v0.29.1): one assistant message spanning a settled
+ * `.msg` row and a `.msg.live` bubble carrying the SAME text, with the bash row
+ * below it still `running`. It clears on reload, because `select()` reconciles
+ * the buffer directly — so the refresh path was the one doing nothing.
+ *
+ * The cause was WHERE the reconciliation sat, not what it decided:
+ *
+ *     await loadEvents(selected()!);
+ *     if (events().at(-1)?.id !== beforeId) {   // <-- the socket already merged!
+ *       const buf = live();
+ *       if (buf && isCoveredByLog(...)) setLive(null);
+ *     }
+ *
+ * The socket handler merges the event BEFORE it schedules this refresh
+ * (`mergeEvents([msg.event])` then `setTimeout(runFeedRefresh, 60)`), so by the
+ * time the refresh runs the newest id is already in `events()` and that test
+ * reads FALSE. The whole block was skipped on every socket-driven refresh, so the
+ * buffer survived until something ELSE cleared it — a turn boundary or the agent
+ * going idle. A tool call following the message keeps the agent `running`, which
+ * is why it could sit there indefinitely.
+ *
+ * Measured in the built bundle: with the persisted message in the log and a
+ * matching delta in the buffer, the live bubble was still present after the
+ * refresh; it clears now, while a genuinely live reply still renders.
+ */
+test("the bubble is reconciled on every feed refresh, not only when the newest id moved (#40)", () => {
+  const at = app.indexOf("const runFeedRefresh = async () => {");
+  assert.notEqual(at, -1, "the feed refresh must exist (#40)");
+  const body = app.slice(at, app.indexOf("let pendingRefresh", at) === -1 ? at + 6000 : at + 6000);
+  const reconcile = body.indexOf("reconcileLiveBuffer(buf, events(), sel()?.status)");
+  const idTest = body.indexOf("events().at(-1)?.id !== beforeId");
+  assert.notEqual(reconcile, -1, "the refresh must reconcile the live buffer (#40)");
+  assert.notEqual(idTest, -1, "the newest-id test must still exist (#40)");
+  assert.ok(
+    reconcile < idTest,
+    "the reconciliation must NOT sit inside the newest-id test: the socket merges " +
+      "before this runs, so that test is false and the bubble is never cleaned (#40)",
+  );
+  // and it must go through the SHARED rule, so this path and select() cannot
+  // disagree about whether a buffer is stale
+  assert.match(
+    body,
+    /!reconcileLiveBuffer\(buf, events\(\), sel\(\)\?\.status\)/,
+    "one shared staleness rule, not a second copy (#40)",
+  );
+});
