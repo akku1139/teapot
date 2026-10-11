@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
+import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents, type TeapotEvent } from "../src/log/events.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
@@ -35,7 +36,7 @@ const reply = (content: string, calls?: ReturnType<typeof tc>[]): LlmResult => (
 
 /** the system prompt that identifies the summarizer's own LLM call */
 const isSummarizer = (messages: any) =>
-  String(messages[0]?.content ?? "").includes("You compress a coding agent's conversation");
+  isSummarizerRequest(messages);
 
 const noteEvents = (events: TeapotEvent[]) =>
   events.filter((e) => e.type === "system_note").map((e) => String((e.data as any)?.event ?? ""));

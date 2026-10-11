@@ -18,6 +18,21 @@ export interface ModelMeta {
    * where they actually work — support is far from universal (#47).
    */
   supportedParameters?: string[];
+  /**
+   * The reasoning levels THIS model accepts, when the endpoint publishes them.
+   *
+   * OpenRouter returns `reasoning.supported_efforts` per model (measured:
+   * `["max","high","low"]` for deepseek-v4.1-flash), which is a far better guide
+   * than the blanket four-level list a UI would otherwise offer: asking for a level
+   * the model does not have is a wasted turn, and offering one it does not have is a
+   * control that does nothing. Absent means the endpoint said nothing, NOT that
+   * there are none.
+   */
+  supportedEfforts?: string[];
+  /** the level the model would use if none is requested (OpenRouter `default_effort`) */
+  defaultEffort?: string;
+  /** reasoning cannot be turned off for this model (OpenRouter `mandatory`) */
+  reasoningMandatory?: boolean;
 }
 
 const cache = new Map<string, { at: number; list: ModelMeta[]; negative?: boolean }>();
@@ -97,6 +112,12 @@ export async function fetchModelList(
           output_modalities?: string[];
         };
         supported_parameters?: string[];
+        reasoning?: {
+          mandatory?: boolean;
+          default_enabled?: boolean;
+          supported_efforts?: string[];
+          default_effort?: string;
+        };
       }[];
     };
     const list = (j.data ?? [])
@@ -124,6 +145,16 @@ export async function fetchModelList(
         supportedParameters: Array.isArray(m.supported_parameters)
           ? m.supported_parameters.filter((p): p is string => typeof p === "string")
           : undefined,
+        // per-model reasoning levels when published (OpenRouter): the UI offers
+        // exactly these, and the request is clamped into them — offering a level the
+        // model does not have is a control that does nothing (#150)
+        supportedEfforts: Array.isArray(m.reasoning?.supported_efforts)
+          ? m.reasoning!.supported_efforts!.filter((e): e is string => typeof e === "string")
+          : undefined,
+        ...(typeof m.reasoning?.default_effort === "string"
+          ? { defaultEffort: m.reasoning.default_effort }
+          : {}),
+        ...(m.reasoning?.mandatory === true ? { reasoningMandatory: true } : {}),
       }))
       .filter((m) => m.id);
     cache.set(root, { at: Date.now(), list });

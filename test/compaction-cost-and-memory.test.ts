@@ -27,6 +27,7 @@ import path from "node:path";
 import { cacheControlForRequest, type LlmConfig } from "../src/agent/llm.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
+import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 
 const OR: LlmConfig = { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", model: "m" };
@@ -69,8 +70,7 @@ async function compactingAgent(opts: {
   let summaries = 0;
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
-    const sys = String((messages as { content?: string }[])[0]?.content ?? "");
-    if (sys.includes("compress")) {
+    if (isSummarizerRequest(messages)) {
       summaries++;
       return { message: { role: "assistant", content: "- distilled notes" } };
     }
@@ -161,9 +161,11 @@ test("the previous notes are in the summarizer's INPUT, not just its instruction
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
     const msgs = messages as { role: string; content?: string }[];
-    if (String(msgs[0]?.content ?? "").includes("compress")) {
+    if (isSummarizerRequest(msgs)) {
+      // the prior notes ride in the TRAILING message now, framed as a checkpoint —
+      // the request prefix is the conversation's own, so there is no other slot
       const user = String(msgs[msgs.length - 1]?.content ?? "");
-      if (user.includes("## Current notes")) sawPriorNotes = true;
+      if (user.includes("<conversation_checkpoint>") && user.includes("NOTES-")) sawPriorNotes = true;
       return { message: { role: "assistant", content: `- NOTES-${n++}` } };
     }
     return {
@@ -205,8 +207,7 @@ test("dropping history tells the model, so a gap is not mistaken for a fact", as
   const sd = mkdtempSync(path.join(os.tmpdir(), "cts-"));
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
-    const sys = String((messages as { content?: string }[])[0]?.content ?? "");
-    if (sys.includes("compress")) throw new Error("summarizer down — force the truncate path");
+    if (isSummarizerRequest(messages)) throw new Error("summarizer down — force the truncate path");
     return {
       message: {
         role: "assistant",

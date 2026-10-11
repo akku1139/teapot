@@ -125,6 +125,8 @@ export interface AgentOptions {
   reasoningEffort?: string;
   /** the endpoint catalogue's per-model capabilities; gates the effort field */
   supportedParameters?: string[];
+  /** the levels this model accepts, when the endpoint publishes them (#150) */
+  supportedEfforts?: string[];
   maxConsecutiveToolErrors?: number;
   /** estimated-token budget; older history is compacted when exceeded */
   /** estimated-token budget; older history is compacted when exceeded */
@@ -215,6 +217,24 @@ const SUMMARIZE_MIN_SHARE = 0.02;
 const SUMMARIZE_MIN_TOKENS = 2_000;
 
 /**
+ * Bounded retries when the summarizer's own request is over the window, and how much
+ * of the shadowed region to shed each time. ZCode handles the same case with a bounded
+ * `prompt-too-long` retry ("compact 请求自身超窗时丢旧 API round 重试"): unbounded would
+ * burn tokens against a provider that refuses every size.
+ */
+const SUMMARIZE_OVERFLOW_RETRIES = 3;
+const SUMMARIZE_SHRINK = 0.6;
+
+/**
+ * Consecutive AUTO compaction failures before auto-compaction stops trying (ZCode:
+ * `max auto failures: 3`). The failure is usually environmental — an unavailable
+ * model, a provider outage — so retrying it every turn re-burns the provider for a
+ * pass that cannot succeed. A success resets the count, so one bad stretch does not
+ * disable compaction for the session.
+ */
+const MAX_AUTO_COMPACT_FAILURES = 3;
+
+/**
  * How much of the budget to KEEP on each successive overflow recovery.
  *
  * An overflow means the estimate was too low, so a single fixed cut can still
@@ -224,6 +244,62 @@ const SUMMARIZE_MIN_TOKENS = 2_000;
  * shrink it enough. The last entry repeats for any further attempt.
  */
 const OVERFLOW_SHRINK_STEPS = [0.5, 0.35, 0.2] as const;
+
+/**
+ * The compaction directive, delivered as the FINAL user message after the replayed
+ * conversation rather than as a distinct summarizer `system` prompt.
+ *
+ * This position is the whole point: the request is then a genuine prefix-EXTENSION
+ * of the last routed request, so the provider's KV cache is reused instead of being
+ * discarded at the first token. Measured before the change — a bespoke summarizer
+ * system prompt shares nothing with the conversation, and the entire history is
+ * re-prefilled at full price exactly when the conversation is largest. DeepSeek
+ * Harness reaches the same conclusion in its `compaction-summary-prefix-cache-reuse`
+ * note.
+ *
+ * It opens with the sentence tests use to RECOGNISE a summarizer call; keeping that
+ * stable matters (an earlier version reworded it and silently made every update pass
+ * look like an ordinary turn).
+ */
+const COMPACT_INSTRUCTION = [
+  "You compress a coding agent's conversation into dense notes for it to continue working.",
+  "Condense the conversation ABOVE into a structured checkpoint so another model can",
+  "resume the work with no loss of essential context.",
+  "",
+  "First think inside an <analysis> block: what mattered, what changed, what is unresolved.",
+  "Then output ONLY the following sections, each starting with its exact heading:",
+  "",
+  "## Primary request and intent",
+  "## Key technical concepts",
+  "## Files and code sections",
+  "## Errors and fixes",
+  "## Problem solving",
+  "## All user messages", // verbatim-ish: intent survives repeated compaction
+  "## Pending tasks",
+  "## Current work",
+  "## Next step",
+  "## Durable lessons",
+  "",
+  "Rules: be terse bullet points, no prose flourishes. Quote file paths and key numbers exactly.",
+  "All user messages are listed nearly verbatim — they carry intent that must survive every future compaction.",
+  "Durable lessons lists reusable insights worth keeping forever (gotchas, preferences, what worked); omit the section if empty.",
+  "Output only the checkpoint text: do not call any tool, and do not mention this request or that the context was compacted.",
+  "The <analysis> block is discarded before your notes are stored, so think freely there.",
+].join("\n");
+
+/** Appended to COMPACT_INSTRUCTION when notes from an earlier pass are present. */
+const UPDATE_INSTRUCTION = [
+  "",
+  "The notes you produced last time are above, framed as a checkpoint. This is an",
+  "UPDATE: PRESERVE what is still true, ADD what the new messages establish, and",
+  "REMOVE only what they resolve or supersede. Never drop a constraint or a user",
+  "request just because the new messages do not repeat it: an unanswered request",
+  "stays, an answered one goes. Return the FULL updated notes under the same headings.",
+].join("\n");
+
+/** framing around the prior notes when an update pass carries them forward */
+const SUMMARY_OPEN = "<conversation_checkpoint>\n";
+const SUMMARY_CLOSE = "\n</conversation_checkpoint>";
 
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
@@ -329,8 +405,8 @@ export class Agent {
    * different answer from an empty list ("published, and excludes it") — #150 turns
    * on that distinction.
    */
-  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters">> &
-    Pick<AgentOptions, "supportedParameters"> & { chatFn?: ChatFn };
+  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts">> &
+    Pick<AgentOptions, "supportedParameters" | "supportedEfforts"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   /**
    * User prompts waiting for the next turn boundary. Deliberately NOT queued
@@ -522,6 +598,12 @@ export class Agent {
   private lastCompactSummary?: string;
   /** overflow recoveries used in the current turn; reset when a turn succeeds */
   private overflowRecoveries = 0;
+  /**
+   * Consecutive auto-compaction failures; at MAX_AUTO_COMPACT_FAILURES auto passes are
+   * skipped until one succeeds (ZCode's circuit breaker). Manual and overflow recovery
+   * are exempt — those are not "keep trying", they are "the operator/provider asked".
+   */
+  private consecutiveCompactFailures = 0;
 
   /**
    * Rescan skill roots — but only when something actually changed (#14).
@@ -1453,6 +1535,10 @@ export class Agent {
       // #47/#150: the effort in force, and whether this model can take one at all
       ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
       effortSupported: effortChoosable(this.opts.supportedParameters),
+      // the levels to OFFER, when the endpoint publishes them: a model with
+      // ["max","high","low"] must not be shown minimal/medium, which would either be
+      // refused or silently clamped (#150)
+      ...(this.opts.supportedEfforts?.length ? { effortOptions: this.opts.supportedEfforts } : {}),
       sessionDir: this.opts.sessionDir,
       ctx: {
         usedTokens: this.lastUsage?.input ?? this.estimateTokens(),
@@ -3341,6 +3427,13 @@ export class Agent {
     const before = this.contextSizeForBudgeting(); // floored — see #73
     if (!force && before < this.opts.contextTokenBudget) return;
     if (!force && this.opts.autoCompact === false) return;
+    // CIRCUIT BREAKER (ZCode: `max auto failures: 3`). A compaction that keeps
+    // failing would otherwise retry on EVERY turn, re-burning the provider for a pass
+    // that cannot succeed — and the failure is usually environmental (an unavailable
+    // model, a provider outage), so retrying it eagerly achieves nothing. Auto
+    // attempts only: a manual `/compact` is the operator asking, and an overflow
+    // recovery is the provider having just refused, so both must still try.
+    if (!force && this.consecutiveCompactFailures >= MAX_AUTO_COMPACT_FAILURES) return;
     // a forced pass on an already-tiny history would just summarize the
     // summary — report ran=false instead
     if (force && this.messages.length <= this.compactedAtLen) return;
@@ -3373,7 +3466,7 @@ export class Agent {
     cut = this.safeCut(cut);
     if (cut <= 0) return; // nothing safely compactable (phase never armed yet)
 
-    const old = this.messages.slice(0, cut);
+    let old = this.messages.slice(0, cut);
     const oldCount = old.length;
     // The prefix's share of the size the budget check ACTED on (which floors our
     // estimate against the provider's reported prompt_tokens). Scaling by character
@@ -3386,26 +3479,23 @@ export class Agent {
     let mode: "summarize" | "truncate" = "summarize";
     let summarizedCount = oldCount;
     let droppedCount = 0;
-    // COST GATE (measured). The summarize call shares NO cacheable prefix with the
-    // main loop: the summarizer's system prompt IS its instructions, so message[0]
-    // differs and the entire history is re-prefilled and re-billed at full size.
-    // Sharing the prefix would mean gutting the summarizer's role, so the lever is
-    // not to PAY for a shallow saving.
+    // COST GATE. The criterion is the ABSOLUTE amount of context the cut would
+    // discard, not how far over the budget we are: a ratio test gets it backwards,
+    // since a small window overflowing slightly is exactly the case where a
+    // summary buys almost nothing (there is little knowledge to lose), while a large
+    // window overflowing slightly still has a lot to lose.
     //
-    // The criterion is the ABSOLUTE amount of context the cut would discard, not
-    // how far over the budget we are. A ratio test gets it backwards: a small
-    // window overflowing slightly is exactly the case where a full-history call
-    // buys almost nothing (there is little knowledge to lose), while a large
-    // window overflowing slightly still has a lot to lose. `oldTokens` is the
-    // summarizable prefix — the thing the call is actually paid for.
+    // Since the summarizer now REPLAYS the conversation prefix, the call reuses the
+    // provider's KV cache, so it is far cheaper than it used to be — but it is not
+    // free (the shadowed region is re-read, and the summary itself is generated), so
+    // a shallow cut is still better served by the free drop.
     //
-    // Below the threshold the DROP alone reclaims the budget, for free.
+    // MANUAL is exempt: an explicit /compact is a user command, not a cost decision,
+    // and opencode draws the line in the same place ("only the user compacts when
+    // automatic compaction is off"). An overflow recovery is exempt too — the
+    // provider just told us the prompt was too big, so the question is not whether
+    // the saving is worth a call.
     //
-    // MANUAL is exempt: an explicit /compact is a user command, not a cost
-    // decision, and opencode draws the line in the same place ("only the user
-    // compacts when automatic compaction is off"). An overflow recovery is exempt
-    // too — the provider just told us the prompt was too big, so the question is
-    // not whether the saving is worth a call.
     // Use BOTH sizes. `oldTokens` is our estimate of the prefix being summarized;
     // `before` is the size the budget check acted on, which already floors that
     // estimate against the provider's REPORTED prompt_tokens. Gating on the local
@@ -3469,20 +3559,54 @@ export class Agent {
       });
       try {
         if (worthSummarizing) {
-          summary = await this.summarize(
-            old,
-            (text) => {
-              bus.emit("update", {
-                kind: "llm-delta",
-                agentId: this.opts.id,
-                // #146: the bubble is session-scoped, so the stream must say which session
-                sessionId: this.currentSession,
-                text: `[compact] ${text}`,
-                reasoning: "",
-              } satisfies BusEvent);
-            },
-            previousSummary,
-          );
+          // OVERFLOW RETRY on the summarizer itself. The replayed prefix is the head
+          // of a request that has already succeeded, so it normally fits — but the
+          // cut can land such that the shadowed region is nearly the whole history
+          // (measured: with a recent-keep target smaller than one message, cut lands
+          // at the far end and `old` is everything). When the conversation was over
+          // its window to begin with — the overflow-recovery case — the auxiliary
+          // request can then be over it too, and there is no truncation to save it
+          // any more.
+          //
+          // The fix keeps the property the replay exists for: REDUCE THE CUT, which
+          // sends FEWER LEADING messages, so the request stays a cacheable prefix of
+          // the routed request while shrinking. (Dropping the middle would break
+          // alignment; dropping the tail would discard the newest context.) ZCode
+          // handles the same case with a bounded `prompt-too-long` retry, and this is
+          // bounded for the same reason: an unbounded loop here would burn tokens
+          // against a provider that will refuse every size.
+          for (let attempt = 0; attempt <= SUMMARIZE_OVERFLOW_RETRIES; attempt++) {
+            try {
+              summary = await this.summarize(
+                old,
+                (text) => {
+                  bus.emit("update", {
+                    kind: "llm-delta",
+                    agentId: this.opts.id,
+                    // #146: the bubble is session-scoped, so the stream must say which session
+                    sessionId: this.currentSession,
+                    text: `[compact] ${text}`,
+                    reasoning: "",
+                  } satisfies BusEvent);
+                },
+                previousSummary,
+              );
+              break;
+            } catch (e) {
+              const shrinkable = isContextOverflow(e) && attempt < SUMMARIZE_OVERFLOW_RETRIES;
+              if (!shrinkable) throw e;
+              const smaller = this.safeCut(Math.max(1, Math.floor(old.length * SUMMARIZE_SHRINK)));
+              if (smaller <= 0 || smaller >= old.length) throw e; // cannot shrink further
+              await this.log.append("system_note", this.currentSession, this.currentBranch, {
+                event: "compaction-summarize-overflow",
+                attempt: attempt + 1,
+                from: old.length,
+                to: smaller,
+              });
+              old = this.messages.slice(0, smaller);
+              cut = smaller;
+            }
+          }
         } else {
           // shallow saving: truncation reclaims the budget for free, so skip the
           // one full-history LLM call the summary would cost
@@ -3500,6 +3624,11 @@ export class Agent {
         await this.log.append("error", this.currentSession, this.currentBranch, {
           message: `compaction summarize failed, falling back to truncation: ${(err as Error).message}`,
         });
+        // ZCode's circuit breaker counts the failure and never fails the turn for it
+        // ("Auto compact 失败不应让当前用户 turn 失败"): the pass still falls back to a
+        // truncation below, so work continues, and after MAX_AUTO_COMPACT_FAILURES
+        // consecutive auto failures the retry stops burning the provider.
+        this.consecutiveCompactFailures += 1;
       }
       if (!summary) {
         // fallback: drop the oldest half without LLM help so work can continue
@@ -3555,6 +3684,12 @@ export class Agent {
       }
       const after = this.estimateTokens();
       this.stats.compactions++;
+      // A pass that got here reclaimed the budget, so autos may try again — ZCode
+      // resets its count on success for the same reason. But NOT when the summary
+      // failed: the truncate fallback still lands here, and resetting on it made the
+      // breaker unreachable (measured: 217 consecutive summarize failures, counter
+      // stuck at 0, so the provider was re-burned on every turn).
+      if (mode === "summarize") this.consecutiveCompactFailures = 0;
       this.compactedAtLen = this.messages.length;
       // Post-compact file restore (Claude Code style): re-attach the most
       // recently read files so the model doesn't burn its first turns re-reading
@@ -3643,98 +3778,71 @@ export class Agent {
   }
 
   /** Ask the model for dense continuation notes over the compacted range. */
+  /**
+   * Summarize `old` into continuation notes.
+   *
+   * PREFIX-CACHE SHAPE (measured): the summarizer request is built as the
+   * conversation's OWN prefix — the session's system prompt, the same tool schemas,
+   * and the messages being shadowed — with the compaction instruction appended as a
+   * trailing `user` message. That makes the auxiliary call a genuine prefix-EXTENSION
+   * of the last routed request, so the provider reuses the KV cache instead of
+   * invalidating it at the first token.
+   *
+   * The alternative (a bespoke summarizer `system` prompt + a flattened transcript)
+   * was measured to share NOTHING with the conversation request: a provider caches on
+   * the leading token sequence, so a different first message discards the whole
+   * prefix and the entire history is re-prefilled at full price — exactly when the
+   * conversation is largest. DeepSeek Harness documents the same finding and the same
+   * fix ("the summarization directive moves from the front of the request to the end
+   * of the conversation"); the reasoning is reproduced here because it is not
+   * obvious, and the previous version of this function did the expensive thing.
+   *
+   * `tools` ride along even though the summarizer never calls one: they are part of
+   * the cached token sequence, so omitting them would misalign everything after them.
+   */
   private async summarize(
     old: ChatMessage[],
     onDelta?: (text: string) => void,
     previousSummary?: string,
   ): Promise<string> {
-    const full = old
-      .map((m) => {
-        const who = m.role === "tool" ? "tool" : m.role;
-        const tc = m.tool_calls?.map((t) => `\n[calls ${t.function.name}(${t.function.arguments})]`).join("");
-        return `${who}: ${m.content ?? ""}${tc}`;
-      })
-      .join("\n\n");
-    // #127: this was a bare `.slice(-120_000)` — the TAIL only.
-    //
-    // The question the issue raises is the right one: when a compaction starts,
-    // the context window opens dramatically, and the summarizer saw only the last
-    // 120k characters of what it was asked to summarise. Anything older was not
-    // summarised and not kept — it was silently DISCARDED. So the original user
-    // requirement, which sits at the very front of the history, was the single
-    // most likely thing to be lost, and losing it is the one failure compaction
-    // cannot recover from: the summary is now the only record.
-    //
-    // Head + tail, with the seam marked so the model can tell a gap from a
-    // boundary. The head is where the goal, the constraints and the original ask
-    // live; the tail is where the recent state and any in-flight error do.
-    const BUDGET = 120_000;
-    const HEAD = Math.floor(BUDGET * 0.35);
-    const TAIL = BUDGET - HEAD;
-    let transcript: string;
-    if (full.length <= BUDGET) {
-      transcript = full;
-    } else {
-      transcript = [
-        full.slice(0, HEAD),
-        `\n\n[... ${full.length - BUDGET} characters elided from the middle of this history ...]\n\n`,
-        full.slice(full.length - TAIL),
-      ].join("");
-    }
     const fn = this.opts.chatFn ?? chat;
+    // the conversation's own head: system prompt + the shadowed region, in order.
+    // `buildMessages()` supplies the live system prompt, so the replayed prefix is
+    // byte-identical to what the last routed request carried.
+    const prefix = this.buildMessages().slice(0, 1 + old.length);
+    // #127 kept the head: dropping the OLDEST text silently discarded the original
+    // request, which sits at the front of the history and is the one thing compaction
+    // cannot recover from. Replaying the prefix VERBATIM (rather than a flattened,
+    // head+tail-elided transcript) keeps that property AND the cache: the model sees
+    // the real messages, in their real order.
+    //
+    // The older head+tail truncation guarded against a summarizer input larger than
+    // the model accepts; that is now handled by what gets shadowed instead — the
+    // region is what the conversation itself just carried, so it already fits the
+    // window that request fitted.
+    const instruction = COMPACT_INSTRUCTION + (previousSummary ? UPDATE_INSTRUCTION : "");
     // Structured sections (Claude Code style): fixed headings survive MULTIPLE
     // successive compactions far better than free-form prose — each pass knows
     // where "pending tasks" vs "user messages" live, so nothing silently
     // merges away. The <analysis> scratchpad gives the model a thinking space;
     // it is stripped from the stored summary (formatCompactSummary).
+    //
+    // `tools` are forwarded even though the summarizer never calls one: they are
+    // part of the cached token sequence, so dropping them (or sending a different
+    // set) misaligns everything after them and costs the cache the whole point of
+    // this shape. MEASURED while writing this: `toolSpecs()` returns 15 and the
+    // conversation sends `allToolSpecs()`'s 29, so the obvious call was wrong — the
+    // exact array the main loop uses is what must ride along.
     const res = await fn(
       { ...this.opts.llm, oneOff: true }, // one-off prompt: ask the provider not to retain it
       [
+        ...prefix,
         {
-          role: "system",
-          content:
-            // Both variants OPEN with the same sentence. Tests (and any future caller)
-            // identify the summarizer by this text, and a shared prefix keeps that
-            // detection working across the initial/update split — the first version of
-            // update mode changed it to "You UPDATE…", which silently made every
-            // update pass look like an ordinary turn.
-            "You compress a coding agent's conversation into dense notes for it to continue working.\n\n" +
-            (previousSummary
-              ? "This is an UPDATE: the current notes are under `## Current notes`. They are your\n" +
-                "output from an earlier compaction and are the ONLY record of everything before the\n" +
-                "messages you are about to read — so carry them forward. PRESERVE what is still\n" +
-                "true, ADD what the new messages establish, and REMOVE only what they resolve or\n" +
-                "supersede. Never drop a constraint or a user request just because the new\n" +
-                "messages do not repeat it: an unanswered request stays, an answered one goes.\n\n"
-              : "") +
-            "First think inside an <analysis> block: what mattered, what changed, what is unresolved.\n" +
-            "Then output ONLY the following sections, each starting with its exact heading:\n\n" +
-            "## Primary request and intent\n" +
-            "## Key technical concepts\n" +
-            "## Files and code sections\n" +
-            "## Errors and fixes\n" +
-            "## Problem solving\n" +
-            "## All user messages\n" + // verbatim-ish: intent survives repeated compaction
-            "## Pending tasks\n" +
-            "## Current work\n" +
-            "## Next step\n" +
-            "## Durable lessons\n\n" +
-            "Rules: be terse bullet points, no prose flourishes. Quote file paths and key numbers exactly. " +
-            "All user messages are listed nearly verbatim — they carry intent that must survive every future compaction. " +
-            'Durable lessons lists reusable insights worth keeping forever (gotchas, preferences, what worked); omit the section if empty. ' +
-            "The <analysis> block is discarded before your notes are stored, so think freely there.",
-        },
-        {
-          role: "user",
-          content:
-            (previousSummary ? `## Current notes\n\n${previousSummary}\n\n` : "") +
-            `## Conversation\n\n${transcript}\n\n` +
-            (previousSummary
-              ? "Update the current notes to cover this conversation as well. Return the FULL updated notes."
-              : "Write the continuation notes now."),
+          role: "user" as const,
+          content: (previousSummary ? `${SUMMARY_OPEN}${previousSummary}${SUMMARY_CLOSE}\n\n` : "") + instruction,
         },
       ],
-      [],
+      allToolSpecs(),
       undefined, // never abortable by stop(): losing the summary would lose history
       onDelta
         ? (s: { text: string; reasoning: string }) => onDelta(s.text)
@@ -4229,19 +4337,36 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
         // `dropped` IS the number of leading messages the live pass removed
         msgs.splice(0, Math.min(msgs.length, Number(d.dropped ?? 0)));
       } else {
+        const sum = typeof d.summary === "string" ? d.summary.trim() : "";
         const summarized = Math.min(msgs.length, Number(d.summarized ?? 0) || msgs.length);
-        const sum = typeof d.summary === "string" ? d.summary : "";
-        msgs.splice(
-          0,
-          summarized,
-          {
-            role: "user",
-            content:
-              `[harness] Context was compacted: ${summarized} earlier messages were summarized. ` +
-              "Goal and notes are managed by the harness (AGENTS.md / memory.md are injected into your prompt when present).\n\n" +
-              `## Summary of earlier conversation\n${sum || "(summary unavailable)"}`,
-          },
-        );
+        // A `summarize` boundary with no summary text is a HALF-WRITTEN record, and
+        // acting on it would delete history to replace it with nothing — the worst
+        // failure compaction can have, because the discarded prefix holds the original
+        // request and the summary is supposed to be its only record.
+        //
+        // So a damaged/absent summary falls back CONSERVATIVELY: the compaction is not
+        // applied at all, the full history stays, and the operator sees why. (ZCode
+        // draws the same line for a damaged preserved segment — "返回保守 fallback，并产生
+        // 结构化 warning" — and refuses to write a half boundary in the first place.)
+        // Reaching this state needs a hand-edited or truncated log, since the live path
+        // only writes `mode: "summarize"` when it has a summary.
+        if (!sum) {
+          console.warn(
+            `[teapot] compaction at seq ${e.seq} has no summary text — keeping the full history rather than discarding it`,
+          );
+        } else {
+          msgs.splice(
+            0,
+            summarized,
+            {
+              role: "user",
+              content:
+                `[harness] Context was compacted: ${summarized} earlier messages were summarized. ` +
+                "Goal and notes are managed by the harness (AGENTS.md / memory.md are injected into your prompt when present).\n\n" +
+                `## Summary of earlier conversation\n${sum}`,
+            },
+          );
+        }
       }
     } else if (e.type === "progress") {
       // progress events may follow an assistant report_progress call that

@@ -43,6 +43,12 @@ export interface LlmConfig {
   /** per-model capabilities from the endpoint catalogue; gates the above */
   supportedParameters?: string[];
   /**
+   * The levels THIS model accepts, when published (OpenRouter's
+   * `reasoning.supported_efforts`). The request is clamped into them, so a level the
+   * model does not have is never sent (#150).
+   */
+  supportedEfforts?: string[];
+  /**
    * A one-off call whose prompt will never be sent again (the compaction
    * summarizer). Providers that cache on a byte-identical prefix charge a WRITE
    * premium to populate the cache, and a one-off prompt is never read back — so
@@ -107,7 +113,14 @@ export function effortForRequest(
   // a catalogue that names the parameter it supports and does NOT list this one is
   // a definite "no" — only the ones that omit the question are worth a probe
   if (supported && !supported.includes("reasoning_effort")) return {};
-  return { reasoning_effort: e as Effort };
+  // Clamp into the model's own levels when it publishes them (#150). The USER's input
+  // is validated against the four levels we offer, but the CLAMPED result may be a
+  // provider-specific one (`xhigh`, `max`) — deepseek advertises `["max","high","low"]`,
+  // so refusing to send `max` because it is not in our own four would throw away the
+  // model's real top tier.
+  const clamped = clampEffort(e, cfg.supportedEfforts);
+  if (!(EFFORT_LADDER as readonly string[]).includes(clamped)) return {};
+  return { reasoning_effort: clamped as Effort };
 }
 
 /**
@@ -169,8 +182,62 @@ export function cacheControlForRequest(cfg: LlmConfig): { prompt_cache_retention
 }
 
 const REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
-/** the OpenAI SDK already types this union; mirror it so the body matches */
-type Effort = "minimal" | "low" | "medium" | "high";
+/**
+ * The value sent on the wire. Wider than the four the UI offers: a model's own
+ * published levels can include `xhigh`/`max`, and clamping must be able to land on
+ * them (deepseek-v4.1-flash advertises `["max","high","low"]`).
+ */
+type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * Canonical low→high ordering used for clamping, including the levels this harness
+ * does not itself offer (`none`, `xhigh`, `max`) because a provider's own list is
+ * spelled in those terms and the comparison needs the full ladder.
+ *
+ * Same ladder and the same rules as Hermes' `EFFORT_LADDER` / `clamp_effort`, which
+ * is the clearest statement of the problem: a provider that does not have the
+ * requested level should not receive a request it will refuse, and should not be
+ * silently escalated either.
+ */
+const EFFORT_LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * Map a requested level onto the levels a MODEL actually accepts (#150).
+ *
+ * Measured: OpenRouter publishes `reasoning.supported_efforts` per model (198 of 458
+ * models), and the levels are not the four a naive UI would offer — deepseek-v4.1-flash
+ * advertises `["max","high","low"]`, so `minimal` and `medium` do not exist for it and
+ * `max` does. Sending an absent level is a refused turn; offering one is a control that
+ * does nothing.
+ *
+ * Rules, matching Hermes:
+ *   - unknown or empty support → the request passes through (we cannot judge it)
+ *   - already supported → unchanged
+ *   - a level that is not on the ladder at all → unchanged (custom providers use
+ *     bespoke names, and rewriting one would be guesswork)
+ *   - otherwise the nearest WEAKER level, so a clamp never escalates cost; if nothing
+ *     weaker exists, the weakest supported level
+ *   - never to `none`, which would silently switch thinking OFF for a caller who asked
+ *     for it to be on
+ */
+export function clampEffort(requested: string, supported: readonly string[] | undefined): string {
+  if (!requested || !supported?.length) return requested;
+  const norm = supported.map((s) => String(s).toLowerCase());
+  if (norm.includes(requested)) return requested;
+  const reqIdx = (EFFORT_LADDER as readonly string[]).indexOf(requested);
+  if (reqIdx < 0) return requested; // not a ladder level: not ours to rewrite
+  const candidates = norm.filter((l) => l !== "none" && (EFFORT_LADDER as readonly string[]).includes(l));
+  if (!candidates.length) return requested;
+  const weaker = candidates.filter((l) => (EFFORT_LADDER as readonly string[]).indexOf(l) < reqIdx);
+  if (weaker.length) {
+    return weaker.reduce((best, l) =>
+      (EFFORT_LADDER as readonly string[]).indexOf(l) > (EFFORT_LADDER as readonly string[]).indexOf(best) ? l : best,
+    );
+  }
+  return candidates.reduce((best, l) =>
+    (EFFORT_LADDER as readonly string[]).indexOf(l) < (EFFORT_LADDER as readonly string[]).indexOf(best) ? l : best,
+  );
+}
 
 /**
  * OpenRouter app attribution (https://openrouter.ai/docs/app-attribution):

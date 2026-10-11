@@ -8,6 +8,7 @@ import { Agent } from "../src/agent/agent.ts";
 import type { ChatFn, ChatMessage, LlmConfig, LlmResult, ToolSpec } from "../src/agent/llm.ts";
 import { readEvents } from "../src/log/events.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
+import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 
 // #110: POSIX-only — runs POSIX commands through the bash tool.
 // The Windows CI job skips this file; see test/helpers/posix-only.ts for why
@@ -575,8 +576,7 @@ test("requested report keeps a valid sequence even when the model calls other to
 
 test("editing a sent prompt forks and can summarize the abandoned tail", async () => {
   const mock = mkMock((req): LlmResult => {
-    const sys = String(req.messages[0]?.content ?? "");
-    if (sys.includes("compress")) return reply("- created hello.txt"); // tail summarizer
+    if (isSummarizerRequest(req.messages)) return reply("- created hello.txt"); // tail summarizer
     if (req.n === 0)
       return reply("creating", [tc("w1", "write_file", { path: "hello.txt", content: "hi" })]);
     return reply("done creating");
@@ -732,10 +732,15 @@ test("compaction keys off the API's prompt_tokens, not the char estimate", async
   // is the opening prompt alone (~9 tokens) — so the cost gate correctly truncates.
   // Each round therefore adds a big tool result, making the older half substantial.
   const big = "z".repeat(12_000);
+  // Alternate a tool call with a plain reply. A mock that ALWAYS issues a tool call
+  // runs each round to the 200-turn cap, and a constant `usage` keeps the history
+  // "over budget" forever — measured, that produced 199 compactions and 1000 LLM calls
+  // for five rounds, which took minutes and made this test flaky (it timed out on the
+  // previous code too, so the fixture was the problem, not the feature).
   const mock = mkMock((req): LlmResult => {
-    const sys = String(req.messages[0]?.content ?? "");
-    if (sys.includes("compress")) return reply("- notes from earlier");
-    // provider reports a huge prefix while the TEXT is modest — the old char
+    if (isSummarizerRequest(req.messages)) return reply("- notes from earlier");
+    if (req.n % 2 === 1) return reply("done");
+    // the provider reports a large prefix while the TEXT is modest — the old char
     // heuristic alone would never have triggered on this history
     return {
       ...reply("working", [tc(`w${req.n}`, "bash", { cmd: `echo ${"e".repeat(40)}` })]),
@@ -779,13 +784,15 @@ test("compactNow forces a pass and reports whether it ran", async () => {
 
 test("compaction summarizes old turns when the budget is exceeded", async () => {
   const mock = mkMock((req): LlmResult => {
-    const sys = String(req.messages[0]?.content ?? "");
-    if (sys.includes("compress")) return reply("- SUMMARY: made big.txt with filler; next: verify");
+    if (isSummarizerRequest(req.messages)) return reply("- SUMMARY: made big.txt with filler; next: verify");
     // A large tool call EVERY round. A short history cannot reach the summarizer at
     // all: the recent-keep boundary lands on the tool result, safeCut backs the cut
     // up to index 1, and the summarizable prefix collapses to the opening prompt
     // (measured ~9 tokens) — so the cost gate correctly chooses truncation. The
     // fixture has to be long enough that the OLDER half is worth summarizing.
+    // alternate, so each round ends instead of running to the turn cap (see the note
+    // in the test above — a constant tool-call stream made these fixtures minutes long)
+    if (req.n % 2 === 1) return reply("done");
     return reply("writing", [tc(`w${req.n}`, "bash", { cmd: `echo ${"e".repeat(200)}` })]);
   });
   await withAgent({ chatFn: mock.chat, contextTokenBudget: 8000, autoContinue: false }, async (agent) => {

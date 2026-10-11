@@ -963,6 +963,8 @@ export class Master {
       ...(modelMeta?.supportedParameters
         ? { supportedParameters: modelMeta.supportedParameters }
         : {}),
+      // #150: the model's own reasoning levels, so the picker offers exactly those
+      ...(modelMeta?.supportedEfforts?.length ? { supportedEfforts: modelMeta.supportedEfforts } : {}),
     });
     // pricing metadata (USD/token) for the runtime cost estimate — best
     // effort: providers without pricing in /models simply show no cost
@@ -1847,7 +1849,7 @@ if (active().length === 0) wake();
     const effortList = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => [] as ModelMeta[]);
     const meta = effortList.find((m) => m.id === (model || llm.model));
     const opts = agent as unknown as {
-      opts: { reasoningEffort: string; supportedParameters?: string[] };
+      opts: { reasoningEffort: string; supportedParameters?: string[]; supportedEfforts?: string[] };
     };
     if (reasoningEffort !== undefined) {
       // validated here so an unsupported value never reaches the request body;
@@ -1858,6 +1860,7 @@ if (active().length === 0) wake();
     }
     // keep `undefined` for "published nothing" — see the note on the option (#150)
     opts.opts.supportedParameters = meta?.supportedParameters;
+    opts.opts.supportedEfforts = meta?.supportedEfforts;
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
     if (!llm.baseUrl) throw new Error("no baseUrl resolved");
     agent.setLlmConfig(llm);

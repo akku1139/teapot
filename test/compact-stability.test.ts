@@ -15,6 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
+import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { Agent } from "../src/agent/agent.ts";
 import type { ChatMessage, LlmResult } from "../src/agent/llm.ts";
 
@@ -52,8 +53,7 @@ test("compaction leaves no dangling tool results when summarizing (#8)", async (
     let n = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       n++;
-      const sys = String(messages[0]?.content ?? "");
-      if (sys.includes("You compress a coding agent's conversation")) return reply("- summary of earlier work");
+      if (isSummarizerRequest(messages)) return reply("- summary of earlier work");
       if (n === 1)
         return reply("writing", [tc("w1", "write_file", { path: "big.txt", content: big })]);
       return reply("done");
@@ -81,11 +81,9 @@ test("compaction leaves no dangling tool results when the summarizer FAILS (#8)"
     let n = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       n++;
-      const sys = String(messages[0]?.content ?? "");
-      // fail ONLY the summarizer call (its system prompt is distinctive), so the
-      // main loop survives and reaches the truncation fallback
-      if (sys.includes("You compress a coding agent's conversation"))
-        throw new Error("summarizer unavailable");
+      // fail ONLY the summarizer call (its trailing directive is distinctive), so
+      // the main loop survives and reaches the truncation fallback
+      if (isSummarizerRequest(messages)) throw new Error("summarizer unavailable");
       if (n === 1)
         return reply("writing", [tc("w1", "write_file", { path: "big.txt", content: big })]);
       return reply("done");
@@ -130,8 +128,7 @@ test("a second compaction after the first stays well-formed (#8)", async () => {
     let n = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       n++;
-      const sys = String(messages[0]?.content ?? "");
-      if (sys.includes("You compress a coding agent's conversation")) return reply("- summary");
+      if (isSummarizerRequest(messages)) return reply("- summary");
       if (n % 2 === 1)
         return reply("writing", [tc(`w${n}`, "write_file", { path: `f${n}.txt`, content: big })]);
       return reply("ok");
@@ -161,8 +158,7 @@ test("history stays pairable after a restart that follows a compaction (#8)", as
     let n = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       n++;
-      const sys = String(messages[0]?.content ?? "");
-      if (sys.includes("You compress a coding agent's conversation")) return reply("- summary");
+      if (isSummarizerRequest(messages)) return reply("- summary");
       if (n === 1)
         return reply("writing", [tc("w1", "write_file", { path: "big.txt", content: big })]);
       return reply("done");

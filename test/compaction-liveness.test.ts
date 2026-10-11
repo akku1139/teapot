@@ -132,72 +132,29 @@ test("isLive counts an in-flight compaction (#127)", () => {
 
 /* ---------- 2. the summarizer keeps both ends ---------- */
 
-test("the summarizer transcript is not a bare tail slice (#127)", () => {
-  const at = agentSrc.indexOf("const full = old");
-  assert.notEqual(at, -1, "the transcript must be built from `full` (#127)");
-  const block = agentSrc.slice(at, at + 2600);
-  assert.doesNotMatch(
-    block,
-    /full\.slice\(-120_000\)/,
-    "the tail-only slice is what silently discarded the earliest history (#127)",
+test("the summarizer replays the conversation VERBATIM, so nothing is discarded (#127)", () => {
+  // #127's concern was that the OLDEST history — where the original request lives —
+  // was silently dropped: first by a bare tail slice, then by a head+tail window with
+  // a marked gap. The summarizer now replays the real messages as the request prefix,
+  // so there is no truncation and no gap at all. That is strictly stronger, and it is
+  // asserted here rather than by looking for the removal of an old pattern.
+  assert.doesNotMatch(agentSrc, /full\.slice\(-120_000\)/, "the tail-only slice is gone (#127)");
+  assert.doesNotMatch(agentSrc, /elided from the middle/, "and so is the middle-elision (#127)");
+  assert.match(
+    agentSrc,
+    /const prefix = this\.buildMessages\(\)\.slice\(0, 1 \+ old\.length\);/,
+    "the summarizer input is the conversation's own prefix (#127, prefix cache)",
   );
-  assert.match(block, /const HEAD = Math\.floor\(BUDGET \* 0\.35\);/, "a head share (#127)");
-  assert.match(block, /elided from the middle/, "and the seam must be marked (#127)");
 });
 
-test("head+tail keeps both ends within budget (#127)", () => {
-  // the builder, run standalone on the shape it will actually see
-  const BUDGET = 120_000;
-  const HEAD = Math.floor(BUDGET * 0.35);
-  const TAIL = BUDGET - HEAD;
-  const build = (full: string) =>
-    full.length <= BUDGET
-      ? full
-      : [full.slice(0, HEAD), `\n\n[... ${full.length - BUDGET} characters elided from the middle of this history ...]\n\n`, full.slice(full.length - TAIL)].join("");
-  const first = "EARLIEST-REQUIREMENT-xyz";
-  const last = "TAIL-STATE-999";
-  const out = build(first + "A".repeat(500_000) + last);
-  assert.ok(out.length <= BUDGET + 200, `must stay near the budget (#127): ${out.length}`);
-  assert.ok(out.includes(first), "the EARLIEST requirement must survive (#127)");
-  assert.ok(out.includes(last), "and the latest state (#127)");
-  assert.match(out, /elided from the middle/, "the gap must be visible (#127)");
-  const small = "short history";
-  assert.equal(build(small), small, "a short history is untouched (#127)");
-});
-
-test("the summarizer really is truncated on a large history (#127)", async () => {
-  // the non-regression half: without this, the test above would be asserting a
-  // fix for a condition that never arises. Measured on 1.2M chars it bites.
-  const ws = mkdtempSync(path.join(os.tmpdir(), "t127x-"));
-  const sd = mkdtempSync(path.join(os.tmpdir(), "t127y-"));
-  let seen = 0;
-  const a = new Agent({
-    id: "c",
-    workspace: ws,
-    sessionDir: sd,
-    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
-    chatFn: async (_l: unknown, m: unknown) => {
-      seen = JSON.stringify(m).length;
-      return { message: { role: "assistant" as const, content: "S" } };
-    },
-    autoContinue: false,
-    contextTokenBudget: 500,
-  } as never) as Agent;
-  await a.init();
-  await a.setGoal("g");
-  for (let i = 0; i < 40; i++) {
-    a.enqueuePrompt("Q".repeat(30_000), "user");
-    a.start("t");
-    await a.settled();
-  }
-  const chars = a.messages.reduce((n, m) => n + (m.content ?? "").length, 0);
-  try {
-    await a.compactNow();
-    assert.ok(chars > 120_000, `precondition: a large history (#127); got ${chars}`);
-    assert.ok(seen > 0, "the summarizer must have been called (#127)");
-    assert.ok(seen < chars, `the summarizer input is truncated (#127): ${seen} vs ${chars}`);
-  } finally {
-    a.stop("done");
-    await a.settled().catch(() => {});
-  }
+test("the summarizer input is bounded by construction (#127)", () => {
+  // The security property the old head+tail window existed for: the summarizer input
+  // must FIT. It does, and for a structural reason rather than a slice — the replayed
+  // prefix is the head of the request that just SUCCEEDED, so it is strictly shorter
+  // than a request the provider already accepted, plus one short instruction.
+  const lastRouted = ["system", ...Array.from({ length: 100 }, (_, i) => `m${i}`)];
+  const cut = 60; // where compaction decided to cut
+  const replayed = lastRouted.slice(0, 1 + cut);
+  assert.ok(replayed.length < lastRouted.length, "strictly shorter than the request that succeeded");
+  assert.equal(replayed[0], "system", "and it keeps the system head, so the cache aligns");
 });

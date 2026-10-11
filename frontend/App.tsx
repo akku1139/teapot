@@ -75,7 +75,7 @@ interface Agent {
   workspaceMissing?: boolean;
   latestProgress: any; stats: any; model: string; provider?: string;
   /** reasoning effort in force, and whether this model accepts one (#47) */
-  reasoningEffort?: string; effortSupported?: boolean;
+  reasoningEffort?: string; effortSupported?: boolean; effortOptions?: string[];
   pendingPrompts?: number;
   /** #78: the ids of the still-queued prompts, so the UI can reconcile by IDENTITY */
   pendingPromptIds?: string[];
@@ -4013,7 +4013,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   onchange={(e) => setEffortDraft(e.currentTarget.value)}
                 >
                   <option value="">provider default</option>
-                  <For each={REASONING_EFFORT_OPTIONS}>
+                  {/* Offer the levels THIS model accepts when the endpoint publishes
+                      them (#150): a model advertising ["max","high","low"] must not be
+                      shown minimal/medium, which would be refused or silently clamped.
+                      Falls back to the four we offer when the endpoint says nothing. */}
+                  <For each={sel()!.effortOptions?.length ? sel()!.effortOptions : REASONING_EFFORT_OPTIONS}>
                     {(v) => <option value={v}>{v}</option>}
                   </For>
                 </select>
