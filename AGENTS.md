@@ -36,8 +36,21 @@ docs/           design notes and surveys
    `config.json`. Running a probe in place once reassigned 493 agents to empty
    sessions and orphaned 377 MB of history (recoverable only because each
    `chat.jsonl` carries its own `agent` field — see
-   `scripts/recover-session-pointers.mjs`). Copy the config AND the sessions tree
-   into a temp dir, point `dataDir` at it, and measure there.
+   `scripts/recover-session-pointers.mjs`).
+
+   **`--port` does NOT isolate anything.** The config path comes from the first
+   CLI arg (`$TEAPOT_CONFIG`), so `teapot --port 7803` loads the REAL config and
+   the REAL data dir and will rewrite it — this happened repeatedly during
+   release verification. To boot safely:
+
+   ```sh
+   cp -r ~/.local/share/teapot-coding-agent/sessions /tmp/sbx/sessions
+   # copy the config, set "dataDir" to /tmp/sbx, then:
+   teapot /tmp/sbx/config.json --port 7831
+   ```
+
+   `scripts/measure-boot.mjs <sandbox-config>` does exactly this and reports how
+   many sessions were MINTED, so a destructive boot is impossible to miss.
 
 ## Before you say "done"
 
