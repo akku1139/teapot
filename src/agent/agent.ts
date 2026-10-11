@@ -456,6 +456,14 @@ export class Agent {
   /** consecutive round-fatal API errors (drives the retry backoff) */
   private consecutiveApiErrors = 0;
   /**
+   * True while the round-level retry backoff is sleeping (#152).
+   *
+   * Separate from `status`, which must keep reading "error" so the operator sees WHAT
+   * failed while the retry is pending — but an agent waiting to retry is stoppable
+   * work in flight, so `isLive()` has to say so or the UI offers "start" and no stop.
+   */
+  private retrySleeping = false;
+  /**
    * Consecutive auto-continued rounds that did no work (#106).
    *
    * Reset by any tool call, any finish, a stop, or fresh operator input — only a
@@ -812,12 +820,21 @@ export class Agent {
     // press start. #9 settled that a stop must neither deliver nor silently
     // DISCARD those prompts, so they are kept — but keeping them must not make the
     // agent read as running. A stop outranks them.
+    //
+    // #152: and one more, from the same family. The round-level retry backoff sets
+    // status "error" while it sleeps ("… — retrying in 60s"), and `error` is not a
+    // live status — so the UI offered "▶ start" for an agent that was waiting to
+    // retry, and there was NO stop control at all. The operator pressed what was
+    // there and nothing stopped, because nothing could. A scheduled retry is work
+    // in flight, so it counts as live; the dedicated flag keeps that independent of
+    // the display status, which still has to read "error".
     if (this.stopRequested) return false;
     return (
       this.status === "running" ||
       this.parkedByTool ||
       this.pendingPrompts.length > 0 ||
       this.compactPhase !== "" ||
+      this.retrySleeping ||
       // ask_user: the loop is parked on the operator's answer — stoppable work
       // in flight, not idleness. Without this the UI offered "start", and
       // pressing it cleared awaitingUser, silently discarding the open question
@@ -2132,7 +2149,16 @@ export class Agent {
             kind: isRunaway ? "runaway" : "api",
           });
           this.setStatus("error", `${msg.slice(0, 220)} — retrying in ${Math.round(wait / 1000)}s`);
-          await this.sleepInterruptible(wait);
+          // #152: while this sleeps the agent is NOT idle — it is going to try again,
+          // and the operator must be able to stop it. Without the flag `isLive()` read
+          // false (status is "error"), so the UI showed "▶ start" and offered no stop
+          // at all while a 5s/5s/30s…30min staircase ran.
+          this.retrySleeping = true;
+          try {
+            await this.sleepInterruptible(wait);
+          } finally {
+            this.retrySleeping = false;
+          }
           if (this.stopRequested) break;
           // the NEXT round is live work again — leaving "error" set made
           // isLive() false (error is not a live status) while the loop was
@@ -2793,6 +2819,11 @@ export class Agent {
     const sys = this.systemPrompt();
     const hasSystem = this.messages[0]?.role === "system";
     const head: ChatMessage[] = [{ role: "system", content: sys }];
+    // NOTE (#152): tool-call pairing is guaranteed one layer down, in `sanitize()`,
+    // because EVERY request path passes through there (turns, the summarizer, the ACP
+    // adapter) while this builds only an Agent's own turn. A violated pairing is refused
+    // with a bare "invalid request error", which is not recognisable as an overflow and
+    // so burns the whole retry staircase before failing with nothing to act on.
     return hasSystem ? [...head, ...this.messages.slice(1)] : [...head, ...this.messages];
   }
 

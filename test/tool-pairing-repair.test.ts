@@ -1,0 +1,99 @@
+/**
+ * #152 — a violated tool-call pairing gets a request refused with a USELESS message.
+ *
+ * MEASURED against the provider in the report (commandcode / deepseek-v4.1-flash). Three
+ * shapes, all rejected with:
+ *
+ *     {"message":"invalid request error","type":"invalid_request_error"}
+ *
+ *   - an assistant `tool_calls` entry with no matching `tool` result
+ *   - a `tool` result whose call is absent (its issuing prefix was compacted away)
+ *   - a kept tail that STARTS on a `tool` result
+ *
+ * Why this matters more than the status code: the message names neither the call nor the
+ * message, and it does not match the context-overflow patterns — so compaction recovery
+ * never runs, and the operator gets a bare 400. The request also cannot ever succeed, yet
+ * it is retried on the full staircase (5s + 5s + 30s) first.
+ *
+ * `repairToolPairing` runs inside `sanitize()`, which EVERY request path goes through
+ * (turns, the compaction summarizer, the ACP adapter), so one guard covers them all.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { repairToolPairing, type ChatMessage } from "../src/agent/llm.ts";
+
+const user = (c: string): ChatMessage => ({ role: "user", content: c });
+const call = (id: string, content = ""): ChatMessage => ({
+  role: "assistant",
+  content,
+  tool_calls: [{ id, type: "function", function: { name: "bash", arguments: "{}" } }],
+});
+const result = (id: string, c = "out"): ChatMessage => ({ role: "tool", tool_call_id: id, content: c });
+
+/** the invariant a provider enforces */
+function pairingErrors(msgs: ChatMessage[]): string[] {
+  const calls = new Set<string>();
+  for (const m of msgs) for (const t of m.tool_calls ?? []) if (t.id) calls.add(t.id);
+  const answered = new Set<string>();
+  for (const m of msgs) if (m.role === "tool" && m.tool_call_id) answered.add(m.tool_call_id);
+  const errs: string[] = [];
+  for (const m of msgs) {
+    if (m.role === "tool" && !calls.has(m.tool_call_id!)) errs.push(`orphan result ${m.tool_call_id}`);
+    for (const t of m.tool_calls ?? []) if (!answered.has(t.id)) errs.push(`unanswered call ${t.id}`);
+  }
+  if (msgs[0]?.role === "tool") errs.push("starts with a tool result");
+  return errs;
+}
+
+test("an orphan tool RESULT is dropped — it cannot be attributed to anything (#152)", () => {
+  const fixed = repairToolPairing([user("go"), result("gone", "orphaned output")]);
+  assert.deepEqual(pairingErrors(fixed), [], `must be sendable: ${JSON.stringify(fixed)}`);
+  assert.ok(
+    !fixed.some((m) => m.role === "tool" && m.tool_call_id === "gone"),
+    "a result whose call is absent has no id to reconstruct, so it is dropped (#152)",
+  );
+  assert.ok(fixed.some((m) => m.content === "go"), "and everything else survives");
+});
+
+test("an UNANSWERED call gets a placeholder result, so the exchange survives (#152)", () => {
+  const fixed = repairToolPairing([user("go"), call("c1"), result("c1", "ok"), call("c2")]);
+  assert.deepEqual(pairingErrors(fixed), []);
+  const synth = fixed.find((m) => m.role === "tool" && m.tool_call_id === "c2");
+  assert.ok(synth, "the missing result must be supplied, not silently dropped — the CALL is real");
+  assert.match(String(synth!.content), /not completed/, "and must say it never ran");
+});
+
+test("a kept tail starting on a tool result is trimmed (#152)", () => {
+  // the compaction shape: the prefix that issued the call is gone, its result is not
+  const fixed = repairToolPairing([result("gone", "orphan"), user("go"), call("c1"), result("c1")]);
+  assert.deepEqual(pairingErrors(fixed), []);
+  assert.notEqual(fixed[0]?.role, "tool", `must not start with a tool result (#152): ${JSON.stringify(fixed)}`);
+});
+
+test("a valid history is returned UNCHANGED — no reallocation, prefix intact (#152)", () => {
+  // identity matters: the prompt must stay byte-identical for prefix caching, and the
+  // fast path keeps the common case free
+  const good: ChatMessage[] = [user("go"), call("c1"), result("c1"), { role: "assistant", content: "done" }];
+  assert.equal(repairToolPairing(good), good, "the same array object, not a copy");
+});
+
+test("a multi-call batch answered ONE SHORT is repaired (#152)", () => {
+  // measured as the exact rejection: two calls, only one answered
+  const two: ChatMessage = {
+    role: "assistant",
+    content: "",
+    tool_calls: [
+      { id: "a", type: "function", function: { name: "bash", arguments: "{}" } },
+      { id: "b", type: "function", function: { name: "bash", arguments: "{}" } },
+    ],
+  };
+  const fixed = repairToolPairing([user("go"), two, result("a")]);
+  assert.deepEqual(pairingErrors(fixed), []);
+  assert.ok(fixed.some((m) => m.role === "tool" && m.tool_call_id === "b"), "the unanswered one is filled");
+});
+
+test("an empty history, and one with no tool calls at all, pass through (#152)", () => {
+  assert.deepEqual(repairToolPairing([]), []);
+  const plain: ChatMessage[] = [user("hi"), { role: "assistant", content: "hello" }];
+  assert.equal(repairToolPairing(plain), plain);
+});

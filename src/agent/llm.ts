@@ -335,8 +335,74 @@ function looksMangled(name: string): boolean {
   return !name || /[\ufffd<>]/.test(name) || /<tool_call>|<\/tool/.test(name);
 }
 
+/**
+ * Repair tool-call pairing so a provider will accept the request (#152).
+ *
+ * MEASURED against commandcode/deepseek: a request is rejected with
+ *
+ *     {"message":"invalid request error","type":"invalid_request_error"}
+ *
+ * — a message that names neither the call nor the message — in three cases, all the
+ * same defect:
+ *
+ *   - an assistant `tool_calls` entry with NO matching `tool` result
+ *   - a `tool` result whose `tool_calls` entry is absent (e.g. the prefix that issued
+ *     it was compacted away)
+ *   - a leading `tool` message, which cannot be answered by anything before it
+ *
+ * The consequences are worse than a bad status code: the failure is not recognisable
+ * as a context overflow, so recovery never runs, and the generic message gives the
+ * operator nothing to act on. It also costs the full retry staircase first (5s + 5s +
+ * 30s) for a request that could never succeed.
+ *
+ * Dropping is the only safe repair for a result with no call: there is no id to
+ * synthesise a call from, and keeping it re-creates the rejection. An unanswered CALL
+ * gets a placeholder result instead, which preserves the exchange's meaning.
+ *
+ * Returns the input unchanged when it is already valid, so the common path allocates
+ * nothing and the prompt stays byte-identical for prefix caching.
+ */
+export function repairToolPairing(messages: ChatMessage[]): ChatMessage[] {
+  const calls = new Set<string>();
+  for (const m of messages) for (const t of m.tool_calls ?? []) if (t.id) calls.add(t.id);
+  const answered = new Set<string>();
+  for (const m of messages) if (m.role === "tool" && m.tool_call_id) answered.add(m.tool_call_id);
+
+  // fast path: nothing to do
+  let ok = true;
+  for (const m of messages) {
+    if (m.role === "tool" && (!m.tool_call_id || !calls.has(m.tool_call_id))) ok = false;
+    for (const t of m.tool_calls ?? []) if (t.id && !answered.has(t.id)) ok = false;
+  }
+  if (ok) return messages;
+
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    // a result whose call is gone cannot be attributed to anything — drop it
+    if (m.role === "tool" && (!m.tool_call_id || !calls.has(m.tool_call_id))) continue;
+    out.push(m);
+    // an unanswered call would be rejected; answer it so the exchange survives
+    for (const t of m.tool_calls ?? []) {
+      if (t.id && !answered.has(t.id)) {
+        out.push({
+          role: "tool",
+          tool_call_id: t.id,
+          content: "(not completed — the tool did not run)",
+        });
+      }
+    }
+  }
+  // and drop a leading run of tool messages: a prefix drop can leave the kept tail
+  // starting on one, which no preceding call can justify
+  let start = 0;
+  while (start < out.length && out[start]!.role === "tool") start++;
+  return start ? out.slice(start) : out;
+}
+
 function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
-  return messages.map((m): Record<string, unknown> => {
+  // #152: repair pairing BEFORE mapping — every request path goes through here, and a
+  // violated pairing is refused with an unhelpful "invalid request error"
+  return repairToolPairing(messages).map((m): Record<string, unknown> => {
     // multimodal user message → OpenAI content-parts array (text + images);
     // providers without vision reject it, but those models were never a fit
     if (m.content_parts?.length) {

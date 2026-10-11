@@ -122,11 +122,22 @@ test("it is live again once the compaction finishes (#127)", async () => {
 test("isLive counts an in-flight compaction (#127)", () => {
   const at = agentSrc.indexOf("  isLive(): boolean {");
   assert.notEqual(at, -1, "isLive must exist (#127)");
-  const block = agentSrc.slice(at, at + 1400);
+  // Bound by the METHOD, not by a character count. A fixed-width window is the trap
+  // this repo has already been bitten by twice (#126, #130): #152 added a few comment
+  // lines to isLive() and pushed the assertion past a 1400-char slice, failing a test
+  // about behaviour that had not changed.
+  const end = agentSrc.indexOf("\n  }", at);
+  assert.notEqual(end, -1, "isLive must terminate");
+  const block = agentSrc.slice(at, end);
   assert.match(
     block,
     /this\.compactPhase !== ""/,
     "a compaction in flight is live work, whatever the status says (#127)",
+  );
+  assert.match(
+    block,
+    /this\.retrySleeping/,
+    "and so is a scheduled RETRY backoff (#152) — with it missing the UI offers start and there is no stop control",
   );
 });
 
