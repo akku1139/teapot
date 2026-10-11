@@ -1803,7 +1803,7 @@ export class Agent {
         // rounds (a rejection is not idle), and maxTurnsPerRound only logs. Measured
         // before this cap: 381 audit calls in a single turn.
         //
-// Deliberately NOT "mark the goal done": #128's whole complaint is that
+        // Deliberately NOT "mark the goal done": #128's whole complaint is that
         // "could not be audited" silently became "passed". The goal is left ACTIVE
         // and a loud note is logged, so the operator sees the loop and decides.
         // `>=` (not `>`): the JSDoc says REACHING 3 stops — `>` allowed a 4th
@@ -1998,25 +1998,14 @@ export class Agent {
           text: "",
           reasoning: "",
         } satisfies BusEvent);
-      // #37: `prompt-delivered` must mean "the outbound request CARRYING this
-      // prompt has started", not "the prompt moved from the queue into
-      // `this.messages`".
+      // #37: `prompt-delivered` means "the outbound request CARRYING this prompt
+      // has started" — which is why it is emitted here and not in
+      // drainPendingPrompts. That runs BEFORE maybeCompact, which can itself make
+      // an LLM call, so the marker preceded the request and the timeline claimed a
+      // delivery order the API never saw.
       //
-      // It used to be logged in drainPendingPrompts, which runs BEFORE
-      // refreshSkills, maybeRequestProgress and — critically — maybeCompact. So
-      // the marker preceded the request, and `maybeCompact()` can itself make an
-      // LLM call, which meant the timeline claimed a delivery order the API never
-      // saw. Measured before the fix:
-      //
-      //     LLM CALL #1
-      //       seq=5  prompt-delivered("first prompt")
-      //       seq=6  llm turn start
-      //
-      // The UI reorders by this marker (resequenceToDelivery), so the semantics
-      // were the bug — not timeline-order.ts.
-      //
-      // Emitted ONCE per request, not per attempt: a retry sends the same payload,
-      // so re-emitting would move the marker after a later event on each try.
+      // Once per request, not per attempt: a retry sends the same payload, so
+      // re-emitting would move the marker past later events on each try.
       if (attempt === 1) await this.markDeliveredPrompts();
       try {
         return await this.callLlm(messages, tools, onDelta);

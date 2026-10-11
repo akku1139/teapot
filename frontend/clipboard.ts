@@ -1,15 +1,12 @@
 /**
  * Clipboard copy with a legacy fallback.
  *
- * #75: this lived inside App.tsx, and `test/copy-button.test.ts` carried its own
- * copy — so the test exercised the copy and the app ran something else.
- * Mutation testing proved the consequence: deleting the entire
- * `execCommand("copy")` fallback from App.tsx left the suite green 11/11. The #52
- * fix could be half-removed invisibly.
+ * The `execCommand("copy")` path is what makes copy work on a plain-http page,
+ * where `navigator.clipboard` is absent (#52).
  *
- * Extracted so the tests drive the code that actually runs. The dependency is
- * injected so the fallback paths are reachable under `node --test`, where
- * `navigator.clipboard` and `document.execCommand` do not exist.
+ * #75: it lived inside App.tsx with a copy in the test, so the test proved
+ * nothing. The dependencies are injected so the fallback paths stay reachable
+ * under `node --test`, where neither global exists.
  */
 
 export type CopyResult = "copied" | "unsupported" | "failed";
@@ -35,8 +32,8 @@ export interface CopyDeps {
 export async function copyText(text: string, deps: CopyDeps = {}): Promise<CopyResult> {
   if (!text) return "unsupported";
 
-  // read the globals lazily so a caller can inject them, and so importing this
-  // module does not require a DOM
+  // a caller-injected dependency wins; otherwise read the globals lazily, so
+  // importing this module does not require a DOM
   const clipboard =
     deps.clipboard !== undefined
       ? deps.clipboard
@@ -75,7 +72,7 @@ export async function copyText(text: string, deps: CopyDeps = {}): Promise<CopyR
     }
   }
 
-  // legacy path, used when the API is missing OR refused
+  // legacy path, used when the modern API is missing or refused
   let ta: StagingTextarea | null = null;
   try {
     const staging: StagingTextarea = makeTextarea();
@@ -89,9 +86,8 @@ export async function copyText(text: string, deps: CopyDeps = {}): Promise<CopyR
   } catch {
     return "failed";
   } finally {
-    // ALWAYS remove the staging textarea: a throw from execCommand used to skip
-    // the cleanup, leaving an invisible element in the document once per failed
-    // copy — and they accumulate for the life of the tab
+    // the removal MUST stay in `finally`: a throw from execCommand would
+    // otherwise leak an invisible element per failed copy, for the life of the tab
     ta?.remove();
   }
 }

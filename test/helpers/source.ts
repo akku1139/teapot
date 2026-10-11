@@ -31,11 +31,27 @@ export function readSource(path: string): string {
  * satisfied the assertion that was supposed to prove the declaration existed.
  *
  * So: assert on stripped source, and the failure mode cannot come back.
+ *
+ * REGEX LITERALS must be skipped too. Without that, `/^https?:\/\//` ends with an
+ * escaped slash followed by the closing slash — two adjacent `/` — and the
+ * stripper mistakes it for a line comment, swallowing the rest of the line. Worse
+ * than a bad match: it can silently truncate the code a test is asserting about,
+ * which is the same class of false confidence this helper exists to remove.
+ * (Caught by running the stripper across all of `src/` and `frontend/`: 36 files
+ * stripped, one threw a syntax error.)
  */
 export function stripSourceComments(src: string): string {
   let out = "";
   let i = 0;
   let quote: string | null = null;
+  /** the last non-space character emitted, used to tell `/` division from a regex */
+  const lastMeaningful = (): string => {
+    for (let j = out.length - 1; j >= 0; j--) {
+      const ch = out[j]!;
+      if (!/\s/.test(ch)) return ch;
+    }
+    return "";
+  };
   while (i < src.length) {
     const c = src[i]!;
     const n = src[i + 1];
@@ -54,6 +70,40 @@ export function stripSourceComments(src: string): string {
       quote = c;
       out += c;
       i++;
+      continue;
+    }
+    // a `/` opening a REGEX literal, rather than commenting or dividing:
+    // it follows an operator/opening bracket/keyword position, and `/` followed
+    // by `=` or another `/` is division/comment, never a regex
+    if (c === "/" && n !== "/" && n !== "=" && n !== "*" && regexCanStartAfter(lastMeaningful())) {
+      out += c;
+      i++;
+      // copy the literal verbatim, honouring escapes and `[...]` classes (a `/`
+      // inside a class does not close the literal)
+      let inClass = false;
+      while (i < src.length) {
+        const r = src[i]!;
+        if (r === "\\") {
+          out += r + (src[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        out += r;
+        if (r === "[") inClass = true;
+        else if (r === "]") inClass = false;
+        else if (r === "/" && !inClass) {
+          i++;
+          break;
+        } else if (r === "\n") {
+          break; // unterminated — treat as division after all, stop cleanly
+        }
+        i++;
+      }
+      // flags
+      while (i < src.length && /[a-z]/.test(src[i]!)) {
+        out += src[i]!;
+        i++;
+      }
       continue;
     }
     if (c === "/" && n === "/") {
@@ -75,4 +125,16 @@ export function stripSourceComments(src: string): string {
     i++;
   }
   return out;
+}
+
+/**
+ * Can a regex literal start here, given the last meaningful character emitted?
+ *
+ * Standard heuristic: yes after an operator, an opening bracket, a comma, or a
+ * keyword — no after an identifier, a closing bracket, or a literal (where `/`
+ * means division).
+ */
+function regexCanStartAfter(prev: string): boolean {
+  if (!prev) return true; // start of file
+  return "(,=:[!&|?{};+-*%^~<>".includes(prev) || prev === "\n";
 }

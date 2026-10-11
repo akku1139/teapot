@@ -1,13 +1,6 @@
 /**
  * Which `ask_user` questions count as answered.
  *
- * #75 — this lived inline in App.tsx, so `test/ask-user-answered.test.ts`
- * re-implemented it locally and asserted against its own copy. Removing either
- * half of the real logic — the optimistic mark, or the log-wins rule — left all
- * nine tests passing, because the replica still had both.
- *
- * Extracted so the tests drive the code that runs.
- *
  * Two sources of truth, and they compose:
  *
  *  - the LOG: any user reply after the latest open question closes every earlier
@@ -19,6 +12,8 @@
  *
  * A session switch clears the second set — one session's answers must not follow
  * the operator into another session.
+ *
+ * #75: extracted from App.tsx so the tests drive the code that runs.
  */
 
 export interface QuestionEvent {
@@ -50,14 +45,13 @@ export function answeredQuestionIdsOf(
     else if (e.type === "system_note" && e.data?.event === "prompt-delivered")
       lastUserPromptAt = Math.max(lastUserPromptAt, e.seq);
   }
-  // any user reply after the latest open question closes ALL earlier questions
-  // of this session (the loop resumes on the first reply)
+  // a logged reply closes every question at or before it
   if (lastQuestionAt >= 0 && lastUserPromptAt > lastQuestionAt) {
     for (const e of events)
       if (e.type === "question" && e.seq <= lastUserPromptAt)
         set.add(String(e.data?.callId ?? ""));
   }
-  // …plus anything answered in this tab whose reply has not been logged yet
+  // …plus this tab's optimistic answers, whose reply is not logged yet
   for (const id of locallyAnswered) set.add(id);
   return set;
 }

@@ -992,40 +992,19 @@ export class Master {
       const parent = this.agents.get(ac.parent);
       if (!parent) return;
       // the waiter re-checks whether ITS targets are all settled, so waking on
-      // every movement is correct and cheap
-      this.wakeParentWaiters(ac.parent);
-      // #130: only report a SETTLED child, never its birth.
+      // every movement is correct and cheap. ANCESTORS too: a waiter's targets
+      // now span the whole subtree, so a grandchild's movement must reach it.
+      this.wakeAncestorWaiters(ac.parent);
+      // #130: report only a SETTLED child, never its birth. A freshly spawned
+      // child is `idle` before `start()` runs, so that first idle->running flip
+      // would tell the parent "@kid is now idle" the instant it existed.
+      // Requiring a prior `running` is what filters it out; the wake above is
+      // unconditional, so `wait_children` is unaffected.
       //
-      // A freshly spawned child is `idle` for a moment before `start()` runs, and
-      // the FIRST status transition it ever makes is therefore idle->running via
-      // that idle. Reporting it told the parent "[harness] @kid is now idle" the
-      // instant the child existed — before it had done anything at all. Measured:
-      // transitions after a spawn are ["idle","running","idle"], so the first is
-      // always the spurious one.
-      //
-      // So the message waits for a child that has actually STARTED. A real
-      // completion still reports (it goes running -> idle), and the wake above is
-      // unconditional, so `wait_children` is unaffected either way.
-      // #130: a spawned child is `idle` until start() runs, and that lazy-load
-      // flip is its FIRST transition — so requiring a prior `running` is what stops
-      // the parent being told the child settled before it began.
-      // #135: reworded, because the old line was wrong in two ways.
-      //
-      // "Continue your task, or finish() if the work is done" was addressed to the
-      // PARENT — but the parent did not spawn this child for its own sake, and
-      // when the child DID call finish() the parent already receives a proper
-      // "Sub-agent X finished. Final report: …" (the `finished. Final report:`
-      // prompt below). So the nudge
-      // restated as an instruction what the report already stated as fact, and
-      // invited the parent to `finish()` ITS OWN goal over a child's status.
-      //
-      // The new wording says what happened and what to do about it, and points at
-      // the report when there is one:
-      //
-      //   child gave a summary  -> "…returned without calling finish(); its final
-      //                             message follows." (the report arrives separately)
-      //   child said nothing     -> "…went idle without reporting. If that is
-      //                             unexpected, message it or re-spawn it."
+      // #135: the wording addresses the CHILD's outcome, not the parent's goal.
+      // "Continue your task, or finish()..." invited the parent to finish its own
+      // goal over a child's status; the child's report already states what
+      // happened, so this points at it instead.
       if (this.reportedRunning.has(agentId) && SETTLED.has(status))
         parent.enqueuePrompt(
           `[harness] Sub-agent @${agentId} is now ${status} without having called finish(), so it has not reported a result.` +
@@ -1047,11 +1026,26 @@ export class Master {
         spawn: (o: { task: string; context: "none" | "fork"; name?: string; persona?: string }) =>
           this.spawnChildFor(self, o),
         list: () =>
-          this.childrenOf(ac.id).map((c) => ({
-            id: c.id,
-            status: c.agent.status,
-            goal: c.agent.goal.text,
-          })),
+          // DIRECT children are the ones this agent can address (stop/message are
+          // refused for anything deeper), but a descendant still working is
+          // invisible to the parent unless it is LISTED — and the parent then
+          // resumes over it. So the whole subtree is listed, each row naming its
+          // own `parent` and flagged `nested`, which is what tells the model who
+          // to address instead of guessing a level (the error `message_agent`
+          // raises names the owner for the same reason).
+          this.subtreeOf(ac.id).flatMap(({ id, depth, parent }) => {
+            const inst = this.agents.get(id);
+            if (!inst) return []; // suspended: not addressable, so not listed
+            return [
+              {
+                id,
+                status: inst.status,
+                goal: inst.goal.text,
+                parent,
+                nested: depth > 1,
+              },
+            ];
+          }),
         stop: (ids?: string[]) => this.stopChildrenFor(ac.id, ids),
         message: (id: string, text: string) => this.messageChild(ac.id, id, text),
         wait: (ids: string[] | undefined, ms: number) =>
@@ -1122,6 +1116,35 @@ export class Master {
       if (inst) out.push({ id: k.id, agent: inst });
     }
     return out;
+  }
+
+  /**
+   * Every configured descendant of `id`, at any depth, with its depth (1 = direct
+   * child) and its own parent id.
+   *
+   * A parent's work is not finished while anything it caused is still running,
+   * and that includes a sub-agent's sub-agent: C can delegate to G and return its
+   * own turn, leaving C idle while G works. Deciding from DIRECT children alone
+   * therefore let an ancestor report "all settled" over a live grandchild — the
+   * reported "it delegates further and the parent never knows".
+   *
+   * Returns configured ids (not instances) so a suspended descendant still counts
+   * as part of the subtree. `seen` guards a cycle in `parent`.
+   */
+  private subtreeOf(id: string, depth = 1, seen = new Set<string>()): { id: string; depth: number; parent: string }[] {
+    const out: { id: string; depth: number; parent: string }[] = [];
+    for (const a of this.config.agents) {
+      if (a.parent !== id) continue;
+      if (seen.has(a.id)) continue;
+      seen.add(a.id);
+      out.push({ id: a.id, depth, parent: id }, ...this.subtreeOf(a.id, depth + 1, seen));
+    }
+    return out;
+  }
+
+  /** the ids of every descendant of `id`, at any depth */
+  private descendantsOf(id: string, seen = new Set<string>()): string[] {
+    return this.subtreeOf(id, 1, seen).map((x) => x.id);
   }
 
   /**
@@ -1289,10 +1312,14 @@ When this task is done (or truly blocked), call finish() with a summary for @${p
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<{ note: string }> {
-    const targets = (ids && ids.length
-      ? ids
-      : this.childrenOf(parentId).map((c) => c.id)
-    ).filter((id) => this.agents.has(id));
+    // The whole DESCENDANT subtree, not just direct children: C can delegate to G
+    // and return its own turn, so C reads idle while G works. Waiting on C must
+    // therefore mean "C and everything C caused" — otherwise an ancestor resumes
+    // over live work it cannot see (see descendantsOf).
+    const named = ids && ids.length ? ids : this.descendantsOf(parentId);
+    const targets = [...new Set(named.flatMap((id) => [id, ...this.descendantsOf(id)]))].filter((id) =>
+      this.agents.has(id),
+    );
     if (targets.length === 0)
       return Promise.resolve({ note: "no live sub-agents to wait for" });
 
@@ -1346,6 +1373,29 @@ if (active().length === 0) wake();
     if (!set) return;
     for (const fn of set) {
       try { fn("child event"); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Wake the waiters of EVERY ancestor of an agent, not just its direct parent.
+   *
+   * A parked `wait_children` is woken by lifecycle events, and its targets now
+   * span the whole subtree — so a grandchild settling has to reach the
+   * grandparent, or the wake never arrives and the ancestor sits until its
+   * timeout even though the work finished.
+   *
+   * `parentId` is passed in rather than looked up: the caller already has it, and
+   * a spawned child that is not PERSISTED (a test, or a transient spawn) is absent
+   * from `config.agents`, so a lookup would find no parent at all and the wake
+   * would be silently skipped.
+   */
+  private wakeAncestorWaiters(parentId: string | undefined): void {
+    const seen = new Set<string>();
+    let cur = parentId;
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      this.wakeParentWaiters(cur);
+      cur = this.config.agents.find((a) => a.id === cur)?.parent;
     }
   }
 
@@ -1407,8 +1457,9 @@ if (active().length === 0) wake();
     const parentId = ac.parent;
     if (!parentId) return;
     // any child lifecycle movement wakes a parked wait_children (the waiter
-    // re-checks whether its targets are all settled)
-    if (parentId) this.wakeParentWaiters(parentId);
+    // re-checks whether its targets are all settled) — ancestors included, since
+    // a waiter's targets span its whole subtree
+    this.wakeAncestorWaiters(parentId);
     const parent = this.agents.get(parentId!);
     if (!parent) return;
 
@@ -1447,29 +1498,12 @@ if (active().length === 0) wake();
       if (parent.status !== "running") parent.start(`sub-agent ${ac.id} error`);
     }
 
-    // #63: a child's activity is NOT mirrored into the parent's log.
-    //
-    // This used to write a `sub` row per child prompt/message/tool_call/…, so
-    // the parent's timeline filled with the child's entire transcript. Two
-    // problems, in order of discovery:
-    //
-    //  1. The rows were invisible, because `"sub"` was never in the web UI's
-    //     FEED_TYPES — so the filter dropped them and the feature did nothing
-    //     for as long as it existed (#40).
-    //  2. Once it was made to work (#40), the parent's timeline was flooded:
-    //     the operator reads a delegation as "what is this chat doing", not as
-    //     a firehose of a child's work.
-    //
-    // The mirroring bought nothing. `sub` rows are display-only:
-    // `rebuildMessagesFrom` never reads them, so the model never saw them and
-    // the child's own history was never duplicated into the parent's context.
-    // What the parent actually needs — the child's report — already arrives as
-    // a harness prompt above, which is the channel the model reads.
-    //
-    // So the right fix is to stop writing them. A chat's timeline is its own.
-    // If per-child detail is wanted in the UI later, it belongs behind an
-    // explicit filter ("show sub-agent activity"), reading each child's own log
-    // rather than interleaving a copy into the parent's.
+    // #63: a child's activity is NOT mirrored into the parent's log. Mirroring
+    // bought nothing — `sub` rows are display-only (`rebuildMessagesFrom` never
+    // read them, so the model never saw them) and once they DID render (#40) the
+    // parent's timeline was flooded with a child's transcript. What the parent
+    // needs is the child's report, which already arrives as a harness prompt
+    // above. A chat's timeline is its own.
   }
 
   /** sessions root + helpers */

@@ -12,9 +12,8 @@
  *   (free-form instructions shown to the agent when it loads the skill)
  *
  * Roots are scanned in priority order; the first skill with a given name wins.
- * Workspace skills (<workspace>/skills) beat global ones (~config/skills), so
- * a project can override shared defaults. Everything stays human-readable and
- * git-friendly Markdown — no database, no lock-in.
+ * Workspace skills (<workspace>/skills) beat global ones (~config/skills), so a
+ * project can override shared defaults.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -28,12 +27,10 @@ export const SKILL_FILE = "SKILL.md";
  * can skip a full rescan (a readdir per root plus a read of every SKILL.md)
  * on the overwhelmingly common "nothing changed" path.
  *
- * The fingerprint covers each root's own mtime/size AND the mtime/size of
- * every SKILL.md one level down, because writing SKILL.md does not bump the
- * parent directory's mtime. Helper scripts edited in place are covered by
- * the SKILL.md stat only in aggregate; a rewritten SKILL.md always lands
- * here too (saveSkill rewrites it), so bundled-file edits ride along with
- * the next skill write rather than triggering their own rescan.
+ * It must walk every SKILL.md the discovery walk could adopt, not just the
+ * roots: writing SKILL.md does not bump the parent directory's mtime. Helper
+ * scripts edited in place ride along with the next skill write (saveSkill
+ * rewrites SKILL.md), rather than triggering their own rescan.
  */
 export async function skillRootsFingerprint(
   roots: { dir: string; source: string }[],
@@ -49,16 +46,14 @@ export async function skillRootsFingerprint(
       continue;
     }
     parts.push(`${st.mtimeMs}:${st.size}`);
-    // stamp every SKILL.md the discovery walk could adopt (same depth bound):
-    // the one-level stat missed a NESTED skill's add/edit entirely, so the
-    // stamp never changed, refreshSkills early-returned, and the skill stayed
-    // invisible/stale in list_skills and the system-prompt catalogue
+    // same depth bound as the discovery walk, or a NESTED skill's add/edit leaves
+    // this stamp unchanged and the skill stays stale in list_skills
     await stampSkillFiles(root.dir, 0, parts);
   }
   return parts.join("|");
 }
 
-/** recursive fingerprint walk — mirrors walkSkills' bound and containment rules */
+/** recursive fingerprint walk — mirrors walkSkills' depth bound */
 async function stampSkillFiles(dir: string, depth: number, parts: string[]): Promise<void> {
   if (depth > MAX_SKILL_DEPTH) return;
   let entries: import("node:fs").Dirent[];
@@ -104,16 +99,16 @@ export function isValidSkillName(name: string): boolean {
  * Minimal frontmatter parser for the subset we need: a leading `---` block of
  * `key: value` lines. No YAML dependency by design.
  *
- * It does understand the two YAML shapes that are common in REAL third-party
- * skills (#28), because without them those files are unreadable:
+ * It does understand the two YAML shapes common in REAL third-party skills
+ * (#28), because without them those files are unreadable:
  *  - FOLDED/LITERAL BLOCK SCALARS (`description: >-` … or `|` …), which is how
  *    most skill authors write a long description. Reading them naively yields
  *    the literal ">-" as the description, which silently destroys the one field
  *    the model matches its task against.
  *  - QUOTED values, whose surrounding quotes are stripped so a description
  *    containing a colon survives.
- * A key whose value is empty (e.g. a nested `metadata:` block) is left out rather
- * than recorded as an empty string.
+ * A key with an empty value (e.g. a nested `metadata:` block) is left out rather
+ * than recorded as "".
  */
 export function parseSkillMd(text: string): ParsedSkill {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
@@ -162,7 +157,6 @@ function unquote(v: string): string {
   return s;
 }
 
-/** Root dirs in priority order: [0] overrides later ones on name clash. */
 /**
  * Skill directories owned by OTHER coding harnesses (#28).
  *
@@ -218,16 +212,15 @@ export function foreignSkillRoots(workspace?: string): { dir: string; source: st
  *
  * Bounded because a skill directory also holds BUNDLED FILES (helper scripts)
  * and arbitrary payload, so an unbounded walk is not safe. Depth is not the
- * thing that makes a directory a skill, though — holding a SKILL.md is — so the
- * bound only limits how far we look, never what counts.
+ * thing that makes a directory a skill — holding a SKILL.md is — so the bound
+ * only limits how far we look, never what counts.
  */
 const MAX_SKILL_DEPTH = 4;
 
 /** Root dirs in priority order: [0] overrides later ones on name clash. */
 export async function discoverSkills(roots: { dir: string; source: string }[]): Promise<SkillDef[]> {
   const byName = new Map<string, SkillDef>();
-  // name -> depth, so a SHALLOWER skill wins over a nested namesake rather than
-  // a deep one silently shadowing the obvious skill (#27)
+  // name -> depth, so a SHALLOWER skill beats a nested namesake (#27)
   const depthByName = new Map<string, number>();
   for (const root of roots) {
     await walkSkills(root.dir, root.source, 0, byName, depthByName);
@@ -238,9 +231,8 @@ export async function discoverSkills(roots: { dir: string; source: string }[]): 
 /**
  * Depth-first walk collecting every directory that holds a SKILL.md (#27).
  *
- * A directory WITHOUT its own SKILL.md is only a container to descend into — we
- * never treat one as a skill, which is what keeps bundled helper directories
- * from being reported as skills themselves.
+ * A directory without its own SKILL.md is only a container to descend into, which
+ * is what keeps bundled helper directories from being reported as skills.
  */
 async function walkSkills(
   dir: string,
@@ -268,7 +260,6 @@ async function walkSkills(
     const parsed = parseSkillMd(hereText);
     const name = parsed.meta.name || path.basename(dir);
     const prevDepth = depthByName.get(name);
-    // first root wins on a name clash, and a shallower skill beats a deeper one
     const wins =
       prevDepth === undefined ||
       (prevDepth !== undefined && depth < prevDepth && byName.get(name)?.source === source);
@@ -294,10 +285,8 @@ async function walkSkills(
   }
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith(".")) continue;
-    // Recurse into every subdirectory: nesting means a skill can sit at ANY depth
-    // (skills/stage1/template/SKILL.md), and "stage1" itself has no SKILL.md.
-    // Bundled helper payloads are not mistaken for skills because a directory
-    // only BECOMES a skill when it holds its own SKILL.md (#27).
+    // a skill can sit at ANY depth (skills/stage1/template/SKILL.md), and
+    // "stage1" itself has no SKILL.md (#27)
     await walkSkills(path.join(dir, e.name), source, depth + 1, byName, depthByName);
   }
 }

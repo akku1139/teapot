@@ -18,7 +18,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   shellOutcome,
-  wasKilled,
   outcomeMarker,
   shellHint,
 } from "../frontend/shell-outcome.ts";
@@ -81,15 +80,6 @@ test("a plain non-zero exit keeps the familiar · FAILED (#46)", () => {
 
 test("an aborted command is named, not silently failed (#46)", () => {
   assert.equal(outcomeMarker(shellOutcome(false, "ABORTED (harness shutdown). x")), " · ABORTED");
-});
-
-/* ---------- wasKilled ---------- */
-
-test("wasKilled separates harness kills from exits (#46)", () => {
-  assert.equal(wasKilled(shellOutcome(false, "TIMEOUT after 1ms.")), true);
-  assert.equal(wasKilled(shellOutcome(false, "ABORTED (harness shutdown).")), true);
-  assert.equal(wasKilled(shellOutcome(false, "exit=2")), false, "an exit is not a kill");
-  assert.equal(wasKilled(shellOutcome(true, "ok")), false);
 });
 
 /* ---------- hint composition ---------- */

@@ -4,15 +4,12 @@
  * #46: "a timed-out bash never reads as complete on the timeline."
  *
  * The bash summary line is built from the tool_result's duration and the
- * requested timeout — so a command killed by the timeout rendered as
- * `300ms · timeout 1s`. That reads exactly like a fast SUCCESS: nothing on the
- * summary line said it had been killed, and the row kept its normal (unmarked)
- * appearance. The only hint was a `· FAILED` buried in the body's result block,
- * which is below the fold for a long-running command.
+ * requested timeout, so a killed command reads as `300ms · timeout 1s` — exactly
+ * like a fast SUCCESS. The kill has to be marked on that line.
  *
  * The three terminal shapes come straight from runShell():
- *   - `TIMEOUT after <n>ms. …`      the timeout fired and the group was killed
- *   - `ABORTED (harness shutdown).…` the operator stopped the agent
+ *   - `TIMEOUT after <n>ms …`        the timeout fired and the group was killed
+ *   - `ABORTED (harness shutdown) …` the harness was shutting down
  *   - anything else                  a normal exit (ok, or `exit=<code>`)
  */
 
@@ -31,17 +28,10 @@ export function shellOutcome(
   return text.trim() ? "ok" : "empty";
 }
 
-/** True only when the harness killed the command rather than it exiting. */
-export function wasKilled(outcome: ShellOutcome): boolean {
-  return outcome === "timeout" || outcome === "aborted";
-}
-
 /**
- * The marker appended to a tool row's summary line.
- *
- * `· FAILED` alone is deliberately kept for non-zero exits, so the common
- * failure path reads exactly as before; only the KILLED cases — which used to
- * look like successes — get their own wording.
+ * The marker appended to a tool row's summary line. `· FAILED` is kept for
+ * non-zero exits, so the common failure path reads as it always has; only the
+ * KILLED cases get their own wording.
  */
 export function outcomeMarker(outcome: ShellOutcome): string {
   switch (outcome) {

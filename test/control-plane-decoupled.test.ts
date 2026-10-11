@@ -150,8 +150,9 @@ test("the master wakes parents from the control plane (#126)", async () => {
   const block = master.slice(at, at + 700);
   assert.match(
     block,
-    /this\.wakeParentWaiters\(ac\.parent\);/,
-    "and wake a parked parent from it (#126)",
+    /this\.wakeAncestorWaiters\(ac\.parent\);/,
+    "and wake a parked ANCESTOR from it (#126) — ancestors, because a waiter's " +
+      "targets span its whole subtree",
   );
 });
 

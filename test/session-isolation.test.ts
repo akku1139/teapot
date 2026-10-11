@@ -40,7 +40,6 @@ import assert from "node:assert/strict";
 import {
   eventBelongsOnTimeline,
   deltaBelongsToTimeline,
-  rowIsStillActive,
 } from "../frontend/session-scope.ts";
 
 const EV = (agent: string, session: string) => ({ agent, session });
@@ -115,17 +114,10 @@ test("a live delta from the displayed session is shown (#146)", () => {
   assert.equal(deltaBelongsToTimeline({ agentId: "A", sessionId: "s1" }, "A", "s1"), true);
 });
 
-/* ---------- ToolRow activity must be session-aware ---------- */
-
-test("a tool row's activity must be scoped to the DISPLAYED session (#120, #133)", () => {
-  // S1 displayed, S1 has an unpaired tool_call, S2 is running
-  assert.equal(
-    rowIsStillActive({ data: {} }, /*agentLive*/ true, /*displayedIsLive*/ false),
-    false,
-    "another session running must NOT make a historical row look live (#120/#146)",
-  );
-  assert.equal(rowIsStillActive({ data: {} }, true, true), true, "the current session running (#120)");
-  assert.equal(rowIsStillActive({ data: {} }, false, true), false);
-  // a child's row is never the selected agent's own work
-  assert.equal(rowIsStillActive({ data: { actor: "kid" } }, true, true), false, "provenance (#40)");
-});
+// NOTE: the tool-row activity rule used to be pinned here through a
+// `rowIsStillActive()` helper that PRODUCTION NEVER CALLED — a test-local copy in
+// the sense #75 warns about, giving the appearance of coverage for the very rule
+// that #120/#146 were about. The rule production actually uses is
+// `isTimelineLive() && isOwnLiveWork(e)`, and its WIRING is asserted in
+// test/session-scoping-wiring.test.ts against App.tsx. The dead helper and this
+// test are gone; the assertion that matters was kept.

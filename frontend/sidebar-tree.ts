@@ -1,23 +1,18 @@
 /**
- * Sidebar tree layout — the pure part, extracted so it can be unit-tested.
+ * Sidebar tree layout — the pure part, extracted so it is testable without a DOM
+ * (happy-dom does no layout) or solid-js, matching live-buffer.ts and
+ * timeline-order.ts.
  *
- * The sidebar interleaves three hierarchies and the ORDER they are emitted in
- * is the whole UX. Extracting this keeps the rule testable without a DOM
- * (happy-dom does no layout) and without pulling solid-js into `node --test`,
- * matching the split already used by live-buffer.ts and timeline-order.ts.
+ * The ORDER rows are emitted in is the whole UX. Two group levels exist:
  *
- * Two group levels exist:
  *   - WORKSPACE (#18): a header wherever the working directory changes, so
- *     unrelated projects stop interleaving in one undifferentiated list;
- *   - CHAT: each TOP-LEVEL chat is its own group, so two chats that happen to
- *     share a directory stay independently collapsible.
+ *     unrelated projects stop interleaving in one list;
+ *   - CHAT: each top-level chat is its own group, so two chats sharing a
+ *     directory stay independently collapsible.
  *
- * #58 — the CHAT level is emitted ONLY when the directory holds more than one
- * top-level chat. Emitted unconditionally, the common case (one chat per
- * project) rendered three rows saying the same thing — the directory header,
- * the chat header restating it, then the chat itself. Dropping the redundant
- * level is safe precisely because the workspace header is already keyed on
- * the directory, which in the solo case IS that chat's group.
+ * #58: the CHAT level is emitted ONLY when the directory holds more than one
+ * top-level chat. Unconditionally, the common case (one chat per project) said
+ * the same thing three times — directory header, chat header, chat.
  */
 
 export interface TreeAgent {
@@ -163,25 +158,15 @@ export function treeRowsOf<T extends TreeAgent>(
       groupKeys.push(ws);
     }
   }
-  // #81: a sub-agent whose parent is NOT in `list` is treated as a ROOT, and
-  // the grouping above then emits it BEFORE any header — so it rendered as a
-  // bare row outside its project, with nothing above it. Two real ways that
-  // happens: 👻 (hideGhosts) filters the list BEFORE the parent-presence check,
-  // and removing a parent deletes it without reparenting its children.
+  // #81: a sub-agent whose parent is NOT in `list` is treated as a ROOT and then
+  // emitted BEFORE any header — a bare row outside its project. Two real routes:
+  // 👻 (hideGhosts) filters the list before the parent-presence check, and
+  // removing a parent does not reparent its children. The 🧩 badge counts against
+  // `agents()` rather than this list, so such a row was counted but not shown.
   //
-  // The 🧩 badge counts against `agents()`, not this list, so an orphan was
-  // counted but not displayed — the badge and the tree disagreed, which is the
-  // reported symptom: a session that HAS sub-agents showing none of them.
-  //
-  // So an orphan is grouped under its parent's DIRECTORY (workspaceOf walks up
-  // through the missing parent), giving it the header it belongs to.
-  //
-  // An orphan with no resolvable directory gets a synthetic group rather than
-  // being dropped: #81 was "a session that HAS sub-agents shows none of them",
-  // and grouping silently is how it hid. These agents have no project to belong
-  // to, so they are collected under one, which keeps them listed and keeps every
-  // project group homogeneous — a header for them is honest ("no workspace")
-  // rather than a bare row floating above the list.
+  // So an orphan groups under its parent's DIRECTORY (workspaceOf walks up through
+  // the missing parent). One with no resolvable directory gets the synthetic group
+  // below rather than being dropped — dropping is how they hid.
   const ORPHANS = "";
   for (const a of roots) {
     if (!a.parent) continue;
@@ -225,24 +210,16 @@ export function workspaceOf(agents: readonly TreeAgent[], id: string, seen = new
 }
 
 /**
- * Should this sidebar row show its collapse caret? (#106)
+ * Should this row show its collapse caret? (#106)
  *
- * A caret that collapses nothing is noise — the operator reported exactly that:
- * "if there are no sub-agents, the expand button is not needed".
+ * A caret that collapses nothing is noise. But gating a chat's caret on "has
+ * children" alone is WRONG: collapsing is what WRITES the `chat:<id>` key, so a
+ * chat can hold a STALE one after an upgrade, or after it was collapsed and then
+ * lost its sub-agents. `sidebarRowsOf` still renders such a row (marked
+ * `chatCollapsedGroup`) — so without a caret there is NO on-screen control to
+ * clear the key and the chat shows ▸ forever.
  *
- * The naive fix (gate a chat's caret on "has children") is WRONG, and #18
- * documented why. Collapsing is what WRITES the `chat:<id>` key, so a chat can
- * hold a STALE one by two ordinary routes:
- *
- *   1. upgrade — every chat was collapsed under the old chat header, so every
- *      existing install starts with keys already set;
- *   2. a chat that HAD sub-agents, was collapsed, then lost them to disposal.
- *
- * In both, `sidebarRowsOf` still renders the row marked `chatCollapsedGroup`, so
- * it is visible — but with no caret there is NO on-screen control to clear the
- * key, and the chat is stuck showing ▸ for good. That is the strand-a-chat bug.
- *
- * So: a caret is shown exactly when it would do something, or when it is the only
+ * A caret therefore appears when it would do something, or when it is the only
  * way back out.
  */
 export function shouldShowCollapseCaret(args: {
@@ -256,19 +233,6 @@ export function shouldShowCollapseCaret(args: {
   return args.isSub ? args.hasChildren : args.collapsed || args.hasChildren;
 }
 
-/**
- * Every DESCENDANT of `agentId`, at any depth (#98).
- *
- * #98: the sidebar's 🧩 badge counted only DIRECT children
- * (`agents().filter(x => x.parent === agentId)`), so a sub-agent that spawned
- * its own reported a smaller number than actually existed — and a busy nested
- * subtree was invisible, because the `· ▶N` active count had the same shape.
- *
- * `subtreeUnread` in App.tsx already recurses for notifications, so the tree
- * could disagree with the badge about the same subtree. This is the shared
- * version; `seen` guards a cycle in `parent`, which would otherwise recurse
- * forever.
- */
 /**
  * The display name a sub-agent was spawned with, recovered from its id.
  *
@@ -300,6 +264,13 @@ export function subAgentDisplayName(id: string, personas: readonly string[] = []
   return name.replace(/_/g, " ").trim() || null;
 }
 
+/**
+ * Every DESCENDANT of `agentId`, at any depth (#98).
+ *
+ * The sidebar's 🧩 badge counted only DIRECT children, so an agent whose subs had
+ * subs reported a smaller number than existed — and the `· ▶N` active count had
+ * the same shape. `seen` guards a cycle in `parent`, which would recurse forever.
+ */
 export function descendantsOf<T extends TreeAgent>(
   agents: readonly T[],
   agentId: string,
@@ -368,20 +339,12 @@ export function sidebarRowsOf<T extends TreeAgent>(
       out.push({ a: r.a, depth: r.depth });
       continue;
     }
-    // ONE header level: the working directory (#18).
-    //
-    // There used to be a second level — a `chat:<id>` header per top-level chat
-    // — so a directory holding six chats rendered thirteen rows:
-    //
-    //     ▾ TEAPOT
-    //       ▾ teapot
-    //         teapot          <- same name again
-    //
-    // The chat level existed to make each top-level chat independently
-    // collapsible, and that ability does not need its own row: a top-level chat
-    // IS an agent row, and its sub-agents already hang beneath it. So the row
-    // itself carries the collapse caret, exactly as a sub-agent's does, and
-    // `chat:<id>` remains the group key so an old collapse still applies.
+    // ONE header level: the working directory (#18). The old second level (a
+    // `chat:<id>` header per top-level chat) restated the directory: a six-chat
+    // directory rendered thirteen rows. The chat level existed only to make each
+    // top-level chat collapsible, and that needs no row of its own — a top-level
+    // chat IS an agent row, so the row carries the caret while `chat:<id>` stays
+    // the group key, keeping old collapses working.
     if (ws !== lastWs) {
       lastWs = ws;
       out.push({

@@ -15,7 +15,7 @@
  * capabilities. A client only calls what initialize advertises, so claiming a
  * half-correct terminal would be worse than omitting it.
  *
- * Protocol notes taken from agentclientprotocol.com rather than from memory:
+ * Protocol notes taken from agentclientprotocol.com:
  *   - JSON-RPC 2.0; notifications get no response (success OR error).
  *   - all file paths MUST be absolute; line numbers are 1-based.
  *   - prompt is a multi-turn request whose result carries a stopReason.
@@ -30,10 +30,9 @@ export const ACP_PROTOCOL_VERSION = 1;
 /**
  * How often a running turn is drained for new events.
  *
- * The web UI gets a WebSocket push; ACP has no such channel here, so the turn
- * is streamed by polling the agent's own log. 150ms is well under the ~60ms
- * render tick a human notices, and the read is a tail of a file this process
- * is already appending to — cheap enough to be invisible next to an LLM call.
+ * ACP has no push channel, so the turn is streamed by polling the agent's own
+ * log. 150ms is well under the ~60ms render tick a human notices, and the read is
+ * a tail of a file this process is already appending to.
  */
 const STREAM_POLL_MS = 150;
 
@@ -76,19 +75,12 @@ interface Session {
   agent: Agent;
 }
 
-/**
- * Run the ACP adapter until stdin closes.
- *
- * Kept as a class rather than free functions so the session map and the pending
- * request bookkeeping have somewhere to live, and so it is directly testable
- * with an in-memory stream pair.
- */
 /* ---------- streaming: log events → session/update notifications ---------- */
 
 /**
  * ACP `ToolCall.kind` for a teapot tool name.
  *
- * The schema's own enum (verified against schema/v1/schema.json, not memory):
+ * The schema's own enum (verified against schema/v1/schema.json):
  * read, edit, delete, move, search, execute, fetch, think, switch_mode, other,
  * description. Editors use this to pick an icon and to decide whether the call
  * mutates anything, so mapping our tools onto it is worth doing properly.
@@ -146,13 +138,10 @@ function toolLocation(
 }
 
 /**
- * Turn one logged event into the session/update payload for it, or null when
- * the event has no ACP equivalent (and must therefore NOT be invented into
- * one).
+ * Turn one logged event into the session/update payload for it, or null when the
+ * event has no ACP equivalent (and must therefore NOT be invented into one).
  *
- * Pure and exported so the mapping is testable without a transport, which is
- * how the previous scaffold went unverified: `drainOnce` existed, was never
- * called, and nothing noticed.
+ * Exported so the mapping is testable without a transport.
  */
 export function updateForEvent(
   e: { type: string; data: unknown },
@@ -162,9 +151,8 @@ export function updateForEvent(
   switch (e.type) {
     case "message": {
       // The completion AUDIT's verdict and the operator-facing summary are
-      // timeline content, not something the agent said to the model. They are
-      // marked precisely so the web feed can skip them; an editor must not be
-      // shown an agent speaking a harness message.
+      // timeline content, not something the agent said to the model; an editor
+      // must not be shown an agent speaking a harness message.
       if (d.final === true || d.operatorFacing === true) return null;
       const text = String(d.content ?? "");
       if (!text.trim()) return null;
@@ -318,9 +306,8 @@ export class AcpAdapter {
     this.initialized = true;
     return {
       protocolVersion: ACP_PROTOCOL_VERSION,
-      // Only capabilities we actually implement. Terminal/fs are deliberately
-      // absent: a client calls what we advertise, and a partial implementation
-      // would be worse than an honest omission.
+      // Only capabilities we actually implement: a client calls what we
+      // advertise, so a partial implementation would be worse than omission.
       agentCapabilities: { loadSession: true, promptCapabilities: { image: false, audio: false } },
       authMethods: [],
     };
@@ -359,9 +346,8 @@ export class AcpAdapter {
     const p = (params ?? {}) as { sessionId?: string };
     const s = p.sessionId ? this.sessions.get(String(p.sessionId)) : undefined;
     if (!s) return;
-    // Remember it HERE rather than asking the Agent whether it was stopped:
-    // the flag that says so is private, and the adapter already knows — it is
-    // the component that answered the cancel notification.
+    // The Agent's own "stopped" flag is private, and this adapter is the
+    // component that answered the cancel notification anyway.
     this.cancelled.add(s.id);
     s.agent.stop("cancelled via ACP");
   }
@@ -380,10 +366,7 @@ export class AcpAdapter {
 
     this.turnUpdates.set(id, { sessionId: s.id });
     this.cancelled.delete(s.id); // a cancel is per-turn, not per-session
-    // Stream the turn as it happens. The editor shows the reply and each tool
-    // call appear as they happen; without this the client sees NOTHING until
-    // the whole turn finishes, which is the difference between a usable agent
-    // and a black box that eventually prints an answer.
+    // Without streaming, the client sees NOTHING until the whole turn finishes.
     const abort = new AbortController();
     const stream = this.streamTurn(s.id, abort.signal).catch(() => {});
     try {
@@ -404,7 +387,7 @@ export class AcpAdapter {
     }
   }
 
-/** Stream a session's events to the client as session/update notifications. */
+  /** drain a session's log tail into session/update notifications */
   async drainOnce(sessionId: string, afterSeq = 0): Promise<number> {
     const s = this.sessions.get(sessionId);
     if (!s) return afterSeq;
@@ -412,34 +395,28 @@ export class AcpAdapter {
     for (const e of events) {
       if (e.seq <= afterSeq) continue;
       const update = updateForEvent(e, { workspace: s.cwd });
-      // null means "no ACP equivalent" — state flips, goals, notes. Staying
-      // silent is correct; the old code invented a tool_call for every one.
+      // null means "no ACP equivalent" — state flips, goals, notes
       if (update) this.notify("session/update", { sessionId, update });
     }
-    // Advance past EVERY event we read, including the ones we did not emit, so
-    // an un-emitted event is not reconsidered on the next poll.
+    // Advance past EVERY event read, emitted or not, so nothing is reconsidered
+    // on the next poll.
     return events.reduce((m, e) => Math.max(m, e.seq), afterSeq);
   }
 
   /**
    * Poll one session until it settles, streaming each batch as it appears.
    *
-   * Polling the JSONL rather than subscribing to the bus is deliberate: the log
-   * is the agent's own record, so a listener attached at the wrong moment can
-   * miss the start of a reply, and a crash mid-turn leaves the file as the one
-   * complete account of what happened. It also means a resumed session replays
-   * exactly the same updates.
+   * The JSONL log rather than the bus is deliberate: a bus listener attached at
+   * the wrong moment can miss the start of a reply, and after a crash mid-turn
+   * the file is the one complete account of what happened. It also means a
+   * resumed session replays exactly the same updates.
    */
   private async streamTurn(sessionId: string, signal: AbortSignal): Promise<void> {
-    // Start from the CURRENT tail: everything before this prompt belongs to
-    // earlier turns, and a resumed session has already been replayed.
+    // Everything before this prompt belongs to earlier turns.
     let cursor = await this.logTail(sessionId);
-    // NOTE the drain happens BEFORE the abort check, not after it. A short
-    // turn — a cached model, a tiny task, a failing endpoint that gives up
-    // quickly — can finish inside one poll interval, so a loop that slept and
-    // then bailed on `signal.aborted` would exit having drained NOTHING. That
-    // is exactly what happened: every turn raced the first tick and the
-    // editor received silence.
+    // The drain happens BEFORE the abort check: a turn can finish inside one poll
+    // interval, so a loop that slept and then bailed on `signal.aborted` would
+    // exit having drained NOTHING and the editor would receive silence.
     for (;;) {
       cursor = await this.drainOnce(sessionId, cursor);
       if (signal.aborted) return;

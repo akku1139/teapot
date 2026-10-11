@@ -2,19 +2,15 @@
  * Formatting helpers shared by the chat/tool timeline.
  *
  * Kept in its own dependency-free module (no solid-js, no DOM) so they can be
- * unit-tested directly under `node --test`, the same way md.js is.
+ * unit-tested directly under `node --test`.
  */
 
 /**
- * Milliseconds → a duration a human reads at a glance (#24).
+ * Milliseconds → a duration a human reads at a glance (#24): `431113ms` on a
+ * tool row is the complaint the issue was filed about.
  *
- * Tool rows used to interpolate raw `${durationMs}ms`, so a seven-minute build
- * rendered as "431113ms · timeout 3300s" — the exact complaint from the issue.
- * Sub-second work keeps sub-second precision (the common case), seconds take
- * over quickly, and hours only appear when they are real.
- *
- * A missing value renders as "?" — the same unknown the old template produced
- * via `?? "?"`, so an event without timing data still looks deliberate.
+ * A missing value renders as "?", so an event without timing data still looks
+ * deliberate rather than broken.
  */
 export function fmtDur(ms: number | undefined | null): string {
   if (ms === undefined || ms === null || !Number.isFinite(ms)) return "?";

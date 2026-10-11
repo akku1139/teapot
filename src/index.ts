@@ -43,16 +43,6 @@ async function waitForPortFree(
 
 /* ---------- live-update handover: keeping the operator's terminal (#35) ---------- */
 
-/**
- * The pid of the process that replaced US, or null if we are the server.
- *
- * `Master.restartServer()` spawns the replacement and records its pid here, so
- * the outgoing process can supervise its own successor instead of exiting and
- * handing the shell a prompt. A field on the master rather than an env var: both
- * processes are separate, but this value is written and read in the SAME
- * process, so there is no environment for the two of them to disagree over.
- */
-
 /** is `pid` still running? (EPERM means alive but not ours to signal) */
 function pidAlive(pid: number): boolean {
   try {
@@ -67,16 +57,13 @@ function pidAlive(pid: number): boolean {
  * Watch the replacement on the operator's behalf.
  *
  * The terminal is still wired to THIS process, so their Ctrl-C arrives here
- * first. Two things must happen, and the old one-shot shutdown() could do
- * neither:
+ * first: forward the signal so the replacement actually stops, and leave once
+ * it exits — otherwise the shell waits on a supervisor with nothing left to
+ * supervise and Ctrl-C looks broken.
  *
- *  1. forward the signal, so the replacement actually stops; and
- *  2. when the replacement does exit, leave too — otherwise the shell waits on
- *     a supervisor with nothing left to supervise and Ctrl-C looks broken.
- *
- * The original shutdown() cannot be reused for this: its `shuttingDown` latch
- * is already set by the SIGTERM that started the handover, so a later Ctrl-C
- * would be swallowed and this process would never exit.
+ * shutdown() cannot be reused for this: its `shuttingDown` latch is already set
+ * by the SIGTERM that started the handover, so a later Ctrl-C would be swallowed
+ * and this process would never exit.
  */
 function supervise(pid: number): void {
   let signalled = false;
@@ -100,11 +87,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * Parse `teapot [--port N] [-p N] [--host addr] [--config file] [config.json]`.
  *
- * Extracted from main() and exported so it can be tested. It was inline before,
- * which left `index.ts` at 48% branch coverage with NO test importing it at all —
- * the parser decides which config file is read and which port is bound, so a
- * regression here starts the wrong server on the wrong port with no error anyone
- * would read.
+ * Exported so it can be tested: the parser decides which config file is read and
+ * which port is bound, so a regression here starts the wrong server on the wrong
+ * port with no error anyone would read.
  *
  * The bare-word rule keeps the FIRST positional as the config path: a later bare
  * word is a stray argument, not an override, and silently replacing the config
@@ -168,17 +153,12 @@ async function main(): Promise<void> {
   if (!Number.isNaN(fromPid) && fromPid !== process.pid) {
     console.log(`[teapot] restart: releasing port from old process ${fromPid}...`);
     try {
-      // Flush the old process's agents and let it release the socket. It does
-      // NOT wait for us (that would deadlock against our bind below) — it
-      // lingers only long enough for its own HTTP response to flush, then exits.
+      // Flush the old process's agents and let it release the socket. It must
+      // NOT wait for us — that would deadlock against our bind below.
       process.kill(fromPid, "SIGTERM");
     } catch {
       /* already gone */
     }
-    // Wait until the socket is genuinely free. Binding while the old process
-    // still holds it fails with EADDRINUSE, and because index.ts swallows
-    // uncaught exceptions that left two processes running while neither served
-    // anything (#35).
     if (!(await waitForPortFree(config.port, config.host, 30_000)))
       console.warn(
         `[teapot] warning: could not confirm ${config.host}:${config.port} is free — binding anyway`,
@@ -222,32 +202,22 @@ async function main(): Promise<void> {
   const shutdown = async (signal?: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    // SUPERVISOR MODE. When a live update replaced us, we are no longer the
-    // server — but we are still the process the SHELL is waiting on, and it
-    // is still this process group that owns the terminal. Exiting here ended
-    // the shell's foreground job, so the operator was dumped back to the
-    // prompt mid-session while the new server kept running in the background
-    // ("teapot live restart returns to the shell", #35).
-    //
-    // So instead of exiting we hand over: keep the job slot, forward signals
-    // to the replacement, and only leave once it is gone. The operator's
-    // terminal — and their Ctrl-C — follow the server across the restart.
-    //
-    // The replacement is the child we spawned ourselves, so we hold it directly:
-    // no pid passed through the environment, and no way for the two processes
-    // to disagree about who supervises whom.
+    // SUPERVISOR MODE. When a live update replaced us we are no longer the
+    // server, but we are still the process the SHELL waits on and the one that
+    // owns the terminal; exiting here dumped the operator back to the prompt
+    // mid-session while the new server kept running in the background (#35). So
+    // we keep the job slot, forward signals to the replacement, and leave only
+    // once it is gone. The replacement is the child we spawned ourselves, so we
+    // hold it directly — no pid through the environment for the two processes to
+    // disagree over.
     if (master.replacementPid !== null) {
       const replacement = master.replacementPid;
       console.log(`[teapot] handing the terminal to the new server (pid ${replacement})...`);
-      // Release the port FIRST. The replacement is blocked in waitForPortFree
-      // waiting for exactly this, and it will SIGTERM us again if we do not go
-      // — but the difference now is that we stop SERVING rather than exiting,
-      // so the shell's foreground job survives the handover.
+      // Release the port FIRST: the replacement is blocked in waitForPortFree
+      // waiting for exactly this, and it will SIGTERM us again if we do not go.
       await server.close();
       console.log("[teapot] port released; supervising the new server");
       supervise(replacement);
-      // Stay attached until the replacement exits. The shell is still waiting
-      // on US, so leaving early is exactly the bug.
       while (pidAlive(replacement)) await sleep(500);
       console.log("[teapot] new server exited; releasing the terminal");
       process.exit(0);
@@ -267,33 +237,25 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-// Only when RUN, not when imported. `void main()` at module scope meant importing
-// this file for `parseArgs` started a whole server — which is why index.ts had no
-// test importing it and sat at 48% branch coverage. The check is the standard
-// ESM "am I the entry point" test, and `node --experimental-strip-types src/index.ts`
-// and `node dist/index.js` both still take this branch.
+// Only when RUN, not when imported: `void main()` at module scope meant importing
+// this file for `parseArgs` started a whole server. `node
+// --experimental-strip-types src/index.ts` and `node dist/index.js` both take
+// this branch.
 function isEntryPoint(): boolean {
   const arg = process.argv[1];
   if (!arg) return false;
-  // `npm i -g teapot-coding-agent` puts a SYMLINK at node_modules/.bin/teapot, and
-  // npm invokes the target THROUGH it. So `process.argv[1]` is the symlink path
-  // (…/node_modules/.bin/teapot), NOT the file it points at — which matched none
-  // of the checks below, `main()` never ran, and the installed command exited 0
-  // in silence. Reporting `teapot` did nothing and needing `node dist/index.js`
-  // was the only symptom. `realpathSync` is what resolves it.
+  // `npm i -g teapot-coding-agent` puts a SYMLINK at node_modules/.bin/teapot and
+  // npm invokes the target THROUGH it, so `process.argv[1]` is the symlink path,
+  // NOT the file it points at: the installed command then exited 0 in silence.
+  // `realpathSync` is what resolves it.
   try {
     const self = realpathSync(fileURLToPath(import.meta.url));
     const entry = realpathSync(arg);
     if (self === entry) return true;
     // `self === entry` is the ONLY correct test: it is the definition of being the
-    // entry point. The suffix checks that used to follow were a fallback for the
-    // symlink case, and they were far too loose — `endsWith("/index.ts")` is true
-    // for EVERY test file that imports this module, so importing it booted a real
+    // entry point. A suffix check such as `endsWith("/index.ts")` is true for
+    // EVERY test file that imports this module, so importing it booted a real
     // server on port 7788 and `cli-args.test.ts` failed with EADDRINUSE.
-    //
-    // Keep a basename check as a safety net for a bundler that rewrites paths, but
-    // require BOTH that we are the module AND that nothing else is: an argv[1] that
-    // resolves to a DIFFERENT file is by definition not this module's entry.
     return false;
   } catch {
     return false;

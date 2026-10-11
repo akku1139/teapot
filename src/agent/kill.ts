@@ -1,33 +1,24 @@
 /**
- * Killing a spawned process tree, across platforms.
+ * Killing a spawned process tree, across platforms (#110).
  *
- * #110 (Windows support). Two problems, and the second is the serious one.
+ * A negative pid is a POSIX process-group kill; Node's own docs (v24,
+ * `doc/api/process.md`) are explicit: *"Windows platforms will throw an error if
+ * the `pid` is used to kill a process group."*
  *
- * 1. **A negative pid is a POSIX process-group kill.** Node's own docs
- *    (v24, `doc/api/process.md`) are explicit: *"Windows platforms will throw an
- *    error if the `pid` is used to kill a process group."*
+ * Both call sites wrapped the kill in an empty catch, and on Windows EVERY group
+ * kill throws — so the throw was the normal path, not the exceptional one, and
+ * the failure was silent: on timeout the tool reported a `TIMEOUT` for a process
+ * that is STILL RUNNING, abort left it alive, and `bash({action:"kill"})`
+ * answered "killed" while dropping a running job from the map untrackable. A
+ * timeout that reports success is worse than a crash, because nothing looks wrong
+ * afterwards.
  *
- * 2. **The throw was swallowed as "already gone".** Both call sites wrapped the
- *    kill in an empty catch — and on Windows EVERY group kill
- *    throws, so that catch is the normal path, not the exceptional one.
- *
- *    The consequence is a silent failure that is worse than no kill at all:
- *
- *      - on timeout, `killReason = "TIMEOUT after …ms"` is set regardless, so
- *        the tool reports a timeout for a process that is STILL RUNNING;
- *      - on harness abort, the same — shutdown leaves the process alive;
- *      - `bash({action:"kill"})` answers "killed" and drops the job from the map
- *        while the process keeps running, now untrackable.
- *
- *    A timeout that reports success is worse than a crash, because nothing looks
- *    wrong afterwards.
- *
- * So the kill now REPORTS whether it worked, and the callers say so. On Windows
- * the group kill is not available at all: Node cannot enumerate a process tree,
- * and killing just the direct child leaves grandchildren running. That is what a
- * Job Object solves (Codex vendors this — `codex-rs/utils/pty/src/win/job.rs`),
- * and it needs native code. Until then the honest thing is to kill the child we
- * have a handle on and tell the operator the tree may survive.
+ * So the kill now REPORTS whether it worked, and the callers say so. Windows has
+ * no group kill at all: Node cannot enumerate a process tree, and killing just
+ * the direct child leaves grandchildren running. That is what a Job Object solves
+ * (Codex vendors this — `codex-rs/utils/pty/src/win/job.rs`) and it needs native
+ * code; until then we kill the child we have a handle on and tell the operator
+ * the tree may survive.
  */
 export interface KillOutcome {
   /** did we actually terminate something? */

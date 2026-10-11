@@ -800,23 +800,12 @@ const isTimelineLive = (): boolean => {
   const pendingKey = (): string => timelineId() || selected() || "?";
   const pendingFor = (key: string): PendingEcho[] => pendingBySession.get(key) ?? [];
   const writePending = (key: string, next: PendingEcho[]): void => {
-    // #100: at most ONE echo per promptId, enforced here because this is the
-    // single point every writer passes through.
-    //
-    // Two writers can add an echo for the same message: the #87 rebuild effect
-    // (which materialises an echo for any id in the server's queue) and the send
-    // path (which appends one when the POST resolves). The rebuild checks what it
-    // already holds, so whichever writes FIRST wins and the other appends a
-    // duplicate — and the snapshot carrying `pendingPromptQueue` can arrive
-    // before the POST resolves, so this is a genuine race, not a fixed order.
-    //
-    // `reconcilePending` cannot catch it: it trims to the server's queued COUNT,
-    // which is 1, so it never inspects two echoes that agree on a single id.
-    //
-    // Fixing either writer alone would leave the other; deduping on the id here
-    // holds however the race resolves, and catches any future third writer.
-    // The LAST occurrence wins, so a writer that has fresher text (the rebuild
-    // carries the server's copy) is not discarded by the earlier one.
+    // #100: at most ONE echo per promptId, enforced at the single point every
+    // writer passes through. Two writers race for the same message (the #87
+    // rebuild from the server's queue, and the send path when the POST resolves),
+    // and `reconcilePending` cannot catch a duplicate because it trims to the
+    // server's COUNT — which is 1, so it never inspects two echoes agreeing on one
+    // id. Last occurrence wins, so the fresher text survives.
     const seen = new Set<string>();
     const deduped: PendingEcho[] = [];
     for (let i = next.length - 1; i >= 0; i--) {
@@ -2170,25 +2159,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           const beforeTotal = eventsTotal();
           const fetchStartedAt = Date.now();
           await loadEvents(selected()!);
-          // #40: the bubble is reconciled on EVERY pass — NOT inside the
-          // "did the newest id change" test below, which is where it used to sit.
-          //
-          // The socket handler merges the event BEFORE it schedules this refresh
-          // (`mergeEvents([msg.event])` then `setTimeout(runFeedRefresh, 60)`), so
-          // by the time this runs the newest id is ALREADY in `events()` and that
-          // test reads false. The whole block was skipped, the bubble was never
-          // cleaned, and a reply that was already persisted stayed on screen a
-          // second time as a live bubble with a cursor — for as long as the agent
-          // stayed running (a tool call is enough: no turn boundary, no idle).
-          //
-          // Reported from a real DOM: the same assistant text rendered once as a
-          // settled row and once as `.msg.live`, with the bash row still running.
-          // It disappears on reload only because select() reconciles directly.
-          //
-          // The staleness test itself is unchanged, and still content-based: drop
-          // the buffer only when the log now covers its text, or the agent is no
-          // longer live. Time-based heuristics raced the stream's natural pauses
-          // and cleared a LIVE bubble mid-reply.
+          // #40: reconcile the bubble on EVERY pass, NOT inside the
+          // "did the newest id change" test below — the socket MERGES the event
+          // before scheduling this refresh, so that test reads false here and the
+          // cleanup would never run. A persisted reply then stayed on screen a
+          // second time as a live bubble with a cursor.
           const buf = live();
           if (buf && !reconcileLiveBuffer(buf, events(), sel()?.status)) setLive(null);
           if (events().at(-1)?.id !== beforeId) {
@@ -4691,24 +4666,11 @@ function ThinkingTimer(props: { startedAt: number }) {
 
 function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
-  // #54: `props.res` must be read REACTIVELY, not captured.
-  //
-  // `<For each={chatEvents()}>` passes `res={pairInfo().resFor.get(e.id)}`, so the
-  // row is built while its result has not arrived yet (`undefined`). When the
-  // result lands, pairInfo is recomputed and the prop changes — but a destructured
-  // `const res = props.res` was bound ONCE at creation, so the row kept rendering
-  // the pre-result branch forever: "running… · waiting for output…" until the row
-  // was destroyed and rebuilt, which is exactly what re-selecting the session (or
-  // reloading via the API) did.
-  //
-  // Measured in the built bundle: with the result present in BOTH the log and the
-  // socket frame, the row stayed `embed running` and showed no output; making this
-  // ONE accessor reactive flipped exactly the class to `embed done` while the
-  // captured-`res` body still said "running…" — proving the prop updates and the
-  // destructured copy does not.
-  //
-  // A getter rather than a signal: the compiler already tracks `props.x` reads, so
-  // every existing use below becomes reactive with no other change.
+  // #54: read the result prop REACTIVELY. `<For each={chatEvents()}>` builds the
+  // row while its result is still undefined, and a destructured `const res =
+  // props.res` is bound once — so the row kept rendering "running…" forever when
+  // the result arrived. A getter: the compiler tracks `props.x` reads, so every
+  // use below becomes reactive with no other change.
   const res = () => props.res;
   // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
   // cannot still be in flight (its result event was missed — e.g. logged while

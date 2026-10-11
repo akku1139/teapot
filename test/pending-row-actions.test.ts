@@ -34,7 +34,7 @@ const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8"
  * The predicate now lives in `frontend/row-grouping.ts` — the module the
  * component itself calls — so these tests drive the code that runs.
  */
-import { groupedWith, actorKeyOf, authorOf as groupedAuthorOf } from "../frontend/row-grouping.ts";
+import { groupedWith } from "../frontend/row-grouping.ts";
 
 const SENT = { type: "prompt", data: { source: "user", promptId: "u1" } };
 const PENDING = { type: "prompt", data: { source: "user", promptId: "u2", pending: true } };

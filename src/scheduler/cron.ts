@@ -20,8 +20,8 @@ const BOUNDS: [number, number][] = [
 function parseField(part: string, min: number, max: number): Set<number> {
   const out = new Set<number>();
   const clampOrThrow = (v: number): number => {
-    // out-of-range values used to slip through silently and produce a set
-    // that NEVER matched (e.g. "99 * * * *" ran never) — reject loudly
+    // accepting an out-of-range value produces a set that never matches, i.e. a
+    // cron that silently never fires ("99 * * * *")
     if (!Number.isInteger(v) || v < min || v > max)
       throw new Error(`bad cron field: ${part} (${min}-${max} expected)`);
     return v;
@@ -87,10 +87,9 @@ export function matches(schedule: Schedule, d: Date): boolean {
 
 /**
  * Next fire time after `from`, scanning minute by minute (cheap: a handful of
- * integer compares per minute). Returns null when nothing fires within a year
- * — annual crons (a December date seen in August) used to fall outside the old
- * 31-day horizon and showed `next: null` in the UI even though they fire.
- * A Feb-29-only cron can still legitimately report null most of the year.
+ * integer compares per minute). The horizon is a year so an annual cron (a
+ * December date seen in August) still resolves; a Feb-29-only cron can
+ * legitimately report null most of the year.
  */
 export function nextFireAt(schedule: Schedule, from = new Date()): string | null {
   const startMinute = Math.floor(from.getTime() / 60_000) + 1; // next whole minute

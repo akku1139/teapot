@@ -38,7 +38,7 @@ export interface ToolContext {
       /** #105: per-spawn reasoning effort; falls back to the parent's */
       reasoning_effort?: string;
     }): Promise<{ id: string }>;
-    list(): { id: string; status: string; goal: string }[];
+    list(): { id: string; status: string; goal: string; parent: string; nested: boolean }[];
     stop(ids?: string[]): Promise<{ stopped: string[] }>;
     message(id: string, text: string): Promise<void>;
     /**
@@ -1755,7 +1755,10 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "list_children",
-    description: "List your live sub-agents: id, status, current goal.",
+    description:
+      "List the sub-agents working under you: id, status, current goal. " +
+      "Includes NESTED ones your sub-agents spawned (marked (nested) with their own parent), " +
+      "so you can see work you would otherwise be unaware of — wait_children waits for these too.",
     parameters: { type: "object", properties: {} },
     async run(_args, ctx) {
       const sa = ctx.subAgents;
@@ -1765,7 +1768,11 @@ export const TOOLS: ToolDef[] = [
       return {
         ok: true,
         result: kids
-          .map((k) => `${k.id} · ${k.status} · ${clip(k.goal, 60)}`)
+          .map(
+            (k) =>
+              `${k.id} · ${k.status} · ${clip(k.goal, 60)}` +
+              (k.nested ? `  (nested — spawned by @${k.parent}; address @${k.parent} to steer it)` : ""),
+          )
           .join("\n"),
       };
     },
@@ -1795,8 +1802,10 @@ export const TOOLS: ToolDef[] = [
     name: "wait_children",
     description:
       "Park until at least one sub-agent settles (finished, errored, stopped, or asks you a question) — " +
-      "or until the timeout lapses. Costs zero tokens while parked: prefer this over bash sleep when " +
-      "waiting on spawned work. The settling child's report is delivered to you afterwards.",
+      "or until the timeout lapses. Waits for your whole SUBTREE: a sub-agent that spawned its own " +
+      "sub-agents is not settled while those are still working, so this never returns over live nested " +
+      "work. Costs zero tokens while parked: prefer this over bash sleep when waiting on spawned work. " +
+      "The settling child's report is delivered to you afterwards.",
     parameters: {
       type: "object",
       properties: {
@@ -2364,8 +2373,8 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
   if (ctx.readOnly && MUTATING_TOOLS.has(name))
     return { ok: false, result: `${name} is blocked: this agent runs with read-only tools` };
   // #17: repair the call before handing it to the tool. A model that sends
-// {"cmd":"ls"} or {"limit":"100"} should get the work done, not a generic parse
-// failure and a wasted turn. Unrepairable calls say what to send instead.
+  // {"cmd":"ls"} or {"limit":"100"} should get the work done, not a generic parse
+  // failure and a wasted turn. Unrepairable calls say what to send instead.
   const repaired = repairToolInput(name, rawArgs);
   if (repaired.error)
     return { ok: false, result: `${name}: ${repaired.error}` };

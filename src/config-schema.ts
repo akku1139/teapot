@@ -1,10 +1,10 @@
 /**
  * Zod schema for teapot's config — the single source of truth for what a
- * valid config looks like. Used to gate web-UI edits (PUT /api/config) and
- * any programmatic writes, with human-readable error messages.
+ * valid config looks like, used to gate web-UI edits (PUT /api/config) and any
+ * programmatic writes with human-readable error messages.
  *
- * NOTE: validation gates, it does not become the storage format — the master
- * persists the raw user JSON so unknown fields survive round-trips.
+ * Validation gates; it is not the storage format — the master persists the raw
+ * user JSON so unknown fields survive round-trips.
  */
 import { z } from "zod";
 

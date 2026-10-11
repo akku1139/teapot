@@ -2,12 +2,8 @@
  * What the right panel's provider dropdown does to the model field.
  *
  * The panel has two controls that must agree: `provider` and the model input.
- * Changing the provider used to leave the model input holding the PREVIOUS
- * provider's value, so the value the switch would actually use — the provider's
- * own configured default — was never selected, and pressing apply carried the
- * old provider's model over to the new endpoint.
- *
- * Pure and dependency-free so it is unit-testable under `node --test`.
+ * They must not drift: a model belonging to one provider must never be carried
+ * over to another endpoint.
  */
 
 export interface ProviderLike {
@@ -42,10 +38,9 @@ export function providerDefaultModel(
  * `toProvider`.
  *
  * The provider's configured default wins. With none configured, the agent's
- * current model is kept ONLY when the dropdown is back on the provider that
- * model already belongs to (re-selecting it must not blank the field);
- * otherwise the field is emptied rather than carrying a foreign model across,
- * and the server's "no model resolved" error is the honest outcome.
+ * current model is kept only when the dropdown is back on the provider that
+ * model belongs to; otherwise the field is emptied rather than carrying a
+ * foreign model across.
  */
 export function modelOnProviderSwitch(
   providers: Record<string, ProviderLike | undefined> | undefined,
@@ -59,12 +54,9 @@ export function modelOnProviderSwitch(
 }
 
 /**
- * Placeholder for the model input — what an empty field would resolve to.
- *
- * While the dropdown still points at the session's own provider, that is the
- * model the session is actually using, which is the useful thing to show. Once
- * the dropdown moves elsewhere the session's model no longer describes it, so
- * the new provider's configured default takes over.
+ * Placeholder for the model input — what an empty field would resolve to:
+ * the session's own model while the dropdown points at its provider, else the
+ * new provider's configured default.
  */
 export function modelPlaceholderFor(
   providers: Record<string, ProviderLike | undefined> | undefined,
@@ -80,12 +72,11 @@ export function modelPlaceholderFor(
  * May the sync effect pull the provider dropdown back to the session's own
  * provider?
  *
- * It may when the operator has NOT touched the dropdown — that is the external
+ * Only when the operator has NOT touched the dropdown — that is the external
  * change (another tab, a restart) the re-sync exists for. Once touched, the
- * choice is theirs: without this, picking a provider that has no default model
+ * choice is theirs: without this, picking a provider with no default model
  * leaves the draft empty, the next poll reads that as "not mid-edit" and yanks
- * the dropdown back before `apply` can be pressed — the exact opposite of the
- * fix.
+ * the dropdown back before `apply` can be pressed.
  */
 export function mayResyncProvider(userTouchedProvider: boolean): boolean {
   return !userTouchedProvider;

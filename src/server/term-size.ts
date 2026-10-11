@@ -4,13 +4,10 @@
  * A resize is a property of the TTY, not a command. There is no pty handle
  * to ioctl(TIOCSWINSZ) here — the shell is reached through `script` (pty) or
  * a plain pipe — so the only lever available is writing `stty rows R cols C`
- * to the child's stdin. That makes it dangerous by default:
- *
- *  1. A drag-resize emits a burst of resize events. The old code wrote an
- *     `stty` line per event.
- *  2. Worse, when an interactive program owns the tty (vim, less, a python
- *     REPL), stdin is read by the PROGRAM, not by a shell — so the text is
- *     consumed as keystrokes and the line lands in your document/session.
+ * to the child's stdin. That makes it dangerous by default: when an interactive
+ * program owns the tty (vim, less, a python REPL) stdin is read by the PROGRAM,
+ * not by a shell, so the text arrives as keystrokes and the line lands in your
+ * document/session.
  *
  * `TermSizeTracker` keeps that safe and quiet:
  *   - debounces to the trailing edge of a drag, so a burst costs ONE stty
@@ -43,9 +40,8 @@ export class TermSizeTracker {
   private states = new Map<ChildProcess, TermState>();
 
   /**
-   * Request a resize. Returns the number of `stty` lines that will actually
-   * be written for this call (0 while a burst is still collapsing) — exposed
-   * for tests and diagnostics.
+   * Request a resize; the sink write happens on the trailing edge of the
+   * debounce.
    */
   request(child: ChildProcess, rows: number, cols: number, write: TermSizeSink["write"]): void {
     const st = this.states.get(child) ?? { rows: 0, cols: 0, timer: null, busyUntil: 0 };

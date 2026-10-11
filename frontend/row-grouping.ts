@@ -1,14 +1,6 @@
 /**
  * Row grouping for the chat feed.
  *
- * #75 — this lived inline inside `MessageRow` in App.tsx, so the tests for it
- * re-implemented the predicate locally and asserted against THEIR OWN copy.
- * A replica passes by construction: deleting the real #49 fix left all four
- * behavioural tests green, because the local mirror still had the fix in it.
- *
- * Extracted so the rule is testable against the code that actually runs. The
- * component now calls `groupedWith()`.
- *
  * The rule: consecutive rows from the same ACTOR group together, so a run of
  * tool calls reads as one block. Three things must NOT group:
  *
@@ -19,7 +11,9 @@
  *  - rows from a different session or branch, which are not adjacent in time.
  *
  * The actor for tool events is THE AGENT, not the tool: keying by tool name
- * broke grouping as soon as two different tools ran back to back.
+ * split a run as soon as two different tools ran back to back.
+ *
+ * #75: extracted from App.tsx so the tests drive the code that runs.
  */
 
 export interface RowLike {
@@ -34,15 +28,22 @@ export interface RowLike {
   };
 }
 
-/** Which side of the conversation a row belongs to. */
-export function authorOf(ev: RowLike): { name: string } {
-  if (ev.type === "prompt" && ev.data?.source === "user") return { name: "you" };
-  if (ev.type === "message") return { name: "agent" };
-  return { name: "harness" };
+/**
+ * Which side of the conversation a row belongs to — a coarse 3-way bucket used as
+ * a GROUPING key. (App.tsx has its own `authorOf` for display metadata; the two
+ * are unrelated, hence the distinct name here.)
+ *
+ * Returns a STRING, not an object: a comparison of two `{name}` objects is a
+ * reference comparison and is always false, which silently disabled grouping.
+ */
+function authorBucketOf(ev: RowLike): string {
+  if (ev.type === "prompt" && ev.data?.source === "user") return "you";
+  if (ev.type === "message") return "agent";
+  return "harness";
 }
 
 /** The grouping key for a row. Tool events all belong to the agent. */
-export function actorKeyOf(ev: RowLike): string {
+function actorKeyOf(ev: RowLike): string {
   const d = ev.data ?? {};
   if (ev.data?.actor) return `sub:${String(ev.data.actor)}`;
   if (ev.type === "tool_call" || ev.type === "tool_result") return "agent-tools";
@@ -50,11 +51,7 @@ export function actorKeyOf(ev: RowLike): string {
   return `type:${ev.type}`;
 }
 
-/**
- * Does `e` group with the row above it?
- *
- * `prev` undefined means it is the first row, which never groups.
- */
+/** Does `e` group with the row above it? A first row (no `prev`) never does. */
 export function groupedWith(prev: RowLike | undefined, e: RowLike): boolean {
   return !!(
     prev &&
@@ -62,7 +59,7 @@ export function groupedWith(prev: RowLike | undefined, e: RowLike): boolean {
     !prev.data?.pending &&
     !e.data?.cancelled &&
     actorKeyOf(prev) === actorKeyOf(e) &&
-    authorOf(prev).name === authorOf(e).name &&
+    authorBucketOf(prev) === authorBucketOf(e) &&
     e.session === prev.session &&
     e.branch === prev.branch
   );

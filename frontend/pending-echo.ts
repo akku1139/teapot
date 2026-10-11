@@ -1,21 +1,16 @@
 /**
- * Reconciling optimistic echoes against the live queue.
+ * Reconciling optimistic echoes against the live queue (#87).
  *
- * Extracted so the rule is testable against the code that runs (#87). It lived
- * inline in App.tsx, and the tests mirrored it — a mirror passes by
- * construction, so the copy and the original could drift without anything
- * noticing.
+ * Extracted from App.tsx so the rule is tested against the code that runs — an
+ * inline copy is a mirror, and a mirror passes by construction.
  */
 
-/** an optimistic echo row awaiting its log entry */
 /**
  * One optimistic echo of a queued prompt.
  *
- * `source` matters: a HARNESS prompt (the operator's goal/todo save, or a
- * sub-agent report) cannot be cancelled or edited by hand — there is no composer
- * draft to return it to and no user text to fork from (#122). Without carrying the
- * source here, every echo rendered as `source:"user"` and grew a ✕ that would have
- * failed.
+ * `source` matters: a HARNESS prompt (a goal/todo save, or a sub-agent report)
+ * has no composer draft to return it to and no user text to fork from, so it must
+ * not grow a ✕/✎ that could only fail (#122).
  */
 export type PendingEcho = {
   id: string;
@@ -31,17 +26,11 @@ export type PendingEcho = {
 /**
  * Reconcile the local echoes against the live queue (#78).
  *
- * Match on IDENTITY. This used to be `filter(!!promptId).slice(0, queued)`,
- * which keeps the FIRST N by position — so every time the server's count dipped
- * below the real queue (a mid-queue ✕ cancel, or the brief gap before
- * drainPendingPrompts() settles) the NEWEST still-queued echoes were dropped.
- * Because `stillPendingIds` is derived from this list, their undelivered log
- * rows then showed up as settled "sent" rows — re-introducing the #19
- * cancellation bug the block below exists to prevent.
- *
- * Pure, and it writes through `writePending` so the per-session map stays in
- * step with the signal (#87) — updating only the signal would lose the echoes
- * again on the next session switch.
+ * Matching is by IDENTITY. The old `filter(!!promptId).slice(0, queued)` kept the
+ * first N by POSITION, so whenever the server's count dipped below the real queue
+ * (a mid-queue cancel, or the gap before `drainPendingPrompts()` settles) the
+ * NEWEST still-queued echoes were dropped — and since `stillPendingIds` derives
+ * from this list, their log rows reappeared as settled "sent" rows (#19).
  */
 export const reconcilePending = (
   list: PendingEcho[],
@@ -53,15 +42,13 @@ export const reconcilePending = (
     const live = new Set(liveIds);
     const matched = list.filter((p) => p.promptId && live.has(p.promptId));
     if (matched.length) {
-      // echoes with no id (predating tracking, or pre-reload) have no identity
-      // to match — keep them only if the ids alone cannot account for the
-      // queue, so they are never silently dropped
+      // echoes with no id (pre-tracking, or pre-reload) have nothing to match on:
+      // keep them only if the ids cannot account for the queue, so they are never
+      // silently dropped
       const unidentifiable = list.filter((p) => !p.promptId);
       return unidentifiable.length ? [...matched, ...unidentifiable].slice(0, queued) : matched;
     }
   }
-  // No ids to match on at all (older server, or every echo predates promptId
-  // tracking): fall back to keeping the HEAD, which is correct for the plain
-  // front-to-back drain case.
+  // no ids at all (older server): the head is correct for a front-to-back drain
   return list.slice(0, queued);
 };

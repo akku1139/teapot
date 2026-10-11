@@ -86,7 +86,7 @@ test("the wakeup itself is NOT gated — only the message is (#130)", async () =
   // Anchor on the two symbols and compare their positions in the FILE, not in a
   // fixed-width slice: a 900-char window found the wake at 290 and the gate at
   // -1, because #130's comment pushed it past the edge — the same trap as #126.
-  const wakeAt = master.indexOf("this.wakeParentWaiters(ac.parent);");
+  const wakeAt = master.indexOf("this.wakeAncestorWaiters(ac.parent);");
   const gateAt = master.indexOf("this.reportedRunning.has(agentId)");
   assert.notEqual(wakeAt, -1, "the wake must be there (#126)");
   assert.notEqual(gateAt, -1, "the report gate must be there (#130)");

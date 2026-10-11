@@ -2,8 +2,8 @@
  * LLM access via the official `openai` npm client (OpenAI-compatible APIs:
  * OpenAI, OpenRouter, local vLLM/Ollama, ...).
  *
- * We deliberately delegate retries/timeouts/response-shape handling to the
- * SDK instead of hand-rolling them.
+ * Retries, timeouts and response-shape handling are delegated to the SDK rather
+ * than hand-rolled.
  */
 import OpenAI from "openai";
 
@@ -137,11 +137,6 @@ export type ChatFn = (
 ) => Promise<LlmResult>;
 
 /**
- * Providers are picky in different ways; the common denominator is that
- * empty text content in user/assistant messages makes many of them 400.
- * Fill blanks with a harmless placeholder before sending.
- */
-/**
  * Providers occasionally glue MULTIPLE tool calls into one entry, or leak
  * their internal framing into the name field (seen live: a name of
  * `get_goal\uFFFD\uFFFDlist_dir` whose raw bytes were
@@ -183,6 +178,7 @@ function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
       );
       return { role: m.role, content: parts };
     }
+    // empty text content makes many providers 400 — send a harmless placeholder
     if ((m.role === "user" || m.role === "assistant") && !m.content) {
       return { ...m, content: m.tool_calls?.length ? "(tool call)" : "(no content)" };
     }
@@ -194,22 +190,16 @@ function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
 }
 
 /**
- * Why did the response carry no usable message?
+ * Why did the response carry no usable message? (#50)
  *
- * #50 — this used to be a bare "LLM API returned no choices", which is what
- * made the report undiagnosable: an empty `choices` array, a 200 carrying an
- * `error` object, a `delta`-shaped body, and an SSE stream that the SDK
- * handed back as a plain String all produce the identical line, and none of
- * them is a useful thing to read in a log.
- *
- * The leading text is kept stable at "LLM API returned no choices" so any
- * existing matching (and the retry notes operators have learned to read)
- * still works; the diagnosis follows after a colon.
+ * The leading text is kept stable at "LLM API returned no choices" so existing
+ * matching (and the retry notes operators have learned to read) still works; the
+ * diagnosis follows after a colon.
  */
 function noChoicesDetail(res: unknown): string {
   const base = "LLM API returned no choices";
   // a gateway that answers 200 with an error object instead of failing: the
-  // actionable message is right there and used to be thrown away
+  // actionable message is right there
   const err = (res as { error?: { message?: unknown; type?: unknown; code?: unknown } })?.error;
   if (err && typeof err === "object") {
     const msg = typeof err.message === "string" ? err.message : JSON.stringify(err);
@@ -356,11 +346,9 @@ export async function chat(
     };
   } catch (err) {
     const e = err as { status?: number; message?: string; error?: { message?: string } };
-    // #50: our own shape-diagnosis already reads as a full sentence and names
-    // the response it saw. It carries no HTTP status (the request SUCCEEDED —
-    // that is the whole problem), so the generic wrapper below would have
-    // relabelled it "LLM API error ?: …", hiding both the diagnosis and the
-    // fact that no status was ever involved.
+    // #50: our own shape-diagnosis reads as a full sentence but carries no HTTP
+    // status (the request SUCCEEDED — that is the whole problem), so the generic
+    // wrapper below would relabel it "LLM API error ?: …".
     if (String((err as Error).message ?? "").startsWith("LLM API returned no choices")) throw err;
     if (e.status === undefined && !String((err as Error).message).includes("provider returned"))
       throw err; // not an API error (abort, bug, ...)
@@ -469,49 +457,32 @@ export async function chatStream(
       });
     if (!message.content && !message.tool_calls) {
       // #50: a stream that opened, produced NOTHING, and closed cleanly. The
-      // throw carries a marker so the handler below can tell this apart from a
-      // request the provider actively rejected: this one is a broken/flaky
-      // proxy, and re-issuing it without `stream` is a genuinely different
-      // request that usually succeeds. Throwing a bare Error would make the two
-      // indistinguishable and cost us that safety net.
+      // marker lets the handler below tell this apart from a request the provider
+      // actively rejected — re-issuing THIS one without `stream` usually succeeds.
       const e = new Error("LLM API error: empty completion") as Error & { emptyStream?: boolean };
       e.emptyStream = true;
       throw e;
     }
     return { message, reasoning: reasoning || undefined, usage };
   } catch (err) {
-    // #50 — a provider that doesn't support streaming at all still gets ONE
-    // clean fallback, but ONLY when the streaming attempt produced nothing for
-    // a reason that could plausibly be the stream itself.
+    // #50 — a provider that doesn't support streaming at all still gets ONE clean
+    // fallback, but ONLY when the failure could plausibly be the stream itself.
+    // The condition must NOT be `!gotChunk && !signal?.aborted`: that also matches
+    // a request that FAILED (a 200 carrying an SSE `error` frame, a context-length
+    // rejection), and the fallback then re-issues the same oversized request,
+    // replacing the real diagnosis — a restored 1500-message session reports "no
+    // choices" instead of "context length exceeded", so isContextOverflow() never
+    // runs compact-and-retry.
     //
-    // The old condition was `!gotChunk && !signal?.aborted`, which also matched
-    // a request that FAILED — a gateway answering 200 with an SSE `error`
-    // frame, or a context-length rejection. In those cases the fallback
-    // re-issued the same oversized request in a different shape, and the
-    // resulting "LLM API returned no choices" replaced the real diagnosis.
-    // That is why a restored 1500-message session reported "no choices" three
-    // times and then errored: the genuine "context length exceeded" was
-    // discarded on the first attempt and could never be recognised by
-    // isContextOverflow(), so the compact-and-retry recovery never ran.
+    //  1. A status in STREAM_REJECTED_STATUS: only a request rejected outright is a
+    //     genuinely DIFFERENT request when re-issued without `stream`.
+    //  2. `emptyStream`: a 200 that streams zero chunks and closes cleanly is a
+    //     broken/flaky proxy — precisely the case the retry rescues. Requiring a
+    //     4xx here would delete that safety net, a regression this file's own
+    //     tests caught.
     //
-    // Two exclusions, and the second one matters as much as the first:
-    //
-    //  1. A status that means the REQUEST ITSELF was rejected. Only then is
-    //     re-issuing it without `stream` a different request rather than the
-    //     same failing one. `400`/`404`/`405`/`422` are the shapes a provider
-    //     uses to say "no streaming here" — deliberately NOT the whole 4xx
-    //     range, because 408/425/429 are transient: replaying those against an
-    //     already-saturated provider just doubles the request count.
-    //  2. A THROWN error, as opposed to a request that simply produced no
-    //     chunks. A 200 that streams zero chunks and closes cleanly is a
-    //     broken/flaky proxy, and that is precisely the case the non-streaming
-    //     retry rescues. Requiring a 4xx here would have deleted that safety
-    //     net — a regression this file's own tests caught.
-    //
-    // So the fallback runs when the request was rejected outright, OR when it
-    // completed without error and without a single chunk. Everything else —
-    // 5xx, an error frame, a mid-stream failure — is the ANSWER, rethrown
-    // untouched so overflow recovery can see it.
+    // Everything else — 5xx, an error frame, a mid-stream failure — is the ANSWER,
+    // rethrown untouched so overflow recovery can see it.
     const status = (err as { status?: unknown })?.status;
     const rejectedByProvider =
       typeof status === "number" && STREAM_REJECTED_STATUS.has(status);

@@ -1,18 +1,6 @@
 /**
- * Live-streaming buffer bookkeeping.
- *
- * The UI keeps ONE in-progress assistant buffer per agent, so several agents
- * can stream at once without clobbering each other. What goes wrong is not the
- * keying — it is WHEN a buffer is dropped.
- *
- * #40: an agent's `status` does not change between tool calls within one round,
- * so a finished reply's buffer was never cleared. The feed refresh only drops
- * it once a persisted assistant message matches its text, and the
- * `status !== "running"` short-circuit kept it alive until then — leaving the
- * previous turn's text on screen under the streaming…/writing… chrome.
- *
- * These helpers are pure and dependency-free so they can be unit-tested under
- * `node --test` without pulling in solid-js.
+ * Live-streaming buffer bookkeeping: ONE in-progress assistant buffer per agent,
+ * so several agents can stream at once without clobbering each other.
  */
 
 export interface LiveBuf {
@@ -22,11 +10,8 @@ export interface LiveBuf {
 }
 
 /**
- * Apply a streaming delta for one agent, returning the next map.
- *
- * A delta never touches another agent's buffer — that per-agent isolation is
- * the whole point of the map (an earlier single-slot design made every session
- * switch clobber the visible reply).
+ * Apply a streaming delta for one agent, returning the next map. Keyed per
+ * agent, so a delta for one never touches another's buffer.
  */
 export function applyDelta(
   prev: Map<string, LiveBuf>,
@@ -62,17 +47,17 @@ export function isTurnBoundary(ev: unknown): boolean {
   return e?.type === "state" && e.data?.detail === "llm turn start";
 }
 
-/**
- * Should the live bubble be dropped because the log now covers what it shows?
- *
- * `status !== "running"` means the agent is no longer mid-reply, so the buffer
- * is definitionally stale. Otherwise the log must contain an assistant message
- * whose text is exactly what the bubble is showing.
- */
+/** "Live" = mid-reply (`running`) or parked on an `ask_user` answer (`waiting`). */
 export function isLiveStatus(status: string | undefined): boolean {
   return status === "running" || status === "waiting";
 }
 
+/**
+ * Is the live bubble already covered by the log?
+ *
+ * Not live -> stale by definition. Still live -> only when the log holds an
+ * assistant message with exactly the text the bubble is showing.
+ */
 export function isCoveredByLog(
   buf: LiveBuf | null | undefined,
   events: { type?: string; data?: { role?: string; content?: string } }[],
@@ -94,24 +79,18 @@ export function isCoveredByLog(
  * Is this row the SELECTED agent's own in-flight work?
  *
  * #40 — "agent2's message is agent1's content, with a writing cursor on it."
- * The timeline marked every row live based on the selected agent's status
- * alone, so a row could wear another actor's "writing…" / "running…" chrome.
+ * Marking a row live from the SELECTED agent's status alone paints rows that are
+ * not its work. Two kinds exist:
  *
- * Two kinds of row can do that, and both are real:
- *
- *  1. MIRRORED SUB-AGENT ACTIVITY. The master appends a child's events into
- *     the parent's own log as `sub` rows, which the feed expands into
+ *  1. MIRRORED SUB-AGENT ACTIVITY. The master appends a child's events into the
+ *     parent's own log as `sub` rows, which the feed expands into
  *     normal-looking rows tagged with `actor` (see the expansion in App.tsx).
- *     Those rows are the CHILD's work: they belong in the parent's feed for
- *     context, but the parent going `running` says nothing about whether the
- *     child is still going, so painting them as the parent's live work is
- *     simply wrong.
- *  2. A TOOL CALL whose result never arrived. A row with no result and a live
- *     agent reads as "in flight"; once the agent is idle it is simply stale,
- *     and the existing `staleDone` guard in ToolRow already covers that.
+ *     Those rows are the CHILD's work: the parent going `running` says nothing
+ *     about whether the child is still going.
+ *  2. A TOOL CALL whose result never arrived — covered by ToolRow's `staleDone`
+ *     guard once the agent is idle.
  *
  * A row with an `actor` is therefore never the selected agent's own work.
- * Everything else — the parent's own messages, tool calls and results — is.
  */
 export function isOwnLiveWork(row: { data?: { actor?: unknown } } | null | undefined): boolean {
   if (!row) return false;
@@ -122,16 +101,9 @@ export function isOwnLiveWork(row: { data?: { actor?: unknown } } | null | undef
 /**
  * Drop live buffers whose agent is no longer running or waiting (#40).
  *
- * The clearing effect in App.tsx used to consult only the SELECTED agent's
- * status, so every OTHER agent's buffer depended entirely on its turn-boundary
- * event arriving over the WebSocket. Nothing replays missed events on
- * reconnect, so a boundary lost across a reconnect left that agent's text on
- * screen indefinitely — reported as "agent2 shows agent1's message with a
- * writing cursor", and surviving until a reload because the buffers are
- * memory-only.
- *
- * Pure and extracted so the rule is testable: given the buffers and a status per
- * agent, return the buffers worth keeping.
+ * The sweep must cover EVERY agent: nothing replays missed events on reconnect,
+ * so an agent whose turn-boundary event was lost would keep its text on screen
+ * — under a writing cursor — until a reload, because the buffers are memory-only.
  *
  * An agent with no reported status is LEFT ALONE rather than treated as idle:
  * absence of evidence is not evidence of completion, and the boundary event is
@@ -147,7 +119,7 @@ export function pruneDeadLiveBuffers<T>(
   for (const id of buffers.keys()) {
     const st = statusOf(id);
     if (st === undefined) continue; // no snapshot: do not guess
-    if (isLiveStatus(st)) continue; // still live (one definition)
+    if (isLiveStatus(st)) continue; // one shared definition of "live"
     doomed.push(id);
   }
   if (doomed.length === 0) return buffers as Map<string, T>;
@@ -157,16 +129,15 @@ export function pruneDeadLiveBuffers<T>(
 }
 
 /**
- * Reconcile one agent's live buffer against the timeline it is about to show.
+ * Reconcile one agent's live buffer against the timeline it is about to show:
+ * not live -> drop; already in the log -> drop; otherwise KEEP. The third is
+ * what stops this becoming the opposite bug.
  *
- * #40: the pruning effect runs only when `agents()` changes, so a buffer could
+ * #40: the sweep above runs only when `agents()` changes, so a buffer could
  * outlive the state that justified it. `select()` clears `events()` but never
  * touched `liveByAgent`, and if the agent was ALREADY idle at the switch the
  * snapshot did not change either — so nothing pruned, and returning to the
  * session re-displayed stale stream text WITH the writing cursor.
- *
- * Three rules: not live -> drop; already in the log -> drop; otherwise KEEP.
- * The third is what stops this becoming the opposite bug.
  */
 export function reconcileLiveBuffer(
   buf: LiveBuf | null | undefined,
