@@ -771,9 +771,25 @@ export class Agent {
     this.goal = stored ?? { text: "", status: "active", updatedAt: new Date().toISOString() };
     // operator-maintained task list lives beside goal.md
     this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");
-    await this.refreshSkills();
-    // the conversation is NOT restored here: boot cost stays O(agents), not
-    // O(history). It is rebuilt lazily by ensureReady() on first interaction.
+    // #143: NO skill scan here. It was the single largest boot cost — 493 agents
+    // each walking their roots (readdir + stat, recursively) measured 2120 ms of
+    // a 4.7 s boot. Every one of those walks was redundant:
+    //
+    //   - the turn loop calls `refreshSkills()` at the TOP of every turn, before
+    //     the system prompt (which embeds the catalogue) is built, so the scan is
+    //     always current before any LLM request
+    //   - the `list_skills` tool calls it itself before reading the cache
+    //   - `/api/agents/:id/skills` (what the panel uses) does its own fresh
+    //     `currentSkills()` walk and never reads this cache
+    //
+    // Caching the walk was the other option and was WORSE: the fingerprint exists
+    // to notice a NESTED skill's add/edit, which does not change its root's mtime,
+    // so any TTL/mtime key reintroduces the staleness the walk was written to fix
+    // (the skills-fingerprint tests pin exactly that). Skipping boot's copy costs
+    // no freshness at all.
+    //
+    // The conversation is likewise not restored here: boot cost stays O(agents),
+    // not O(history). Both are rebuilt lazily by ensureReady()/the turn loop.
     if (this.opts.restoreSession) {
       this.status = "stopped";
       this.statusReason = "session not loaded — select it or send a prompt";

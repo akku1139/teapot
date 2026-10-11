@@ -30,6 +30,7 @@ import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
 import {
   fetchModelList,
+  peekModelList,
   contextLengthFor,
   isReasoningEffort,
   type ModelMeta,
@@ -38,6 +39,16 @@ import {
 
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 const MAX_SPAWN_DEPTH = 3;
+/**
+ * How long boot waits for an endpoint's model catalogue (#143).
+ *
+ * The window and the reasoning-effort gate both come from `/models`, so a boot
+ * that waits on it is waiting for metadata, not for anything it needs to start.
+ * The lookup is fired concurrently for every distinct endpoint before the agent
+ * loop (see prefetchModelLists), so this bound is paid once per ENDPOINT rather
+ * than once per agent — and only when the endpoint is slow or dead.
+ */
+const MODEL_META_BOOT_MS = 1_500;
 /** statuses that mean a child has finished working, for #130 */
 const SETTLED: ReadonlySet<string> = new Set(["idle", "stopped", "waiting", "error"]);
 
@@ -504,6 +515,16 @@ export class Master {
    */
   private deferConfigWrites = false;
   private configDirty = false;
+  /**
+   * Endpoints whose catalogue boot has already WAITED for (#143).
+   *
+   * The wait must be paid once per endpoint, not once per agent. `Promise.race`
+   * against a timeout is per-CALL: with a dead endpoint every agent on it paid
+   * the full timeout again, because the shared request was still pending. 493
+   * agents over one unreachable provider measured 4.4s of boot spent purely
+   * idle, for a single request.
+   */
+  private metaWaited = new Set<string>();
 
   /** write once and clear the dirty flag — used at the end of a batched section */
   private flushConfig(): void {
@@ -642,6 +663,14 @@ export class Master {
     // boot, which is its own silent data loss.
     this.deferConfigWrites = true;
     this.configDirty = false;
+    // #143: start every endpoint's model-catalogue lookup NOW, concurrently.
+    //
+    // `addAgent` awaits this per agent, and the endpoints are shared by many
+    // agents (493 agents over 6 providers here). Fired up front, the requests
+    // overlap and each subsequent agent finds the promise already in flight or
+    // resolved — instead of the requests being serialised behind the agent loop,
+    // where a slow endpoint's timeout is paid again and again.
+    this.prefetchModelLists();
     try {
       for (const ac of this.config.agents) {
         try {
@@ -753,6 +782,36 @@ export class Master {
    * Restarts reuse the latest existing session; fresh creations never touch
    * an older one's history.
    */
+  /**
+   * Fire the model-catalogue lookup for every distinct endpoint, concurrently.
+   *
+   * `fetchModelList` already shares an in-flight request per baseUrl, so this is
+   * about STARTING them together: without it the requests begin one at a time, as
+   * the agent loop reaches each provider, and a slow endpoint's timeout is paid
+   * serially by every agent on it.
+   *
+   * Best-effort by design — nothing awaits this. A failure is cached briefly by
+   * `fetchModelList`, and an agent whose lookup is not ready simply gets no
+   * inferred window, which is the same outcome as today's timeout.
+   */
+  private prefetchModelLists(): void {
+    const endpoints = new Set<string>();
+    const add = (baseUrl?: string, apiKey?: string): void => {
+      if (!baseUrl) return;
+      const key = baseUrl.replace(/\/+$/, "");
+      if (endpoints.has(key)) return;
+      endpoints.add(key);
+      void fetchModelList(baseUrl, apiKey).catch(() => []);
+    };
+    for (const ac of this.config.agents) {
+      const prov = this.config.providers?.[ac.provider ?? this.config.defaultProvider ?? ""];
+      add(ac.baseUrl ?? prov?.baseUrl ?? this.config.llm.baseUrl, ac.apiKey ?? prov?.apiKey ?? this.config.llm.apiKey);
+    }
+    // no configured agents yet (first-run wizard) — still warm the default so the
+    // first created agent does not wait
+    if (endpoints.size === 0) add(this.config.llm.baseUrl, this.config.llm.apiKey);
+  }
+
   async addAgent(
     ac: AgentConfig,
     opts: { persist?: boolean; fresh?: boolean } = {},
@@ -789,26 +848,33 @@ export class Master {
     // spawn-tree depth: computed from the config chain (ac may not be
     // registered yet when this runs — spawnChildFor persists AFTER creation)
     const myDepth = ac.parent ? this.depthOf(ac.parent) + 1 : 0;
-    // learn the model's real context window from provider metadata (once per
-    // endpoint, cached) unless the config already pins one explicitly
-    let inferredWindow: number | undefined;
-    if (!ac.contextWindowTokens && !this.config.contextWindowTokens) {
-      // don't block the event loop on provider metadata: fire the lookup but
-      // keep boot moving. The agent's gauge fills in when it resolves.
-      const listPromise = fetchModelList(llm.baseUrl, llm.apiKey);
-      inferredWindow = await Promise.race([
-        listPromise.then((l) => contextLengthFor(l, llm.model)),
-        new Promise<undefined>((r) => setTimeout(() => r(undefined), 1_500)),
-      ]);
-      void listPromise.catch(() => []);
-    }
-    // catalogue entry for this model — gates reasoning_effort support (#47)
-    const modelMeta = (
-      await Promise.race([
+    // Model metadata: the context window (for the compaction budget) and the
+    // catalogue entry that gates reasoning_effort support (#47) come from the
+    // SAME `/models` list.
+    //
+    // #143: boot must not WAIT for this. It only tunes the compaction budget and
+    // the effort controls, so a missing list costs nothing that matters; what it
+    // cost was boot time — measured at 4.4s of pure idle on 493 agents pointed at
+    // one unreachable endpoint, because the `Promise.race` timeout below is
+    // per-CALL and the shared request stayed pending for every agent.
+    //
+    // So: use the catalogue if `prefetchModelLists()` has already produced it
+    // (the common case — the lookups were fired when boot started), and wait only
+    // ONCE per endpoint for the stragglers, where the wait overlaps a request
+    // that is already in flight.
+    const needsWindow = !ac.contextWindowTokens && !this.config.contextWindowTokens;
+    const root = llm.baseUrl.replace(/\/+$/, "");
+    let list = peekModelList(llm.baseUrl);
+    if (list === undefined && !this.metaWaited.has(root)) {
+      this.metaWaited.add(root);
+      list = await Promise.race([
         fetchModelList(llm.baseUrl, llm.apiKey),
-        new Promise<undefined>((r) => setTimeout(() => r(undefined), 1_500)),
-      ])
-    )?.find((m) => m.id === llm.model);
+        // a placeholder so the race can settle without the list
+        new Promise<undefined>((r) => setTimeout(() => r(undefined), MODEL_META_BOOT_MS)),
+      ]);
+    }
+    const inferredWindow = needsWindow && list ? contextLengthFor(list, llm.model) : undefined;
+    const modelMeta = list?.find((m) => m.id === llm.model);
     const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
     await mkdirSync(sessionDir, { recursive: true });
     // every session dir this master hands out carries an ownership manifest —

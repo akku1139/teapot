@@ -45,6 +45,23 @@ function fresh(entry: { at: number; negative?: boolean }): boolean {
   return Date.now() - entry.at < (entry.negative ? NEGATIVE_TTL : TTL);
 }
 
+/**
+ * The catalogue if it is ALREADY known, without starting a fetch (#143).
+ *
+ * Boot uses this so it never waits for metadata it can do without: the context
+ * window only tunes the compaction budget, and `supportedParameters` only gates
+ * the reasoning-effort controls (#47). `prefetchModelLists()` starts the real
+ * lookups in parallel, so an endpoint that answers quickly is usually warm by the
+ * time its first agent is created, and a slow or dead one costs no boot time.
+ */
+export function peekModelList(baseUrl: string): ModelMeta[] | undefined {
+  const root = baseUrl.replace(/\/+$/, "");
+  const hit = cache.get(root);
+  if (!hit) return undefined;
+  if (!fresh(hit)) return undefined;
+  return hit.negative ? [] : hit.list;
+}
+
 /** Fetch GET /models from an OpenAI-compatible endpoint (cached ~10 min). */
 export async function fetchModelList(
   baseUrl: string,
