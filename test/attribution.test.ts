@@ -81,10 +81,12 @@ test("chat(): non-openrouter base URLs send NO attribution headers", async () =>
 // The SDK path against the REAL openrouter.ai host can't be integration-tested
 // offline — so guard the single wiring line explicitly. If it regresses, the
 // unit tests above still pass but live requests would lose attribution.
+// The second argument is the conversation's session id (OpenCode's header —
+// see opencode-session-header.test.ts); it must keep being handed over.
 test("llm.ts wires providerHeaders into the OpenAI client", () => {
   const src = fs.readFileSync(
     path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "agent", "llm.ts"),
     "utf8",
   );
-  assert.match(src, /defaultHeaders:\s*providerHeaders\(cfg\.baseUrl\)/);
+  assert.match(src, /defaultHeaders:\s*providerHeaders\(cfg\.baseUrl, cfg\.sessionId\)/);
 });
