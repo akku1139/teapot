@@ -726,6 +726,9 @@ export default function App() {
           setAtBottom(true);
           setMissed(0);
           scrollBottom(true);
+          // #160: returning to the tab and finding the tail is the same act of
+          // reading as scrolling to it — it must settle the badge too
+          markReadIfFollowing();
         }
       });
     };
@@ -859,6 +862,31 @@ const isTimelineLive = (): boolean => {
       });
       return changed ? next : list; // avoid identity churn on no-op runs
     });
+  };
+  /**
+   * Mark the DISPLAYED session read when the reader is at its tail (#160).
+   *
+   * "タイムラインを下までスクロールしても通知が既読にならない" — because the only
+   * caller of `markSessionRead` was the feed-refresh path, and that path runs it
+   * inside `if (events().at(-1)?.id !== beforeId)`. So a session whose unread
+   * notifications were ALREADY in `events()` marked nothing when the operator
+   * scrolled to the bottom: no new event arrived, so the branch never ran, and the
+   * badge stayed lit until some unrelated event happened to refresh the feed.
+   *
+   * Reading the tail is the thing that means "seen" — whether the operator got
+   * there by scrolling, by pressing the jump pill, or by returning to the tab. So
+   * the rule lives in one place and every route to the tail calls it.
+   *
+   * The guard is not an optimisation detail: the feed's scroll handler fires on
+   * every frame of a scroll, and `markSessionRead` allocates a mapped list even to
+   * discover nothing changed. Checking for an actually-unread notification first
+   * keeps a scroll cheap.
+   */
+  const markReadIfFollowing = () => {
+    const id = selected();
+    if (!id) return;
+    if (!notifs().some((n) => !n.read && n.agentId === id)) return;
+    markSessionRead(id);
   };
   /** unread for one agent INCLUDING its whole sub-tree (subs, sub-subs…) */
   const subtreeUnread = (agentId: string): number => {
@@ -3485,6 +3513,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               return; // locked: don't re-evaluate follow mode until back at tail
             }
             if (nb && missed()) setMissed(0);
+            // #160: reaching the tail is what marks this session read — the
+            // scroll itself, not a new event arriving while we happen to be here.
+            if (nb) markReadIfFollowing();
             // The follow flag follows the SAME decision, not one raw measurement.
             // `setAtBottom(nb)` here was the second half of the bug: content
             // appended below grows the gap, `nearBottom()` reads false for that
@@ -3696,7 +3727,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
           <div class={"composer" + (composerMaximized() ? " maximized" : "")}>
             <Show when={!atBottom() || missed() > 0}>
-              <button class="jump" onclick={() => scrollBottom(true)}>
+              <button
+                class="jump"
+                onclick={() => {
+                  scrollBottom(true);
+                  // #160: pressing "jump to present" IS reading the tail — the
+                  // operator asked to be taken to the newest content, so the
+                  // badge must settle exactly as it does for a manual scroll
+                  markReadIfFollowing();
+                }}
+              >
                 ↓ {missed() > 0 ? `${missed()} new message${missed() > 1 ? "s" : ""}` : "jump to present"}
               </button>
             </Show>

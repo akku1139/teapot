@@ -30,8 +30,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
 import { Agent } from "../src/agent/agent.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
+
+// #110: POSIX-only — the fixture starts a `sleep` through the bash tool, which
+// spawns /bin/bash. On Windows that is ENOENT, so the failure would be the
+// fixture's platform, not the product's behaviour.
+markPosixOnly("starts a background shell through the bash tool");
 
 const reply = (content: string, calls?: unknown[]): LlmResult => ({
   message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },

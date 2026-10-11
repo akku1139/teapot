@@ -833,6 +833,72 @@ console.log("deep render ok: feed rows present");
     }
     console.log("deep render ok: a persisted reply does not double as a live bubble (#40)");
   }
+
+  /* ---------- #160: scrolling to the tail must mark notifications read -------
+   * "タイムラインを下までスクロールしても通知が既読にならない" (v0.29.17).
+   *
+   * `markSessionRead` had exactly ONE caller — the feed-refresh path — and it sat
+   * inside `if (events().at(-1)?.id !== beforeId)`. So a session whose unread
+   * notifications were ALREADY in `events()` marked nothing when the reader
+   * scrolled down: no new event arrived, that branch never ran, and the badge
+   * stayed lit. The scroll itself was never a reason to mark anything read.
+   *
+   * Driven through the REAL bundle, because the defect is a missing CALL SITE —
+   * the helper was always correct, so a helper test would have been green all
+   * along (#40's lesson, again).
+   */
+  {
+    const sock = MockWS.instances.at(-1);
+    if (!sock?.onmessage) {
+      console.error("#160 check: no app socket to drive");
+      process.exit(1);
+    }
+    const unreadBadge = () => w.document.querySelector(".notifdot");
+    // SERVE FIRST, then LOOK — exactly the reported case, and the one the old
+    // code could not handle: the notification is already in the feed before the
+    // reader scrolls, so no later refresh will come along to rescue the badge.
+    //
+    // A `message` with `final:true` is what raises a "finished" notification.
+    pushEvent({
+      id: "e160", seq: 160, ts: "2026-01-01T11:00:00Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "message",
+      data: { role: "assistant", content: "all done here", final: true },
+    });
+    sock.onmessage({ data: JSON.stringify({
+      kind: "agent-update", agentId: AGENT.id,
+      snapshot: { ...RUNNING_AGENT, session: "alpha-s1" },
+    }) });
+    await new Promise((r) => setTimeout(r, 250));
+    if (!unreadBadge()) {
+      console.error("#160 check could not raise an unread badge — the test would pass vacuously");
+      process.exit(1);
+    }
+    // give the feed a real scrollable height, or assigning scrollTop is a silent
+    // no-op and the check passes without ever reaching the tail
+    const feed = w.document.querySelector(".feed");
+    if (!feed) {
+      console.error("#160 check: .feed not found");
+      process.exit(1);
+    }
+    const filler = w.document.createElement("div");
+    filler.style.height = "4000px";
+    feed.appendChild(filler);
+    await new Promise((r) => setTimeout(r, 40));
+    // the reader scrolls all the way down — the action the report describes
+    feed.scrollTop = feed.scrollHeight;
+    feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
+    const still = unreadBadge();
+    filler.remove();
+    if (still) {
+      console.error(
+        "#160 REGRESSION: scrolling to the bottom left the notification unread" +
+          `\nbadge: ${still.textContent}`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: scrolling to the tail marks the session read (#160)");
+  }
 }
 
 /* ---------- #30: an in-progress todo edit must survive a panel re-render ----------
