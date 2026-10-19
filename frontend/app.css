@@ -815,6 +815,14 @@ details.reasoning .thinkscroll {
   padding: 7px 16px; cursor: pointer; font: inherit; font-weight: 600;
 }
 .cfgsave:hover { filter: brightness(1.12); }
+/* a labelled checkbox row in the settings form — the grid lays fields out in columns,
+   so a toggle must span and sit on its own line */
+.cfgtoggle {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 8px; font-size: 12.5px; color: var(--fg); cursor: pointer;
+  flex-direction: row;
+}
+
 /* MCP server cards (#67). Each server is a small card rather than one flat row: it
    carries a transport choice that reveals a different set of fields, a header editor,
    a connection test and its result. Flattening those into one row made the URL input

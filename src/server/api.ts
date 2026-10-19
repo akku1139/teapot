@@ -849,6 +849,7 @@ const MAX_WS_CLIENTS = 64;
         onError: patch.onError,
         retryDelayMs: patch.retryDelayMs,
         maxSpawnDepth: patch.maxSpawnDepth,
+        shortContext: patch.shortContext,
         tasks: patch.tasks,
         mcpServers: patch.mcpServers,
       });

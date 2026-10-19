@@ -6630,6 +6630,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   );
   const [ctxWinK, setCtxWinK] = createSignal(props.cfg.contextWindowTokens ? Math.round(props.cfg.contextWindowTokens / 1000) : 0);
   const [maxDepth, setMaxDepth] = createSignal(props.cfg.maxSpawnDepth ?? 3);
+  const [shortContext, setShortContext] = createSignal(Boolean(props.cfg.shortContext));
   const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
   // MCP servers (#67). The header text is kept separately as STRINGS: the config holds
   // an object, and round-tripping it through JSON on every keystroke would rewrite what
@@ -6772,6 +6773,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           ...(ctxBudgetK() != null ? { contextTokenBudget: Math.max(1, ctxBudgetK()!) * 1000 } : {}),
           ...(ctxWinK() > 0 ? { contextWindowTokens: ctxWinK() * 1000 } : {}),
           maxSpawnDepth: Math.max(0, maxDepth()),
+          shortContext: shortContext(),
           tasks: cleanTasks,
           mcpServers: cleanMcp,
         }),
@@ -6940,6 +6942,20 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
             {numInput("context window (k tok)", ctxWinK(), (v) => setCtxWinK(v), "model's real window — 0/blank hides the % gauge")}
             {numInput("max spawn depth", maxDepth(), (v) => setMaxDepth(v), "sub-agent nesting limit (0 = no spawning)")}
           </div>
+          {/* #161: opt-in because it DISCARDS information early by design. On a large
+              window that is pure loss; on a 32k–262k model waiting for overflow means
+              one huge cut instead of many small ones. */}
+          <label class="cfgtoggle" title="prune old tool output early (at 60% of the budget) instead of waiting for the window to fill. Meant for small-window models — on a large window it throws away context you had room for.">
+            <input
+              type="checkbox"
+              checked={shortContext()}
+              onchange={(e) => setShortContext(e.currentTarget.checked)}
+            />
+            short-context mode (#161)
+            <span class="muted" style="font-size:11px">
+              — prune old tool output early; for 32k–262k windows, not large ones
+            </span>
+          </label>
         </fieldset>
 
         <fieldset classList={{ hide: section() !== "mcp" }}>

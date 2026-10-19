@@ -163,7 +163,7 @@ test("a context with room left is NOT pruned (#compact-order)", async () => {
     } as any);
     await probe.init();
     (probe as any).messages = (agent.messages as any[]).map((m) => ({ ...m }));
-    const clipped = (probe as any).maybePrune(true);
+    const clipped = await (probe as any).maybePrune(true);
     await probe.dispose();
     assert.ok(
       clipped > 0,
@@ -247,6 +247,56 @@ test("a MANUAL pass still summarizes even when clipping would suffice (#compact-
       ),
       "the summary must land in the history a manual pass rewrites",
     );
+    await agent.dispose();
+  });
+});
+
+test("short-context mode prunes EARLY, inside the budget (#161)", async () => {
+  // #161: "262k tokenとかのモデルを使おうと思ったら積極的な過去tool履歴ドロップとかして
+  // いかないと厳しい". The mode must prune while the context still FITS, which is the
+  // opposite of what the default path does — so the property to test is that the
+  // default leaves the history alone at a size where the short mode clips it.
+  await useTempDirs(["corder-sc-", "corder-scs-"], async ([ws, sessionDir]) => {
+    // Budget 4000: short mode's bar is 0.6 * 4000 = 2400, so a ~2400-estimate history
+    // sits just above it — UNDER the budget (where the default path returns early) and
+    // OVER the short bar. That gap is the whole point of the mode.
+    const agent = await freshAgent(ws!, sessionDir!, 4_000, () => reply("ok"));
+    (agent as any).opts.shortContext = true;
+
+    setMessages(agent, bigHistory("Z".repeat(3_100)));
+    const before = charsOf(agent);
+    const est = (agent as any).contextSizeForBudgeting();
+    assert.ok(
+      est > 2_400 && est < 4_000,
+      `precondition: the estimate must be between short mode's bar (2400) and the budget (4000); got ${est}`,
+    );
+
+    await (agent as any).maybeCompact(false);
+    const after = charsOf(agent);
+
+    assert.ok(
+      after < before,
+      `short mode must prune while there is still room (was ${before}, became ${after})`,
+    );
+    // and it must be a PRUNE, not a summarize/truncate — no LLM call for this
+    const events = await eventNames(agent);
+    assert.ok(events.includes("context-pruned"), `expected a prune: ${JSON.stringify(events)}`);
+    await agent.dispose();
+  });
+});
+
+test("the default mode does NOT prune at that same size (#161)", async () => {
+  // the control: without the flag, the identical history is left alone. Without this
+  // the test above would pass against code that always pruned, which is the bug the
+  // earlier fix (#172 line) removed.
+  await useTempDirs(["corder-df-", "corder-dfs-"], async ([ws, sessionDir]) => {
+    const agent = await freshAgent(ws!, sessionDir!, 4_000, () => reply("ok"));
+    setMessages(agent, bigHistory("Z".repeat(3_100)));
+    const before = charsOf(agent);
+    await (agent as any).maybeCompact(false);
+    assert.equal(charsOf(agent), before, "the default mode must leave a fitting context alone");
+    const events = await eventNames(agent);
+    assert.ok(!events.includes("context-pruned"), "and must emit no prune event");
     await agent.dispose();
   });
 });

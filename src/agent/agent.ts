@@ -124,6 +124,19 @@ export interface AgentOptions {
   continueDelayMs?: number;
   /** automatically compact when context exceeds budget (default true) */
   autoCompact?: boolean;
+  /**
+   * Short-context mode (#161): prune old tool output EARLY, at a share of the budget
+   * well below 1, and keep a smaller protected tail.
+   *
+   * Why opt-in rather than default: pruning is destructive (a clipped tool result
+   * leaves the model's context — the log keeps it, but the model must re-issue the
+   * call), so on a large window the default "only when the next request would not fit"
+   * is right. On a 32k–262k model the arithmetic changes: the same verbatim tail is a
+   * much larger share of the window, so waiting until overflow means ONE huge cut
+   * instead of many small ones, and the summarize path fires while a usable amount of
+   * the window is still free.
+   */
+  shortContext?: boolean;
   /** reasoning effort for models that support it (#47) */
   reasoningEffort?: string;
   /** the endpoint catalogue's per-model capabilities; gates the effort field */
@@ -231,6 +244,23 @@ const KEEP_RECENT_TOKENS = 15_000;
  * configured for.
  */
 const PRUNE_AT_SHARE = 0.95;
+
+/**
+ * Short-context mode (#161): the same knobs, retuned for a window where the default
+ * tail is a large share of everything.
+ *
+ * Measured reasoning, not a guess: `KEEP_RECENT_TOKENS` is 15k, which is 5.7% of a
+ * 262k window (fine) but 47% of a 32k one — so on a small model the verbatim tail
+ * alone nearly fills the budget and the first prune does almost nothing useful.
+ * The mode therefore (a) prunes at 0.6 of the budget instead of 0.95, (b) keeps a
+ * QUARTER of the budget verbatim instead of a fixed 15k, and (c) clips tool results
+ * down to 200 chars instead of 400, because on a small window the head of an output
+ * is most of what fits.
+ *
+ * Opt-in by design: on a large window this throws away real information early.
+ */
+const SHORT_PRUNE_AT_SHARE = 0.6;
+const SHORT_PRUNE_KEEP_CHARS = 200;
 
 /**
  * The summarize call is skipped when the summarizable prefix is a small share of
@@ -589,6 +619,7 @@ export class Agent {
       restoreSession: true,
       globalSkillsDir: "",
       pluginSkillRoots: [],
+      shortContext: false,
       bundledSkillsDir: "",
       spawnDepth: 0,
       readOnlyTools: false,
@@ -1286,7 +1317,7 @@ export class Agent {
       // FORCED: this reproduces what the live session had already done, so it must
       // not consult the "is there room" bar — a restored context that happens to sit
       // below it still has to match the prompt the provider last accepted.
-      this.maybePrune(true);
+      await this.maybePrune(true);
 
       // #54: answer tool_calls the log says are still open.
       //
@@ -3607,15 +3638,18 @@ export class Agent {
    * re-pruned so a reload does not hand the provider a strictly larger prompt than
    * the one that had just succeeded.
    */
-  private maybePrune(force = false): number {
+  private async maybePrune(force = false): Promise<number> {
     const est = this.contextSizeForBudgeting(); // floored — see #73
     const budget = this.opts.contextTokenBudget;
     if (!budget) return 0;
     // Below the bar there is enough room for the next request, so clipping now would
     // spend information to buy space that is already free.
-    if (!force && est < budget * PRUNE_AT_SHARE) return 0;
-    // protect the recent tail (~half the budget in chars) from any pruning
-    const protectChars = budget * 2;
+    const pruneShare = this.opts.shortContext ? SHORT_PRUNE_AT_SHARE : PRUNE_AT_SHARE;
+    if (!force && est < budget * pruneShare) return 0;
+    // protect the recent tail (~half the budget in chars) from any pruning. Short mode
+    // protects a THIRD of it: a 2x-budget tail on a small window is most of the window,
+    // so pruning would find nothing to do exactly when it is needed (#161).
+    const protectChars = this.opts.shortContext ? Math.floor(budget * 1.2) : budget * 2;
     let seen = 0;
     let boundary = this.messages.length;
     for (let i = this.messages.length - 1; i >= 0; i--) {
@@ -3650,13 +3684,19 @@ export class Agent {
         (m.content?.length ?? 0) > PRUNE_MIN
       ) {
         const len = m.content!.length;
-        saved += len - 400;
-        m.content = m.content!.slice(0, 400) + `\n…[pruned ${len} bytes of ${toolName || "tool"} output]`;
+        const keep = this.opts.shortContext ? SHORT_PRUNE_KEEP_CHARS : 400;
+        saved += len - keep;
+        m.content =
+          m.content!.slice(0, keep) + `\n…[pruned ${len} bytes of ${toolName || "tool"} output]`;
         count++;
       }
     }
     if (count > 0)
-      void this.log.append("system_note", this.currentSession, this.currentBranch, {
+      // AWAITED, not fire-and-forget: the caller decides what to do next based on the
+      // count, and a compaction pass that reports its outcome must have its reasons on
+      // disk first — a `void` append could land after the pass returned, so the log
+      // read the order "compacted" → "pruned".
+      await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-pruned",
         outputs: count,
         savedBytes: saved,
@@ -3675,12 +3715,17 @@ export class Agent {
     // what would overflow the window; the char heuristic is only a fallback
     // for providers that omit usage
     const before = this.contextSizeForBudgeting(); // floored — see #73
+    // SHORT-CONTEXT MODE (#161) prunes INSIDE the budget, so it must run before the
+    // "are we over budget" return below — otherwise its lower threshold is unreachable
+    // and the mode does nothing at all. This is the one path where pruning deliberately
+    // spends information early, and it only exists because the operator asked for it.
+    if (this.opts.shortContext) await this.maybePrune();
     if (!force && before < this.opts.contextTokenBudget) return;
     if (!force && this.opts.autoCompact === false) return;
     // stage 1: clip oversized old tool outputs before considering a summarize.
     // ONLY reached once this pass is actually over budget — pruning is destructive,
     // so it must not run on a context that still has room (see maybePrune()).
-    const pruned = this.maybePrune(true);
+    const pruned = await this.maybePrune(true);
     // If clipping alone brought the request back under budget, STOP: that is the
     // cheapest possible compaction (no LLM call, no history rewritten, the tool
     // results are re-issuable) and everything below would discard context the model
@@ -3725,6 +3770,9 @@ export class Agent {
       // of the budget — a fixed floor GREATER than the budget would keep everything
       // and compaction would never fire at all (measured: a 500-token budget kept
       // a 7.5k-token history intact)
+      // already scaled: on a small budget a quarter is below the 15k default, so a
+      // 32k-window session keeps ~6k rather than 15k. Short mode does NOT need to
+      // change this — checked while implementing #161 rather than assumed.
       : Math.min(KEEP_RECENT_TOKENS, Math.max(1, Math.floor(this.opts.contextTokenBudget / 4)));
     let cut = -1;
     for (let i = this.messages.length - 1; i >= 1; i--) {

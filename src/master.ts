@@ -240,6 +240,8 @@ export interface AgentConfig {
   autoContinue?: boolean;
   /** automatically compact when context exceeds budget (default true) */
   autoCompact?: boolean;
+  /** #161: prune old tool output early — for small-window models. Opt-in. */
+  shortContext?: boolean;
   /** reasoning effort for models that support it (#47); omit = provider default */
   reasoningEffort?: string;
   /**
@@ -280,6 +282,12 @@ export interface TeapotConfig {
    * `mcp__<server>__<tool>`. Omitted entirely = no MCP, which is the common case.
    */
   mcpServers?: McpServerConfig[];
+  /**
+   * Short-context mode (#161): prune old tool output early instead of waiting for the
+   * window to fill. Opt-in — on a large window it discards information you had room
+   * for. Meant for 32k–262k models.
+   */
+  shortContext?: boolean;
   /**
    * Directory of Agent Plugins (#162), each a subdirectory with `plugin.json`.
    * Defaults to `<config dir>/plugins`. `false` disables plugin discovery.
@@ -815,6 +823,12 @@ export class Master {
     tasks?: TaskConfig[];
     mcpServers?: McpServerConfig[];
   /**
+   * Short-context mode (#161): prune old tool output early instead of waiting for the
+   * window to fill. Opt-in — on a large window it discards information you had room
+   * for. Meant for 32k–262k models.
+   */
+  shortContext?: boolean;
+  /**
    * Directory of Agent Plugins (#162), each a subdirectory with `plugin.json`.
    * Defaults to `<config dir>/plugins`. `false` disables plugin discovery.
    *
@@ -848,6 +862,14 @@ export class Master {
     // #67: the registry is applied by the caller (it also connects); this only
     // records the list so a restart comes back with the same servers.
     if (patch.mcpServers !== undefined) this.config.mcpServers = patch.mcpServers;
+    if (patch.shortContext !== undefined) {
+      this.config.shortContext = patch.shortContext;
+      // apply to LIVE agents too: the mode is read every turn, so a restart should not
+      // be the price of switching it
+      for (const a of this.agents.values())
+        (a as unknown as { opts: { shortContext?: boolean } }).opts.shortContext =
+          patch.shortContext;
+    }
     if (patch.maxTurnsPerRound !== undefined) this.config.maxTurnsPerRound = patch.maxTurnsPerRound;
     if (patch.onError !== undefined) this.config.onError = patch.onError;
     if (patch.retryDelayMs !== undefined) this.config.retryDelayMs = patch.retryDelayMs;
@@ -1186,6 +1208,15 @@ export class Master {
       ...(this.config.onError ? { onError: this.config.onError } : {}),
       ...(this.config.retryDelayMs ? { retryDelayMs: this.config.retryDelayMs } : {}),
       autoContinue: ac.autoContinue ?? true,
+      // BUG found while wiring #161: `autoCompact` was a field on AgentConfig and on
+      // AgentOptions, but nothing ever carried it between the two — so a configured
+      // `"autoCompact": false` was silently ignored and compaction stayed on. Passed
+      // here for the same reason as shortContext: a config knob that does nothing is
+      // worse than no knob.
+      ...(ac.autoCompact === false ? { autoCompact: false } : {}),
+      // #161: per-agent choice, else the global default. This mode DISCARDS information
+      // early by design, so it must never switch on by accident.
+      ...((ac.shortContext ?? this.config.shortContext) ? { shortContext: true } : {}),
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
       ...(ac.contextWindowTokens || this.config.contextWindowTokens || inferredWindow
         ? {
