@@ -16,7 +16,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
 import {
   applyDelta,
   clearLive,
@@ -189,32 +188,5 @@ describe("pruneDeadLiveBuffers (#40)", () => {
     assert.deepEqual([...out.keys()], ["c"], "only the live agent remains (#40)");
   });
 
-  test("App.tsx prunes by agent status, not by the selected session", () => {
-    // This assertion used to REQUIRE the dead-code shape — `agents()` read
-    // inside the signal updater — which is precisely why v0.26.1 shipped the fix
-    // and it never ran. It asserted the text, not the behaviour.
-    //
-    // The wiring is now asserted in test/live-buffer-wiring.test.ts, which
-    // checks the dependency is read OUTSIDE the updater (the thing that actually
-    // makes the effect subscribe) and that nothing else has the same bug.
-    const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-    const at = app.indexOf("pruneDeadLiveBuffers(prev");
-    const start = app.lastIndexOf("createEffect(", at);
-    const body = app.slice(start, app.indexOf("\n  });", at));
-    assert.match(
-      body,
-      /const list = agents\(\)/,
-      "agents() must be read in the effect body so the effect subscribes (#40)",
-    );
-    assert.match(
-      body,
-      /list\.find\(\(x\) => x\.id === id\)/,
-      "status must come from the agent snapshot, per agent (#40)",
-    );
-    assert.doesNotMatch(
-      body,
-      /selected\(\)/,
-      "and must not be scoped to the selected agent — that was the original bug (#40)",
-    );
-  });
+
 });

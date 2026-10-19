@@ -4,6 +4,7 @@ import { fmtDur } from "./format";
 import {
   applyDelta,
   clearLive,
+  clearThinkClockIfDone,
   isCoveredByLog,
   isTurnBoundary,
   isOwnLiveWork,
@@ -671,7 +672,18 @@ export default function App() {
     setLiveByAgent((prev) =>
       pruneDeadLiveBuffers(prev, (id) => list.find((x) => x.id === id)?.status),
     );
-    setThinkStartedAt(0);
+    // #131 (again): do NOT zero the clock here. This effect runs on EVERY `agents()`
+    // change — a status snapshot arrives constantly — and a status transition is
+    // exactly what happens when thinking ENDS. Zeroing here set `startedAt = 0` while
+    // the 💭 block was still on screen, and `now() - 0` is elapsed-since-the-EPOCH:
+    //
+    //     reported: "thinking 497531h 23m", appearing the moment reasoning finished
+    //
+    // The clock belongs to the reasoning stream: the delta handler below arms it and
+    // clears it when real text arrives. Resetting it from a status sweep makes an
+    // unrelated snapshot reach into stream bookkeeping — the same mixing of concerns
+    // that produced the original #131.
+    setThinkStartedAt((cur) => clearThinkClockIfDone(cur, list, selected(), live()));
   });
 
   // auto-scroll the feed while live output streams and we're at the bottom.
@@ -6593,6 +6605,28 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
   const [err, setErr] = createSignal("");
 
+  /**
+   * Which section the settings dialog is showing.
+   *
+   * The five sections used to be stacked in one column, so reaching the task list meant
+   * scrolling past every provider row — and with several providers (each now holding
+   * several keys, #170) the dialog was a wall of inputs with no way to see what it
+   * contained. A menu on the left names them, shows only one at a time, and marks the
+   * one you are on.
+   *
+   * The SAVE button stays outside the menu: it applies the whole form, so it must not
+   * look like it belongs to whichever section happens to be visible.
+   */
+  type Section = "providers" | "runtime" | "tasks" | "agents" | "update";
+  const [section, setSection] = createSignal<Section>("providers");
+  const SECTIONS: { key: Section; label: string; hint: string }[] = [
+    { key: "providers", label: "🧦 providers", hint: "endpoints, API keys, default models" },
+    { key: "runtime", label: "⚙️ runtime", hint: "context budget, retries, spawn depth" },
+    { key: "tasks", label: "⏰ scheduled tasks", hint: "cron prompts run against an agent" },
+    { key: "agents", label: "👥 agents", hint: "what exists (read-only)" },
+    { key: "update", label: "⬆️ live update", hint: "restart onto a newer build" },
+  ];
+
   const agentIds = () => (props.cfg.agents ?? []).map((a: any) => a.id);
 
   const saveProviders = (): Record<string, any> | null => {
@@ -6652,7 +6686,24 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   return (
     <Modal title="settings" onClose={props.onClose}>
       <form onsubmit={save} style="display:flex;flex-direction:column;gap:14px">
-        <fieldset>
+        {/* A MENU, not one long column. With several providers — each holding
+            several keys (#170) — the stacked form was a wall of inputs whose extent
+            the operator could not see; reaching the task list meant scrolling past
+            every credential. One section at a time, named on the left. */}
+        <div class="cfgmenu">
+          <For each={SECTIONS}>
+            {(sec) => (
+              <button
+                type="button"
+                class={"cfgmenu-item" + (section() === sec.key ? " on" : "")}
+                title={sec.hint}
+                onclick={() => setSection(sec.key)}
+              >{sec.label}</button>
+            )}
+          </For>
+        </div>
+        <div class="cfgpanel">
+        <fieldset classList={{ hide: section() !== "providers" }}>
           <legend>providers</legend>
           {/* Index keyed by position — editing a row must not recreate its
               input DOM and steal focus. For (keyed by identity) recreated
@@ -6758,7 +6809,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           </Show>
         </fieldset>
 
-        <fieldset>
+        <fieldset classList={{ hide: section() !== "runtime" }}>
           <legend>agent runtime</legend>
           <div class="cfggrid">
             {numInput("progress interval (min)", intervalMin(), (v) => setIntervalMin(v), "how often the harness asks for a progress report")}
@@ -6778,7 +6829,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset classList={{ hide: section() !== "tasks" }}>
           <legend>scheduled tasks</legend>
           <Show when={tasks().length > 0}>
             <Index each={tasks()}>
@@ -6801,7 +6852,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           <button type="button" onclick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ add task</button>
         </fieldset>
 
-        <fieldset>
+        <fieldset classList={{ hide: section() !== "agents" }}>
           <legend>agents (read-only — edit config file or use +)</legend>
           <For each={props.cfg.agents ?? []}>
             {(a: any) => (
@@ -6813,7 +6864,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           </For>
         </fieldset>
 
-        <fieldset>
+        <fieldset classList={{ hide: section() !== "update" }}>
           <legend>live update</legend>
           <div class="cfgrow">
             <span class="muted">current version: {props.cfg.version ?? "unknown"}</span>
@@ -6862,6 +6913,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
         </fieldset>
 
         <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
+        </div>
         <button type="submit" style="align-self:flex-end;background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer">save settings</button>
       </form>
     </Modal>

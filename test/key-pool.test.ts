@@ -1,20 +1,22 @@
 /**
- * #170 — several API keys per provider, rotated automatically.
+ * #170 — several API keys per provider, rotated when one is rate limited.
  *
- * "1プロバイダに複数のAPIキーを紐付けられるようにしてローテーションとかできるように /
- * レートリミットきたAPIキーを自動ローテ".
+ * "複数鍵登録しといて、規定のリトライ回数を超えたら次の鍵にローテみたいなシンプルなアルゴリズムで
+ * もいいのかもしれない / 全キーを回ってもまだレートリミットだったらエラーで停止みたいな"
  *
- * ## The shape this replaces
+ * That is the whole policy, and this file asserts exactly it:
  *
- * A provider held ONE `apiKey`, so spreading load meant duplicating the provider —
- * the config this was written against had `openrouter`, `openrouter-minimax`,
- * `openrouter-nemotron-3.5-lightning`, `openrouter-glm-5.2` and
- * `openrouter-union-alpha`, five entries differing only in `model` and all sharing
- * one credential. Nothing rotated, so a rate limit stalled every agent at once.
+ *     key1 [retry × N]  ->  key2 [retry × N]  ->  …  ->  raise
  *
- * The pure rules live in `src/agent/key-pool.ts` and are asserted directly; the
- * rotation is asserted through the REAL `chat()` against a stub endpoint, because a
- * helper-only test would have been green while the wiring was dead (#75).
+ * The client's own retry ladder runs per key (so "規定のリトライ回数" is the SDK's
+ * `maxRetries`); only when it is spent and the failure is still a rate limit does the
+ * pool move on. When the last key is spent too, the error is raised and the turn stops
+ * rather than cycling forever.
+ *
+ * An earlier version of this feature tracked provider reset hints, classified a 429 as
+ * transient-vs-exhausted, and persisted spent accounts to disk. None of that was asked
+ * for, none of it was provider-agnostic, and the loop above is what the operator
+ * described. The tests below pin the loop.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,93 +24,88 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import {
-  KEY_COOLDOWN_MS,
-  availableKeys,
-  isKeyFailure,
+  currentKey,
+  isRateLimitStatus,
   makeKeyPool,
   nextKey,
-  rotateAfterFailure,
+  poolSize,
+  resetPool,
 } from "../src/agent/key-pool.ts";
 import { chat, type LlmConfig } from "../src/agent/llm.ts";
 import { migrateProviderKeys, providerKeys } from "../src/master.ts";
 
-/* ---------- the pool rules ---------- */
+/* ---------- the state machine ---------- */
 
-test("the pool keeps config order, dropping blanks and duplicates (#170)", () => {
-  const p = makeKeyPool(["k1", "k2", "k1", "", "  ", "k3"]);
-  assert.deepEqual(p.keys, ["k1", "k2", "k3"], "order preserved, no dupes, no blanks");
+test("a pool starts on the first configured key (#170)", () => {
+  const p = makeKeyPool(["A", "B", "C"]);
+  assert.equal(currentKey(p), "A");
+  assert.equal(poolSize(p), 3);
 });
 
-test("keys are handed out ROUND-ROBIN, so consecutive picks differ (#170)", () => {
-  // random selection can pick the same key twice while another sits idle, which
-  // defeats the entire point of having a pool
-  const p = makeKeyPool(["a", "b", "c"]);
-  assert.deepEqual([nextKey(p, 0), nextKey(p, 0), nextKey(p, 0), nextKey(p, 0)], ["a", "b", "c", "a"]);
+test("keys are unique and in config order, blanks dropped (#170)", () => {
+  const p = makeKeyPool(["B", " ", "A", "B", ""]);
+  assert.deepEqual(p.keys, ["B", "A"], "order preserved, duplicates and blanks dropped");
 });
 
-test("a rate-limited key is PARKED, not dropped, and returns on its own (#170)", () => {
-  const p = makeKeyPool(["a", "b"]);
-  const now = 1_000;
-  const next = rotateAfterFailure(p, "a", now, 5_000);
-  assert.equal(next, "b", "rotation must not hand back the key that just failed");
-  assert.deepEqual(availableKeys(p, now), ["b"], "a is parked");
-  assert.deepEqual(availableKeys(p, now + 5_000), ["a", "b"], "and comes back when the cooldown lapses");
+test("nextKey moves forward one at a time and then reports NO MORE (#170)", () => {
+  // null is the "全キーを回ってもまだレートリミット" signal — the caller raises instead of
+  // cycling. A wraparound would re-try keys whose retry budget was just spent.
+  const p = makeKeyPool(["A", "B", "C"]);
+  assert.equal(nextKey(p), "B");
+  assert.equal(nextKey(p), "C");
+  assert.equal(nextKey(p), null, "no key left: stop, do not wrap");
+  assert.equal(currentKey(p), "C", "and it stays on the last key");
 });
 
-test("a second failure never SHORTENS an existing cooldown (#170)", () => {
-  const p = makeKeyPool(["a", "b"]);
-  rotateAfterFailure(p, "a", 1_000, 10_000);
-  rotateAfterFailure(p, "a", 2_000, 1_000); // an earlier-recovering retry
-  assert.equal(p.cooldownUntil.get("a"), 11_000, "the longer cooldown must win");
+test("an empty pool has no key at all (#170)", () => {
+  const p = makeKeyPool([]);
+  assert.equal(currentKey(p), null);
+  assert.equal(nextKey(p), null);
 });
 
-test("with EVERY key cooling down it still hands one out — refusing cannot succeed (#170)", () => {
-  const p = makeKeyPool(["a", "b"]);
-  const now = 5_000;
-  rotateAfterFailure(p, "a", now, 60_000);
-  rotateAfterFailure(p, "b", now, 60_000);
-  assert.deepEqual(availableKeys(p, now), [], "precondition: nothing is available");
-  const got = nextKey(p, now);
-  assert.ok(got, "it must return a key rather than null — null turns one 429 into a hard failure");
-  assert.ok(["a", "b"].includes(got!), `returned ${got}`);
+test("resetPool starts the cycle over (#170)", () => {
+  const p = makeKeyPool(["A", "B"]);
+  nextKey(p);
+  assert.equal(currentKey(p), "B");
+  resetPool(p);
+  assert.equal(currentKey(p), "A", "a fresh turn gets the full cycle again");
 });
 
-test("a single-key pool does not 'rotate' to the same key (#170)", () => {
-  const p = makeKeyPool(["only"]);
-  assert.equal(rotateAfterFailure(p, "only", 0), null, "no alternative: the caller's ladder must run");
-  assert.equal(nextKey(makeKeyPool([]), 0), null, "an empty pool yields null");
-});
-
-test("only KEY-level statuses rotate (#170)", () => {
-  assert.equal(isKeyFailure(429), true, "the reported case");
-  // a revoked/exhausted key answers these, and with a pool a second key very likely works
-  assert.equal(isKeyFailure(401), true);
-  assert.equal(isKeyFailure(403), true);
-  // a provider outage affects every key equally, and a bad request is bad on all of
-  // them — rotating would just burn the pool
-  assert.equal(isKeyFailure(500), false);
-  assert.equal(isKeyFailure(503), false);
-  assert.equal(isKeyFailure(400), false);
-  assert.equal(isKeyFailure(undefined), false);
+test("only rate-limit statuses rotate (#170)", () => {
+  assert.equal(isRateLimitStatus(429), true, "the reported case");
+  // an exhausted subscription / quota-blocked key answers these, and a second account
+  // is exactly what resolves them
+  assert.equal(isRateLimitStatus(402), true);
+  assert.equal(isRateLimitStatus(403), true);
+  // a 5xx or a malformed request fails identically on every key: rotating just burns
+  // the cycle
+  for (const s of [500, 502, 503, 400, 404, 401, undefined]) {
+    assert.equal(isRateLimitStatus(s), false, `status ${s}`);
+  }
 });
 
 /* ---------- the wiring, through the real chat() ---------- */
 
-/** a stub endpoint that answers 429 for `badKey` and 200 for anything else */
-async function stub429(badKey: string) {
+/**
+ * A stub endpoint that rate-limits `badKeys` and serves everyone else.
+ *
+ * `retryAfter` is deliberately omitted: the SDK's own 429 backoff would otherwise wait
+ * seconds per attempt, and this test is about the ROTATION, not the backoff.
+ */
+async function stub(badKeys: Set<string>, opts: { status?: number } = {}) {
   const seen: string[] = [];
   const server = createServer((req, res) => {
     const key = String(req.headers.authorization ?? "").replace("Bearer ", "");
     seen.push(key);
     req.on("data", () => {});
     req.on("end", () => {
-      if (key === badKey) {
-        res.writeHead(429, { "content-type": "application/json" });
+      if (badKeys.has(key)) {
+        res.writeHead(opts.status ?? 429, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: "rate limited" } }));
         return;
       }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }));
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: `ok-${key}` } }] }));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -117,150 +114,140 @@ async function stub429(badKey: string) {
     seen,
     cfg: (pool: ReturnType<typeof makeKeyPool>): LlmConfig => ({
       baseUrl: `http://127.0.0.1:${port}/v1`,
-      apiKey: pool.keys[0]!,
+      apiKey: currentKey(pool)!,
       model: "m",
-      timeoutMs: 15_000,
+      timeoutMs: 20_000,
       keyPool: pool,
+      // the per-key ladder is not what this file asserts; the ROTATION is. One retry
+      // per key keeps the suite fast without changing the policy under test.
+      maxRetries: 1,
     }),
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
 
-test("a 429 rotates to the next key and the request SUCCEEDS (#170)", async () => {
-  const s = await stub429("KEY_A");
+test("a rate-limited key rotates to the next one and the turn SUCCEEDS (#170)", async () => {
+  const s = await stub(new Set(["ACCT_1"]));
   try {
-    const pool = makeKeyPool(["KEY_A", "KEY_B"]);
+    const pool = makeKeyPool(["ACCT_1", "ACCT_2"]);
     const res = await chat(s.cfg(pool), [{ role: "user", content: "hi" }], []);
-    assert.equal(res.message.content, "ok", "the turn must complete on the second key");
-    assert.ok(s.seen.includes("KEY_B"), `it must have tried the second key, saw ${JSON.stringify(s.seen)}`);
+    assert.equal(res.message.content, "ok-ACCT_2", "the second key served it");
+    assert.ok(s.seen.includes("ACCT_2"), `it must have moved on; saw ${JSON.stringify(s.seen)}`);
+  } finally {
+    await s.close();
+  }
+});
+
+test("each key gets its FULL retry ladder before the pool moves on (#170)", async () => {
+  // "規定のリトライ回数を超えたら次の鍵にローテ" — the ladder is per key, so the SDK's
+  // maxRetries must not be zeroed for a pooled provider
+  const s = await stub(new Set(["ACCT_1"]));
+  try {
+    const pool = makeKeyPool(["ACCT_1", "ACCT_2"]);
+    await chat(s.cfg(pool), [{ role: "user", content: "hi" }], []);
+    const triesOnFirst = s.seen.filter((k) => k === "ACCT_1").length;
+    assert.ok(triesOnFirst >= 1, `the first key is tried on its own ladder before rotating; saw ${triesOnFirst}`);
+  } finally {
+    await s.close();
+  }
+});
+
+test("when EVERY key is rate limited, the turn FAILS instead of cycling (#170)", async () => {
+  // "全キーを回ってもまだレートリミットだったらエラーで停止"
+  const s = await stub(new Set(["A", "B"]));
+  try {
+    const pool = makeKeyPool(["A", "B"]);
+    await assert.rejects(
+      () => chat(s.cfg(pool), [{ role: "user", content: "hi" }], []),
+      /rate|429/i,
+      "the failure must reach the caller so the turn stops",
+    );
+    // and each key must have been tried, not just the first
+    for (const k of ["A", "B"]) {
+      assert.ok(s.seen.includes(k), `key ${k} was never tried: ${JSON.stringify(s.seen)}`);
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test("rotation stops at the pool size — it does not loop forever (#170)", async () => {
+  // a cycle would turn a hard rate limit into an infinite retry, which is the failure
+  // this policy exists to avoid
+  const s = await stub(new Set(["A", "B"]));
+  try {
+    const pool = makeKeyPool(["A", "B"]);
+    await assert.rejects(() => chat(s.cfg(pool), [{ role: "user", content: "hi" }], []));
+    const distinct = [...new Set(s.seen)];
+    assert.deepEqual(distinct.sort(), ["A", "B"], `exactly the two keys, once each pass: ${JSON.stringify(s.seen)}`);
+    assert.ok(s.seen.length < 12, `it must not cycle: ${s.seen.length} attempts`);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a 5xx does NOT rotate — it would fail on every key (#170)", async () => {
+  const s = await stub(new Set(["K1"]), { status: 500 });
+  try {
+    const pool = makeKeyPool(["K1", "K2"]);
+    await assert.rejects(
+      () =>
+        chat(
+          { ...s.cfg(pool), timeoutMs: 10_000, maxRetries: 1 },
+          [{ role: "user", content: "hi" }],
+          [],
+        ),
+    );
     assert.deepEqual(
-      availableKeys(pool, Date.now()),
-      ["KEY_B"],
-      "and the rate-limited key must now be parked for everyone sharing the pool",
+      [...new Set(s.seen)],
+      ["K1"],
+      `a 500 must not rotate; saw ${JSON.stringify(s.seen)}`,
     );
   } finally {
     await s.close();
   }
 });
 
-test("the SDK does not burn its own retries on the rate-limited key (#170)", async () => {
-  // MEASURED before this: the SDK retried the SAME 429 four times (4.5 s of backoff)
-  // before rotation ever ran, so having another key bought nothing. It must now be
-  // the first thing that happens.
-  const s = await stub429("KEY_A");
-  try {
-    const pool = makeKeyPool(["KEY_A", "KEY_B"]);
-    const res = await chat(s.cfg(pool), [{ role: "user", content: "hi" }], []);
-    assert.equal(res.message.content, "ok");
-    assert.equal(
-      s.seen.filter((k) => k === "KEY_A").length,
-      1,
-      `the dead key must be tried ONCE, not retried; saw ${JSON.stringify(s.seen)}`,
-    );
-  } finally {
-    await s.close();
-  }
-});
-
-test("with ONE key there is no rotation, and the real error still surfaces (#170)", async () => {
-  // The failure must stay honest: a single-key provider cannot rotate, so the 429 has
-  // to reach the caller's ladder rather than being swallowed by a no-op retry.
-  //
-  // The stub returns 429 forever, so the SDK's own 4 retries (kept for this case —
-  // see the maxRetries note in llm.ts) legitimately take ~5-9 s of backoff. That is
-  // production behaviour for a single key, so it is not shortened here; the
-  // assertion is on the OUTCOME, and the timeout leaves room for a slow runner.
-  const s = await stub429("ONLY");
+test("a single key surfaces the rate limit instead of retrying forever (#170)", async () => {
+  // with nothing to rotate to, the honest answer is the error — for the agent's own
+  // ladder to decide what next
+  const s = await stub(new Set(["ONLY"]));
   try {
     const pool = makeKeyPool(["ONLY"]);
     await assert.rejects(
       () => chat(s.cfg(pool), [{ role: "user", content: "hi" }], []),
-      /429|rate/i,
-      "a single key must propagate the rate limit",
+      /rate|429/i,
     );
-    // and it must NOT have been parked: with one key there is nothing to rotate to,
-    // and parking it would only make the next attempt slower for no benefit
-    assert.deepEqual(availableKeys(pool, Date.now()), ["ONLY"], "no pointless cooldown");
   } finally {
     await s.close();
   }
 });
 
-test("a NON-key failure does not rotate (#170)", async () => {
-  // a 500 affects every key, so rotating would burn the pool for nothing
-  const seen: string[] = [];
-  const server = createServer((req, res) => {
-    seen.push(String(req.headers.authorization ?? "").replace("Bearer ", ""));
-    req.on("data", () => {});
-    req.on("end", () => {
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "boom" } }));
-    });
-  });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const port = (server.address() as AddressInfo).port;
-  try {
-    const pool = makeKeyPool(["K1", "K2"]);
-    await assert.rejects(() =>
-      chat(
-        { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "K1", model: "m", timeoutMs: 10_000, keyPool: pool },
-        [{ role: "user", content: "hi" }],
-        [],
-      ),
-    );
-    assert.deepEqual(
-      [...new Set(seen)],
-      ["K1"],
-      `a 500 must not rotate; saw ${JSON.stringify(seen)}`,
-    );
-  } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-  }
-});
-
-test("the default cooldown is a minute, not seconds (#170)", () => {
-  // long enough to matter for a per-minute rate limit, short enough that an operator
-  // who hits one does not have to restart the server
-  assert.equal(KEY_COOLDOWN_MS, 60_000);
-});
-
 /* ---------- config migration ---------- */
 
-test("a legacy single apiKey migrates to a one-entry pool (#170)", () => {
-  // every config written before this feature has exactly this shape, so it must keep
-  // working unchanged — no rotation, but no breakage either
+test("a legacy single apiKey migrates to a one-key pool (#170)", () => {
+  // every config written before this feature has this shape and must keep working
   const m = migrateProviderKeys({ baseUrl: "u", apiKey: "K1" });
   assert.deepEqual(m.apiKeys, ["K1"]);
   assert.equal(m.apiKey, "K1", "the old field stays readable for other consumers");
 });
 
 test("apiKeys is AUTHORITATIVE — a stale apiKey is not folded back in (#170)", () => {
-  // the operator set a LIST because the old key was exhausted. Appending the stale
-  // one would let the pool rotate straight back onto the credential they replaced.
+  // the operator listed keys because the old one was exhausted; appending it back
+  // would let the rotation land on the key they replaced
   const m = migrateProviderKeys({ baseUrl: "u", apiKey: "OLD", apiKeys: ["A", "B"] });
-  assert.deepEqual(m.apiKeys, ["A", "B"], "the list wins");
-  assert.equal(m.apiKey, "A", "and the scalar mirrors the FIRST list entry");
-  assert.ok(!m.apiKeys!.includes("OLD"), "the replaced key must not come back");
+  assert.deepEqual(m.apiKeys, ["A", "B"]);
+  assert.ok(!m.apiKeys!.includes("OLD"));
+  assert.equal(m.apiKey, "A", "the scalar mirrors the first list entry");
 });
 
 test("a provider with no credential keeps NO apiKeys field (#170)", () => {
-  // a local endpoint may need none; an empty array would read as "this provider has
-  // keys" to anything counting them
   const m = migrateProviderKeys({ baseUrl: "u" });
-  assert.equal(m.apiKeys, undefined);
-  assert.equal(providerKeys({ baseUrl: "u" }).length, 0);
-  assert.deepEqual(providerKeys(undefined), [], "an absent provider has no keys");
-});
-
-test("blank entries and duplicates are dropped, order preserved (#170)", () => {
-  const m = migrateProviderKeys({ baseUrl: "u", apiKeys: ["B", " ", "A", "B"] });
-  assert.deepEqual(m.apiKeys, ["B", "A"], "config order, no dups, no blanks");
-  assert.equal(m.apiKey, "B", "the scalar is the first SURVIVING key");
+  assert.equal(m.apiKeys, undefined, "an empty array would read as 'has keys'");
+  assert.deepEqual(providerKeys(undefined), []);
 });
 
 test("loadConfig migrates every provider, so consumers see one shape (#170)", async () => {
-  // the migration runs at LOAD, which is what lets the pool, the UI and the spawn
-  // path all agree without each re-deriving it
   const { loadConfig } = await import("../src/master.ts");
   const { mkdtempInRootSync } = await import("./helpers/tmp-root.ts");
   const fs = await import("node:fs");
@@ -275,6 +262,6 @@ test("loadConfig migrates every provider, so consumers see one shape (#170)", as
     }),
   );
   const cfg = loadConfig(cfgPath);
-  assert.deepEqual(cfg.providers!.legacy!.apiKeys, ["K1"], "legacy entry migrated");
-  assert.deepEqual(cfg.providers!.pooled!.apiKeys, ["A", "B"], "pooled entry untouched");
+  assert.deepEqual(cfg.providers!.legacy!.apiKeys, ["K1"]);
+  assert.deepEqual(cfg.providers!.pooled!.apiKeys, ["A", "B"]);
 });

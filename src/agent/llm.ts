@@ -6,7 +6,7 @@
  * than hand-rolled.
  */
 import OpenAI from "openai";
-import { rotateAfterFailure, isKeyFailure, type KeyPoolState } from "./key-pool.ts";
+import { isRateLimitStatus, nextKey, type KeyPoolState } from "./key-pool.ts";
 
 export interface ToolSpec {
   type: "function";
@@ -65,6 +65,15 @@ export interface LlmConfig {
    */
   oneOff?: boolean;
   /**
+   * How many times the client retries a rate limit on ONE key before the pool moves to
+   * the next (#170). This is the "規定のリトライ回数".
+   *
+   * Injectable because the SDK's default backoff is seconds per attempt, so a test that
+   * exercises rotation through the real client spent ~50 s waiting out a staircase that
+   * is not what it is asserting. Production leaves it unset (4).
+   */
+  maxRetries?: number;
+  /**
    * The provider's key POOL (#170), shared across every agent on that provider so a
    * rate-limited key is parked for everyone rather than re-tried per agent. Absent
    * means "one key, no rotation" — `apiKey` is then the only credential.
@@ -97,13 +106,13 @@ const clients = new WeakMap<LlmConfig, OpenAI>();
  * candidates are the failed one: retrying with the SAME credential cannot help, and
  * the caller's own staircase is the right response then.
  */
-export function rotateKey(cfg: LlmConfig, now = Date.now()): LlmConfig | null {
+export function rotateKey(cfg: LlmConfig): LlmConfig | null {
   const pool = cfg.keyPool;
-  if (!pool || pool.keys.length < 2) return null;
-  const next = rotateAfterFailure(pool, cfg.apiKey, now);
-  if (!next) return null;
-  // a new apiKey means a new OpenAI client below, which is correct: the credential
-  // is baked into the client at construction
+  if (!pool) return null;
+  const next = nextKey(pool);
+  if (!next) return null; // every key has had its turn
+  // a new apiKey means a new OpenAI client below, which is correct: the credential is
+  // baked into the client at construction
   return { ...cfg, apiKey: next };
 }
 
@@ -313,18 +322,15 @@ export function providerHeaders(baseUrl: string, sessionId?: string): Record<str
 function client(cfg: LlmConfig): OpenAI {
   let c = clients.get(cfg);
   if (!c) {
-    // #170: with a POOL the SDK must NOT retry a 429 itself. Its backoff re-sends the
-    // SAME rate-limited key four times — MEASURED, 6.7 s of backoff before the
-    // rotation below ever saw the error — when the point of having another key is to
-    // use it immediately. So a multi-key provider surfaces the status straight away
-    // and `withKeyRotation` picks the next key; the agent's own ladder (5s/5s/30s) is
-    // still there as the outer backstop for a 5xx, which no key can fix.
-    const pooled = (cfg.keyPool?.keys.length ?? 0) > 1;
+    // #170: the SDK's retry ladder is deliberately KEPT for a pooled provider too.
+    // The operator's rule is "規定のリトライ回数を超えたら次の鍵にローテ", i.e. each key gets
+    // its own retries before the pool moves on — so `maxRetries` is the per-key budget
+    // and must not be zeroed.
     c = new OpenAI({
       baseURL: cfg.baseUrl,
       apiKey: cfg.apiKey,
       timeout: cfg.timeoutMs ?? 120_000,
-      maxRetries: pooled ? 0 : 4,
+      maxRetries: cfg.maxRetries ?? 4, // per-key: rotation happens after these are spent
       defaultHeaders: providerHeaders(cfg.baseUrl, cfg.sessionId),
     });
     clients.set(cfg, c);
@@ -348,19 +354,22 @@ async function withKeyRotation<T>(
   run: (cfg: LlmConfig) => Promise<T>,
 ): Promise<{ value: T; cfg: LlmConfig }> {
   let cur = cfg;
-  const attempts = Math.max(1, cfg.keyPool?.keys.length ?? 1);
   let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
+  for (let i = 0; i < Math.max(1, cfg.keyPool?.keys.length ?? 1); i++) {
     try {
+      // The client's own retry ladder runs inside `run`, so by the time this catch
+      // fires the FIRST key has already been retried its configured number of times.
+      // Only then do we move on — that is the operator's "規定のリトライ回数を超えたら".
       return { value: await run(cur), cfg: cur };
     } catch (err) {
       lastErr = err;
       const status = (err as { status?: unknown })?.status;
-      if (typeof status !== "number" || !isKeyFailure(status)) throw err;
+      if (typeof status !== "number" || !isRateLimitStatus(status)) throw err;
       const rotated = rotateKey(cur);
-      if (!rotated) throw err; // one key, or no alternative: the caller's ladder runs
+      // no key left: "全キーを回ってもまだレートリミットだったらエラーで停止"
+      if (!rotated) throw err;
       console.warn(
-        `[teapot] key rate-limited/unusable (HTTP ${status}) — rotating to the next of ${cur.keyPool?.keys.length ?? 1} keys for this provider`,
+        `[teapot] rate limited (HTTP ${status}) on this key — moving to the next of ${cur.keyPool?.keys.length ?? 1} for this provider`,
       );
       cur = rotated;
     }

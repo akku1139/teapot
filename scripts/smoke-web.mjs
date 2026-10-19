@@ -1112,6 +1112,136 @@ console.log("deep render ok: feed rows present");
     }
   }
 
+  /* ---------- a DIFFERENT tool must not group under the previous one ------------
+   * Reported: "write_file 後の bash が間違ってグループ化されてる". Every tool shared one
+   * grouping bucket, so a `bash` after a `write_file` hung under the file panel with no
+   * icon of its own. Driven through the real bundle: the defect was in what the feed
+   * RENDERED.
+   */
+  {
+    pushEvent({ id: "gx1", seq: 711, ts: "2026-01-01T17:10:01Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "message", data: { role: "assistant", content: "boundary before the tool run" } });
+    pushEvent({ id: "gx2", seq: 712, ts: "2026-01-01T17:10:02Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_call", data: { callId: "cx1", name: "write_file", args: { path: "GROUP_SEP.txt", content: "x" } } });
+    pushEvent({ id: "gx3", seq: 713, ts: "2026-01-01T17:10:03Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_result", data: { callId: "cx1", name: "write_file", result: "wrote it", ok: true, durationMs: 3 } });
+    pushEvent({ id: "gx4", seq: 714, ts: "2026-01-01T17:10:04Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_call", data: { callId: "cx2", name: "bash", args: { command: "echo SEPARATE" } } });
+    pushEvent({ id: "gx5", seq: 715, ts: "2026-01-01T17:10:05Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_result", data: { callId: "cx2", name: "bash", result: "SEPARATE", ok: true, durationMs: 3 } });
+    flushRefreshes();
+    await new Promise((r) => setTimeout(r, 400));
+    const rowFor = (needle) => {
+      for (const d of w.document.querySelectorAll(".embed")) {
+        const sm = d.querySelector("summary");
+        if (sm && sm.textContent.includes(needle)) return { head: sm.textContent.trim() };
+      }
+      return null;
+    };
+    const wrote = rowFor("GROUP_SEP.txt");
+    const bash = rowFor("SEPARATE");
+    if (!wrote || !bash) {
+      console.error(`tool-separation check could not find both rows (${!!wrote}/${!!bash}) — vacuous`);
+      process.exit(1);
+    }
+    if (!bash.head.includes("\u2699")) {
+      console.error(
+        `SEPARATION REGRESSION: the bash after a write_file has no icon of its own` +
+          `\n  write_file: ${JSON.stringify(wrote.head)}\n  bash      : ${JSON.stringify(bash.head)}`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a different tool starts its own block, not a grouped row");
+  }
+
+  /* ---------- settings is a MENU: one section visible at a time ----------------
+   * "settings ウィンドウもダサいので / メニューベースにする?" — five sections were stacked
+   * in one column, so the dialog could not show its own extent. Now: pick a section,
+   * see only that one.
+   *
+   * Asserted on what the operator EXPERIENCES — the COMPUTED display of each section,
+   * and whether a typed edit survives switching — never on class names, which is the
+   * "shape" this repo's testing rule forbids pinning.
+   */
+  {
+    const openBtn = [...w.document.querySelectorAll("button")].find((b) =>
+      /settings|config/i.test(b.getAttribute("title") ?? b.textContent ?? ""),
+    );
+    if (!openBtn) {
+      console.error("#settings check: no settings button");
+      process.exit(1);
+    }
+    openBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+
+    const menu = [...w.document.querySelectorAll(".cfgmenu-item")];
+    const panels = [...w.document.querySelectorAll(".cfgpanel fieldset")];
+    if (menu.length < 2 || panels.length < 2) {
+      console.error(`#settings REGRESSION: no section menu (${menu.length} items, ${panels.length} panels)`);
+      process.exit(1);
+    }
+    const visible = () =>
+      [...w.document.querySelectorAll(".cfgpanel fieldset")].filter((f) => {
+        const cs = w.document.defaultView.getComputedStyle(f);
+        return cs.display !== "none" && cs.visibility !== "hidden";
+      });
+    if (visible().length !== 1) {
+      console.error(`#settings REGRESSION: ${visible().length} sections visible at once — the old stacked form`);
+      process.exit(1);
+    }
+    const wasShowing = visible()[0]?.textContent ?? "";
+    const runtimeItem = menu.find((b) => /runtime/i.test(b.textContent ?? ""));
+    if (!runtimeItem) {
+      console.error("#settings check: no runtime section — vacuous");
+      process.exit(1);
+    }
+    runtimeItem.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const nowShowing = visible();
+    if (nowShowing.length !== 1 || (nowShowing[0]?.textContent ?? "") === wasShowing) {
+      console.error("#settings REGRESSION: clicking a menu item did not swap the visible section");
+      process.exit(1);
+    }
+
+    // a typed edit must survive a round trip: the form is ONE submit, so sections are
+    // HIDDEN, not unmounted — switching back must keep what was typed
+    const intervalInput = () =>
+      [...w.document.querySelectorAll(".cfgpanel label")].find((l) =>
+        /progress interval/i.test(l.textContent ?? ""),
+      )?.querySelector("input") ?? null;
+    const target = intervalInput();
+    if (!target) {
+      console.error("#settings check: runtime has no progress-interval input — vacuous");
+      process.exit(1);
+    }
+    target.value = "77";
+    target.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    menu[0].click();
+    await new Promise((r) => setTimeout(r, 200));
+    runtimeItem.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const back = intervalInput();
+    if (!back || String(back.value) !== "77") {
+      console.error(
+        `#settings REGRESSION: switching sections discarded a typed edit (77 -> ${JSON.stringify(back?.value)})`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: settings is a menu — one section shown, edits survive switching");
+
+    // CLOSE the dialog: it is a full-screen overlay, and leaving it open swallows the
+    // Escape key that the later #50 drawer scenario presses — MEASURED as
+    // "#50 REGRESSION: Escape did not close the drawer", a failure that named the wrong
+    // feature entirely.
+    [...w.document.querySelectorAll(".modal-head .iconbtn")].at(-1)?.click();
+    await new Promise((r) => setTimeout(r, 300));
+    if (w.document.querySelector(".modal")) {
+      console.error("#settings check did not close the dialog; later checks would inherit it");
+      process.exit(1);
+    }
+  }
+
   /* ---------- #32: a constant branch label is not repeated on every row --------
    * Reported as part of "タイムラインが煩雑". MEASURED: all 14940 events of one real
    * session carried `br0`, so ~1500 rendered rows each printed "br0" — a label that

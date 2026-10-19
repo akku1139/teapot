@@ -149,3 +149,43 @@ export function reconcileLiveBuffer(
   if (isCoveredByLog(buf, events, status)) return null;
   return buf;
 }
+
+/**
+ * Should the "💭 thinking" elapsed clock be cleared? (#131)
+ *
+ * Returns the value the clock should hold: the existing `startedAt` unless the
+ * thinking block is no longer on screen, in which case 0 (the "not armed" sentinel).
+ *
+ * ## Why this is not just `setThinkStartedAt(0)` in the status sweep
+ *
+ * The original #131 was a session switch leaving `startedAt = 0` while the block was
+ * visible, so `now() - 0` rendered as elapsed-since-the-EPOCH ("thinking 497531h").
+ * The fix sentinel-guarded the timer, but the CLOCK was still zeroed from a status
+ * effect — and a status transition is exactly what happens when thinking ends:
+ *
+ *     reasoning arrives      -> startedAt = T
+ *     the turn's status flips -> effect zeroes it
+ *     the block is still rendered -> now() - 0 -> "thinking 497531h 23m"
+ *
+ * which is the reported "reasoning が終わった瞬間に発生した" (no session switch needed).
+ *
+ * So the clock may only be cleared when the block it measures is GONE — no live
+ * buffer for the displayed session and nothing still streaming. A status change alone
+ * must not touch it.
+ */
+export function clearThinkClockIfDone(
+  startedAt: number,
+  agents: readonly { id: string; status?: string; session?: string }[],
+  selected: string | null | undefined,
+  live: { text: string; reasoning: string } | null | undefined,
+): number {
+  if (!startedAt) return 0; // already idle: nothing to clear
+  // the bubble IS the thinking block; while it exists, the clock is meaningful
+  if (live) return startedAt;
+  if (!selected) return 0;
+  const a = agents.find((x) => x.id === selected);
+  // the displayed agent is mid-turn: reasoning may arrive again on the next chunk, and
+  // re-arming would restart an elapsed time the operator is already reading
+  if (a?.status === "running" || a?.status === "waiting") return startedAt;
+  return 0;
+}

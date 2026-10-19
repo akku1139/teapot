@@ -61,7 +61,20 @@ function actorKeyOf(ev: RowLike): string {
   if (ev.data?.actor) return `sub:${String(ev.data.actor)}`;
   if (ev.type === "tool_call" || ev.type === "tool_result") {
     const name = typeof d.name === "string" ? d.name : "";
-    return name === "load_skill" ? "agent-skill" : "agent-tools";
+    // A run of the SAME tool groups; a change of tool starts a new group.
+    //
+    // Keying every tool as one bucket made `write_file` swallow the `bash` after it,
+    // and the bash then rendered with no icon under the file's panel — reported as
+    // "write_file 後の bash が間違ってグループ化されてる". Reading the earlier comment
+    // here ("keying by tool name split a run as soon as two different tools ran back
+    // to back") the original intent was clearly the opposite complaint: two ROWS of one
+    // tool must group, which keying by name does. What must NOT group is one tool
+    // hanging under a different tool's output, because the second then reads as part of
+    // the first instead of as the next action.
+    //
+    // `load_skill` keeps its own bucket for the same reason it always had one (#149):
+    // it renders as expanded prose, so anything under it reads as that prose.
+    return name === "load_skill" ? "agent-skill" : `tool:${name}`;
   }
   if (ev.type === "prompt") return `src:${String(d.source ?? "user")}`;
   return `type:${ev.type}`;

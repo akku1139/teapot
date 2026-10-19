@@ -19,7 +19,7 @@ import {
   fsyncSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { availableKeys, makeKeyPool, type KeyPoolState } from "./agent/key-pool.ts";
+import { currentKey, makeKeyPool, resetPool, type KeyPoolState } from "./agent/key-pool.ts";
 import { sessionTitleFrom } from "./session-title.ts";
 import path from "node:path";
 import os from "node:os";
@@ -687,6 +687,8 @@ export class Master {
     const keys = providerKeys(prov);
     if (keys.length === 0) return undefined;
     const existing = this.keyPools.get(name);
+    // reuse while the KEY LIST is unchanged, so the pool keeps its position in the
+    // cycle across spawns; a changed list is a new pool
     if (existing && existing.keys.length === keys.length && existing.keys.every((k, i) => k === keys[i])) {
       return existing;
     }
@@ -695,13 +697,28 @@ export class Master {
     return pool;
   }
 
-  /** diagnostics: how many keys each provider holds, and how many are usable now */
-  keyPoolReport(now = Date.now()): { provider: string; keys: number; available: number }[] {
+  /**
+   * Diagnostics: each provider's keys and which one is in use.
+   *
+   * Deliberately shows only position, not "spent until" timestamps: this pool has no
+   * such state — a key is rotated past once its retries are spent, and a new turn
+   * starts the cycle again.
+   */
+  keyPoolReport(): { provider: string; keys: number; current: number }[] {
     return [...this.keyPools.entries()].map(([provider, pool]) => ({
       provider,
       keys: pool.keys.length,
-      available: availableKeys(pool, now).length,
+      current: pool.current,
     }));
+  }
+
+  /** start every provider's cycle over from its first key */
+  resetKeyPool(provider?: string): void {
+    const names = provider ? [provider] : [...this.keyPools.keys()];
+    for (const n of names) {
+      const pool = this.keyPools.get(n);
+      if (pool) resetPool(pool);
+    }
   }
 
   private writeConfigAtomic(body: string): void {
@@ -1017,7 +1034,13 @@ export class Master {
     const pool = inlineKey ? undefined : this.keyPoolFor(provName, prov);
     const llm: LlmConfig = {
       baseUrl: ac.baseUrl ?? prov?.baseUrl ?? this.config.llm.baseUrl!,
-      apiKey: inlineKey ?? pool?.keys[0] ?? prov?.apiKey ?? this.config.llm.apiKey!,
+      // the pool's CURRENT key is the sticky one: a restart must resume on the
+      // account the operator's cycle had reached, not start over on a spent first one
+      apiKey:
+        inlineKey ??
+        currentKey(pool) ??
+        prov?.apiKey ??
+        this.config.llm.apiKey!,
       model: ac.model ?? prov?.model ?? this.config.llm.model!,
       timeoutMs: 120_000,
       ...(pool && pool.keys.length > 1 ? { keyPool: pool } : {}),

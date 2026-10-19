@@ -705,7 +705,26 @@ details.reasoning .thinkscroll {
    red notifdot badge (that rendered as a huge red ✕ circle in the corner) */
 .iconbtn.active { background: var(--acc); color: #fff; }
 .overlay { position: fixed; inset: 0; background: #0009; display: grid; place-items: center; z-index: 10; }
-.modal { background: var(--bg-mid); border-radius: 10px; padding: 16px 18px; width: min(620px, 92vw); max-height: 88vh; overflow-y: auto; }
+.modal { background: var(--bg-mid); border-radius: 10px; padding: 16px 18px; width: min(760px, 94vw); max-height: 88vh; overflow-y: auto; }
+/* Settings is a MENU: a named section on the left, one panel on the right. The
+   stacked form it replaced could not show its own extent once a provider held
+   several keys (#170). */
+.cfgmenu { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--bg-light); }
+.cfgmenu-item {
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: var(--dim); font: inherit; font-size: 12.5px; padding: 5px 10px; cursor: pointer;
+  white-space: nowrap;
+}
+.cfgmenu-item:hover { color: var(--fg); background: var(--bg-darkest); }
+.cfgmenu-item.on {
+  color: var(--fg); background: var(--bg-darkest); border-color: var(--acc);
+  font-weight: 600;
+}
+.cfgpanel { padding-top: 12px; }
+/* a panel section is hidden, not unmounted: the form is one submit, so its inputs
+   must stay in the DOM for `save` to read them, and switching back must not reset
+   what was typed */
+.cfgpanel fieldset.hide { display: none; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 16px; }
 .modal label { display: flex; flex-direction: column; gap: 4px; color: var(--dim); font-size: 12.5px; }
 .modal input[type=text], .modal input[type=number], .modal input[type=password],
