@@ -303,16 +303,41 @@ test("regression: cancelling a queued prompt logs prompt-cancelled and never del
   });
 });
 
-test("regression: cancelled prompt renders as withdrawn, not as a sent message (#19)", async () => {
-  const src = await readFile("frontend/App.tsx", "utf8");
-  // the timeline must derive withdrawn state from the prompt-cancelled note…
-  assert.match(src, /prompt-cancelled/);
-  // …mark the log row…
-  assert.match(src, /\.cancelled = true/);
-  // …and render it differently from a delivered message
-  assert.match(src, /withdrawn/);
-  // a withdrawn message never reached the model, so forking from it is wrong
-  assert.match(src, /!e\.data\?\.cancelled/);
+test("regression: a cancelled prompt is marked withdrawn by the pipeline (#19)", async () => {
+  // Was four `assert.match(src, …)` regexes against App.tsx — a test that cannot fail
+  // for a real reason: it pinned the SPELLING of the filter, so it went red the moment
+  // the pipeline moved into `frontend/timeline.ts` with the behaviour fully intact.
+  // This drives the real pipeline instead and asserts the ROW it produces.
+  const { buildTimeline } = await import("../frontend/timeline.ts");
+  const FEED = new Set(["prompt", "message", "system_note"]);
+  const RENDERED = new Set(["prompt", "message"]);
+
+  const events = [
+    { id: "e1", seq: 1, type: "prompt", data: { source: "user", promptId: "p1", text: "withdraw me" } },
+    // the note records the withdrawal at the seq where it happened
+    { id: "e2", seq: 9, type: "system_note", data: { event: "prompt-cancelled", promptId: "p1" } },
+  ];
+  const out = buildTimeline({
+    events: events as any,
+    consumed: new Set<string>(),
+    pending: [],
+    echo: () => events[0] as any,
+    feedTypes: FEED,
+    renderedTypes: RENDERED,
+    renderedNoteEvents: new Set(["prompt-cancelled"]),
+  });
+
+  const row = out.find((e) => e.type === "prompt");
+  assert.ok(row, "precondition: the withdrawn prompt must still have a row (#19)");
+  assert.equal(
+    row!.data.cancelled,
+    true,
+    "a withdrawn prompt carries the marker, so the UI can render it as withdrawn (#19)",
+  );
+  // and it is NOT still sitting at its enqueue position: the withdrawal moved it
+  assert.equal(row!.seq, 9, "it sorts at the cancellation, not where it was typed");
+  // the input is untouched — the pipeline must not write to the events store
+  assert.equal((events[0]!.data as any).cancelled, undefined, "the pipeline must not mutate its input");
 });
 
 test("regression: queued prompts survive stop without being delivered (#9)", async () => {

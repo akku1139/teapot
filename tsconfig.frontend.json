@@ -12,7 +12,13 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "allowJs": false
+    "allowJs": false,
+    // A frontend helper may import another with an explicit `.ts` extension. Vite
+    // resolves both forms, but `node --test` runs the sources DIRECTLY and needs the
+    // extension — without this, a pure helper like `timeline.ts` could only be tested
+    // by importing the whole component. `noEmit` is already set, which is the
+    // condition TypeScript requires for this flag.
+    "allowImportingTsExtensions": true
   },
   "include": ["frontend/**/*.ts", "frontend/**/*.tsx"]
 }

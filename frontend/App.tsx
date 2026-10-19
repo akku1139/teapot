@@ -11,7 +11,7 @@ import {
   pruneDeadLiveBuffers,
   reconcileLiveBuffer,
 } from "./live-buffer";
-import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order";
+import { buildTimeline, type TimelineEvent, type PendingEchoLike } from "./timeline";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
@@ -1101,247 +1101,21 @@ const isTimelineLive = (): boolean => {
   const answeredQuestionIds = createMemo(() =>
     answeredQuestionIdsOf(events() as unknown as QuestionEvent[], locallyAnswered()),
   );
-  const chatEvents = createMemo(() => {
-    const { consumed } = pairInfo();
-    // Reasoning-only assistant turns (content empty, only 💭 reasoning) used
-    // to render as their own agent bubble between every pair of tool rows,
-    // which also broke "consecutive bash" grouping. They now ride along with
-    // the tool run: a reasoning-only turn is dropped when the nearest visible
-    // row before it is a tool event — its thinking belongs to that action.
-    const _lastVisibleBefore = new Map<string, string>();
-    let lastKind = "";
-    for (const e of events()) {
-      (e as Ev & { _prevKind?: string })._prevKind = lastKind;
-      if (!FEED_TYPES.has(e.type)) continue;
-      const d = e.data ?? {};
-      const isCarrier =
-        e.type === "message" &&
-        String(d.content ?? "").trim() === "" &&
-        String(d.reasoning ?? "").trim() !== "";
-      if (!isCarrier) lastKind = e.type === "tool_result" ? "tool" : e.type;
-    }
-    const real = events().filter((e) => {
-      // `sub` rows are no longer WRITTEN (#63) — a child's activity never
-      // belonged in the parent's timeline. But logs written before that still
-      // contain them, and silently dropping rows an operator can see on disk is
-      // how a log stops being trustworthy. So they are admitted here for
-      // rendering: the expansion below tags each with its actor, and the
-      // reader sees a child row rather than a row that mysteriously vanished.
-      if (e.type === "sub") return true;
-      if (!FEED_TYPES.has(e.type)) return false;
-      // #75: a row that RENDERS NOTHING must not reach the feed array at all.
-      //
-      // `state` is in FEED_TYPES, but neither MessageRow nor SwitchContent has a
-      // branch for it — it draws nothing. It nevertheless became the `prev` of the
-      // next row, and `groupedWith()` keys on the row TYPE, so a run of bash calls
-      // was cut in half by an invisible row:
-      //
-      //     e15100 tool_call (bash)   <- rendered with its icon
-      //     e15102 state              <- draws NOTHING, but is `prev`
-      //     e15105 tool_call (bash)   <- its prev is `state`, so no grouping
-      //
-      // MEASURED on this session: 304 of the last 1500 events are `state`, and
-      // replaying the real log through this filter showed exactly the reported
-      // shape — two consecutive bash rows both carrying their icon. The same hole
-      // merged UNRELATED runs, so the FIRST row of a run could also lose its icon.
-      //
-      // Dropping them here is the fix rather than special-casing `state` in
-      // `actorKeyOf`: the rule is "a row that is not displayed does not continue
-      // anyone's run", which stays true for any future invisible type.
-
-      // report_progress calls are fully rendered by the progress embed below
-      // (the timeline's 📈 row + the right panel's snapshot) — the tool-call
-      // row would just repeat the same content a third time
-      // report_progress / ask_user calls are fully rendered by their own
-      // embeds (📈 progress / ❓ question) — the tool rows would just repeat
-      // the same content a second time. ask_user also shows "answered"
-      // state via its embed, so the raw rows add nothing.
-      const metaToolName =
-        e.type === "tool_call" || e.type === "tool_result" ? String(e.data?.name ?? "") : "";
-      if (metaToolName === "report_progress") return false;
-      if (metaToolName === "ask_user") return false;
-      // #107: `record_decision` is fully rendered by its own 📌 decision card.
-      // The tool handler appends BOTH a `decision` event and the usual
-      // tool_call/tool_result pair, so without this the timeline showed the
-      // decision twice — the card, then a meta row that just said the tool had
-      // been called. Same treatment as report_progress above.
-      if (metaToolName === "record_decision") return false;
-      // paired tool results live inside their call's merged row
-      if (e.type === "tool_result") return !consumed.has(e.id);
-      // tool-call carrier turns have no visible payload — the ToolRow below
-      // already tells that story; an empty agent bubble is just noise
-      if (e.type === "message") {
-        const content = String(e.data?.content ?? "");
-        // reasoning-only turn right after a tool result: the next tool row's
-        // collapsible reasoning covers that thinking; a standalone bubble here
-        // broke "consecutive bash" grouping (prismrv-root-7fb7533b)
-        if (
-          content.trim() === "" &&
-          String(e.data?.reasoning ?? "").trim() !== "" &&
-          (e as Ev & { _prevKind?: string })._prevKind === "tool"
-        )
-          return false;
-        // a requested progress report is already shown by its progress embed —
-        // the log keeps the message (restores need it) but the feed must not
-        if (e.data?.progressEcho) return false;
-        // sanitize()'s request-only placeholder leaked into old logs as an
-        // "assistant said (tool call)" message; the tool rows tell that story
-        if (!e.data?.final && content.trim() === "(tool call)") return false;
-        return (
-          content.trim() !== "" ||
-          String(e.data?.reasoning ?? "").trim() !== "" ||
-          !!e.data?.final
-        );
-      }
-      return true;
-    });
-    // expand mirrored child activity ("sub" events) into normal-looking rows
-    // tagged with the acting sub id, so the parent feed shows who did what
-    const expanded: Ev[] = [];
-    for (const e of real) {
-      if (e.type === "sub") {
-        const d = e.data as { sub?: string; type?: string; data?: any };
-        const kind = String(d?.type ?? "message");
-        if (kind === "state") continue; // child state churn is noise up here
-        expanded.push({ ...e, type: kind, data: { ...d?.data, actor: d?.sub } });
-      } else expanded.push(e);
-    }
-    // DEDUPE: models often end a report_progress / record_decision turn by
-    // repeating the very same content as an ordinary assistant message. When a
-    // message follows its embed event (progress/decision) with essentially
-    // identical text, drop the message — the embed already shows it (rendered).
-    const norm = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-    const deduped: Ev[] = [];
-    for (let i = 0; i < expanded.length; i++) {
-      const e = expanded[i]!;
-      if (
-        e.type === "message" &&
-        e.data?.role === "assistant"
-      ) {
-        const prev = expanded[i - 1];
-        const body = norm(e.data.content);
-        if (prev?.type === "progress") {
-          const p = prev.data;
-          const same =
-            body.includes(norm(p.doing)) ||
-            (!!p.recent && body.includes(norm(p.recent)));
-          if (same && body.length <= Math.max(200, norm(p.doing).length * 3)) continue;
-        }
-        if (prev?.type === "decision") {
-          const d = prev.data;
-          // the decision line is the identity — models echo it verbatim or as
-          // a heading; rationale alone is too weak a signal to dedupe on
-          const dec = norm(d.decision);
-          if (dec && body.includes(dec) && body.length <= Math.max(300, dec.length * 3)) continue;
-        }
-      }
-      deduped.push(e);
-    }
-    // append optimistic echoes. An echo lives from SEND until its text enters
-    // an LLM call payload — signalled by the prompt-delivered system_note
-    // (same promptId). The LOGGED prompt row appears much earlier (at enqueue
-    // time), so "drop when logged" made the pending indicator flash for ~120ms
-    // and vanish while the message was still queued for the model.
-    //
-    // The logged prompt row of a NOT-YET-DELIVERED message must NOT render as
-    // a settled timeline row: it would show the queued text twice (a "sent"
-    // row at its log position AND the pending echo at the bottom) and imply
-    // the model already saw it. Until prompt-delivered arrives, the log row is
-    // hidden and the pending echo alone represents the message.
-    const deliveredIds = new Set<string>();
-    const loggedUserPrompts = new Set<string>();
-    const deliveredNotes = new Map<string, number>(); // promptId → seq of its prompt-delivered note
-    // promptId → seq of its prompt-cancelled note. A withdrawn message is
-    // logged at ENQUEUE time but never delivered, so once the echo is dropped
-    // its prompt row comes back as an ordinary "sent" message — implying the
-    // model saw something it never received (#19).
-    const cancelledNotes = new Map<string, number>();
-    for (const e of deduped) {
-      const pid = (e.data as any)?.promptId;
-      if (!pid) continue;
-      if (e.type === "prompt" && e.data?.source === "user") loggedUserPrompts.add(String(pid));
-      if (e.type === "system_note" && (e.data as any)?.event === "prompt-delivered") {
-        deliveredIds.add(String(pid));
-        deliveredNotes.set(String(pid), e.seq);
-      }
-      if (e.type === "system_note" && (e.data as any)?.event === "prompt-cancelled")
-        cancelledNotes.set(String(pid), e.seq);
-    }
-    const _deliveredSeq = new Map<string, number>();
-    const stillPendingIds = new Set<string>();
-    for (const p of pendingMsgs()) {
-      if (p.promptId && !deliveredIds.has(p.promptId)) stillPendingIds.add(p.promptId);
-    }
-    const visible = deduped.filter((e) => {
-      // #75: drop the rows that DRAW NOTHING. They must be filtered here, AFTER
-      // the pending-echo bookkeeping above (which reads `prompt-delivered` and
-      // `prompt-cancelled` notes out of this same array), but they must not
-      // survive into the feed: `prev` is taken from this array positionally, and
-      // an invisible row CUTS a run of tool calls in half because
-      // `groupedWith()` keys on the row TYPE.
-      //
-      // MEASURED on this session: 304 of the last 1500 events are `state`, which
-      // is in FEED_TYPES but has no render branch in either MessageRow or
-      // SwitchContent. Replaying the real log through this filter reproduced the
-      // report exactly — e15100 `tool_call` (bash), e15102 `state`, e15105
-      // `tool_call` (bash) — two adjacent bash rows that could not group, while
-      // other pairs in the same session grouped fine ("グループ化されるときとされない
-      // ときがある"). The same hole also merged unrelated runs, which stole the icon
-      // from a run's FIRST row.
-      //
-      // Dropping by "does this type draw anything" rather than special-casing
-      // `state` keeps the rule true for any future invisible type.
-      if (!RENDERED_TYPES.has(e.type)) {
-        return e.type === "system_note" && RENDERED_NOTE_EVENTS.has(String(e.data?.event ?? ""));
-      }
-      if (e.type !== "prompt" || e.data?.source !== "user") return true;
-      const pid = String((e.data as any)?.promptId ?? "");
-      return pid === "" || !stillPendingIds.has(pid); // hide undelivered log rows
-    });
-    // A delivered user prompt's log row was written at ENQUEUE time — its seq
-    // sits wherever the operator typed it, NOT where the model actually
-    // consumed it. Re-sequence it to its prompt-delivered note's position so
-    // the timeline reads in true context order: the message lands between the
-    // agent output that came before the delivery and the reply after it.
-    for (let i = 0; i < visible.length; i++) {
-      const e = visible[i]!;
-      if (e.type !== "prompt" || e.data?.source !== "user") continue;
-      const pid = String((e.data as any)?.promptId ?? "");
-      // A withdrawn row sorts at the position of its cancellation and carries
-      // a marker, so it renders as withdrawn rather than as a sent message
-      const cancelSeq = cancelledNotes.get(pid);
-      if (cancelSeq !== undefined && e.data) (e.data as any).cancelled = true;
-      // Move it down to wherever the model actually consumed (or dropped) it.
-      //
-      // #37: an UNDELIVERED prompt has no delivery note yet, so this left it at
-      // its original seq — which is the position where it was TYPED. The agent
-      // kept working meanwhile, so its later turns were logged at higher seqs
-      // and rendered BELOW the prompt that has not been sent yet. The model
-      // receives it after that work, so the timeline said the opposite.
-      //
-      // So an undelivered user prompt sits at the BOTTOM, just above the echo
-      // block: that is where it will be consumed, and the echo immediately below
-      // it is the same message. A delivered one still moves to its delivery
-      // note, which is more precise and unchanged.
-      const delivered = deliveredNotes.get(pid) ?? 0;
-      const settled = Math.max(delivered, cancelSeq ?? 0) || undefined;
-      visible[i] = settled !== undefined
-        ? resequenceToDelivery(e, settled)
-        : { ...e, seq: pendingFloor(visible) };
-    }
-    const pend = pendingMsgs().filter((p) => {
-      if (!p.promptId) return true;
-      // delivered AND its log row exists → the log row owns the display now
-      if (deliveredIds.has(p.promptId) && loggedUserPrompts.has(p.promptId)) return false;
-      return true;
-    });
-    const echoes: Ev[] = pend.map((p) => echoEv(p));
-    // Echo ordering: all echoes sort BELOW every settled row (their seq sits
-    // above the log's max seq), and multiple pending messages keep their own
-    // send order — first-sent highest, so the block reads top-down in the
-    // order the operator typed them.
-    return placeEchoesBelow(visible, echoes);
-  });
+  const chatEvents = createMemo(() =>
+    // The pipeline lives in ./timeline so its stages cannot be reordered by accident
+    // and so it can be driven with a plain array (#timeline-refactor). It used to be a
+    // ~240-line memo that MUTATED its own input rows, so a re-run saw the previous
+    // run's writes — the structural reason timeline bugs were intermittent.
+    buildTimeline({
+      events: events() as TimelineEvent[],
+      consumed: pairInfo().consumed,
+      pending: pendingMsgs() as PendingEchoLike[],
+      echo: echoEv as (p: PendingEchoLike) => TimelineEvent,
+      feedTypes: FEED_TYPES,
+      renderedTypes: RENDERED_TYPES,
+      renderedNoteEvents: RENDERED_NOTE_EVENTS,
+    }) as Ev[],
+  );
   // Reference-stable echo rows: chatEvents re-runs on EVERY event burst, and
   // rebuilding the echo objects each time handed Solid's <For> a brand-new
   // reference — remounting the pending row (and, with the tail-anchor race,
