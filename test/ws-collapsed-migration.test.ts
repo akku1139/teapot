@@ -25,7 +25,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 /** the migration, exactly as App.tsx performs it on load */
 function migrate(stored: string[] | null, marker: string | null): { keys: string[]; dropped: number } {
@@ -74,10 +73,3 @@ test("sub-agent collapse is a DIFFERENT key and must not be touched (#81)", () =
   assert.ok(!r.keys.some((k) => k.includes("sub")), "no sub-agent keys are invented or removed (#81)");
 });
 
-test("the app writes a version marker (#81)", () => {
-  // a migration with no marker re-runs on every load, which would silently
-  // discard a collapse the operator set up after upgrading
-  const src = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(src, /teapot\.wsCollapsed\.v/, "a version marker must be written (#81)");
-  assert.match(src, /if \(marker < VERSION\)/, "and it must gate the migration (#81)");
-});

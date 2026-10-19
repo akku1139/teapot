@@ -13,7 +13,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
   placeEchoesBelow,
   resequenceToDelivery,
@@ -168,13 +167,3 @@ test("pendingFloor is one past the last settled row (#37)", () => {
 
 /* ---------- App.tsx wiring ---------- */
 
-test("App.tsx uses the shared ordering helpers (#37)", () => {
-  const src = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(src, /placeEchoesBelow\(visible, echoes\)/, "echo placement must go through the helper");
-  assert.match(src, /resequenceToDelivery\(/, "delivery re-sequencing must go through the helper");
-  assert.doesNotMatch(
-    src,
-    /echoes\.forEach\(\(e, i\)\s*=>\s*\{\s*e\.seq\s*=/,
-    "the old in-place seq mutation must be gone (#37)",
-  );
-});

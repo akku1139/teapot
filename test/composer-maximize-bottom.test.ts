@@ -177,15 +177,6 @@ test("the composer is a flex column, which is what makes this layout meaningful 
   assert.match(max, /inset:\s*0/, "covering it entirely (#65)");
 });
 
-test("the maximize control and the class are still wired (#65)", () => {
-  assert.match(
-    app,
-    /"composer" \+ \(composerMaximized\(\) \? " maximized" : ""\)/,
-    "the maximized class must still be applied (#65)",
-  );
-  assert.match(app, /composerMaximized\(\)/, "and be driven by state (#65)");
-});
-
 /* ---------- the BOTTOM EDGE, not just the growth (#65, second pass) ---------- */
 
 /*

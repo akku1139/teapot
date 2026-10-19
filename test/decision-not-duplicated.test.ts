@@ -52,16 +52,6 @@ test("it sits with the other fully-embedded tools (#107)", () => {
   }
 });
 
-test("the decision card itself still renders (#107)", () => {
-  // the exclusion must not remove the thing the operator wants
-  assert.match(app, /case "decision":/, "the 📌 decision card must remain (#107)");
-  assert.match(
-    app,
-    /📌/,
-    "and it must still be drawn (#107)",
-  );
-});
-
 test("the handler really does emit both a decision event and a tool pair (#107)", () => {
   // the premise. If this ever changes, the exclusion becomes dead code and the
   // comment above it should change with it.

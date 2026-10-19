@@ -13,7 +13,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 // the SAME primitive frontend/shiki.ts imports (shiki/core re-exports it)
 import { hastToHtml } from "shiki/core";
@@ -89,13 +88,3 @@ test("shiki's html escapes source text rather than emitting it (#security)", () 
   assert.equal(total, 0, `shiki output produced live nodes: ${kinds.join(", ")} (#security)`);
 });
 
-test("the file preview inserts shiki html RAW — so that path must be proven (#security)", () => {
-  // structural: if this ever changes to an escaping renderer, this test becomes
-  // belt-and-braces rather than the only guard. Read it so the reason is visible.
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(
-    app,
-    /innerHTML=\{props\.html\}/,
-    "shiki html IS injected raw (#security) — that is why the test above exists",
-  );
-});

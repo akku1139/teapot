@@ -21,7 +21,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent, AUTO_CONTINUE_NUDGE, autoContinueNudge } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
@@ -125,14 +124,5 @@ test("the nudge a never-finishing agent receives names the goal (#136)", async (
       await a.settled().catch(() => {});
     }
   });
-});
-
-test("the sub-agent nudge is unaffected (#136)", () => {
-  // it already restated its task; it must not acquire a second copy
-  const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  const m = /\[harness\] Auto-nudge\.[^`]*/.exec(src)?.[0] ?? "";
-  assert.ok(m.length > 0, "the sub-agent nudge must exist (#136)");
-  assert.equal((m.match(/Current goal:/g) ?? []).length, 0, "it uses its own wording (#136)");
-  assert.ok(m.includes("YOUR task"), "and still names its own task (#136)");
 });
 

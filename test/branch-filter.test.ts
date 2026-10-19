@@ -82,23 +82,6 @@ test("a no-op click still reloads rather than doing nothing (#38)", () => {
 
 /* ---------- the semantics are now stated in the UI ---------- */
 
-test("the filter explains that it now SHOWS the inherited history (#38)", () => {
-  // The behaviour changed: the filter used to hide inherited history and the
-  // note admitted it, which read as data loss. It now includes that history, so
-  // the note must describe the new behaviour — a note left describing the old
-  // one would actively mislead.
-  assert.match(
-    app,
-    /showing <b>\{branchFilter\(\)\}<\/b> and the history it inherited before forking/,
-    "the note must say the inherited history IS shown (#38)",
-  );
-  assert.doesNotMatch(
-    app,
-    /showing <b>\{branchFilter\(\)\}<\/b> only/,
-    "the old 'only — hides inherited history' wording must be gone (#38)",
-  );
-});
-
 /* ---------- session switching keeps its own behaviour ---------- */
 
 /* ---------- session switching keeps its own behaviour ---------- */

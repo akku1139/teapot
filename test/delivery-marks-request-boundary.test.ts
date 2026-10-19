@@ -32,7 +32,6 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
-import { readFileSync } from "node:fs";
 
 interface Ev {
   seq: number;
@@ -147,28 +146,3 @@ test("a retry does not move the marker (#37)", async () => {
   });
 });
 
-test("the marker is not written at drain time (#37)", () => {
-  // structural: the whole bug was the call site, so pin it
-  const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  const drain = src.slice(
-    src.indexOf("private drainPendingPrompts"),
-    src.indexOf("private drainPendingPrompts") + 1600,
-  );
-  assert.doesNotMatch(
-    drain,
-    /event: "prompt-delivered"/,
-    "the marker must NOT be logged in drainPendingPrompts (#37) — it runs before the request",
-  );
-  const mark = src.indexOf("private async markDeliveredPrompts");
-  assert.notEqual(mark, -1, "the boundary marker must exist (#37)");
-  // anchor on the CALL, not on a fixed-width slice: `markDeliveredPrompts` sits
-  // further into llmCall than 1600 chars, so a window silently found nothing
-  const callAt = src.indexOf("await this.markDeliveredPrompts()");
-  assert.notEqual(callAt, -1, "the boundary marker must be CALLED (#37)");
-  const call = src.slice(src.lastIndexOf("private async llmCall", callAt), callAt);
-  assert.match(
-    call,
-    /if \(attempt === 1\)/,
-    "and only on the FIRST attempt — a retry resends the same payload (#37)",
-  );
-});

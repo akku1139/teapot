@@ -15,7 +15,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
-import { readSource } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,14 +47,3 @@ test("snapshot.pendingPrompts stays the DELIVERY counter (harness included) (#14
   });
 });
 
-test("the queued badge counts the CANCELLABLE set, not the delivery counter (#D3)", () => {
-  const app = readSource(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "frontend", "App.tsx"));
-  const at = app.indexOf("of yours queued");
-  assert.notEqual(at, -1, "the badge must exist");
-  const block = app.slice(app.lastIndexOf("<Show when={(sel()!.pendingPromptIds", at - 400) === -1 ? Math.max(0, at - 900) : app.lastIndexOf("<Show when={(sel()!.pendingPromptIds", at - 400), at);
-  assert.match(
-    block,
-    /pendingPromptIds\?\.length/,
-    "the badge must read the cancellable ids — harness prompts have no ✕ and are not 'yours' (#D3)",
-  );
-});

@@ -166,33 +166,10 @@ test("the snapshot ships `live` so the client can decide (#59)", async () => {
 
 /* ---------- wiring: the UI must trust the server ---------- */
 
-test("the ⏯ button decides on `live`, not on status (#59)", () => {
-  assert.match(
-    app,
-    /onclick=\{isSelLive\(\) \? act\("\/stop"\) : act\("\/start"\)\}/,
-    "the control must offer stop whenever the agent is live (#59)",
-  );
-  assert.doesNotMatch(
-    app,
-    /onclick=\{sel\(\)!\.status === "running" \? act\("\/stop"\) : act\("\/start"\)\}/,
-    "the status-only check is the regression (#59)",
-  );
-});
-
 test("Escape interrupts on `live` too (#59)", () => {
   // Same wrong field: Esc did nothing at all on a parked agent, which is
   // precisely when a user reaches for it.
   assert.match(app, /if \(s && isSelLive\(\)\) \{[\s\S]{0,160}\/stop/, "Esc must stop a parked agent (#59)");
-});
-
-test("the fallback covers an older server that does not send `live` (#59)", () => {
-  // `??` rather than a bare read, so a cached snapshot from a previous server
-  // cannot make the button permanently read "start".
-  assert.match(
-    app,
-    /return a\.live \?\? \(a\.status === "running" \|\| a\.status === "waiting"\);/,
-    "an older server's snapshot must still drive the button (#59)",
-  );
 });
 
 test("isLive() is the single source of truth on the agent (#59)", () => {

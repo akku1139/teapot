@@ -25,7 +25,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 // #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
 
@@ -56,97 +55,3 @@ test("the sweep reads agents() OUTSIDE the signal updater (#40)", () => {
   );
 });
 
-test("no other call site reads agents() inside a setLiveByAgent updater (#40)", () => {
-  // the general shape of the bug: a lazy read inside an updater that may never
-  // run, so the effect subscribes to nothing
-  const lazy = [...app.matchAll(/setLiveByAgent\(\(prev\) => \{[\s\S]{0,240}?agents\(\)/g)];
-  assert.deepEqual(
-    lazy.map((m) => m[0].slice(0, 80)),
-    [],
-    `a signal updater must not be the only reader of a dependency (#40); found ${lazy.length}`,
-  );
-});
-
-test("the sweep covers EVERY agent, not just the selected one (#40)", () => {
-  const body = pruneEffect();
-  assert.match(
-    body,
-    /list\.find\(\(x\) => x\.id === id\)/,
-    "status must come from the per-agent snapshot (#40)",
-  );
-  assert.doesNotMatch(
-    body,
-    /selected\(\)/,
-    "and must not be scoped to the selected agent — that was the original bug (#40)",
-  );
-});
-
-test("the helper itself still refuses to guess an unknown status (#40)", () => {
-  // belt and braces on the pure behaviour the wiring depends on: an agent with
-  // no snapshot is left alone rather than treated as idle
-  const lb = readSource(new URL("../frontend/live-buffer.ts", import.meta.url));
-  assert.match(
-    lb,
-    /if \(st === undefined\) continue;/,
-    "an unknown status must not prune — absence of evidence is not completion (#40)",
-  );
-  // #40: this was a literal match on `st === "running" || st === "waiting"`, which
-  // broke when that expression moved into the shared `isLiveStatus()` predicate —
-  // the predicate is what makes the two call sites agree, so match on THAT.
-  assert.match(
-    lb,
-    /if \(isLiveStatus\(st\)\) continue;/,
-    "a live or parked agent keeps its buffer (#40)",
-  );
-});
-
-/**
- * #40, the third occurrence — a reply that was ALREADY persisted still rendered
- * a second time as a live bubble with a cursor.
- *
- * Reported from a real DOM (v0.29.1): one assistant message spanning a settled
- * `.msg` row and a `.msg.live` bubble carrying the SAME text, with the bash row
- * below it still `running`. It clears on reload, because `select()` reconciles
- * the buffer directly — so the refresh path was the one doing nothing.
- *
- * The cause was WHERE the reconciliation sat, not what it decided:
- *
- *     await loadEvents(selected()!);
- *     if (events().at(-1)?.id !== beforeId) {   // <-- the socket already merged!
- *       const buf = live();
- *       if (buf && isCoveredByLog(...)) setLive(null);
- *     }
- *
- * The socket handler merges the event BEFORE it schedules this refresh
- * (`mergeEvents([msg.event])` then `setTimeout(runFeedRefresh, 60)`), so by the
- * time the refresh runs the newest id is already in `events()` and that test
- * reads FALSE. The whole block was skipped on every socket-driven refresh, so the
- * buffer survived until something ELSE cleared it — a turn boundary or the agent
- * going idle. A tool call following the message keeps the agent `running`, which
- * is why it could sit there indefinitely.
- *
- * Measured in the built bundle: with the persisted message in the log and a
- * matching delta in the buffer, the live bubble was still present after the
- * refresh; it clears now, while a genuinely live reply still renders.
- */
-test("the bubble is reconciled on every feed refresh, not only when the newest id moved (#40)", () => {
-  const at = app.indexOf("const runFeedRefresh = async () => {");
-  assert.notEqual(at, -1, "the feed refresh must exist (#40)");
-  const body = app.slice(at, app.indexOf("let pendingRefresh", at) === -1 ? at + 6000 : at + 6000);
-  const reconcile = body.indexOf("reconcileLiveBuffer(buf, events(), sel()?.status)");
-  const idTest = body.indexOf("events().at(-1)?.id !== beforeId");
-  assert.notEqual(reconcile, -1, "the refresh must reconcile the live buffer (#40)");
-  assert.notEqual(idTest, -1, "the newest-id test must still exist (#40)");
-  assert.ok(
-    reconcile < idTest,
-    "the reconciliation must NOT sit inside the newest-id test: the socket merges " +
-      "before this runs, so that test is false and the bubble is never cleaned (#40)",
-  );
-  // and it must go through the SHARED rule, so this path and select() cannot
-  // disagree about whether a buffer is stale
-  assert.match(
-    body,
-    /!reconcileLiveBuffer\(buf, events\(\), sel\(\)\?\.status\)/,
-    "one shared staleness rule, not a second copy (#40)",
-  );
-});

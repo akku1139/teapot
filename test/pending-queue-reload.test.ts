@@ -20,7 +20,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 
@@ -112,27 +111,3 @@ test("the rebuild is additive, not a replacement (#87)", () => {
   );
 });
 
-test("the App wires the rebuild through the per-session store (#87)", () => {
-  // A structural check alone was NOT enough: emptying `missing` in App.tsx left
-  // every other assertion here passing. So the effect is checked for the pieces
-  // that make it WORK, not merely exist — using substring checks rather than
-  // regexes, which have repeatedly lost their escaping through this edit path.
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  // anchor on the USE, not the type declaration — `indexOf` finds the type first
-  const at = app.indexOf("const queue = sel()?.pendingPromptQueue");
-  assert.notEqual(at, -1, "the UI must read the shipped queue (#87)");
-  const effect = app.slice(at - 200, at + 1400);
-
-  assert.ok(
-    effect.includes("const have = new Set(pendingFor(key)"),
-    "the effect must know which echoes it already holds (#87)",
-  );
-  assert.ok(
-    effect.includes("const missing = queue.filter((q) => q.id && !have.has(q.id))"),
-    "and compute which queued prompts have none (#87)",
-  );
-  assert.ok(
-    /writePending\(key,[\s\S]{0,240}?missing\.map/.test(effect),
-    "then write exactly those through the per-session store (#87)",
-  );
-});

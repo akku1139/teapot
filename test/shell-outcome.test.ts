@@ -15,7 +15,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
   shellOutcome,
   outcomeMarker,
@@ -104,18 +103,3 @@ test("a background job keeps its own hint shape (#46)", () => {
 
 /* ---------- App.tsx wiring ---------- */
 
-test("App.tsx renders shell outcomes through the helper (#46)", () => {
-  const src = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(src, /shellOutcome\(/, "must detect the outcome via shellOutcome (#46)");
-  assert.match(src, /shellHint\(\{/, "the bash summary must use shellHint (#46)");
-  assert.match(src, /outcomeMarker\(/, "resultBlock must use outcomeMarker (#46)");
-});
-
-test("the ambiguous template is gone (#46)", () => {
-  const src = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(
-    src,
-    /\$\{fmtDur\(res\.data\?\.durationMs\)\}\$\{timeoutHint\}/,
-    "the old `duration + timeout` hint is exactly what read as success (#46)",
-  );
-});

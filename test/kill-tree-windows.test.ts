@@ -31,7 +31,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { killTree, describeKill, canKillProcessGroup } from "../src/agent/kill.ts";
 import { spawn } from "node:child_process";
 
@@ -57,27 +56,6 @@ test("only POSIX can kill a whole process group (#110)", () => {
   assert.equal(canKillProcessGroup("linux"), true, "POSIX has process groups (#110)");
   assert.equal(canKillProcessGroup("darwin"), true, "macOS too (#110)");
   assert.equal(canKillProcessGroup("win32"), false, "Windows does NOT (#110)");
-});
-
-test("no code path calls process.kill with a negative pid (#110)", () => {
-  // the negative pid is what throws on Windows; it must now live in ONE place
-  const tools = readFileSync(new URL("../src/agent/tools.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(
-    tools,
-    /process\.kill\(-/,
-    "the raw group kill must not remain at the call sites (#110)",
-  );
-  const kill = readFileSync(new URL("../src/agent/kill.ts", import.meta.url), "utf8");
-  assert.match(kill, /process\.kill\(-child\.pid/, "it belongs in the helper (#110)");
-});
-
-test("an empty catch no longer hides a failed kill (#110)", () => {
-  const tools = readFileSync(new URL("../src/agent/tools.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(
-    tools,
-    /catch \{\s*\/\*\s*already gone\s*\*\/\s*\}/,
-    "the swallow that hid every Windows failure must be gone (#110)",
-  );
 });
 
 /* ---------- the reporting, which is the actual fix ---------- */

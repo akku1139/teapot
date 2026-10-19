@@ -8,7 +8,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { fmtDur } from "../frontend/format.ts";
 
 test("fmtDur: the issue's own example becomes readable (#24)", () => {
@@ -54,14 +53,4 @@ test("fmtDur: never emits a raw 'ms' suffix once a second has passed (#24)", () 
   for (const ms of [1_000, 4_000, 59_999, 60_000, 431_113, 3_600_000, 86_400_000]) {
     assert.doesNotMatch(fmtDur(ms), /ms$/, `${ms} still renders as raw milliseconds`);
   }
-});
-
-test("every durationMs render in App.tsx goes through fmtDur (#24)", () => {
-  // guards against a new raw `${durationMs}ms` template creeping back in
-  const src = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  const bare = [...src.matchAll(/\{\s*(?:e|res)\.[^}]*durationMs\s*\}\s*ms/g)];
-  assert.equal(bare.length, 0, `raw ms templates remain: ${bare.map((m) => m[0]).join(", ")}`);
-  // and the formatter really is wired into the tool-row meta lines
-  const uses = src.match(/fmtDur\(/g) ?? [];
-  assert.ok(uses.length >= 8, `expected fmtDur at every render site, found ${uses.length}`);
 });

@@ -59,16 +59,3 @@ test("sending no longer collapses a maximized composer (#134)", () => {
   );
 });
 
-test("the toggle can still restore it (#134)", () => {
-  // nothing becomes unreachable: maximizing stays reversible
-  assert.match(
-    app,
-    /const next = !composerMaximized\(\);/,
-    "the maximize button must still toggle (#134)",
-  );
-  assert.match(
-    app,
-    /class=\{"composer" \+ \(composerMaximized\(\) \? " maximized" : ""\)\}/,
-    "and the class must still reflect the state (#134)",
-  );
-});

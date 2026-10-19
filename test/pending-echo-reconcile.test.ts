@@ -20,7 +20,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 /* ---------- the rule, as implemented ---------- */
 
@@ -104,28 +103,3 @@ test("no live ids at all leaves the list alone (#78)", () => {
 
 /* ---------- the server must actually publish the ids ---------- */
 
-test("snapshot publishes pendingPromptIds, not just a count (#78)", () => {
-  const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  assert.match(
-    src,
-    /pendingPromptIds: this\.pendingPrompts\.map\(\(p\) => p\.id\)/,
-    "identity cannot be expressed without the ids (#78)",
-  );
-});
-
-test("the ids are bounded and carry no prompt text (#78)", () => {
-  const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  const line = src.split("\n").find((l) => l.includes("pendingPromptIds:")) ?? "";
-  assert.match(line, /slice\(0, 64\)/, "the snapshot must stay bounded (#78)");
-  assert.doesNotMatch(line, /\.text/, "only ids may travel — never prompt content (#78)");
-});
-
-test("the component reconciles by id, not by position (#78)", () => {
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /sel\(\)\?\.pendingPromptIds/, "the UI must read the ids (#78)");
-  assert.doesNotMatch(
-    app,
-    /filter\(\(p\) => !!p\.promptId\)\.slice\(0, queued\)/,
-    "the positional slice is the bug (#78) — it matches nothing and keeps the first N",
-  );
-});

@@ -4224,7 +4224,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               // tool (wait_children) and queued prompts both read "idle" while
               // the agent is very much alive, so the old check offered START on
               // a working agent and the user could not stop it.
-              onclick={isSelLive() ? act("/stop") : act("/start")}
+              //
+              // The `() =>` wrapper is the WHOLE POINT, not a style choice: a bare
+              // expression in `onclick={…}` is evaluated ONCE, when the element is
+              // created, so the handler froze to whichever action was right at that
+              // moment. Solid DOES re-evaluate the label and `class` (they are
+              // tracked reads), so the button could read "▶ start" while its frozen
+              // handler still posted `/stop`:
+              //
+              //     label="■ stop"  ->  click  ->  POST /start   (measured)
+              //
+              // Reported as "stop した後に start が機能しない": stopping while the
+              // agent ran froze the handler to `/stop`, and every press afterwards
+              // re-sent a stop — so the agent never restarted.
+              onclick={() => (isSelLive() ? act("/stop") : act("/start"))()}
             >{isSelLive() ? "■ stop" : "▶ start"}</button>
             <button
               title="branch off the conversation here — try things without disturbing the main line"

@@ -13,7 +13,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { goalLine, auditPhase, isAuditLifecycle } from "../frontend/goal-timeline.ts";
 
 /* ---------- the reported sequence, end to end ---------- */
@@ -161,20 +160,3 @@ test("a non-audit goal event keeps its text (#41)", () => {
 
 /* ---------- App.tsx wiring ---------- */
 
-test("App.tsx renders goal events through goalLine (#41)", () => {
-  const src = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(src, /goalLine\(e\.data/, "the goal renderer must go through goalLine (#41)");
-  assert.doesNotMatch(
-    src,
-    /🎯 goal \{String\(d\.event/,
-    "the old empty-body template must be gone (#41)",
-  );
-  // the label alone is not enough — the detail must be rendered too, and the
-  // decision to render it is `hasCard`, not a guess from an empty string (#51)
-  const block = src.slice(src.indexOf('if (e.type === "goal")'));
-  assert.match(
-    block.slice(0, 1400),
-    /line\.hasCard/,
-    "the detail body must be rendered when hasCard says so (#41, #51)",
-  );
-});

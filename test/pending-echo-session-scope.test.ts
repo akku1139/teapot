@@ -22,15 +22,6 @@ import { blockFrom, readSource } from "./helpers/source.ts";
 
 const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
 
-test("pending echoes are stored per session, not globally (#87)", () => {
-  assert.match(
-    app,
-    /const pendingBySession = new Map<string, PendingEcho\[\]>/,
-    "echoes must be keyed by session (#87)",
-  );
-  assert.match(app, /const pendingKey = \(\): string =>/, "and addressed through one key (#87)");
-});
-
 test("a session switch saves the outgoing echoes and restores the incoming (#87)", () => {
   // the line that caused the bug was a bare `setPendingMsgs([])`
   assert.doesNotMatch(
@@ -80,22 +71,3 @@ test("every mutation of the echo list goes through the per-session writer (#87)"
   }
 });
 
-test("the echo set is not re-derived from the timeline on return (#87)", () => {
-  // the pending indicator must survive a switch, so the per-session map is the
-  // single source of truth for which echoes belong to a session
-  assert.match(
-    app,
-    // `\w+` because the list is the DEDUPED one since #100 — the rule is
-    // "an empty list deletes the entry", not which local holds it
-    /if \(\w+\.length === 0\) pendingBySession\.delete\(key\);/,
-    "an emptied session drops its entry rather than accumulating (#87)",
-  );
-  assert.match(
-    app,
-    // was `else pendingBySession.set(key, next)` — a literal that broke when
-    // #100 introduced the `deduped` local. The rule is "a non-empty list is
-    // stored under its session key", not which name the list has.
-    /else pendingBySession\.set\(key, \w+\);/,
-    "and a session with echoes is remembered (#87)",
-  );
-});

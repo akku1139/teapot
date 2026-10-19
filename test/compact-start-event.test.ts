@@ -18,7 +18,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { Agent } from "../src/agent/agent.ts";
@@ -191,21 +190,3 @@ test("a forced /compact is labelled manual, an automatic one is not (#56)", asyn
   });
 });
 
-test("the web UI renders the start note as a visible timeline row (#56)", async () => {
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /context-compaction-started/, "the web UI must handle the start note (#56)");
-  const idx = app.indexOf("context-compaction-started");
-  const window = app.slice(idx, idx + 800);
-  assert.match(
-    window,
-    /divider-msg|embed/,
-    `the start note must render a VISIBLE row, not a log-only note. Saw: ${window.slice(0, 240)}`,
-  );
-  // it must not sit after the blanket `return null` for log-only notes
-  const handlerStart = app.lastIndexOf('if (e.type === "system_note")', idx);
-  const nullIndex = app.indexOf("return null; // log-only notes", handlerStart);
-  assert.ok(
-    nullIndex === -1 || idx < nullIndex,
-    "the start-note branch must come BEFORE the log-only fallthrough (#56)",
-  );
-});

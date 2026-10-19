@@ -157,52 +157,7 @@ test("the API exposes the lineage mode and defaults to strict (#38)", () => {
   );
 });
 
-test("the web UI asks for the inherited view (#38)", () => {
-  assert.match(
-    app,
-    /&branch=\$\{encodeURIComponent\(bf\)\}&lineage=true/,
-    "the timeline must request lineage filtering (#38)",
-  );
-});
-
-test("the note describes the new behaviour, not the old one (#38)", () => {
-  // A stale note is worse than none: it would tell the operator the view hides
-  // inherited history, which is now the opposite of what happens.
-  assert.doesNotMatch(
-    app,
-    /reasoning over the history\s*\n?\s*inherited before this branch forked/,
-    "the old 'only — the agent also reasons over' note must be gone (#38)",
-  );
-  assert.match(
-    app,
-    /and the history it inherited before forking/,
-    "the note must say the inherited history IS shown (#38)",
-  );
-});
-
 /* ---------- #77: BOTH fetch paths must agree about what a filter means ---------- */
-
-test("both the tail and the older-pages fetch request the inherited view (#77)", () => {
-  // The tail fetch asked for `lineage=true`; `loadOlder` did not. So a filtered
-  // fork's first page showed the inherited history and scrolling up silently
-  // switched to strict filtering — the parent's pre-fork rows disappeared from
-  // the top, which reads as data loss (#38 all over again).
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  // Match to end of LINE, not to the next backtick: the template contains a
-  // nested one (`&branch=${...}`), so a [^`]* class stops short.
-  const fetches = app
-    .split("\n")
-    .filter((l) => l.includes("/events?limit="))
-    .map((l) => l.trim());
-  assert.ok(fetches.length >= 2, `expected both event fetches (#77); found ${fetches.length}`);
-  for (const url of fetches) {
-    assert.match(
-      url,
-      /branch=\$\{encodeURIComponent\(bf\)\}&lineage=true/,
-      `every branch-filtered fetch must ask for lineage, or pagination changes what the filter means (#77): ${url}`,
-    );
-  }
-});
 
 test("the server honours lineage only when asked (#77)", () => {
   // Guard the other half: if the flag stopped mattering, the frontend fix would

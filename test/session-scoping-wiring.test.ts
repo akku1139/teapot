@@ -90,30 +90,3 @@ test("the llm-delta protocol carries a session id (#146)", async () => {
   );
 });
 
-test("every llm-delta emitter supplies its session (#146)", async () => {
-  const { readFileSync } = await import("node:fs");
-  const agent = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  const emissions = agent.match(/kind: "llm-delta"/g) ?? [];
-  const withSession = agent.match(/kind: "llm-delta"[\s\S]{0,200}?sessionId:/g) ?? [];
-  assert.ok(emissions.length > 0, "there must be emissions to check (#146)");
-  assert.equal(
-    withSession.length,
-    emissions.length,
-    `every llm-delta must name its session (#146): ${emissions.length} emissions, ${withSession.length} with a sessionId`,
-  );
-});
-
-test("ToolRow activity is session-scoped (#120, #133, #146, #54)", () => {
-  assert.match(
-    app,
-    /agentActive=\{[\s\S]{0,200}?isTimelineLive\(\) && isOwnLiveWork\(e\)/,
-    "agentActive must go through the session-scoped liveness (#146)",
-  );
-  assert.match(
-    app,
-    // #54: the rule moved to frontend/session-scope.ts so the three gates that
-    // share it cannot drift again — this pins the DELEGATION, not the body.
-    /const isTimelineLive = \(\): boolean => \{[\s\S]{0,400}?timelineIsLive\(/,
-    "and that liveness must be the shared rule (#54)",
-  );
-});

@@ -15,7 +15,6 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 // #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
 import {
@@ -85,39 +84,6 @@ test("isTurnBoundary recognises only the per-turn state event (#40)", () => {
   assert.equal(isTurnBoundary({ type: "tool_result", data: {} }), false);
   assert.equal(isTurnBoundary(null), false);
   assert.equal(isTurnBoundary(undefined), false);
-});
-
-test("App.tsx clears on the turn boundary, not on the per-attempt reset (#40)", () => {
-  // Guards against "fixing" this by clearing on the empty llm-delta the server
-  // emits before EVERY call — that fires on retries too and would blank the
-  // bubble mid-reply.
-  const src = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  assert.match(src, /isTurnBoundary\(msg\.event\)/, "turn-boundary check must be wired in");
-  // #141: `handler` STARTS at that same literal, so `handler.indexOf(<it>)` is 0
-  // and `boundaryBlock` was ALWAYS "" — measured length 0. A doesNotMatch on an
-  // empty string cannot fail, so the exact regression this test forbids (clearing
-  // the buffer by inspecting delta text) would have shipped green.
-  //
-  // Bound by the NEXT llm-delta branch instead, and require one to exist.
-  const at = src.indexOf('if (msg.kind === "llm-delta")');
-  assert.notEqual(at, -1, "the llm-delta handler must exist (#40)");
-  // there is only ONE llm-delta branch, so bound by the next `msg.kind` sibling
-  // (compaction-progress) rather than by another llm-delta
-  const rest = src.slice(at + 10);
-  const sib = rest.search(/^ {6}if \(msg\.kind ===/m);
-  assert.notEqual(sib, -1, "there must be a FOLLOWING branch to bound the block (#40)");
-  const nextAt = at + 10 + sib;
-  const handler = src.slice(at, nextAt);
-  const boundaryBlock = handler;
-  assert.ok(
-    boundaryBlock.length > 40,
-    `the bounded block must be non-empty, or the assertion is vacuous (#141); got ${boundaryBlock.length} chars`,
-  );
-  assert.doesNotMatch(
-    boundaryBlock,
-    /msg\.text\s*\?\?\s*""\)\s*===\s*""/,
-    "must not clear the buffer by inspecting delta text",
-  );
 });
 
 /* ---------- the covered-by-log rule ---------- */

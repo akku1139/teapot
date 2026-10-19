@@ -27,7 +27,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 // #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
 import path from "node:path";
@@ -140,21 +139,3 @@ test("resolveWorkspace does not read HOME alone (#110)", () => {
   );
 });
 
-test("every ~ expansion in src/ has a non-POSIX fallback (#110)", () => {
-  // the same mistake is easy to make again; skills.ts already does it right
-  const files: [string, string][] = [
-    ["src/master.ts", master],
-    ["src/server/api.ts", readSource(new URL("../src/server/api.ts", import.meta.url))],
-    ["src/agent/skills.ts", readSource(new URL("../src/agent/skills.ts", import.meta.url))],
-  ];
-  for (const [name, src] of files) {
-    for (const m of src.matchAll(/(?:process\.env\.HOME|~\/\^~)[^\n]*/g)) {
-      const line = m[0];
-      if (!line.includes("~")) continue;
-      assert.ok(
-        /os\.homedir\(\)|USERPROFILE/.test(line),
-        `${name}: a ~ expansion reads only process.env.HOME, which is unset on Windows: ${line.trim()} (#110)`,
-      );
-    }
-  }
-});

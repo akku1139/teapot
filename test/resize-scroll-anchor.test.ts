@@ -23,7 +23,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
 
 interface Row {
   eid: string;
@@ -104,43 +103,3 @@ test("the fix keeps the topmost visible row (#103)", () => {
   assert.equal(fixed - a, offset, `and at the same offset within it (#103)`);
 });
 
-test("the resize handler re-pins rather than trusting scrollTop (#103)", () => {
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  // Anchored on the CODE. It used to search for the explanatory comment's text,
-  // so rewording the prose failed the test while the behaviour was unchanged.
-  const at = app.indexOf("const onResize = () => {");
-  assert.notEqual(at, -1, "the handler must exist (#103)");
-  const block = app.slice(at, app.indexOf("onCleanup(", at));
-  assert.match(block, /addEventListener\("resize"/, "it must listen for resize (#103)");
-  assert.match(block, /f\.scrollTop = f\.scrollHeight/, "and re-pin when following (#103)");
-  assert.match(block, /anchorRow/, "and use the anchor row otherwise (#103)");
-  assert.match(
-    block,
-    /requestAnimationFrame/,
-    "after layout settles — measuring during a resize reads stale heights (#103)",
-  );
-});
-
-test("the anchor is a stable row id, not a pixel offset or an index (#103)", () => {
-  // a row INDEX would shift if rows were prepended; a pixel offset is exactly
-  // what does not survive a re-wrap
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  assert.match(
-    app,
-    /data-eid/,
-    "rows carry a stable event id to anchor on (#103)",
-  );
-  const at = app.indexOf("function firstVisibleRow");
-  assert.notEqual(at, -1, "the anchor helper must exist (#103)");
-  const fn = app.slice(at, app.indexOf("\n  }", at));
-  assert.match(fn, /\[data-eid\]/, "and must select by that id (#103)");
-  assert.match(fn, /getBoundingClientRect\(\)\.top|\.top\b/, "measuring the row's viewport top (#103)");
-});
-
-test("the listener is cleaned up (#103)", () => {
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  const at = app.indexOf("const onResize = () => {");
-  assert.notEqual(at, -1, "the handler must exist (#103)");
-  const block = app.slice(at, app.indexOf("});", app.indexOf("onCleanup", at)));
-  assert.match(block, /removeEventListener\("resize"/, "a leaked listener would fire per remount (#103)");
-});

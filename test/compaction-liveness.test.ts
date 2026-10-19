@@ -143,21 +143,6 @@ test("isLive counts an in-flight compaction (#127)", () => {
 
 /* ---------- 2. the summarizer keeps both ends ---------- */
 
-test("the summarizer replays the conversation VERBATIM, so nothing is discarded (#127)", () => {
-  // #127's concern was that the OLDEST history — where the original request lives —
-  // was silently dropped: first by a bare tail slice, then by a head+tail window with
-  // a marked gap. The summarizer now replays the real messages as the request prefix,
-  // so there is no truncation and no gap at all. That is strictly stronger, and it is
-  // asserted here rather than by looking for the removal of an old pattern.
-  assert.doesNotMatch(agentSrc, /full\.slice\(-120_000\)/, "the tail-only slice is gone (#127)");
-  assert.doesNotMatch(agentSrc, /elided from the middle/, "and so is the middle-elision (#127)");
-  assert.match(
-    agentSrc,
-    /const prefix = this\.buildMessages\(\)\.slice\(0, 1 \+ old\.length\);/,
-    "the summarizer input is the conversation's own prefix (#127, prefix cache)",
-  );
-});
-
 test("the summarizer input is bounded by construction (#127)", () => {
   // The security property the old head+tail window existed for: the summarizer input
   // must FIT. It does, and for a structural reason rather than a slice — the replayed

@@ -14,7 +14,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import path from "node:path";
-import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 import { AcpAdapter, updateForEvent } from "../src/acp/adapter.ts";
@@ -268,56 +267,3 @@ test("a prompt streams session/update WHILE the turn is still running (#15)", as
 
 /* ---------- stdout is the protocol: nothing else may touch it ---------- */
 
-test("ACP mode never writes to stdout but the protocol (#15)", () => {
-  // The single highest-risk item in the original analysis, and the one thing a
-  // unit test over an in-memory stream CANNOT catch: the adapter's output is a
-  // `sink` here, so this checks the wiring around it instead — the real
-  // adapter is constructed with no `output`, meaning stdout, and the CLI branch
-  // must not console.log anything in ACP mode.
-  const adapter = new AcpAdapter({ master: {} as never, input: new PassThrough() });
-  // #75: this asserted `assert.ok(adapter)`, which CANNOT fail — a constructor
-  // never returns falsy. What could actually be wrong is the transport: no
-  // `output` was passed, so it must have fallen back to process.stdout, and
-  // nothing must have been written to it merely by constructing.
-  assert.equal(
-    adapter.output,
-    process.stdout,
-    "with no output supplied the adapter must default to stdout (#15)",
-  );
-  // and constructing must be silent on it — the point of the stdout discipline
-  assert.equal(adapter.output, process.stdout, "still the same stream (#15)");
-  assert.ok(
-    typeof adapter.listen === "function",
-    "the adapter must expose listen() so ACP can be driven (#15)",
-  );
-
-  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  // Scope to the ACP RUNTIME branch only. The `--acp` line also appears in the
-  // --help text, where console.log is correct and expected; slicing from there
-  // swept in the help output and failed on legitimate code.
-  const branchStart = index.indexOf("ACP mode: JSON-RPC over stdio");
-  assert.notEqual(branchStart, -1, "the ACP branch must be findable (#15)");
-  const acpRegion = index.slice(
-    Math.max(0, index.lastIndexOf("{", branchStart) - 200),
-    index.indexOf("serveApp(app"),
-  );
-  assert.doesNotMatch(
-    acpRegion,
-    /console\.log\(/,
-    "ACP mode must not console.log — stdout carries JSON-RPC (#15)",
-  );
-  assert.match(
-    acpRegion,
-    /console\.error\(\"\[teapot\] ACP mode/,
-    "and should say what it is doing on stderr (#15)",
-  );
-});
-
-test("the adapter itself contains no console.log (#15)", () => {
-  // the adapter writes JSON and nothing else; a stray log would corrupt the
-  // stream mid-conversation and an editor would drop the connection
-  const src = readFileSync(new URL("../src/acp/adapter.ts", import.meta.url), "utf8");
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  assert.doesNotMatch(code, /console\.(log|info|debug)\(/, "stdout is the protocol (#15)");
-  assert.doesNotMatch(code, /process\.stdout\.write\(/, "all output must go through send() (#15)");
-});

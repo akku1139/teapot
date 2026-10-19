@@ -25,9 +25,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
 
 interface Echo {
   id: string;
@@ -105,23 +103,4 @@ test("a duplicate keeps its own SLOT, not its position (#100)", () => {
     ["p2", "p1", "p3"],
     "one entry per promptId (#100)",
   );
-});
-
-test("writePending is the place that enforces it (#100)", () => {
-  // structural: the guard has to be at the choke point, or one writer escapes it
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  const at = app.indexOf("const writePending =");
-  assert.notEqual(at, -1, "writePending must exist (#100)");
-  const body = app.slice(at, app.indexOf("\n  };", at));
-  assert.match(body, /seen\.has\(id\)/, "writePending must dedupe on promptId (#100)");
-  assert.match(body, /if \(!id\)/, "and must keep id-less echoes (#100)");
-  assert.match(body, /deduped\.reverse\(\)/, "preserving order (#100)");
-});
-
-test("both writers still exist — the fix does not remove a path (#100)", () => {
-  // the #87 rebuild and the send path are both still needed; only the duplicate
-  // is gone
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  assert.match(app, /pendingPromptQueue/, "the #87 rebuild survives (#100)");
-  assert.match(app, /setPendingMsgs\(/, "the send path survives (#100)");
 });

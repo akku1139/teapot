@@ -983,6 +983,79 @@ console.log("deep render ok: feed rows present");
     console.log("deep render ok: an invisible row does not split a tool run (#75)");
   }
 
+  /* ---------- #59: the start/stop toggle must send what its LABEL says ---------
+   * Reported: "stop した後に start が機能しない".
+   *
+   * The button is ONE element that flips between ▶ start and ■ stop, and it chose
+   * the action with a bare expression:
+   *
+   *     onclick={isSelLive() ? act("/stop") : act("/start")}
+   *
+   * A bare expression in `onclick={…}` is evaluated ONCE, when the element is
+   * created — the handler FROZE to whichever action was correct at that moment.
+   * Solid does re-evaluate the label and `class` (tracked reads), so the button
+   * could read "▶ start" while its frozen handler re-sent a stop. MEASURED, by
+   * clicking the real bundle:
+   *
+   *     label="■ stop"  ->  click  ->  POST /start    <- reported as a dead button
+   *     label="▶ start" ->  click  ->  POST /stop
+   *
+   * So an agent stopped while it was running could never be started again: every
+   * press stopped it. The check below drives both presses and asserts the METHOD
+   * matches the label, which is the property the operator experiences.
+   */
+  {
+    const posted = [];
+    const origFetchToggle = globalThis.fetch;
+    setGlobal("fetch", async (u, init) => {
+      if (typeof u === "string" && /\/stop|\/start$/.test(u) && init?.method === "POST") {
+        posted.push(u.slice(u.lastIndexOf("/")));
+      }
+      return origFetchToggle(u, init);
+    });
+    const sockT = MockWS.instances.at(-1);
+    if (!sockT?.onmessage) {
+      console.error("#59 check: no app socket to drive");
+      process.exit(1);
+    }
+    const toggle = () => [...w.document.querySelectorAll("button")].find((b) => /start|stop/.test(b.textContent ?? ""));
+
+    // live agent -> the button must offer stop AND send /stop
+    sockT.onmessage({ data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "running", live: true } }) });
+    await new Promise((r) => setTimeout(r, 300));
+    const stopBtn = toggle();
+    if (!stopBtn || !/stop/.test(stopBtn.textContent ?? "")) {
+      console.error(`#59 check could not reach the stop state — got ${JSON.stringify(stopBtn?.textContent)}`);
+      process.exit(1);
+    }
+    stopBtn.click();
+    await new Promise((r) => setTimeout(r, 300));
+    if (posted.at(-1) !== "/stop") {
+      console.error(
+        `#59 REGRESSION: a button reading "■ stop" posted ${JSON.stringify(posted.at(-1))} — the click handler is frozen at element creation`,
+      );
+      process.exit(1);
+    }
+
+    // stopped agent -> must offer start AND send /start (the reported failure)
+    sockT.onmessage({ data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "stopped", live: false } }) });
+    await new Promise((r) => setTimeout(r, 300));
+    const startBtn = toggle();
+    if (!startBtn || !/start/.test(startBtn.textContent ?? "")) {
+      console.error(`#59 check could not reach the start state — got ${JSON.stringify(startBtn?.textContent)}`);
+      process.exit(1);
+    }
+    startBtn.click();
+    await new Promise((r) => setTimeout(r, 300));
+    if (posted.at(-1) !== "/start") {
+      console.error(
+        `#59 REGRESSION: after a stop, the button read "▶ start" but posted ${JSON.stringify(posted.at(-1))} — pressing start cannot restart the agent`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: the start/stop toggle sends what its label says (#59)");
+  }
+
   /* ---------- #32: a constant branch label is not repeated on every row --------
    * Reported as part of "タイムラインが煩雑". MEASURED: all 14940 events of one real
    * session carried `br0`, so ~1500 rendered rows each printed "br0" — a label that

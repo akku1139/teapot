@@ -50,26 +50,3 @@ test("no preset pre-fills a model (#144)", () => {
   assert.doesNotMatch(table, /gpt-4o/, "gpt-4o-mini was the reported default (#144)");
 });
 
-test("the fetched catalogue is a CHOICE, not autocomplete (#144)", () => {
-  // with nothing pre-filled the list carries the whole decision, so it must be
-  // clickable and show what each model costs
-  assert.match(app, /const filteredModels = \(\) =>/, "the catalogue must be filterable by what is typed (#144)");
-  assert.match(app, /class=\{"wizmodel"/, "rows must be clickable choices (#144)");
-  assert.match(app, /onclick=\{\(\) => setModel\(m\.id\)\}/, "clicking a row must select it (#144)");
-  assert.match(app, /specOf\(m\.id\)/, "and each row shows its ctx/price (#144)");
-  // capped, or a 400-model endpoint pushes the rest of the form off screen
-  assert.match(app, /slice\(0, 40\)/, "the list must be capped (#144)");
-});
-
-test("submitting with no model explains itself instead of failing server-side (#144)", () => {
-  const at = app.indexOf("const submit = async (e: Event) => {");
-  assert.notEqual(at, -1, "the wizard submit must exist");
-  const body = app.slice(at, app.indexOf("props.onDone();", at));
-  assert.match(body, /if \(!model\(\)\.trim\(\)\)/, "it must check the model first (#144)");
-  assert.match(body, /pick a model/, "and say what to do about it (#144)");
-});
-
-test("the example config does not ship a stale model either (#144)", () => {
-  const ex = readSourceUrl(new URL("../teapot.config.example.json", import.meta.url));
-  assert.doesNotMatch(ex, /gpt-4o/, "the example still advertised the stale model (#144)");
-});

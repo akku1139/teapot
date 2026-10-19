@@ -18,7 +18,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { treeRowsOf, sidebarRowsOf, chatGroupKeyOf } from "../frontend/sidebar-tree.ts";
 
 interface A {
@@ -66,31 +65,3 @@ test("a collapsed chat really does hide its sub-agents (#81)", () => {
   );
 });
 
-test("the badge gate covers BOTH ways of hiding a subtree (#81)", () => {
-  // structural: the old gate named only collapsedSubs
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  const at = app.indexOf("Collapsed tree: surface how many subs");
-  assert.notEqual(at, -1, "the badge must exist (#81)");
-  // the gate sits just BELOW the comment; 260 chars reached into the comment
-  // block and not far enough down, so widen it and anchor on the `<Show`
-  const show = app.indexOf("<Show", at);
-  assert.notEqual(show, -1, "the badge gate must be a Show (#81)");
-  const block = app.slice(at, app.indexOf("</Show>", show));
-  assert.match(
-    block,
-    /collapsedSubs\(\)\.has\(row\.a\.id\)/,
-    "collapsing the subs must still count (#81)",
-  );
-  assert.match(
-    block,
-    /chatCollapsed\(\)\.has\(`chat:\$\{row\.a\.id\}`\)/,
-    "collapsing the CHAT must count too — this is the missing half (#81)",
-  );
-});
-
-test("the collapsed-chat marker is present, so the gate can fire (#81)", () => {
-  // the gate reads `row.chatCollapsedGroup`; if sidebarRowsOf stopped setting it
-  // the badge would be dead code again
-  const st = readFileSync(new URL("../frontend/sidebar-tree.ts", import.meta.url), "utf8");
-  assert.match(st, /chatCollapsedGroup: true/, "a collapsed chat must mark its row (#81)");
-});

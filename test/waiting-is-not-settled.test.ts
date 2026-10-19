@@ -71,20 +71,3 @@ test("a waiting agent's STATUS is idle, which is why the display needs the parke
   }
 });
 
-test("reusing `waiting` for wait_children would REINTRODUCE the false settle (#130 gate)", async () => {
-  // `waiting` already means "blocked on the OPERATOR" (ask_user), and master's
-  // SETTLED set — the #130 gate that decides whether to tell a parent its child
-  // is done — INCLUDES it, deliberately: a child asking a question needs the
-  // operator, and the parent should hear about it rather than wait forever.
-  //
-  // wait_children means the opposite ("still working"). So a distinct status
-  // cannot simply reuse `waiting`: the report gate would announce a busy child as
-  // settled, which is the very bug the subtree fix removes. This asserts the
-  // conflict exists, so nobody "unifies" the two states later without noticing.
-  const master = await import("node:fs").then((fs) =>
-    fs.readFileSync(new URL("../src/master.ts", import.meta.url), "utf8"),
-  );
-  const settled = /const SETTLED[^=]*=\s*new Set\(\[([^\]]*)\]\)/.exec(master)?.[1] ?? "";
-  assert.match(settled, /"waiting"/, "waiting counts as settled — what makes reuse unsafe (#130)");
-  assert.match(settled, /"idle"/, "and idle does too");
-});

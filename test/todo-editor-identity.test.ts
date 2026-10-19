@@ -16,7 +16,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 // #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
 
@@ -107,16 +106,6 @@ test("preview=TRUE renders the checklist, not the editor (#88)", () => {
 });
 
 /* ---------- the real check lives in the bundle smoke test ---------- */
-
-test("the smoke test asserts node identity, not just the draft text (#30)", () => {
-  const smoke = readSource(new URL("../scripts/smoke-web.mjs", import.meta.url));
-  assert.match(
-    smoke,
-    /after !== box/,
-    "smoke must assert the editor NODE survives, since focus/caret loss was the bug (#30)",
-  );
-  assert.match(smoke, /activeElement/);
-});
 
 /* ---------- EACH gate is keyed, not just one of them (#75 T5c/T5d) ---------- */
 

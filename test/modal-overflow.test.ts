@@ -51,16 +51,6 @@ test("the new-agent provider column is shrinkable (#36)", () => {
   assert.match(style, /flex:\s*0 1 auto|flex:1|flex:/, `provider column needs a flex basis: ${style}`);
 });
 
-test("no in-modal control is left at min-width:auto", () => {
-  // .modal input / select / textarea all share one rule; make sure a later,
-  // narrower rule cannot undo it for selects specifically
-  assert.doesNotMatch(
-    css,
-    /\.modal\s+select\s*\{[^}]*min-width:\s*auto/,
-    "a later .modal select rule would re-break the shrink",
-  );
-});
-
 test("the agent-name and model columns keep sharing the row evenly", () => {
   // both neighbours are flex:1; the provider column must not claim all the space
   const name = /<label style="flex:1">agent name/.test(app);

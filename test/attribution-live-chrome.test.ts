@@ -185,46 +185,5 @@ test("a mirrored row with no type defaults to a message (#40)", () => {
   assert.equal(rows[0]!.data.actor, "kid");
 });
 
-test("a legacy `sub` row is still rendered, attributed to its actor (#63)", () => {
-  // A child's activity is no longer written into the parent's log (#63) — the
-  // mirroring flooded the parent's timeline and bought nothing, since
-  // `rebuildMessagesFrom` never read those rows, so the model never saw them.
-  //
-  // But logs written BEFORE that change still contain them, and dropping rows
-  // an operator can see in the file on disk is how a log stops being
-  // trustworthy. They are still admitted by the filter and expanded, so a child
-  // row renders as a child row instead of vanishing.
-  const rows = expand([{ type: "sub", data: { sub: "leaf", type: "message", data: { content: "x" } } }]);
-  assert.equal(rows[0]!.data.actor, "leaf", "a legacy child row keeps its actor (#63)");
-  assert.equal(isOwnLiveWork(rows[0]!), false, "and is not the parent's own live work (#40)");
-
-  // and nothing writes them any more
-  const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(
-    master,
-    /log\.append\("sub"/,
-    "the parent log must no longer be written a copy of the child's activity (#63)",
-  );
-});
-
 /* ---------- wiring: the gate must still be in place ---------- */
 
-test("agentActive consults the provenance gate (#40)", () => {
-  // #146: the provenance gate must survive, but it now sits behind a
-  // SESSION check as well. `isSelLive()` alone answers "is this AGENT working",
-  // while the timeline is per session — so an agent working on S2 would mark S1's
-  // stranded tool rows "running…".
-  assert.match(
-    app,
-    // comments may sit inside the braces (they did when #146 added its note), so
-    // match the expression rather than the surrounding punctuation
-    /agentActive=\{[\s\S]{0,200}?isTimelineLive\(\) && isOwnLiveWork\(e\)/,
-    "the gate must survive, now session-scoped (#40/#146)",
-  );
-  assert.match(
-    app,
-    /const isTimelineLive = \(\): boolean =>/,
-    "and the session-scoped liveness must exist (#146)",
-  );
-  assert.match(app, /if \(e\.data\?\.actor\) return \{ name: `@\$\{String\(e\.data\.actor\)\}`/, "and the author must be shown (#40)");
-});

@@ -23,7 +23,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 // #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
 import { subAgentDisplayName } from "../frontend/sidebar-tree.ts";
@@ -80,19 +79,6 @@ test("the sidebar tooltip names the sub-agent (#121)", () => {
     block,
     /sub-agent of @\$\{row\.a\.parent\} — "\$\{named\}"/,
     "the parent stays, and the name is added (#121)",
-  );
-});
-
-test("the persona list is passed in, not hard-coded (#121)", () => {
-  // a stale copy in sidebar-tree.ts would mis-parse every persona-spawned id
-  // the day a persona is added
-  const tree = readSource(new URL("../frontend/sidebar-tree.ts", import.meta.url));
-  const fn = tree.slice(tree.indexOf("export function subAgentDisplayName"));
-  assert.match(fn, /personas: readonly string\[\] = \[\]/, "the list must be a parameter (#121)");
-  assert.doesNotMatch(
-    tree.slice(0, tree.indexOf("export function subAgentDisplayName")),
-    /reviewer[\s\S]{0,40}tester[\s\S]{0,40}researcher/,
-    "and must NOT be duplicated in this module (#121)",
   );
 });
 

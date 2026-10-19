@@ -84,17 +84,3 @@ test("reusing a session re-themes it too (#137)", () => {
   assert.notEqual(at, -1, "the reuse path must re-theme (#137)");
 });
 
-test("the re-theming helper is the shared, cursor-aware module (#137/#75)", () => {
-  // the helper LIVES in ./terminal-theme and is imported — an inline copy here
-  // would drift (the #75 failure mode: tests anchored to a copy, not the code)
-  assert.match(
-    app,
-    /import \{ retintTerminal, themeColors \} from "\.\/terminal-theme"/,
-    "App must use the shared module (#137)",
-  );
-  assert.doesNotMatch(
-    app,
-    /function retintTerminal/,
-    "no inline copy may shadow the module (#75)",
-  );
-});

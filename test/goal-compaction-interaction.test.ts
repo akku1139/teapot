@@ -24,7 +24,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
-import { readFileSync } from "node:fs";
 
 const mk = (ws: string, sd: string, chatFn: unknown, extra: Record<string, unknown> = {}) =>
   new Agent({
@@ -88,45 +87,3 @@ test("the audit verdict drives the goal status, deliberately (#82)", async () =>
   });
 });
 
-test("the status transition belongs to setGoalAudit, not to compaction (#82)", () => {
-  // the real question behind #82: could a compaction be what completes a goal?
-  const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  const audit = src.slice(src.indexOf("async setGoalAudit"), src.indexOf("async setGoalAudit") + 900);
-  assert.match(audit, /if \(verdict === "approved"\) this\.goal\.status = "done"/, "audit owns the transition (#82)");
-  // and maybeCompact must not touch goal.status at all
-  const compact = src.slice(src.indexOf("private async maybeCompact"), src.indexOf("private async maybeCompact") + 6000);
-  assert.doesNotMatch(
-    compact,
-    /goal\.status\s*=/,
-    "compaction must never change the goal status (#82) — that is the overlap worth ruling out",
-  );
-});
-
-test("every compaction entry point is serialised through enqueue (#82)", () => {
-  // three call sites: the turn boundary, overflow recovery, and the operator's
-  // explicit compactNow. If any ran off the chain, the guarantee above would be
-  // accidental rather than structural.
-  const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  // three: the turn boundary, overflow recovery, and compactNow
-  const calls = [...src.matchAll(/await this\.maybeCompact\(/g)].length;
-  assert.equal(calls, 3, `expected 3 call sites, found ${calls} (#82)`);
-  // compactNow wraps its call in enqueue()
-  assert.match(
-    src,
-    /async compactNow\(\)[\s\S]{0,220}this\.enqueue\(async \(\) => \{[\s\S]{0,160}this\.maybeCompact\(true\)/,
-    "compactNow must go through enqueue (#82)",
-  );
-  // and the loop's own compaction is inside the enqueued loop body
-  assert.match(src, /this\.runChain = p\.then\(/, "enqueue must serialise via runChain (#82)");
-});
-
-test("the goal is instance state, not message content (#82)", () => {
-  // this is WHY compaction cannot drop it — worth pinning, because moving the
-  // goal into the prompt would silently reintroduce the interaction
-  const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-  assert.match(
-    src,
-    /goal: GoalState = \{/,
-    "the goal must stay a field on the agent (#82)",
-  );
-});

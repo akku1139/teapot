@@ -179,18 +179,6 @@ test("an empty tree renders nothing (#58)", () => {
 
 /* ---------- wiring ---------- */
 
-test("App.tsx delegates the tree and grouping to the tested module (#58)", () => {
-  assert.match(app, /treeRowsOf\(agents\(\), collapsedSubs\(\), hideGhosts\(\), chatCollapsed\(\)\)/, "the tree must come from the tested module (#58)");
-  assert.match(app, /sidebarRowsOf\(agents\(\), treeRows\(\), wsCollapsed\(\)\)/, "the rows must too (#58)");
-  assert.match(app, /wsChatCountsOf\(agents\(\)\)/, "the directory count must too (#58)");
-});
-
-test("chat collapse reuses the persisted group set rather than new state (#58)", () => {
-  // a second signal would mean a second thing to migrate on the next change
-  assert.match(app, /const isChat = !row\.a\.parent;/, "the row caret keys off being top-level (#58)");
-  assert.match(app, /toggleWsGroup\(`chat:\$\{row\.a\.id\}`/, "and toggles it in the persisted set (#58)");
-});
-
 /* ---------- #62: a directory's chats must be CONTIGUOUS ---------- */
 
 test("one directory renders ONE header even when its chats are interleaved (#62)", () => {

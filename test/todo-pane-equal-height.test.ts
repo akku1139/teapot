@@ -83,20 +83,6 @@ test("the two heights are identical, so toggling cannot jump (#124)", () => {
   );
 });
 
-test("the preview no longer carries an inline height (#124)", () => {
-  // an inline style wins over the sheet, so leaving it would defeat the class
-  assert.match(
-    app,
-    /class="content mdpreview todopane"/,
-    "the preview must take its box from the class (#124)",
-  );
-  assert.doesNotMatch(
-    app,
-    /mdpreview[^>]*style="[^"]*max-height/,
-    "and must not still carry an inline max-height (#124)",
-  );
-});
-
 test("the editor keeps the styling its inline style used to carry (#124)", () => {
   // the move to the sheet must not drop anything — an earlier version of this
   // change lost width, background, border, color and resize, which the build

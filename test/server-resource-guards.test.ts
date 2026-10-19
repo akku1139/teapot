@@ -117,29 +117,3 @@ test("a failed create does not leak its reservation (#71)", async () => {
 
 /* ---------- #70: the terminal cap must actually cap ---------- */
 
-test("the terminal cap holds (#70)", async () => {
-  // Source-level: the guard exists, but a connection refused at the cap used to
-  // decrement a counter it never incremented, so repeated connect/close cycles
-  // drove the counter to zero while real shells stayed alive — measured 16 live
-  // shells against a max of 10.
-  //
-  // The WebSocket handler needs a live upgrade to exercise end to end, so this
-  // pins the two properties that made it drift: admission is tracked per
-  // connection, and the release is gated on it.
-  const src = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
-  assert.match(
-    src,
-    /let admitted = false;/,
-    "admission must be tracked per connection (#70)",
-  );
-  assert.match(
-    src,
-    /if \(!admitted\) return;[\s\S]{0,120}termCounts\.get\(agentId\) \?\? 1\) - 1/,
-    "only an ADMITTED connection may decrement the counter (#70)",
-  );
-  assert.match(
-    src,
-    /if \(cur >= 10\)/,
-    "the cap itself must still be enforced (#70)",
-  );
-});

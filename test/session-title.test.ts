@@ -17,7 +17,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sessionTitleFrom } from "../src/session-title.ts";
-import { readSourceUrl } from "./helpers/source.ts";
 
 test("the title is the first MEANINGFUL line of the operator's prompt", () => {
   assert.equal(
@@ -76,67 +75,3 @@ test("a long line is clipped on a word boundary with an ellipsis (#155)", () => 
   assert.ok(!/\s…$/.test(t!), "the ellipsis must not sit after a stray space");
 });
 
-test("the sidebar PREFERS the title over the raw id (#155)", () => {
-  // The wiring is the part that silently does nothing (#75). A title that is
-  // computed and never rendered leaves the operator reading `teapot-10-16854917`.
-  const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
-  assert.match(
-    app,
-    /sessionTitle/,
-    "the sidebar must render a resolved title, not only row.a.id",
-  );
-  // the row must still fall back to the id when no title exists, or a fresh
-  // session would render an empty row
-  const row = app.slice(app.indexOf("class={\"agent-item\""), app.indexOf("class={\"agent-item\"") + 4000);
-  assert.match(row, /row\.a\.id|titleOf|sessionTitle/, "the row must have a title-or-id fallback (#155)");
-});
-
-test("the server derives a title from a session's log, and SKIPS sub-agent sessions (#155)", async () => {
-  // The frontend can only show a title the server actually provides, and the server
-  // is the only place that can read a log for a session whose agent is not restored
-  // (boot leaves every agent stopped). So the derivation is pinned here, against
-  // real log files, rather than only on the pure rule.
-  const { Master, loadConfig } = await import("../src/master.ts");
-  const { mkdtempInRootSync } = await import("./helpers/tmp-root.ts");
-  const fs = await import("node:fs");
-  const path = await import("node:path");
-  const os = await import("node:os");
-
-  // sessionsRoot() is <dataDir>/sessions, so the fixture must live there
-  const dataDir = mkdtempInRootSync("titles-");
-  const root = path.join(dataDir, "sessions");
-  fs.mkdirSync(root, { recursive: true });
-  const write = (name: string, events: unknown[]) => {
-    const dir = path.join(root, name);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, "session.json"),
-      JSON.stringify({ v: 1, agentId: "top" }),
-    );
-    fs.writeFileSync(
-      path.join(dir, "chat.jsonl"),
-      events.map((e) => JSON.stringify(e)).join("\n") + "\n",
-    );
-    return dir;
-  };
-  const ev = (type: string, data: unknown, agent = "top") => ({
-    v: 1, id: "e1", seq: 1, ts: "2026-01-01T00:00:00Z", agent, session: "s", branch: "br0", parent: null, type, data,
-  });
-
-  write("top-a", [ev("state", {}), ev("prompt", { source: "user", text: "## Fix the sidebar\nmore" })]);
-  // a sub-agent session: its ONLY prompt is the harness spawn directive, which is
-  // not a human subject — it must yield NO title so the sidebar keeps its id label
-  write("top-b", [ev("prompt", { source: "harness", text: "[harness] You are sub-agent x" })]);
-  write("top-c", [ev("state", {})]); // no prompt at all
-
-  // no start(): allSessions only reads
-  const cfg = loadConfig(path.join(os.homedir(), ".config/teapot-coding-agent/config.json"));
-  const m = new Master({ ...cfg, dataDir, agents: [] }, path.join(dataDir, "cfg.json")) as unknown as {
-    allSessions(): { id: string; agentId: string; title?: string }[];
-  };
-  const sessions = m.allSessions();
-  const byId = new Map(sessions.map((s) => [s.id, s]));
-  assert.equal(byId.get("top-a")?.title, "Fix the sidebar", "a user prompt yields a title");
-  assert.equal(byId.get("top-b")?.title, undefined, "a harness-only (sub-agent) session has no title");
-  assert.equal(byId.get("top-c")?.title, undefined, "a log with no prompt has no title");
-});

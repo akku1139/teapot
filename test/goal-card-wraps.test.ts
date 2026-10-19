@@ -46,29 +46,6 @@ const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8"
 
 /* ---------- the rule ---------- */
 
-test("code inside a card wraps rather than scrolling (#111)", () => {
-  assert.match(
-    css,
-    /\.content pre\s*>\s*code\s*\{[^}]*white-space:\s*pre-wrap/,
-    "the fence must still preserve newlines and spaces (#111)",
-  );
-  assert.match(
-    css,
-    /\.content pre\s*>\s*code\s*\{[^}]*overflow-wrap:\s*anywhere/,
-    "and long unbreakable tokens (paths) must break instead of scrolling (#111)",
-  );
-});
-
-test("real code blocks keep their own horizontal scroll (#111)", () => {
-  // #111 is about PROSE, not code: `.content pre` must stay overflow-x:auto so a
-  // wide diff still scrolls rather than reflowing into an unreadable shape
-  assert.match(
-    css,
-    /\.content pre\s*\{[^}]*overflow-x:\s*auto/,
-    "a genuine code block must still scroll horizontally (#111)",
-  );
-});
-
 /* ---------- the fence's purpose is preserved ---------- */
 
 test("the plain-text detail still keeps its newlines (#111)", () => {

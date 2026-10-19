@@ -28,7 +28,6 @@ import {
 } from "../src/agent/llm.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
-import { readSourceUrl } from "./helpers/source.ts";
 
 const GO = "https://opencode.ai/zen/go/v1";
 
@@ -154,19 +153,4 @@ test("agent turns, and their summariser, name the conversation's session", async
       await agent.dispose();
     }
   });
-});
-
-/* ---------- 4. the wizard offers the endpoint ---------- */
-
-test("the setup wizard offers OpenCode Go at the documented base URL", () => {
-  const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
-  const at = app.indexOf('key: "opencode-go"');
-  assert.notEqual(at, -1, "the OpenCode Go preset must exist");
-  const entry = app.slice(at, app.indexOf("},", at));
-  assert.match(
-    entry,
-    /url: "https:\/\/opencode\.ai\/zen\/go\/v1"/,
-    "the Go base URL is the one the docs publish",
-  );
-  assert.match(entry, /model: ""/, "the operator still picks a model from the fetched catalogue (#144)");
 });

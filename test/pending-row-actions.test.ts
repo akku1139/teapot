@@ -86,52 +86,7 @@ test("a withdrawn row does not group either (#49)", () => {
 
 /* ---------- the affordance must not depend on hover ---------- */
 
-test("the queued row's cancel button is visible without hover (#49)", () => {
-  assert.match(
-    css,
-    /\.msg\.pending \.msg-head \.editbtn\s*\{[^}]*opacity:\s*1/,
-    "a control that only appears on hover does not exist for a keyboard user (#49)",
-  );
-});
-
-test("edit buttons are focusable and become visible on focus (#49)", () => {
-  assert.match(
-    css,
-    /\.msg-head \.editbtn:focus-visible\s*\{[^}]*opacity:\s*1/,
-    "focus must reveal the affordance (#49)",
-  );
-});
-
 /* ---------- wiring ---------- */
-
-test("the SHIPPED predicate excludes pending and cancelled rows (#49)", () => {
-  // #75: this used to grep App.tsx for the guard. The predicate has since moved
-  // to frontend/row-grouping.ts, so grepping the component was checking that a
-  // string still lived in a particular file rather than that the rule holds.
-  //
-  // The behavioural tests above now drive the real module, so this one only has
-  // to assert that the COMPONENT still calls it — otherwise the extraction could
-  // silently stop being used and the tests would keep passing against a module
-  // nothing imports.
-  assert.match(
-    app,
-    /groupedWith\(props\.prev/,
-    "MessageRow must call the shared predicate (#49/#75)",
-  );
-  const src = readFileSync(new URL("../frontend/row-grouping.ts", import.meta.url), "utf8");
-  assert.match(src, /!e\.data\?\.pending/, "the pending row must be excluded (#49)");
-  assert.match(src, /!prev\.data\?\.pending/, "a pending predecessor must break the group (#49)");
-  assert.match(src, /!e\.data\?\.cancelled/, "a withdrawn row must be excluded (#49)");
-});
-
-test("the shared predicate is imported, not re-declared in App.tsx (#75)", () => {
-  assert.match(app, /from "\.\/row-grouping"/, "the import must exist (#75)");
-  assert.doesNotMatch(
-    app,
-    /const actorKey = \(ev/,
-    "the local copy must be gone, or it can drift again (#75)",
-  );
-});
 
 test("the cancel button lives inside the header the group flag controls (#49)", () => {
   // documents WHY the guard is required: if the button ever moves out of

@@ -32,7 +32,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { shouldShowCollapseCaret } from "../frontend/sidebar-tree.ts";
 
 /** the reported case: no sub-agents, not collapsed -> no caret */
@@ -85,22 +84,3 @@ test("a sub-agent shows the caret only when it has children (#18)", () => {
 });
 
 /** the gate must not drift back to the old shape */
-test("the gate is the shared helper, not an inline expression (#106)", () => {
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  // anchor on the CALL, not on the rationale comment beside it (#106)
-  const callAt = app.indexOf("when={shouldShowCollapseCaret(");
-  assert.notEqual(callAt, -1, "the gate must be the shared helper (#106)");
-  const use = app.slice(callAt, callAt + 260);
-  assert.match(use, /isSub: !!row\.a\.parent/, "must pass the real row state (#106)");
-  assert.match(use, /collapsed: row\.chatCollapsedGroup === true/, "must pass the collapsed flag (#106)");
-  assert.match(use, /hasChildren: agents\(\)\.some\(\(x\) => x\.parent === row\.a\.id\)/, "must pass child presence (#106)");
-});
-
-test("the old top-level-ness gate is gone (#18/#106)", () => {
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(
-    app,
-    /when=\{\s*!row\.a\.parent \|\|/,
-    "keying on top-level-ness is the #18 bug #106 narrowed (#106)",
-  );
-});

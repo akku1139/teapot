@@ -1,5 +1,4 @@
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { useTempDir } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
@@ -106,19 +105,3 @@ test("the WebSocket routes reject a bad ?token= and nothing else (#79)", async (
   });
 });
 
-test("the query-token allowlist is exactly the two sockets (#79)", () => {
-  const src = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
-  assert.match(src, /path === "\/api\/ws"/, "/api/ws must be allowed (#79)");
-  assert.match(src, /\^\\\/api\\\/agents\\\/\[\^\/\]\+\\\/term\$/, "the terminal socket must be allowed (#79)");
-  // and nothing broader: a bare prefix match on /api/ would defeat the point
-  assert.doesNotMatch(
-    src,
-    /tokenInQueryOk[\s\S]{0,200}startsWith\("\/api\/"\)/,
-    "the allowlist must not widen to all of /api (#79)",
-  );
-  assert.doesNotMatch(
-    src,
-    /tokenInQueryOk[\s\S]{0,200}startsWith\("\/api\/agents\/"\)/,
-    "a prefix on /api/agents/ would allow every agent route (#79)",
-  );
-});

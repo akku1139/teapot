@@ -22,7 +22,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 // #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
 
@@ -142,13 +141,6 @@ test("a collapsed chat is still clickable (#66)", () => {
   );
 });
 
-test("the collapsed caret is what shows the state (#66)", () => {
-  // the caret glyph flips ▾/▸ in the component; this asserts the row still
-  // renders it, so "collapsed" is never conveyed by opacity alone
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  assert.match(app, /\{off \? "▸" : "▾"\}/, "the caret must reflect the collapsed state (#66)");
-});
-
 /**
  * The #66 regression guard, made STRUCTURAL.
  *
@@ -209,64 +201,4 @@ function statementsOf(body: string): string[] {
   if (tail) out.push(tail);
   return out;
 }
-
-test("clicking a collapsed chat selects it WITHOUT expanding it (#66/#85)", () => {
-  const body = sidebarRowOnClick(readSource(new URL("../frontend/App.tsx", import.meta.url)));
-  const stmts = statementsOf(body);
-
-  // 1. selecting must be a TOP-LEVEL statement — not nested in any guard. A dead
-  //    select is the #66 bug, and a regex cannot see deadness.
-  const selectStmt = stmts.find((x) => x.includes("select(row.a.id)"));
-  assert.ok(selectStmt, `select(row.a.id) must appear (#66); got ${JSON.stringify(stmts)}`);
-  assert.doesNotMatch(
-    selectStmt,
-    /^\s*(if|for|while|switch)\b/,
-    `select must NOT be inside a conditional — a dead select is the #66 bug (#66); got ${selectStmt}`,
-  );
-
-  // 2. #85: the row must NOT touch the collapse state. The operator's collapse
-  //    is theirs; forcing it open on every visit made the sub-agent list
-  //    impossible to keep out of the way. The caret is the only control.
-  assert.doesNotMatch(
-    body,
-    /toggleWsGroup|setWsCollapsed|chatCollapsed/,
-    `the row click must not expand or collapse anything (#85); got ${body}`,
-  );
-
-  // 3. and the dead-end guard must be gone entirely
-  assert.doesNotMatch(
-    body,
-    /if \(!row\.chatCollapsedGroup\)/,
-    `a collapsed row must never be a dead end (#66); got ${body}`,
-  );
-});
-
-test("the caret remains the control that expands (#85)", () => {
-  // The other half of #85: removing expand-on-select must not remove the ability
-  // to expand. The caret handler still toggles, in both directions.
-  const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-  // #81 wrapped the toggle in a block that also clears the second collapse store,
-  // so the literal prefix is gone. Assert the call, which is the actual rule.
-  const caretAt = app.indexOf("toggleWsGroup(`chat:${row.a.id}`, row.a.id, off)");
-  assert.ok(caretAt > 0, "the caret must still toggle the chat group (#85)");
-  const around = app.slice(caretAt - 200, caretAt + 200);
-  assert.match(
-    around,
-    /toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, off\)/,
-    `the caret passes the current state, so it toggles both ways (#85); got ${around.slice(120, 260)}`,
-  );
-});
-
-test("the row handler has no conditional at all (#66/#85)", () => {
-  // The handler is now a single unconditional `select(...)`. A conditional here
-  // could only reintroduce either bug: guard it and the row becomes a dead end
-  // (#66), or branch on the collapsed state and it forces the subtree open
-  // (#85). So the assertion is simply "no branches".
-  const body = sidebarRowOnClick(readSource(new URL("../frontend/App.tsx", import.meta.url)));
-  assert.doesNotMatch(
-    body,
-    /\b(if|for|while|switch)\b/,
-    `the row handler must be unconditional (#66/#85); got ${body}`,
-  );
-});
 

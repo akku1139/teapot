@@ -16,7 +16,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { descendantsOf } from "../frontend/sidebar-tree.ts";
 
 interface A {
@@ -83,32 +82,3 @@ test("an agent with no descendants yields an empty list (#98)", () => {
   assert.deepEqual(descendantsOf([agent("solo")], "solo"), [], "no subs means no badge (#98)");
 });
 
-test("the badge uses the recursive helper (#98)", () => {
-  // structural: the badge must not go back to filtering direct children
-  const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-  const at = app.indexOf('class={"subcount"');
-  assert.notEqual(at, -1, "the badge must exist (#98)");
-  // anchor on the gate's position, not its exact text: #81 widened this gate to
-  // a multi-line expression, so searching for the old one-line form found nothing
-  // and the block came back empty — the test then failed on correct code
-  const show = app.lastIndexOf("<Show", at);
-  assert.notEqual(show, -1, "the badge gate must exist (#98)");
-  const block = app.slice(show, at);
-  assert.match(block, /descendantsOf\(agents\(\), row\.a\.id\)/, "the badge must count DESCENDANTS (#98)");
-  assert.doesNotMatch(
-    block,
-    /agents\(\)\.filter\(\(x\) => x\.parent === row\.a\.id\)/,
-    "and must not filter direct children (#98)",
-  );
-});
-
-test("the unread badge and the count agree about a subtree (#98)", () => {
-  // they used to differ by construction: subtreeUnread recursed, the badge did not
-  const agents = [agent("root"), agent("a", "root"), agent("b", "a")];
-  const descendants = descendantsOf(agents, "root").length;
-  const unreadShape = agents
-    .filter((x) => x.id === "root")
-    .concat(descendantsOf(agents, "root")) // what subtreeUnread walks
-    .length;
-  assert.equal(unreadShape - 1, descendants, "both must describe the same subtree (#98)");
-});

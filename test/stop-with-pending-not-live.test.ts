@@ -153,12 +153,3 @@ test("withdrawal does not depend on isLive (#59, #133)", async () => {
   );
   assert.match(block, /prompt\/cancel/, "it uses its own endpoint (#59/#133)");
 });
-
-test("the toggle reads isSelLive, which is the one field at issue (#133)", async () => {
-  // pins WHY isLive mattered: one button, two meanings
-  assert.match(
-    app,
-    /onclick=\{isSelLive\(\) \? act\("\/stop"\) : act\("\/start"\)\}/,
-    "the control button is driven solely by isSelLive (#133)",
-  );
-});

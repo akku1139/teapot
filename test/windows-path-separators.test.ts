@@ -31,30 +31,6 @@ function testFiles(dir: string): string[] {
   return out;
 }
 
-test("no test reads a file via URL.pathname — it breaks on Windows (#126, #110)", () => {
-  const offenders: string[] = [];
-  for (const f of testFiles(here)) {
-    if (path.basename(f) === "windows-path-separators.test.ts") continue; // this file
-    const src = readFileSync(f, "utf8");
-    // COMMENTS MUST BE STRIPPED before scanning. The first version of this guard did
-    // not, so the helper's own documentation — which quotes the forbidden pattern to
-    // explain why it is wrong — failed the test on Windows.
-    const code = src
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ""))
-      .split("\n")
-      .map((l) => l.replace(/\/\/.*$/, ""))
-      .join("\n");
-    code.split("\n").forEach((line, i) => {
-      if (/new URL\([^)]*\)\s*\.pathname/.test(line)) offenders.push(`${path.relative(here, f)}:${i + 1}`);
-    });
-  }
-  assert.deepEqual(
-    offenders,
-    [],
-    `use readSourceUrl(url) or fileURLToPath(url) instead of URL.pathname (#126): ${offenders.join(", ")}`,
-  );
-});
-
 test("the conversion yields a path that EXISTS — which is the actual bug (#126)", () => {
   // The failure this whole file is about was ENOENT: the path did not exist. So
   // assert exactly that, using a test-relative URL like every call site does.

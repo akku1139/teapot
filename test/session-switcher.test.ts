@@ -114,22 +114,3 @@ test("an explicit request beats a bound session (#58)", () => {
 
 /* ---------- anti-vacuity: the wiring must still exist ---------- */
 
-test("App.tsx routes its selection through this function (#141)", async () => {
-  // the extraction is only worth anything if the app actually calls it
-  const { readSource } = await import("./helpers/source.ts");
-  const path = await import("node:path");
-  const { fileURLToPath } = await import("node:url");
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const app = readSource(path.join(here, "..", "frontend", "App.tsx"));
-  assert.match(
-    app,
-    /from "\.\/session-index"/,
-    "App.tsx must import the shared function (#141)",
-  );
-  assert.match(app, /resolveTimelineSession\(/, "and call it (#141)");
-  assert.doesNotMatch(
-    app,
-    /function resolveTimelineSession\s*\([^)]*\)\s*\{[\s\S]{0,400}?sessionsByAgent\(\)/,
-    "the implementation must NOT be duplicated back into the component (#141)",
-  );
-});

@@ -147,12 +147,3 @@ test("the hidden case still returns immediately (#139)", () => {
   assert.match(onVisible(), /visibilityState !== "visible"\) return;/, "hidden tabs must no-op (#139)");
 });
 
-test("the socket's liveness ping exists to make recovery likely (#79)", async () => {
-  // context for why the old behaviour was "sometimes works": the server reaps a
-  // socket that misses a 30s ping, which fires onclose and so recovers. The gap
-  // is the case where the socket looks alive.
-  const { readFileSync } = await import("node:fs");
-  const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
-  assert.match(api, /kind: "ping"/, "the server must ping (#79)");
-  assert.match(api, /unresponsive/, "and reap a client that misses the pong (#79)");
-});

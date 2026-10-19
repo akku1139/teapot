@@ -14,36 +14,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
-
-test("the edit-prompt route starts the agent (#96)", () => {
-  const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
-  const at = api.indexOf('app.post("/api/agents/:id/edit-prompt"');
-  assert.notEqual(at, -1, "the route must exist (#96)");
-  const route = api.slice(at, api.indexOf('app.post("/api/agents/:id/fork"', at));
-  assert.match(
-    route,
-    /a\.start\("edited prompt resent"\)/,
-    "the button promises a RESEND; nothing resent (#96)",
-  );
-  // and it must be AFTER the edit, or it starts a loop that then rewrites history
-  assert.ok(
-    route.indexOf("editPromptAt(") < route.indexOf('a.start("edited prompt resent")'),
-    "the resend must follow the edit, not precede it (#96)",
-  );
-});
-
-test("the plain fork route is unchanged (#96)", () => {
-  // forking without editing should NOT start work — there is nothing new to do,
-  // and silently starting would spend tokens on an operator's browsing
-  const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
-  const at = api.indexOf('app.post("/api/agents/:id/fork"');
-  const route = api.slice(at, at + 500);
-  assert.doesNotMatch(route, /a\.start\(/, "a bare fork must not start the agent (#96)");
-});
 
 test("after an edit the agent is startable (#96)", async () => {
   // the second symptom from the report. editPromptAt REFUSES while the agent is

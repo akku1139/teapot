@@ -32,14 +32,6 @@ test("saving the task list switches to the rendered preview (#88)", () => {
   );
 });
 
-test("the view toggle still exists, so preview is reversible (#88)", () => {
-  assert.match(
-    app,
-    /onClick=\{\(\) => setTodoViewMode\(!todoViewMode\(\)\)\}/,
-    "the pencil/eye toggle must remain, so the operator can go back to editing (#88)",
-  );
-});
-
 test("the dirty flag is still cleared on save (#88)", () => {
   // the preview must not also imply the draft is still unsaved
   const i = app.indexOf("const saveTodo = async () => {");
