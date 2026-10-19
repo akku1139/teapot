@@ -745,25 +745,79 @@ details.reasoning .thinkscroll {
 .iconbtn.active { background: var(--acc); color: #fff; }
 .overlay { position: fixed; inset: 0; background: #0009; display: grid; place-items: center; z-index: 10; }
 .modal { background: var(--bg-mid); border-radius: 10px; padding: 16px 18px; width: min(760px, 94vw); max-height: 88vh; overflow-y: auto; }
-/* Settings is a MENU: a named section on the left, one panel on the right. The
-   stacked form it replaced could not show its own extent once a provider held
-   several keys (#170). */
-.cfgmenu { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--bg-light); }
+/* Settings has columns that scroll INSIDE it and a footer that must not scroll away,
+   so the modal becomes a flex column with a real height instead of one scrolling box.
+   `:has()` keeps this scoped to the settings dialog — the other modals (new agent,
+   setup) are simple forms and scrolling as a whole is right for them. */
+.modal:has(.cfgbody) { display: flex; flex-direction: column; overflow: hidden; }
+.modal:has(.cfgbody) > form { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+/**
+ * Settings: a vertical rail on the left, one section on the right, footer pinned.
+ *
+ * The earlier version stacked the five sections in ONE column (a wall of inputs whose
+ * extent the operator could not see once a provider held several keys, #170), then
+ * moved the menu to a wrapping ROW on top. The row re-wrapped to two lines on a narrow
+ * dialog and pushed the panel down whenever the window changed, so the content being
+ * read moved under the reader. A rail keeps its width and the panel's top edge fixed.
+ *
+ * The form is a flex COLUMN with `min-height: 0`: `.cfgbody` takes the remaining
+ * height and each column scrolls ITSELF, which is what lets the footer stay put.
+ */
+.cfgbody { display: flex; gap: 0; min-height: 0; flex: 1; }
+.modal:has(.cfgbody) { display: flex; flex-direction: column; }
+.cfgmenu {
+  display: flex; flex-direction: column; gap: 2px;
+  flex: 0 0 148px;            /* a label never wraps; the panel takes the rest */
+  padding: 2px 10px 2px 0;
+  border-right: 1px solid var(--bg-light);
+  border-bottom: none;
+  overflow-y: auto;
+}
 .cfgmenu-item {
+  display: block; width: 100%; text-align: left;
   background: transparent; border: 1px solid transparent; border-radius: 6px;
-  color: var(--dim); font: inherit; font-size: 12.5px; padding: 5px 10px; cursor: pointer;
+  color: var(--dim); font: inherit; font-size: 12.5px; padding: 7px 9px; cursor: pointer;
   white-space: nowrap;
 }
 .cfgmenu-item:hover { color: var(--fg); background: var(--bg-darkest); }
 .cfgmenu-item.on {
   color: var(--fg); background: var(--bg-darkest); border-color: var(--acc);
   font-weight: 600;
+  /* a left marker: the border alone reads as a hover state, and the operator could
+     not tell which section they were on at a glance */
+  box-shadow: inset 2px 0 0 var(--acc);
 }
-.cfgpanel { padding-top: 12px; }
+.cfgmenu-label { pointer-events: none; }
+.cfgpanel { flex: 1; min-width: 0; padding: 2px 0 2px 14px; overflow-y: auto; }
 /* a panel section is hidden, not unmounted: the form is one submit, so its inputs
    must stay in the DOM for `save` to read them, and switching back must not reset
    what was typed */
 .cfgpanel fieldset.hide { display: none; }
+/* a section's own legend repeated what the menu already says — drop it, and let the
+   first field start at the top of the panel */
+.cfgpanel legend { display: none; }
+.cfgpanel fieldset { border: none; margin: 0; padding: 0; }
+.cfgfoot {
+  display: flex; gap: 10px; align-items: center; justify-content: flex-end;
+  padding-top: 10px; border-top: 1px solid var(--bg-light); flex: 0 0 auto;
+}
+.cfgsave {
+  background: var(--acc); border: none; border-radius: 6px; color: #fff;
+  padding: 7px 16px; cursor: pointer; font: inherit; font-weight: 600;
+}
+.cfgsave:hover { filter: brightness(1.12); }
+/* narrow: the rail would eat the panel, so it becomes a horizontal strip again —
+   but sticky at the top of the panel, so it never pushes live content around. */
+@media (max-width: 620px) {
+  .cfgbody { flex-direction: column; }
+  .cfgmenu {
+    flex: 0 0 auto; flex-direction: row; flex-wrap: nowrap; overflow-x: auto;
+    border-right: none; border-bottom: 1px solid var(--bg-light);
+    padding: 0 0 6px;
+  }
+  .cfgmenu-item { width: auto; }
+  .cfgpanel { padding: 10px 0 0; }
+}
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 16px; }
 .modal label { display: flex; flex-direction: column; gap: 4px; color: var(--dim); font-size: 12.5px; }
 .modal input[type=text], .modal input[type=number], .modal input[type=password],

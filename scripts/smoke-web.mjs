@@ -1230,6 +1230,59 @@ console.log("deep render ok: feed rows present");
     }
     console.log("deep render ok: settings is a menu — one section shown, edits survive switching");
 
+    // ---- the layout itself: a left rail, and a footer that cannot scroll away ----
+    //
+    // Asserted on COMPUTED geometry, because these are the properties the operator
+    // feels: the menu must be a fixed-width rail beside the panel, and SAVE must be
+    // reachable without scrolling the form. happy-dom does no layout and does not
+    // expand the `flex-direction` shorthand, so the contract is expressed with what it
+    // DOES resolve (`display`, `flex-basis`, `overflow-y`) — the same CSS-contract
+    // approach the rest of this file uses for geometry.
+    {
+      const cssOf = (sel) => {
+        const el = w.document.querySelector(sel);
+        return el ? w.document.defaultView.getComputedStyle(el) : null;
+      };
+      const bodyCs = cssOf(".cfgbody");
+      const menuCs = cssOf(".cfgmenu");
+      const panelCs = cssOf(".cfgpanel");
+      const footCs = cssOf(".cfgfoot");
+      for (const [name, cs] of [["body", bodyCs], ["menu", menuCs], ["panel", panelCs], ["footer", footCs]]) {
+        if (!cs) {
+          console.error(`#settings REGRESSION: no .cfg${name} — the rail layout is missing`);
+          process.exit(1);
+        }
+      }
+      // side-by-side: the body is a flex row, and the rail has a FIXED basis, so a long
+      // section cannot squeeze it
+      if (bodyCs.display !== "flex") {
+        console.error(`#settings REGRESSION: the body is ${bodyCs.display}, not a flex row`);
+        process.exit(1);
+      }
+      if (!/^0\s+0\s+\d+px/.test(menuCs.flex || menuCs.flexBasis)) {
+        console.error(
+          `#settings REGRESSION: the rail does not have a fixed width (flex=${JSON.stringify(menuCs.flex)}, basis=${JSON.stringify(menuCs.flexBasis)})`,
+        );
+        process.exit(1);
+      }
+      // the panel scrolls ITSELF — that is what keeps the footer in place
+      if (!/auto|scroll/.test(panelCs.overflowY)) {
+        console.error(
+          `#settings REGRESSION: the panel does not scroll on its own (overflow-y=${panelCs.overflowY}) — SAVE would scroll away with the form`,
+        );
+        process.exit(1);
+      }
+      // and the section's own <legend> must not repeat what the rail already says
+      const legendCs = cssOf(".cfgpanel legend");
+      if (legendCs && legendCs.display !== "none") {
+        console.error(
+          `#settings REGRESSION: the section legend is visible again (display=${legendCs.display}) — it duplicates the rail label`,
+        );
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: settings is a left rail with a pinned footer");
+
     // CLOSE the dialog: it is a full-screen overlay, and leaving it open swallows the
     // Escape key that the later #50 drawer scenario presses — MEASURED as
     // "#50 REGRESSION: Escape did not close the drawer", a failure that named the wrong

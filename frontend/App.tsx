@@ -6704,24 +6704,34 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
 
   return (
     <Modal title="settings" onClose={props.onClose}>
-      <form onsubmit={save} style="display:flex;flex-direction:column;gap:14px">
+      <form onsubmit={save} style="display:flex;flex-direction:column;gap:12px;min-height:0">
         {/* A MENU, not one long column. With several providers — each holding
             several keys (#170) — the stacked form was a wall of inputs whose extent
             the operator could not see; reaching the task list meant scrolling past
-            every credential. One section at a time, named on the left. */}
-        <div class="cfgmenu">
-          <For each={SECTIONS}>
-            {(sec) => (
-              <button
-                type="button"
-                class={"cfgmenu-item" + (section() === sec.key ? " on" : "")}
-                title={sec.hint}
-                onclick={() => setSection(sec.key)}
-              >{sec.label}</button>
-            )}
-          </For>
-        </div>
-        <div class="cfgpanel">
+            every credential. One section at a time, named on the left.
+
+            The menu is a VERTICAL rail rather than a wrapping row: a row of five
+            labels re-wrapped to two lines on a narrow dialog and pushed the panel
+            down every time the window changed, which moved the content the operator
+            was already reading. A rail keeps its own width and the panel's top edge
+            fixed. */}
+        <div class="cfgbody">
+          <nav class="cfgmenu" aria-label="settings sections">
+            <For each={SECTIONS}>
+              {(sec) => (
+                <button
+                  type="button"
+                  class={"cfgmenu-item" + (section() === sec.key ? " on" : "")}
+                  title={sec.hint}
+                  aria-current={section() === sec.key ? "page" : undefined}
+                  onclick={() => setSection(sec.key)}
+                >
+                  <span class="cfgmenu-label">{sec.label}</span>
+                </button>
+              )}
+            </For>
+          </nav>
+          <div class="cfgpanel">
         <fieldset classList={{ hide: section() !== "providers" }}>
           <legend>providers</legend>
           {/* Index keyed by position — editing a row must not recreate its
@@ -6930,10 +6940,17 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
             <span class="muted" style="margin-left:8px;font-size:12px">gracefully stops all agents, spawns new process, then reloads this page</span>
           </div>
         </fieldset>
-
-        <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
+          </div>
         </div>
-        <button type="submit" style="align-self:flex-end;background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer">save settings</button>
+
+        {/* The footer sits OUTSIDE the two columns and outside the scroll area, so
+            SAVE is always reachable no matter how long the visible section is —
+            previously it scrolled away with the form and the operator had to reach
+            the bottom to commit anything. */}
+        <div class="cfgfoot">
+          <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
+          <button type="submit" class="cfgsave">save settings</button>
+        </div>
       </form>
     </Modal>
   );
