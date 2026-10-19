@@ -3572,6 +3572,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   <MessageRow
                     e={e}
                     prev={chatEvents()[i() - 1]}
+                    // #32: only worth labelling when the session HAS more than one
+                    // branch (a fork). With a single branch every row repeated the
+                    // same constant.
+                    showBranch={branches().length > 1}
                     res={pairInfo().resFor.get(e.id)}
                     // #54: an unpaired tool_result is rendered as a COMPLETED
                     // tool row of its own — its call fell out of the events
@@ -5062,7 +5066,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Grouping is `groupedWith()` from ./row-grouping — extracted so the rule can
@@ -5202,7 +5206,15 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdi
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
             <span class="ts">{e.data?.pending ? "queued…" : e.data?.cancelled ? "withdrawn" : fmtTs(e.ts)}</span>
-            <span class="ts">{e.branch}</span>
+            {/* #32 (clutter): the branch label is constant for a whole session and
+                was repeated on EVERY row — MEASURED, all 14940 events of this
+                session carry `br0`, so ~1500 rendered rows said "br0" for no
+                information. Show it only when the session actually HAS more than
+                one branch (a fork), which is the only time it distinguishes
+                anything. It stays in the row title, and in the branch picker. */}
+            <Show when={props.showBranch}>
+              <span class="ts">{e.branch}</span>
+            </Show>
             <Show when={props.onCancel}>
               <button
                 class="editbtn"

@@ -902,6 +902,25 @@ console.log("deep render ok: feed rows present");
     console.log("deep render ok: consecutive tool rows group under one head (#75)");
   }
 
+  /* ---------- #32: a constant branch label is not repeated on every row --------
+   * Reported as part of "タイムラインが煩雑". MEASURED: all 14940 events of one real
+   * session carried `br0`, so ~1500 rendered rows each printed "br0" — a label that
+   * cannot distinguish anything while there is only one branch. It is worth showing
+   * exactly when the session has FORKED.
+   */
+  {
+    const branchLabels = () =>
+      [...w.document.querySelectorAll(".msg-head")].filter((h) => /br\d/.test(h.textContent ?? "")).length;
+    const before = branchLabels();
+    if (before !== 0) {
+      console.error(
+        `#32 REGRESSION: ${before} rows repeat the branch label on a single-branch session`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: one branch -> no per-row branch label (#32)");
+  }
+
   /* ---------- #160: scrolling to the tail must mark notifications read -------
    * "タイムラインを下までスクロールしても通知が既読にならない" (v0.29.17).
    *
