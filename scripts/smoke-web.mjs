@@ -545,6 +545,64 @@ console.log("deep render ok: feed rows present");
   }
 }
 
+/* ---------- a whitespace-only reasoning delta must not draw an empty block ----
+ * A provider streams reasoning as DELTAS; a chunk can be pure whitespace ("\n\n"),
+ * and `Show when={str}` is truthy for that, so an empty 💭 block rendered for a
+ * frame. Reported as "agent が一瞬空のreasoning を表示する".
+ *
+ * Driven through the real socket, because the guard lives in the render path that
+ * only runs when a delta actually arrives. */
+{
+  const fail = (msg) => { console.error(`#reasoning REGRESSION: ${msg}`); process.exit(1); };
+  const sock = MockWS.instances.at(-1);
+  if (!sock?.onmessage) fail("no app socket to drive");
+  // a live, RUNNING agent is required — an idle one drops the buffer on the sweep
+  sock.onmessage({
+    data: JSON.stringify({
+      kind: "agent-update",
+      agentId: AGENT.id,
+      snapshot: { ...AGENT, status: "running" },
+    }),
+  });
+  for (const sid of ["alpha", "alpha-s1", "alpha-s2"]) {
+    sock.onmessage({
+      data: JSON.stringify({
+        kind: "llm-delta",
+        agentId: AGENT.id,
+        sessionId: sid,
+        text: "",
+        // whitespace ONLY: nothing a reader could see, so nothing may be drawn
+        reasoning: "\n  \n",
+      }),
+    });
+  }
+  await new Promise((r) => setTimeout(r, 260));
+
+  // PRECONDITION: a live bubble must exist, or "no thinking block" proves nothing
+  const bubble = w.document.querySelector(".msg.live");
+  if (!bubble) fail("no live bubble — the check would pass vacuously");
+  const details = bubble.querySelector("details.reasoning");
+  if (details) {
+    fail("a whitespace-only reasoning delta drew an empty 💭 block");
+  }
+  // and a REAL delta must still draw it, so the guard is not just "never show"
+  for (const sid of ["alpha", "alpha-s1", "alpha-s2"]) {
+    sock.onmessage({
+      data: JSON.stringify({
+        kind: "llm-delta",
+        agentId: AGENT.id,
+        sessionId: sid,
+        text: "",
+        reasoning: "actually thinking",
+      }),
+    });
+  }
+  await new Promise((r) => setTimeout(r, 260));
+  const real = w.document.querySelector(".msg.live details.reasoning");
+  if (!real) fail("a real reasoning delta must still draw the 💭 block");
+  console.log("deep render ok: whitespace reasoning draws nothing, real reasoning draws (#reasoning)");
+}
+
 /* ---------- #58: a deep link must open the session it NAMES ----------------
  * `select()` resolved an agent id to its newest/bound session and ignored the
  * session in the URL, so `/session/alpha-s1` opened alpha-s2 and then REWROTE

@@ -3777,7 +3777,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       <span class="author" style="color:var(--acc)">agent</span>
                       <span class="ts">streaming…</span>
                     </div>
-                    <Show when={liveReasoning()}>
+                    {/* `.trim()` guard: a provider streams reasoning as DELTAS, and a
+                        chunk can be pure whitespace ("\n\n"). `Show when={str}` is
+                        truthy for that, so an empty 💭 block rendered for a frame —
+                        the reported "agent が一瞬空のreasoning を表示する". The
+                        reasoning is not empty, it just has nothing in it yet. */}
+                    <Show when={liveReasoning().trim() !== ""}>
                       <details class="reasoning" open>
                         <summary>
                           💭 thinking <ThinkingTimer startedAt={liveStartedAt()} />

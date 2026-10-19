@@ -47,13 +47,28 @@ const logHas = [{ type: "message", data: { role: "assistant", content: "agent1 w
 
 /* ---------- the stale case: A → B → A with A already idle ---------- */
 
-test("a stale buffer is dropped when returning to a settled agent (#40)", () => {
-  // exactly the reported reproduction: the snapshot never changed, so no prune
-  // was scheduled, and the old text came back with the writing cursor
+test("a stale buffer with NO log copy is KEPT for one more frame (#40, #172b)", () => {
+  // #40 asked for "an idle agent's buffer must not reappear" and the fix was
+  // `if (!isLiveStatus(status)) return null` — drop on any non-live status. That is
+  // too eager: a turn settles BEFORE its assistant event is delivered, so at that
+  // moment the log holds nothing and the bubble was destroyed with nothing to replace
+  // it. The operator saw the message blink out and come back ("writing 状態から確定
+  // イベントになる時に一瞬メッセージが消える").
+  //
+  // The bubble is only redundant when the log REALLY has its content. Holding it one
+  // extra frame is invisible; dropping it early is a visible flash.
   assert.equal(
     reconcileLiveBuffer(buf, [], "idle"),
+    buf,
+    "no assistant message in the log yet, so this bubble is not redundant yet",
+  );
+  // once the log catches up it IS redundant, which is the property #40 wanted
+  assert.equal(reconcileLiveBuffer(buf, logHas, "idle"), null, "persisted → drop (#40)");
+  // and an agent that never produced text still drops immediately
+  assert.equal(
+    reconcileLiveBuffer({ text: "", reasoning: "", streaming: false }, [], "idle"),
     null,
-    "an idle agent's buffer must not reappear (#40)",
+    "an empty bubble has nothing to flash, so it can go at once",
   );
 });
 

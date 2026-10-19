@@ -55,8 +55,23 @@ export function isLiveStatus(status: string | undefined): boolean {
 /**
  * Is the live bubble already covered by the log?
  *
- * Not live -> stale by definition. Still live -> only when the log holds an
- * assistant message with exactly the text the bubble is showing.
+ * "Covered" must mean the log REALLY has this content, because the caller's next
+ * action is to destroy the bubble. Getting it wrong in the safe direction costs a
+ * duplicate for one frame; getting it wrong in the other direction makes the message
+ * VANISH and then reappear — which is the reported "writing 状態から確定イベントになる時に
+ * 一瞬メッセージが消える".
+ *
+ * The old rule was `if (!isLiveStatus(status)) return true` — i.e. "the agent stopped,
+ * so whatever the log says, drop the bubble". But a turn ends BEFORE the log's
+ * `message` event has been delivered: the status flips as the turn settles, and the
+ * assistant event lands a frame later. In that window the log holds no matching
+ * content at all, so the bubble was destroyed while nothing had replaced it.
+ *
+ * So:
+ *   - NOTHING buffered (no text, no reasoning) → nothing to lose, covered.
+ *   - text present → only when the log holds an assistant message with that text.
+ *   - text present but NO assistant messages in the log at all → NOT covered. This is
+ *     the settling window, and holding the bubble one extra frame is invisible.
  */
 export function isCoveredByLog(
   buf: LiveBuf | null | undefined,
@@ -65,15 +80,24 @@ export function isCoveredByLog(
 ): boolean {
   if (!buf) return false;
   if (!buf.text) return !isLiveStatus(status);
-  if (!isLiveStatus(status)) return true;
   const body = buf.text.trim();
-  return events.some(
-    (e) =>
-      e.type === "message" &&
-      e.data?.role === "assistant" &&
-      String(e.data.content ?? "").trim() === body,
-  );
+  // Even when the agent has stopped, an EMPTY assistant history cannot be what this
+  // bubble became — the event has simply not arrived yet.
+  const anyAssistant = events.some((e) => e.type === "message" && e.data?.role === "assistant");
+  if (!isLiveStatus(status)) return anyAssistant && assistantTexts(events).has(body);
+  if (!anyAssistant) return false;
+  return assistantTexts(events).has(body);
 }
+
+/** the trimmed text of every assistant message the log currently holds */
+function assistantTexts(events: { type?: string; data?: { role?: string; content?: string } }[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of events) {
+    if (e.type === "message" && e.data?.role === "assistant") out.add(String(e.data.content ?? "").trim());
+  }
+  return out;
+}
+
 
 /**
  * Is this row the SELECTED agent's own in-flight work?
@@ -145,7 +169,10 @@ export function reconcileLiveBuffer(
   status: string | undefined,
 ): LiveBuf | null {
   if (!buf) return null;
-  if (!isLiveStatus(status)) return null;
+  // The one authority on "is this bubble redundant" is `isCoveredByLog`. This used to
+  // short-circuit on `!isLiveStatus(status)` FIRST, which dropped the bubble the moment
+  // the agent stopped — before the log's assistant event had been delivered — and that
+  // is the frame where the message vanished from the timeline.
   if (isCoveredByLog(buf, events, status)) return null;
   return buf;
 }

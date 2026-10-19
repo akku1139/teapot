@@ -105,8 +105,25 @@ test("isCoveredByLog keeps a buffer that is genuinely still streaming (#40)", ()
   );
 });
 
-test("isCoveredByLog drops anything once the agent is no longer running (#40)", () => {
-  assert.equal(isCoveredByLog(buf("anything"), [], "idle"), true);
+test("isCoveredByLog needs the log to REALLY hold the text, not just a stopped agent (#40)", () => {
+  // This used to assert `isCoveredByLog(buf("anything"), [], "idle") === true`: "the
+  // agent stopped, so drop whatever the bubble holds". That is the bug — a turn
+  // settles before its assistant event is delivered, so at that instant the log holds
+  // nothing and the bubble was destroyed with nothing to replace it. The message
+  // blinked out and came back.
+  //
+  // The property #40 actually wanted: an IDLE bubble is redundant only when the log
+  // already has its content.
+  assert.equal(
+    isCoveredByLog(buf("anything"), [], "idle"),
+    false,
+    "an empty log cannot be what this bubble became — the event has not arrived yet",
+  );
+  const persisted = [{ type: "message", data: { role: "assistant", content: "anything" } }];
+  assert.equal(isCoveredByLog(buf("anything"), persisted, "idle"), true, "persisted → drop (#40)");
+  // a DIFFERENT persisted reply must not cover it either
+  const other = [{ type: "message", data: { role: "assistant", content: "something else" } }];
+  assert.equal(isCoveredByLog(buf("anything"), other, "idle"), false);
 });
 
 test("isCoveredByLog ignores non-assistant and non-matching rows (#40)", () => {
