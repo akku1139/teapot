@@ -324,7 +324,9 @@ Most session state is not injected into prompts — fetch it with tools instead:
 - finish(goalComplete=true, summary) → goal fully achieved.
 - ask_user(question, options?) → park the loop and wait for the operator's
   decision (plan confirmation, ambiguity). One concrete question at a time.
-- read_memory() / set_memory(content) → your durable notes (memory.md).
+- read_memory() / add_memory(text) / set_memory(content) → your durable notes
+  (memory.md). add_memory appends and cannot lose earlier notes; set_memory
+  REPLACES the whole file. The notes are NOT in your prompt — read them.
 - get_todo() / set_todo(content) → the operator-maintained task list
   (todo.md); check it when picking up work, keep it current as you go.
 - When corrected, add_feedback(rule) so it sticks; review via get_feedback().
@@ -2738,7 +2740,35 @@ export class Agent {
           const a = safeParse(call.function.arguments);
           const content = String(a.content ?? "").slice(0, 32_000);
           await fs.writeFile(this.memoryFile, content, "utf8");
-          await this.answerMeta(call, "memory saved (injected into future prompts)");
+          // #48: this used to say "injected into future prompts", which was false —
+          // memory.md is never injected. The model then behaved as if it already held
+          // its notes. Say what actually happened, and what the model must do instead.
+          await this.answerMeta(
+            call,
+            `memory.md REPLACED (${content.length} bytes). It is not in your prompt — call read_memory when you need it.`,
+          );
+          continue;
+        }
+        if (call.function.name === "add_memory") {
+          const a = safeParse(call.function.arguments);
+          const text = String(a.text ?? "").trim().slice(0, 8_000);
+          if (!text) {
+            await this.answerMeta(call, "add_memory needs non-empty `text` — nothing appended");
+            continue;
+          }
+          // APPEND rather than replace (#48). `set_memory` overwrites the whole file,
+          // so a model that had not just read it silently ERASED everything it did not
+          // re-send — MEASURED on a real session: 21 writes, with the content dropping
+          // from 1028 to 83 bytes. Appending is the operation "remember this" actually
+          // wants, and it cannot lose what is already there.
+          const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
+          const sep = prev && !prev.endsWith("\n") ? "\n" : "";
+          const next = `${prev}${sep}${text}\n`;
+          await fs.writeFile(this.memoryFile, next.slice(0, 32_000), "utf8");
+          await this.answerMeta(
+            call,
+            `appended to memory.md (now ${next.length} bytes). Not in your prompt — call read_memory to see it.`,
+          );
           continue;
         }
         await this.log.append("tool_call", this.currentSession, this.currentBranch, {
@@ -3763,7 +3793,8 @@ export class Agent {
             role: "user",
             content:
               `[harness] Context was compacted: ${oldCount} earlier messages were summarized. ` +
-              "Goal and notes are managed by the harness (AGENTS.md / memory.md are injected into your prompt when present).\n\n" +
+              "AGENTS.md is embedded in your system prompt; memory.md, todo.md and decisions.md are NOT — "
+              + "call read_memory / get_todo / get_decisions if you need them.\n\n" +
               `## Summary of earlier conversation\n${summary}`,
           },
           ...this.messages.slice(cut),
@@ -3781,6 +3812,32 @@ export class Agent {
       // Post-compact file restore (Claude Code style): re-attach the most
       // recently read files so the model doesn't burn its first turns re-reading
       // exactly what it had in context a moment ago. Budget: 3 files × 400 lines.
+      if (mode === "summarize") {
+        // #48: the durable notes go back in HERE, and only here.
+        //
+        // MEASURED before this: `set_memory` 181 times across every session but a
+        // `read_memory` AFTER writing only 13 times — the notes were written and
+        // never consulted, so the whole system was decoration. The prompt made it
+        // worse by claiming memory.md was injected when it never was.
+        //
+        // Compaction is the one moment where re-attaching is free and obviously
+        // right: the history that held the notes has just been summarised away, and
+        // the prompt has to move anyway. Everywhere else they stay behind
+        // `read_memory()` so the prefix cache is never disturbed.
+        try {
+          const notes = (await fs.readFile(this.memoryFile, "utf8")).trim();
+          if (notes) {
+            this.messages.splice(1, 0, {
+              role: "user",
+              content:
+                `[harness] Your durable notes (memory.md), re-attached after compaction — ` +
+                `this is what earlier you chose to remember:\n\n${notes.slice(0, 8_000)}`,
+            });
+          }
+        } catch {
+          /* no notes yet — nothing to re-attach */
+        }
+      }
       if (this.recentReads.length && mode === "summarize") {
         const restored: string[] = [];
         const restoredPaths = new Set<string>();
@@ -4284,11 +4341,24 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
       function: {
         name: "set_memory",
         description:
-          "Overwrite your durable notes (memory.md). Keep them terse: decisions, gotchas, where you left off.",
+          "REPLACE your durable notes (memory.md) entirely — anything you do not include is lost. Prefer add_memory unless you are rewriting the whole file. Keep notes terse: decisions, gotchas, where you left off.",
         parameters: {
           type: "object",
           properties: { content: { type: "string" } },
           required: ["content"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "add_memory",
+        description:
+          "Append one note to memory.md without touching what is already there. Use this to remember a decision, a gotcha, or where you left off — it cannot lose earlier notes (#48).",
+        parameters: {
+          type: "object",
+          properties: { text: { type: "string", description: "the note to append, one or two lines" } },
+          required: ["text"],
         },
       },
     },
@@ -4343,7 +4413,7 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   const META_TOOLS = new Set([
     "finish", "report_progress", "set_goal", "get_goal",
-    "read_memory", "set_memory", "list_skills", "get_todo", "set_todo",
+    "read_memory", "set_memory", "add_memory", "list_skills", "get_todo", "set_todo",
     "get_feedback", "add_feedback", "record_decision", "get_decisions",
   ]);
   const openCalls = new Map<string, string>(); // real tool_call id -> name
@@ -4496,7 +4566,8 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
               role: "user",
               content:
                 `[harness] Context was compacted: ${summarized} earlier messages were summarized. ` +
-                "Goal and notes are managed by the harness (AGENTS.md / memory.md are injected into your prompt when present).\n\n" +
+                "AGENTS.md is embedded in your system prompt; memory.md, todo.md and decisions.md are NOT — "
+              + "call read_memory / get_todo / get_decisions if you need them.\n\n" +
                 `## Summary of earlier conversation\n${sum}`,
             },
           );
