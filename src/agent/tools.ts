@@ -1303,14 +1303,45 @@ export const TOOLS: ToolDef[] = [
       let off = num(args.offset, 1);
       off = off < 0 ? Math.max(0, lines.length + off) : Math.max(0, off - 1);
       const lim = num(args.limit, 2000);
+      // A LINE cap alone does not bound the output: a single 5MB minified line is one
+      // "line", and 2000 lines of 2000 chars is 4MB. The three caps below each kill a
+      // different shape of oversized file (#17 item 3):
+      //   lines  → a 3000-line source file
+      //   bytes  → a big log, whatever its line structure
+      //   per-line → minified.js / a one-line JSON blob
       const pageLines = lines.slice(off, off + lim);
-      const slice =
-        idMode === "hash" ? renderHashlines(pageLines, off + 1) : renderGutter(pageLines, off + 1);
+      // PER-LINE cap first: clipping lines before joining means one giant line cannot
+      // blow the byte budget on its own, and the marker names how much was cut.
+      const cappedLines = pageLines.map((l) =>
+        l.length > MAX_READ_LINE_CHARS
+          ? l.slice(0, MAX_READ_LINE_CHARS) +
+            ` …[line clipped: ${l.length - MAX_READ_LINE_CHARS} more chars]`
+          : l,
+      );
+      const rendered =
+        idMode === "hash" ? renderHashlines(cappedLines, off + 1) : renderGutter(cappedLines, off + 1);
       // the phantom trailing line is dropped for the count too, or a file that
       // ends in a newline always reports one line more than it has
       const total = lines.length && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
       const more = off + lim < total ? `\n... (${total - off - lim} more lines)` : "";
-      return { ok: true, result: slice + more };
+      const out = rendered + more;
+      // BYTE cap last, with the remaining line count in the marker so the model knows
+      // how to continue rather than assuming it saw everything.
+      if (out.length > MAX_READ_BYTES) {
+        const head = out.slice(0, MAX_READ_BYTES);
+        const cutAt = head.lastIndexOf("\n");
+        return {
+          ok: true,
+          result:
+            (cutAt > 0 ? head.slice(0, cutAt) : head) +
+            `\n... [output clipped at ${MAX_READ_BYTES} bytes of ${out.length}; ` +
+            // `head` holds N rendered lines separated by N-1 newlines, and rendering
+            // started at 1-indexed line `off + 1`, so the next unread line is
+            // off + 1 + N. Counting newlines alone gives N-1 and would re-read one line.
+            `continue with offset=${off + 1 + countLines(cutAt > 0 ? head.slice(0, cutAt) : head) + 1}]`,
+        };
+      }
+      return { ok: true, result: out };
     },
   },
   {
@@ -2084,6 +2115,28 @@ export const TOOLS: ToolDef[] = [
 /** #16: how many files one read_file call may cover. Each costs context, so an
  *  unbounded array would just be a way to overflow the window in one shot. */
 const MAX_MULTI_READ = 10;
+
+/**
+ * The three read caps (#17 item 3). A line cap alone is not a bound: one 5MB minified
+ * line is a single "line", and 2000 lines of 2000 chars is 4MB. Each cap kills a
+ * different shape of oversized file:
+ *
+ *   2000 lines  → a 3000-line source file        (the `limit` default, unchanged)
+ *   256 KB      → a 5MB log, whatever its lines
+ *   2000 chars  → minified.js / a one-line JSON blob
+ *
+ * The byte cap is a SHARE of what a tool result can be, not the whole budget: the model
+ * still needs room to reason about what it read.
+ */
+const MAX_READ_BYTES = 256 * 1024;
+const MAX_READ_LINE_CHARS = 2_000;
+
+/** how many lines a string contains — used to say where to resume a clipped read */
+function countLines(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
+  return n;
+}
 
 /**
  * Subsequence match: every character of `needle` appears in `hay`, in order,
