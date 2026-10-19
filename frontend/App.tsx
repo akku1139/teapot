@@ -464,6 +464,25 @@ export default function App() {
     document.documentElement.dataset.appearance =
       THEMES.find((t) => t.key === active)?.mode ?? "dark";
   });
+  /**
+   * #143 A/B: paint/layout containment for timeline rows, toggleable at runtime.
+   *
+   * The client held 418 MB for one session (600 MB after a reload) because a page of
+   * 2000 events is ~22 000 DOM nodes of already-parsed markdown, all of it LAID OUT.
+   * `content-visibility: auto` lets the browser skip layout/paint for rows outside the
+   * viewport while keeping them in the DOM, so scroll anchoring, `data-eid` lookups,
+   * cmd-F and text selection all keep working — unlike virtual scrolling, which would
+   * buy the memory by unmounting rows.
+   *
+   * It is a data attribute rather than a plain CSS rule so the change can be A/B'd on
+   * a live server: `teapot.feedCv=0` in localStorage turns it off without a rebuild,
+   * which is what makes a memory comparison between two releases meaningful.
+   */
+  createEffect(() => {
+    const off = localStorage.getItem("teapot.feedCv") === "0";
+    if (off) delete document.documentElement.dataset.feedcv;
+    else document.documentElement.dataset.feedcv = "on";
+  });
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");

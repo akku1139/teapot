@@ -236,6 +236,45 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
 .badge.idle { color: var(--warn); } .badge.done { color: var(--acc); }
 .badge.queued { color: var(--warn); background: #faa81a1a; border: 1px solid #faa81a44; white-space: nowrap; }
 
+/**
+ * #143: keep only the rows near the viewport laid out and painted.
+ *
+ * A session with 17 690 events loads 2000 per page and ~1210 of those draw a row
+ * (MEASURED), at ~11 DOM nodes each — 13 300 nodes, every one of them styled, laid out
+ * and painted, holding already-parsed markdown.
+ *
+ * `content-visibility: auto` skips layout/paint for rows outside the viewport while
+ * keeping them in the DOM. That last part is why this and not virtual scrolling: MDN is
+ * explicit that `auto` (unlike `hidden`) keeps the contents available to find-in-page,
+ * the accessibility tree, tab order and text selection. This feed depends on real DOM
+ * anyway — scroll anchoring measures `getBoundingClientRect()` on the first visible row
+ * and rows are looked up by `data-eid`.
+ *
+ * Gated on a data attribute so an A/B can run on a live server without a rebuild
+ * (`teapot.feedCv=0` in localStorage disables it). See the effect in App.tsx.
+ *
+ * ## `contain-intrinsic-size` is NOT optional
+ *
+ * Without a placeholder size a skipped row measures 0px, `scrollHeight` collapses, and
+ * every scroll-anchoring path in App.tsx — which diffs the container's height before and
+ * after a reflow — computes a wrong delta, so the view jumps on each append.
+ *
+ * The value is `auto 140px`, and BOTH parts matter:
+ *   - `auto` makes the browser REMEMBER a row's real size once rendered. Row heights
+ *     here vary by three orders of magnitude (MEASURED: message median 105 chars / max
+ *     1186; tool_result median 279 / max 8000), so a fixed guess alone makes the
+ *     scrollbar jump around as rows come into view.
+ *   - `140px` is only the initial guess for rows never yet rendered.
+ *
+ * Note what this does NOT solve: Chromium reports no layout shift for a
+ * content-visibility unskip (crbug 40733057, by design since M88), so a regression in
+ * our own scroll anchoring would be invisible to CLS metrics. That is why the anchoring
+ * behaviour has its own tests rather than relying on a metric to catch it.
+ */
+html[data-feedcv="on"] .feed > .msg {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 140px;
+}
 .feed { flex: 1; overflow-y: auto; padding: 14px 0 8px; min-height: 0; overscroll-behavior: contain; }
 .msg { display: flex; gap: 14px; padding: 3px 18px; }
 .msg:hover { background: #ffffff08; }
