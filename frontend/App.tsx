@@ -4276,8 +4276,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             >⑂ fork</button>
             <button onclick={async () => {
               const id = selected();
-              if (!id || !confirm(`remove agent ${id}? (log is kept)`)) return;
-              await api(`/api/agents/${id}`, { method: "DELETE" }).catch(() => {});
+              if (!id || !confirm(`archive agent ${id}?\n\nIt stops running and leaves the list, but its config and full session history are KEPT — restore it any time from ⚙ settings → archive.`)) return;
+              await api(`/api/agents/${id}/archive`, { method: "POST" }).catch(() => {});
               const rest = agents().filter((a) => a.id !== id);
               setAgents(rest);
               // the agent is gone, so its session is too — drop the cached
@@ -4286,7 +4286,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               void refreshSessionIndex(true);
               if (rest[0]) select(rest[0].id);
               else { setSelected(null); setEvents([]); }
-              }} title="remove agent from teapot (session log stays on disk)">🗑 remove</button>
+              }} title="archive agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)">🗄 archive</button>
               <Show when={agents().some((a) => a.parent === selected())}>
                 <button
                   onclick={async () => {
@@ -4685,7 +4685,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     <span class="muted">@{t.agent}</span>
                     <Show when={t.forked}><span title="runs on a forked branch so chatter stays off the main line">⑂</span></Show>
                   </div>
-                  <div class="sched-meta mono">
+                  {/* NOT monospace: this line is mostly prose ("→ next 5m · last
+                      2h"), and reading it in a fixed-width face was hard (#tasks).
+                      Only the raw `- [ ]` markdown editor keeps monospace. */}
+                  <div class="sched-meta">
                     {t.schedule} → next {t.next ? relTime(t.next) : "—"}{t.last ? ` · last ${relTime(t.last)}` : " · never ran"}
                   </div>
                   <div class="sched-prompt muted">{oneLine(t.prompt, 90)}</div>
@@ -6636,12 +6639,29 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
    * The SAVE button stays outside the menu: it applies the whole form, so it must not
    * look like it belongs to whichever section happens to be visible.
    */
-  type Section = "providers" | "runtime" | "tasks" | "agents" | "update";
+  type Section = "providers" | "runtime" | "tasks" | "archive" | "agents" | "update";
   const [section, setSection] = createSignal<Section>("providers");
+  // the archive list is SERVER state (which entries are archived), fetched on open
+  // and after every action — not derived from props.cfg, which carries the config as
+  // loaded and would go stale the moment an agent is archived from the controls panel
+  const [archived, setArchived] = createSignal<
+    { id: string; workspace: string; archivedAt?: number; sessions: number }[]
+  >([]);
+  const refreshArchived = async () => {
+    const r = (await api("/api/archived").catch(() => null)) as {
+      agents?: { id: string; workspace: string; archivedAt?: number; sessions: number }[];
+    } | null;
+    setArchived(r?.agents ?? []);
+  };
+  // refresh whenever the panel is OPENED, so it never shows a stale list
+  createEffect(() => {
+    if (section() === "archive") void refreshArchived();
+  });
   const SECTIONS: { key: Section; label: string; hint: string }[] = [
     { key: "providers", label: "🧦 providers", hint: "endpoints, API keys, default models" },
     { key: "runtime", label: "⚙️ runtime", hint: "context budget, retries, spawn depth" },
     { key: "tasks", label: "⏰ scheduled tasks", hint: "cron prompts run against an agent" },
+    { key: "archive", label: "🗄 archive", hint: "agents you put away — restore or delete for good" },
     { key: "agents", label: "👥 agents", hint: "what exists (read-only)" },
     { key: "update", label: "⬆️ live update", hint: "restart onto a newer build" },
   ];
@@ -6879,6 +6899,78 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
             </Index>
           </Show>
           <button type="button" onclick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ add task</button>
+        </fieldset>
+
+        <fieldset classList={{ hide: section() !== "archive" }}>
+          <legend>archived agents — restore, or delete for good</legend>
+          {/* Archived entries keep their config and their session history. The
+              distinction the UI must make obvious is which of the two buttons is
+              irreversible, so DELETE states exactly what it destroys. */}
+          <Show
+            when={archived().length > 0}
+            fallback={
+              <div class="muted" style="font-size:12.5px">
+                nothing archived. 🗄 archive in the controls panel puts an agent away
+                without losing its history.
+              </div>
+            }
+          >
+            <For each={archived()}>
+              {(a) => (
+                <div class="cfgrow archrow">
+                  <div class="archmain">
+                    <b>{a.id}</b>
+                    <span class="muted">
+                      {a.sessions} session{a.sessions === 1 ? "" : "s"}
+                      {a.archivedAt ? ` · archived ${relTime(new Date(a.archivedAt).toISOString())}` : ""}
+                    </span>
+                    <span class="muted mono ellip" title={a.workspace}>{a.workspace}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="archrestore"
+                    onclick={async () => {
+                      const r = (await api(`/api/agents/${a.id}/restore`, { method: "POST" }).catch(
+                        () => null,
+                      )) as { live?: boolean } | null;
+                      await refreshArchived();
+                      // `onSaved` re-fetches the agent list, so the restored agent
+                      // reappears in the controls panel without a reload
+                      props.onSaved();
+                      flashHint(
+                        r?.live === false
+                          ? `restored ${a.id} — it could not be started (check its provider)`
+                          : `restored ${a.id}`,
+                      );
+                    }}
+                    title="bring it back and start it again — its history was never touched"
+                  >↩ restore</button>
+                  <button
+                    type="button"
+                    class="danger"
+                    onclick={async () => {
+                      // The count comes from the server's own listing, so the
+                      // warning names a real number rather than a guess.
+                      if (
+                        !confirm(
+                          `PERMANENTLY DELETE ${a.id}?\n\n` +
+                            `${a.sessions} session${a.sessions === 1 ? "" : "s"} of history will be ` +
+                            "erased from disk along with the config entry. This cannot be undone " +
+                            "— archiving was the reversible option.",
+                        )
+                      )
+                        return;
+                      await api(`/api/agents/${a.id}/purge`, { method: "DELETE" }).catch(() => {});
+                      await refreshArchived();
+                      props.onSaved();
+                      flashHint(`deleted ${a.id} for good`);
+                    }}
+                    title="erase the config entry AND every session directory — irreversible"
+                  >🗑 delete</button>
+                </div>
+              )}
+            </For>
+          </Show>
         </fieldset>
 
         <fieldset classList={{ hide: section() !== "agents" }}>

@@ -210,6 +210,21 @@ export interface AgentOptions {
 const KEEP_RECENT_TOKENS = 15_000;
 
 /**
+ * When pruning old tool output becomes worthwhile, as a share of the budget.
+ *
+ * Just under 1: pruning is DESTRUCTIVE (a clipped tool result leaves the model's
+ * context entirely — the log keeps it, but the model cannot see it without re-issuing
+ * the call), so it must only spend that information when the next request would
+ * otherwise not fit. The old value was 0.6 of a budget that is itself 75% of the
+ * window, i.e. history was being clipped at 45% of the real window with a quarter of
+ * the window still free — which is what the operator noticed ("25%余ってる").
+ *
+ * A share rather than an absolute count, so it tracks whatever window the session is
+ * configured for.
+ */
+const PRUNE_AT_SHARE = 0.95;
+
+/**
  * The summarize call is skipped when the summarizable prefix is a small share of
  * the budget, because the call cannot reuse any prefix cache (its system prompt is
  * its instructions) and so re-bills the whole history uncached. Below this share,
@@ -1257,7 +1272,11 @@ export class Agent {
       // reload. It is a size fix, not a semantic one: the model has already
       // seen and acted on that output, and the pruned form keeps the head plus
       // a marker, exactly as it did live.
-      this.maybePrune();
+      //
+      // FORCED: this reproduces what the live session had already done, so it must
+      // not consult the "is there room" bar — a restored context that happens to sit
+      // below it still has to match the prompt the provider last accepted.
+      this.maybePrune(true);
 
       // #54: answer tool_calls the log says are still open.
       //
@@ -3559,11 +3578,32 @@ export class Agent {
    * summarize, clip OLD oversized tool outputs — they are the usual bulk and
    * their details rarely matter once executed. The most recent window is
    * protected so current work never loses its footing.
+   *
+   * WHEN it may run is the subtle part. It used to fire at `budget * 0.6`, and
+   * because the budget is itself 75% of the model's window that meant clipping
+   * history at **45% of the real window** — well before the auto-compact trigger at
+   * 75%, i.e. while a quarter of the window was still free. The operator's report:
+   * "compactで最初に過去履歴を落としてるけど…25%余ってるから多分あまりそれする必要ない".
+   *
+   * Pruning is destructive in a way compaction is not: a clipped tool result is GONE
+   * from the model's context (the log keeps it, but the model cannot see it without
+   * re-issuing the call), so doing it early trades real information for room that is
+   * not needed yet. It is now a PRE-STEP OF COMPACTION — called from `maybeCompact()`
+   * only once that pass has decided it is actually over budget — plus a margin so a
+   * mid-size context is still tidy. `PRUNE_AT_SHARE` is a share of the BUDGET, and a
+   * share just under 1 means "only when the next request would not fit".
+   *
+   * The separate restore-time call (#50) keeps its own rule: a restored history is
+   * re-pruned so a reload does not hand the provider a strictly larger prompt than
+   * the one that had just succeeded.
    */
-  private maybePrune(): number {
+  private maybePrune(force = false): number {
     const est = this.contextSizeForBudgeting(); // floored — see #73
     const budget = this.opts.contextTokenBudget;
-    if (!budget || est < budget * 0.6) return 0; // prune only when it matters
+    if (!budget) return 0;
+    // Below the bar there is enough room for the next request, so clipping now would
+    // spend information to buy space that is already free.
+    if (!force && est < budget * PRUNE_AT_SHARE) return 0;
     // protect the recent tail (~half the budget in chars) from any pruning
     const protectChars = budget * 2;
     let seen = 0;
@@ -3624,11 +3664,29 @@ export class Agent {
     // prefer the provider's own count from the last response — it is exactly
     // what would overflow the window; the char heuristic is only a fallback
     // for providers that omit usage
-    // stage 1: clip oversized old tool outputs before considering a summarize
-    this.maybePrune();
     const before = this.contextSizeForBudgeting(); // floored — see #73
     if (!force && before < this.opts.contextTokenBudget) return;
     if (!force && this.opts.autoCompact === false) return;
+    // stage 1: clip oversized old tool outputs before considering a summarize.
+    // ONLY reached once this pass is actually over budget — pruning is destructive,
+    // so it must not run on a context that still has room (see maybePrune()).
+    const pruned = this.maybePrune(true);
+    // If clipping alone brought the request back under budget, STOP: that is the
+    // cheapest possible compaction (no LLM call, no history rewritten, the tool
+    // results are re-issuable) and everything below would discard context the model
+    // can still use. This is the ordering the operator asked for — "どうしても足りなかったら
+    // 過去履歴落とす程度でいい" — and it is what Anthropic calls the lightest form of
+    // compaction. A manual `/compact` still means "summarize", so it is exempt.
+    if (pruned > 0 && !force && this.contextSizeForBudgeting() < this.opts.contextTokenBudget) {
+      await this.log.append("system_note", this.currentSession, this.currentBranch, {
+        event: "context-pruned-enough",
+        outputs: pruned,
+        tokensAfter: this.contextSizeForBudgeting(),
+        budget: this.opts.contextTokenBudget,
+      });
+      this.compactedAtLen = this.messages.length;
+      return;
+    }
     // CIRCUIT BREAKER (ZCode: `max auto failures: 3`). A compaction that keeps
     // failing would otherwise retry on EVERY turn, re-burning the provider for a pass
     // that cannot succeed — and the failure is usually environmental (an unavailable

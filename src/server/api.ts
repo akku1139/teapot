@@ -502,6 +502,36 @@ const MAX_WS_CLIENTS = 64;
     }
   });
 
+  // archive / restore / purge. "remove" used to mean "delete the config entry and
+  // orphan the history on disk"; these make the three intents distinct — put it
+  // away (reversible), bring it back, or destroy it for real.
+  app.get("/api/archived", (c) => c.json({ agents: master.archivedAgents() }));
+
+  app.post("/api/agents/:id/archive", async (c) => {
+    try {
+      return c.json(await master.archiveAgent(c.req.param("id")));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 404);
+    }
+  });
+
+  app.post("/api/agents/:id/restore", async (c) => {
+    try {
+      return c.json(await master.restoreAgent(c.req.param("id")));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 404);
+    }
+  });
+
+  // DESTRUCTIVE: config entry AND session directories
+  app.delete("/api/agents/:id/purge", async (c) => {
+    try {
+      return c.json(await master.purgeAgent(c.req.param("id")));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 404);
+    }
+  });
+
   // remove agent (log file is kept)
   app.delete("/api/agents/:id", async (c) => {
     try {

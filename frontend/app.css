@@ -748,8 +748,17 @@ details.reasoning .thinkscroll {
 /* Settings has columns that scroll INSIDE it and a footer that must not scroll away,
    so the modal becomes a flex column with a real height instead of one scrolling box.
    `:has()` keeps this scoped to the settings dialog — the other modals (new agent,
-   setup) are simple forms and scrolling as a whole is right for them. */
-.modal:has(.cfgbody) { display: flex; flex-direction: column; overflow: hidden; }
+   setup) are simple forms and scrolling as a whole is right for them.
+
+   The height is FIXED (`height`, not `max-height`): sizing to content made the whole
+   dialog jump every time the operator changed section, because a two-field section
+   ("runtime") and a ten-provider one differ by hundreds of pixels. A settings window is
+   a place you move around in; its frame must not move with you. `88vh` is the cap so
+   the small sections do not overshoot a short window. */
+.modal:has(.cfgbody) {
+  display: flex; flex-direction: column; overflow: hidden;
+  height: min(660px, 88vh);
+}
 .modal:has(.cfgbody) > form { min-height: 0; flex: 1; display: flex; flex-direction: column; }
 /**
  * Settings: a vertical rail on the left, one section on the right, footer pinned.
@@ -806,6 +815,22 @@ details.reasoning .thinkscroll {
   padding: 7px 16px; cursor: pointer; font: inherit; font-weight: 600;
 }
 .cfgsave:hover { filter: brightness(1.12); }
+/* archive rows: the entry and its cost go on the left, the two actions on the right.
+   `delete` is the only irreversible control in the settings dialog, so it keeps the
+   danger styling and sits apart from `restore` — a misclick between them must not be
+   the difference between "back" and "gone". */
+.cfgrow.archrow { flex-wrap: nowrap; align-items: center; gap: 8px; }
+.archmain { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.archmain b { font-size: 12.5px; }
+.archmain .muted { font-size: 11px; }
+.archmain .mono { font-size: 10.5px; max-width: 100%; }
+.archrow button { flex: none; white-space: nowrap; }
+.archrow .archrestore { background: var(--acc); border-color: var(--acc); color: #fff; font-weight: 600; }
+.archrow .archrestore:hover { filter: brightness(1.12); }
+@media (max-width: 620px) {
+  .cfgrow.archrow { flex-wrap: wrap; }
+  .archrow button { flex: 1 1 auto; }
+}
 /* narrow: the rail would eat the panel, so it becomes a horizontal strip again —
    but sticky at the top of the panel, so it never pushes live content around. */
 @media (max-width: 620px) {
@@ -1202,9 +1227,12 @@ input[type="number"] {
   border: none;
   padding: 6px 8px;
   color: var(--fg);
-  font-family: ui-monospace, Menlo, monospace;
   font-size: 12.5px;
   line-height: 1.45;
   resize: vertical;
 }
+/* The EDITOR is monospace, because it is raw markdown where `- [ ]` must line up.
+   The RENDERED checklist is prose the operator reads; monospace made it visibly
+   hard to scan (fixed-width digits and cramped kanji), so it inherits the UI font. */
+.todopane-edit { font-family: ui-monospace, Menlo, monospace; }
 

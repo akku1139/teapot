@@ -126,6 +126,14 @@ function apiResponse(url) {
     return { provider: "openrouter", models: [{ id: AGENT.model, contextLength: 200_000 }] };
   if (u === "/api/metrics") return { rssMb: 1, heapUsedMb: 1, loadavg1: 0, uptimeSec: 1, agents: [] };
   if (u === "/api/tasks") return { tasks: [] };
+  // archive: one entry with a real session count, so the panel's warning can name
+  // a number. Empty-restore is covered by the server test.
+  if (u === "/api/archived")
+    return {
+      agents: [
+        { id: "shelved", workspace: "/tmp/shelved-project", archivedAt: Date.now() - 86_400_000, sessions: 3 },
+      ],
+    };
   if (u === "/api/personas") return { personas: [] };
   return { ok: true };
 }
@@ -1282,6 +1290,63 @@ console.log("deep render ok: feed rows present");
       }
     }
     console.log("deep render ok: settings is a left rail with a pinned footer");
+
+    // ---- archive: the reversible half of "remove" ----
+    //
+    // Drives the real panel: select the archive section, wait for its fetch, and
+    // assert that the row names the entry AND that `delete` is visibly the dangerous
+    // one. A row that renders both buttons identically would be the exact bug the
+    // feature exists to prevent — the operator could not tell reversible from not.
+    {
+      const railBtns = [...w.document.querySelectorAll(".cfgmenu-item")];
+      const archBtn = railBtns.find((b) => /archive/.test(b.textContent ?? ""));
+      if (!archBtn) {
+        console.error("#archive REGRESSION: no 🗄 archive entry in the settings rail");
+        process.exit(1);
+      }
+      archBtn.click();
+      // the section fetches /api/archived on open — poll rather than sleep
+      const deadline = Date.now() + 3000;
+      let row = null;
+      while (Date.now() < deadline) {
+        row = w.document.querySelector(".archrow");
+        if (row) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      if (!row) {
+        console.error("#archive REGRESSION: the archive section rendered no rows");
+        process.exit(1);
+      }
+      // PRECONDITION: the row must actually show the entry and its cost
+      const rowText = String(row.textContent ?? "");
+      if (!rowText.includes("shelved")) {
+        console.error(`#archive REGRESSION: the row does not name the archived agent: ${rowText}`);
+        process.exit(1);
+      }
+      if (!/3 sessions/.test(rowText)) {
+        console.error(
+          `#archive REGRESSION: the row does not say how much history is there: ${rowText}`,
+        );
+        process.exit(1);
+      }
+      const restore = row.querySelector(".archrestore");
+      const del = row.querySelector("button.danger");
+      if (!restore || !del) {
+        console.error("#archive REGRESSION: a row must offer BOTH restore and delete");
+        process.exit(1);
+      }
+      // the destructive one must be styled as such, and they must not look the same
+      const restoreBg = w.document.defaultView.getComputedStyle(restore).background;
+      const delBg = w.document.defaultView.getComputedStyle(del).background;
+      if (restoreBg === delBg) {
+        console.error(
+          `#archive REGRESSION: restore and delete are styled identically (${restoreBg}) — ` +
+            "the operator cannot tell reversible from irreversible",
+        );
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: archive lists entries with distinct restore/delete");
 
     // CLOSE the dialog: it is a full-screen overlay, and leaving it open swallows the
     // Escape key that the later #50 drawer scenario presses — MEASURED as

@@ -17,6 +17,7 @@ import {
   closeSync,
   readSync,
   fsyncSync,
+  rmSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { currentKey, makeKeyPool, resetPool, type KeyPoolState } from "./agent/key-pool.ts";
@@ -215,6 +216,19 @@ export interface AgentConfig {
   contextWindowTokens?: number;
   /** set when this agent was spawned by another agent — survives restarts */
   parent?: string;
+  /**
+   * Archived: hidden from the normal agent list, not started at boot, but its
+   * config entry and its session history are kept so it can be restored.
+   *
+   * This is what "remove" should always have been. `removeAgent` deleted the config
+   * entry while leaving `sessions/` on disk, which made the session unreachable from
+   * the UI forever — recoverable only by knowing the id and editing config.json by
+   * hand. Archiving is reversible; deleting is not, so deleting is now a separate,
+   * explicitly destructive action.
+   */
+  archived?: boolean;
+  /** epoch ms when it was archived — lets the UI sort newest-first */
+  archivedAt?: number;
   /** test hook: inject a mock LLM function */
   chatFn?: ChatFn;
   /** restrict to read-only tools (set automatically for read-only personas) */
@@ -861,6 +875,10 @@ export class Master {
     this.prefetchModelLists();
     try {
       for (const ac of this.config.agents) {
+        // archived agents keep their config entry and their history but do not run;
+        // starting one would spend a provider request and mint/rewrite a session for
+        // something the operator deliberately put away.
+        if (ac.archived) continue;
         try {
           await this.addAgent(ac);
         } catch (err) {
@@ -2030,6 +2048,93 @@ if (active().length === 0) wake();
     await agent.dispose();
     this.config.agents = this.config.agents.filter((a) => a.id !== id);
     this.saveConfig();
+  }
+
+  /**
+   * Put an agent away without losing it: stop it, drop it from the running set, and
+   * mark its config entry archived. The entry and its session history stay on disk,
+   * so `restoreAgent` can bring it back byte-identically.
+   *
+   * This exists because the old "remove" conflated two very different wishes —
+   * "I am done with this for now" and "destroy it" — and implemented the first as
+   * the second: it deleted the config entry, which orphaned the session directory
+   * (the files survived, but nothing in the UI could reach them again).
+   */
+  async archiveAgent(id: string): Promise<{ archived: boolean }> {
+    const ac = this.config.agents.find((a) => a.id === id);
+    if (!ac) throw new Error(`no such agent: ${id}`);
+    const live = this.agents.get(id);
+    if (live) {
+      this.agents.delete(id);
+      await live.dispose();
+    }
+    ac.archived = true;
+    ac.archivedAt = Date.now();
+    this.saveConfig();
+    return { archived: true };
+  }
+
+  /** Bring an archived agent back. Its session pointer was never touched. */
+  async restoreAgent(id: string): Promise<{ restored: boolean; live: boolean }> {
+    const ac = this.config.agents.find((a) => a.id === id);
+    if (!ac) throw new Error(`no such agent: ${id}`);
+    delete ac.archived;
+    delete ac.archivedAt;
+    this.saveConfig();
+    // start it again unless it was never configured to run (it is in the list, so it
+    // was) — a restore is the operator asking for it back, so it comes back LIVE
+    try {
+      await this.addAgent(ac);
+      return { restored: true, live: true };
+    } catch (err) {
+      // the entry is restored either way; starting it can fail on a provider/auth
+      // problem, and reporting that is more useful than undoing the restore
+      console.error(`[teapot] restored "${id}" but could not start it: ${(err as Error).message}`);
+      return { restored: true, live: false };
+    }
+  }
+
+  /** Archived entries, newest first — what the settings panel lists. */
+  archivedAgents(): Array<{ id: string; workspace: string; archivedAt?: number; sessions: number }> {
+    return this.config.agents
+      .filter((a) => a.archived)
+      .map((a) => ({
+        id: a.id,
+        workspace: a.workspace,
+        ...(a.archivedAt !== undefined ? { archivedAt: a.archivedAt } : {}),
+        sessions: this.sessionsOf(a.id).length,
+      }))
+      .sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
+  }
+
+  /**
+   * Delete an agent FOR REAL: config entry, live instance, and its session
+   * directories on disk. Irreversible — the UI asks first and says how much is
+   * being destroyed.
+   */
+  async purgeAgent(id: string): Promise<{ purged: true; dirs: number }> {
+    const ac = this.config.agents.find((a) => a.id === id);
+    if (!ac) throw new Error(`no such agent: ${id}`);
+    const live = this.agents.get(id);
+    if (live) {
+      this.agents.delete(id);
+      await live.dispose();
+    }
+    // collect the directories BEFORE dropping the config entry, because
+    // `sessionsOf` resolves ownership through the config + live map
+    const dirs = this.sessionsOf(id);
+    this.config.agents = this.config.agents.filter((a) => a.id !== id);
+    this.saveConfig();
+    let removed = 0;
+    for (const d of dirs) {
+      try {
+        rmSync(path.join(this.sessionsRoot(), d.id), { recursive: true, force: true });
+        removed++;
+      } catch (err) {
+        console.error(`[teapot] could not delete ${d.id}: ${(err as Error).message}`);
+      }
+    }
+    return { purged: true, dirs: removed };
   }
 
   /**

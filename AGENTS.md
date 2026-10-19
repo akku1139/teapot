@@ -232,6 +232,25 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   `100.x` and `fd7a:…` — an IPv4-only listener is unreachable from an IPv6
   client. `dualStackHost()` in `src/server/api.ts` maps the wildcard to a
   missing hostname for this reason.
+- **Remove vs archive vs purge are three different wishes, and conflating them loses
+  data.** `removeAgent` originally deleted the agent's config entry while leaving its
+  `sessions/` directory on disk: the history survived but nothing in the UI could reach
+  it again — recoverable only by knowing the id and hand-editing `config.json`. The
+  entry is what binds an agent to a session, so **deleting the entry orphans the
+  history** just as surely as deleting the files would. `archived?: boolean` on
+  `AgentConfig` is the reversible middle: stopped, hidden, entry and history kept,
+  skipped at boot. `purgeAgent` is the only destructive one and deletes both.
+  - Anything that "removes" a row from a config list should ask which of these three the
+    operator means. A default that is destructive is the one nobody forgives.
+- Compaction is ordered by **cost, not by which mechanism is best**: clip re-issuable
+  tool output (free, no history rewritten) → only if that is not enough, summarize →
+  only if the summarize fails, truncate. `maybePrune()` used to run unconditionally at
+  the top of every turn, gated at `0.6 × budget`, and the budget is itself 75% of the
+  model's window — so history was clipped at **45% of the real window** with a quarter
+  of it still free. Pruning is destructive in a way compaction is not (a clipped tool
+  result leaves the model's context; the log keeps it, but the model must re-issue the
+  call), so it may only run once a pass is genuinely over budget.
+
 - The web terminal resizes with `stty -F <pty-slave> rows R cols C` — an
   ioctl(TIOCSWINSZ) on the DEVICE — never by writing `stty` to the child's stdin.
   stdin belongs to whatever owns the tty, so a written command arrives as KEYS in
