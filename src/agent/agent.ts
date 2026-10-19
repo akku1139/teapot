@@ -13,6 +13,8 @@ import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from 
 import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, killBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { sessionTitleFrom } from "../session-title.ts";
+import { mcp } from "./mcp-registry.ts";
+import { flattenToolName } from "./mcp-registry.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
@@ -140,6 +142,12 @@ export interface AgentOptions {
   provider?: string;
   /** shared skill dir (defaults to none; workspace skills always enabled) */
   globalSkillsDir?: string;
+  /**
+   * Skill roots contributed by Agent Plugins (#162). Ranked with the global dir —
+   * below the workspace (a project must win on a name clash) and above the bundled
+   * skills (an operator-installed plugin is more specific than what ships with teapot).
+   */
+  pluginSkillRoots?: { dir: string; source: string }[];
   /** package-shipped skills (lowest priority root; auto-resolved by master) */
   bundledSkillsDir?: string;
   /** depth in the sub-agent spawn tree (0 = top level); enforced by the master */
@@ -580,6 +588,7 @@ export class Agent {
       contextWindowTokens: 0,
       restoreSession: true,
       globalSkillsDir: "",
+      pluginSkillRoots: [],
       bundledSkillsDir: "",
       spawnDepth: 0,
       readOnlyTools: false,
@@ -600,6 +609,7 @@ export class Agent {
     this.skillRoots = [
       { dir: path.join(opts.workspace, "skills"), source: "workspace" },
       ...(opts.globalSkillsDir ? [{ dir: opts.globalSkillsDir, source: "global" }] : []),
+      ...(opts.pluginSkillRoots ?? []),
       // OTHER HARNESSES' skill directories (#28). The SKILL.md format is shared,
       // so these are readable as-is — verified against real third-party skills
       // (terminalskills/skills, trailofbits/skills, …). They sit below the
@@ -4288,7 +4298,14 @@ export class Agent {
   }
 }
 
-/** workspace tools + agent-meta tools (finish / report_progress / set_goal / set_memory) */
+/**
+ * workspace tools + agent-meta tools + every tool from every CONNECTED MCP server.
+ *
+ * The MCP tools are appended LAST and their names are namespaced (`mcp__server__tool`),
+ * so adding one can never shadow a built-in — a server exposing `bash` must not be able
+ * to take over the shell. `mcpSpecs()` is empty when nothing is configured, which is
+ * the common case, so the cost of the feature is one empty spread.
+ */
 function allToolSpecs(): ReturnType<typeof toolSpecs> {
   return [
     ...toolSpecs(),
@@ -4538,7 +4555,27 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
         parameters: { type: "object", properties: {} },
       },
     },
+    ...mcpSpecs(),
   ];
+}
+
+/**
+ * MCP tools as function specs, flattened and namespaced.
+ *
+ * Descriptions are prefixed with their origin so the model can reason about which
+ * server a result came from — with three servers exposing `search`, a bare description
+ * gives it nothing to choose with. The server's own JSON Schema is forwarded as-is:
+ * rewriting it would drop constraints the server enforces.
+ */
+function mcpSpecs(): ReturnType<typeof toolSpecs> {
+  return mcp.allTools().map((t) => ({
+    type: "function" as const,
+    function: {
+      name: flattenToolName(t.server, t.name),
+      description: `[MCP: ${t.server}] ${t.description || `${t.name} (no description provided)`}`,
+      parameters: t.inputSchema,
+    },
+  }));
 }
 
 

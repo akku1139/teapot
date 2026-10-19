@@ -6625,6 +6625,33 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   const [ctxWinK, setCtxWinK] = createSignal(props.cfg.contextWindowTokens ? Math.round(props.cfg.contextWindowTokens / 1000) : 0);
   const [maxDepth, setMaxDepth] = createSignal(props.cfg.maxSpawnDepth ?? 3);
   const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
+  // MCP servers (#67). The header text is kept separately as STRINGS: the config holds
+  // an object, and round-tripping it through JSON on every keystroke would rewrite what
+  // the operator is typing (a half-typed quote would be erased mid-word).
+  const [mcpServers, setMcpServers] = createSignal<any[]>(
+    (props.cfg.mcpServers ?? []).map((m: any) => ({ ...m })),
+  );
+  const [mcpHeadersText, setMcpHeadersText] = createSignal<Record<number, string>>(
+    Object.fromEntries(
+      (props.cfg.mcpServers ?? []).map((m: any, i: number) => [
+        i,
+        m.headers ? JSON.stringify(m.headers) : "",
+      ]),
+    ),
+  );
+  const [mcpHeaderErr, setMcpHeaderErr] = createSignal<Record<number, string>>({});
+  const [mcpStatus, setMcpStatus] = createSignal<
+    Record<number, { kind: "testing" | "ok" | "err"; text: string }>
+  >({});
+  // live per-server state, refreshed when the section is opened
+  const [mcpStates, setMcpStates] = createSignal<Record<string, any>>({});
+  const refreshMcpStates = async () => {
+    const r = (await api("/api/mcp").catch(() => null)) as { states?: any[] } | null;
+    setMcpStates(Object.fromEntries((r?.states ?? []).map((s: any) => [s.name, s])));
+  };
+  createEffect(() => {
+    if (section() === "mcp") void refreshMcpStates();
+  });
   const [err, setErr] = createSignal("");
 
   /**
@@ -6639,7 +6666,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
    * The SAVE button stays outside the menu: it applies the whole form, so it must not
    * look like it belongs to whichever section happens to be visible.
    */
-  type Section = "providers" | "runtime" | "tasks" | "archive" | "agents" | "update";
+  type Section = "providers" | "runtime" | "mcp" | "tasks" | "archive" | "agents" | "update";
   const [section, setSection] = createSignal<Section>("providers");
   // the archive list is SERVER state (which entries are archived), fetched on open
   // and after every action — not derived from props.cfg, which carries the config as
@@ -6661,6 +6688,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
     { key: "providers", label: "🧦 providers", hint: "endpoints, API keys, default models" },
     { key: "runtime", label: "⚙️ runtime", hint: "context budget, retries, spawn depth" },
     { key: "tasks", label: "⏰ scheduled tasks", hint: "cron prompts run against an agent" },
+    { key: "mcp", label: "🔌 MCP servers", hint: "external tool servers exposed to every agent" },
     { key: "archive", label: "🗄 archive", hint: "agents you put away — restore or delete for good" },
     { key: "agents", label: "👥 agents", hint: "what exists (read-only)" },
     { key: "update", label: "⬆️ live update", hint: "restart onto a newer build" },
@@ -6697,6 +6725,35 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
       if (!t.agent) { setErr(`task "${t.id}": agent is required`); return; }
       if (!t.schedule?.trim()) { setErr(`task "${t.id}": schedule is required`); return; }
     }
+    // MCP servers: validate HERE so a bad entry fails in the dialog that made it.
+    // A nameless server would otherwise connect as "" and its tools would flatten to
+    // `mcp____tool`, which the model cannot tell apart from another nameless one.
+    const cleanMcp: any[] = [];
+    const seenMcp = new Set<string>();
+    for (const m of mcpServers()) {
+      const name = String(m.name ?? "").trim();
+      const url = String(m.url ?? "").trim();
+      const transport = m.transport ?? "http";
+      const command = String(m.command ?? "").trim();
+      if (!name && !url && !command) continue; // a blank row is not an error
+      if (!name) { setErr("MCP: a server needs a name"); return; }
+      if (seenMcp.has(name)) { setErr(`MCP: two servers are named "${name}"`); return; }
+      seenMcp.add(name);
+      if (transport === "stdio" ? !command : !url) {
+        setErr(`MCP "${name}": ${transport === "stdio" ? "a command is" : "a url is"} required`);
+        return;
+      }
+      cleanMcp.push({
+        name,
+        transport,
+        enabled: m.enabled !== false,
+        ...(url ? { url } : {}),
+        ...(transport === "stdio"
+          ? { command, ...(m.args?.length ? { args: m.args } : {}) }
+          : {}),
+        ...(m.headers && Object.keys(m.headers).length ? { headers: m.headers } : {}),
+      });
+    }
     try {
       await api("/api/config", {
         method: "PUT",
@@ -6710,6 +6767,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           ...(ctxWinK() > 0 ? { contextWindowTokens: ctxWinK() * 1000 } : {}),
           maxSpawnDepth: Math.max(0, maxDepth()),
           tasks: cleanTasks,
+          mcpServers: cleanMcp,
         }),
       });
       props.onSaved(); props.onClose();
@@ -6876,6 +6934,164 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
             {numInput("context window (k tok)", ctxWinK(), (v) => setCtxWinK(v), "model's real window — 0/blank hides the % gauge")}
             {numInput("max spawn depth", maxDepth(), (v) => setMaxDepth(v), "sub-agent nesting limit (0 = no spawning)")}
           </div>
+        </fieldset>
+
+        <fieldset classList={{ hide: section() !== "mcp" }}>
+          <legend>MCP servers — external tools, shared by every agent</legend>
+          {/* Tool discovery is the part that goes wrong, so `test` is a first-class
+              control: it connects, lists, and reports the exact failure WITHOUT
+              saving. Discovering on save would put the error on an agent's turn
+              instead of on the row that caused it. */}
+          <div class="muted" style="font-size:11.5px;margin-bottom:8px">
+            each tool becomes <code class="mono">mcp__server__tool</code> for every agent.
+            saving connects them; the status shown here is live.
+          </div>
+          <Show
+            when={mcpServers().length > 0}
+            fallback={
+              <div class="muted" style="font-size:12.5px">
+                no MCP servers. add one below — a remote url, or a local command for stdio.
+              </div>
+            }
+          >
+            <Index each={mcpServers()}>
+              {(srv, i) => {
+                const st = () => mcpStates()[srv().name];
+                const upd = (patch: Record<string, any>) =>
+                  setMcpServers(mcpServers().map((x, j) => (j === i ? { ...x, ...patch } : x)));
+                return (
+                  <div class="cfgcol mcpcard">
+                    <div class="cfgrow">
+                      <input
+                        class="cfgname"
+                        placeholder="name"
+                        value={srv().name}
+                        oninput={(e) => upd({ name: e.currentTarget.value })}
+                        title="the name that appears inside mcp__<name>__ in tool names"
+                      />
+                      <input
+                        placeholder="https://example.com/mcp  (or leave empty for a stdio command)"
+                        value={srv().url ?? ""}
+                        oninput={(e) => upd({ url: e.currentTarget.value })}
+                      />
+                      <label style="display:flex;gap:3px;align-items:center;white-space:nowrap;color:var(--dim);font-size:11px">
+                        <input
+                          type="checkbox"
+                          checked={srv().enabled !== false}
+                          onchange={(e) => upd({ enabled: e.currentTarget.checked })}
+                        />on
+                      </label>
+                      <button
+                        type="button"
+                        class="danger"
+                        onclick={() => setMcpServers(mcpServers().filter((_, j) => j !== i))}
+                      >✕</button>
+                    </div>
+                    <div class="cfgrow">
+                      <select
+                        value={srv().transport ?? "http"}
+                        onchange={(e) => upd({ transport: e.currentTarget.value })}
+                        title="streamable HTTP is the current spec; legacy SSE is the 2024-11-05 handshake; stdio spawns a local process"
+                      >
+                        <option value="http">streamable http</option>
+                        <option value="sse">legacy http+sse</option>
+                        <option value="stdio">stdio (local command)</option>
+                      </select>
+                      <Show when={srv().transport === "stdio"}>
+                        <>
+                          <input
+                            placeholder="command (e.g. npx)"
+                            value={srv().command ?? ""}
+                            oninput={(e) => upd({ command: e.currentTarget.value })}
+                          />
+                          <input
+                            placeholder="args, space separated"
+                            value={(srv().args ?? []).join(" ")}
+                            oninput={(e) =>
+                              upd({ args: e.currentTarget.value.split(" ").filter(Boolean) })
+                            }
+                          />
+                        </>
+                      </Show>
+                    </div>
+                    <div class="cfgrow">
+                      <input
+                        placeholder="headers as JSON, e.g. {&quot;Authorization&quot;:&quot;Bearer …&quot;}"
+                        value={mcpHeadersText()[i] ?? ""}
+                        oninput={(e) => {
+                          const t = e.currentTarget.value;
+                          setMcpHeadersText((m) => ({ ...m, [i]: t }));
+                          // parse eagerly so a typo is visible here, not as a 401 later
+                          if (!t.trim()) upd({ headers: undefined });
+                          else {
+                            try {
+                              upd({ headers: JSON.parse(t) });
+                              setMcpHeaderErr((m) => ({ ...m, [i]: "" }));
+                            } catch {
+                              setMcpHeaderErr((m) => ({ ...m, [i]: "not valid JSON — not applied" }));
+                            }
+                          }
+                        }}
+                        title="static headers for every request — the local equivalent of a token store"
+                      />
+                      <button
+                        type="button"
+                        onclick={async () => {
+                          const patch = mcpServers()[i];
+                          if (!patch.name) {
+                            setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "give it a name first" } }));
+                            return;
+                          }
+                          setMcpStatus((m) => ({ ...m, [i]: { kind: "testing", text: "connecting…" } }));
+                          const r = (await api("/api/mcp/test", {
+                            method: "POST",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify(patch),
+                          }).catch(() => null)) as
+                            | { ok?: boolean; tools?: { name: string }[]; error?: string }
+                            | null;
+                          setMcpStatus((m) => ({
+                            ...m,
+                            [i]: r?.ok
+                              ? { kind: "ok", text: `${r.tools?.length ?? 0} tools` }
+                              : { kind: "err", text: r?.error ?? "no response" },
+                          }));
+                        }}
+                        title="connect now and list the tools — nothing is saved"
+                      >test</button>
+                      <Show when={st()}>
+                        <span
+                          class={"mcpstate " + (st()?.status ?? "")}
+                          title={st()?.lastError ?? ""}
+                        >
+                          {st()?.status === "connected"
+                            ? `● ${st()?.tools} tools`
+                            : st()?.status === "error"
+                              ? "● error"
+                              : st()?.status === "disabled"
+                                ? "● off"
+                                : "● idle"}
+                        </span>
+                      </Show>
+                    </div>
+                    <Show when={mcpHeaderErr()[i]}>
+                      <div class="muted" style="font-size:11px;color:var(--warn)">{mcpHeaderErr()[i]}</div>
+                    </Show>
+                    <Show when={mcpStatus()[i]}>
+                      <div
+                        class="mcpresult"
+                        style={mcpStatus()[i]?.kind === "err" ? "color:var(--err)" : "color:var(--ok)"}
+                      >{mcpStatus()[i]?.text}</div>
+                    </Show>
+                  </div>
+                );
+              }}
+            </Index>
+          </Show>
+          <button
+            type="button"
+            onclick={() => setMcpServers([...mcpServers(), { name: "", url: "", transport: "http", enabled: true }])}
+          >+ add MCP server</button>
         </fieldset>
 
         <fieldset classList={{ hide: section() !== "tasks" }}>

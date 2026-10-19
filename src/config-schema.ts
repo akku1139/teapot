@@ -64,6 +64,34 @@ export const ConfigPatchSchema = z.object({
   onError: z.enum(["stop", "retry"]).optional(),
   retryDelayMs: z.number().int().min(1_000).optional(),
   tasks: z.array(TaskSchema).optional(),
+  /**
+   * MCP servers (#67). Validated here so a bad entry fails the SAVE with a readable
+   * message instead of surfacing later as a tool that never appears: a stdio server
+   * needs a command, a network one needs a url, and the name is what namespaces every
+   * tool it exposes.
+   */
+  mcpServers: z
+    .array(
+      z
+        .object({
+          name: z.string().min(1, "MCP server name required"),
+          url: z.string().optional(),
+          command: z.string().optional(),
+          args: z.array(z.string()).optional(),
+          env: z.record(z.string(), z.string()).optional(),
+          headers: z.record(z.string(), z.string()).optional(),
+          transport: z.enum(["http", "sse", "stdio"]).optional(),
+          enabled: z.boolean().optional(),
+          timeoutMs: z.number().int().min(1_000).optional(),
+        })
+        .refine((v) => Boolean(v.url || v.command), {
+          message: "an MCP server needs a url or a command",
+        })
+        .refine((v) => v.transport !== "stdio" || Boolean(v.command), {
+          message: "stdio transport requires a command",
+        }),
+    )
+    .optional(),
 });
 
 export type ConfigPatch = z.infer<typeof ConfigPatchSchema>;

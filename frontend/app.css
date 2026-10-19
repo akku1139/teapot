@@ -815,6 +815,25 @@ details.reasoning .thinkscroll {
   padding: 7px 16px; cursor: pointer; font: inherit; font-weight: 600;
 }
 .cfgsave:hover { filter: brightness(1.12); }
+/* MCP server cards (#67). Each server is a small card rather than one flat row: it
+   carries a transport choice that reveals a different set of fields, a header editor,
+   a connection test and its result. Flattening those into one row made the URL input
+   a few characters wide on a narrow dialog. */
+.mcpcard {
+  border: 1px solid var(--bg-light);
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+.mcpcard .cfgrow { margin-bottom: 5px; }
+.mcpcard .cfgrow:last-child { margin-bottom: 0; }
+.mcpresult { font-size: 11.5px; margin-top: 3px; overflow-wrap: anywhere; }
+/* live connection state — a coloured dot reads faster than the word does */
+.mcpstate { font-size: 11px; white-space: nowrap; color: var(--dim); }
+.mcpstate.connected { color: var(--ok); }
+.mcpstate.error { color: var(--err); }
+.mcpstate.disabled { color: var(--dim); }
+
 /* archive rows: the entry and its cost go on the left, the two actions on the right.
    `delete` is the only irreversible control in the settings dialog, so it keeps the
    danger styling and sits apart from `restore` — a misclick between them must not be

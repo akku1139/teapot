@@ -93,6 +93,7 @@ function apiResponse(url) {
       needsSetup: false,
       providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1" } },
       defaultProvider: "openrouter",
+      mcpServers: [{ name: "files", url: "https://mcp.example/mcp", transport: "http", enabled: true }],
       agents: [{ id: AGENT.id, workspace: AGENT.workspace }],
       tasks: [],
     };
@@ -128,6 +129,14 @@ function apiResponse(url) {
   if (u === "/api/tasks") return { tasks: [] };
   // archive: one entry with a real session count, so the panel's warning can name
   // a number. Empty-restore is covered by the server test.
+  // #67: one server in the "connected" state, so the panel's status pill has
+  // something real to render
+  if (u === "/api/mcp")
+    return {
+      servers: [{ name: "files", url: "https://mcp.example/mcp", transport: "http", enabled: true }],
+      states: [{ name: "files", status: "connected", tools: 4 }],
+    };
+  if (u === "/api/plugins") return { pluginsDir: null, plugins: [] };
   if (u === "/api/archived")
     return {
       agents: [
@@ -1347,6 +1356,74 @@ console.log("deep render ok: feed rows present");
       }
     }
     console.log("deep render ok: archive lists entries with distinct restore/delete");
+
+    // ---- MCP servers (#67): the panel must show each server's LIVE state ----
+    {
+      const railBtns = [...w.document.querySelectorAll(".cfgmenu-item")];
+      const mcpBtn = railBtns.find((b) => /MCP/.test(b.textContent ?? ""));
+      if (!mcpBtn) {
+        console.error("#mcp REGRESSION: no MCP entry in the settings rail");
+        process.exit(1);
+      }
+      mcpBtn.click();
+      // the section fetches /api/mcp on open, so poll for the CARD (renders from props)
+      // and then for the PILL (renders only after the fetch resolves)
+      const deadline = Date.now() + 3000;
+      let card = null;
+      while (Date.now() < deadline) {
+        card = w.document.querySelector(".mcpcard");
+        if (card) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      while (card && !card.querySelector(".mcpstate") && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      if (!card) {
+        console.error("#mcp REGRESSION: the MCP section rendered no server cards");
+        process.exit(1);
+      }
+      // PRECONDITION: the configured server must be there, with its url
+      const urlInput = card.querySelector('input[placeholder^="https://example.com"]');
+      if (!urlInput) {
+        console.error("#mcp REGRESSION: the server's url field is missing");
+        process.exit(1);
+      }
+      if (urlInput.value !== "https://mcp.example/mcp") {
+        console.error(`#mcp REGRESSION: the url field shows ${JSON.stringify(urlInput.value)}`);
+        process.exit(1);
+      }
+      // the transport selector must reflect the configured transport, not default
+      const sel = card.querySelector("select");
+      if (!sel || sel.value !== "http") {
+        console.error(`#mcp REGRESSION: transport selector shows ${JSON.stringify(sel?.value)}`);
+        process.exit(1);
+      }
+      // and the LIVE state must be visible: a connected server shows its tool count.
+      // A panel that silently drops this makes the operator test by asking an agent.
+      const pill = card.querySelector(".mcpstate");
+      if (!pill) {
+        console.error("#mcp REGRESSION: no connection-state pill — status is invisible");
+        process.exit(1);
+      }
+      const pillText = String(pill.textContent ?? "");
+      if (!/4 tools/.test(pillText)) {
+        console.error(
+          `#mcp REGRESSION: the connected server's tool count is not shown (${JSON.stringify(pillText)})`,
+        );
+        process.exit(1);
+      }
+      if (!/connected/.test(pill.className)) {
+        console.error(`#mcp REGRESSION: the pill does not carry the connected class (${pill.className})`);
+        process.exit(1);
+      }
+      // the test button must exist — it is the only way to check a server before saving
+      const testBtn = [...card.querySelectorAll("button")].find((b) => /test/.test(b.textContent ?? ""));
+      if (!testBtn) {
+        console.error("#mcp REGRESSION: no test button — a bad server can only be found by saving");
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: MCP panel shows server, transport and live tool count");
 
     // CLOSE the dialog: it is a full-screen overlay, and leaving it open swallows the
     // Escape key that the later #50 drawer scenario presses — MEASURED as

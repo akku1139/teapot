@@ -232,6 +232,22 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   `100.x` and `fd7a:…` — an IPv4-only listener is unreachable from an IPv6
   client. `dualStackHost()` in `src/server/api.ts` maps the wildcard to a
   missing hostname for this reason.
+- **Third-party components get a namespace and a containment check.** MCP tools are
+  exposed as `mcp__<server>__<tool>`; a plugin's servers are additionally qualified with
+  the plugin name (`<plugin>:<server>`) because the registry keys by name and two
+  plugins may each ship a `db`. Without the prefix a server exposing `bash` would
+  shadow the local shell, and without the qualification one plugin's tools silently
+  vanish behind another's.
+  - A plugin (`plugin.json`, Agent Plugins spec) is third-party code arriving as a
+    directory — usually an extracted archive — so **every package path is resolved with
+    `realpath` and proven inside the root**. Checking the literal path misses the only
+    attack that matters: a symlink pointing at `~/.ssh`. `plugin.json`, `skills/`, each
+    `SKILL.md`, a stdio `command` and `cwd` are all checked, and the failure boundary is
+    the NARROWEST one (bad server → that server; bad skill → that skill; bad manifest →
+    the plugin).
+  - `McpError` uses explicit fields, not parameter properties (`constructor(x, readonly
+    y)`): Node's type-stripping loader refuses that syntax and `pnpm test` runs sources
+    directly.
 - **Remove vs archive vs purge are three different wishes, and conflating them loses
   data.** `removeAgent` originally deleted the agent's config entry while leaving its
   `sessions/` directory on disk: the history survived but nothing in the UI could reach

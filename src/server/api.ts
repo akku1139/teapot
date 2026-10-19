@@ -79,6 +79,8 @@ import path from "node:path";
 import { bus } from "../bus.ts";
 import { readEvents, readEventsTail, filterByBranch } from "../log/events.ts";
 import type { Master } from "../master.ts";
+import { mcp } from "../agent/mcp-registry.ts";
+import { connectMcp, McpError, type McpServerConfig } from "../agent/mcp.ts";
 
 /** media categories the file tree can preview inline */
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
@@ -850,10 +852,89 @@ const MAX_WS_CLIENTS = 64;
         retryDelayMs: patch.retryDelayMs,
         maxSpawnDepth: patch.maxSpawnDepth,
         tasks: patch.tasks,
+        mcpServers: patch.mcpServers,
       });
+      // #67: apply the new server list to the live registry and connect in the
+      // background — an added server's tools must appear on the next turn without a
+      // restart, and a removed one's connection must be closed now.
+      if (patch.mcpServers) {
+        mcp.apply(patch.mcpServers);
+        void mcp.connectAll();
+      }
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  // ---- MCP servers (#67) ----
+  //
+  // `test` is the endpoint the settings panel uses to answer "does this work?" before
+  // saving: it connects, lists tools, and reports the count or the exact failure. Doing
+  // that through `PUT /api/config` would mean saving a broken server first, and the
+  // failure would then surface on an agent's turn instead of in the panel that caused it.
+  app.get("/api/mcp", (c) =>
+    c.json({
+      servers: master.config.mcpServers ?? [],
+      states: mcp.states().map((s) => ({
+        name: s.config.name,
+        status: s.status,
+        tools: s.tools.length,
+        ...(s.lastError ? { lastError: s.lastError } : {}),
+        ...(s.lastChecked ? { lastChecked: s.lastChecked } : {}),
+      })),
+    }),
+  );
+
+  // Agent Plugins (#162): what was loaded, and where from. Read-only on purpose —
+  // installing a plugin is a filesystem act, and a web endpoint that unpacks an
+  // archive is a much larger surface than this feature is worth.
+  app.get("/api/plugins", (c) =>
+    c.json({
+      pluginsDir:
+        master.config.pluginsDir === false
+          ? null
+          : (master.config.pluginsDir ?? null),
+      plugins: master.plugins.map((p) => ({
+        name: p.name,
+        ...(p.version ? { version: p.version } : {}),
+        ...(p.description ? { description: p.description } : {}),
+        root: p.root,
+        skills: p.skills,
+        mcpServers: p.mcpServers.map((s) => s.name),
+        warnings: p.warnings,
+      })),
+    }),
+  );
+
+  app.post("/api/mcp/test", async (c) => {
+    const body = await c.req.json<McpServerConfig>().catch(() => null);
+    if (!body?.name) return c.json({ error: "a server needs a name" }, 400);
+    try {
+      const conn = await connectMcp({ ...body, enabled: true });
+      try {
+        const tools = await conn.tools();
+        return c.json({
+          ok: true,
+          tools: tools.map((t) => ({ name: t.name, description: t.description })),
+        });
+      } finally {
+        await conn.close();
+      }
+    } catch (err) {
+      const e = err as McpError;
+      return c.json({ ok: false, error: e.message, authRequired: Boolean(e.authRequired) }, 200);
+    }
+  });
+
+  app.post("/api/mcp/connect", async (c) => {
+    const body = await c.req.json<{ name?: string }>().catch(() => null);
+    if (!body?.name) return c.json({ error: "missing name" }, 400);
+    try {
+      const st = await mcp.connect(body.name);
+      return c.json({ ok: true, status: st.status, tools: st.tools.length });
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message }, 200);
     }
   });
 

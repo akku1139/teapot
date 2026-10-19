@@ -32,6 +32,9 @@ import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/c
 import type { LlmConfig, ChatFn } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
+import { mcp } from "./agent/mcp-registry.ts";
+import { loadPlugins, type LoadedPlugin } from "./agent/plugins.ts";
+import type { McpServerConfig } from "./agent/mcp.ts";
 import {
   fetchModelList,
   peekModelList,
@@ -272,6 +275,20 @@ export interface TeapotConfig {
   defaultProvider?: string;
   agents: AgentConfig[];
   tasks?: TaskConfig[];
+  /**
+   * MCP servers (#67). Tools from these are exposed to every agent as
+   * `mcp__<server>__<tool>`. Omitted entirely = no MCP, which is the common case.
+   */
+  mcpServers?: McpServerConfig[];
+  /**
+   * Directory of Agent Plugins (#162), each a subdirectory with `plugin.json`.
+   * Defaults to `<config dir>/plugins`. `false` disables plugin discovery.
+   *
+   * A plugin contributes SKILLS (its `skills/` becomes a skill root) and MCP servers
+   * (from its `mcp.json`) — the two component types the format defines that teapot
+   * has something to attach them to.
+   */
+  pluginsDir?: string | false;
   progressIntervalMs?: number;
   /** progress prompts also require this much real model output since the last report */
   progressMinChars?: number;
@@ -554,6 +571,8 @@ export function sanitizeAgentId(id: string): string {
 
 export class Master {
   readonly agents = new Map<string, Agent>();
+  /** Agent Plugins loaded at boot (#162); their skill roots are offered to every agent */
+  plugins: LoadedPlugin[] = [];
 
   /**
    * ONE key pool per provider name (#170), shared by every agent on it.
@@ -794,6 +813,16 @@ export class Master {
     onError?: "stop" | "retry";
     retryDelayMs?: number;
     tasks?: TaskConfig[];
+    mcpServers?: McpServerConfig[];
+  /**
+   * Directory of Agent Plugins (#162), each a subdirectory with `plugin.json`.
+   * Defaults to `<config dir>/plugins`. `false` disables plugin discovery.
+   *
+   * A plugin contributes SKILLS (its `skills/` becomes a skill root) and MCP servers
+   * (from its `mcp.json`) — the two component types the format defines that teapot
+   * has something to attach them to.
+   */
+  pluginsDir?: string | false;
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
     if (patch.defaultProvider !== undefined) this.config.defaultProvider = patch.defaultProvider;
@@ -816,6 +845,9 @@ export class Master {
         (patch.contextTokenBudget ?? 0) > 0 ? patch.contextTokenBudget! : undefined;
     }
     if (patch.maxSpawnDepth !== undefined) this.config.maxSpawnDepth = patch.maxSpawnDepth;
+    // #67: the registry is applied by the caller (it also connects); this only
+    // records the list so a restart comes back with the same servers.
+    if (patch.mcpServers !== undefined) this.config.mcpServers = patch.mcpServers;
     if (patch.maxTurnsPerRound !== undefined) this.config.maxTurnsPerRound = patch.maxTurnsPerRound;
     if (patch.onError !== undefined) this.config.onError = patch.onError;
     if (patch.retryDelayMs !== undefined) this.config.retryDelayMs = patch.retryDelayMs;
@@ -850,6 +882,36 @@ export class Master {
     this.saveConfig();
   }
 
+  /**
+   * Load Agent Plugins (#162) and merge their MCP servers with the configured ones.
+   *
+   * Separate from `start()` so it can be exercised without booting a server: this is
+   * where plugin servers get QUALIFIED with their plugin name, and a naming collision
+   * here silently makes one plugin's tools disappear.
+   */
+  async loadPluginsAndMcp(): Promise<McpServerConfig[]> {
+    const pluginMcp: McpServerConfig[] = [];
+    if (this.config.pluginsDir !== false) {
+      const dir = this.config.pluginsDir ?? path.join(CONFIG_DIR, "plugins");
+      const { plugins, errors } = await loadPlugins(dir, path.join(DATA_DIR, "plugin-data"));
+      this.plugins = plugins;
+      for (const e of errors) console.error(`[teapot] skipping plugin ${e.dir}: ${e.error}`);
+      for (const p of plugins) {
+        for (const w of p.warnings) console.error(`[teapot] plugin "${p.name}": ${w}`);
+        // QUALIFY each server with its plugin name. A plugin's own `mcp.json` names its
+        // servers locally ("db"), and two plugins may each have one — the registry keys
+        // by name, so an unqualified collision would silently replace one with the other
+        // and its tools would appear to vanish. The plugin name is the natural prefix.
+        pluginMcp.push(...p.mcpServers.map((s) => ({ ...s, name: `${p.name}:${s.name}` })));
+      }
+      if (plugins.length)
+        console.error(
+          `[teapot] loaded ${plugins.length} plugin(s): ${plugins.map((p) => p.name).join(", ")}`,
+        );
+    }
+    return [...(this.config.mcpServers ?? []), ...pluginMcp];
+  }
+
   async start(): Promise<void> {
     mkdirSync(this.config.dataDir, { recursive: true });
     // #144: ONE config write for the whole boot instead of one per agent.
@@ -873,6 +935,20 @@ export class Master {
     // resolved — instead of the requests being serialised behind the agent loop,
     // where a slow endpoint's timeout is paid again and again.
     this.prefetchModelLists();
+    // #67: connect configured MCP servers in the background. Deliberately NOT
+    // awaited: a slow or unreachable server must not delay listening, and its tools
+    // appear as the connection lands (an agent's next turn picks them up because
+    // `allToolSpecs()` reads the registry each call).
+    // #162: Agent Plugins contribute skill roots and MCP servers. Loaded BEFORE the
+    // MCP connect below so a plugin's servers connect in the same pass as configured
+    // ones, and before any agent starts so its skills are discoverable on turn one.
+    if (this.config.mcpServers?.length || this.config.pluginsDir !== false) {
+      const allMcp = await this.loadPluginsAndMcp();
+      if (allMcp.length) {
+        mcp.apply(allMcp);
+        void mcp.connectAll();
+      }
+    }
     try {
       for (const ac of this.config.agents) {
         // archived agents keep their config entry and their history but do not run;
@@ -1122,6 +1198,11 @@ export class Master {
         : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
       bundledSkillsDir: BUNDLED_SKILLS_DIR,
+      // #162: a plugin's own skills/ is a skill root, ranked with the global ones so
+      // a workspace skill still wins on a name clash
+      pluginSkillRoots: this.plugins
+        .filter((p) => p.skillsDir)
+        .map((p) => ({ dir: p.skillsDir!, source: `plugin:${p.name}` })),
       provider: provName,
       spawnDepth: myDepth,
       ...(ac.readOnly ? { readOnlyTools: true } : {}),

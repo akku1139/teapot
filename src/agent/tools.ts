@@ -16,6 +16,7 @@ import {
 import { isReasoningEffort } from "../model-meta.ts";
 import { killTree, describeKill } from "./kill.ts";
 import { editorConfigFor } from "./editorconfig.ts";
+import { mcp, MCP_PREFIX } from "./mcp-registry.ts";
 
 export interface ToolContext {
   cwd: string;
@@ -2421,6 +2422,21 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
 }
 
 export async function executeTool(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
+  // MCP tools are namespaced (`mcp__server__tool`) so they can never reach this point
+  // by shadowing a built-in. Dispatched BEFORE the built-in lookup because there is no
+  // static TOOLS entry to find — the tool list belongs to the server.
+  if (name.startsWith(MCP_PREFIX)) {
+    if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
+    let args: unknown = {};
+    try {
+      args = rawArgs.trim() ? JSON.parse(rawArgs) : {};
+    } catch {
+      return { ok: false, result: `${name}: arguments are not valid JSON` };
+    }
+    const r = await mcp.call(name, args);
+    if (!r) return { ok: false, result: `unknown tool: ${name}` };
+    return { ok: r.ok, result: r.text };
+  }
   const def = TOOLS.find((t) => t.name === name);
   if (!def) return { ok: false, result: `unknown tool: ${name}` };
   if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
