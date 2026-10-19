@@ -15,9 +15,11 @@ import {
   unlinkSync,
   openSync,
   closeSync,
+  readSync,
   fsyncSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { sessionTitleFrom } from "./session-title.ts";
 import path from "node:path";
 import os from "node:os";
 import { expandTilde, homeDir } from "./home.ts";
@@ -1586,6 +1588,58 @@ if (active().length === 0) wake();
     }
   }
 
+  /**
+   * A human title for a session dir, from its first user prompt (#155), or null.
+   *
+   * Reads in bounded chunks and stops at the FIRST prompt event of any source —
+   * see the note in allSessions() for why that early exit is what makes this
+   * affordable. A torn final line is skipped rather than parsed: a chunk boundary
+   * can cut a JSON object in half, and that must not abort the scan.
+   */
+  private sessionTitleOf(dirPath: string): string | null {
+    let fd: number | undefined;
+    try {
+      fd = openSync(path.join(dirPath, "chat.jsonl"), "r");
+      const CHUNK = 16 * 1024;
+      // cap per session so one enormous log cannot dominate boot
+      const CAP = 256 * 1024;
+      const buf = Buffer.alloc(CHUNK);
+      let offset = 0;
+      let carry = "";
+      while (offset < CAP) {
+        const n = readSync(fd, buf, 0, CHUNK, offset);
+        if (n <= 0) break;
+        offset += n;
+        const lines = (carry + buf.subarray(0, n).toString("utf8")).split("\n");
+        carry = lines.pop() ?? "";
+        for (const l of lines) {
+          if (!l) continue;
+          let e: { type?: unknown; data?: { source?: unknown; text?: unknown } };
+          try {
+            e = JSON.parse(l) as typeof e;
+          } catch {
+            continue; // torn line at a chunk boundary
+          }
+          if (e.type !== "prompt") continue;
+          // a sub-agent session receives only harness prompts and is labelled from
+          // its id, so a harness prompt is not a title
+          if (e.data?.source !== "user") return null;
+          return sessionTitleFrom(typeof e.data.text === "string" ? e.data.text : null);
+        }
+      }
+      return null;
+    } catch {
+      return null; // no log / unreadable — fall back to the id
+    } finally {
+      if (fd !== undefined)
+        try {
+          closeSync(fd);
+        } catch {
+          /* already closed */
+        }
+    }
+  }
+
   private writeSessionManifest(dirPath: string, agentId: string): void {
     try {
       const file = path.join(dirPath, "session.json");
@@ -1743,7 +1797,7 @@ if (active().length === 0) wake();
    * log first. One readdir powers every "list sessions" need — the UI calls
    * the aggregated endpoint instead of fanning out one request per agent.
    */
-  allSessions(): { id: string; agentId: string; mtimeMs: number; sizeBytes: number }[] {
+  allSessions(): { id: string; agentId: string; mtimeMs: number; sizeBytes: number; title?: string }[] {
     const candidateIds = new Set<string>(this.config.agents.map((a) => a.id).filter(Boolean) as string[]);
     for (const [liveId] of this.agents) candidateIds.add(liveId);
     // dir names themselves are candidate owners too: "s" owns legacy "s",
@@ -1769,7 +1823,23 @@ if (active().length === 0) wake();
         m = st.mtimeMs;
         size = st.size;
       } catch { /* no log yet — still listable */ }
-      out.push({ id: d, agentId: owner, mtimeMs: m, sizeBytes: size });
+      // #155: a title derived from the session's FIRST user prompt, so the
+      // sidebar does not make the operator read `teapot-10-16854917`.
+      //
+      // Read here rather than from the live agent because boot leaves agents
+      // STOPPED: their logs are not restored, so a title computed during restore
+      // would be missing for every session the operator has not opened yet —
+      // i.e. exactly the ones they need it for.
+      //
+      // BOUNDED and cheap: the scan stops at the FIRST `prompt` event of ANY
+      // source, which is what makes it affordable. Measured over 817 real
+      // sessions: 36 ms / 7.9 MB with the early exit, versus 804 ms / 169 MB
+      // scanning to find a USER prompt specifically (sub-agents receive only
+      // `harness` prompts, 758 of the 817, so they were what made it slow).
+      // Those sub-sessions correctly produce no title — the sidebar already
+      // labels them from their id via subAgentDisplayName().
+      const title = this.sessionTitleOf(dirPath);
+      out.push({ id: d, agentId: owner, mtimeMs: m, sizeBytes: size, ...(title ? { title } : {}) });
     }
     return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   }

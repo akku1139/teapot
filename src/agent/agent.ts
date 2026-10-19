@@ -12,6 +12,7 @@ import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, killBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
+import { sessionTitleFrom } from "../session-title.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
@@ -604,6 +605,11 @@ export class Agent {
    * Recovered from the log so the continuity survives a restart.
    */
   private lastCompactSummary?: string;
+  /**
+   * A short human title for this session (#155), derived from the operator's first
+   * prompt. Undefined until the log is read (or when there is no usable prompt).
+   */
+  private sessionTitle?: string;
   /** overflow recoveries used in the current turn; reset when a turn succeeds */
   private overflowRecoveries = 0;
   /**
@@ -1170,6 +1176,13 @@ export class Agent {
     // the whole file (not just the current branch) to match what the runtime
     // panel showed before the restart.
     for (const e of own) {
+      // #155: the title comes from the FIRST user prompt, which never changes, so
+      // deriving it here is free — this loop already walks the whole log at
+      // restore. Only the first one is taken; later prompts are a different
+      // subject and would make the sidebar label churn under the reader.
+      if (this.sessionTitle === undefined && e.type === "prompt" && (e.data as { source?: string })?.source === "user") {
+        this.sessionTitle = sessionTitleFrom((e.data as { text?: string })?.text) ?? undefined;
+      }
       if (e.type === "state") {
         const d = e.data as { detail?: string };
         if (d.detail === "llm turn start") this.stats.turns++;
@@ -1557,6 +1570,10 @@ export class Agent {
       workspace: this.workspace,
       workspaceMissing: this.workspaceMissing,
       session: this.currentSession,
+      // #155: a human label for this session, so the sidebar does not ask the
+      // operator to read `teapot-10-16854917`. Absent when the first prompt had
+      // no usable line — the UI then falls back to the id.
+      ...(this.sessionTitle ? { sessionTitle: this.sessionTitle } : {}),
       branch: this.currentBranch,
       goal: {
         status: this.goal.status,

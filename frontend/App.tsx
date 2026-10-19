@@ -73,6 +73,9 @@ interface Agent {
    *  parked tool and queued prompts are both live while status reads "idle" (#59) */
   live?: boolean;
   session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
+  /** #155: a short label derived from the session's first user prompt. Absent
+   *  when that prompt had no usable line — the sidebar falls back to the id. */
+  sessionTitle?: string;
   workspaceMissing?: boolean;
   latestProgress: any; stats: any; model: string; provider?: string;
   /** reasoning effort in force, and whether this model accepts one (#47) */
@@ -224,6 +227,15 @@ export default function App() {
   // request per agent per switch hammered the server for identical data)
   const [masterSessionIndex, setMasterSessionIndex] = createSignal<Map<string, string>>(new Map());
   const [sessionsByAgent, setSessionsByAgent] = createSignal<Map<string, string[]>>(new Map());
+  /**
+   * #155: session id → human title, from `/api/sessions`.
+   *
+   * The per-agent snapshot also carries a title, but only for a session whose agent
+   * has been RESTORED. Boot leaves agents stopped, so the sidebar would show raw ids
+   * for every session the operator has not opened — i.e. the ones they most need to
+   * tell apart. This index is built from the logs themselves and covers all of them.
+   */
+  const [sessionTitles, setSessionTitles] = createSignal<Map<string, string>>(new Map());
   let sessionIndexFetched = false;
   async function refreshSessionIndex(force = false): Promise<void> {
     // A permanent latch meant a session created or deleted while the tab was
@@ -236,14 +248,17 @@ export default function App() {
       const r = await api("/api/sessions");
       const byId = new Map<string, string>();
       const byAgent = new Map<string, string[]>();
+      const titles = new Map<string, string>();
       for (const s of r.sessions ?? []) {
         byId.set(s.id, s.agentId);
+        if (typeof s.title === "string" && s.title) titles.set(s.id, s.title);
         const list = byAgent.get(s.agentId) ?? [];
         list.push(s.id); // server returns newest first
         byAgent.set(s.agentId, list);
       }
       setMasterSessionIndex(byId);
       setSessionsByAgent(byAgent);
+      setSessionTitles(titles);
     } catch { /* transient — retried on next agent-set change */ }
   }
   const [events, setEvents] = createSignal<Ev[]>([]);
@@ -3265,8 +3280,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <span class={`dot ${row.a.status}`} />
                 <span
                   class={row.a.workspaceMissing ? " ghost" : ""}
-                  title={row.a.workspaceMissing ? `workspace not found on disk (${row.a.workspace}) — it will be created when this session runs` : undefined}
-                >{row.a.id}</span>
+                  /* #155: show the session's own title when it has one, so several
+                     sessions of one agent are distinguishable at a glance. The id
+                     stays visible in the tooltip AND remains the fallback text —
+                     a session whose first prompt had no usable line must still
+                     render something clickable. */
+                  title={
+                    row.a.workspaceMissing
+                      ? `workspace not found on disk (${row.a.workspace}) — it will be created when this session runs`
+                      : (row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? ""))
+                        ? `${row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? "")} — ${row.a.id}`
+                        : row.a.id
+                  }
+                >{row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? "") ?? row.a.id}</span>
                 {row.a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
                 <Show when={subtreeUnread(row.a.id) > 0}>
                   <span class="notifbadge" title={`${subtreeUnread(row.a.id)} unread notification${subtreeUnread(row.a.id) > 1 ? "s" : ""} (including sub-agents)`}>
