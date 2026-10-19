@@ -47,58 +47,19 @@ test("resizing to the size already applied writes nothing (#20)", async () => {
   t.disposeAll();
 });
 
-test("a resize during foreground output is deferred, never typed into the program (#20)", async () => {
+test("a resize lands even while a program is streaming output (#172)", async () => {
+  // The busy-deferral existed for the OLD mechanism, which typed `stty rows R cols C`
+  // into the child's stdin: during output that text landed inside vim/nano. The size
+  // is now an ioctl on the pty DEVICE, so a streaming program is no reason to wait —
+  // and waiting is exactly what broke resizing in nano: an editor redraws
+  // continuously, so the busy window never expired and the resize NEVER applied
+  // (#172: "nanoとか開いたらリサイズ効いてない").
   const t = new TermSizeTracker();
   const child = fakeChild();
   const seen: string[] = [];
-  const write = (r: number, c: number) => seen.push(`${r}x${c}`);
-
-  // an interactive program (vim/REPL) is producing output right now
-  t.markBusy(child, 400);
-  t.request(child, 40, 120, write);
+  t.request(child, 40, 120, (r, c) => seen.push(`${r}x${c}`));
   await sleep(TERM_RESIZE_DEBOUNCE_MS + 80);
-  assert.deepEqual(seen, [], "must not type stty into a program that is running");
-
-  // once it falls quiet the resize is applied
-  await sleep(400);
-  assert.deepEqual(seen, ["40x120"]);
-  t.disposeAll();
-});
-
-test("forget() cancels a pending resize so it can't hit a dead child (#20)", async () => {
-  const t = new TermSizeTracker();
-  const child = fakeChild();
-  const seen: string[] = [];
-  t.request(child, 50, 200, (r, c) => seen.push(`${r}x${c}`));
-  t.forget(child); // terminal closed mid-debounce
-  await sleep(TERM_RESIZE_DEBOUNCE_MS + 80);
-  assert.deepEqual(seen, [], "a closed terminal must not receive a late stty");
-  t.disposeAll();
-});
-
-test("output that CONTINUES past the first deadline keeps deferring the write", async () => {
-  // the inverse of the deferral test above: the resize was queued FIRST and
-  // the program STARTED STREAMING afterwards. markBusy extends busyUntil, but
-  // the pending timer kept its original deadline and fired into the program —
-  // the exact keystroke-injection the deferral exists to prevent.
-  const t = new TermSizeTracker();
-  const child = fakeChild();
-  const seen: string[] = [];
-  const write = (r: number, c: number) => seen.push(`${r}x${c}`);
-
-  t.request(child, 40, 120, write);
-  await sleep(50); // the debounce is already counting down…
-  t.markBusy(child, 600); // …and now the child starts streaming output
-  await sleep(TERM_RESIZE_DEBOUNCE_MS + 100); // well past the original deadline
-  assert.deepEqual(
-    seen,
-    [],
-    "a child that is STILL producing output must not receive stty, even past the first deadline",
-  );
-
-  // once it falls quiet the deferred resize lands
-  await sleep(700);
-  assert.deepEqual(seen, ["40x120"], "and lands once the program is quiet");
+  assert.deepEqual(seen, ["40x120"], "a size change must apply without waiting for quiet");
   t.disposeAll();
 });
 

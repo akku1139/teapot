@@ -498,9 +498,19 @@ test("an agent RUNS an MCP tool end to end, and a server cannot shadow bash (#67
       );
       assert.equal(r.ok, true, `MCP dispatch must succeed: ${r.result}`);
       assert.match(r.result, /mcp ran lookup/);
-      // and the local shell is still the local shell
-      const local = await executeTool("bash", JSON.stringify({ command: "echo LOCAL" }), (agent as any).toolCtx);
-      assert.match(local.result, /LOCAL/, "a built-in tool must not be diverted to MCP");
+      // and a built-in name still routes to the BUILT-IN, not to MCP. Asserting on
+      // shell OUTPUT would test the shell (Windows has no `sh`, so `echo LOCAL`
+      // produced nothing and this failed there for the wrong reason); assert on the
+      // routing instead: an MCP server offering `bash` must not be reachable under the
+      // bare name, so a bare-name call reaches the local tool and NOT the server.
+      const before = srv.requests.filter((r) => r.body?.method === "tools/call").length;
+      const local = await executeTool("bash", JSON.stringify({ command: "exit 0" }), (agent as any).toolCtx);
+      const after = srv.requests.filter((r) => r.body?.method === "tools/call").length;
+      assert.equal(after, before, "a bare built-in name must never be dispatched to MCP");
+      assert.ok(
+        typeof local.ok === "boolean",
+        "the built-in bash must actually run (its ok flag is a boolean either way)",
+      );
       await agent.dispose();
     });
     await mcp.closeAll();

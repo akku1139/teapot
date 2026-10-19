@@ -55,6 +55,7 @@ function renderMarkdownCached(src: string): string {
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./term-tabs";
 
 declare const __APP_VERSION__: string;
 
@@ -2576,10 +2577,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       agentId: who,
       title: perAgent === 0 ? who : `${who}·${perAgent + 1}`,
     };
+    // land in the focused pane. The index must come from the list BEFORE the append:
+    // a Solid setter applies synchronously, so reading `termTabs().length` afterwards
+    // returns the NEW length — one past the end — and the pane then points outside the
+    // array, which renders as "no shell here" while a tab visibly exists (#172).
+    const at = indexAfterAppend(termTabs());
     setTermTabs((list) => [...list, tab]);
-    // land in the focused pane. The new tab's index is the OLD length —
-    // read it before the setter runs.
-    const at = termTabs().length;
     if (focusedPane() === 0) setPaneL(at);
     else setPaneR(at);
   }
@@ -2596,9 +2599,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
     const rest = termTabs().filter((_, j) => j !== i);
     setTermTabs(rest);
-    const shift = (idx: number) => (idx === i ? -1 : idx > i ? idx - 1 : idx);
-    setPaneL((p) => Math.min(shift(p), rest.length - 1));
-    setPaneR((p) => (p === -1 ? -1 : Math.min(shift(p), rest.length - 1)));
+    // closing the tab a pane SHOWS must land on a real neighbour; the old
+    // `Math.min(shift(p), rest.length - 1)` produced -1 for the shown tab (its own
+    // shifted index), leaving the pane on "no shell here" until a tab was clicked
+    setPaneL((p) => paneIndexAfterClose(p, i, rest.length));
+    // the same rule for the split pane — the old expression left it invalid (and
+    // referenced a `shift` that no longer existed) whenever it showed the closed tab
+    setPaneR((p) => (p === -1 ? -1 : paneIndexAfterClose(p, i, rest.length)));
   }
 
   // (retintTerminal lives in ./terminal-theme — #137: it now compares the
@@ -2789,9 +2796,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // the old findIndex picked index 0 whenever paneL() wasn't 0 (or -1
       // when it was), so split often opened with BOTH panes on one shell or
       // an empty right side despite other tabs existing
-      const candidates = termTabs().map((_, i) => i).filter((i) => i !== paneL());
       if (paneR() < 0 || paneR() === paneL() || paneR() >= termTabs().length) {
-        setPaneR(candidates[0] ?? -1);
+        setPaneR(rightPaneSeed(paneL(), termTabs().length));
       }
     }
     requestAnimationFrame(() => { mountPane(0); if (splitView()) mountPane(1); });

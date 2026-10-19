@@ -20,11 +20,15 @@
  * Before this, the size was applied by WRITING `stty rows R cols C\n` into the
  * child's stdin. That is only safe when a shell is reading: when an interactive
  * program owns the tty (vim, less, a python REPL) stdin belongs to the PROGRAM,
- * so the line arrived as keystrokes and landed in the operator's document. The
- * whole design below — debounce, busy-defer, no-op skip — exists to make that
- * text rare rather than to make it harmless; with the device ioctl the text is
- * gone entirely, and the remaining machinery now only serves to avoid redundant
- * syscalls on a drag.
+ * so the line arrived as keystrokes and landed in the operator's document. With
+ * the device ioctl that text is gone entirely, so the machinery here is only
+ * about avoiding redundant syscalls on a drag — a debounce and a no-op skip.
+ *
+ * It used to ALSO defer while the child was producing output (`markBusy`). That
+ * existed solely to make the text path rarer, and it became a bug once the ioctl
+ * removed the hazard: a full-screen program redraws continuously, so the busy
+ * window never expired and the resize never applied at all (#172 — "nanoとか
+ * 開いたらリサイズ効いてない"). Deferring is now wrong for every path.
  *
  * ## Why the slave path has to be discovered
  *
@@ -37,7 +41,6 @@
  * `TermSizeTracker` still:
  *   - debounces to the trailing edge of a drag (one ioctl per drag, not per pixel)
  *   - remembers the applied size and skips no-op resizes entirely
- *   - defers while the child is producing output (markBusy)
  *   - keys state by CHILD, not agent: one agent may hold up to 10 terminals,
  *     each with its own size and its own foreground program
  */
@@ -111,14 +114,10 @@ function ptySlaveOf(pid: number): string | null {
 
 /** debounce window: long enough to collapse a drag, short enough to feel instant */
 export const TERM_RESIZE_DEBOUNCE_MS = 250;
-/** how long after output a terminal counts as "a program is running" */
-export const TERM_BUSY_MS = 400;
-
 interface TermState {
   rows: number;
   cols: number;
   timer: NodeJS.Timeout | null;
-  busyUntil: number;
 }
 
 export interface TermSizeSink {
@@ -134,7 +133,7 @@ export class TermSizeTracker {
    * debounce.
    */
   request(child: ChildProcess, rows: number, cols: number, write: TermSizeSink["write"]): void {
-    const st = this.states.get(child) ?? { rows: 0, cols: 0, timer: null, busyUntil: 0 };
+    const st = this.states.get(child) ?? { rows: 0, cols: 0, timer: null };
     this.states.set(child, st);
     if (st.timer) {
       clearTimeout(st.timer);
@@ -143,7 +142,6 @@ export class TermSizeTracker {
     // already the applied size → nothing a shell could act on
     if (st.rows === rows && st.cols === cols) return;
 
-    const wait = Math.max(0, st.busyUntil - Date.now());
     const apply = () => {
       st.timer = null;
       st.rows = rows;
@@ -154,30 +152,7 @@ export class TermSizeTracker {
         /* child exited mid-debounce */
       }
     };
-    st.timer = setTimeout(
-      () => {
-        // output may have CONTINUED past the deadline this timer was computed
-        // from (markBusy only extends busyUntil — it cannot reach an already
-        // pending timer). Writing now would type stty into a running program,
-        // so defer to whatever busy window remains.
-        const remain = st.busyUntil - Date.now();
-        if (remain > 0) {
-          st.timer = setTimeout(apply, remain);
-          return;
-        }
-        apply();
-      },
-      wait > 0 ? wait : TERM_RESIZE_DEBOUNCE_MS,
-    );
-  }
-
-  /** a child produced output — defer resizes so we never type into it */
-  markBusy(child: ChildProcess, ms: number = TERM_BUSY_MS): void {
-    // create the entry if absent: output usually arrives long before the first
-    // resize, and dropping the signal then let the resize land in the program
-    const st = this.states.get(child) ?? { rows: 0, cols: 0, timer: null, busyUntil: 0 };
-    this.states.set(child, st);
-    st.busyUntil = Date.now() + ms;
+    st.timer = setTimeout(apply, TERM_RESIZE_DEBOUNCE_MS);
   }
 
   /** forget a child; cancels its pending resize so we can't write to a corpse */

@@ -387,11 +387,9 @@ const MAX_WS_CLIENTS = 64;
             `[teapot] ⌨ terminal open: ${agentId} @ ${agent.workspace} (${hasScript ? "pty" : "pipe"})`,
           );
           child.stdout?.on("data", (b: Buffer) => {
-            termSizes.markBusy(child!);
             send({ kind: "data", data: b.toString("utf8") });
           });
           child.stderr?.on("data", (b: Buffer) => {
-            termSizes.markBusy(child!);
             send({ kind: "data", data: b.toString("utf8") });
           });
           child.on("close", (code) => {
