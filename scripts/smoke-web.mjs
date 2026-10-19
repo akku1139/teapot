@@ -902,6 +902,87 @@ console.log("deep render ok: feed rows present");
     console.log("deep render ok: consecutive tool rows group under one head (#75)");
   }
 
+  /* ---------- #75: an INVISIBLE row must not split a tool run ------------------
+   * Reported (v0.29.21): "bashが連続なのに両方にアイコンがついてる", and — the clue that
+   * found it — some pairs grouped while others did not in the SAME session.
+   *
+   * `state` is in FEED_TYPES but neither MessageRow nor SwitchContent has a branch
+   * for it, so it draws NOTHING. It nevertheless became the grouping `prev` of the
+   * next row, and `groupedWith()` keys on the row TYPE, so a run was cut in half:
+   *
+   *     e15100 tool_call (bash)   <- rendered WITH its icon
+   *     e15102 state              <- draws nothing, but is `prev`
+   *     e15105 tool_call (bash)   <- its prev is `state` -> no grouping -> icon too
+   *
+   * MEASURED on this session: 304 of the last 1500 events are `state`. Replaying the
+   * real log through App.tsx's own filter reproduced exactly that shape.
+   *
+   * Rows that draw nothing are now dropped from the feed array, so a run continues
+   * across them. The check below is the reported shape with a real boundary in front.
+   */
+  {
+    const sockB = MockWS.instances.at(-1);
+    // a VISIBLE boundary, so the first bash genuinely starts a new run
+    pushEvent({ id: "gb0", seq: 601, ts: "2026-01-01T16:00:00Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "message", data: { role: "assistant", content: "boundary before the run" } });
+    pushEvent({ id: "gb1", seq: 602, ts: "2026-01-01T16:00:01Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_call", data: { callId: "cb1", name: "bash", args: { command: "INVIS_ONE" } } });
+    pushEvent({ id: "gb2", seq: 603, ts: "2026-01-01T16:00:02Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_result", data: { callId: "cb1", name: "bash", result: "o", ok: true, durationMs: 3 } });
+    // the invisible rows that used to split the run: a turn boundary and a
+    // carrier turn (empty content — the ToolRow already tells that story)
+    pushEvent({ id: "gb3", seq: 604, ts: "2026-01-01T16:00:03Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "state", data: { from: "running", to: "running", detail: "llm turn start", turn: 91 } });
+    pushEvent({ id: "gb4", seq: 605, ts: "2026-01-01T16:00:04Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "message", data: { role: "assistant", content: "", toolCalls: [{ id: "x", name: "bash" }] } });
+    pushEvent({ id: "gb5", seq: 606, ts: "2026-01-01T16:00:05Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_call", data: { callId: "cb2", name: "bash", args: { command: "INVIS_TWO" } } });
+    // and a log-only note, which has the same effect and must be dropped too
+    pushEvent({ id: "gb6", seq: 607, ts: "2026-01-01T16:00:06Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "system_note", data: { event: "session-restored", branch: "br0" } });
+    pushEvent({ id: "gb7", seq: 608, ts: "2026-01-01T16:00:07Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_call", data: { callId: "cb3", name: "bash", args: { command: "INVIS_THREE" } } });
+    pushEvent({ id: "gb8", seq: 609, ts: "2026-01-01T16:00:08Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_result", data: { callId: "cb3", name: "bash", result: "o", ok: true, durationMs: 3 } });
+    flushRefreshes();
+    await new Promise((r) => setTimeout(r, 500));
+
+    const rowFor = (needle) => {
+      for (const d of w.document.querySelectorAll(".embed")) {
+        const sm = d.querySelector("summary");
+        if (sm && sm.textContent.includes(needle)) return { cls: d.className, head: sm.textContent.trim() };
+      }
+      return null;
+    };
+    const one = rowFor("INVIS_ONE");
+    const two = rowFor("INVIS_TWO");
+    const three = rowFor("INVIS_THREE");
+    if (!one || !two || !three) {
+      console.error(`#75 check could not find all three rows (${!!one}/${!!two}/${!!three}) — vacuous`);
+      process.exit(1);
+    }
+    if (one.head.includes("\u2699") === false) {
+      console.error(
+        `#75 REGRESSION: the FIRST row of a run must carry the icon, got ${JSON.stringify(one.head)}`,
+      );
+      process.exit(1);
+    }
+    for (const [name, r] of [["2nd", two], ["3rd", three]]) {
+      if (r.head.includes("\u2699")) {
+        console.error(
+          `#75 REGRESSION: the ${name} bash row has its own icon — an invisible row (state / carrier / log-only note) split the run (#75)` +
+            `\n  first: ${JSON.stringify(one.head)}\n  ${name}  : ${JSON.stringify(r.head)}`,
+        );
+        process.exit(1);
+      }
+      if (!/\bgrouped\b/.test(r.cls)) {
+        console.error(`#75 REGRESSION: the ${name} row is not marked grouped — cls=${JSON.stringify(r.cls)}`);
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: an invisible row does not split a tool run (#75)");
+  }
+
   /* ---------- #32: a constant branch label is not repeated on every row --------
    * Reported as part of "タイムラインが煩雑". MEASURED: all 14940 events of one real
    * session carried `br0`, so ~1500 rendered rows each printed "br0" — a label that

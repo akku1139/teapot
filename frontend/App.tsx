@@ -176,6 +176,40 @@ const FEED_TYPES = new Set([
 // the logged prompt row replaces the echo right away (otherwise the "sent ✓"
 // echo lingered until some unrelated event happened to refresh the timeline)
 const NOTE_FEED_TYPES = new Set(["system_note"]);
+
+/**
+ * The types that actually DRAW a row — `FEED_TYPES` minus the ones that pass the
+ * filter but render nothing (#75).
+ *
+ * `state` is the offender that was measured: it is in `FEED_TYPES`, neither
+ * MessageRow nor SwitchContent has a branch for it, and yet it became the
+ * grouping `prev` of the next row. Because `groupedWith()` keys on the row TYPE,
+ * an invisible row CUT a run of bash calls in half — reported as "bashが連続なのに
+ * 両方にアイコンがついてる", and it also merged unrelated runs, which stole the icon
+ * from a run's FIRST row.
+ *
+ * `system_note` renders only for a few event kinds (runaway-detected, error-retry,
+ * background-exit, context-compacted, context-compaction-started). The rest —
+ * `prompt-delivered`, `session-restored`, `llm-retry`, … — are log-only, and they
+ * have exactly the same effect on grouping, so they are dropped from the chain by
+ * the note-event check below rather than by type.
+ *
+ * Kept as an explicit list so adding a feed type without a render branch is a
+ * visible omission: the tests assert every member renders something.
+ */
+const RENDERED_TYPES = new Set([
+  "user", "message", "prompt", "tool_call", "tool_result", "progress",
+  "error", "fork", "goal", "todo", "question", "decision", "compaction",
+]);
+
+/** system_note shapes that DO draw a divider/embed; the rest are log-only. */
+const RENDERED_NOTE_EVENTS = new Set([
+  "runaway-detected",
+  "error-retry",
+  "background-exit",
+  "context-compacted",
+  "context-compaction-started",
+]);
 const fmtTs = (iso: string) => {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -1063,6 +1097,26 @@ const isTimelineLive = (): boolean => {
       // reader sees a child row rather than a row that mysteriously vanished.
       if (e.type === "sub") return true;
       if (!FEED_TYPES.has(e.type)) return false;
+      // #75: a row that RENDERS NOTHING must not reach the feed array at all.
+      //
+      // `state` is in FEED_TYPES, but neither MessageRow nor SwitchContent has a
+      // branch for it — it draws nothing. It nevertheless became the `prev` of the
+      // next row, and `groupedWith()` keys on the row TYPE, so a run of bash calls
+      // was cut in half by an invisible row:
+      //
+      //     e15100 tool_call (bash)   <- rendered with its icon
+      //     e15102 state              <- draws NOTHING, but is `prev`
+      //     e15105 tool_call (bash)   <- its prev is `state`, so no grouping
+      //
+      // MEASURED on this session: 304 of the last 1500 events are `state`, and
+      // replaying the real log through this filter showed exactly the reported
+      // shape — two consecutive bash rows both carrying their icon. The same hole
+      // merged UNRELATED runs, so the FIRST row of a run could also lose its icon.
+      //
+      // Dropping them here is the fix rather than special-casing `state` in
+      // `actorKeyOf`: the rule is "a row that is not displayed does not continue
+      // anyone's run", which stays true for any future invisible type.
+
       // report_progress calls are fully rendered by the progress embed below
       // (the timeline's 📈 row + the right panel's snapshot) — the tool-call
       // row would just repeat the same content a third time
@@ -1187,6 +1241,27 @@ const isTimelineLive = (): boolean => {
       if (p.promptId && !deliveredIds.has(p.promptId)) stillPendingIds.add(p.promptId);
     }
     const visible = deduped.filter((e) => {
+      // #75: drop the rows that DRAW NOTHING. They must be filtered here, AFTER
+      // the pending-echo bookkeeping above (which reads `prompt-delivered` and
+      // `prompt-cancelled` notes out of this same array), but they must not
+      // survive into the feed: `prev` is taken from this array positionally, and
+      // an invisible row CUTS a run of tool calls in half because
+      // `groupedWith()` keys on the row TYPE.
+      //
+      // MEASURED on this session: 304 of the last 1500 events are `state`, which
+      // is in FEED_TYPES but has no render branch in either MessageRow or
+      // SwitchContent. Replaying the real log through this filter reproduced the
+      // report exactly — e15100 `tool_call` (bash), e15102 `state`, e15105
+      // `tool_call` (bash) — two adjacent bash rows that could not group, while
+      // other pairs in the same session grouped fine ("グループ化されるときとされない
+      // ときがある"). The same hole also merged unrelated runs, which stole the icon
+      // from a run's FIRST row.
+      //
+      // Dropping by "does this type draw anything" rather than special-casing
+      // `state` keeps the rule true for any future invisible type.
+      if (!RENDERED_TYPES.has(e.type)) {
+        return e.type === "system_note" && RENDERED_NOTE_EVENTS.has(String(e.data?.event ?? ""));
+      }
       if (e.type !== "prompt" || e.data?.source !== "user") return true;
       const pid = String((e.data as any)?.promptId ?? "");
       return pid === "" || !stillPendingIds.has(pid); // hide undelivered log rows
