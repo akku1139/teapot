@@ -3973,6 +3973,28 @@ export class Agent {
 
   private sleepInterruptible(ms: number): Promise<void> {
     return new Promise((resolve) => {
+      // #158-follow-up: a STOP that arrived before this sleep armed must end it.
+      //
+      // `stop()` releases the sleep through `this.wake`, which is a SINGLE slot
+      // created when the sleep starts. So a stop issued during the `await` BEFORE
+      // the sleep — the `log.append` of the retry note, which is a real disk write —
+      // found `wake === null`, did nothing, and the sleep it was meant to cancel
+      // then began on its own and ran to completion.
+      //
+      // MEASURED (stop injected while `log.append("error-retry")` was in flight):
+      //
+      //     PRE : status=running  live=true      (the stop lands here)
+      //     POST: TIMEOUT after 6000ms           status=error  live=false
+      //
+      // — the operator's stop was swallowed and the agent sat in a 60s backoff,
+      // which is the reported "LLM APIエラーリトライ中はstopが効かなかった".
+      //
+      // `stopRequested` is exactly the flag that means "do not continue", and it is
+      // set SYNCHRONOUSLY by stop(), so testing it here closes the window without
+      // caring how long the preceding await took. Every dialog through this helper
+      // (the round backoff, the inner 5s/5s/30s staircase, the auto-continue delay)
+      // inherits the fix.
+      if (this.stopRequested) return resolve();
       const timer = setTimeout(() => {
         this.wake = null;
         resolve();

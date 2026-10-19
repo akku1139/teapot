@@ -90,16 +90,26 @@ test("the 🧦 model box has ONE apply, and it sends the model AND the effort (#
   // (the button's own closing tag must be INCLUDED, or the only apply in the box
   // is sliced off and the assertion passes vacuously)
   const boxStart = app.indexOf(">\u{1F9E6} model<");
-  const boxEnd = app.indexOf(">apply model + effort</button>");
   assert.notEqual(boxStart, -1, "the 🧦 model box must be locatable");
-  assert.notEqual(boxEnd, -1, "the merged apply button must be locatable");
-  const box = app.slice(boxStart, boxEnd + ">apply model + effort</button>".length);
+  // The box ends at the "current:" line printed under it. Anchoring on the
+  // button's own LABEL would make this test fail every time the label is
+  // reworded, which is not the property under test.
+  const boxEnd = app.indexOf('<div class="meta">\n              current: {sel()!.model}');
+  assert.notEqual(boxEnd, -1, "the end of the model box must be locatable");
+  const box = app.slice(boxStart, boxEnd);
 
   const applies = box.match(/>apply[^<]*<\/button>/g) ?? [];
-  assert.deepEqual(
-    applies,
-    [">apply model + effort</button>"],
+  assert.equal(
+    applies.length,
+    1,
     `exactly one apply button must live in the model box, got: ${JSON.stringify(applies)}`,
+  );
+  // and its label must NOT try to enumerate what it sends — the operator only
+  // needs "apply", because it applies the whole box
+  assert.equal(
+    applies[0],
+    ">apply</button>",
+    `the apply button label must be just "apply", got ${applies[0]}`,
   );
 
   // and that one request carries both halves of the form

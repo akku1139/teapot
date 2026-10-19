@@ -164,3 +164,141 @@ test("stop() also lands mid-call, while the provider is still thinking (#152)", 
   assert.ok(Date.now() - t0 < 3_000, `stop must return promptly: ${Date.now() - t0}ms`);
   await a.dispose();
 });
+
+test("stop() lands even when it arrives BEFORE the backoff sleep is armed (#158 follow-up)", async () => {
+  // Reported: "stop ボタンが仕事してない可能性がある / 少なくともLLM APIエラーリトライ中は
+  // stopが効かなかった".
+  //
+  // The existing tests above park the agent AFTER the backoff is armed, which is why
+  // they were green while this failed. The gap is the await BEFORE the sleep:
+  //
+  //     await this.log.append("error-retry", …)   <- stop lands HERE
+  //     setStatus("error", "retrying in 60s")
+  //     retrySleeping = true
+  //     await this.sleepInterruptible(wait)        <- now nothing can cancel it
+  //
+  // `stop()` releases the sleep through `this.wake`, a SINGLE slot that does not
+  // exist until the sleep starts — so a stop inside that window woke nothing, and
+  // the sleep it was meant to cancel began afterwards and ran to full term.
+  // MEASURED before the fix: TIMEOUT after 6000ms, `status=error`, `live=false`.
+  //
+  // This is deterministic rather than a race: `log.append` is slowed to model a real
+  // disk write, and the stop is issued while that await is provably in flight.
+  const ws = mkdtempInRootSync("prearm-");
+  const sd = mkdtempInRootSync("prearms-");
+  let calls = 0;
+  const a = new Agent({
+    id: "t",
+    workspace: ws,
+    sessionDir: sd,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn: async (): Promise<LlmResult> => {
+      calls++;
+      const err = new Error("LLM API error 400: invalid request error") as Error & { status: number };
+      err.status = 400;
+      throw err;
+    },
+    autoContinue: false,
+    retryDelayMs: 60_000, // long enough that waiting it out is unambiguous failure
+    onError: "retry",
+  } as never);
+  const internals = a as unknown as { maybeCompact(f?: boolean): Promise<void> };
+  internals.maybeCompact = async () => {
+    throw new Error("LLM API error 400: invalid request error");
+  };
+  let inAppend = false;
+  const log = (a as unknown as { log: { append: (...x: unknown[]) => Promise<unknown> } }).log;
+  const origAppend = log.append.bind(log);
+  log.append = async (...args: unknown[]) => {
+    const data = args[3] as { event?: string } | undefined;
+    if (data?.event === "error-retry") {
+      inAppend = true;
+      await new Promise((r) => setTimeout(r, 1500));
+      inAppend = false;
+    }
+    return origAppend(...args);
+  };
+  await a.init();
+  a.enqueuePrompt("go");
+  a.start("t");
+  try {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !inAppend) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(inAppend, "precondition: the stop must land DURING the pre-sleep await");
+    const callsBefore = calls;
+    const t0 = Date.now();
+    a.stop("user pressed stop");
+    await Promise.race([
+      a.settled(),
+      // 6s is 1/10th of the backoff: settling means it was CANCELLED, not waited out
+      new Promise((_, rej) => setTimeout(() => rej(new Error("stop did not settle")), 6_000)),
+    ]);
+    assert.equal(a.status, "stopped");
+    assert.equal(a.isLive(), false);
+    assert.ok(Date.now() - t0 < 3_000, `stop must not wait out the backoff: ${Date.now() - t0}ms`);
+    assert.equal(calls, callsBefore, "and no attempt may be issued after it");
+  } finally {
+    await a.dispose();
+  }
+});
+
+test("stop() lands during the INNER llm-retry staircase, pre-arm window included", async () => {
+  // The inner staircase (`llm-retry`, 5s/5s/30s) has the SAME shape as the round
+  // backoff — a `log.append` await immediately before the sleep — so it carried the
+  // same swallowed-stop window. It is covered by the one fix in
+  // `sleepInterruptible`; this pins that, because the report named the LLM API retry
+  // path specifically and a future refactor must not reintroduce it here alone.
+  const ws = mkdtempInRootSync("inner-");
+  const sd = mkdtempInRootSync("inners-");
+  let calls = 0;
+  const a = new Agent({
+    id: "t",
+    workspace: ws,
+    sessionDir: sd,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn: async (): Promise<LlmResult> => {
+      calls++;
+      const err = new Error("LLM API error 500: upstream unavailable") as Error & { status: number };
+      err.status = 500;
+      throw err;
+    },
+    autoContinue: false,
+    // onError is NOT "retry": the inner staircase is the only retry in play, so this
+    // isolates it from the round-level backoff the tests above cover
+    onError: "stop",
+  } as never);
+  let inAppend = false;
+  const log = (a as unknown as { log: { append: (...x: unknown[]) => Promise<unknown> } }).log;
+  const origAppend = log.append.bind(log);
+  log.append = async (...args: unknown[]) => {
+    const data = args[3] as { event?: string } | undefined;
+    if (data?.event === "llm-retry") {
+      inAppend = true;
+      await new Promise((r) => setTimeout(r, 1200)); // the inner window
+      inAppend = false;
+    }
+    return origAppend(...args);
+  };
+  await a.init();
+  a.enqueuePrompt("go");
+  a.start("t");
+  try {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !inAppend) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(inAppend, "precondition: the stop must land during the llm-retry await");
+    const callsBefore = calls;
+    const t0 = Date.now();
+    a.stop("user pressed stop");
+    await Promise.race([
+      a.settled(),
+      // the first inner wait is 5s; 6s would mean it was WAITED OUT, not cancelled
+      new Promise((_, rej) => setTimeout(() => rej(new Error("stop did not settle")), 8_000)),
+    ]);
+    assert.equal(a.status, "stopped");
+    assert.equal(a.isLive(), false);
+    assert.ok(Date.now() - t0 < 3_000, `stop must not wait out the 5s retry: ${Date.now() - t0}ms`);
+    assert.equal(calls, callsBefore, "no further attempt may be issued after a stop");
+  } finally {
+    await a.dispose();
+  }
+});

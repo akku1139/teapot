@@ -1425,6 +1425,33 @@ const MAX_WS_CLIENTS = 64;
 }
 
 /**
+ * Translate a wildcard bind address into the one `node:http` treats as dual-stack.
+ *
+ * MEASURED (node 26):
+ *
+ *     listen({host: "0.0.0.0"})  -> bound 0.0.0.0 | family IPv4   ← IPv4 ONLY
+ *     listen({host: "::"})       -> bound ::      | family IPv6   ← DUAL STACK
+ *     listen({})                 -> bound ::                     ← DUAL STACK
+ *
+ * Over Tailscale that difference is decisive. The tailnet hands the host BOTH an
+ * IPv4 address (100.x) and an IPv6 one (fd7a:…), and a client that resolves the
+ * host to its IPv6 address CANNOT connect to an IPv4-only listener. Reported as
+ * "0.0.0.0 にしても tailscale 越しに接続できない", with the tell that an IPv4-only
+ * reverse proxy in front worked — exactly the asymmetry this produces:
+ *
+ *     0.0.0.0:7789  teapot  LISTEN 0.0.0.0:7789   <- IPv4 only  ✗ IPv6
+ *          *:7788  proxy   LISTEN       *:7788    <- dual stack ✓
+ *
+ * So `0.0.0.0` — the spelling every operator reaches for, and what `--help`
+ * advertises — is translated to "no hostname" rather than passed through, because
+ * a missing hostname is what makes Node bind `::` with `IPV6_V6ONLY` off.
+ * `::` is passed through for the same reason.
+ */
+export function dualStackHost(host: string | undefined): string | undefined {
+  return host === "0.0.0.0" || host === "::" ? undefined : host;
+}
+
+/**
  * Serve the app, returning a handle that can release the listening socket.
  *
  * #35: the live-update handover needs to give the port up WITHOUT exiting —
@@ -1436,13 +1463,14 @@ const MAX_WS_CLIENTS = 64;
  */
 export function serveApp(app: Hono, port: number, host?: string): { close: () => Promise<void> } {
   const wss = new WebSocketServer({ noServer: true });
+  const bindHost = dualStackHost(host);
   const server = serve(
-    { fetch: app.fetch, port, hostname: host, websocket: { server: wss } },
+    { fetch: app.fetch, port, hostname: bindHost, websocket: { server: wss } },
     (info) => {
       const shown =
         host && host !== "0.0.0.0" && host !== "::"
           ? `http://${host}:${info.port}`
-          : `http://localhost:${info.port} (all interfaces)`;
+          : `http://localhost:${info.port} (all interfaces, IPv4 + IPv6)`;
       console.log(`[teapot] master listening on ${shown}`);
     },
   );

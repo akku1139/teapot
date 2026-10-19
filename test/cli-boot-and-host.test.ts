@@ -275,3 +275,55 @@ test("--host 0.0.0.0 still opts into exposure (#140)", async () => {
     }
   });
 });
+
+/** a non-loopback IPv6 address, if this host has one */
+function lanAddress6(): string | null {
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      // node reports family as "IPv6" or the number 6 depending on version
+      const fam = String(a.family);
+      if ((fam === "IPv6" || fam === "6") && !a.internal && !a.address.startsWith("fe80::")) {
+        return a.address;
+      }
+    }
+  }
+  return null;
+}
+
+test("--host 0.0.0.0 must be DUAL-STACK, not IPv4-only (#158 report)", async () => {
+  // Reported against v0.29.19: "--host 0.0.0.0 にしても tailscale 越しに接続できない",
+  // with the tell that an IPv4-only reverse proxy in front DID work. That
+  // asymmetry is the whole diagnosis:
+  //
+  //     listen({host:"0.0.0.0"}) -> bound 0.0.0.0 | family IPv4  <- IPv4 ONLY
+  //     listen({host:"::"})      -> bound ::      | family IPv6  <- DUAL STACK
+  //
+  // MEASURED on this host, teapot vs the proxy that worked:
+  //
+  //     0.0.0.0:7789  teapot  LISTEN 0.0.0.0:7789   IPv6 -> connection failed
+  //          *:7788  proxy   LISTEN       *:7788    IPv6 -> 200
+  //
+  // Tailscale gives the host BOTH families (100.x AND fd7a:…), so a client that
+  // resolves the host to its IPv6 address cannot reach an IPv4-only listener.
+  // "Expose to the network" has to mean the network that exists.
+  const v6 = lanAddress6();
+  await useTempDirs(["t158c-"], async ([dataDir]) => {
+    const { proc, port, log } = await startServer(["--host", "0.0.0.0"], dataDir!);
+    try {
+      assert.match(log, /all interfaces/, "it must still report exposure (#140)");
+      assert.ok(await reachable(port, "127.0.0.1"), "IPv4 loopback must serve");
+      // IPv6 loopback is always present, so this half never needs a LAN and can
+      // never skip — it is the assertion that fails on an IPv4-only bind
+      assert.ok(
+        await reachable(port, "[::1]"),
+        "--host 0.0.0.0 must accept IPv6 too, or an IPv6 client cannot connect " +
+          "(this is the reported tailscale failure)",
+      );
+      if (v6) {
+        assert.ok(await reachable(port, `[${v6}]`), `--host 0.0.0.0 must expose the IPv6 LAN: ${v6}`);
+      }
+    } finally {
+      proc.kill("SIGTERM");
+    }
+  });
+});

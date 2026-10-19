@@ -4092,7 +4092,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     setTimeout(() => { btn.textContent = "apply"; btn.disabled = false; }, 1200);
                   }
                 }}
-              >apply model + effort</button>
+              >apply</button>
             </div>
             <div class="meta">
               current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show>
