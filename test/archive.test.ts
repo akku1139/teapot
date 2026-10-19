@@ -64,7 +64,9 @@ test("archive keeps the config entry and every session directory (#archive)", as
 
     const arch = await app.request("/api/agents/keeper/archive", { method: "POST" });
     assert.equal(arch.status, 200);
-    assert.deepEqual(await arch.json(), { archived: true });
+    const body = (await arch.json()) as { archived: boolean; ids: string[] };
+    assert.equal(body.archived, true);
+    assert.deepEqual(body.ids, ["keeper"], "no sub-agents, so only itself");
 
     // the config entry is still there, flagged
     const entry = m.config.agents.find((a) => a.id === "keeper");
@@ -181,6 +183,94 @@ test("boot starts configured agents but not archived ones (#archive)", async () 
       assert.equal(entry.archived, true);
     } finally {
       await second.dispose?.();
+    }
+  });
+});
+
+test("archiving a parent archives its whole SUBTREE (#archive)", async () => {
+  // A sub-agent cannot run once its parent is archived — the parent is what spawns it
+  // and what messages it. Leaving children in the list produced entries that looked
+  // usable and could never do anything, and their sessions stayed in the sidebar with
+  // no explanation of why nothing happened when clicked.
+  await useTempDirs(["arch5-root-", "arch5-ws-"], async ([dataDir, ws]) => {
+    // three agents: parent → child → grandchild, plus an unrelated sibling
+    const m = mkMaster(dataDir, [
+      { id: "parent", workspace: ws!, provider: "p", model: "m" },
+      { id: "child", workspace: ws!, provider: "p", model: "m", parent: "parent" },
+      { id: "grandchild", workspace: ws!, provider: "p", model: "m", parent: "child" },
+      { id: "other", workspace: ws!, provider: "p", model: "m" },
+    ]);
+    const app = buildApp(m);
+    // boot them so the live map has entries: archiving must DISPOSE each one
+    for (const id of ["parent", "child", "grandchild", "other"]) {
+      try {
+        await (m as any).addAgent({ id, workspace: ws, provider: "p", model: "m" });
+      } catch {
+        /* the provider does not resolve in a test; the config entry still exists */
+      }
+    }
+
+    const res = await app.request("/api/agents/parent/archive", { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { archived: boolean; ids: string[] };
+
+    // PRECONDITION: the fixture really is a 3-deep tree
+    assert.equal(
+      m.config.agents.filter((a) => a.id === "grandchild")[0]?.parent,
+      "child",
+      "precondition: grandchild hangs off child",
+    );
+
+    assert.deepEqual(
+      [...body.ids].sort(),
+      ["child", "grandchild", "parent"],
+      "the parent AND every descendant must be archived",
+    );
+    for (const id of ["parent", "child", "grandchild"]) {
+      assert.equal(
+        m.config.agents.find((a) => a.id === id)?.archived,
+        true,
+        `${id} must be marked archived`,
+      );
+      assert.equal(m.agents.get(id), undefined, `${id} must not stay live`);
+    }
+    // an unrelated agent is untouched — this is a subtree, not "archive everything"
+    assert.equal(
+      m.config.agents.find((a) => a.id === "other")?.archived,
+      undefined,
+      "an unrelated agent must not be archived",
+    );
+  });
+});
+
+test("restoring a parent restores its subtree too (#archive)", async () => {
+  // The inverse, and the reason the two must agree: a parent restored alone would come
+  // back unable to reach the work it delegated, while its children sat in the archive
+  // with no visible reason for being there.
+  await useTempDirs(["arch6-root-", "arch6-ws-"], async ([dataDir, ws]) => {
+    const m = mkMaster(dataDir, [
+      { id: "p2", workspace: ws!, provider: "p", model: "m" },
+      { id: "c2", workspace: ws!, provider: "p", model: "m", parent: "p2" },
+    ]);
+    const app = buildApp(m);
+
+    await app.request("/api/agents/p2/archive", { method: "POST" });
+    // PRECONDITION: both really are archived before we restore
+    for (const id of ["p2", "c2"]) {
+      assert.equal(m.config.agents.find((a) => a.id === id)?.archived, true);
+    }
+
+    const res = await app.request("/api/agents/p2/restore", { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { restored: boolean; ids: string[] };
+    assert.deepEqual([...body.ids].sort(), ["c2", "p2"]);
+
+    for (const id of ["p2", "c2"]) {
+      assert.equal(
+        m.config.agents.find((a) => a.id === id)?.archived,
+        undefined,
+        `${id} must be un-archived`,
+      );
     }
   });
 });

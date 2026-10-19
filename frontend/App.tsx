@@ -56,6 +56,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./term-tabs";
+import { pickAfterArchive } from "./archive-target";
 
 declare const __APP_VERSION__: string;
 
@@ -4061,15 +4062,34 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             >⑂ fork</button>
             <button onclick={async () => {
               const id = selected();
-              if (!id || !confirm(`archive agent ${id}?\n\nIt stops running and leaves the list, but its config and full session history are KEPT — restore it any time from ⚙ settings → archive.`)) return;
+              if (!id) return;
+              // The whole SUBTREE goes too: a sub-agent cannot run once its parent is
+              // archived (the parent is what spawns and messages it), so leaving the
+              // descendants in the list produced entries that looked usable and were not.
+              const doomed = new Set([id, ...descendantsOf(agents(), id).map((a) => a.id)]);
+              const subs = doomed.size - 1;
+              if (
+                !confirm(
+                  `archive agent ${id}?\n\n` +
+                    (subs > 0 ? `Its ${subs} sub-agent${subs === 1 ? "" : "s"} will be archived too.\n\n` : "") +
+                    "They stop running and leave the list, but the config and full session history are " +
+                    "KEPT — restore any of them from ⚙ settings → archive.",
+                )
+              )
+                return;
               await api(`/api/agents/${id}/archive`, { method: "POST" }).catch(() => {});
-              const rest = agents().filter((a) => a.id !== id);
+              const rest = agents().filter((a) => !doomed.has(a.id));
               setAgents(rest);
               // the agent is gone, so its session is too — drop the cached
               // index or the UI keeps routing to a session that no longer
               // exists (#39)
               void refreshSessionIndex(true);
-              if (rest[0]) select(rest[0].id);
+              // Switch to a USABLE neighbour. `rest[0]` was picked blindly, and the
+              // first remaining row can be a 👻 ghost (workspace gone) — landing the
+              // operator on a dead session right after they tidied up is the opposite
+              // of what archiving is for.
+              const next = pickAfterArchive(agents(), doomed);
+              if (next) select(next.id);
               else { setSelected(null); setEvents([]); }
               }} title="archive agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)">🗄 archive</button>
               <Show when={agents().some((a) => a.parent === selected())}>
@@ -6458,14 +6478,33 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   // and after every action — not derived from props.cfg, which carries the config as
   // loaded and would go stale the moment an agent is archived from the controls panel
   const [archived, setArchived] = createSignal<
-    { id: string; workspace: string; archivedAt?: number; sessions: number }[]
+    {
+      id: string;
+      workspace: string;
+      archivedAt?: number;
+      sessions: number;
+      parent?: string;
+      subs?: number;
+    }[]
   >([]);
   const refreshArchived = async () => {
     const r = (await api("/api/archived").catch(() => null)) as {
-      agents?: { id: string; workspace: string; archivedAt?: number; sessions: number }[];
+      agents?: {
+        id: string;
+        workspace: string;
+        archivedAt?: number;
+        sessions: number;
+        parent?: string;
+        subs?: number;
+      }[];
     } | null;
     setArchived(r?.agents ?? []);
   };
+  // Only TOP-LEVEL archived entries get a row. Archiving a parent takes its subtree
+  // with it, so listing every descendant individually would suggest the operator
+  // archived several things when they archived one — and restoring the parent already
+  // brings the children back.
+  const archivedTop = () => archived().filter((a) => !a.parent);
   // refresh whenever the panel is OPENED, so it never shows a stale list
   createEffect(() => {
     if (section() === "archive") void refreshArchived();
@@ -6924,7 +6963,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
               distinction the UI must make obvious is which of the two buttons is
               irreversible, so DELETE states exactly what it destroys. */}
           <Show
-            when={archived().length > 0}
+            when={archivedTop().length > 0}
             fallback={
               <div class="muted" style="font-size:12.5px">
                 nothing archived. 🗄 archive in the controls panel puts an agent away
@@ -6932,13 +6971,16 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
               </div>
             }
           >
-            <For each={archived()}>
+            <For each={archivedTop()}>
               {(a) => (
                 <div class="cfgrow archrow">
                   <div class="archmain">
                     <b>{a.id}</b>
                     <span class="muted">
                       {a.sessions} session{a.sessions === 1 ? "" : "s"}
+                      {(a.subs ?? 0) > 0
+                        ? ` · +${a.subs} sub-agent${a.subs === 1 ? "" : "s"} (restored together)`
+                        : ""}
                       {a.archivedAt ? ` · archived ${relTime(new Date(a.archivedAt).toISOString())}` : ""}
                     </span>
                     <span class="muted mono ellip" title={a.workspace}>{a.workspace}</span>
@@ -6949,15 +6991,17 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
                     onclick={async () => {
                       const r = (await api(`/api/agents/${a.id}/restore`, { method: "POST" }).catch(
                         () => null,
-                      )) as { live?: boolean } | null;
+                      )) as { live?: boolean; ids?: string[] } | null;
                       await refreshArchived();
                       // `onSaved` re-fetches the agent list, so the restored agent
                       // reappears in the controls panel without a reload
                       props.onSaved();
+                      const extra = (r?.ids?.length ?? 1) - 1;
                       flashHint(
-                        r?.live === false
+                        (r?.live === false
                           ? `restored ${a.id} — it could not be started (check its provider)`
-                          : `restored ${a.id}`,
+                          : `restored ${a.id}`) +
+                          (extra > 0 ? ` + ${extra} sub-agent${extra === 1 ? "" : "s"}` : ""),
                       );
                     }}
                     title="bring it back and start it again — its history was never touched"

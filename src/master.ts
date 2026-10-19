@@ -2172,49 +2172,87 @@ if (active().length === 0) wake();
    * the second: it deleted the config entry, which orphaned the session directory
    * (the files survived, but nothing in the UI could reach them again).
    */
-  async archiveAgent(id: string): Promise<{ archived: boolean }> {
-    const ac = this.config.agents.find((a) => a.id === id);
-    if (!ac) throw new Error(`no such agent: ${id}`);
-    const live = this.agents.get(id);
-    if (live) {
-      this.agents.delete(id);
-      await live.dispose();
+  async archiveAgent(id: string): Promise<{ archived: boolean; ids: string[] }> {
+    const root = this.config.agents.find((a) => a.id === id);
+    if (!root) throw new Error(`no such agent: ${id}`);
+    // The whole SUBTREE goes with it. A sub-agent whose parent is archived can never
+    // run again — its parent is what spawns and messages it — so leaving it un-archived
+    // put orphans in the list that look usable and are not. The descendants are found
+    // from the config (not the live map), so sub-agents that are already stopped or
+    // suspended are included.
+    const ids = [id, ...this.subtreeOf(id).map((s) => s.id)];
+    const now = Date.now();
+    for (const one of ids) {
+      const live = this.agents.get(one);
+      if (live) {
+        this.agents.delete(one);
+        await live.dispose();
+      }
+      const ac = this.config.agents.find((a) => a.id === one);
+      if (!ac) continue;
+      ac.archived = true;
+      ac.archivedAt = now;
     }
-    ac.archived = true;
-    ac.archivedAt = Date.now();
     this.saveConfig();
-    return { archived: true };
+    return { archived: true, ids };
   }
 
-  /** Bring an archived agent back. Its session pointer was never touched. */
-  async restoreAgent(id: string): Promise<{ restored: boolean; live: boolean }> {
+  /**
+   * Bring an archived agent back. Its session pointer was never touched.
+   *
+   * Restores the SUBTREE too, because archiving took it: a parent restored without its
+   * children would come back unable to reach the work it delegated, and the children
+   * would sit invisibly in the archive with no way to know why.
+   */
+  async restoreAgent(id: string): Promise<{ restored: boolean; live: boolean; ids: string[] }> {
     const ac = this.config.agents.find((a) => a.id === id);
     if (!ac) throw new Error(`no such agent: ${id}`);
-    delete ac.archived;
-    delete ac.archivedAt;
+    const ids = [id, ...this.subtreeOf(id).map((s) => s.id)];
+    for (const one of ids) {
+      const e = this.config.agents.find((a) => a.id === one);
+      if (!e) continue;
+      delete e.archived;
+      delete e.archivedAt;
+    }
     this.saveConfig();
     // start it again unless it was never configured to run (it is in the list, so it
     // was) — a restore is the operator asking for it back, so it comes back LIVE
     try {
       await this.addAgent(ac);
-      return { restored: true, live: true };
+      return { restored: true, live: true, ids };
     } catch (err) {
       // the entry is restored either way; starting it can fail on a provider/auth
       // problem, and reporting that is more useful than undoing the restore
       console.error(`[teapot] restored "${id}" but could not start it: ${(err as Error).message}`);
-      return { restored: true, live: false };
+      return { restored: true, live: false, ids };
     }
   }
 
   /** Archived entries, newest first — what the settings panel lists. */
-  archivedAgents(): Array<{ id: string; workspace: string; archivedAt?: number; sessions: number }> {
-    return this.config.agents
-      .filter((a) => a.archived)
+  archivedAgents(): Array<{
+    id: string;
+    workspace: string;
+    archivedAt?: number;
+    sessions: number;
+    /** the archived parent, when this entry came along with one */
+    parent?: string;
+    /** how many archived descendants hang under this entry */
+    subs: number;
+  }> {
+    const archived = this.config.agents.filter((a) => a.archived);
+    const ids = new Set(archived.map((a) => a.id));
+    return archived
       .map((a) => ({
         id: a.id,
         workspace: a.workspace,
         ...(a.archivedAt !== undefined ? { archivedAt: a.archivedAt } : {}),
         sessions: this.sessionsOf(a.id).length,
+        // A sub-agent is listed under its parent rather than as an equal entry: the
+        // operator archived ONE thing, and a flat list of every descendant makes it
+        // look like they did several. Only an ARCHIVED parent counts — otherwise a
+        // live parent would hide a genuinely standalone entry.
+        ...(a.parent && ids.has(a.parent) ? { parent: a.parent } : {}),
+        subs: this.subtreeOf(a.id).filter((s) => ids.has(s.id)).length,
       }))
       .sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
   }
