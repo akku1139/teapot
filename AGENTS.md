@@ -52,6 +52,25 @@ docs/           design notes and surveys
    `scripts/measure-boot.mjs <sandbox-config>` does exactly this and reports how
    many sessions were MINTED, so a destructive boot is impossible to miss.
 
+   Shape facts that cost time to rediscover: `dataDir` holds a `sessions/`
+   subdirectory (the session dirs live UNDER it, not at `dataDir`), and
+   `config.agents` is a **LIST** of `{id, workspace, provider, session}`, not an
+   object — feeding it an object fails at boot with
+   `this.config.agents is not iterable`. **Never invent a port**: 7788 and 7789
+   are the operator's live server and an IPv4 reverse proxy onto it, and a
+   sandbox on either one silently loses the bind (EADDRINUSE) while your `ss`
+   reads THEIR listener. Pick a high port and confirm it is yours.
+
+7. **Never kill by port or by a broad `pgrep -f`.** Two measured traps:
+
+   - `pgrep -f PATTERN` matches your OWN command line, so a probe that looks for
+     a process reliably finds itself.
+   - killing whatever listens on a port is how you kill **the process running
+     you**. That happened here: 7789 was the harness's own server, and the agent
+     killed it believing it was its leftover sandbox.
+
+   Kill by an exact PID you recorded when you started the thing, or not at all.
+
 ## Before you say "done"
 
 Run all of these and make them pass. "It typechecks" is not one of them.
@@ -88,30 +107,48 @@ script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
 
 ## Testing
 
-- Put pure logic in a `.ts` helper next to `App.tsx` (e.g.
-  `frontend/session-scope.ts`) and unit-test it directly with `node --test`.
-  Huge parts of `App.tsx` are not mountable in tests, so "make it testable"
-  usually means "extract the rule".
-- **Assert on the code that actually runs.** A test that re-implements the
-  function it is checking, or that only asserts a source-string shape the bug
-  can survive, proves nothing. This failure mode shipped more than once (#75).
-- Behaviour that depends on the real bundle (rendering, the drawer, the live
-  buffer) belongs in `scripts/smoke-web.mjs`, which loads the built bundle in
-  happy-dom and drives it. happy-dom does **no layout**, so geometry is
+- **Never assert on SOURCE TEXT.** Do not read `App.tsx` / `agent.ts` / `app.css`
+  and `assert.match` a regex against it. Such a test cannot fail for a real reason:
+  it pins the SPELLING of code that has to work at RUNTIME, so it breaks on
+  refactors that fix bugs and stays green on changes that cause them.
+
+  This is not hypothetical. The ▶ start / ■ stop toggle had tests asserting
+  `onclick={isSelLive() ? … }` and they were GREEN while the button posted the wrong
+  action (a bare expression in `onclick={…}` is evaluated once, so the handler froze
+  and "▶ start" kept sending `/stop`). 250 test cases of this kind were deleted; the
+  whole suite was green through a dead button the entire time.
+
+- **Test the behaviour instead.** Put pure logic in a `.ts` helper next to `App.tsx`
+  (e.g. `frontend/session-scope.ts`) and unit-test it directly with `node --test`.
+  Anything that depends on the real bundle — rendering, the drawer, the live buffer,
+  the toggles, the feed — belongs in `scripts/smoke-web.mjs`, which loads the BUILT
+  bundle in happy-dom and drives it. happy-dom does **no layout**, so geometry is
   asserted as a CSS contract (`test/helpers/css.ts`), never as pixels.
-- Read source through `readSource()` (`test/helpers/source.ts`) so CRLF
-  checkouts behave like LF ones (#126).
-- Strip CSS comments before asserting on a rule body (`cssRuleBody` already
-  does) — declarations quoted in a rule's own explanatory comment otherwise
-  satisfy the assertion (#75).
-- **Never slice source by a fixed width** (`src.slice(at, at + 1600)`). It is a
-  guess about how long the code will be, and it goes red as soon as someone adds a
-  comment — and only on Windows, because CRLF makes the block longer. That has now
-  happened three times (#126, #130, #152). Use `blockFrom(src, anchor)` from
-  `test/helpers/source.ts`, which walks to the matching close brace.
-- **Do not add a test per assertion.** Prefer one test that would fail for the
-  real reason over five that pin incidental strings. Delete tests that no
-  longer protect anything; a suite that grows without bound gets ignored.
+
+  A smoke check must assert its own PRECONDITION (that the row exists, that the
+  bubble has text, that the element is scrollable) or it passes vacuously, and it
+  must be verified to FAIL against the pre-fix code.
+
+- **Do not add a test per assertion.** Prefer one test that would fail for the real
+  reason over five that pin incidental strings. Delete tests that no longer protect
+  anything; a suite that grows without bound gets ignored.
+
+- **A test that fails on one platform only is usually a fixture bug**, not a product
+  bug: Windows has no `/bin/bash` (mark such files POSIX-only via
+  `test/helpers/posix-only.ts`) and CRLF changes byte offsets. Never `slice` source
+  by a fixed width — use `blockFrom(src, anchor)`. Where a source read is genuinely
+  unavoidable, use `readSource()` so CRLF checkouts behave like LF ones (#126).
+
+- **Never wait a fixed duration for a state.** Poll for the condition. A fixed
+  `setTimeout` under a loaded CI runner fails as "precondition not met" with no hint
+  that the test merely ran out of clock (measured: #136 on Windows, on a
+  version-bump commit of otherwise identical code). Also CLEAR timers you race
+  against — an abandoned 30 s timer kept a test file's process alive for 20 s of
+  pure idle after its work was done.
+
+- If production code hardcodes a delay the test must wait out, make it injectable
+  instead of sleeping (`llmRetryWaitsMs` exists for exactly this). Test time is a
+  real cost: it is why an over-long suite gets skipped locally and stops being run.
 
 ## Comments
 
@@ -132,6 +169,12 @@ non-obvious choice was made, what was measured, what breaks otherwise.
 - **A `//` comment inside JSX children is not a comment — it is JSX text and it
   renders on screen.** Use `{/* … */}`. (`test/jsx-line-comment.test.ts` parses
   every `.tsx` and fails on this.)
+- **Wrap an event handler in `() => …` when it decides anything from state.**
+  `onclick={cond() ? a() : b()}` is evaluated ONCE, at element creation: Solid
+  re-runs the tracked reads in the LABEL and `class`, but NOT the handler, so a
+  button can read "▶ start" while its frozen handler posts `/stop`. That shipped —
+  after a stop, the agent could never be restarted. Write
+  `onclick={() => (cond() ? a() : b())()}` so the choice is made at click time.
 - The composer is an **uncontrolled** textarea on purpose: `value={draft()}`
   writes the DOM on every keystroke, which ends an in-flight IME composition and
   discards the kana being typed. Sync the value through the gated effect in
@@ -179,6 +222,25 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   `idle`. Use `live`/`isBusy` for control decisions.
 - Log events are append-only JSONL; the UI rebuilds state from them. Never
   rewrite history in place.
+- **A feed row that renders nothing must not stay in the feed array.** `prev` is
+  taken positionally from `chatEvents()`, and `groupedWith()` keys on the row
+  TYPE, so an invisible row (e.g. `state`, which is in `FEED_TYPES` but has no
+  render branch) cuts a run of tool calls in half. Assert "does this type draw
+  anything" rather than special-casing one type.
+- `--host 0.0.0.0` binds **IPv4 only**; `::` (and a missing hostname) binds
+  DUAL-STACK. On a host reachable over both families — Tailscale hands out
+  `100.x` and `fd7a:…` — an IPv4-only listener is unreachable from an IPv6
+  client. `dualStackHost()` in `src/server/api.ts` maps the wildcard to a
+  missing hostname for this reason.
+- The web terminal resizes with `stty -F <pty-slave> rows R cols C` — an
+  ioctl(TIOCSWINSZ) on the DEVICE — never by writing `stty` to the child's stdin.
+  stdin belongs to whatever owns the tty, so a written command arrives as KEYS in
+  vim / less / a REPL. This is what VS Code (node-pty) and Alacritty do; neither
+  issues `stty` as text. `resolvePtySlave` finds the device via /proc: `script` is
+  spawned with piped stdio, so ITS OWN fd 0 is our pipe, and the pty slave is on
+  the shell it FORKS — reading the spawned child's fd 0 returns nothing useful and
+  silently falls back to typing. macOS has no /proc, so the stdin write stays as
+  the fallback there.
 
 ## Commits and releases
 
@@ -189,6 +251,18 @@ non-obvious choice was made, what was measured, what breaks otherwise.
 - Releases are tag-driven (`.github/workflows/publish.yml`). Bumping
   `package.json` and pushing the matching `vX.Y.Z` tag publishes to npm; the
   workflow refuses a tag that disagrees with the version.
+- **A green publish workflow does not mean the version is installable.** npm
+  registers it, and the tarball appears on the CDN later; `dist-tags.latest` can
+  even name the new version while
+  `https://registry.npmjs.org/<pkg>/-/<pkg>-<v>.tgz` still 404s. Verify the
+  TARBALL with a HEAD request before declaring a release done, and do not
+  conclude from a 404 that it failed.
+- Re-running a publish can return `E409 Cannot publish over previously staged
+  version`. That means the version was **already accepted** and is awaiting
+  validation — it is not a conflict to resolve. **Do not bump the version to
+  "get past" it**; that ships a second, identical release. Wait for the tarball.
+- `npm cache clean --force` before trusting `npm view` / `npm pack` / `npm i -g`;
+  the cache served stale metadata repeatedly here.
 
 ## Fixing a bug that has been "fixed" before
 
@@ -203,3 +277,34 @@ changing code for one of them:
    that the code you are about to change is actually called: instrument it, or
    assert the call site, not the helper.
 3. **Write the test so it fails on the old code** before you call it fixed.
+
+## Debugging, and when to stop reasoning
+
+- **When a synthetic reproduction disagrees with the real thing, believe the real
+  thing.** A hand-built fixture said a `state` row did not break tool grouping;
+  the actual log, replayed through the app's own filter, showed it did. The
+  fixture was wrong about the filter, not the app.
+- **Drive the artefact, do not read it.** Dump the BUILT bundle's DOM
+  (`scripts/smoke-web.mjs`) to see what a user sees. Reading `App.tsx` produced
+  three plausible-and-wrong diagnoses in one session; a DOM dump produced the
+  answer in one shot.
+- **A user's "sometimes it works" is data, not noise.** That a bug is
+  intermittent means some condition differs; find the condition (here: whether a
+  turn boundary fell between two tool calls) instead of filing it as flaky.
+- **A wrong guess about the OPERATOR'S setup is expensive.** Before touching
+  anything that listens on a port or holds state, read what is already running
+  (`ss -ltnp`) and treat an unknown listener as theirs until proven otherwise.
+- When the operator corrects you, `add_feedback` the rule. Two from this session:
+  never treat npm's messages as a conflict to work around (E409 = already
+  accepted), and never kill a process you have not proven you started.
+
+## Editing many files at once
+
+A one-off script that deletes or rewrites hundreds of call sites across `test/`
+cut four files in half, because a brace-matching walker is confused by braces
+inside template literals and strings. If you must batch-edit:
+
+- verify EACH file after the edit and revert just that file on failure
+  (`node --experimental-strip-types --check <file>` catches TS parse errors that
+  plain `node --check` accepts), and
+- prefer many small, reviewable edits over one clever transform.
