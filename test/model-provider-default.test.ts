@@ -78,3 +78,37 @@ test("the provider dropdown is wired to the rule (#3)", () => {
     "the placeholder must come from the same rule (#3)",
   );
 });
+
+test("the 🧦 model box has ONE apply, and it sends the model AND the effort (#3 follow-up)", () => {
+  // Reported: "model と effort を別々で apply できるボタンがあるけど、どっちが効いたのか
+  // わかりにくい" — there were two buttons for one form, and neither said what it
+  // carried. Pressing the one beside `effort` did NOT send the model edit sitting
+  // right above it. One button removes the ambiguity, and it must send BOTH fields
+  // in the single request the endpoint already accepts.
+  const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
+  // the box runs from its heading down to the "current:" line printed under it
+  // (the button's own closing tag must be INCLUDED, or the only apply in the box
+  // is sliced off and the assertion passes vacuously)
+  const boxStart = app.indexOf(">\u{1F9E6} model<");
+  const boxEnd = app.indexOf(">apply model + effort</button>");
+  assert.notEqual(boxStart, -1, "the 🧦 model box must be locatable");
+  assert.notEqual(boxEnd, -1, "the merged apply button must be locatable");
+  const box = app.slice(boxStart, boxEnd + ">apply model + effort</button>".length);
+
+  const applies = box.match(/>apply[^<]*<\/button>/g) ?? [];
+  assert.deepEqual(
+    applies,
+    [">apply model + effort</button>"],
+    `exactly one apply button must live in the model box, got: ${JSON.stringify(applies)}`,
+  );
+
+  // and that one request carries both halves of the form
+  const onclick = box.slice(box.lastIndexOf("onclick"));
+  assert.match(onclick, /provider: modelProvider\(\)/, "the apply must send the provider");
+  assert.match(onclick, /model: modelDraft\(\)/, "and the model");
+  assert.match(
+    onclick,
+    /reasoningEffort: effortDraft\(\)/,
+    "and the effort — a single button that silently dropped it would be the same bug in reverse",
+  );
+});

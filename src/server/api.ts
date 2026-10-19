@@ -11,7 +11,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
-import { TermSizeTracker } from "./term-size.ts";
+import { TermSizeTracker, resolvePtySlave } from "./term-size.ts";
 import { expandTilde, homeDir } from "../home.ts";
 import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
@@ -198,11 +198,44 @@ const MAX_WS_CLIENTS = 64;
   // keyed by CHILD, not agent: one agent may have up to 10 concurrent
   // terminals, each with its own size and its own foreground program
   const termSizes = new TermSizeTracker();
+  // #20 follow-up: apply the size with an ioctl on the pty DEVICE
+  // (`stty -F <slave>`) rather than writing `stty …` into the child's stdin.
+  //
+  // Writing to stdin is only safe while a SHELL is reading it: when an
+  // interactive program owns the tty (vim, less, a REPL) it is the PROGRAM that
+  // reads, so the command arrived as keystrokes and landed in the operator's
+  // document. MEASURED: `stty -F /dev/pts/0 rows 55 cols 190` sets the size
+  // (readback 55 190), delivers a real SIGWINCH to the foreground process, and
+  // emits no bytes into the terminal stream at all — the same mechanism VS Code
+  // (node-pty) and Alacritty use.
+  //
+  // The slave is resolved per call rather than cached: `script` may have exited
+  // and been replaced, and a stale device path would resize someone else's pty.
+  // The stdin write stays as the fallback for hosts without /proc (macOS), so
+  // no platform loses resize — it only loses the improvement.
   const setTermSize = (child: ChildProcess, rows: number, cols: number): void =>
     termSizes.request(child, rows, cols, (r, c) => {
-      if (!child.stdin?.writable) return;
-      child.stdin.write(`stty rows ${r} cols ${c} >/dev/null 2>&1\n`);
+      const slave = resolvePtySlave(child);
+      if (slave) {
+        const r2 = spawn("stty", ["-F", slave, "rows", String(r), "cols", String(c)], {
+          stdio: "ignore",
+        });
+        // a failed ioctl must fall through to the stdin path, not silently drop
+        // the resize: `stty` exits non-zero when the device is not a tty
+        r2.on("error", () => writeSizeViaStdin(child, r, c));
+        r2.on("close", (code) => {
+          if (code !== 0) writeSizeViaStdin(child, r, c);
+        });
+        return;
+      }
+      writeSizeViaStdin(child, r, c);
     });
+
+  /** last-resort resize for a host with no /proc: type it into the shell */
+  const writeSizeViaStdin = (child: ChildProcess, r: number, c: number): void => {
+    if (!child.stdin?.writable) return;
+    child.stdin.write(`stty rows ${r} cols ${c} >/dev/null 2>&1\n`);
+  };
 
 
   // ---- realtime events over WebSocket (replaces SSE for the web UI) ----

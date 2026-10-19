@@ -78,3 +78,26 @@ test("an unknown dashed flag is ignored, not treated as a config path", () => {
   // config filename, which is how a bare-word rule goes wrong
   assert.equal(parseArgs(["--acp"]).cfgArg, undefined);
 });
+
+test("--flag=value works for every flag, not just the space-separated form", () => {
+  // Reported: "--host が効いてないっぽい、0.0.0.0 にしても他デバイスからアクセスできない".
+  // `--host=0.0.0.0` — the spelling people reach for, and the one every other CLI
+  // accepts — was silently DISCARDED: only `--host 0.0.0.0` matched. The server
+  // then came up on loopback with nothing readable to say why, so the operator
+  // reasonably blamed their network. MEASURED on the built CLI:
+  //
+  //     $ teapot cfg.json --port=7842 --host=0.0.0.0
+  //     [teapot] master listening on http://127.0.0.1:7841   ← both ignored
+  const r = parseArgs(["--host=0.0.0.0", "--port=8080", "--config=x.json"]);
+  assert.deepEqual(
+    r,
+    { cfgArg: "x.json", portOverride: 8080, hostOverride: "0.0.0.0", help: false },
+    "every flag must accept both `--flag value` and `--flag=value`",
+  );
+});
+
+test("both spellings can be mixed, and a bare path still wins the config slot", () => {
+  assert.equal(parseArgs(["c.json", "--host=1.2.3.4"]).cfgArg, "c.json");
+  assert.equal(parseArgs(["--host=1.2.3.4", "c.json"]).hostOverride, "1.2.3.4");
+  assert.equal(parseArgs(["--port=1", "--host", "h"]).hostOverride, "h");
+});

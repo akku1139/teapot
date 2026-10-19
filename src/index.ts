@@ -94,6 +94,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * The bare-word rule keeps the FIRST positional as the config path: a later bare
  * word is a stray argument, not an override, and silently replacing the config
  * with it would be worse than ignoring it.
+ *
+ * BOTH spellings are accepted: `--host 0.0.0.0` and `--host=0.0.0.0`. Only the
+ * space-separated form used to parse, so `--host=0.0.0.0` — the spelling people
+ * reach for, and the one every other CLI accepts — was silently DISCARDED and the
+ * server came up on loopback with nothing readable to say why. Reported as
+ * "--host が効いてない、0.0.0.0 にしても他デバイスからアクセスできない", and a
+ * silently-ignored flag is the worst possible shape for this: the operator sees a
+ * server that started fine and blames their network.
  */
 export function parseArgs(argv: string[]): {
   cfgArg?: string;
@@ -106,17 +114,24 @@ export function parseArgs(argv: string[]): {
   let hostOverride: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--port" || a === "-p") {
-      const raw = argv[++i];
+    // `--name=value` and `--name value` both work. Splitting here means every
+    // branch below sees the plain name and reads its value the same way, so a
+    // future flag cannot repeat the `--host=` omission.
+    const eq = a.startsWith("--") ? a.indexOf("=") : -1;
+    const name = eq === -1 ? a : a.slice(0, eq);
+    // for `--name=value` the value is already in `a`; otherwise take the next word
+    const value = () => (eq === -1 ? argv[++i] : a.slice(eq + 1));
+    if (name === "--port" || name === "-p") {
+      const raw = value();
       const n = Number(raw);
       // NaN is dropped rather than applied: `config.port = NaN` would fall through
       // to the listen call and produce a far more confusing failure than ignoring
       // a mistyped flag
       if (!Number.isNaN(n)) portOverride = n;
-    } else if (a === "--host") {
-      hostOverride = argv[++i];
-    } else if (a === "--config" || a === "-c") {
-      cfgArg = argv[++i];
+    } else if (name === "--host") {
+      hostOverride = value();
+    } else if (name === "--config" || name === "-c") {
+      cfgArg = value();
     } else if (!a.startsWith("-") && cfgArg === undefined) {
       cfgArg = a;
     }
@@ -129,7 +144,7 @@ async function main(): Promise<void> {
   if (help) {
     console.log("teapot [--port N] [--host addr] [--config file.json] [config.json]");
     console.log("  --host 127.0.0.1 (default) · 0.0.0.0 exposes the UI to your network");
-    console.log("  --acp  speak the Agent Client Protocol on stdio instead of serving HTTP (#15)");
+    console.log("  --acp  speak the Agent Client Protocol on stdio instead of serving HTTP");
     console.log("  env: TEAPOT_PORT, TEAPOT_HOST, TEAPOT_CONFIG_DIR, TEAPOT_DATA_DIR, TEAPOT_API_TOKEN");
     return;
   }

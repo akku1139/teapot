@@ -4028,34 +4028,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <datalist id="model-list">
                 <For each={models()}>{(m) => <option value={m.id} />}</For>
               </datalist>
-              <button
-                title="apply to this session — takes effect from the agent's next turn"
-                onclick={async (e) => {
-                  if (!selected()) return;
-                  const btn = e.currentTarget as HTMLButtonElement;
-                  btn.disabled = true;
-                  try {
-                    await api(`/api/agents/${selected()}/model`, {
-                      method: "POST",
-                      headers: { "content-type": "application/json" },
-                      body: JSON.stringify({
-                        provider: modelProvider(),
-                        model: modelDraft().trim() || undefined,
-                        // pass the provider-reported window so the runtime
-                        // gauge + derived compaction budget work immediately
-                        contextWindowTokens:
-                          models().find((m) => m.id === (modelDraft().trim() || undefined))?.contextLength,
-                      }),
-                    });
-                    btn.textContent = "✓ applied";
-                    refreshAgents();
-                  } catch (ex) {
-                    alert(`model switch failed: ${(ex as Error).message}`);
-                  } finally {
-                    setTimeout(() => { btn.textContent = "apply"; btn.disabled = false; }, 1200);
-                  }
-                }}
-              >apply</button>
             </div>
             {/* #47: reasoning effort. Shown ONLY when the endpoint's catalogue
                 says this model advertises `reasoning_effort` — support is 196/462
@@ -4078,30 +4050,50 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     {(v) => <option value={v}>{v}</option>}
                   </For>
                 </select>
-                <button
-                  title="apply to this session — takes effect from the agent's next turn"
-                  onclick={async (e) => {
-                    if (!selected()) return;
-                    const btn = e.currentTarget as HTMLButtonElement;
-                    btn.disabled = true;
-                    try {
-                      await api(`/api/agents/${selected()}/model`, {
-                        method: "POST",
-                        headers: { "content-type": "application/json" },
-                        // "" clears it back to the provider default
-                        body: JSON.stringify({ reasoningEffort: effortDraft() }),
-                      });
-                      btn.textContent = "✓ applied";
-                      refreshAgents();
-                    } catch (ex) {
-                      alert(`effort change failed: ${(ex as Error).message}`);
-                    } finally {
-                      setTimeout(() => { btn.textContent = "apply"; btn.disabled = false; }, 1200);
-                    }
-                  }}
-                >apply</button>
               </div>
             </Show>
+            {/* ONE apply for the whole 🧦 model box (#3 follow-up).
+                There used to be a button beside the model input AND one beside
+                the effort select, both posting to the same endpoint. Two buttons
+                for one form is ambiguous about what each one sends — the operator
+                could not tell whether pressing "apply" next to the effort had
+                also carried their model edit, and it had not. So there is one
+                button, it sits here under both fields, and it sends both. */}
+            <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+              <button
+                title="apply the provider, model and effort above to this session — takes effect from the agent's next turn"
+                style="flex:1"
+                onclick={async (e) => {
+                  if (!selected()) return;
+                  const btn = e.currentTarget as HTMLButtonElement;
+                  btn.disabled = true;
+                  try {
+                    await api(`/api/agents/${selected()}/model`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({
+                        provider: modelProvider(),
+                        model: modelDraft().trim() || undefined,
+                        // pass the provider-reported window so the runtime
+                        // gauge + derived compaction budget work immediately
+                        contextWindowTokens:
+                          models().find((m) => m.id === (modelDraft().trim() || undefined))?.contextLength,
+                        // "" clears it back to the provider default. Sent only
+                        // when the endpoint offers the control at all: a model
+                        // with no effort support must not have one forced on it.
+                        ...(sel()!.effortSupported ? { reasoningEffort: effortDraft() } : {}),
+                      }),
+                    });
+                    btn.textContent = "✓ applied";
+                    refreshAgents();
+                  } catch (ex) {
+                    alert(`apply failed: ${(ex as Error).message}`);
+                  } finally {
+                    setTimeout(() => { btn.textContent = "apply"; btn.disabled = false; }, 1200);
+                  }
+                }}
+              >apply model + effort</button>
+            </div>
             <div class="meta">
               current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show>
             </div>
