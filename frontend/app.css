@@ -734,6 +734,13 @@ details.reasoning .thinkscroll {
 .cfgrow input { background: var(--bg-darkest); border: 1px solid var(--bg-light); border-radius: 5px; padding: 5px 8px; color: var(--fg); font-size: 12.5px; min-width: 0; flex: 1; }
 .cfgrow select { background: var(--bg-darkest); border: 1px solid var(--bg-light); border-radius: 5px; padding: 5px 8px; color: var(--fg); font-size: 12.5px; }
 .cfgrow .cfgname { width: 90px; flex-shrink: 0; flex: none; color: var(--warn); font-weight: 600; }
+/* #170: the key list under a provider row. It wraps to its own full-width line so
+   several keys stay readable instead of squeezing the baseUrl/model fields. */
+.cfgrow .cfgkeys { display: flex; flex-direction: column; gap: 4px; flex-basis: 100%; padding-left: 96px; }
+.cfgrow .cfgkeyrow { display: flex; gap: 4px; align-items: center; }
+.cfgrow .cfgkeyrow input { flex: 1; }
+.cfgrow .cfgkeyrow button, .cfgrow .cfgkeys > button { flex: none; }
+.cfgrow .cfgkeys > button { align-self: flex-start; }
 .cfgrow button { background: var(--bg-mid); border: 1px solid var(--bg-light); color: var(--fg); border-radius: 5px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
 .cfgrow button:hover { background: var(--bg-light); }
 .cfgrow button.danger { background: var(--err); border-color: var(--err); color: #fff; }

@@ -19,6 +19,7 @@ import {
   fsyncSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { availableKeys, makeKeyPool, type KeyPoolState } from "./agent/key-pool.ts";
 import { sessionTitleFrom } from "./session-title.ts";
 import path from "node:path";
 import os from "node:os";
@@ -183,7 +184,20 @@ export const SUB_PERSONAS: Record<
 export interface ProviderConfig {
   /** OpenAI-compatible base URL, e.g. https://openrouter.ai/api/v1 */
   baseUrl: string;
+  /**
+   * A SINGLE key. Still honoured, and still what the UI writes when a provider has
+   * one credential, so existing configs and hand-written files keep working.
+   *
+   * When both are present `apiKeys` wins as the pool; `apiKey` is then the first
+   * entry for display. See migrateKeyPools().
+   */
   apiKey?: string;
+  /**
+   * Several keys for ONE provider, rotated round-robin (#170). A rate-limited key is
+   * parked for a cooldown instead of failing the request. See
+   * src/agent/key-pool.ts for the rules.
+   */
+  apiKeys?: string[];
   /** optional default model for this provider */
   model?: string;
 }
@@ -327,6 +341,64 @@ export function resolveConfigPath(explicitPath?: string): string {
 
 let masterRawConfig: Record<string, unknown> = {};
 
+/**
+ * Normalise a provider entry's credentials into `apiKeys` (#170).
+ *
+ * Both spellings are read, and the result is written back in the shape the UI and
+ * the pool consume. The rules:
+ *
+ *   - `apiKeys` present  -> used as-is (trimmed, blanks and duplicates dropped)
+ *   - `apiKey` only      -> becomes `apiKeys: [apiKey]`  (the OLD shape, which is
+ *                           every config written before this feature)
+ *   - neither            -> left alone (a local endpoint may need no key)
+ *
+ * `apiKey` is KEPT in step with `apiKeys[0]` rather than deleted, because other
+ * readers still expect it (the setup wizard, `/api/providers`, hand-edited files) and
+ * a migration that removes a field the operator can see is a migration they will
+ * report as data loss.
+ *
+ * Returns a NEW entry; the caller decides whether to persist.
+ */
+export function migrateProviderKeys(p: ProviderConfig): ProviderConfig {
+  const seen = new Set<string>();
+  const clean = (list: readonly unknown[]): string[] => {
+    const out: string[] = [];
+    for (const k of list) {
+      const t = typeof k === "string" ? k.trim() : "";
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    return out;
+  };
+
+  // `apiKeys` is AUTHORITATIVE once present. The single `apiKey` only SEEDS the pool
+  // when there is no list — appending it as well would resurrect a credential the
+  // operator had already replaced (they set a list precisely because the old key was
+  // exhausted), and the pool would happily rotate back onto it.
+  const hasList = Array.isArray(p.apiKeys);
+  const keys = hasList
+    ? clean(p.apiKeys!)
+    : clean(typeof p.apiKey === "string" ? [p.apiKey] : []);
+
+  if (keys.length === 0) {
+    // no credential at all (a local endpoint may need none): do not invent an empty
+    // array, which would read as "this provider has keys" to anything counting them
+    const { apiKeys: _drop, ...rest } = p;
+    return rest as ProviderConfig;
+  }
+  // `apiKey` is kept in step with the FIRST key rather than deleted: other readers
+  // still expect it (the setup wizard, `/api/providers`), and a migration that
+  // removes a field the operator can see reads as data loss.
+  return { ...p, apiKeys: keys, apiKey: keys[0] };
+}
+
+/** Every key for a provider, in order, with the legacy single key folded in. */
+export function providerKeys(p: ProviderConfig | undefined): string[] {
+  if (!p) return [];
+  return migrateProviderKeys(p).apiKeys ?? [];
+}
+
 export function loadConfig(configPath: string): TeapotConfig {
   if (!existsSync(configPath)) return DEFAULT_CONFIG;
   mkdirSync(CONFIG_DIR, { recursive: true });
@@ -337,7 +409,12 @@ export function loadConfig(configPath: string): TeapotConfig {
     ...user,
     dataDir: user.dataDir ? path.resolve(user.dataDir.replace(/^~/, os.homedir())) : DEFAULT_CONFIG.dataDir,
     llm: { ...DEFAULT_CONFIG.llm, ...user.llm },
-    providers: { ...user.providers },
+    // #170: fold a legacy single `apiKey` into `apiKeys` on load, so every consumer
+    // below sees one shape. Done here rather than at each use site because the pool,
+    // the UI and the spawn path all need the same answer.
+    providers: Object.fromEntries(
+      Object.entries(user.providers ?? {}).map(([name, p]) => [name, migrateProviderKeys(p)]),
+    ),
   };
 }
 
@@ -463,6 +540,19 @@ export function sanitizeAgentId(id: string): string {
 
 export class Master {
   readonly agents = new Map<string, Agent>();
+
+  /**
+   * ONE key pool per provider name (#170), shared by every agent on it.
+   *
+   * Shared on purpose: a 429 is a statement about the CREDENTIAL, not about the
+   * agent that happened to send the request. Per-agent pools would let agent B walk
+   * straight back into the key agent A just got rate-limited on — the rotation would
+   * exist and do nothing, which is the failure shape this repo keeps re-learning.
+   *
+   * Keyed by PROVIDER NAME rather than baseUrl: two entries for the same endpoint may
+   * legitimately hold different credentials, and those must not be merged.
+   */
+  private readonly keyPools = new Map<string, KeyPoolState>();
   /**
    * pid of the process that replaced us in a live update, or null while we are
    * still the server. `restartServer()` sets it; `index.ts` reads it to keep
@@ -584,6 +674,36 @@ export class Master {
   }
 
   /** write-and-rename, so config.json is never observed empty or half-written */
+  /**
+   * The shared pool for a provider, created on first use (#170).
+   *
+   * Cached so the cooldown state survives across agents AND across a provider being
+   * re-read: rebuilding the pool on every spawn would forget that a key is cooling
+   * down and hand it straight back out. Rebuilt only if the KEY LIST changes (the
+   * operator edited the provider), which is when the old cooldowns stop being
+   * meaningful.
+   */
+  private keyPoolFor(name: string, prov: ProviderConfig | undefined): KeyPoolState | undefined {
+    const keys = providerKeys(prov);
+    if (keys.length === 0) return undefined;
+    const existing = this.keyPools.get(name);
+    if (existing && existing.keys.length === keys.length && existing.keys.every((k, i) => k === keys[i])) {
+      return existing;
+    }
+    const pool = makeKeyPool(keys);
+    this.keyPools.set(name, pool);
+    return pool;
+  }
+
+  /** diagnostics: how many keys each provider holds, and how many are usable now */
+  keyPoolReport(now = Date.now()): { provider: string; keys: number; available: number }[] {
+    return [...this.keyPools.entries()].map(([provider, pool]) => ({
+      provider,
+      keys: pool.keys.length,
+      available: availableKeys(pool, now).length,
+    }));
+  }
+
   private writeConfigAtomic(body: string): void {
     // #144: `/dev/null` is a real, intentional value here — many callers (and
     // every test that does not care about persistence) pass it as "no config
@@ -889,11 +1009,18 @@ export class Master {
     if (!prov && !ac.baseUrl && !this.config.llm.baseUrl) {
       throw new Error(`agent ${ac.id}: unknown provider "${provName}" and no fallback`);
     }
+    // #170: an INLINE `ac.apiKey` is this agent's own credential, so it must NOT be
+    // joined to the provider's pool — the pool belongs to the named provider, and
+    // folding a one-off override in would rotate an agent onto keys its operator did
+    // not choose for it. Only the named provider gets a pool.
+    const inlineKey = typeof ac.apiKey === "string" && ac.apiKey.trim() ? ac.apiKey.trim() : undefined;
+    const pool = inlineKey ? undefined : this.keyPoolFor(provName, prov);
     const llm: LlmConfig = {
       baseUrl: ac.baseUrl ?? prov?.baseUrl ?? this.config.llm.baseUrl!,
-      apiKey: ac.apiKey ?? prov?.apiKey ?? this.config.llm.apiKey!,
+      apiKey: inlineKey ?? pool?.keys[0] ?? prov?.apiKey ?? this.config.llm.apiKey!,
       model: ac.model ?? prov?.model ?? this.config.llm.model!,
       timeoutMs: 120_000,
+      ...(pool && pool.keys.length > 1 ? { keyPool: pool } : {}),
     };
     if (!llm.model) throw new Error(`agent ${ac.id}: no model configured (set model on the agent or on its provider)`);
     // spawn-tree depth: computed from the config chain (ac may not be

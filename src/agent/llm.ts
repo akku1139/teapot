@@ -6,6 +6,7 @@
  * than hand-rolled.
  */
 import OpenAI from "openai";
+import { rotateAfterFailure, isKeyFailure, type KeyPoolState } from "./key-pool.ts";
 
 export interface ToolSpec {
   type: "function";
@@ -63,6 +64,12 @@ export interface LlmConfig {
    * request where the API can express that; see cacheControlForRequest().
    */
   oneOff?: boolean;
+  /**
+   * The provider's key POOL (#170), shared across every agent on that provider so a
+   * rate-limited key is parked for everyone rather than re-tried per agent. Absent
+   * means "one key, no rotation" — `apiKey` is then the only credential.
+   */
+  keyPool?: KeyPoolState;
 }
 
 export interface LlmResult {
@@ -78,6 +85,27 @@ export interface LlmResult {
 }
 
 const clients = new WeakMap<LlmConfig, OpenAI>();
+
+/**
+ * Rotate to another key after a KEY-level failure (#170), returning a config that
+ * uses it — or null when there is nothing to rotate to.
+ *
+ * Only the `apiKey` differs; the pool (and therefore the shared cooldown state) is
+ * the same object, so the key we just failed stays parked for every other agent too.
+ *
+ * Returns null when the pool has one key, has no pool at all, or the only other
+ * candidates are the failed one: retrying with the SAME credential cannot help, and
+ * the caller's own staircase is the right response then.
+ */
+export function rotateKey(cfg: LlmConfig, now = Date.now()): LlmConfig | null {
+  const pool = cfg.keyPool;
+  if (!pool || pool.keys.length < 2) return null;
+  const next = rotateAfterFailure(pool, cfg.apiKey, now);
+  if (!next) return null;
+  // a new apiKey means a new OpenAI client below, which is correct: the credential
+  // is baked into the client at construction
+  return { ...cfg, apiKey: next };
+}
 
 /**
  * Reasoning effort for a request body (#47, #150).
@@ -285,16 +313,59 @@ export function providerHeaders(baseUrl: string, sessionId?: string): Record<str
 function client(cfg: LlmConfig): OpenAI {
   let c = clients.get(cfg);
   if (!c) {
+    // #170: with a POOL the SDK must NOT retry a 429 itself. Its backoff re-sends the
+    // SAME rate-limited key four times — MEASURED, 6.7 s of backoff before the
+    // rotation below ever saw the error — when the point of having another key is to
+    // use it immediately. So a multi-key provider surfaces the status straight away
+    // and `withKeyRotation` picks the next key; the agent's own ladder (5s/5s/30s) is
+    // still there as the outer backstop for a 5xx, which no key can fix.
+    const pooled = (cfg.keyPool?.keys.length ?? 0) > 1;
     c = new OpenAI({
       baseURL: cfg.baseUrl,
       apiKey: cfg.apiKey,
       timeout: cfg.timeoutMs ?? 120_000,
-      maxRetries: 4, // SDK handles backoff for 429/5xx/network errors
+      maxRetries: pooled ? 0 : 4,
       defaultHeaders: providerHeaders(cfg.baseUrl, cfg.sessionId),
     });
     clients.set(cfg, c);
   }
   return c;
+}
+
+/**
+ * Run a request, rotating to another key when the failure is KEY-level (#170).
+ *
+ * Bounded by the pool size: each rotation parks the key that just failed, so the walk
+ * cannot revisit one and cannot loop forever. A non-key failure (a 500, a malformed
+ * request, an abort) is rethrown untouched — rotating on those would burn every key
+ * for a problem none of them caused.
+ *
+ * The LAST failure is the one propagated, so the operator sees the error from the
+ * final key rather than whichever happened to fail first.
+ */
+async function withKeyRotation<T>(
+  cfg: LlmConfig,
+  run: (cfg: LlmConfig) => Promise<T>,
+): Promise<{ value: T; cfg: LlmConfig }> {
+  let cur = cfg;
+  const attempts = Math.max(1, cfg.keyPool?.keys.length ?? 1);
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return { value: await run(cur), cfg: cur };
+    } catch (err) {
+      lastErr = err;
+      const status = (err as { status?: unknown })?.status;
+      if (typeof status !== "number" || !isKeyFailure(status)) throw err;
+      const rotated = rotateKey(cur);
+      if (!rotated) throw err; // one key, or no alternative: the caller's ladder runs
+      console.warn(
+        `[teapot] key rate-limited/unusable (HTTP ${status}) — rotating to the next of ${cur.keyPool?.keys.length ?? 1} keys for this provider`,
+      );
+      cur = rotated;
+    }
+  }
+  throw lastErr;
 }
 
 export type ChatFn = (
@@ -560,15 +631,20 @@ export async function chat(
   onDelta?: (snap: { text: string; reasoning: string }) => void,
 ): Promise<LlmResult> {
   try {
-    const res = await client(cfg).chat.completions.create(
-      {
-        model: cfg.model,
-        messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-        ...(tools.length ? { tools } : {}),
-        ...effortForRequest(cfg),
-        ...cacheControlForRequest(cfg),
-      },
-      { signal },
+    // #170: a KEY-level failure (429 especially) rotates to the provider's next key
+    // and retries immediately, rather than handing a rate limit straight to the
+    // caller's backoff ladder — with several keys this usually just works.
+    const { value: res } = await withKeyRotation(cfg, (c) =>
+      client(c).chat.completions.create(
+        {
+          model: c.model,
+          messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          ...(tools.length ? { tools } : {}),
+          ...effortForRequest(c),
+          ...cacheControlForRequest(c),
+        },
+        { signal },
+      ),
     );
     // #50: a gateway may answer with `null` (or any non-object) on some proxy
     // error paths, so the guard is on `rm`, not on `res` being truthy —
@@ -671,19 +747,26 @@ export async function chatStream(
   let text = "";
   let reasoning = "";
   try {
-    const stream = await client(cfg).chat.completions.create(
-      {
-        model: cfg.model,
-        messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-        ...(tools.length ? { tools } : {}),
-        ...effortForRequest(cfg),
-        ...cacheControlForRequest(cfg),
-        stream: true,
-        // ask providers to include the final usage chunk in streaming mode
-        // (OpenAI-compatible; harmless where unsupported)
-        stream_options: { include_usage: true },
-      },
-      { signal },
+    // #170: the KEY-level rotation covers this path the same way as chat(). It can
+    // only start a NEW stream — if a key fails MID-stream the text already sent to
+    // the UI stands, and `gotChunk` below stops us from silently restarting and
+    // duplicating it. A 429 on a stream is a REJECTION (no chunks yet), which is the
+    // case rotation is for.
+    const { value: stream } = await withKeyRotation(cfg, (c) =>
+      client(c).chat.completions.create(
+        {
+          model: c.model,
+          messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          ...(tools.length ? { tools } : {}),
+          ...effortForRequest(c),
+          ...cacheControlForRequest(c),
+          stream: true,
+          // ask providers to include the final usage chunk in streaming mode
+          // (OpenAI-compatible; harmless where unsupported)
+          stream_options: { include_usage: true },
+        },
+        { signal },
+      ),
     );
     const calls: Record<number, { id: string; name: string; args: string }> = {};
     let finishReason: string | undefined;

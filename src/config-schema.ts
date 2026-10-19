@@ -11,6 +11,16 @@ import { z } from "zod";
 export const ProviderSchema = z.object({
   baseUrl: z.union([z.string().url("baseUrl must be a valid URL"), z.literal("")]).optional(),
   apiKey: z.string().optional(),
+  /**
+   * Several credentials for ONE provider, rotated round-robin (#170). Blank entries
+   * are rejected rather than silently dropped: the operator wrote them, and a key
+   * that vanishes without a word is how "I added 3 keys but it still rate-limits"
+   * happens.
+   */
+  apiKeys: z
+    .array(z.string().min(1, "an api key entry must not be empty"))
+    .max(50, "at most 50 keys per provider")
+    .optional(),
   model: z.string().optional(),
 });
 

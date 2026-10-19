@@ -6539,11 +6539,24 @@ function SetupWizard(props: { onDone: () => void }) {
 }
 
 function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void }) {
-  type PRow = { name: string; baseUrl: string; apiKey: string; model: string };
+  /**
+   * #170: a provider row holds a LIST of keys, rotated round-robin by the server.
+   *
+   * `apiKeys` is read when present and `apiKey` seeds it otherwise, matching the
+   * migration on the server side — an existing config must open in this dialog
+   * showing its key, and save back without changing its shape.
+   */
+  type PRow = { name: string; baseUrl: string; apiKeys: string[]; model: string };
+  const rowOf = (name: string, v: any): PRow => {
+    const keys: string[] = Array.isArray(v?.apiKeys) && v.apiKeys.length
+      ? v.apiKeys.filter((k: unknown) => typeof k === "string" && k.trim())
+      : v?.apiKey
+        ? [String(v.apiKey)]
+        : [""];
+    return { name, baseUrl: v?.baseUrl ?? "", apiKeys: keys.length ? keys : [""], model: v?.model ?? "" };
+  };
   const [providers, setProviders] = createSignal<PRow[]>(
-    Object.entries(props.cfg.providers ?? {}).map(([name, v]: [string, any]) => ({
-      name, baseUrl: v.baseUrl ?? "", apiKey: v.apiKey ?? "", model: v.model ?? "",
-    })),
+    Object.entries(props.cfg.providers ?? {}).map(([name, v]: [string, any]) => rowOf(name, v)),
   );
   const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? "");
   // the default as it exists on disk, so we can tell "configured but missing"
@@ -6587,7 +6600,15 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
     for (const p of providers()) {
       if (!p.name.trim()) { setErr("provider name is required"); return null; }
       if (p.baseUrl && !/^https?:\/\//.test(p.baseUrl)) { setErr(`provider ${p.name}: baseUrl must start with http(s)://`); return null; }
-      out[p.name.trim()] = { baseUrl: p.baseUrl, ...(p.apiKey ? { apiKey: p.apiKey } : {}), ...(p.model ? { model: p.model } : {}) };
+      // blanks are dropped on save (an empty row the operator added and did not
+      // fill), and the legacy scalar mirrors the FIRST key so anything still
+      // reading `apiKey` keeps working
+      const keys = p.apiKeys.map((k) => k.trim()).filter(Boolean);
+      out[p.name.trim()] = {
+        baseUrl: p.baseUrl,
+        ...(keys.length ? { apiKeys: keys, apiKey: keys[0] } : {}),
+        ...(p.model ? { model: p.model } : {}),
+      };
     }
     return out;
   };
@@ -6643,13 +6664,59 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
               <div class="cfgrow">
                 <input class="cfgname" placeholder="name" value={p().name} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, name: e.currentTarget.value } : x)))} />
                 <input placeholder="https://…/v1" value={p().baseUrl} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
-                <input placeholder="api key" type="password" value={p().apiKey} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, apiKey: e.currentTarget.value } : x)))} />
                 <input placeholder="default model" value={p().model} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, model: e.currentTarget.value } : x)))} />
                 <button type="button" class="danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i))}>✕</button>
+                {/* #170: several keys per provider, rotated round-robin. A
+                    rate-limited key is parked for a minute and the next one is
+                    used, so an exhausted key no longer stalls every agent on it.
+                    The first key is what anything reading the legacy `apiKey`
+                    sees, which is why order is preserved. */}
+                <div class="cfgkeys">
+                  <For each={p().apiKeys}>
+                    {(k, ki) => (
+                      <div class="cfgkeyrow">
+                        <input
+                          placeholder={ki() === 0 ? "api key" : "api key (backup)"}
+                          type="password"
+                          value={k}
+                          oninput={(e) =>
+                            setProviders(
+                              providers().map((x, j) =>
+                                j === i
+                                  ? { ...x, apiKeys: x.apiKeys.map((v, m) => (m === ki() ? e.currentTarget.value : v)) }
+                                  : x,
+                              ),
+                            )
+                          }
+                        />
+                        <Show when={p().apiKeys.length > 1}>
+                          <button
+                            type="button"
+                            title="remove this key"
+                            onclick={() =>
+                              setProviders(
+                                providers().map((x, j) =>
+                                  j === i ? { ...x, apiKeys: x.apiKeys.filter((_, m) => m !== ki()) } : x,
+                                ),
+                              )
+                            }
+                          >−</button>
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                  <button
+                    type="button"
+                    title="add another key for this provider — they are rotated round-robin, and a rate-limited key is skipped for a minute"
+                    onclick={() =>
+                      setProviders(providers().map((x, j) => (j === i ? { ...x, apiKeys: [...x.apiKeys, ""] } : x)))
+                    }
+                  >+ key</button>
+                </div>
               </div>
             )}
           </Index>
-          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKey: "", model: "" }])}>+ add custom</button>
+          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKeys: [""], model: "" }])}>+ add custom</button>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             <span class="muted" style="font-size:11.5px">quick-add:</span>
             <For each={PROVIDER_PRESETS}>
@@ -6660,7 +6727,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
                   onclick={() => {
                     // re-click = update the existing entry instead of duplicating
                     const rest = providers().filter((x) => x.name !== p.key);
-                    setProviders([...rest, { name: p.key, baseUrl: p.url, apiKey: "", model: p.model }]);
+                    setProviders([...rest, { name: p.key, baseUrl: p.url, apiKeys: [""], model: p.model }]);
                     if (!defaultProvider()) setDefaultProvider(p.key);
                   }}
                 >+ {p.label}</button>

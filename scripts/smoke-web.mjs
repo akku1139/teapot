@@ -1056,6 +1056,62 @@ console.log("deep render ok: feed rows present");
     console.log("deep render ok: the start/stop toggle sends what its label says (#59)");
   }
 
+  /* ---------- #170: a provider can hold SEVERAL keys ------------------------
+   * The config used to give each provider one `apiKey`, so spreading load meant
+   * duplicating the whole provider (this config had five `openrouter-*` entries
+   * differing only in `model`, sharing one credential). Nothing rotated, so a rate
+   * limit stalled every agent on it at once. The dialog must let the operator add
+   * a second key for the SAME provider.
+   */
+  {
+    const cfgBtn = [...w.document.querySelectorAll("button")].find((b) =>
+      /settings|config/i.test(b.getAttribute("title") ?? b.textContent ?? ""),
+    );
+    if (!cfgBtn) {
+      console.error("#170 check: no settings button to open the config dialog");
+      process.exit(1);
+    }
+    cfgBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+
+    const keyInputs = () => [...w.document.querySelectorAll(".cfgkeyrow input")];
+    if (keyInputs().length === 0) {
+      console.error("#170 REGRESSION: the config dialog renders no key inputs at all");
+      process.exit(1);
+    }
+    const before = keyInputs().length;
+    const addKey = [...w.document.querySelectorAll(".cfgkeys > button")].find((b) => /\+\s*key/.test(b.textContent ?? ""));
+    if (!addKey) {
+      console.error(`#170 REGRESSION: no "+ key" control — a provider cannot hold a second key`);
+      process.exit(1);
+    }
+    addKey.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const after = keyInputs().length;
+    if (after !== before + 1) {
+      console.error(`#170 REGRESSION: "+ key" did not add a row (${before} -> ${after})`);
+      process.exit(1);
+    }
+    // and removing is possible again, so a mistyped extra key is not permanent
+    const removeBtn = [...w.document.querySelectorAll(".cfgkeyrow button")].find((b) => /remove this key/.test(b.getAttribute("title") ?? ""));
+    if (!removeBtn) {
+      console.error(`#170 REGRESSION: an added key cannot be removed`);
+      process.exit(1);
+    }
+    console.log("deep render ok: a provider can hold several API keys (#170)");
+    // CLOSE it again: the dialog is a full-screen overlay, and leaving it open
+    // swallowed the Escape key that the later #50 drawer scenario presses —
+    // MEASURED as "#50 REGRESSION: Escape did not close the drawer" in the
+    // narrow run, a failure that named the wrong feature entirely.
+    const modalClose = [...w.document.querySelectorAll(".modal-head .iconbtn")].at(-1);
+    modalClose?.click();
+    await new Promise((r) => setTimeout(r, 300));
+    if (w.document.querySelector(".modal")) {
+      console.error("#170 check did not close the config dialog; later checks would inherit it");
+      process.exit(1);
+    }
+  }
+
   /* ---------- #32: a constant branch label is not repeated on every row --------
    * Reported as part of "タイムラインが煩雑". MEASURED: all 14940 events of one real
    * session carried `br0`, so ~1500 rendered rows each printed "br0" — a label that
