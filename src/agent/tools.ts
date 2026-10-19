@@ -15,6 +15,7 @@ import {
 } from "./skills.ts";
 import { isReasoningEffort } from "../model-meta.ts";
 import { killTree, describeKill } from "./kill.ts";
+import { editorConfigFor } from "./editorconfig.ts";
 
 export interface ToolContext {
   cwd: string;
@@ -100,6 +101,29 @@ function clip(s: string, max: number): string {
 
 async function readText(p: string): Promise<string> {
   return fs.readFile(p, "utf8");
+}
+
+/**
+ * Persist a `write_file` payload and report what line endings it used (#84/#109).
+ *
+ * Extracted so the two paths — a file whose own EOL was detected, and one decided
+ * by `.editorconfig` — share one write. The message names CRLF/CR only when a
+ * conversion actually happened, so an ordinary LF write stays quiet.
+ */
+async function finishWrite(
+  p: string,
+  out: string,
+  eol: Eol | null,
+  original: string,
+): Promise<{ ok: true; result: string }> {
+  await fs.writeFile(p, out, "utf8");
+  const converted = eol !== null && eol !== "\n" && out !== original;
+  return {
+    ok: true,
+    result:
+      `wrote ${p} (${out.length} bytes)` +
+      (converted ? ` (kept ${eol === "\r\n" ? "CRLF" : "CR"} line endings)` : ""),
+  };
 }
 
 /**
@@ -1334,17 +1358,20 @@ export const TOOLS: ToolDef[] = [
       // So an EXISTING file's dominant EOL is re-applied. detectEol returns null
       // for a mixed file, which is left untouched on purpose: choosing a winner
       // there would itself be the silent whole-file rewrite this prevents.
+      //
+      // #109: when the file CANNOT answer — it is new, or its EOL is mixed — ask
+      // `.editorconfig` before falling back to LF. The order is deliberate: the
+      // file's own bytes outrank configuration, which outranks the default. A
+      // `end_of_line = crlf` in a repo whose files are all LF must not convert
+      // every file the agent touches, so config is never consulted for a file that
+      // already has an unambiguous ending.
       const before = await currentOrNull(p);
-      const eol = before === null ? null : detectEol(before);
-      const out = applyEol(args.content, eol);
-      await fs.writeFile(p, out, "utf8");
-      const converted = eol !== null && eol !== "\n" && out !== args.content;
-      return {
-        ok: true,
-        result:
-          `wrote ${p} (${out.length} bytes)` +
-          (converted ? ` (kept ${eol === "\r\n" ? "CRLF" : "CR"} line endings)` : ""),
-      };
+      const detected = before === null ? null : detectEol(before);
+      if (detected !== null) return finishWrite(p, applyEol(args.content, detected), detected, args.content);
+      const ec = editorConfigFor(p);
+      const out = applyEol(args.content, ec.eol);
+      const final = ec.finalNewline === true && out !== "" && !out.endsWith("\n") ? `${out}\n` : out;
+      return finishWrite(p, final, ec.eol, args.content);
     },
   },
   {

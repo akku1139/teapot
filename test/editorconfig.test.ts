@@ -1,0 +1,140 @@
+/**
+ * `.editorconfig` support (#109) — "edit_file の改行コードを .editorconfig に合わせて
+ * 正規化するとか?".
+ *
+ * ## The precedence this pins
+ *
+ * The file's own content OUTRANKS configuration, which outranks the LF default.
+ * #84 already re-applies an existing file's dominant EOL, because the model never
+ * emits `\r` and writing its content verbatim turned a CRLF file into a whole-file
+ * diff. `.editorconfig` therefore only supplies an answer where the file could not:
+ *
+ *   - a NEW file (nothing to detect), and
+ *   - a MIXED-EOL file (`detectEol` returns null on purpose).
+ *
+ * The alternative — letting config win — means a `end_of_line = crlf` in a repo whose
+ * files are all LF silently converts every file the agent touches. That is the
+ * "startled the operator with a whole-file diff" failure in a new costume.
+ *
+ * Driven through `executeTool`, i.e. the real path, because a helper that nothing
+ * calls is this repo's recurring defect (#75).
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
+import { executeTool, type ToolContext } from "../src/agent/tools.ts";
+import { editorConfigFor, sectionMatches } from "../src/agent/editorconfig.ts";
+
+const ctxOf = (cwd: string): ToolContext =>
+  ({ cwd, defaultTimeoutMs: 5_000, maxOutputBytes: 100_000 }) as unknown as ToolContext;
+
+const write = (cwd: string, args: Record<string, unknown>) =>
+  executeTool("write_file", JSON.stringify(args), ctxOf(cwd));
+
+test("a NEW file takes its line ending from .editorconfig (#109)", async () => {
+  const ws = mkdtempInRootSync("ec-new-");
+  fs.writeFileSync(path.join(ws, ".editorconfig"), "root = true\n\n[*]\nend_of_line = crlf\n");
+  const r = await write(ws, { path: "new.txt", content: "a\nb\n" });
+  assert.equal(r.ok, true);
+  assert.equal(
+    fs.readFileSync(path.join(ws, "new.txt"), "utf8"),
+    "a\r\nb\r\n",
+    "a new file must use the configured ending, not the LF default",
+  );
+  assert.match(r.result, /CRLF/, "and it must SAY so — a silent conversion is what #84 was about");
+});
+
+test("an EXISTING file's own ending OUTRANKS .editorconfig (#109/#84)", async () => {
+  // the repo declares crlf, but this file is LF. Converting it would be a
+  // whole-file diff for what the model believed was an ordinary write.
+  const ws = mkdtempInRootSync("ec-exist-");
+  fs.writeFileSync(path.join(ws, ".editorconfig"), "root = true\n\n[*]\nend_of_line = crlf\n");
+  fs.writeFileSync(path.join(ws, "lf.txt"), "x\ny\n");
+  const r = await write(ws, { path: "lf.txt", content: "p\nq\n" });
+  assert.equal(r.ok, true);
+  assert.equal(
+    fs.readFileSync(path.join(ws, "lf.txt"), "utf8"),
+    "p\nq\n",
+    "the file's own bytes outrank the config, or every LF repo with a CRLF setting churns",
+  );
+});
+
+test("a .editorconfig section only applies to the files it names (#109)", async () => {
+  const ws = mkdtempInRootSync("ec-glob-");
+  fs.writeFileSync(
+    path.join(ws, ".editorconfig"),
+    "root = true\n\n[*.md]\nend_of_line = crlf\n\n[scripts/**.js]\nend_of_line = cr\n",
+  );
+  await write(ws, { path: "readme.md", content: "a\nb\n" });
+  await write(ws, { path: "code.ts", content: "a\nb\n" });
+  await write(ws, { path: path.join("scripts", "deep", "run.js"), content: "a\nb\n" });
+  assert.equal(fs.readFileSync(path.join(ws, "readme.md"), "utf8"), "a\r\nb\r\n", "[*.md] applies");
+  assert.equal(
+    fs.readFileSync(path.join(ws, "code.ts"), "utf8"),
+    "a\nb\n",
+    "a file the config does not name keeps the default",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(ws, "scripts", "deep", "run.js"), "utf8"),
+    "a\rb\r",
+    "[scripts/**.js] must reach a nested path",
+  );
+});
+
+test("insert_final_newline = true ends a new file with a newline (#109)", async () => {
+  const ws = mkdtempInRootSync("ec-fnl-");
+  fs.writeFileSync(path.join(ws, ".editorconfig"), "root = true\n\n[*]\ninsert_final_newline = true\n");
+  await write(ws, { path: "n.txt", content: "no trailing newline" });
+  assert.equal(fs.readFileSync(path.join(ws, "n.txt"), "utf8"), "no trailing newline\n");
+});
+
+test("a nested .editorconfig overrides the root one, and root=true stops the walk (#109)", async () => {
+  const ws = mkdtempInRootSync("ec-nest-");
+  fs.writeFileSync(path.join(ws, ".editorconfig"), "root = true\n\n[*]\nend_of_line = crlf\n");
+  const sub = path.join(ws, "sub");
+  fs.mkdirSync(sub);
+  fs.writeFileSync(path.join(sub, ".editorconfig"), "[*]\nend_of_line = lf\n");
+  await write(sub, { path: "a.txt", content: "a\nb\n" });
+  assert.equal(
+    fs.readFileSync(path.join(sub, "a.txt"), "utf8"),
+    "a\nb\n",
+    "the NEAREST .editorconfig must win",
+  );
+});
+
+test("no .editorconfig leaves the LF default untouched (#109)", async () => {
+  const ws = mkdtempInRootSync("ec-none-");
+  await write(ws, { path: "plain.txt", content: "a\nb\n" });
+  assert.equal(fs.readFileSync(path.join(ws, "plain.txt"), "utf8"), "a\nb\n");
+});
+
+test("the config reader reports nothing rather than guessing (#109)", () => {
+  const ws = mkdtempInRootSync("ec-read-");
+  assert.deepEqual(editorConfigFor(path.join(ws, "x.txt")), { eol: null }, "no file -> no opinion");
+  // a property outside any section applies to nothing
+  fs.writeFileSync(path.join(ws, ".editorconfig"), "end_of_line = crlf\n");
+  assert.deepEqual(editorConfigFor(path.join(ws, "x.txt")), { eol: null });
+  // an unsupported value is ignored, not coerced
+  fs.writeFileSync(path.join(ws, ".editorconfig"), "[*]\nend_of_line = wat\n");
+  assert.deepEqual(editorConfigFor(path.join(ws, "x.txt")), { eol: null });
+});
+
+test("editorconfig globs match the way the format documents (#109)", () => {
+  // a section with no `/` matches the BASENAME at any depth — the format's special
+  // case, and why `[*.md]` at a repo root reaches `docs/x.md`
+  assert.equal(sectionMatches("*.md", "docs/x.md"), true);
+  assert.equal(sectionMatches("*.md", "x.txt"), false);
+  // a single star never crosses a separator
+  assert.equal(sectionMatches("src/*.ts", "src/a.ts"), true);
+  assert.equal(sectionMatches("src/*.ts", "src/sub/a.ts"), false);
+  // a double star does
+  assert.equal(sectionMatches("src/**.ts", "src/sub/a.ts"), true);
+  assert.equal(sectionMatches("**/*.ts", "a.ts"), true, "**/ must also match zero segments");
+  // brace alternation and character classes
+  assert.equal(sectionMatches("**.{js,ts}", "x/y/a.ts"), true);
+  assert.equal(sectionMatches("**.{js,ts}", "x/y/a.py"), false);
+  assert.equal(sectionMatches("lib/[ab].js", "lib/a.js"), true);
+  assert.equal(sectionMatches("lib/[ab].js", "lib/c.js"), false);
+});
