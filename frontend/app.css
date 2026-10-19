@@ -317,6 +317,10 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .tbl th { background: var(--bg-darkest); font-weight: 600; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
+/* A run of rows from the SAME actor (#75). The head is what identifies the actor,
+   so only the first row keeps its icon; the rest tighten up against it (no gap, no
+   rounded top) so the run reads as one block rather than N separate embeds. */
+.embed.grouped { margin-top: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .embed.fail { border-color: var(--err); }
 /* error-retry heartbeat — warning tone, distinct from hard failures */
 .embed.warn-embed { border-color: var(--warn); }

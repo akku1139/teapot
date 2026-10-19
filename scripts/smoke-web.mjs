@@ -834,6 +834,74 @@ console.log("deep render ok: feed rows present");
     console.log("deep render ok: a persisted reply does not double as a live bubble (#40)");
   }
 
+  /* ---------- #75 (again): a run of tool rows from ONE actor groups ------------
+   * Reported: "タイムラインで bash が2つ並んだときに両方に アイコン+名前 がついてる
+   * (本来、同じアクターからの出力の連続なので1つ目だけにアイコンとかがつくべき)" — and,
+   * importantly, it looked inconsistent ("グループ化されるときとされないときがある").
+   *
+   * The inconsistency is real but was NOT the bug: two bash calls issued in the SAME
+   * assistant turn do group, while two separated by an assistant message do not —
+   * that is the rule working, because the message is a different actor. Checked
+   * against this session's own log: the "grouped" pair had only a `tool_result`
+   * between them, the "not grouped" pair had EIGHT assistant messages. No time term
+   * exists in the rule at all.
+   *
+   * The actual defect was the #75 shape once more: `groupedWith()` returned true,
+   * but `ToolRow` never RECEIVED `prev`, so the rule could not run for tool rows and
+   * every consecutive bash row rendered its own "⚙ + label". Verified by dumping the
+   * built bundle (the helper test was green throughout).
+   */
+  {
+    pushEvent({ id: "eg1", seq: 301, ts: "2026-01-01T13:00:01Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_call", data: { callId: "cg1", name: "bash", args: { command: "echo GROUPED_ONE" } } });
+    pushEvent({ id: "eg2", seq: 302, ts: "2026-01-01T13:00:02Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_result", data: { callId: "cg1", name: "bash", result: "GROUPED_ONE", ok: true, durationMs: 4 } });
+    pushEvent({ id: "eg3", seq: 303, ts: "2026-01-01T13:00:03Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_call", data: { callId: "cg2", name: "bash", args: { command: "echo GROUPED_TWO" } } });
+    pushEvent({ id: "eg4", seq: 304, ts: "2026-01-01T13:00:04Z", session: "alpha-s1", branch: "br0",
+      parent: null, type: "tool_result", data: { callId: "cg2", name: "bash", result: "GROUPED_TWO", ok: true, durationMs: 4 } });
+    flushRefreshes();
+    await new Promise((r) => setTimeout(r, 400));
+
+    const headFor = (needle) => {
+      for (const d of w.document.querySelectorAll(".embed")) {
+        if (!d.textContent.includes(needle)) continue;
+        const sum = d.querySelector("summary");
+        return { cls: d.className, head: sum ? sum.textContent.trim() : "" };
+      }
+      return null;
+    };
+    const one = headFor("GROUPED_ONE");
+    const two = headFor("GROUPED_TWO");
+    if (!one || !two) {
+      console.error(`#75 check could not find both rows (one=${!!one}, two=${!!two}) — vacuous`);
+      process.exit(1);
+    }
+    // the FIRST row of a run carries the icon: it is what identifies the actor
+    if (!one.head.includes("\u2699")) {
+      console.error(`#75 REGRESSION: the first row of a run must carry the actor icon, got ${JSON.stringify(one.head)}`);
+      process.exit(1);
+    }
+    // the SECOND must not — it continues the same actor's run
+    if (two.head.includes("\u2699")) {
+      console.error(
+        `#75 REGRESSION: both consecutive bash rows show an icon+label (#75) — expected only the first` +
+          `\n  first : ${JSON.stringify(one.head)}\n  second: ${JSON.stringify(two.head)}`,
+      );
+      process.exit(1);
+    }
+    if (!/\bgrouped\b/.test(two.cls)) {
+      console.error(`#75 REGRESSION: the continuing row is not marked grouped — cls=${JSON.stringify(two.cls)}`);
+      process.exit(1);
+    }
+    // and it must still say WHAT ran — dropping the command would be the opposite bug
+    if (!two.head.includes("GROUPED_TWO")) {
+      console.error(`#75: a grouped row must keep its command, got ${JSON.stringify(two.head)}`);
+      process.exit(1);
+    }
+    console.log("deep render ok: consecutive tool rows group under one head (#75)");
+  }
+
   /* ---------- #160: scrolling to the tail must mark notifications read -------
    * "タイムラインを下までスクロールしても通知が既読にならない" (v0.29.17).
    *

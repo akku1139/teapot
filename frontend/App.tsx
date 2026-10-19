@@ -4717,8 +4717,19 @@ function ThinkingTimer(props: { startedAt: number }) {
 
 /* ---------- per-tool timeline rendering ---------- */
 
-function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
+function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
+  // GROUPING (#75 pattern, again). `groupedWith()` is the shared rule and it
+  // ALWAYS said these two bash calls group — but ToolRow never received `prev`, so
+  // the rule never ran for tool rows and every one of them rendered a full head:
+  //
+  //     embed class="embed done" summary="⚙ $ echo ALPHA3ms…"
+  //     embed class="embed done" summary="⚙ $ echo BETA3ms…"     <- reported
+  //
+  // Measured by dumping the real bundle in happy-dom, not by reading code: the
+  // helper was right and the CALL was missing. A run of commands therefore read as
+  // a stack of unrelated blocks, which is the "timeline is cluttered" complaint.
+  const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
   // #54: read the result prop REACTIVELY. `<For each={chatEvents()}>` builds the
   // row while its result is still undefined, and a destructured `const res =
   // props.res` is bound once — so the row kept rendering "running…" forever when
@@ -4961,7 +4972,7 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
 
   return (
     <details
-      class={"embed" + (res() ? (res()!.data?.ok === false ? " fail" : " done") : staleDone() ? " done" : " running")}
+      class={"embed" + (grouped ? " grouped" : "") + (res() ? (res()!.data?.ok === false ? " fail" : " done") : staleDone() ? " done" : " running")}
       title={`${name}${derived().hint ? " — " + derived().hint : ""}`}
       onToggle={(ev: ToggleEvent) => {
         // expanding/collapsing changes the feed height; while following, the
@@ -4970,7 +4981,13 @@ function ToolRow(props: { e: Ev; res?: Ev; orphan?: boolean; agentActive?: boole
       }}
     >
       <summary>
-        <b>{derived().icon} {derived().label}</b>
+        {/* a GROUPED row keeps its command (you still need to know what ran) but
+            drops the repeated ⚙, so a run of commands reads as one block instead
+            of N unrelated ones (#75). No leading space when grouped — the label
+            already carries its own marker ("$ ", "⏳ ", …). */}
+        <b>
+          {grouped ? derived().label : `${derived().icon} ${derived().label}`}
+        </b>
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
         </Show>
@@ -5183,7 +5200,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onEdi
           </div>
         </Show>
 
-        <SwitchContent e={e} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} />
+        <SwitchContent e={e} prev={props.prev} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} />
       </div>
     </div>
   );
@@ -5221,7 +5238,7 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
   );
 }
 
-function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+function SwitchContent(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   switch (e.type) {
     case "prompt": {
@@ -5258,7 +5275,10 @@ function SwitchContent(props: { e: Ev; res?: Ev; orphan?: boolean; onOption?: (t
         </>
       );
     case "tool_call":
-      return <ToolRow e={e} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} />;
+      // `prev` must be FORWARDED (grouping #75): without it ToolRow cannot know it
+      // continues the previous actor's run, which is what made every consecutive
+      // bash row render its own icon + label.
+      return <ToolRow e={e} prev={props.prev} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} />;
     case "tool_result": {
       // #54: a result whose call is no longer in the events window. It used to
       // render as a bare output blob with no tool name and no command, which
