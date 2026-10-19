@@ -324,9 +324,12 @@ Most session state is not injected into prompts — fetch it with tools instead:
 - finish(goalComplete=true, summary) → goal fully achieved.
 - ask_user(question, options?) → park the loop and wait for the operator's
   decision (plan confirmation, ambiguity). One concrete question at a time.
-- read_memory() / add_memory(text) / set_memory(content) → your durable notes
-  (memory.md). add_memory appends and cannot lose earlier notes; set_memory
-  REPLACES the whole file. The notes are NOT in your prompt — read them.
+- read_memory(query?) / add_memory(text) / forget_memory(query) / set_memory(content)
+  → your durable notes (memory.md). add_memory appends and cannot lose earlier
+  notes; forget_memory removes the lines matching a substring, so a stale note can
+  be corrected instead of piling up; set_memory REPLACES the whole file. Pass a
+  query to read_memory to search rather than dumping everything. The notes are NOT
+  in your prompt — read them.
 - get_todo() / set_todo(content) → the operator-maintained task list
   (todo.md); check it when picking up work, keep it current as you go.
 - When corrected, add_feedback(rule) so it sticks; review via get_feedback().
@@ -354,7 +357,11 @@ Most session state is not injected into prompts — fetch it with tools instead:
   shown to the operator directly (rendered as markdown in the progress
   panel) — do NOT also repeat the same content as a chat message; end the
   turn right after the call (a short "reported." is fine).
-- Be frugal: prefer small precise edits, avoid runaway loops.`;
+- Be frugal: prefer small precise edits, avoid runaway loops.
+- When the operator asks you to remember something, WRITE it with add_memory. When
+  earlier context might be relevant again (a decision, a gotcha, where you left off),
+  SEARCH it with read_memory(query) and use what you find. Nothing is injected: an
+  unread note is an unwritten note.`;
 
 /**
  * A message whose ENTIRE text is parenthesised is an acknowledgement, not work.
@@ -2724,8 +2731,41 @@ export class Agent {
           continue;
         }
         if (call.function.name === "read_memory") {
+          const a = safeParse(call.function.arguments);
+          const query = String(a.query ?? "").trim();
           const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
-          await this.answerMeta(call, mem.trim() || "(memory.md is empty — nothing noted yet)");
+          if (!mem.trim()) {
+            await this.answerMeta(call, "(memory.md is empty — nothing noted yet)");
+            continue;
+          }
+          // #48: `query` searches instead of dumping the whole file.
+          //
+          // This is the one idea worth taking from the ecosystem. MCP's reference memory
+          // server (the de-facto standard, used by Claude and offered by DSH as a
+          // reference) exposes `search` alongside `read`, and its search is deliberately
+          // a case-insensitive substring match — no embeddings, no model, no provider
+          // dependency. DSH's guidance to the model is the same shape: "when historical
+          // information may be relevant, search memory and use relevant results".
+          //
+          // MEASURED why it matters here: `set_memory` was called 181 times but
+          // `read_memory` only 97 times across every session, and only 13 of those reads
+          // came after a write. Dumping a growing file gives the model no way to ask a
+          // QUESTION, so a big file is all-or-nothing — either burn the whole thing into
+          // the context or do not look at all.
+          if (!query) {
+            await this.answerMeta(call, mem.trim());
+            continue;
+          }
+          const needle = query.toLowerCase();
+          const hits = mem
+            .split(/\r?\n/)
+            .filter((line) => line.toLowerCase().includes(needle));
+          await this.answerMeta(
+            call,
+            hits.length
+              ? `${hits.length} line(s) matching ${JSON.stringify(query)}:\n${hits.join("\n")}`
+              : `(no line in memory.md matches ${JSON.stringify(query)} — ${mem.split(/\r?\n/).length} lines searched; call read_memory with no query to see all of it)`,
+          );
           continue;
         }
         if (call.function.name === "list_skills") {
@@ -2746,6 +2786,51 @@ export class Agent {
           await this.answerMeta(
             call,
             `memory.md REPLACED (${content.length} bytes). It is not in your prompt — call read_memory when you need it.`,
+          );
+          continue;
+        }
+        if (call.function.name === "forget_memory") {
+          const a = safeParse(call.function.arguments);
+          const query = String(a.query ?? "").trim();
+          if (!query) {
+            await this.answerMeta(call, "forget_memory needs a `query` — nothing removed");
+            continue;
+          }
+          // #48: notes must be REMOVABLE, not only appendable.
+          //
+          // MCP's reference memory makes observations "added or removed
+          // independently" for exactly this reason: an append-only store accumulates
+          // stale facts ("the build takes 4 minutes" stays long after it takes 40
+          // seconds), and a memory that is confidently wrong is worse than one that is
+          // silent. Without a delete, the only way to correct a file was `set_memory`
+          // with the whole content re-typed — which is how 1028 bytes became 83.
+          const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
+          if (!prev.trim()) {
+            await this.answerMeta(call, "(memory.md is empty — nothing to forget)");
+            continue;
+          }
+          const needle = query.toLowerCase();
+          const kept: string[] = [];
+          const removed: string[] = [];
+          for (const line of prev.split(/\r?\n/)) {
+            if (line.toLowerCase().includes(needle)) removed.push(line);
+            else kept.push(line);
+          }
+          if (removed.length === 0) {
+            await this.answerMeta(
+              call,
+              `(no line in memory.md matches ${JSON.stringify(query)} — nothing removed)`,
+            );
+            continue;
+          }
+          // collapse the blank runs a deletion leaves behind, so the file does not
+          // grow holes
+          const next = kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+          await fs.writeFile(this.memoryFile, next, "utf8");
+          await this.answerMeta(
+            call,
+            `removed ${removed.length} line(s) from memory.md:\n${removed.join("\n").slice(0, 1_500)}\n` +
+              `(memory.md is now ${next.length} bytes — re-add with add_memory if that was wrong)`,
           );
           continue;
         }
@@ -4332,8 +4417,32 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
       type: "function" as const,
       function: {
         name: "read_memory",
-        description: "Read your durable notes (memory.md).",
-        parameters: { type: "object", properties: {} },
+        description:
+          "Read your durable notes (memory.md). Pass `query` to search for the lines that mention something — cheaper than reading the whole file, and the right call when you only need to check one fact.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "case-insensitive substring; omit it to get the whole file",
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "forget_memory",
+        description:
+          "Delete the lines of memory.md that match a substring. Use it to remove a note that became wrong, or to consolidate duplicates. Returns what was removed, so a mistake is visible and re-addable.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "case-insensitive substring of the line(s) to delete" },
+          },
+          required: ["query"],
+        },
       },
     },
     {
@@ -4413,7 +4522,7 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   const META_TOOLS = new Set([
     "finish", "report_progress", "set_goal", "get_goal",
-    "read_memory", "set_memory", "add_memory", "list_skills", "get_todo", "set_todo",
+    "read_memory", "set_memory", "add_memory", "forget_memory", "list_skills", "get_todo", "set_todo",
     "get_feedback", "add_feedback", "record_decision", "get_decisions",
   ]);
   const openCalls = new Map<string, string>(); // real tool_call id -> name

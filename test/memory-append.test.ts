@@ -145,7 +145,7 @@ test("the notes are NOT claimed to be in the prompt (#48)", async () => {
 test("the shipped prompt does not claim memory.md is injected (#48)", async () => {
   // asserted on the RUNTIME prompt text (what the model receives), not on a source
   // regex — the false sentence lived in two places and the model read both
-  const { agent, sd } = await drive([() => null]);
+  const { agent } = await drive([() => null]);
   try {
     const sys = (agent as unknown as { systemPrompt(): string }).systemPrompt();
     assert.doesNotMatch(
@@ -171,14 +171,12 @@ test("a compaction re-attaches the notes, because the history holding them is go
   fs.writeFileSync(path.join(sd, "memory.md"), "REMEMBER: the key lives in env, not config\n");
 
   const promptsSeen: string[] = [];
-  let n = 0;
   const agent = new Agent({
     id: "t",
     workspace: ws,
     sessionDir: sd,
     llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
     chatFn: async (_c: unknown, msgs: { role: string; content?: unknown }[]): Promise<LlmResult> => {
-      n++;
       // the summarizer is the request whose LAST message carries the directive
       const last = String(msgs[msgs.length - 1]?.content ?? "");
       if (/compress|summar|You are an? .*summar/i.test(last)) {
@@ -210,6 +208,133 @@ test("a compaction re-attaches the notes, because the history holding them is go
       "after compaction the notes must come back — otherwise they are write-only",
     );
     assert.match(after, /the key lives in env/, "and the note's TEXT must be there, not just a header");
+  } finally {
+    await agent.dispose();
+  }
+});
+
+/* ---------- search: the idea taken from the ecosystem (#48) ---------- */
+
+/**
+ * MCP's reference memory server — the de-facto standard, and the one DSH recommends as
+ * a reference — exposes `search` next to `read`, and its search is deliberately a
+ * case-insensitive SUBSTRING match: no embeddings, no model, no provider dependency.
+ * DSH's own model guidance is the same shape ("when historical information may be
+ * relevant, search memory and use relevant results").
+ *
+ * The reason it matters for teapot is the measurement: a file big enough to be useful
+ * is too big to dump, so without a query the model's only options were "burn it all
+ * into the context" or "do not look".
+ */
+test("read_memory(query) returns only the matching lines (#48)", async () => {
+  const { agent, sd, toolReplies } = await drive([
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("a", "set_memory", { content: "build takes 4 minutes\nPORT is 7789\nkey lives in env" })] } }),
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("b", "read_memory", { query: "port" })] } }),
+  ]);
+  try {
+    const replies = [...new Set(toolReplies)];
+    const hit = replies.find((r) => /matching/.test(r)) ?? "";
+    assert.match(hit, /PORT is 7789/, "the matching line must come back");
+    assert.doesNotMatch(hit, /build takes 4 minutes/, "and unrelated lines must not");
+    assert.match(hit, /1 line/, "it must say HOW MANY matched, so the model knows it is not the whole file");
+    // precondition: the file really does hold the other lines
+    assert.match(memoryOf(sd), /build takes 4 minutes/);
+  } finally {
+    await agent.dispose();
+  }
+});
+
+test("a query that matches nothing says so AND offers the fallback (#48)", async () => {
+  // "no results" must not read as "memory is empty" — the model needs to know the
+  // difference, or it will conclude its notes were lost
+  const { agent, toolReplies } = await drive([
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("a", "set_memory", { content: "alpha\nbeta" })] } }),
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("b", "read_memory", { query: "nonexistent" })] } }),
+  ]);
+  try {
+    const replies = [...new Set(toolReplies)];
+    const miss = replies.find((r) => /no line in memory\.md matches/.test(r)) ?? "";
+    assert.match(miss, /2 lines searched/, "it must report how much WAS searched");
+    assert.match(miss, /no query to see all/, "and point at the unfiltered read");
+  } finally {
+    await agent.dispose();
+  }
+});
+
+test("read_memory with no query still returns the whole file (#48)", async () => {
+  const { agent, sd, toolReplies } = await drive([
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("a", "set_memory", { content: "alpha\nbeta" })] } }),
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("b", "read_memory", {})] } }),
+  ]);
+  try {
+    const replies = [...new Set(toolReplies)];
+    assert.ok(replies.includes("alpha\nbeta"), `the unfiltered read must be unchanged; got ${JSON.stringify(replies.slice(-2))}`);
+    assert.equal(memoryOf(sd), "alpha\nbeta");
+  } finally {
+    await agent.dispose();
+  }
+});
+
+/* ---------- forget: notes must be removable, not only appendable (#48) ---------- */
+
+test("forget_memory removes only the matching lines (#48)", async () => {
+  // An append-only store accumulates stale facts ("the build takes 4 minutes" outlives
+  // the 40-second build), and a confidently wrong memory is worse than a silent one.
+  // Before this, correcting a line meant re-typing the whole file into set_memory —
+  // which is how 1028 bytes became 83 on a real session.
+  const { agent, sd } = await drive([
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("a", "set_memory", { content: "build takes 4 minutes\nPORT is 7789\nkey lives in env" })] } }),
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("b", "forget_memory", { query: "build takes 4 minutes" })] } }),
+  ]);
+  try {
+    const after = memoryOf(sd);
+    assert.doesNotMatch(after, /build takes 4 minutes/, "the stale note must be gone");
+    assert.match(after, /PORT is 7789/, "and everything else must survive");
+    assert.match(after, /key lives in env/);
+  } finally {
+    await agent.dispose();
+  }
+});
+
+test("forget_memory reports what it removed, so a mistake is visible (#48)", async () => {
+  const { agent, toolReplies } = await drive([
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("a", "set_memory", { content: "keep me\ndrop me" })] } }),
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("b", "forget_memory", { query: "drop me" })] } }),
+  ]);
+  try {
+    const replies = [...new Set(toolReplies)];
+    const note = replies.find((r) => /removed 1 line/.test(r)) ?? "";
+    assert.match(note, /drop me/, "the removed text must be quoted back");
+    assert.match(note, /re-add/, "and the model told how to undo it");
+  } finally {
+    await agent.dispose();
+  }
+});
+
+test("forget_memory matching nothing leaves the file alone (#48)", async () => {
+  const { agent, sd, toolReplies } = await drive([
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("a", "set_memory", { content: "alpha" })] } }),
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("b", "forget_memory", { query: "zzz" })] } }),
+  ]);
+  try {
+    assert.equal(memoryOf(sd), "alpha", "a miss must not touch the file");
+    const replies = [...new Set(toolReplies)];
+    assert.ok(replies.some((r) => /nothing removed/.test(r)), "and it must say so");
+  } finally {
+    await agent.dispose();
+  }
+});
+
+test("the prompt tells the model to write AND search, since nothing is injected (#48)", async () => {
+  // DSH's examples add exactly one line of memory guidance for this reason: provider
+  // tool descriptions are authoritative, but a model that does not think to look never
+  // sees them. Asserted on the RUNTIME prompt, which is what the model receives.
+  const { agent } = await drive([() => null]);
+  try {
+    const sys = (agent as unknown as { systemPrompt(): string }).systemPrompt();
+    assert.match(sys, /add_memory/, "must name the write tool");
+    assert.match(sys, /read_memory\(query\)/, "and the search form");
+    assert.match(sys, /unread note is an unwritten note/i, "and say plainly that nothing is injected");
   } finally {
     await agent.dispose();
   }
