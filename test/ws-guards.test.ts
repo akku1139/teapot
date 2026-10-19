@@ -20,7 +20,7 @@ import { blockFrom } from "./helpers/source.ts";
 
 const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
+const _master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
 
 /* ---------- the cap ---------- */
 

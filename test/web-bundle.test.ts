@@ -68,15 +68,20 @@ test("web bundle: module init + deep render survive", async (t) => {
   child.stdout.on("data", (c) => (out += c));
   child.stderr.on("data", (c) => (out += c));
 
-  const code = await Promise.race([
-    new Promise<number | null>((res) => child.on("exit", res)),
-    new Promise<null>((_, rej) =>
-      setTimeout(() => {
-        child.kill("SIGKILL");
-        rej(new Error("smoke test timed out after 30s"));
-      }, 30_000),
-    ),
-  ]);
+  // The timeout must be CLEARED when the child wins the race. Left pending, the
+  // 30 s timer keeps the event loop alive long after the work is done: MEASURED,
+  // this file took 40 s of wall clock for two ~10 s spawns, because each test
+  // abandoned a 30 s timer and the process then sat idle until it expired.
+  const code = await new Promise<number | null>((res, rej) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rej(new Error("smoke test timed out after 30s"));
+    }, 30_000);
+    child.on("exit", (c) => {
+      clearTimeout(timer);
+      res(c);
+    });
+  });
   assert.equal(code, 0, `bundle smoke test failed:\n${out}`);
 });
 
@@ -110,14 +115,19 @@ test("web bundle: the narrow-screen drawer can be closed (#50)", async (t) => {
   child.stdout.on("data", (c) => (out += c));
   child.stderr.on("data", (c) => (out += c));
 
-  const code = await Promise.race([
-    new Promise<number | null>((res) => child.on("exit", res)),
-    new Promise<null>((_, rej) =>
-      setTimeout(() => {
-        child.kill("SIGKILL");
-        rej(new Error("narrow-viewport smoke test timed out after 30s"));
-      }, 30_000),
-    ),
-  ]);
+  // The timeout must be CLEARED when the child wins the race. Left pending, the
+  // 30 s timer keeps the event loop alive long after the work is done: MEASURED,
+  // this file took 40 s of wall clock for two ~10 s spawns, because each test
+  // abandoned a 30 s timer and the process then sat idle until it expired.
+  const code = await new Promise<number | null>((res, rej) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rej(new Error("narrow-viewport smoke test timed out after 30s"));
+    }, 30_000);
+    child.on("exit", (c) => {
+      clearTimeout(timer);
+      res(c);
+    });
+  });
   assert.equal(code, 0, `narrow-viewport smoke test failed:\n${out}`);
 });

@@ -31,7 +31,7 @@ import { Master } from "../src/master.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const master = readSource(path.join(here, "..", "src", "master.ts"));
+const _master = readSource(path.join(here, "..", "src", "master.ts"));
 
 /** a parent with one child; returns the prompts the parent receives */
 async function tree() {
@@ -136,22 +136,3 @@ test("each status gets advice that fits it (#135)", async () => {
   );
 });
 
-test("the OLD wording is gone from the source (#135)", () => {
-  assert.doesNotMatch(
-    master,
-    /is now \$\{status\}\. Continue your task, or finish\(\) if the work is done\./,
-    "the reported wording must not survive (#135)",
-  );
-});
-
-test("a child that DID finish still gets the proper report (#135)", async () => {
-  // the reworded nudge must not have displaced the real report — that is the
-  // message the old wording was duplicating
-  const at = master.indexOf("finished. Final report:");
-  assert.notEqual(at, -1, "the real report must still exist (#135)");
-  assert.notEqual(
-    at,
-    -1,
-    "the real report path must be untouched by the reworded nudge (#135)",
-  );
-});

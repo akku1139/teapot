@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+const _app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * The MERGED body of every rule whose selector list contains `selector` exactly.

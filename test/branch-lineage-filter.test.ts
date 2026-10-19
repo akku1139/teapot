@@ -28,7 +28,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { filterByBranch, type TeapotEvent } from "../src/log/events.ts";
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+const _app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
 
 let seq = 0;

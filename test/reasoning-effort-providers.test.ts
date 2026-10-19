@@ -38,7 +38,7 @@ const base = { apiKey: "k", model: "m", reasoningEffort: "high" } as const;
 const COMMANDCODE: LlmConfig = { ...base, baseUrl: "https://api.commandcode.ai/provider/v1" };
 
 /** refuses the field with a 400, and also publishes no capability list */
-const GOOGLE: LlmConfig = { ...base, baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" };
+const _GOOGLE: LlmConfig = { ...base, baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" };
 
 /* ---------- sending ---------- */
 

@@ -21,8 +21,8 @@ test("stopAllAgents: gracefully stops all running agents", async () => {
         defaultProvider: "p", agents: [] } as any,
       "/dev/null",
     );
-    const a = await m.addAgent({ id: "x", workspace: ws, provider: "p" });
-    const b = await m.addAgent({ id: "y", workspace: ws, provider: "p" });
+    const _a = await m.addAgent({ id: "x", workspace: ws, provider: "p" });
+    const _b = await m.addAgent({ id: "y", workspace: ws, provider: "p" });
     assert.equal(m.agents.size, 2);
     await m.stopAllAgents(5_000);
     assert.equal(m.agents.size, 0, "all agents disposed");

@@ -26,7 +26,7 @@ import { readFileSync } from "node:fs";
 // source assertions below must read it there. Reading App.tsx made them
 // vacuous the moment the extraction landed.
 const app = readFileSync(new URL("../frontend/clipboard.ts", import.meta.url), "utf8");
-const appTsx = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+const _appTsx = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * #75: this used to be a MIRROR of the shipped copy strategy, so the suite

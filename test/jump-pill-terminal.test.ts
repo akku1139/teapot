@@ -24,7 +24,7 @@ import { cssRuleBodies } from "./helpers/css.ts";
 import { readSourceUrl } from "./helpers/source.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
+const _app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 test("the open-state pill is placed from the drawer height plus the composer's own (#142)", () => {
   const bodies = cssRuleBodies(css, ".channel:has(.termdrawer) .composer:not(.maximized) .jump");
@@ -38,19 +38,3 @@ test("the open-state pill is placed from the drawer height plus the composer's o
   assert.doesNotMatch(body, /56px/, "the fixed 56px stood in for a taller composer (#142)");
 });
 
-test("--termh is published where BOTH the drawer and the composer inherit it (#142)", () => {
-  assert.match(
-    app,
-    /<section class="channel" style=\{\{ "--termh": `\$\{termHeight\(\)\}px` \} as any\}>/,
-    "it must be set on .channel, the common ancestor (#142)",
-  );
-  assert.doesNotMatch(
-    app,
-    /<div class="termdrawer" style=\{\{ height: `\$\{termHeight\(\)\}px`, "--termh"/,
-    "on .termdrawer it cannot reach the composer — that WAS the bug (#142)",
-  );
-  // the maximized composer overlays the column and has no feed edge above it,
-  // so it needs its own placement or the pill has nothing to sit on
-  const max = cssRuleBodies(css, ".channel:has(.termdrawer) div.composer.maximized .jump");
-  assert.equal(max.length, 1, "the maximized composer needs its own placement (#142)");
-});

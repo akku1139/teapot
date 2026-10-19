@@ -174,6 +174,19 @@ export interface AgentOptions {
   onError?: "stop" | "retry";
   /** backoff between error retries (ms); doubles each attempt, capped at 10 min */
   retryDelayMs?: number;
+  /**
+   * Backoff staircase for the INNER per-call retry (`llmCall`): the waits before
+   * attempt 2, 3, 4. Defaults to the measured-in-production `[5s, 5s, 30s]`.
+   *
+   * Injectable because it is otherwise unmeasurable: a test that exercises the
+   * retry path had to wait out the staircase FOR REAL, so a handful of files cost
+   * 10-17 s each and the suite's wall clock was dominated by sleeping rather than
+   * by testing. That also made such tests load-sensitive — the #136 flake was a
+   * fixed wait whose owner declared the timing was not what was under test.
+   *
+   * Production never sets this; the delays stay exactly as tuned.
+   */
+  llmRetryWaitsMs?: number[];
   /** set when spawned by another agent (sub-agent lineage) */
   parent?: string;
   /** injectable LLM call for tests (defaults to the real one) */
@@ -406,8 +419,8 @@ export class Agent {
    * different answer from an empty list ("published, and excludes it") — #150 turns
    * on that distinction.
    */
-  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts">> &
-    Pick<AgentOptions, "supportedParameters" | "supportedEfforts"> & { chatFn?: ChatFn };
+  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs">> &
+    Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   /**
    * User prompts waiting for the next turn boundary. Deliberately NOT queued
@@ -2222,7 +2235,7 @@ export class Agent {
     const maxAttempts = 4;
     // fail fast, escalate late: most provider hiccups recover in seconds;
     // only sustained failure earns a long cooldown (operator request)
-    const waits = [5_000, 5_000, 30_000];
+    const waits = this.opts.llmRetryWaitsMs ?? [5_000, 5_000, 30_000];
     for (let attempt = 1; ; attempt++) {
       if (this.stopRequested) throw Object.assign(new Error("stopped"), { name: "StopRequested" });
       this.abort = new AbortController();

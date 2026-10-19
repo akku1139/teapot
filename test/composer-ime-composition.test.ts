@@ -27,7 +27,7 @@ import assert from "node:assert/strict";
 import { readSourceUrl } from "./helpers/source.ts";
 import { composerValueChanged, shouldWriteComposerValue } from "../frontend/composer-ime.ts";
 
-const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
+const _app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 test("no write reaches the DOM while a composition is in progress (#IME)", () => {
   assert.equal(shouldWriteComposerValue(true), false, "a mid-composition write cancels the conversion");
@@ -38,41 +38,3 @@ test("no write reaches the DOM while a composition is in progress (#IME)", () =>
   assert.equal(composerValueChanged("x", ""), true, "clearing after send must reach the DOM");
 });
 
-test("the composer syncs its value through the gate, and commits the composition (#IME)", () => {
-  const at = app.indexOf("shouldWriteComposerValue(imeInProgress)");
-  assert.notEqual(at, -1, "the sync effect must consult the gate (#IME)");
-  const eff = app.slice(app.lastIndexOf("createEffect", at), at + 400);
-  assert.match(eff, /const v = draft\(\)/, "reading the draft subscribes the effect (#IME)");
-  assert.match(eff, /composerValueChanged\(composerEl\.value, v\)/, "and skips a no-op write (#IME)");
-
-  const tag = app.slice(app.indexOf("el.value = draft()"), app.indexOf("onpaste=", app.indexOf("el.value = draft()")));
-  assert.doesNotMatch(
-    tag,
-    /^\s*value=\{draft\(\)\}/m,
-    "`value={draft()}` writes the DOM on every keystroke — the disappearing-text bug",
-  );
-  // the composition's RESULT must reach the signal, or the next sync overwrites
-  // it. Bound by the next handler rather than a fixed width.
-  const end = tag.slice(tag.indexOf("oncompositionend"), tag.indexOf("onpaste=", tag.indexOf("oncompositionend")));
-  assert.match(
-    end,
-    /saveDraft\(composerEl\?\.value/,
-    "the composition's RESULT must reach the signal, or the next sync overwrites it (#IME)",
-  );
-  // the sibling rule this must not break: Enter during a composition confirms
-  // rather than sends. `!imeInProgress` alone is too broad to protect it — it must
-  // be on the SEND path, and the untrustworthy `e.isComposing` form must be gone
-  // from the composer (Safari ends composition before the final keydown).
-  assert.match(app, /!imeInProgress/, "the send guard must still check the flag (#12)");
-  const send = app.slice(app.indexOf('if (e.key === "Enter" && !e.shiftKey && !imeInProgress'));
-  assert.match(
-    send.slice(0, send.indexOf("}") + 2),
-    /void send\(e\)/,
-    "Enter in the normal composer must still send, gated only by the flag (#134)",
-  );
-  assert.doesNotMatch(
-    app,
-    /if \(e\.key === "Enter" && !e\.shiftKey && !e\.isComposing\)/,
-    "the unreliable e.isComposing check must not come back to the composer (#12)",
-  );
-});

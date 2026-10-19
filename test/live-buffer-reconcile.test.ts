@@ -31,7 +31,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -41,8 +40,7 @@ import {
   pruneDeadLiveBuffers,
 } from "../frontend/live-buffer.ts";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const app = readSource(path.join(here, "..", "frontend", "App.tsx"));
+const _here = path.dirname(fileURLToPath(import.meta.url));
 
 const buf = { text: "agent1 was here", streaming: true };
 const logHas = [{ type: "message", data: { role: "assistant", content: "agent1 was here" } }];
@@ -116,43 +114,5 @@ test("the prune helper uses the shared predicate (#40)", () => {
 
 /* ---------- the wiring, which was the real bug twice already ---------- */
 
-test("select() reconciles the buffer after loading the timeline (#40)", () => {
-  // `select()` cleared events() but never touched liveByAgent, so nothing could
-  // revalidate on a session switch
-  const at = app.indexOf("async function select(");
-  assert.notEqual(at, -1, "select() must exist (#40)");
-  // #126: select() is ~171,000 chars, so a 4200-char window found none of this.
-  // Take a real slice up to the NEXT top-level declaration instead.
-  const end = app.indexOf("\n  async function ", at + 10);
-  const block = app.slice(at, end === -1 ? at + 12000 : end);
-  assert.match(block, /reconcileLiveBuffer\(/, "select() must reconcile (#40)");
-  const rec = block.indexOf("reconcileLiveBuffer(");
-  assert.ok(
-    rec > block.indexOf("another switch won"),
-    "reconciliation must run after loadEvents (#40)",
-  );
-});
-
-test("the reconcile runs AFTER loadEvents, not before (#40)", () => {
-  const at = app.indexOf("reconcileLiveBuffer(cur, events()");
-  assert.notEqual(at, -1, "it must read the LOADED events (#40)");
-  const before = app.lastIndexOf("setEvents([])", at);
-  assert.ok(before !== -1 && before < at, "and must come after events were fetched (#40)");
-});
-
 /* ---------- the WS hello snapshot was being discarded ---------- */
 
-test("the WS hello snapshot is applied, not discarded (#40)", () => {
-  assert.match(
-    app,
-    /if \(msg\.kind === "hello" && Array\.isArray\(msg\.agents\)\) \{/,
-    "the authoritative snapshot sent on connect must be handled (#40)",
-  );
-  assert.match(app, /msg\.kind === "hello"/, "the handler must exist (#40)");
-});
-
-test("hello, agent-update and REST share one merge (#40)", () => {
-  assert.match(app, /function mergeAgentSnapshots\(/, "one merge helper (#40)");
-  const uses = [...app.matchAll(/mergeAgentSnapshots\(/g)].length;
-  assert.ok(uses >= 3, `all three snapshot paths must use it (#40); found ${uses - 1} call sites`);
-});

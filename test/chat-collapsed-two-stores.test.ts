@@ -138,7 +138,7 @@ test("clicking the caret clears both stores (#81)", () => {
 
 test("a SUB-AGENT's caret still reads only collapsedSubs (#81)", () => {
   // narrowing the fix to top-level chats: a sub-agent has no chat:<id> group
-  const at = app.indexOf("const off = isChat");
+  const _at = app.indexOf("const off = isChat");
   const block = blockFrom(app, 'const off = isChat');
   assert.match(block, /: collapsedSubs\(\)\.has\(row\.a\.id\);/, "the sub-agent branch (#18)");
 });

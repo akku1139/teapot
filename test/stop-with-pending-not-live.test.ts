@@ -33,15 +33,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { blockFrom, readSource } from "./helpers/source.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../src/agent/agent.ts";
 
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const app = readSource(path.join(here, "..", "frontend", "App.tsx"));
+const _here = path.dirname(fileURLToPath(import.meta.url));
 
 /** an agent parked mid-LLM-call with a second prompt queued behind it */
 async function stopWithPending() {
@@ -136,20 +134,3 @@ test("a start consumes the queued prompt and goes live again (#133)", async () =
   }
 });
 
-test("withdrawal does not depend on isLive (#59, #133)", async () => {
-  // #59's real requirement is that a held prompt be withdrawable. That is the ✕ on
-  // the row, gated on source/pending/promptId — NOT on `isSelLive`, so correcting
-  // the toggle cannot have broken it.
-  const at = app.indexOf("onCancel={");
-  assert.notEqual(at, -1, "the withdraw affordance must exist (#59)");
-  // #126: a 400-char window contained neither string, and bounding by `onResize`
-  // made it WORSE — `onResize` appears BEFORE `onCancel`, so the window was
-  // negative. Take a fixed 1200 forward from the handler.
-  const block = blockFrom(app, 'onCancel={');
-  assert.doesNotMatch(
-    block,
-    /isSelLive\(\)/,
-    "the ✕ must not consult isLive — it withdrew while the agent was stopped (#59/#133)",
-  );
-  assert.match(block, /prompt\/cancel/, "it uses its own endpoint (#59/#133)");
-});

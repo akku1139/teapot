@@ -316,7 +316,7 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
   // ones outside that guard.
   await useTempDirs(["p50a-", "p50b-"], async ([ws, sessionDir]) => {
     const bigOut = "Z".repeat(20_000);
-    const tc = (id: string, name: string, args: unknown) => ({
+    const _tc = (id: string, name: string, args: unknown) => ({
       id,
       type: "function" as const,
       function: { name, arguments: JSON.stringify(args) },

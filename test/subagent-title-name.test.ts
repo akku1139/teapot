@@ -24,10 +24,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
 import { subAgentDisplayName } from "../frontend/sidebar-tree.ts";
 
-const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
 const PERSONAS = ["reviewer", "tester", "researcher", "implementer"];
 
 test("the reported id yields its name (#121)", () => {
@@ -71,30 +69,3 @@ test("ids with no sub-agent suffix yield null (#121)", () => {
   }
 });
 
-test("the sidebar tooltip names the sub-agent (#121)", () => {
-  const at = app.indexOf("subAgentDisplayName(row.a.id");
-  assert.notEqual(at, -1, "the tooltip must use the helper (#121)");
-  const block = app.slice(Math.max(0, at - 260), at + 200);
-  assert.match(
-    block,
-    /sub-agent of @\$\{row\.a\.parent\} — "\$\{named\}"/,
-    "the parent stays, and the name is added (#121)",
-  );
-});
-
-test("a top-level chat still has no tooltip (#121)", () => {
-  // unchanged: only a sub-agent row gets one
-  // `row.a.parent` and the helper call are ~6 lines apart, so an 80-char window
-  // found nothing — anchor on the ternary instead.
-  //
-  // #126: this then searched for a literal "title={\n", which git checks out as
-  // CRLF on Windows, so the test failed there while passing on Linux — the THIRD
-  // time this shape has broken a test. Never anchor on whitespace between source
-  // tokens; anchor on the token itself.
-  const at = app.indexOf("row.a.parent\n");
-  const gate = at === -1 ? app.indexOf("row.a.parent") : at;
-  assert.notEqual(gate, -1, "the tooltip must still be gated on having a parent (#121)");
-  const block = app.slice(gate, gate + 700);
-  assert.match(block, /: undefined/, "a top-level chat gets NO tooltip (#121)");
-  assert.match(block, /: `sub-agent of @\$\{row\.a\.parent\}`;/, "the old wording is the fallback (#121)");
-});

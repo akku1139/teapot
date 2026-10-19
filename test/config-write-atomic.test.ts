@@ -129,7 +129,7 @@ test("no temp files are left behind (#144)", async () => {
 
 test("booting N agents performs ONE write, not N (#144)", async () => {
   const dataDir = mkdtempInRootSync("t144d-");
-  const ws = mkdtempInRootSync("t144w-");
+  const _ws = mkdtempInRootSync("t144w-");
   const { path: p, agents } = cfg(dataDir, 6);
   const m = master(p, dataDir, agents);
 
@@ -161,7 +161,7 @@ test("the flushed config still describes this boot (#144)", async () => {
   // a deferred write that never flushes would leave config.json describing the
   // PREVIOUS boot — silent data loss of a different kind
   const dataDir = mkdtempInRootSync("t144e-");
-  const ws = mkdtempInRootSync("t144x-");
+  const _ws = mkdtempInRootSync("t144x-");
   const { path: p, agents } = cfg(dataDir, 3);
   const m = master(p, dataDir, agents);
   await m.start();

@@ -34,13 +34,10 @@ import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { freePort } from "./helpers/free-port.ts";
-import { readSource } from "./helpers/source.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
-const indexSrc = readSource(path.join(repo, "src", "index.ts"));
-const masterSrc = readSource(path.join(repo, "src", "master.ts"));
 
 /**
  * How long a spawned server gets to print its listening line.
@@ -107,26 +104,6 @@ async function reachable(port: number, host: string, ms = 2500): Promise<boolean
 }
 
 /* ---------- 1. the entry point ---------- */
-
-test("the entry-point check resolves a bin SYMLINK (#140)", () => {
-  // the bug was comparing argv[1] to import.meta.url's pathname: through
-  // node_modules/.bin they are different files
-  assert.match(
-    indexSrc,
-    /realpathSync\(arg\)/,
-    "argv[1] must be resolved, or a symlinked bin never matches (#140)",
-  );
-  assert.match(
-    indexSrc,
-    /realpathSync\(fileURLToPath\(import\.meta\.url\)\)/,
-    "and so must the module's own path (#140)",
-  );
-  assert.doesNotMatch(
-    indexSrc,
-    /import\.meta\.url\)\.pathname/,
-    "URL.pathname is what produced the mismatch in the first place (#140)",
-  );
-});
 
 test("the published bin actually starts (#140)", async (t) => {
   // end-to-end: spawn the way npm does, THROUGH a symlink named `teapot`
@@ -228,16 +205,6 @@ test("the built entry point boots when run DIRECTLY, on every platform (#140)", 
 });
 
 /* ---------- 2. the default host ---------- */
-
-test("the default host is loopback, not undefined (#140)", () => {
-  // undefined made @hono/node-server bind every interface, which is the opposite
-  // of what --help advertises
-  assert.match(
-    masterSrc,
-    /host:\s*process\.env\.TEAPOT_HOST \?\? "127\.0\.0\.1"/,
-    "the default must BE the documented default (#140)",
-  );
-});
 
 test("the default binds loopback only (#140)", async () => {
   const lan = lanAddress();

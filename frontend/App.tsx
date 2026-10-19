@@ -827,7 +827,7 @@ const isTimelineLive = (): boolean => {
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
   // ask_user calls that already have their tool_result in the log — used to
   // disable the option buttons (answering twice sent duplicate prompts)
-  const answeredIds = createMemo(() => {
+  const _answeredIds = createMemo(() => {
     const set = new Set<string>();
     for (const e of events()) {
       if (e.type === "tool_result" && e.data?.name === "ask_user") set.add(String(e.data.callId));
@@ -1076,7 +1076,7 @@ const isTimelineLive = (): boolean => {
     // which also broke "consecutive bash" grouping. They now ride along with
     // the tool run: a reasoning-only turn is dropped when the nearest visible
     // row before it is a tool event — its thinking belongs to that action.
-    const lastVisibleBefore = new Map<string, string>();
+    const _lastVisibleBefore = new Map<string, string>();
     let lastKind = "";
     for (const e of events()) {
       (e as Ev & { _prevKind?: string })._prevKind = lastKind;
@@ -1235,7 +1235,7 @@ const isTimelineLive = (): boolean => {
       if (e.type === "system_note" && (e.data as any)?.event === "prompt-cancelled")
         cancelledNotes.set(String(pid), e.seq);
     }
-    const deliveredSeq = new Map<string, number>();
+    const _deliveredSeq = new Map<string, number>();
     const stillPendingIds = new Set<string>();
     for (const p of pendingMsgs()) {
       if (p.promptId && !deliveredIds.has(p.promptId)) stillPendingIds.add(p.promptId);
@@ -1483,7 +1483,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * so grouping needs no new concept at all; a header row marks each project.
    * Sub-agents inherit their parent's workspace so a subtree stays together.
    */
-  const workspaceOf = (id: string): string => workspaceOfPure(agents(), id);
+  const _workspaceOf = (id: string): string => workspaceOfPure(agents(), id);
   /** the `chat:<id>` group this agent collapses under — its top-level ancestor,
    *  so a sub-agent shares its parent's group rather than becoming its own */
   const chatGroupKey = (a: Agent): string => chatGroupKeyOf(agents(), a);
@@ -2292,7 +2292,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           // blinking forever after the agent went idle)
           const beforeId = events().at(-1)?.id;
           const beforeTotal = eventsTotal();
-          const fetchStartedAt = Date.now();
+          const _fetchStartedAt = Date.now();
           await loadEvents(selected()!);
           // #40: reconcile the bubble on EVERY pass, NOT inside the
           // "did the newest id change" test below — the socket MERGES the event
@@ -3115,7 +3115,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   // rebuilt the form subtree — silently wiping half-typed goals mid-input.
   const [goalDraft, setGoalDraft] = createSignal("");
   const [goalVerifyDraft, setGoalVerifyDraft] = createSignal("");
-  const [goalDirty, setGoalDirty] = createSignal(false);
+  const [_goalDirty, setGoalDirty] = createSignal(false);
   const [goalNotify, setGoalNotify] = createSignal(true);
   let goalSeededFor = "";
   createEffect(() => {

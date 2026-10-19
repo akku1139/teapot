@@ -115,7 +115,7 @@ test("it does NOT depend on pendingRefresh having been set (#139)", () => {
   // never triggers — so gating on it made waking a no-op.
   const b = onVisible();
   const gated = /if \(pendingRefresh\) \{[\s\S]{0,400}?return;[\s\S]{0,200}?catchUpAfterReconnect/.test(b);
-  const bare = /if \(pendingRefresh\) \{[\s\S]{0,400}?return;\s*\}\s*(?:[\s\S]{0,400}?)?\/\*|if \(pendingRefresh\) \{[\s\S]{0,400}?return;\s*\}\s*$/m.test(b);
+  const _bare = /if \(pendingRefresh\) \{[\s\S]{0,400}?return;\s*\}\s*(?:[\s\S]{0,400}?)?\/\*|if \(pendingRefresh\) \{[\s\S]{0,400}?return;\s*\}\s*$/m.test(b);
   assert.equal(
     gated,
     false,

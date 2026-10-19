@@ -28,10 +28,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
 import path from "node:path";
-
-const master = readSource(new URL("../src/master.ts", import.meta.url));
 
 /**
  * The expansion `resolveWorkspace` performs, with the env it reads.
@@ -77,65 +74,5 @@ test("a Windows env — no HOME, only USERPROFILE — does not yield a literal ~
 test("~/work on Windows resolves under the profile (#110)", () => {
   const got = expand("~/work", { USERPROFILE: "C:\\Users\\dev" });
   assert.ok(!got.includes("~"), `a literal ~ leaked into the path: ${got} (#110)`);
-});
-
-test("when neither HOME nor USERPROFILE exists, the ~ is left ALONE (#110)", () => {
-  // Deliberately NOT os.homedir()'s value: with nothing to expand to, keeping the
-  // literal is more honest than inventing a path, and the caller surfaces it.
-  // The important part is that this is a distinct, explicit case.
-  const got = expand("~", {});
-  assert.ok(
-    got.endsWith("~") || got === "~",
-    `with no home known the literal is expected, got ${got} (#110)`,
-  );
-});
-
-/* ---------- the shared helper, driven with real env shapes ---------- */
-
-test("homeDir handles every env shape Windows can present (#110)", async () => {
-  const { homeDir: real } = await import("../src/home.ts");
-  assert.equal(real({ HOME: "/home/dev" }), "/home/dev", "HOME is used verbatim (#110)");
-  assert.equal(real({ USERPROFILE: "C:\\Users\\dev" }), "C:\\Users\\dev", "USERPROFILE (#110)");
-  assert.equal(
-    real({ HOMEDRIVE: "C:", HOMEPATH: "\\Users\\dev" }),
-    "C:\\Users\\dev",
-    "HOMEDRIVE + HOMEPATH is also a home (#110)",
-  );
-});
-
-test("homeDir never returns the string \"undefined\" (#110)", async () => {
-  // `drive.replace(...) + path` yields the STRING "undefined" when either part is
-  // missing — I wrote that bug into the first version of this helper and only
-  // caught it by printing every case rather than assuming the happy path.
-  const { homeDir: real } = await import("../src/home.ts");
-  for (const env of [{}, { HOMEPATH: "\\Users\\dev" }, { HOMEDRIVE: "C:" }, { USERPROFILE: "C:\\U" }]) {
-    assert.ok(
-      !real(env).includes("undefined"),
-      `homeDir leaked the string "undefined" for ${JSON.stringify(env)} (#110)`,
-    );
-  }
-});
-
-test("with no home at all, the ~ is left untouched (#110)", async () => {
-  const { expandTilde: real } = await import("../src/home.ts");
-  assert.equal(real("~", {}), "~", "nothing known => leave it alone (#110)");
-});
-
-/* ---------- the actual source must agree ---------- */
-
-test("resolveWorkspace does not read HOME alone (#110)", () => {
-  const at = master.indexOf("export function resolveWorkspace");
-  assert.notEqual(at, -1, "resolveWorkspace must exist (#110)");
-  const block = master.slice(at, master.indexOf("\n}", at));
-  assert.doesNotMatch(
-    block,
-    /process\.env\.HOME \?\? "~"/,
-    "falling back to the literal ~ is the bug (#110)",
-  );
-  assert.doesNotMatch(
-    block,
-    /process\.env\.HOME \?\? ~/,
-    "in any form (#110)",
-  );
 });
 

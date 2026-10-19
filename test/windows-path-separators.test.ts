@@ -18,7 +18,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
+const _here = path.dirname(fileURLToPath(import.meta.url));
 
 /** every .ts under test/ (including helpers), which is where this bites */
 function testFiles(dir: string): string[] {

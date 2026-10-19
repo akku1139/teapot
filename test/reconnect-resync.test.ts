@@ -214,7 +214,7 @@ test("a throw between the two appends still produces a result (#54)", () => {
 test("stopping mid-batch leaves no unanswered tool_call (#54)", async () => {
   await useTempDirs(["h54a-", "h54b-"], async ([ws, sd]) => {
     let release: () => void = () => {};
-    const gate = new Promise<void>((r) => {
+    const _gate = new Promise<void>((r) => {
       release = r;
     });
     const a = new Agent({

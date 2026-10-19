@@ -91,7 +91,7 @@ test("a restarted session does not replay the completion audit into the conversa
   await useTempDirs(["a50a-", "a50b-"], async ([ws, sessionDir]) => {
     let turn = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
-      const sys = String(messages[0]?.content ?? "");
+      const _sys = String(messages[0]?.content ?? "");
       // The auditor is a separate, tools-less call. Identify it by its PROMPT,
       // not by the absence of tool calls: by the time the audit runs, the
       // worker's own set_goal/finish calls are in the history, so the old

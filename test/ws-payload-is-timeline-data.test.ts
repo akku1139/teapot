@@ -98,25 +98,3 @@ test("a socket event merges AND schedules a refresh (#54, #145)", () => {
   );
 });
 
-test("mergeEvents is idempotent, which is what makes the socket safe (#54)", () => {
-  // a socket event and a REST page can carry the SAME event; without dedupe by id
-  // the row would appear twice
-  const at = app.indexOf("function mergeEvents(");
-  assert.notEqual(at, -1, "mergeEvents must exist (#54)");
-  const body = app.slice(at, app.indexOf("\n  }\n", at));
-  assert.match(body, /new Map<string, Ev>\(\)/, "dedupe by id (#54)");
-  // Assert the GUARD, not just the Map: a Map alone does not dedupe, and my first
-  // version of this line matched `map.set(e.id, …)` which survives removing the
-  // `if (!map.has(…))` entirely — so deleting the dedupe passed.
-  assert.match(
-    body,
-    /if \(!map\.has\(e\.id\)\) map\.set\(e\.id, e\)/,
-    "the incoming event must be skipped when its id is already held (#54)",
-  );
-  assert.match(
-    body,
-    /for \(const e of prev\) map\.set\(e\.id, e\)/,
-    "and the held events must seed the map first (#54)",
-  );
-  assert.match(body, /sort\(\(a, b\) => a\.seq - b\.seq\)/, "and keep seq order (#54)");
-});

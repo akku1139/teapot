@@ -22,7 +22,7 @@ test("a PARKED child must count as active for waitChildren (not settled)", async
   const dataDir = mkdtempInRootSync("wcp-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   const ws = mkdtempInRootSync("wcpw-");
-  const c1 = await m.addAgent({ id: "c1", parent: "p", workspace: ws, chatFn }, { persist: false });
+  const _c1 = await m.addAgent({ id: "c1", parent: "p", workspace: ws, chatFn }, { persist: false });
   const c2 = await m.addAgent({ id: "c2", parent: "p", workspace: ws, chatFn }, { persist: false });
   try {
     // c1: settled (idle). c2: PARKED — exactly what parkForTool does to the

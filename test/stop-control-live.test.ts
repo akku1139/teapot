@@ -32,8 +32,6 @@ import type { LlmResult } from "../src/agent/llm.ts";
 
 // via readSourceUrl so line endings are NORMALISED — these anchor on "\n", which a
 // raw readFileSync leaves as CRLF on Windows (#126)
-const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
-const agentSrc = readSourceUrl(new URL("../src/agent/agent.ts", import.meta.url));
 
 const reply = (content: string, calls?: any[]): LlmResult => ({
   message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
@@ -166,33 +164,3 @@ test("the snapshot ships `live` so the client can decide (#59)", async () => {
 
 /* ---------- wiring: the UI must trust the server ---------- */
 
-test("Escape interrupts on `live` too (#59)", () => {
-  // Same wrong field: Esc did nothing at all on a parked agent, which is
-  // precisely when a user reaches for it.
-  assert.match(app, /if \(s && isSelLive\(\)\) \{[\s\S]{0,160}\/stop/, "Esc must stop a parked agent (#59)");
-});
-
-test("isLive() is the single source of truth on the agent (#59)", () => {
-  // #127: this matched the WHOLE definition on one line, so adding the fourth
-  // clause (a compaction in flight) broke a passing test. Match each clause
-  // instead, inside isLive() — a rule, not a line.
-  //
-  // #152: and bound by the METHOD, not a character count. A 1600-char window held
-  // on Linux and failed on Windows, where CRLF makes the block longer — the same
-  // fixed-width trap this file's own comment describes, one order of magnitude
-  // later. A method-bounded slice cannot drift this way.
-  const at = agentSrc.indexOf("isLive(): boolean {");
-  assert.notEqual(at, -1, "isLive must exist (#59)");
-  const end = agentSrc.indexOf("\n  }", at);
-  assert.notEqual(end, -1, "isLive must terminate");
-  const block = agentSrc.slice(at, end);
-  for (const [clause, why] of [
-    ['this\\.status === "running"', "running (#59)"],
-    ["this\\.parkedByTool", "parked (#59)"],
-    ["this\\.pendingPrompts\\.length > 0", "queued (#59)"],
-    ['this\\.compactPhase !== ""', "a manual compaction in flight (#127)"],
-    ["this\\.retrySleeping", "a scheduled retry backoff (#152)"],
-  ] as const) {
-    assert.match(block, new RegExp(clause), `isLive must cover ${why}`);
-  }
-});

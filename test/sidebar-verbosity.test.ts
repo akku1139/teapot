@@ -33,7 +33,7 @@ import {
   type TreeAgent,
 } from "../frontend/sidebar-tree.ts";
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
+const _app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 const a = (id: string, workspace: string, parent = ""): TreeAgent => ({ id, workspace, parent });
 

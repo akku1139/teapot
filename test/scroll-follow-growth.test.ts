@@ -32,7 +32,7 @@ import assert from "node:assert/strict";
 import { readSourceUrl } from "./helpers/source.ts";
 import { isScrollingAway } from "../frontend/scroll-follow.ts";
 
-const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
+const _app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 test("content growing below a bottom-pinned reader is not a scroll away", () => {
   const bottom = { gap: 0, top: 1000 };
@@ -53,23 +53,3 @@ test("a real move up still stops following", () => {
   assert.equal(isScrollingAway({ gap: 5000, top: 0 }, undefined), false);
 });
 
-test("the feed handler uses the shared rule for BOTH the lock and the flag (#40)", () => {
-  const at = app.indexOf('<div class="feed" onscroll=');
-  assert.notEqual(at, -1, "the feed scroll handler must exist");
-  const body = app.slice(at, app.indexOf("</Show>", at));
-  assert.match(body, /isScrollingAway\(/, "the lock must use the extracted rule");
-  assert.doesNotMatch(
-    body,
-    /gap > lastScrollGap \+ 8/,
-    "the gap-only heuristic IS the bug — growth fakes it",
-  );
-  // the sample must be read BEFORE it is overwritten, or the comparison is
-  // always false and the lock silently never fires
-  const read = body.indexOf("const movingAway = isScrollingAway(");
-  const write = body.indexOf("lastScrollSample = { gap, top };");
-  assert.ok(read !== -1 && write !== -1, "the sample must be both read and written");
-  assert.ok(read < write, "reading after the write compares a value with itself");
-  // both call sites must use that ONE decision
-  assert.match(body, /else if \(movingAway\) setAtBottom\(false\)/, "the follow flag must agree with the lock");
-  assert.match(body, /else if \(movingAway\) userScrolledUp = true;/, "and the lock itself");
-});

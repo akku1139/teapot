@@ -921,7 +921,7 @@ console.log("deep render ok: feed rows present");
    * across them. The check below is the reported shape with a real boundary in front.
    */
   {
-    const sockB = MockWS.instances.at(-1);
+    const _sockB = MockWS.instances.at(-1);
     // a VISIBLE boundary, so the first bash genuinely starts a new run
     pushEvent({ id: "gb0", seq: 601, ts: "2026-01-01T16:00:00Z", session: "alpha-s1", branch: "br0",
       parent: null, type: "message", data: { role: "assistant", content: "boundary before the run" } });
@@ -1665,6 +1665,12 @@ console.log("deep render ok: feed rows present");
 if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const drawer = () => w.document.querySelector(".rightbar");
+  // This block is the ONLY one gated on loading narrow: it checks that the
+  // minifier's hoisted media-query rules still leave the ✕ row visible, which
+  // happy-dom can only answer for the width the document was parsed at. The
+  // caller therefore runs this script twice (1440 and 900) — see
+  // test/web-bundle.test.ts. Everything else here runs once, wide, and the
+  // resize scenario below narrows in-process for the flows that need it.
   const drawerOpen = () => drawer()?.classList.contains("open") ?? false;
   const fail = (msg) => { console.error(`#50 REGRESSION: ${msg}`); process.exit(1); };
 

@@ -42,7 +42,7 @@ import { Window } from "happy-dom";
 import { renderMarkdown } from "../frontend/md.js";
 import { goalLine } from "../frontend/goal-timeline.ts";
 
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+const _css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
 /* ---------- the rule ---------- */
 

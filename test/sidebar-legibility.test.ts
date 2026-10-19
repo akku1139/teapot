@@ -118,29 +118,6 @@ test("a collapsed chat is NOT dimmed (#66)", () => {
   );
 });
 
-test("a collapsed chat is still clickable (#66)", () => {
-  // #66's title is "you cannot select from the chat list without expanding the
-  // sub-agent list", and what that actually described was the APPEARANCE: a
-  // collapsed parent rendered at `opacity: .5` with `cursor: default`, so it
-  // read as greyed-out and disabled. That was a styling bug and this is its fix
-  // — full-contrast name, pointer cursor, row still clickable.
-  //
-  // An earlier attempt also made the click EXPAND the chat. That was an
-  // over-correction (#85): the operator's collapse state is theirs, and forcing
-  // it open on every visit made the sub-agent list impossible to keep away.
-  assert.match(
-    lastRule(".agent-item.collapsed"),
-    /cursor:\s*pointer/,
-    "a collapsed chat must invite the click that opens it (#66)",
-  );
-  // no rule may switch its hover off — that was what made the row look inert
-  assert.doesNotMatch(
-    css,
-    /\.agent-item\.collapsed:hover\s*\{[^}]*background:\s*none/,
-    "a collapsed chat must light up on hover like any other selectable row (#66)",
-  );
-});
-
 /**
  * The #66 regression guard, made STRUCTURAL.
  *

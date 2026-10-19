@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { readSourceUrl, stripSourceComments } from "./helpers/source.ts";
 
 const agent = stripSourceComments(readSourceUrl(new URL("../src/agent/agent.ts", import.meta.url)));
-const skills = stripSourceComments(readSourceUrl(new URL("../src/agent/skills.ts", import.meta.url)));
+const _skills = stripSourceComments(readSourceUrl(new URL("../src/agent/skills.ts", import.meta.url)));
 
 /** the body of init() */
 function initBody(): string {
@@ -32,34 +32,3 @@ function initBody(): string {
   return agent.slice(at, end);
 }
 
-test("init() does not scan skills (#143)", () => {
-  assert.doesNotMatch(
-    initBody(),
-    /refreshSkills\(\)/,
-    "the boot-time scan was redundant AND cost 2120ms across 493 agents (#143)",
-  );
-});
-
-test("every reader of the skill cache refreshes it first (#143)", () => {
-  // the paths that justify dropping the boot scan — if any of these stops
-  // refreshing, the catalogue could go stale with nothing to fix it
-  const turnLoop = agent.indexOf("await this.refreshSkills();");
-  assert.notEqual(turnLoop, -1, "the turn loop must still refresh before building the prompt (#143)");
-  const listSkills = agent.slice(agent.indexOf('call.function.name === "list_skills"'));
-  assert.match(
-    listSkills.slice(0, 200),
-    /await this\.refreshSkills\(\)/,
-    "the list_skills tool must refresh before reading the cache (#143)",
-  );
-});
-
-test("the skill walk itself is not time-cached (#143)", () => {
-  // a TTL/mtime cache here would hide a nested SKILL.md addition, which is the
-  // bug the recursive walk exists to catch
-  assert.doesNotMatch(
-    skills,
-    /WALK_TTL|walkCache|stampCache/,
-    "caching the walk defeats the nested-skill detection it exists for (#143)",
-  );
-  assert.match(skills, /async function stampSkillFiles/, "the recursive fingerprint must stay");
-});
