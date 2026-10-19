@@ -230,11 +230,23 @@ setGlobal("requestAnimationFrame", (cb) => setTimeout(() => cb(Date.now()), 16))
 setGlobal("WebSocket", MockWS);
 // the app's connectWs() runs at import time; its socket must exist for the
 // pending-echo regression below to push bus events into the app
-setGlobal("fetch", async (url) => {
+// every request, with its method and parsed body — a check that needs to prove WHAT
+// was saved cannot do it from the url alone
+const requests = [];
+setGlobal("fetch", async (url, init) => {
   fetchCount++;
+  const u0 = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+  let body = null;
+  if (typeof init?.body === "string") {
+    try {
+      body = JSON.parse(init.body);
+    } catch {
+      body = init.body;
+    }
+  }
+  requests.push({ url: u0, method: (init?.method ?? "GET").toUpperCase(), body });
   requestedUrls.push(String(url));
-  const u = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
-  return { ok: true, status: 200, json: async () => apiResponse(u) };
+  return { ok: true, status: 200, json: async () => apiResponse(u0) };
 });
 
 // surface async render explosions loudly instead of dying silently
@@ -1424,6 +1436,75 @@ console.log("deep render ok: feed rows present");
       }
     }
     console.log("deep render ok: MCP panel shows server, transport and live tool count");
+
+    // ---- #161: short-context mode is a REAL toggle, and it defaults to OFF ----
+    //
+    // It discards information early by design, so an accidental default-on would cost
+    // every operator context they had room for. Asserting the default AND that the
+    // control is bound (clicking it flips it) is what makes the opt-in guarantee real.
+    {
+      const railBtns = [...w.document.querySelectorAll(".cfgmenu-item")];
+      const runtimeBtn = railBtns.find((b) => /runtime/.test(b.textContent ?? ""));
+      if (!runtimeBtn) {
+        console.error("#161 REGRESSION: no runtime section in the settings rail");
+        process.exit(1);
+      }
+      runtimeBtn.click();
+      await new Promise((r) => setTimeout(r, 60));
+      const toggle = w.document.querySelector(".cfgtoggle input[type=checkbox]");
+      if (!toggle) {
+        console.error("#161 REGRESSION: the short-context toggle is missing from runtime");
+        process.exit(1);
+      }
+      // PRECONDITION: the label must name the mode, or the operator cannot know what
+      // this checkbox does
+      const labelText = String(toggle.closest(".cfgtoggle")?.textContent ?? "");
+      if (!/short-context/.test(labelText)) {
+        console.error(`#161 REGRESSION: the toggle is unlabelled: ${JSON.stringify(labelText)}`);
+        process.exit(1);
+      }
+      if (toggle.checked) {
+        console.error("#161 REGRESSION: short-context mode is ON by default — it is opt-in");
+        process.exit(1);
+      }
+      // Assert the BINDING through its effect on the saved config, not the checkbox's
+      // DOM property: `checked` is set by Solid once, so a broken handler still leaves
+      // the DOM checked and the assertion would pass vacuously (MEASURED — replacing
+      // the handler with `() => {}` kept the old version of this check green).
+      toggle.checked = true;
+      toggle.dispatchEvent(new w.Event("change"));
+      await new Promise((r) => setTimeout(r, 40));
+      const saveBtn = w.document.querySelector(".cfgsave");
+      if (!saveBtn) {
+        console.error("#161 REGRESSION: no save button to commit the toggle");
+        process.exit(1);
+      }
+      const before = requestedUrls.length;
+      saveBtn.click();
+      // the save PUTs /api/config; poll for that request
+      const saveDeadline = Date.now() + 3000;
+      let put = null;
+      while (Date.now() < saveDeadline) {
+        put = requests.find((c) => c.url === "/api/config" && c.method === "PUT");
+        if (put) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      void before;
+      if (!put) {
+        console.error(
+          "#161 REGRESSION: toggling short-context did not change the saved config " +
+            "(no PUT /api/config) — the handler is not wired",
+        );
+        process.exit(1);
+      }
+      if (put.body?.shortContext !== true) {
+        console.error(
+          `#161 REGRESSION: the saved config does not carry shortContext:true (got ${JSON.stringify(put.body?.shortContext)})`,
+        );
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: short-context mode is an off-by-default bound toggle (#161)");
 
     // CLOSE the dialog: it is a full-screen overlay, and leaving it open swallows the
     // Escape key that the later #50 drawer scenario presses — MEASURED as
