@@ -95,10 +95,23 @@ test("the nudge a never-finishing agent receives names the goal (#136)", async (
     await a.setGoal("fix the code based on the current review and release the next version");
     a.enqueuePrompt("go", "user");
     a.start("t");
-    await new Promise((r) => setTimeout(r, 1500));
+    // POLL for the outcome instead of sleeping a fixed 1500 ms. The assertion below
+    // is "the agent was auto-continued", which is a STATE the loop reaches after an
+    // LLM call plus a spin-up — on a loaded machine that can exceed any fixed budget,
+    // and a fixed one fails as "precondition: the agent was auto-continued" with no
+    // hint that the test simply ran out of clock. MEASURED on Windows CI: this test
+    // failed on a version-bump commit and passed on a rerun of the SAME code.
+    // Waiting on the condition is both faster in the common case and immune to it.
+    const deadline = Date.now() + 15_000;
+    let nudges: Awaited<ReturnType<typeof readEvents>> = [];
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+      nudges = (await readEvents(`${sd}/chat.jsonl`)).filter(
+        (e) => e.type === "prompt" && e.data?.source === "harness",
+      );
+      if (nudges.length > 0) break;
+    }
     try {
-      const events = await readEvents(`${sd}/chat.jsonl`);
-      const nudges = events.filter((e) => e.type === "prompt" && e.data?.source === "harness");
       assert.ok(nudges.length > 0, "precondition: the agent was auto-continued (#136)");
       const last = String(nudges[nudges.length - 1]!.data?.text ?? "");
       assert.ok(last.startsWith("[harness] "), `the injected nudge must be prefixed (#136); got ${last.slice(0, 40)}`);
