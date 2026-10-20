@@ -37,7 +37,7 @@ import {
 } from "./sidebar-tree";
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
-import { isScrollingAway } from "./scroll-follow";
+import { atTail, shouldFollowAfterChange, type TailSample } from "./scroll-policy";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -367,9 +367,9 @@ export default function App() {
         raf = 0;
         const f = feedEl();
         if (!f) return;
-        // measured BEFORE the reflow settles is unreliable, so use the slack
-        // test that `nearBottom` uses rather than an exact offset
-        const wasFollowing = atBottom();
+        // Sample the geometry: a window resize changes the viewport WITHOUT a scroll, so
+        // reading the sticky `atBottom` flag answers a question about the previous layout.
+        const wasFollowing = atTail(tailSample());
         const anchorRow =
           wasFollowing || !f.scrollHeight ? null : firstVisibleRow(f as HTMLElement);
         if (!wasFollowing && !anchorRow) return;
@@ -610,12 +610,21 @@ export default function App() {
   createEffect(() => {
     // key on the banner's presence, in BOTH directions
     void compacting();
-    if (!atBottom()) return;
+    // SAMPLE the geometry now, and re-sample when the DOM has settled. The decision is
+    // `shouldFollowAfterChange`, not the sticky `atBottom` flag: the banner changed the
+    // height between those two moments, and a sticky flag cannot see that (it is only
+    // updated by scroll events, and there is no scroll here).
+    const before = tailSample();
     //
     // two frames: one for the banner to enter/leave the flow, one to paint
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        if (atBottom()) scrollBottom(true);
+        const after = tailSample();
+        if (after && shouldFollowAfterChange(before, after)) {
+          // follow: land on the tail. `scrollBottom(true)` FORCES past atBottom so the
+          // jump happens even though no scroll event has confirmed it yet.
+          scrollBottom(true);
+        }
       }),
     );
   });
@@ -707,13 +716,14 @@ export default function App() {
     setThinkStartedAt((cur) => clearThinkClockIfDone(cur, list, selected(), live()));
   });
 
-  // auto-scroll the feed while live output streams and we're at the bottom.
-  // The old version double-checked nearBottom() inside the rAF — but the live
-  // bubble has ALREADY grown by then, so the unscrolled distance exceeded the
-  // threshold, "user scrolled away" was falsely detected, and follow mode
-  // jittered on/off with every chunk (worse with a tall composer eating into
-  // the viewport). atBottom() is only flipped by real user scrolling, so it is
-  // the signal to trust here; nearBottom() would just re-measure mid-growth.
+  // AUTO-SCROLL while live output streams, decided by the POLICY rather than the sticky
+  // flag.
+  //
+  // The old version used `atBottom()` twice (once to gate, once inside the rAF). That flag
+  // is only updated by `onscroll`, and streaming grows the bubble with NO scroll event, so
+  // between the two reads it was stale — which is the shape of every report about follow
+  // mode stopping by itself. Sampling the geometry at BOTH ends and comparing them is what
+  // distinguishes "content grew" (follow) from "the reader moved up" (stop).
   createEffect(() => {
     // reasoning-only streams (💭 thinking, no text yet) must follow too —
     // keying the effect on liveText() alone left the feed parked while the
@@ -721,10 +731,11 @@ export default function App() {
     const txt = liveText();
     const rsn = live()?.reasoning ?? "";
     if (!txt && !rsn) return;
-    if (!atBottom()) return;
+    const before = tailSample();
     // wait for the DOM to paint the new text
     requestAnimationFrame(() => {
-      if (atBottom()) scrollBottom(true);
+      const after = tailSample();
+      if (after && shouldFollowAfterChange(before, after)) scrollBottom(true);
     });
   });
   // Browsers pause requestAnimationFrame while a tab is hidden, so scroll
@@ -1539,8 +1550,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       if (events().length === before) return;
       // prepending grows the content ABOVE the viewport; keep the reader
       // pinned to the tail while we backfill, or follow mode silently died
-      // here and "new messages appear at the top of my view" was the result
-      if (atBottom() && selected() === id) scrollBottom(true);
+      // here and "new messages appear at the top of my view" was the result.
+      // Sampled, not the sticky flag: prepending is itself a height change.
+      if (atTail(tailSample()) && selected() === id) scrollBottom(true);
     }
   }
 
@@ -1628,19 +1640,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   }
 
   function feedEl() { return document.querySelector(".feed"); }
-  /** slack for "am I at the bottom" — must cover the composer's own growth:
-   * a multi-line input (up to 160px) shrinks the feed viewport between frames,
-   * and a fixed 80px threshold reads that as "user scrolled away" mid-stream */
-  function bottomSlack() {
-    // tight: the old 80px+ made "at the bottom" true while the reader was
-    // still ~20-80px above it, so follow mode tugged on manual scrolling.
-    const c = document.querySelector<HTMLTextAreaElement>(".composer textarea");
-    return 24 + Math.min(Math.max((c?.scrollHeight ?? 0) - (c?.clientHeight ?? 0), 0), 160);
-  }
-  function nearBottom() {
+  /**
+   * The feed's geometry, as the follow rule wants it.
+   *
+   * Sampling at the moment of the decision is the whole point: the old code kept a sticky
+   * `atBottom` flag updated by `onscroll`, and content can grow with NO scroll event, so
+   * the flag was stale exactly when it mattered.
+   */
+  function tailSample(): TailSample | null {
     const f = feedEl();
-    if (!f) return true;
-    return f.scrollHeight - f.scrollTop - f.clientHeight < bottomSlack();
+    if (!f) return null;
+    return { top: f.scrollTop, height: f.scrollHeight, viewport: f.clientHeight };
+  }
+  /** is the reader at the tail RIGHT NOW */
+  function nearBottom() {
+    // `atTail` uses the one constant slack. The old `bottomSlack()` derived the threshold
+    // from the composer's overflow, so "at the bottom" meant a different pixel distance
+    // whenever the composer grew a line — which is what made follow mode tug at the
+    // reader. Content growth is handled by the rule, not by widening the threshold.
+    const s = tailSample();
+    return atTail(s);
   }
   function scrollBottom(force = false) {
     const f = feedEl();
@@ -1718,7 +1737,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // been scrolled (the pill only disappears once a real scroll lands)
       setAtBottom(true);
       userScrolledUp = false;
-      lastScrollSample = undefined;
+      // a session switch changes the geometry completely, so the previous sample would
+      // read as an enormous scroll in whichever direction
+      lastSample = undefined;
     }
     setSelected(id);
     setTimelineId(tid);
@@ -2099,6 +2120,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           // blinking forever after the agent went idle)
           const beforeId = events().at(-1)?.id;
           const beforeTotal = eventsTotal();
+          // SAMPLE THE GEOMETRY BEFORE THE FETCH. The old code read the sticky
+          // `atBottom` flag AFTER new rows had been painted — state events, tool rows and
+          // a grown live bubble all add height with no scroll — so by then the flag had
+          // already been corrected by a scroll handler, or was about to be, and the view
+          // jumped away right when a round kicked off.
+          const beforeTail = tailSample();
           const _fetchStartedAt = Date.now();
           await loadEvents(selected()!);
           // #40: reconcile the bubble on EVERY pass, NOT inside the
@@ -2109,12 +2136,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           const buf = live();
           if (buf && !reconcileLiveBuffer(buf, events(), sel()?.status)) setLive(null);
           if (events().at(-1)?.id !== beforeId) {
-            // trust atBottom() (flipped only by real user scrolling). The old
-            // nearBottom() re-check measured AFTER new rows (state events like
-            // idle→running, tool rows…) had already grown the feed — the
-            // unscrolled gap exceeded the slack, follow was falsely dropped,
-            // and the view jumped away right when a round kicked off.
-            if (atBottom()) {
+            const afterTail = tailSample();
+            // follow iff the reader was at the tail before this content arrived and has
+            // not moved since — the one rule, asked at the moment content changed
+            if (afterTail && shouldFollowAfterChange(beforeTail, afterTail)) {
               scrollBottom(true);
               // following the tail means the operator has seen this session's
               // newest content — its notifications count as read
@@ -2697,26 +2722,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let composerEl: HTMLTextAreaElement | undefined;
   const autosizeComposer = () => {
     if (!composerEl) return;
-    // Suppress scroll-event processing while we resize the input: the
-    // relayout fires a feed onscroll whose nearBottom() result flips with
-    // every keystroke at the boundary, blinking the jump pill per character.
-    // The flag also keeps follow mode pinned through the relayout.
-    suppressScrollEval = true;
-    const wasFollowing = atBottom();
+    // The composer growing shrinks the feed's VIEWPORT, which raises the gap without
+    // anybody scrolling — one of the growth paths the follow rule exists for. The old
+    // code suppressed scroll processing around the resize and restored `atBottom` from a
+    // snapshot taken BEFORE it, so the decision was made from geometry that was already
+    // stale by one relayout.
+    const before = tailSample();
     composerEl.style.height = "auto";
     composerEl.style.height = composerMaximized()
       ? "" // CSS takes over: .composer.maximized textarea fills the column
       : `${Math.min(composerEl.scrollHeight, MAX_COMPOSER_H)}px`;
     requestAnimationFrame(() => {
-      const f = feedEl();
-      if (wasFollowing && f) f.scrollTop = f.scrollHeight;
-      suppressScrollEval = false;
+      const after = tailSample();
+      // A reader who was at the tail stays there; one who had scrolled up is left alone.
+      if (after && shouldFollowAfterChange(before, after)) scrollBottom(true);
     });
   };
-  let suppressScrollEval = false;
   // user-scroll lock state (see the feed onscroll handler)
   let userScrolledUp = false;
-  let lastScrollSample: { gap: number; top: number } | undefined;
+  /** the previous scroll sample, for telling a deliberate scroll from a reflow/clamp */
+  let lastSample: TailSample | undefined;
   createEffect(() => {
     const v = draft(); // re-run on typing AND after send() clears the draft
     // #the RESIZE must happen AFTER the DOM text is synced, not before. This
@@ -3389,7 +3414,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </header>
 
           <div class="feed" onscroll={(e) => {
-            if (suppressScrollEval) return; // programmatic resize, not user
             const el = e.currentTarget;
             const nb = nearBottom();
             // USER-SCROLL LOCK. Two jobs, and the discriminator is `scrollTop`:
@@ -3406,13 +3430,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             // thresholds and the sample are the whole bug.
             const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
             const top = el.scrollTop;
+            const height = el.scrollHeight;
             // ONE decision, taken from the sample. It must be read BEFORE the
             // sample is overwritten, and it must drive BOTH the lock and the
             // follow flag — they are the same question.
-            const movingAway = isScrollingAway({ gap, top }, lastScrollSample);
-            lastScrollSample = { gap, top };
+            //
+            // `height` is part of the sample because a SHRINK clamps scrollTop down to the
+            // new maximum, which is indistinguishable from the reader scrolling up when
+            // only `top` is compared. That knocked a reader who had not moved out of
+            // follow mode after every compaction, every tool row collapsing, and every
+            // switch to a shorter log.
+            //
+            // The decision comes from the POLICY (frontend/scroll-policy.ts) so this
+            // handler and every other growth path ask the same question.
+            const before = lastSample;
+            const now = { top, height, viewport: el.clientHeight };
+            // A deliberate scroll up = `top` decreased while the content did NOT shrink.
+            const movedUp = before !== undefined && now.top < before.top - 1 && now.height >= before.height;
+            lastSample = now;
             if (nb) userScrolledUp = false;
-            else if (movingAway) userScrolledUp = true;
+            else if (movedUp) userScrolledUp = true;
             // reached the top → pull the next older page (infinite scroll up).
             // MUST run before the follow-lock return: the lock exists to stop
             // follow mode from fighting the reader, and a reader at the very
@@ -3436,7 +3473,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             // the operator watched a live stream. Measured: +30px of growth, no
             // input at all.
             if (nb) setAtBottom(true);
-            else if (movingAway) setAtBottom(false);
+            else if (movedUp) setAtBottom(false);
           }}>
             <Show when={compacting()}>
               {(c) => (
@@ -3488,7 +3525,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       // merely the same agent (#120, #133)
                       isTimelineLive() && isOwnLiveWork(e)
                     }
-                    onResize={() => { if (atBottom()) requestAnimationFrame(() => scrollBottom(true)); }}
+                    // A row that EXPANDS when its result arrives (a `<details>` opening,
+                    // a tool body growing) is one of the growth paths — decided by the
+                    // policy, from geometry sampled at the moment the row resized.
+                    onResize={() => {
+                      const after = tailSample();
+                      if (after && atTail(after)) requestAnimationFrame(() => scrollBottom(true));
+                    }}
                     onCancel={
                       // #122: only an OPERATOR prompt can be withdrawn. A harness
                       // prompt has no composer draft to return to — cancelling it

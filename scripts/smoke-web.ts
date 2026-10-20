@@ -2840,6 +2840,60 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
   console.log("deep render ok: widening back disarms the drawer without breaking the column (#50)");
 }
 
+// ---- #108: the compaction banner must live INSIDE the scrollable feed ----
+//
+// If it sat outside the feed it could not change the scroll height at all, which is the
+// whole reason a compaction pass detaches follow mode. Asserted in the real DOM: push the
+// `compaction-progress` frame the server sends and check where the banner lands.
+{
+  const sock = MockWS.instances.at(-1);
+  if (!sock?.onmessage) {
+    console.error("#108 REGRESSION: no app socket to drive");
+    process.exit(1);
+  }
+  sock.onmessage({
+    data: JSON.stringify({
+      kind: "compaction-progress",
+      agentId: AGENT.id,
+      phase: "summarizing",
+      summarized: 120,
+    }),
+  });
+  await new Promise((r) => setTimeout(r, 200));
+
+  const banner = w.document.querySelector(".divider-msg.compacting");
+  if (!banner) {
+    console.error("#108 REGRESSION: the compaction banner never rendered");
+    process.exit(1);
+  }
+  // PRECONDITION + the property: the banner is a DESCENDANT of the scroll container, so
+  // it contributes to scrollHeight. Asserting the containment is the structural fact the
+  // old source-text test was standing for.
+  const feed = w.document.querySelector(".feed");
+  if (!feed || !feed.contains(banner)) {
+    console.error(
+      "#108 REGRESSION: the compaction banner is outside .feed, so a pass cannot change " +
+        "the scroll height — follow mode can no longer detach on it",
+    );
+    process.exit(1);
+  }
+  // and it says what phase it is in, so the operator can tell it is working
+  if (!/summarizing/.test(banner.textContent ?? "")) {
+    console.error(`#108: the banner does not name the phase: ${JSON.stringify(banner.textContent)}`);
+    process.exit(1);
+  }
+  // clearing it (phase done) removes the row again — the other direction
+  sock.onmessage({
+    data: JSON.stringify({ kind: "compaction-progress", agentId: AGENT.id, phase: "done" }),
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  if (w.document.querySelector(".divider-msg.compacting")) {
+    console.error("#108 REGRESSION: the banner survived its `done` phase");
+    process.exit(1);
+  }
+}
+console.log("deep render ok: the compaction banner lives inside the feed (#108)");
+
 // give deferred Solid effects a final tick before declaring victory
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
