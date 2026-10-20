@@ -1612,15 +1612,35 @@ export class Agent {
    * normalized text; unknown items are reported back instead of silently
    * dropped. Returns a short human-readable summary for the tool result.
    */
+  /**
+   * Apply surgical changes to todo.md.
+   *
+   * Each entry names an item by its exact (normalised) text and says what to do with it:
+   *   - `done` / `reopen` / `remove` act on an EXISTING checkbox line;
+   *   - `add` appends a new unchecked line, even when nothing matches.
+   *
+   * `action` is optional and defaults to `done`, so every existing caller and every model
+   * that only sends `{item, done}` keeps working.
+   *
+   * Why not whole-list replacement, which Codex (`update_plan`) and DeepSeek Harness
+   * (`todo/write`) both use: `todo.md` is a file the OPERATOR also edits, and it holds
+   * headings, notes and prose — not only checkboxes. A model re-emitting "the list" would
+   * silently drop anything it did not repeat, which is exactly the data loss `set_memory`
+   * caused before `#48` (measured: 1028 → 83 bytes). The `content` argument still exists
+   * for a deliberate restructure.
+   */
   async updateTodoItems(
-    updates: { item: string; done: boolean }[],
+    updates: { item: string; done?: boolean; action?: "done" | "reopen" | "add" | "remove" }[],
     by = "agent",
   ): Promise<string> {
     const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
     const lines = this.todo.split("\n");
     let matched = 0;
+    let added = 0;
+    let removed = 0;
     const unmatched: string[] = [];
     for (const u of updates) {
+      const action = u.action ?? (u.done === false ? "reopen" : "done");
       const target = norm(u.item);
       // find the LAST matching checkbox line (later duplicates win)
       let idx = -1;
@@ -1632,27 +1652,54 @@ export class Agent {
           break;
         }
       }
+      if (action === "add") {
+        // An ADD repeats: the caller may add several items with the same wording, and
+        // refusing because one already exists would make "add" unpredictable. But adding
+        // the SAME text twice in one call is a mistake, so collapse it.
+        if (idx !== -1) {
+          unmatched.push(`${u.item} (already present — not added twice)`);
+          continue;
+        }
+        lines.push(`- [ ] ${u.item.trim()}`);
+        added++;
+        continue;
+      }
       if (idx === -1) {
         unmatched.push(u.item);
         continue;
       }
-      lines[idx] = lines[idx]!.replace(/^(.* \[)[ xX](\].*)$/, (_s, a, b) => `${a}${u.done ? "x" : " "}${b}`);
+      if (action === "remove") {
+        lines.splice(idx, 1);
+        removed++;
+        continue;
+      }
+      const checked = action === "done";
+      lines[idx] = lines[idx]!.replace(/^(.* \[)[ xX](\].*)$/, (_s, a, b) => `${a}${checked ? "x" : " "}${b}`);
       matched++;
     }
-    if (matched > 0) {
+    if (matched > 0 || added > 0 || removed > 0) {
+      // trailing blank lines from a removal are tidied so the file does not grow a gap
+      while (lines.length > 1 && lines[lines.length - 1]!.trim() === "" && lines[lines.length - 2]!.trim() === "")
+        lines.pop();
       this.todo = lines.join("\n");
       await fs.writeFile(this.todoFile, this.todo, "utf8");
       await this.log.append("todo", this.currentSession, this.currentBranch, {
         event: "items",
         by,
         matched,
+        ...(added ? { added } : {}),
+        ...(removed ? { removed } : {}),
         ...(unmatched.length ? { unknown: unmatched } : {}),
       });
     }
-    const parts = [`${matched} item(s) updated`];
+    const parts: string[] = [];
+    if (matched) parts.push(`${matched} item(s) updated`);
+    if (added) parts.push(`${added} item(s) added`);
+    if (removed) parts.push(`${removed} item(s) removed`);
+    if (!parts.length) parts.push("nothing changed");
     if (unmatched.length)
       parts.push(
-        `NOT FOUND in todo.md: ${unmatched.map((s) => `"${s}"`).join(", ")} — check get_todo and retry with the exact wording`,
+        `NOT FOUND in todo.md: ${unmatched.map((s) => `"${s}"`).join(", ")} — check get_todo and retry with the exact wording, or use action:"add" to create it`,
       );
     return parts.join(". ");
   }
@@ -2746,13 +2793,23 @@ export class Agent {
         }
         if (call.function.name === "set_todo") {
           const a = safeParse(call.function.arguments);
-          // Preferred: surgical checkbox updates — no full rewrite, no risk
-          // of mangling unrelated sections, cheap enough to do mid-task.
+          // Surgical item changes — no full rewrite, so the operator's own headings and
+          // notes in todo.md survive. `action` decides what to do; `done` is kept as
+          // shorthand so a model that only sends {item, done} still works.
+          const ACTIONS = new Set(["done", "reopen", "add", "remove"] as const);
           const updates = Array.isArray(a.updates)
             ? a.updates
                 .map((u: unknown) => {
-                  const o = (u ?? {}) as { item?: unknown; done?: unknown };
-                  return { item: String(o.item ?? ""), done: o.done !== false };
+                  const o = (u ?? {}) as { item?: unknown; done?: unknown; action?: unknown };
+                  const raw = String(o.action ?? "");
+                  const action = ACTIONS.has(raw as never)
+                    ? (raw as "done" | "reopen" | "add" | "remove")
+                    : undefined;
+                  return {
+                    item: String(o.item ?? ""),
+                    done: o.done !== false,
+                    ...(action ? { action } : {}),
+                  };
                 })
                 .filter((u: { item: string }) => u.item.trim())
             : [];
@@ -2765,7 +2822,8 @@ export class Agent {
           if (!content.trim()) {
             await this.answerMeta(
               call,
-              "nothing to do: pass updates:[{item,done}] to check items off, or content to replace the whole list",
+              "nothing to do: pass updates:[{item, action}] to change items " +
+                "(action: done | reopen | add | remove), or content to replace the whole list",
             );
             continue;
           }
@@ -4571,20 +4629,29 @@ function allToolSpecs(): ReturnType<typeof toolSpecs> {
       function: {
         name: "set_todo",
         description:
-          "Update the operator-visible task list (todo.md). PREFERRED: pass updates to check specific " +
-          "items off as you finish them — cheap, surgical, no risk of mangling other sections. Only pass " +
-          "content to rewrite the whole list when restructuring it. Call this promptly on every item you complete.",
+          "Update the operator-visible task list (todo.md). PREFERRED: pass updates to change specific " +
+          "items — cheap, surgical, no risk of mangling other sections or the operator's own notes. " +
+          "Each entry names an item by its exact text and says what to do: done (default), reopen, " +
+          "add, or remove. Only pass content to rewrite the whole list when restructuring it. " +
+          "Call this promptly on every item you complete.",
         parameters: {
           type: "object",
           properties: {
             updates: {
               type: "array",
-              description: "surgical checkbox flips — match items by their exact text in todo.md",
+              description: "surgical item changes — match existing items by their exact text in todo.md",
               items: {
                 type: "object",
                 properties: {
-                  item: { type: "string", description: "checkbox item text (without the \"- [ ]\" marker)" },
-                  done: { type: "boolean", description: "true = check off, false = reopen (default true)" },
+                  item: { type: "string", description: "item text (without the \"- [ ]\" marker)" },
+                  action: {
+                    type: "string",
+                    enum: ["done", "reopen", "add", "remove"],
+                    description:
+                      "done = check off (default), reopen = uncheck, add = append a new item " +
+                      "(works even when nothing matches), remove = delete the line",
+                  },
+                  done: { type: "boolean", description: "shorthand for action done/reopen (default true)" },
                 },
                 required: ["item"],
               },

@@ -1425,3 +1425,80 @@ test("reaching the round cap with auto-continue ON starts the NEXT round (#round
     },
   );
 });
+
+test("set_todo can ADD an item — a new one is no longer just 'unknown' (#todo-add)", async () => {
+  // Report: the surgical path could only flip EXISTING checkboxes, so adding an item meant
+  // rewriting the whole list — the exact risk `updates` exists to avoid, and the operator's
+  // own headings/notes in todo.md would be at the mercy of a model re-emitting them.
+  //
+  // Codex (`update_plan`) and DeepSeek Harness (`todo/write`) both replace the whole list,
+  // which is safe when the harness OWNS the list. todo.md is a file the OPERATOR edits, so
+  // replacement stays opt-in (`content`) and `action:"add"` fills the gap instead.
+  const results: string[] = [];
+  let n = 0;
+  const chat: ChatFn = async (_c, messages) => {
+    const i = n++;
+    if (i > 0) {
+      const t = [...messages].reverse().find((m) => m.role === "tool");
+      results.push(t?.content ?? "");
+    }
+    if (i === 0)
+      return reply("adding", [
+        tc("a1", "set_todo", {
+          updates: [
+            { item: "brand new task", action: "add" },
+            { item: "write the parser", action: "done" },
+          ],
+        }),
+      ]);
+    if (i === 1)
+      return reply("removing", [
+        tc("a2", "set_todo", {
+          updates: [
+            { item: "ship it", action: "remove" },
+            { item: "brand new task", action: "reopen" },
+          ],
+        }),
+      ]);
+    return reply("done");
+  };
+  await withAgent({ chatFn: chat, autoContinue: false }, async (agent) => {
+    await agent.setGoal("work the list");
+    await agent.setTodo("# plan\n\n## steps\n- [ ] write the parser\n- [ ] ship it\n");
+    agent.enqueuePrompt("go");
+    agent.start("t");
+    await agent.settled();
+
+    // PRECONDITION + property: the operator's structure is INTACT — headings and the
+    // section survive, which is the whole reason this is not a whole-list rewrite
+    assert.match(agent.todo, /^# plan\n\n## steps\n/, `headings must survive: ${agent.todo}`);
+    assert.match(agent.todo, /- \[x\] write the parser/, "done still works");
+    assert.match(agent.todo, /- \[ \] brand new task/, "the ADDED item is present and unchecked");
+    assert.match(results[0]!, /1 item\(s\) added/, `the reply must say what happened: ${results[0]}`);
+    // second pass: `ship it` removed, `brand new task` reopened
+    assert.doesNotMatch(agent.todo, /ship it/, "remove deletes the line");
+    assert.match(agent.todo, /- \[ \] brand new task/, "reopen unchecks it again");
+    assert.match(results[1]!, /1 item\(s\) removed/, `got: ${results[1]}`);
+    assert.equal(
+      (agent.todo.match(/brand new task/g) ?? []).length,
+      1,
+      "adding the same text twice in one call must not duplicate it",
+    );
+    await agent.dispose();
+  });
+});
+
+test("set_todo keeps its old {item, done} shape working (#todo-add)", async () => {
+  // The `action` field is additive: a model (or a saved prompt) that only sends
+  // {item, done} must behave exactly as before. `done:false` means reopen.
+  await withAgent({ chatFn: async () => reply("ok"), autoContinue: false }, async (agent) => {
+    await agent.setTodo("- [x] one\n- [ ] two\n");
+    const note = await agent.updateTodoItems([
+      { item: "one", done: false },
+      { item: "two", done: true },
+    ]);
+    assert.equal(agent.todo, "- [ ] one\n- [x] two\n", "done:false reopens, done:true checks");
+    assert.match(note, /2 item\(s\) updated/);
+    await agent.dispose();
+  });
+});
