@@ -1176,6 +1176,31 @@ const isTimelineLive = (): boolean => {
       renderedNoteEvents: RENDERED_NOTE_EVENTS,
     }) as Ev[],
   );
+  /**
+   * Each row paired with the row ABOVE it, computed once per rebuild.
+   *
+   * WHY THIS EXISTS (#178): the template used to pass `prev={chatEvents()[i() - 1]}`
+   * directly. Inside `<For>`, `i` is a SIGNAL (`mapArray` does `indexes[j] = createSignal(i)`
+   * and re-runs `indexes[j](j)` when slots shift), so every one of the ~16,600 rendered rows
+   * became a SUBSCRIBER of the whole `chatEvents()` memo through that read. Any change to
+   * the timeline therefore re-ran that lookup in every row, and each re-run walked the memo's
+   * dependency graph — on a large session the UI was unusable on load.
+   *
+   * Pairing up front is O(n) once per rebuild and gives each row a plain value: `prev` is
+   * then a prop comparison, not a reactive dependency on the entire array. `groupedWith()`
+   * only needs the immediately preceding row, so nothing else is lost.
+   */
+  const rowsWithPrev = createMemo(() => {
+    const rows = chatEvents();
+    // one array of {row, prev, next} — same length and order as `chatEvents()`.
+    // `next` is what lets the row decide its own spacing instead of leaving it to a
+    // `:has(+ .msg.grouped)` selector that every row pays for on every recalc.
+    return rows.map((row, idx) => ({
+      row,
+      prev: idx > 0 ? rows[idx - 1] : undefined,
+      next: idx < rows.length - 1 ? rows[idx + 1] : undefined,
+    }));
+  });
   // Reference-stable echo rows: chatEvents re-runs on EVERY event burst, and
   // rebuilding the echo objects each time handed Solid's <For> a brand-new
   // reference — remounting the pending row (and, with the tail-anchor race,
@@ -3549,21 +3574,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <Show when={chatEvents().length > 0} fallback={
               <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
             }>
-              <For each={chatEvents()}>
-                {(e, i) => (
+              <For each={rowsWithPrev()}>
+                {(pair) => (
                   <MessageRow
-                    e={e}
-                    prev={chatEvents()[i() - 1]}
+                    e={pair.row}
+                    // plain value: NOT `chatEvents()[i() - 1]` — see `rowsWithPrev`
+                    prev={pair.prev}
+                    next={pair.next}
                     // #32: only worth labelling when the session HAS more than one
                     // branch (a fork). With a single branch every row repeated the
                     // same constant.
                     showBranch={branches().length > 1}
-                    res={pairInfo().resFor.get(e.id)}
+                    res={pairInfo().resFor.get(pair.row.id)}
                     // #54: an unpaired tool_result is rendered as a COMPLETED
                     // tool row of its own — its call fell out of the events
                     // window while the command ran. Without this the result was
                     // a bare anonymous row and the run read as unfinished.
-                    orphan={pairInfo().orphanCalls.has(e.id)}
+                    orphan={pairInfo().orphanCalls.has(pair.row.id)}
                     onOption={(t) => void sendText(t)}
                     // #55: pass the ACCESSOR, not the Set. A <For> child is a
                     // non-reactive closure, so `answeredQuestionIds()` was
@@ -3581,7 +3608,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     agentActive={
                       // #146: the DISPLAYED session must be the live one, not
                       // merely the same agent (#120, #133)
-                      isTimelineLive() && isOwnLiveWork(e)
+                      isTimelineLive() && isOwnLiveWork(pair.row)
                     }
                     // A row that EXPANDS when its result arrives (a `<details>` opening,
                     // a tool body growing) is one of the growth paths — decided by the
@@ -3594,10 +3621,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       // #122: only an OPERATOR prompt can be withdrawn. A harness
                       // prompt has no composer draft to return to — cancelling it
                       // would discard a system message the operator never wrote.
-                      e.data?.source === "user" &&
-                      e.data?.pending && e.data?.promptId && e.data?.sent !== true
+                      pair.row.data?.source === "user" &&
+                      pair.row.data?.pending && pair.row.data?.promptId && pair.row.data?.sent !== true
                         ? () => {
-                            const pid = String(e.data.promptId);
+                            const pid = String(pair.row.data.promptId);
                             api(`/api/agents/${selected()}/prompt/cancel`, {
                               method: "POST",
                               headers: { "content-type": "application/json" },
@@ -3620,10 +3647,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       // reached the model, so there is nothing to fork from —
                       // cancel (✕) returns its text to the composer instead.
                       // A withdrawn message likewise never reached the model.
-                      e.type === "prompt" &&
-                      e.data?.source === "user" &&
-                      !(e.data?.pending && e.data?.sent !== true) &&
-                      !e.data?.cancelled &&
+                      pair.row.type === "prompt" &&
+                      pair.row.data?.source === "user" &&
+                      !(pair.row.data?.pending && pair.row.data?.sent !== true) &&
+                      !pair.row.data?.cancelled &&
                       // #129: do NOT offer the editor while the agent is live.
                       //
                       // `editPromptAt` refuses a running agent ("agent is running —
@@ -3636,7 +3663,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       // The server-side guard is correct and stays; this just stops
                       // offering an action that cannot succeed.
                       !isSelLive()
-                        ? () => setEditing({ eventId: e.id, text: String(e.data?.text ?? "") })
+                        ? () => setEditing({ eventId: pair.row.id, text: String(pair.row.data?.text ?? "") })
                         : undefined
                     }
                   />
@@ -5093,7 +5120,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: Ev; next?: Ev; res?: Ev; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Grouping is `groupedWith()` from ./row-grouping — extracted so the rule can
@@ -5101,6 +5128,16 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; showB
   // and the tests re-implemented it, which is why deleting the real #49 fix left
   // them all green.
   const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
+  /**
+   * Whether the row BELOW continues this run — computed here rather than in CSS.
+   *
+   * The spacing around a run needs three facts: is this a continuation (`grouped`), does a
+   * continuation follow, and does one follow THIS row. `:has(+ .msg.grouped)` could answer
+   * the last two, but it makes the style engine run a sibling-matching pass for EVERY row on
+   * every style recalc — and this feed renders ~1,100 rows on open (#178). The component
+   * already knows the next event, so the answer is free here and the selector disappears.
+   */
+  const nextGrouped = !!props.next && groupedWith(e as RowLike, props.next as RowLike);
 
   // non-chat-looking events become divider lines
   if (e.type === "fork") {
@@ -5210,7 +5247,15 @@ function MessageRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; showB
 
   return (
     <div
-      class={"msg" + (grouped ? " grouped" : "") + (e.data?.pending ? " pending" : "") + (e.data?.cancelled ? " withdrawn" : "")}
+      class={
+        "msg" +
+        (grouped ? " grouped" : "") +
+        // the row BELOW continues this run — replaces a `:has(+ .msg.grouped)` selector,
+        // which made every row pay for a sibling match on every recalc (#178)
+        (nextGrouped ? " next-grouped" : "") +
+        (e.data?.pending ? " pending" : "") +
+        (e.data?.cancelled ? " withdrawn" : "")
+      }
       data-eid={e.id}
     >
       {/* grouped rows keep the same geometry as the row that started the

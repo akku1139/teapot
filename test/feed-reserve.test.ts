@@ -265,3 +265,50 @@ test("dispose() releases every observer, so a re-arm cannot leak (#177)", () => 
   }
   void asked;
 });
+
+test("adoption measures all rows BEFORE writing any, not read/write per row (#178)", () => {
+  // Reported: "開いただけで重すぎてまともに操作できない" on v0.29.40.
+  //
+  // At mount this module adopted every row in the feed and, for each one, did
+  // `getBoundingClientRect()` (forces layout) and then `el.style.setProperty(...)` (dirties
+  // style). Read → write → read → write, once per row. On a real session that is ~16,600
+  // forced reflows in one task — layout thrashing — which is why opening the UI froze it.
+  //
+  // Batching is the fix: all reads, then all writes, so the browser flushes layout once.
+  // The invariant is the ORDER, so record the interleaving.
+  (globalThis as unknown as { __obs: (() => void)[] }).__obs = [];
+  const ops: string[] = [];
+  const rows = Array.from({ length: 20 }, (_, i) => {
+    const style = new Map<string, string>();
+    return {
+      style: {
+        setProperty: (k: string, v: string) => {
+          ops.push("write");
+          style.set(k, v);
+        },
+        getPropertyValue: (k: string) => style.get(k) ?? "",
+      },
+      getBoundingClientRect: () => {
+        ops.push("read");
+        return { width: 400, height: 100 + i };
+      },
+      offsetWidth: 400,
+      offsetHeight: 100 + i,
+      __style: style,
+    } as unknown as HTMLElement;
+  });
+  reserveRowSizes(fakeRoot(rows));
+
+  // PRECONDITION: every row was really measured and reserved, or the order proves nothing
+  assert.equal(ops.filter((o) => o === "read").length, rows.length, "every row must be measured once");
+  assert.equal(ops.filter((o) => o === "write").length, rows.length, "every row must be reserved once");
+
+  // the last read must come before the first write: no interleaving anywhere
+  const lastRead = ops.lastIndexOf("read");
+  const firstWrite = ops.indexOf("write");
+  assert.ok(
+    lastRead < firstWrite,
+    `reads and writes interleaved (last read at ${lastRead}, first write at ${firstWrite}) — ` +
+      `each pair forces a reflow, so ${rows.length} rows means ${rows.length} layout flushes (#178)`,
+  );
+});

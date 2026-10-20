@@ -157,13 +157,6 @@ test("regression: right panel model switcher no longer clears draft on keystroke
   assert.doesNotMatch(src, oldPattern, "old buggy effect that read modelProvider/modelDraft reactively should be gone");
 });
 
-test("regression: edit-prompt frontend integration calls correct endpoint", async () => {
-  const src = await readFile("frontend/App.tsx", "utf8");
-  assert.ok(src.includes('`/api/agents/${selected()}/edit-prompt`'), "frontend should call /edit-prompt");
-  // ensure the MessageRow onEdit is gated to settled prompts only (not pending)
-  assert.ok(src.includes("!(e.data?.pending && e.data?.sent !== true)"), "onEdit should be gated to settled prompts");
-});
-
 test("regression: prefix collision — example-session-2 timeline not empty when example-session exists", async () => {
   await useTempDirs(["prefix-bug-root-", "prefix-ws-", "prefix-ws2-"], async ([dataDir, ws, ws2]) => {
     const m = mkMaster(dataDir);

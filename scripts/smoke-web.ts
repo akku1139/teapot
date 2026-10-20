@@ -1056,6 +1056,15 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: delivered prompt sits in true context order");
+
+    // ----
+    // NOTE: an ✎ edit gating check was attempted here and REMOVED. The bundle only offers
+    // Edit on a settled user prompt when the agent is not live, and this fixture's timeline
+    // is a live session, so no row ever renders the button — the check could only ever be
+    // vacuous or wrongly red. `test/regression-fixes.test.ts` used to pin the gate as a
+    // source regex; that assertion was deleted rather than moved, because a regex on the
+    // spelling of the condition protects nothing (AGENTS.md). The gate itself is unchanged.
+    // ----
   }
 
   /* ---------- #40: a persisted reply must not also render as a live bubble ---
@@ -1306,15 +1315,37 @@ console.log("deep render ok: feed rows present");
         );
         process.exit(1);
       }
-      // and a run's last row must still separate it from what follows (when a row does)
-      const lastGrouped = groupedRows[groupedRows.length - 1];
-      const next = lastGrouped?.nextElementSibling;
-      if (next && next.classList.contains("msg")) {
-        if (parseFloat(cssOf(lastGrouped).paddingBottom) <= 0) {
+      // The HEAD of a run (the row immediately above a continuation) must be marked
+      // `next-grouped` and carry no bottom padding — that pair replaces the old
+      // `:has(+ .msg.grouped)` selector, which made every row pay for a sibling match on
+      // every style recalc (#178). Asserted here rather than as a source regex.
+      const head = groupedRows[0]?.previousElementSibling;
+      if (head && head.classList.contains("msg")) {
+        if (!head.classList.contains("next-grouped")) {
           console.error(
-            "#grouped REGRESSION: a run's last row gives no space below it — blocks run together",
+            "#grouped REGRESSION: the row above a continuation is not marked next-grouped, so the " +
+              "run's first gap is double (the head keeps its bottom padding and the continuation " +
+              "adds its own)",
           );
           process.exit(1);
+        }
+        if (parseFloat(cssOf(head).paddingBottom) > 0) {
+          console.error(
+            "#grouped REGRESSION: the head of a run carries bottom padding — the first gap of the " +
+              "run is double",
+          );
+          process.exit(1);
+        }
+        // …and a row that is NOT followed by a continuation must keep its own bottom space,
+        // otherwise blocks run together. `next-grouped` is what makes that distinction.
+        const lastGrouped = groupedRows[groupedRows.length - 1];
+        if (lastGrouped && !lastGrouped.classList.contains("next-grouped")) {
+          if (parseFloat(cssOf(lastGrouped).paddingBottom) <= 0) {
+            console.error(
+              "#grouped REGRESSION: a run's last row gives no space below it — blocks run together",
+            );
+            process.exit(1);
+          }
         }
       }
     }

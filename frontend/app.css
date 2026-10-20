@@ -394,11 +394,14 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .msg.grouped { padding: 0 18px; }
 .embed.grouped { margin-top: var(--grouped-gap); }
 /* the FIRST continuation follows the head, so it gets the same gap; the head itself must
-   not also carry bottom padding, or the run's first gap is double */
-.msg:not(.grouped):has(+ .msg.grouped) { padding-bottom: 0; }
-.msg:not(.grouped):has(+ .msg.grouped) .embed { margin-bottom: 0; }
+   not also carry bottom padding, or the run's first gap is double.
+   `next-grouped` is set from the component, NOT `:has(+ .msg.grouped)` — a `:has()` here
+   makes the style engine run a sibling-matching pass for every row on every recalc, and
+   this feed renders ~1,100 rows on open (#178). The component already knows the next event. */
+.msg:not(.grouped).next-grouped { padding-bottom: 0; }
+.msg:not(.grouped).next-grouped .embed { margin-bottom: 0; }
 /* the run ENDS here: restore the space below, which is what separates blocks */
-.msg.grouped:not(:has(+ .msg.grouped)) { padding-bottom: 3px; }
+.msg.grouped:not(.next-grouped) { padding-bottom: 3px; }
 /* each row keeps ALL FOUR corners rounded: squaring the left ones to signal
    "continuation" read as a stack of boxes with a flattened edge ("角丸になってなくて").
    Grouping is carried by the missing icon and the shared head. */

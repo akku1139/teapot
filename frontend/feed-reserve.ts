@@ -87,11 +87,27 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
     onReserve?.();
   };
 
+  /**
+   * Rows adopted in the current batch, measured together (see `flushMeasure()`).
+   *
+   * #178: measuring each row as it was adopted meant `getBoundingClientRect()` → write style →
+   * `getBoundingClientRect()` → write style, once per row. On a large session (~16,600 rows)
+   * that is ~16,600 forced reflows — layout thrashing — and it ran on load, which is why the
+   * UI was unusable on open.
+   */
+  let pending: HTMLElement[] = [];
+  /** read ALL pending boxes first, then write ALL reservations: one layout flush per batch */
+  const flushMeasure = () => {
+    if (!pending.length) return;
+    const batch = pending;
+    pending = [];
+    const boxes = batch.map((el) => el.getBoundingClientRect()); // reads only
+    for (let i = 0; i < batch.length; i++) reserve(batch[i]!, boxes[i]!); // writes only
+  };
   const observe = (el: HTMLElement) => {
-    // A row already laid out (the visible ones at mount) can be measured immediately; the
-    // observers only need to handle rows that start skipped and rows that change size.
-    const rect = el.getBoundingClientRect();
-    if (rect.height > 0) reserve(el, rect);
+    // queued: the caller (`adoptAll` / the MutationObserver callback) flushes the whole batch
+    // once, so this never reads layout per row.
+    pending.push(el);
   };
 
   const io =
@@ -145,6 +161,7 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
    */
   const adoptAll = () => {
     for (const el of root.querySelectorAll<HTMLElement>("[data-eid]")) adopt(el);
+    flushMeasure();
   };
   adoptAll();
 
@@ -169,6 +186,8 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
               for (const inner of el.querySelectorAll?.<HTMLElement>("[data-eid]") ?? []) adopt(inner);
             }
           }
+          // one batched measurement for everything this callback adopted
+          flushMeasure();
         })
       : null;
   mo?.observe(root, { childList: true, subtree: true });
