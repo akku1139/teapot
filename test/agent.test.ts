@@ -1374,3 +1374,54 @@ test("auto-continue is suppressed while a background bash runs; its exit wakes t
     await agent.dispose();
   });
 });
+
+test("reaching the round cap with auto-continue ON starts the NEXT round (#roundcap)", async () => {
+  // REPORTS: a session hit `⏸ round cap 200 turns`, logged `round complete`, and then sat
+  // idle instead of continuing. The cap is documented as a soft checkpoint that only
+  // LOGS — the round ends and auto-continue starts another — so if the agent goes idle
+  // here, something between the cap and the auto-continue gate is wrong.
+  //
+  // The distinction that matters: the existing cap test uses `autoContinue: false`, so it
+  // proves the round ENDS without asserting that anything CONTINUES. That is exactly the
+  // half that was never covered.
+  //
+  // BOUNDED on purpose: a mock that always calls a tool with auto-continue on never goes
+  // idle, so `settled()` would wait forever (measured — this test hung for 400 s before
+  // the bound existed). The mock stops the agent itself once it has seen enough.
+  let n = 0;
+  let caps = 0;
+  let turnsAfter = 0;
+  // `withAgent` hands the agent to the callback, but the chatFn runs before that, so the
+  // agent is captured on the first turn instead of being referenced before it exists.
+  let self: { stop: (why: string) => void } | null = null;
+  await withAgent(
+    {
+      maxTurnsPerRound: 3,
+      autoContinue: true,
+      chatFn: async (): Promise<LlmResult> => {
+        n++;
+        // BOUND: without this the run never goes idle (always a tool call, always
+        // continue) and `settled()` waits forever — measured, 400 s.
+        if (n > 8) self?.stop("enough");
+        return reply(`step ${n}`, [tc(`t${n}`, "list_dir", {})] as never);
+      },
+    },
+    async (agent) => {
+      self = agent;
+      agent.setGoal("keep going"); // auto-continue needs an ACTIVE goal
+      agent.enqueuePrompt("go");
+      agent.start("test");
+      await agent.settled();
+      const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+      caps = events.filter((e) => dataOf(e).event === "round-turn-cap").length;
+      turnsAfter = agent.stats.turns;
+      // PRECONDITION: the cap was really reached, or "it continued" proves nothing
+      assert.ok(caps >= 1, `precondition: the round cap must have been hit; turns=${turnsAfter}`);
+      // THE PROPERTY: the first round stopped at 3, and MORE turns followed
+      assert.ok(
+        turnsAfter > 3,
+        `auto-continue must start another round after the cap (#roundcap); turns=${turnsAfter}`,
+      );
+    },
+  );
+});
