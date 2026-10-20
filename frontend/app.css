@@ -356,10 +356,19 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .tbl th { background: var(--bg-darkest); font-weight: 600; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
-/* A run of rows from the SAME actor (#75). The head is what identifies the actor,
-   so only the first row keeps its icon; the rest tighten up against it (no gap, no
-   rounded top) so the run reads as one block rather than N separate embeds. */
-.embed.grouped { margin-top: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+/* A run of rows from the SAME actor (#75). From the second row on there is no icon, and
+   the rows sit flush against each other (`margin-top: 0`) so a run reads as one group.
+
+   Each row keeps ALL FOUR corners rounded. An earlier version squared the left radii to
+   signal "continuation", which read as a stack of boxes with a flattened edge — the
+   report was "角丸になってなくて" (they are not rounded). The grouping is already
+   communicated by the missing icon and the shared head, so the shape does not need to
+   carry it too.
+
+   The rows' own vertical padding goes: `.msg`'s `padding: 3px` on every row in a run was
+   the "数px 謎の空間" between commands. */
+.embed.grouped { margin-top: 0; border-radius: 4px; }
+.msg.grouped { padding-bottom: 0; }
 .embed.fail { border-color: var(--err); }
 /* error-retry heartbeat — warning tone, distinct from hard failures */
 .embed.warn-embed { border-color: var(--warn); }
@@ -448,8 +457,6 @@ input[type="checkbox"] { accent-color: var(--acc); }
 }
 .copybtn:hover { color: var(--fg); filter: brightness(1.3); }
 .embed summary { display: flex; align-items: center; gap: 6px; }
-/* tool glyph in a result row whose call was evicted (#54) */
-.embed summary .iconmeta { flex-shrink: 0; font-size: 11px; }
 /* per-tool copy cluster pushed to the row's right edge */
 .toolcopy { margin-left: auto; display: flex; gap: 4px; flex-shrink: 0; }
 .msgfoot { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--dim); font-size: 11px; }

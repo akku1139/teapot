@@ -975,18 +975,18 @@ console.log("deep render ok: feed rows present");
       console.error(`#75 check could not find both rows (one=${!!one}, two=${!!two}) — vacuous`);
       process.exit(1);
     }
-    // the FIRST row of a run carries the icon: it is what identifies the actor
-    if (!one.head.includes("\u2699")) {
-      console.error(`#75 REGRESSION: the first row of a run must carry the actor icon, got ${JSON.stringify(one.head)}`);
-      process.exit(1);
-    }
-    // the SECOND must not — it continues the same actor's run
-    if (two.head.includes("\u2699")) {
-      console.error(
-        `#75 REGRESSION: both consecutive bash rows show an icon+label (#75) — expected only the first` +
-          `\n  first : ${JSON.stringify(one.head)}\n  second: ${JSON.stringify(two.head)}`,
-      );
-      process.exit(1);
+    // NEITHER row may carry a tool glyph. `⚙` was the default for every tool and no
+    // tool ever overrode it, so it identified nothing — the tool NAME is already in the
+    // row's author slot. It also differed between a run's head (present) and its
+    // continuations (absent), which is the inconsistency that got reported.
+    for (const [name, row] of [["first", one], ["second", two]]) {
+      if (row.head.includes("\u2699")) {
+        console.error(
+          `#75 REGRESSION: the ${name} row carries a meaningless \u2699 glyph — the tool name ` +
+            `already says what ran. head=${JSON.stringify(row.head)}`,
+        );
+        process.exit(1);
+      }
     }
     if (!/\bgrouped\b/.test(two.cls)) {
       console.error(`#75 REGRESSION: the continuing row is not marked grouped — cls=${JSON.stringify(two.cls)}`);
@@ -998,6 +998,59 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: consecutive tool rows group under one head (#75)");
+
+    // ---- a grouped run must JOIN: square corners, no dead space between rows ----
+    //
+    // Reported: "グループ化されたツールログは角丸になってなくて、しかも下に数px 謎の空間がある".
+    // The first half was wrong in the other direction — only the LEFT radii were zeroed,
+    // so a run looked like separate boxes with a flattened edge — and the space was
+    // `.msg`'s own `padding: 3px` on every row inside the run.
+    //
+    // Measured as a CSS contract (happy-dom does no layout), which is how this file
+    // asserts geometry everywhere.
+    {
+      const cssOf = (el) => w.document.defaultView.getComputedStyle(el);
+      const groupedRows = [...w.document.querySelectorAll(".msg.grouped")];
+      if (groupedRows.length === 0) {
+        console.error("#grouped REGRESSION: no grouped rows to measure — the check is vacuous");
+        process.exit(1);
+      }
+      for (const [i, row] of groupedRows.entries()) {
+        // the row's own vertical padding is the dead space
+        const pad = cssOf(row);
+        if (pad.paddingBottom !== "0px") {
+          console.error(
+            `#grouped REGRESSION: grouped row ${i} keeps padding-bottom=${pad.paddingBottom} — ` +
+              "that is the few pixels of dead space between commands",
+          );
+          process.exit(1);
+        }
+        const embed = row.querySelector(".embed");
+        if (!embed) {
+          console.error(`#grouped REGRESSION: grouped row ${i} has no embed`);
+          process.exit(1);
+        }
+        const r = cssOf(embed);
+        // ALL FOUR corners stay rounded. Grouping is carried by the missing icon and the
+        // shared head; squaring the corners to signal "continuation" read as a flattened
+        // box and was reported as "角丸になってなくて".
+        for (const corner of [
+          "borderTopLeftRadius",
+          "borderTopRightRadius",
+          "borderBottomLeftRadius",
+          "borderBottomRightRadius",
+        ]) {
+          if (r[corner] !== "4px") {
+            console.error(
+              `#grouped REGRESSION: a grouped row's ${corner} is ${r[corner]}, not 4px — ` +
+                "every corner must stay rounded",
+            );
+            process.exit(1);
+          }
+        }
+      }
+    }
+    console.log("deep render ok: a grouped run joins — rounded corners, no dead space (#grouped)");
   }
 
   /* ---------- #75: an INVISIBLE row must not split a tool run ------------------
@@ -1059,9 +1112,12 @@ console.log("deep render ok: feed rows present");
       console.error(`#75 check could not find all three rows (${!!one}/${!!two}/${!!three}) — vacuous`);
       process.exit(1);
     }
-    if (one.head.includes("\u2699") === false) {
+    // No glyph on ANY row of the run: `⚙` defaulted for every tool and no tool ever
+    // overrode it, so it identified nothing (the tool name is in the author slot) and it
+    // differed between a head and its continuations — the reported inconsistency.
+    if (one.head.includes("\u2699")) {
       console.error(
-        `#75 REGRESSION: the FIRST row of a run must carry the icon, got ${JSON.stringify(one.head)}`,
+        `#75 REGRESSION: a tool row carries a meaningless \u2699 glyph, got ${JSON.stringify(one.head)}`,
       );
       process.exit(1);
     }
@@ -1232,7 +1288,10 @@ console.log("deep render ok: feed rows present");
     const rowFor = (needle) => {
       for (const d of w.document.querySelectorAll(".embed")) {
         const sm = d.querySelector("summary");
-        if (sm && sm.textContent.includes(needle)) return { head: sm.textContent.trim() };
+        // the ROW class carries `grouped`; `.embed` itself only carries `embed grouped`
+        const row = d.closest(".msg");
+        if (sm && sm.textContent.includes(needle))
+          return { head: sm.textContent.trim(), cls: `${row?.className ?? ""} ${d.className}` };
       }
       return null;
     };
@@ -1242,11 +1301,20 @@ console.log("deep render ok: feed rows present");
       console.error(`tool-separation check could not find both rows (${!!wrote}/${!!bash}) — vacuous`);
       process.exit(1);
     }
-    if (!bash.head.includes("\u2699")) {
+    // The signal is the `grouped` CLASS, not a glyph: a different tool must start its
+    // own row. This used to test for `⚙`, which no longer exists — every tool row now
+    // omits it, because it was the same for all of them and identified nothing.
+    if (/\bgrouped\b/.test(bash.cls)) {
       console.error(
-        `SEPARATION REGRESSION: the bash after a write_file has no icon of its own` +
-          `\n  write_file: ${JSON.stringify(wrote.head)}\n  bash      : ${JSON.stringify(bash.head)}`,
+        `SEPARATION REGRESSION: the bash after a write_file was grouped into its run` +
+          `\n  write_file: ${JSON.stringify(wrote.head)} cls=${wrote.cls}` +
+          `\n  bash      : ${JSON.stringify(bash.head)} cls=${bash.cls}`,
       );
+      process.exit(1);
+    }
+    // and the write_file row it follows must NOT have been grouped into anything either
+    if (/\bgrouped\b/.test(wrote.cls)) {
+      console.error(`SEPARATION REGRESSION: the write_file row was itself marked grouped: ${wrote.cls}`);
       process.exit(1);
     }
     console.log("deep render ok: a different tool starts its own block, not a grouped row");

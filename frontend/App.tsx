@@ -4752,8 +4752,10 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentAct
   // arrived kept the pre-result label and body for good: only the class (re-read
   // from the prop) changed. See the note on `res` above.
   const derived = createMemo(() => {
-  // per-tool summary line: [icon, label, hint]
-  let icon = "⚙";
+  // per-tool summary line: [label, hint]. There is no icon: the default was "⚙" for
+  // every tool and no case ever overrode it, so it identified nothing — the tool NAME
+  // is already in the row's author slot, and a grouped row showed no ⚙ at all, which is
+  // the inconsistency this removes.
   let label = name;
   let hint: string | null = "";
   let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
@@ -4924,7 +4926,7 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentAct
   } catch {
     /* fall back to the generic view on anything unexpected */
   }
-    return { icon, label, hint, body };
+    return { label, hint, body };
   });
 
   return (
@@ -4938,13 +4940,10 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentAct
       }}
     >
       <summary>
-        {/* a GROUPED row keeps its command (you still need to know what ran) but
-            drops the repeated ⚙, so a run of commands reads as one block instead
-            of N unrelated ones (#75). No leading space when grouped — the label
-            already carries its own marker ("$ ", "⏳ ", …). */}
-        <b>
-          {grouped ? derived().label : `${derived().icon} ${derived().label}`}
-        </b>
+        {/* A GROUPED row keeps its command (you still need to know what ran) but drops
+            the repeated marker, so a run of commands reads as one block instead of N
+            unrelated ones (#75). The label already carries its own marker ("$ ", "⏳ "). */}
+        <b>{derived().label}</b>
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
         </Show>
@@ -5256,7 +5255,6 @@ function SwitchContent(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; on
       return (
         <details class={"embed " + (ok ? "" : "fail")} open={props.orphan}>
           <summary>
-            <span class="iconmeta">⚙</span>
             <span class="meta">
               {/* the call is gone, so the command is too — show the tool and
                   the outcome rather than inventing an argument that was never
