@@ -1795,7 +1795,14 @@ if (active().length === 0) wake();
   }
 
   /** sessions root + helpers */
-  private sessionsRoot(): string {
+  /**
+   * Where session directories live.
+   *
+   * Public: it is the layout contract every part of the harness depends on, and a test
+   * that plants a directory (a foreign manifest, an impostor owner) needs the same path
+   * the master resolves rather than a re-derivation that can drift from it.
+   */
+  sessionsRoot(): string {
     return path.join(this.config.dataDir, "sessions");
   }
 

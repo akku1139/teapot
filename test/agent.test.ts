@@ -97,7 +97,7 @@ test("agent: plain answer ends round; finish marks goal done", async () => {
     assert.equal(agent.goal.status, "done");
     assert.equal(agent.stats.turns, 2);
     // finish must leave an answered tool_call in history (API-valid sequence)
-    const last = agent.messages.at(-1)!;
+    const last = agent.conversation.at(-1)!;
     assert.equal(last.role, "tool");
     assert.equal(last.tool_call_id, "c2");
     await agent.dispose();
@@ -130,8 +130,7 @@ test("stop() interrupts a hanging LLM call immediately", async () => {
   });
 });
 
-test("dispose() kills a running tool so master shutdown never hangs", async (t) => {
-  t.timeout?.(15_000);
+test("dispose() kills a running tool so master shutdown never hangs", { timeout: 15_000 }, async () => {
   const mock = mkMock(() =>
     reply("running a long job", [tc("l1", "bash", { command: "sleep 30", timeout_ms: 600_000 })]),
   );
@@ -176,7 +175,7 @@ test("stopping mid-stream keeps the partial reply in the log", async () => {
     assert.ok(m, "interrupted partial message must be logged");
     assert.match((m.data as Record<string, unknown>).content as string, /half-written rep/);
     // the in-memory conversation keeps it too (restart replays it from the log)
-    assert.ok(agent.messages.some((x) => x.role === "assistant" && x.content?.includes("half-written")));
+    assert.ok(agent.conversation.some((x) => x.role === "assistant" && x.content?.includes("half-written")));
     // stop is control flow — no error events
     assert.ok(!events.some((e) => e.type === "error"));
     await agent.dispose();
@@ -185,8 +184,7 @@ test("stopping mid-stream keeps the partial reply in the log", async () => {
 
 /* ---------- prompt mailbox ---------- */
 
-test("prompts sent mid-run are logged instantly and delivered at the next turn boundary", async (t) => {
-  t.timeout?.(20_000);
+test("prompts sent mid-run are logged instantly and delivered at the next turn boundary", { timeout: 20_000 }, async () => {
   let secondRoundUserTexts: (string | null)[] = [];
   const mock = mkMock((req): LlmResult => {
     if (req.n === 0)
@@ -260,7 +258,7 @@ test("image attachments flow into multimodal content parts and survive replay", 
     });
     await b.init();
     await b.load();
-    const restored = b.messages.find((m) => m.content_parts?.length);
+    const restored = b.conversation.find((m) => m.content_parts?.length);
     assert.ok(restored, "replay restores the multimodal message");
     assert.equal(restored!.content_parts![1]!.type, "image_url");
     await b.dispose();
@@ -305,14 +303,18 @@ test("background bash exit notifies the agent at the next turn boundary", async 
     for (let i = 0; i < 100 && !reportLogged; i++) {
       await new Promise((r) => setTimeout(r, 20));
       const evts = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
-      reportLogged = evts.some((e) => e.type === "prompt" && /Background job report/.test(String(e.data?.text ?? "")));
+      reportLogged = evts.some((e) => e.type === "prompt" && /Background job report/.test(String((e.data as { text?: unknown })?.text ?? "")));
     }
     assert.ok(reportLogged, "the background report must reach the conversation");
     const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
-    const report = events.find((e) => e.type === "prompt" && /Background job report/.test(String(e.data?.text ?? "")));
+    const report = events.find(
+      (e) => e.type === "prompt" && /Background job report/.test(String((e.data as { text?: unknown })?.text ?? "")),
+    );
     assert.ok(report, "the report must be logged as a prompt");
-    assert.match(String(report!.data.text), /bg\d+: FAILED with exit code 3/);
-    assert.match(String(report!.data.text), /\|\s*hi/); // output tail carried along
+    // the event payload is a loose record; name the field once rather than casting three times
+    const reportText = String((report!.data as { text?: unknown }).text ?? "");
+    assert.match(reportText, /bg\d+: FAILED with exit code 3/);
+    assert.match(reportText, /\|\s*hi/); // output tail carried along
     const note = events.find((e) => e.type === "system_note" && (e.data as any).event === "background-exit");
     assert.ok(note, "a background-exit timeline row must be logged");
     await agent.dispose();
@@ -386,16 +388,17 @@ test("delivered prompt emits a prompt-delivered note carrying its promptId", asy
     assert.ok(pids.includes(pid), "the first prompt's id must appear on a delivered note");
     // and every logged user prompt carries the same id the UI echoed with
     const logged = events.filter((e) => e.type === "prompt" && (e.data as any)?.source === "user");
-    for (const l of logged) assert.ok(l.data.promptId, "logged user prompts carry their echo id");
+    for (const l of logged)
+      assert.ok((l.data as { promptId?: unknown }).promptId, "logged user prompts carry their echo id");
     await agent.dispose();
   });
 });
 
-test("an agent without a goal text does not auto-continue forever", async (t) => {
-  t.timeout?.(15_000);
+test("an agent without a goal text does not auto-continue forever", { timeout: 15_000 }, async () => {
   let calls = 0;
   await withAgent({
-      chatFn: () => {
+      // async: `ChatFn` returns a Promise, and a sync function is not assignable
+      chatFn: async () => {
         calls++;
         return reply("ok, standing by");
       },
@@ -411,8 +414,7 @@ test("an agent without a goal text does not auto-continue forever", async (t) =>
   });
 });
 
-test("a queued prompt keeps a finished round going", async (t) => {
-  t.timeout?.(15_000);
+test("a queued prompt keeps a finished round going", { timeout: 15_000 }, async () => {
   const mock = mkMock(async (req): Promise<LlmResult> => {
     if (req.n === 0) {
       await new Promise((r) => setTimeout(r, 300)); // keep round one open
@@ -428,7 +430,7 @@ test("a queued prompt keeps a finished round going", async (t) => {
     agent.enqueuePrompt("second arrives right at the boundary");
     await agent.settled();
     assert.equal(agent.goal.status, "done");
-    const userMsgs = agent.messages.filter((m) => m.role === "user");
+    const userMsgs = agent.conversation.filter((m) => m.role === "user");
     assert.ok(userMsgs.some((m) => m.content === "second arrives right at the boundary"));
     await agent.dispose();
   });
@@ -436,12 +438,11 @@ test("a queued prompt keeps a finished round going", async (t) => {
 
 /* ---------- progress gating ---------- */
 
-test("progress prompts wait for real output, not just elapsed time", async (t) => {
-  t.timeout?.(25_000);
+test("progress prompts wait for real output, not just elapsed time", { timeout: 25_000 }, async () => {
   let big = false;
   let sawAsk = false;
   let harnessedAt = Infinity;
-  const mock: ChatFn = (_cfg, _messages, tools) => {
+  const mock: ChatFn = async (_cfg, _messages, tools) => {
     // the harness's dedicated progress-report ask: its prompt is the LAST
     // user message (it now carries tools too — the model answers by calling
     // report_progress, which keeps its tool ledger consistent)
@@ -498,7 +499,7 @@ test("requested progress report appears exactly ONCE (no voluntary re-report)", 
   // even the junk "(tool call)" placeholder)
   let reportedVoluntarily = false;
   let askedOnce = false;
-  const mock: ChatFn = (_cfg, messages) => {
+  const mock: ChatFn = async (_cfg, messages) => {
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (/Please give a brief progress report/.test(String(lastUser?.content ?? ""))) {
       askedOnce = true;
@@ -532,7 +533,7 @@ test("requested progress report appears exactly ONCE (no voluntary re-report)", 
         "no duplicate progress cards at the same moment",
       );
       // and the model history stays API-valid: no [user, tool] hole
-      const roles = agent.messages.map((m) => m.role);
+      const roles = agent.conversation.map((m) => m.role);
       for (let i = 0; i < roles.length; i++) {
         if (roles[i] === "tool") assert.equal(roles[i - 1], "assistant", `tool result at ${i} must follow an assistant turn`);
       }
@@ -544,7 +545,7 @@ test("requested progress report appears exactly ONCE (no voluntary re-report)", 
 test("requested report keeps a valid sequence even when the model calls other tools", async () => {
   // the assistant carrier message (with tool_calls) must be pushed BEFORE any
   // tool answer; skipping it produced [user, tool] which 400s on the next call
-  const mock: ChatFn = (_cfg, messages) => {
+  const mock: ChatFn = async (_cfg, messages) => {
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (/Please give a brief progress report/.test(String(lastUser?.content ?? ""))) {
       // model ignores the ask and calls something else entirely
@@ -561,7 +562,7 @@ test("requested report keeps a valid sequence even when the model calls other to
       agent.enqueuePrompt("go");
       agent.start("t");
       await agent.settled();
-      const roles = agent.messages.map((m) => m.role);
+      const roles = agent.conversation.map((m) => m.role);
       for (let i = 0; i < roles.length; i++) {
         if (roles[i] === "tool") {
           assert.ok(i > 0 && roles[i - 1] === "assistant", `[user, tool] hole at ${i}`);
@@ -601,7 +602,7 @@ test("editing a sent prompt forks and can summarize the abandoned tail", async (
     assert.equal((newPrompt.data as Record<string, unknown>).text, "create hello2.txt instead");
 
     // history keeps prefix + tail notes + edited prompt
-    const texts = agent.messages.map((m) => m.content ?? "");
+    const texts = agent.conversation.map((m) => m.content ?? "");
     assert.ok(texts.some((t) => t.includes("another timeline")), "summary note expected");
     assert.match(texts.find((t) => t.includes("Notes from what happened")) ?? "", /created hello\.txt/);
 
@@ -652,8 +653,7 @@ test("get_todo/set_todo round-trips the operator task list", async () => {
 
 /* ---------- ask_user parks the loop for the operator ---------- */
 
-test("ask_user waits for the operator and resumes with their answer", async (t) => {
-  t.timeout?.(15_000);
+test("ask_user waits for the operator and resumes with their answer", { timeout: 15_000 }, async () => {
   const mock = mkMock((req): LlmResult => {
     if (req.n === 0)
       return reply("need a decision", [
@@ -755,7 +755,7 @@ test("compaction keys off the API's prompt_tokens, not the char estimate", async
       await agent.settled();
     }
     assert.ok(agent.stats.compactions >= 1, "usage above budget must compact");
-    assert.match(agent.messages[0]!.content ?? "", /Context was compacted/);
+    assert.match(agent.conversation[0]!.content ?? "", /Context was compacted/);
     await agent.dispose();
   });
 });
@@ -772,7 +772,7 @@ test("compactNow forces a pass and reports whether it ran", async () => {
     const r = await agent.compactNow();
     assert.equal(r.ran, true);
     assert.equal(agent.stats.compactions, 1);
-    assert.match(agent.messages[0]!.content ?? "", /Context was compacted/);
+    assert.match(agent.conversation[0]!.content ?? "", /Context was compacted/);
     // second call: already-compacted tiny history has nothing to cut
     const r2 = await agent.compactNow();
     assert.equal(r2.ran, false);
@@ -808,12 +808,12 @@ test("compaction summarizes old turns when the budget is exceeded", async () => 
     // how eagerly the budget is enforced. What it asserts is that the SUMMARIZE path
     // ran — the note carries the summarizer's text, which truncation never produces.
     assert.ok(agent.stats.compactions >= 1, `expected a compaction, got ${agent.stats.compactions}`);
-    const note = agent.messages[0]!;
+    const note = agent.conversation[0]!;
     assert.equal(note.role, "user");
     assert.match(note.content ?? "", /Context was compacted/);
     assert.match(note.content ?? "", /made big\.txt/, `the summary text must be the summarizer's, not a truncation notice: ${String(note.content).slice(0, 80)}`);
     // kept tail still starts at a valid boundary and contains the exchange
-    assert.equal(agent.messages[1]!.role, "assistant");
+    assert.equal(agent.conversation[1]!.role, "assistant");
     const events = await readEvents(agent.log.filePath);
     const noteEv = events.find(
       (e) => e.type === "system_note" && (e.data as Record<string, unknown>).event === "context-compacted",
@@ -850,7 +850,7 @@ test("restart rebuilds conversation (incl. tool args/results) from the log", asy
     assert.equal(b.status, "stopped"); // lazy: not restored at boot
     await b.load(); // explicit load (what clicking the agent in the UI does)
 
-    const msgs = b.messages;
+    const msgs = b.conversation;
     assert.equal(msgs.length, 4); // prompt, assistant+call, tool result, final assistant
     assert.deepEqual(
       msgs.map((m) => m.role),
@@ -876,7 +876,7 @@ test("consecutive tool failures trip the runaway guard", async () => {
   let n = 0;
   await withAgent({
       maxConsecutiveToolErrors: 2,
-      chatFn: () => reply("try", [tc(`bad${n++}`, "read_file", { path: "missing.txt" })]),
+      chatFn: async () => reply("try", [tc(`bad${n++}`, "read_file", { path: "missing.txt" })]),
     }, async (agent) => {
     agent.enqueuePrompt("go");
     agent.start("test");
@@ -923,7 +923,7 @@ test("failure counter resets between rounds (start works after an error)", async
     {
       maxConsecutiveToolErrors: 2,
       autoContinue: false,
-      chatFn: () => {
+      chatFn: async () => {
         calls++;
         return failing
           ? reply("try", [tc(`bad${calls}`, "read_file", { path: "missing.txt" })])
@@ -954,7 +954,7 @@ test("onError:retry rides out runaway tool failures and recovers", async () => {
   // path is deterministic here: no LLM retry inside, so the test is fast.
   let calls = 0;
   let failing = true;
-  const chatFn = (): LlmResult => {
+  const chatFn = async (): Promise<LlmResult> => {
     calls++;
     if (failing) return reply("try", [tc(`bad${calls}`, "read_file", { path: "missing.txt" })]);
     return calls % 2 === 0
@@ -994,7 +994,7 @@ test("per-round turn cap ends the round silently and logs a note (no model nudge
     {
       maxTurnsPerRound: 3,
       autoContinue: false, // round simply ENDS at the cap; nothing nudges the model
-      chatFn: (): LlmResult => {
+      chatFn: async (): Promise<LlmResult> => {
         n++;
         return reply(`step ${n}`, [tc(`t${n}`, "list_dir", {})] as never);
       },
@@ -1011,7 +1011,7 @@ test("per-round turn cap ends the round silently and logs a note (no model nudge
         "a round-turn-cap note must be logged",
       );
       const nudges = events.filter(
-        (e) => e.type === "prompt" && /This round ran/.test(String(e.data?.text ?? "")),
+        (e) => e.type === "prompt" && /This round ran/.test(String((e.data as { text?: unknown })?.text ?? "")),
       );
       assert.equal(nudges.length, 0, "no wrap-up nudge may reach the model");
       await agent.dispose();
@@ -1220,8 +1220,7 @@ test("no verification contract: finish(goalComplete) marks done without audit", 
   });
 });
 
-test("stopping mid-bash kills the process group and settles immediately", async (t) => {
-  t.timeout?.(20_000);
+test("stopping mid-bash kills the process group and settles immediately", { timeout: 20_000 }, async () => {
   let n = 0;
   const chat: ChatFn = async () => {
     const i = n++;
@@ -1304,6 +1303,9 @@ test("reload restores session stats and seeds the context gauge", async () => {
 test("boot no longer creates a missing workspace; first tool run does", async () => {
   const { existsSync } = await import("node:fs");
   const missing = path.join(testTmpRoot(), `teapot-ghost-${Date.now()}`);
+  // `n` was never declared here: the chatFn threw ReferenceError on the first call, the
+  // agent swallowed it, and the test passed on the boot path it was really asserting.
+  let n = 0;
   await useTempDir("teapot-ghost-sd-", async (sessionDir) => {
       const agent = new Agent({
         id: "g",

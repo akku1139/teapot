@@ -54,7 +54,7 @@ async function restoredText(data: Record<string, unknown>): Promise<string> {
   await a.init();
   try {
     await (a as unknown as { ensureReady(): Promise<void> }).ensureReady();
-    return a.messages.map((m: { content?: string | null }) => m.content ?? "").join("\n");
+    return a.conversation.map((m: { content?: string | null }) => m.content ?? "").join("\n");
   } finally {
     await a.dispose();
   }

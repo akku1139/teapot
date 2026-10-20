@@ -115,7 +115,7 @@ test("a tool_call left unanswered by an early exit is still answered (#76)", asy
     } as never);
     assert.equal(orphan, undefined, "returns nothing (#76)");
 
-    const answered = (agent.messages as any[]).filter((m) => m.role === "tool").map((m) => m.tool_call_id);
+    const answered = (agent.conversation as any[]).filter((m) => m.role === "tool").map((m) => m.tool_call_id);
     assert.ok(
       answered.includes("lost"),
       `the orphaned call must get a result or the provider rejects the next request (#76); got ${JSON.stringify(answered)}`,
@@ -131,13 +131,13 @@ test("already-answered calls are not answered twice (#76)", async () => {
     agent.enqueuePrompt("go", "user");
     agent.start("t");
     await agent.settled();
-    (agent.messages as any[]).push({ role: "tool", tool_call_id: "already", content: "done" });
+    (agent.conversation as any[]).push({ role: "tool", tool_call_id: "already", content: "done" });
     await agent.answerUnansweredToolCalls({
       role: "assistant",
       content: "",
       tool_calls: [tc("already", "bash", { command: "ls" }), tc("fresh", "bash", { command: "pwd" })],
     } as never);
-    const ids = (agent.messages as any[]).filter((m) => m.role === "tool" && m.tool_call_id === "already").length;
+    const ids = (agent.conversation as any[]).filter((m) => m.role === "tool" && m.tool_call_id === "already").length;
     assert.equal(ids, 1, `an answered call must not get a second result (#76); got ${ids}`);
     await agent.dispose();
   });

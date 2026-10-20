@@ -353,7 +353,7 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
       await agent.log.append("usage", s, b, { inputTokens: 9_000, outputTokens: 10 });
     };
     const size = (a: Agent) =>
-      (a.messages as any[]).reduce((s, m) => s + (m.content?.length ?? 0), 0);
+      (a.conversation as any[]).reduce((s, m) => s + (m.content?.length ?? 0), 0);
     const opts = {
       id: "t",
       workspace: ws!,
@@ -388,7 +388,7 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
       restoredSize < 30_000,
       `restore must re-apply pruning: ${restoredSize} chars looks un-pruned (#50)`,
     );
-    const pruned = (second.messages as any[]).filter((m) =>
+    const pruned = (second.conversation as any[]).filter((m) =>
       String(m.content ?? "").includes("[pruned"),
     );
     assert.ok(
@@ -438,7 +438,7 @@ test("restore-pruning is idempotent — reloading again never shrinks further (#
       await agent.log.append("message", s, b, { role: "assistant", content: "done" });
       await agent.log.append("usage", s, b, { inputTokens: 9_000, outputTokens: 10 });
     };
-    const size = (a: Agent) => (a.messages as any[]).reduce((s, m) => s + (m.content?.length ?? 0), 0);
+    const size = (a: Agent) => (a.conversation as any[]).reduce((s, m) => s + (m.content?.length ?? 0), 0);
 
     const first = mk();
     await first.init();
@@ -508,7 +508,7 @@ test("restore-pruning never clips a ONE-SHOT tool result (#50)", async () => {
     } as any);
     await c.init();
     await c.load();
-    const preserved = (c.messages as any[]).filter(
+    const preserved = (c.conversation as any[]).filter(
       (m) => m.role === "tool" && (m.content ?? "").length === bigOut.length,
     );
     assert.equal(
@@ -583,8 +583,8 @@ test("restore-pruning leaves an OLD log without a usage event alone (#50)", asyn
     await c.init();
     await c.load();
     assert.ok(
-      (c.messages as any[]).length >= 3,
-      `a legacy log must still restore its history (#50); got ${(c.messages as any[]).length} messages`,
+      (c.conversation as any[]).length >= 3,
+      `a legacy log must still restore its history (#50); got ${(c.conversation as any[]).length} messages`,
     );
     await c.dispose();
   });

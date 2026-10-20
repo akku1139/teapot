@@ -79,7 +79,7 @@ test("archive keeps the config entry and every session directory (#archive)", as
 
     // it is not running any more
     assert.equal(m.agents.get("keeper"), undefined, "an archived agent must not stay live");
-    await m.dispose?.();
+    await m.stopAllAgents();
   });
 });
 
@@ -112,7 +112,7 @@ test("restore brings the SAME session back, live (#archive)", async () => {
       "restore must reattach the SAME session, not mint a new one — otherwise the " +
         "history the archive was supposed to protect is unreachable again",
     );
-    await m.dispose?.();
+    await m.stopAllAgents();
   });
 });
 
@@ -147,7 +147,7 @@ test("purge erases both the entry and the session directories (#archive)", async
         `session ${d} must be erased — purge is the irreversible option`,
       );
     }
-    await m.dispose?.();
+    await m.stopAllAgents();
   });
 });
 
@@ -165,7 +165,7 @@ test("boot starts configured agents but not archived ones (#archive)", async () 
       });
     }
     await app.request("/api/agents/asleep/archive", { method: "POST" });
-    await first.dispose?.();
+    await first.stopAllAgents();
 
     // a fresh Master over the same dataDir = a restart
     const second = mkMaster(dataDir, first.config.agents);
@@ -182,7 +182,7 @@ test("boot starts configured agents but not archived ones (#archive)", async () 
       assert.ok(entry, "boot must not drop the archived entry from the config");
       assert.equal(entry.archived, true);
     } finally {
-      await second.dispose?.();
+      await second.stopAllAgents();
     }
   });
 });

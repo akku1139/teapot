@@ -160,7 +160,7 @@ function apiResponse(url) {
 
 let fetchCount = 0;
 /** every URL the app asked for — lets a test assert WHICH session it opened (#58) */
-const requestedUrls = [];
+const requestedUrls: string[] = [];
 
 /* ---------- happy-dom globals ---------- */
 
@@ -170,9 +170,23 @@ const requestedUrls = [];
 // events into the app exactly like the real server does.
 const WS_EVENTS = []; // queued {kind, ...} messages delivered on open
 class MockWS {
-  static instances = [];
-  url; readyState = 0; onopen = null; onmessage = null; onclose = null; onerror = null;
-  constructor(url) {
+  // typed explicitly: `static instances = []` infers `never[]`, so every read out of it
+  // (`MockWS.instances.at(-1)`) was `never` and every field access on it an error. The
+  // check helpers below drive the socket through these, so the shape has to be declared.
+  static instances: MockWS[] = [];
+  url: string;
+  readyState = 0;
+  onopen: (() => void) | null = null;
+  onmessage: ((m: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  send(_data: string) {
+    /* outbound (pong etc.) — ignored */
+  }
+  close(): void {
+    this.readyState = 3;
+  }
+  constructor(url: string) {
     this.url = url;
     MockWS.instances.push(this);
     this.readyState = 1;
@@ -181,8 +195,6 @@ class MockWS {
       for (const m of WS_EVENTS.splice(0)) this.onmessage?.({ data: JSON.stringify(m) });
     });
   }
-  close() { this.readyState = 3; }
-  send(data) { /* outbound (pong etc.) — ignored */ }
 }
 
 const w = new Window({ url: "http://localhost:7788/session/test" });
@@ -243,7 +255,8 @@ setGlobal("WebSocket", MockWS);
 // pending-echo regression below to push bus events into the app
 // every request, with its method and parsed body — a check that needs to prove WHAT
 // was saved cannot do it from the url alone
-const requests = [];
+/** every fetch the bundle made, with the method and parsed body a check can assert on */
+const requests: { url: string; method: string; body: any }[] = [];
 setGlobal("fetch", async (url, init) => {
   fetchCount++;
   const u0 = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
@@ -277,7 +290,8 @@ try {
   await import(pathToFileURL(path.join(pub, asset)).href);
   console.log("bundle imported:", asset);
 } catch (err) {
-  console.error("IMPORT FAIL:", err.constructor.name, err.message);
+  const e = err as Error;
+  console.error("IMPORT FAIL:", e.constructor.name, e.message);
   process.exit(1);
 }
 
@@ -464,6 +478,10 @@ console.log("deep render ok: feed rows present");
   // is exactly how the v0.26.1 fix shipped green while doing nothing.
   {
     const sock = MockWS.instances.at(-1);
+    if (!sock) {
+      console.error("smoke: no app socket — the bundle never opened one");
+      process.exit(1);
+    }
     // #146: the bubble is gated on the DISPLAYED SESSION being live, so an idle
     // agent shows nothing — correct, and the reason this check must make the
     // agent live first. It used to pass only because that gate did not exist.
@@ -566,7 +584,11 @@ console.log("deep render ok: feed rows present");
 {
   const fail = (msg) => { console.error(`#reasoning REGRESSION: ${msg}`); process.exit(1); };
   const sock = MockWS.instances.at(-1);
-  if (!sock?.onmessage) fail("no app socket to drive");
+  // a `fail()` call does not NARROW the type for the compiler, so the guard has to throw
+  if (!sock?.onmessage) {
+    fail("no app socket to drive");
+    throw new Error("unreachable");
+  }
   // a live, RUNNING agent is required — an idle one drops the buffer on the sweep
   sock.onmessage({
     data: JSON.stringify({
@@ -671,7 +693,7 @@ console.log("deep render ok: feed rows present");
   // exists but silently does nothing. That is why the "API exists" case is not
   // evidence of a working copy, and why the button has to fall through when the
   // environment cannot really copy.
-  const copied = [];
+  const copied: string[] = [];
   let execCommandCalls = 0;
   const realExec = w.document.execCommand;
   w.document.execCommand = (cmd) => {
@@ -741,7 +763,18 @@ console.log("deep render ok: feed rows present");
  * shows ONCE — the pending echo at the bottom — never as a settled row too. */
 {
   const RUNNING_AGENT = { ...AGENT, status: "running", pendingPrompts: 1 };
-  const PENDING_EVENTS = [
+  // typed explicitly: an inferred element union from a dozen different literals makes
+  // every later `.push()` a type error that says nothing about the check being written
+  const PENDING_EVENTS: {
+    id: string;
+    seq: number;
+    ts: string;
+    session: string;
+    branch: string;
+    parent: string | null;
+    type: string;
+    data: any;
+  }[] = [
     ...EVENTS,
     { id: "e5", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0",
       parent: null, type: "prompt",
@@ -770,16 +803,35 @@ console.log("deep render ok: feed rows present");
   // refresh the feed so e5 (undelivered log row) is in `events()`
   const appWs = MockWS.instances.at(-1);
   if (!appWs?.onmessage) { console.error("MOCK WS missing"); process.exit(1); }
-  if (!appWs.onmessage) { console.error("[dbg] appWs has NO onmessage handler!"); process.exit(1); }
-  const pushEvent = (event) =>
-    appWs.onmessage({
+  if (!appWs.onmessage) {
+    console.error("[dbg] appWs has NO onmessage handler!");
+    process.exit(1);
+  }
+  // `process.exit` does not narrow for the compiler; bind the handler to a const
+  const appOnMessage = appWs.onmessage.bind(appWs);
+  // typed loosely on purpose: the fixture events are JSON the server would write, and
+  // `data` is genuinely open — pinning it to one literal shape made every variant a
+  // type error in the CALLER instead of the assertion that matters
+  const pushEvent = (event: {
+    id: string;
+    seq: number;
+    ts: string;
+    session: string;
+    branch: string;
+    parent: string | null;
+    type: string;
+    data: any;
+  }) =>
+    appOnMessage({
       data: JSON.stringify({
         kind: "event",
         agentId: AGENT.id,
         event: { agent: AGENT.id, ...event }, // bus events always carry .agent
       }),
     });
-  pushEvent(PENDING_EVENTS.at(-1));
+  const last = PENDING_EVENTS.at(-1);
+  if (!last) throw new Error("PENDING_EVENTS must not be empty");
+  pushEvent(last);
   // the feed defers refreshes while hidden; fire the visibility event so the
   // app drains pendingRefresh (happy-dom never flips the flag by itself)
   const flushRefreshes = () =>
@@ -890,6 +942,10 @@ console.log("deep render ok: feed rows present");
    */
   {
     const sock = MockWS.instances.at(-1);
+    if (!sock) {
+      console.error("smoke: no app socket — the bundle never opened one");
+      process.exit(1);
+    }
     if (!sock?.onmessage) {
       console.error("#40 check: no app socket to drive");
       process.exit(1);
@@ -979,7 +1035,11 @@ console.log("deep render ok: feed rows present");
     // tool ever overrode it, so it identified nothing — the tool NAME is already in the
     // row's author slot. It also differed between a run's head (present) and its
     // continuations (absent), which is the inconsistency that got reported.
-    for (const [name, row] of [["first", one], ["second", two]]) {
+    const rows: [string, { cls: string; head: string }][] = [
+      ["first", one],
+      ["second", two],
+    ];
+    for (const [name, row] of rows) {
       if (row.head.includes("\u2699")) {
         console.error(
           `#75 REGRESSION: the ${name} row carries a meaningless \u2699 glyph — the tool name ` +
@@ -1121,7 +1181,11 @@ console.log("deep render ok: feed rows present");
       );
       process.exit(1);
     }
-    for (const [name, r] of [["2nd", two], ["3rd", three]]) {
+    const rest: [string, { cls: string; head: string }][] = [
+      ["2nd", two],
+      ["3rd", three],
+    ];
+    for (const [name, r] of rest) {
       if (r.head.includes("\u2699")) {
         console.error(
           `#75 REGRESSION: the ${name} bash row has its own icon — an invisible row (state / carrier / log-only note) split the run (#75)` +
@@ -1159,7 +1223,7 @@ console.log("deep render ok: feed rows present");
    * matches the label, which is the property the operator experiences.
    */
   {
-    const posted = [];
+    const posted: string[] = [];
     const origFetchToggle = globalThis.fetch;
     setGlobal("fetch", async (u, init) => {
       if (typeof u === "string" && /\/stop|\/start$/.test(u) && init?.method === "POST") {
@@ -1465,7 +1529,7 @@ console.log("deep render ok: feed rows present");
       archBtn.click();
       // the section fetches /api/archived on open — poll rather than sleep
       const deadline = Date.now() + 3000;
-      let row = null;
+      let row: Element | null = null;
       while (Date.now() < deadline) {
         row = w.document.querySelector(".archrow");
         if (row) break;
@@ -1518,9 +1582,9 @@ console.log("deep render ok: feed rows present");
       // the section fetches /api/mcp on open, so poll for the CARD (renders from props)
       // and then for the PILL (renders only after the fetch resolves)
       const deadline = Date.now() + 3000;
-      let card = null;
+      let card: HTMLElement | null = null;
       while (Date.now() < deadline) {
-        card = w.document.querySelector(".mcpcard");
+        card = w.document.querySelector(".mcpcard") as HTMLElement | null;
         if (card) break;
         await new Promise((r) => setTimeout(r, 25));
       }
@@ -1532,7 +1596,7 @@ console.log("deep render ok: feed rows present");
         process.exit(1);
       }
       // PRECONDITION: the configured server must be there, with its url
-      const urlInput = card.querySelector('input[placeholder^="https://example.com"]');
+      const urlInput = card.querySelector('input[placeholder^="https://example.com"]') as HTMLInputElement | null;
       if (!urlInput) {
         console.error("#mcp REGRESSION: the server's url field is missing");
         process.exit(1);
@@ -1581,15 +1645,18 @@ console.log("deep render ok: feed rows present");
     // Without it the operator sees only "error" and cannot tell a wrong url from a
     // missing grant.
     {
-      const card = w.document.querySelector(".mcpcard");
+      const card = w.document.querySelector(".mcpcard") as HTMLElement | null;
       if (!card) {
         console.error("#oauth REGRESSION: no MCP card to check");
         process.exit(1);
       }
       const deadline = Date.now() + 4000;
-      let authBtn = null;
+      let authBtn: HTMLButtonElement | null = null;
       while (Date.now() < deadline) {
-        authBtn = [...card.querySelectorAll("button")].find((b) => /authorize/.test(b.textContent ?? ""));
+        authBtn =
+          ([...card.querySelectorAll("button")] as HTMLButtonElement[]).find((b) =>
+            /authorize/.test(b.textContent ?? ""),
+          ) ?? null;
         if (authBtn) break;
         await new Promise((r) => setTimeout(r, 25));
       }
@@ -1663,7 +1730,7 @@ console.log("deep render ok: feed rows present");
       saveBtn.click();
       // the save PUTs /api/config; poll for that request
       const saveDeadline = Date.now() + 3000;
-      let put = null;
+      let put: { url: string; method: string; body: any } | undefined;
       while (Date.now() < saveDeadline) {
         put = requests.find((c) => c.url === "/api/config" && c.method === "PUT");
         if (put) break;
@@ -1732,6 +1799,10 @@ console.log("deep render ok: feed rows present");
    */
   {
     const sock = MockWS.instances.at(-1);
+    if (!sock) {
+      console.error("smoke: no app socket — the bundle never opened one");
+      process.exit(1);
+    }
     if (!sock?.onmessage) {
       console.error("#160 check: no app socket to drive");
       process.exit(1);
@@ -1870,6 +1941,10 @@ console.log("deep render ok: feed rows present");
   // differs replaces the agent object, which is what re-renders the panel.
   await new Promise((r) => setTimeout(r, 150));
   const appWs2 = MockWS.instances.at(-1);
+  if (!appWs2) {
+    console.error("smoke: no app socket for the update check");
+    process.exit(1);
+  }
   appWs2.onmessage?.({
     data: JSON.stringify({
       kind: "agent-update",
@@ -2401,7 +2476,7 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   //    leave /api/agents stubbed to their own fixtures, so pin the status here
   //    rather than inheriting whatever they happened to leave behind — and
   //    wait for the UI to show it, so we are not racing the poll.
-  const stopCalls = [];
+  const stopCalls: string[] = [];
   const realFetch = globalThis.fetch;
   const RUNNING_FOR_ESC = { ...AGENT, status: "running" };
   setGlobal("fetch", async (url, init) => {

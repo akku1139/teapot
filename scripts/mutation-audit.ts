@@ -133,13 +133,14 @@ const run = (files) => {
     });
     return { failed: 0, names: [] };
   } catch (e) {
-    const out = String(e.stdout ?? "") + String(e.stderr ?? "");
+    const err = e as { stdout?: unknown; stderr?: unknown };
+    const out = String(err.stdout ?? "") + String(err.stderr ?? "");
     const names = [...out.matchAll(/^✖ (.+?) \(\d/gm)].map((m) => m[1]);
     return { failed: names.length, names };
   }
 };
 
-const results = [];
+const results: { name: string; caught: boolean; count: number; names: string[] }[] = [];
 for (const mut of MUTATIONS) {
   if (only && !mut.name.includes(only)) continue;
   const src = fs.readFileSync(mut.file, "utf8");

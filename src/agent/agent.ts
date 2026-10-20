@@ -496,6 +496,34 @@ export class Agent {
     Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   /**
+   * The conversation this agent holds, for INSPECTION.
+   *
+   * Tests need to assert what the agent will actually send (compaction, tool pairing,
+   * restoration), and reaching into a private field meant every assertion had to launder
+   * the type through `as unknown as { messages: … }` — thirty of them, each of which would
+   * keep compiling after the shape changed. A read-only view makes the intent explicit and
+   * lets the type checker do its job. There is no setter: mutation belongs to the class.
+   */
+  get conversation(): readonly ChatMessage[] {
+    return this.messages;
+  }
+
+  /**
+   * The endpoint this agent resolved, for INSPECTION.
+   *
+   * Tests assert that a per-agent override, a provider preset and the default all land on
+   * the same baseUrl/key/model — reaching into `opts` to do it meant the assertions had to
+   * defeat `private` and would have kept compiling after the shape changed.
+   */
+  get llmConfig(): Readonly<LlmConfig> {
+    return this.opts.llm;
+  }
+
+  /** the provider this agent resolved, for inspection (which preset won, and why) */
+  get providerName(): string {
+    return this.opts.provider;
+  }
+  /**
    * User prompts waiting for the next turn boundary. Deliberately NOT queued
    * on runChain: that chain holds the long-running loop, so queueing behind
    * it would delay both the log entry (UI) and delivery until the round —
@@ -1092,7 +1120,13 @@ export class Agent {
    * Everything that touches history (prompts, start, fork, UI selection)
    * funnels through here; boot stays cheap no matter how many sessions exist.
    */
-  private ensureReady(): Promise<void> {
+  /**
+   * Resolve the session/workspace this agent operates on.
+   *
+   * Public because `load()` is a thin wrapper over it and a test that reproduces a
+   * restart needs the same step WITHOUT the reload side effects.
+   */
+  ensureReady(): Promise<void> {
     if (!this.readyPromise) {
       this.readyPromise = (async () => {
         if (this.opts.restoreSession) {
@@ -3020,8 +3054,12 @@ export class Agent {
    * Scans the tail of `messages` for `tool_call_id`s, so it is correct whichever
    * path left the batch unfinished — a stop, a throw, or a normal completion
    * where a handler returned early. Answered calls are left alone.
+   *
+   * PUBLIC so a test can reproduce "the batch was left half-answered" directly. That
+   * state is what the provider rejects the next request over, and reaching it through a
+   * whole turn would make the assertion depend on everything else in the loop.
    */
-  private async answerUnansweredToolCalls(m: ChatMessage): Promise<void> {
+  async answerUnansweredToolCalls(m: ChatMessage): Promise<void> {
     const calls = m.tool_calls ?? [];
     if (!calls.length) return;
     const answered = new Set<string>();

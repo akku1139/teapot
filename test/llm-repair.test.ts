@@ -127,7 +127,7 @@ test("a restarted session does not replay the completion audit into the conversa
       `fixture must produce one audit message event, got ${auditEvents.length}`,
     );
     assert.equal(
-      (first.messages as ChatMessage[]).some((m) => String(m.content ?? "").includes(AUDIT_MARK)),
+      (first.conversation as ChatMessage[]).some((m) => String(m.content ?? "").includes(AUDIT_MARK)),
       false,
       "the live history must NOT carry the audit verdict (it was a side conversation)",
     );
@@ -139,7 +139,7 @@ test("a restarted session does not replay the completion audit into the conversa
     second.start("t");
     await second.settled();
 
-    const leaked = (second.messages as ChatMessage[]).filter((m) =>
+    const leaked = (second.conversation as ChatMessage[]).filter((m) =>
       String(m.content ?? "").includes(AUDIT_MARK),
     );
     assert.deepEqual(
@@ -240,7 +240,7 @@ test("a real tool call survives a restart and the resumed turn stays valid (#50)
     );
     // the restored history must still contain the tool exchange, not have lost it
     assert.ok(
-      (second.messages as ChatMessage[]).some((m) => m.role === "tool"),
+      (second.conversation as ChatMessage[]).some((m) => m.role === "tool"),
       "the tool result must survive the restart — otherwise the pair is broken (#50)",
     );
     await second.dispose();
@@ -288,7 +288,7 @@ test("a restored session drops an empty assistant turn instead of inventing one 
     second.start("t");
     await second.settled();
 
-    const restored = second.messages as ChatMessage[];
+    const restored = second.conversation as ChatMessage[];
     assert.equal(
       restored.some((m) => m.role === "assistant" && m.content === ""),
       false,
@@ -334,7 +334,7 @@ test("an empty assistant turn that DID carry tool calls is kept (#50)", async ()
     second.start("t");
     await second.settled();
 
-    const restored = second.messages as ChatMessage[];
+    const restored = second.conversation as ChatMessage[];
     assert.ok(
       restored.some((m) => m.tool_calls?.some((t) => t.id === "call_real_1")),
       "a blank turn that issued tool calls must be kept — its results depend on it (#50)",
@@ -375,7 +375,7 @@ test("an operator-facing message is skipped by the restore (#50)", async () => {
     second.start("t");
     await second.settled();
     assert.equal(
-      (second.messages as ChatMessage[]).some((m) => String(m.content ?? "").includes(AUDIT_MARK)),
+      (second.conversation as ChatMessage[]).some((m) => String(m.content ?? "").includes(AUDIT_MARK)),
       false,
       "operator-facing audit notes must not enter the model's history (#50)",
     );
@@ -408,7 +408,7 @@ test("a provider 200 with zero choices is a retryable error, not a dead session 
     agent.start("t");
     await agent.settled();
     assert.ok(
-      (agent.messages as ChatMessage[]).some((m) => String(m.content ?? "").includes("recovered")),
+      (agent.conversation as ChatMessage[]).some((m) => String(m.content ?? "").includes("recovered")),
       "an empty-choices 200 must ride the retry ladder, not end the session (#50)",
     );
     await agent.dispose();
@@ -464,7 +464,7 @@ test("no message-event shape survives a restore in an unsafe form (#50)", async 
       second.start("t");
       await second.settled();
 
-      const restored = second.messages as ChatMessage[];
+      const restored = second.conversation as ChatMessage[];
       const a = audit(restored);
       assert.deepEqual(a.orphanCalls, [], `${label}: dangling tool_call (#50)`);
       assert.deepEqual(a.orphanResults, [], `${label}: dangling tool result (#50)`);

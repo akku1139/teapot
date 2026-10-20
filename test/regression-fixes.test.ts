@@ -451,8 +451,8 @@ test("regression: default provider is honored and not silently dropped (#21)", a
     const { buildApp } = await import("../src/server/api.ts");
     const app = buildApp(m);
     const agent = await m.addAgent({ id: "t", workspace: ws }, { fresh: true, persist: false });
-    assert.equal(agent.opts.provider, "zzz", "defaultProvider must win over list order");
-    assert.equal(agent.opts.llm.baseUrl, "http://z");
+    assert.equal(agent.providerName, "zzz", "defaultProvider must win over list order");
+    assert.equal(agent.llmConfig.baseUrl, "http://z");
 
     // and the config endpoint reports it back for the panel to render
     const res = await app.request("/api/config");

@@ -457,7 +457,7 @@ test("fresh incarnation gets a clean session dir; restart reuses the latest", as
     const b = await m.addAgent({ id: "s", workspace: ws, provider: "p" }, { fresh: true });
     const dirB = b.snapshot().sessionDir;
     assert.notEqual(dirB, dirA); // no inheritance across incarnations
-    assert.equal(b.messages.length, 0); // blank slate
+    assert.equal(b.conversation.length, 0); // blank slate
     assert.equal(b.goal.text, ""); // and no inherited goal
     await b.setGoal("incarnation #2");
 
@@ -579,7 +579,7 @@ test("legacy flat <id>.jsonl is migrated into sessions/<id>/chat.jsonl", async (
     assert.equal(path.basename(dir), "s");
     assert.ok(existsSync(path.join(dir, "chat.jsonl")));
     await a.load(); // lazy: history is rebuilt on first interaction
-    assert.ok(a.messages.length === 1 && a.messages[0].content === "old");
+    assert.ok(a.conversation.length === 1 && a.conversation[0].content === "old");
     assert.ok(!existsSync(path.join(dataDir, "s.jsonl"))); // moved
     await a.dispose();
   });

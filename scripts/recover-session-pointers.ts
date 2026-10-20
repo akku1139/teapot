@@ -57,36 +57,55 @@ function inspect(d) {
   return { bytes, mtime, logOwner, manifest };
 }
 
-const info = new Map(dirs.map((d) => [d, inspect(d)]));
+const info = new Map<string, ReturnType<typeof inspect>>(dirs.map((d) => [d, inspect(d)]));
+/**
+ * `info.get` with a real failure instead of `undefined`.
+ *
+ * Every key here comes from `dirs`, which `info` was built from, so a miss is impossible
+ * by construction — but `Map.get` types as possibly-undefined and dereferencing it would
+ * crash this recovery script halfway through rewriting session pointers. Throwing names
+ * the directory instead.
+ */
+const stat = (d: string): ReturnType<typeof inspect> => {
+  const v = info.get(d);
+  if (!v) throw new Error(`internal: no stats for session dir ${d}`);
+  return v;
+};
 
-const choices = [];
-const problems = [];
+const choices: {
+  id: string;
+  from: string | undefined;
+  to: string;
+  bytes: number;
+  candidates: number;
+}[] = [];
+const problems: string[] = [];
 for (const a of cfg.agents) {
   const re = new RegExp("^" + a.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-[0-9a-f]{8}$");
   const mine = dirs.filter((d) => re.test(d));
-  const withLog = mine.filter((d) => info.get(d).bytes > 0);
+  const withLog = mine.filter((d) => stat(d).bytes > 0);
   if (!withLog.length) {
     problems.push(`${a.id}: no log-bearing dir among ${mine.length} candidate(s)`);
     continue;
   }
-  const best = withLog.slice().sort((x, y) => info.get(y).mtime - info.get(x).mtime)[0];
+  const best = withLog.slice().sort((x, y) => stat(y).mtime - stat(x).mtime)[0];
   choices.push({
     id: a.id,
     from: a.session,
     to: best,
-    bytes: info.get(best).bytes,
+    bytes: stat(best).bytes,
     candidates: withLog.length,
   });
 }
 
-const claim = new Map();
+const claim = new Map<string, string>();
 for (const c of choices) {
   if (claim.has(c.to)) problems.push(`dir ${c.to} claimed by BOTH ${claim.get(c.to)} and ${c.id}`);
   claim.set(c.to, c.id);
 }
 
 const changed = choices.filter((c) => c.from !== c.to);
-const mfx = dirs.filter((d) => info.get(d).manifest === "x").length;
+const mfx = dirs.filter((d) => stat(d).manifest === "x").length;
 
 console.log(`agents in config        : ${cfg.agents.length}`);
 console.log(`session dirs on disk    : ${dirs.length}`);
@@ -111,7 +130,7 @@ if (!APPLY) {
 //    exists (authoritative) and from the directory name otherwise
 let fixedManifests = 0;
 for (const d of dirs) {
-  const i = info.get(d);
+  const i = stat(d);
   const owner = i.logOwner ?? d.replace(/-[0-9a-f]{8}$/, "");
   if (!owner) continue;
   if (i.manifest === owner) continue;
@@ -120,7 +139,8 @@ for (const d of dirs) {
 }
 
 // 2. point each agent back at its real session
-const byId = new Map(cfg.agents.map((a) => [a.id, a]));
+// typed from the config itself, so a future field on an agent entry is visible here
+const byId = new Map<string, (typeof cfg.agents)[number]>(cfg.agents.map((a) => [a.id, a]));
 let fixedPointers = 0;
 for (const c of choices) {
   const a = byId.get(c.id);

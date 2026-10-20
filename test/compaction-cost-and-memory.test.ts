@@ -106,7 +106,7 @@ test("a DEEP history is summarized rather than dropped", async () => {
     assert.ok(agent.stats.compactions >= 1, "the budget must have been enforced");
     assert.ok(summaries() >= 1, "a long history earns the summarize call");
     assert.match(
-      String(agent.messages[0]?.content ?? ""),
+      String(agent.conversation[0]?.content ?? ""),
       /## Summary of earlier conversation/,
       "and the notes are what the model is left with",
     );
@@ -233,7 +233,7 @@ test("dropping history tells the model, so a gap is not mistaken for a fact", as
     }
     assert.ok(agent.stats.compactions >= 1, "the fallback must still reclaim the budget");
     assert.match(
-      String(agent.messages[0]?.content ?? ""),
+      String(agent.conversation[0]?.content ?? ""),
       /DROPPED, not summarized/,
       "the model must be told its prefix is gone, not left to infer it",
     );
@@ -249,7 +249,7 @@ test("no compaction path leaves a dangling tool result (provider 400)", async ()
   try {
     const called = new Set<string>();
     const answered = new Set<string>();
-    for (const m of agent.messages) {
+    for (const m of agent.conversation) {
       for (const t of m.tool_calls ?? []) called.add(t.id);
       if (m.tool_call_id) answered.add(m.tool_call_id);
     }

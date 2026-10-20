@@ -150,10 +150,10 @@ test("one API key can back several model presets (#22)", async () => {
         { id: p, workspace: ws, provider: p, chatFn: async () => ({ message: { role: "assistant", content: "ok" } }) },
         { fresh: true, persist: false },
       );
-      seen[p] = a.opts.llm.model;
+      seen[p] = a.llmConfig.model;
       // every preset must carry the SAME key through to the agent
-      assert.equal(a.opts.llm.apiKey, KEY, `${p} must use the shared key`);
-      assert.equal(a.opts.llm.baseUrl, URL);
+      assert.equal(a.llmConfig.apiKey, KEY, `${p} must use the shared key`);
+      assert.equal(a.llmConfig.baseUrl, URL);
       await a.dispose();
     }
     // each entry resolves to its OWN model — they do not collapse
@@ -172,7 +172,7 @@ test("an agent's own model overrides its preset's model (#22)", async () => {
       { id: "over", workspace: ws, provider: "or", model: "pinned-model" },
       { fresh: true, persist: false },
     );
-    assert.equal(a.opts.llm.model, "pinned-model");
+    assert.equal(a.llmConfig.model, "pinned-model");
     await a.dispose();
   });
 });

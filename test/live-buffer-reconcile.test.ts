@@ -38,11 +38,16 @@ import {
   isCoveredByLog,
   isLiveStatus,
   pruneDeadLiveBuffers,
+  type LiveBuf,
 } from "../frontend/live-buffer.ts";
 
 const _here = path.dirname(fileURLToPath(import.meta.url));
 
-const buf = { text: "agent1 was here", streaming: true };
+// The shape is `LiveBuf`: `text` and `reasoning` are the two streamed parts, and `at` is
+// when the stretch started. `streaming` was a field this fixture invented — nothing in
+// `live-buffer.ts` has ever read it, so the buffers these tests passed were not the ones
+// the app builds.
+const buf: LiveBuf = { text: "agent1 was here", reasoning: "", at: Date.now() };
 const logHas = [{ type: "message", data: { role: "assistant", content: "agent1 was here" } }];
 
 /* ---------- the stale case: A → B → A with A already idle ---------- */
@@ -66,7 +71,7 @@ test("a stale buffer with NO log copy is KEPT for one more frame (#40, #172b)", 
   assert.equal(reconcileLiveBuffer(buf, logHas, "idle"), null, "persisted → drop (#40)");
   // and an agent that never produced text still drops immediately
   assert.equal(
-    reconcileLiveBuffer({ text: "", reasoning: "", streaming: false }, [], "idle"),
+    reconcileLiveBuffer({ text: "", reasoning: "", at: Date.now() }, [], "idle"),
     null,
     "an empty bubble has nothing to flash, so it can go at once",
   );

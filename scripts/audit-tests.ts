@@ -18,8 +18,8 @@ const dir = "test";
 const verbose = process.argv.includes("--verbose");
 
 /** assertion helpers a file defines locally (they call assert.* internally) */
-function localAssertHelpers(src) {
-  const names = [];
+function localAssertHelpers(src: string): string[] {
+  const names: string[] = [];
   for (const m of src.matchAll(/function\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{/g)) {
     const start = m.index + m[0].length;
     // the body up to the matching brace
@@ -112,8 +112,8 @@ export function blankLiterals(src) {
   return out;
 }
 
-function testBlocks(src) {
-  const out = [];
+function testBlocks(src: string): { name: string; body: string; line: number }[] {
+  const out: { name: string; body: string; line: number }[] = [];
   const safe = blankLiterals(src);
   const re = /^test\s*\(/gm;
   let m;
@@ -151,7 +151,12 @@ function testBlocks(src) {
 }
 
 const files = fs.readdirSync(dir).filter((f) => f.endsWith(".test.ts"));
-const findings = { noAssert: [], tautology: [], selfProving: [], sourceOnly: [] };
+const findings: Record<"noAssert" | "tautology" | "selfProving" | "sourceOnly", string[]> = {
+  noAssert: [],
+  tautology: [],
+  selfProving: [],
+  sourceOnly: [],
+};
 
 for (const f of files) {
   const src = fs.readFileSync(path.join(dir, f), "utf8");
@@ -179,7 +184,7 @@ for (const f of files) {
   }
 }
 
-const show = (label, list, note) => {
+const show = (label: string, list: string[], note?: string) => {
   console.log(`\n=== ${label}: ${list.length} ===`);
   if (note) console.log(`    ${note}`);
   for (const x of list.slice(0, verbose ? 200 : 12)) console.log("  " + x);

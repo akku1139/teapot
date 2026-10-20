@@ -64,7 +64,7 @@ function bigHistory(bigOut: string): ChatMessage[] {
 }
 
 const charsOf = (a: Agent) =>
-  (a.messages as ChatMessage[]).reduce((n, m) => n + (m.content?.length ?? 0), 0);
+  (a.conversation as ChatMessage[]).reduce((n, m) => n + (m.content?.length ?? 0), 0);
 
 const setMessages = (a: Agent, msgs: ChatMessage[]) =>
   ((a as unknown as { messages: ChatMessage[] }).messages = msgs);
@@ -143,7 +143,7 @@ test("a context with room left is NOT pruned (#compact-order)", async () => {
       est > 2_400 && est < 3_800,
       `precondition: the estimate must lie between the old bar (2400) and the new one (3800); got ${est}`,
     );
-    const prunable = (agent.messages as any[]).some(
+    const prunable = (agent.conversation as any[]).some(
       (m) => m.role === "tool" && String(m.content ?? "").length > 3_000,
     );
     assert.ok(prunable, "precondition: an oversized tool result must be present");
@@ -162,7 +162,7 @@ test("a context with room left is NOT pruned (#compact-order)", async () => {
       chatFn: async () => reply("ok"),
     } as any);
     await probe.init();
-    (probe as any).messages = (agent.messages as any[]).map((m) => ({ ...m }));
+    (probe as any).messages = (agent.conversation as any[]).map((m) => ({ ...m }));
     const clipped = await (probe as any).maybePrune(true);
     await probe.dispose();
     assert.ok(
@@ -242,7 +242,7 @@ test("a MANUAL pass still summarizes even when clipping would suffice (#compact-
 
     assert.ok(chatCalls > 0, "a manual compaction must actually ask the model for notes");
     assert.ok(
-      (agent.messages as ChatMessage[]).some((m) =>
+      (agent.conversation as ChatMessage[]).some((m) =>
         String(m.content ?? "").includes("## Current work"),
       ),
       "the summary must land in the history a manual pass rewrites",

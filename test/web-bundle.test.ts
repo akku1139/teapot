@@ -61,7 +61,7 @@ test("web bundle: module init + deep render survive", async (t) => {
 
   const child = spawn(
     process.execPath,
-    [path.join(root, "scripts", "smoke-web.mjs"), assetsDir],
+    [path.join(root, "scripts", "smoke-web.ts"), assetsDir],
     { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
   );
   let out = "";
@@ -108,7 +108,7 @@ test("web bundle: the narrow-screen drawer can be closed (#50)", async (t) => {
 
   const child = spawn(
     process.execPath,
-    [path.join(root, "scripts", "smoke-web.mjs"), assetsDir],
+    [path.join(root, "scripts", "smoke-web.ts"), assetsDir],
     { cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SMOKE_WIDTH: "900" } },
   );
   let out = "";

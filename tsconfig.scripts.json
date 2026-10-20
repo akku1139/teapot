@@ -1,0 +1,37 @@
+{
+  "//": [
+    "Type-check surface for the parts of the repo that are NOT built: scripts/ and test/.",
+    "",
+    "They run as TypeScript directly (Node 22+ strips types), so nothing compiles them and",
+    "without this file a type error in a script or a test is invisible until it runs \u2014 which",
+    "is exactly the case that never shows up on the happy path. `pnpm typecheck:scripts`",
+    "covers it.",
+    "",
+    "`noEmit` because there is nothing to build: Node executes the sources. `allowImportingTsExtensions`",
+    "lets them import `./x.ts`, which is what Node needs and what the sources already use."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "resolveJsonModule": true,
+    "types": [
+      "node"
+    ],
+    "noImplicitAny": false
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "test/**/*.ts"
+  ]
+}

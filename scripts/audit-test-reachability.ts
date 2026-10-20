@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 /** every .ts/.tsx under a dir, excluding build output */
-function walk(dir, out = []) {
+function walk(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) {
@@ -48,14 +48,16 @@ function resolveImport(fromFile, spec) {
 }
 
 /** modules reachable from the test files, following imports */
-const reachable = new Set();
-const queue = [];
+const reachable = new Set<string>();
+const queue: [string, string][] = [];
 for (const t of tests) {
   const src = fs.readFileSync(t, "utf8");
   for (const m of src.matchAll(/from\s+"([^"]+)"/g)) queue.push([t, m[1]]);
 }
 while (queue.length) {
-  const [from, spec] = queue.pop();
+  const next = queue.pop();
+  if (!next) break;
+  const [from, spec] = next;
   const target = resolveImport(from, spec);
   if (!target || reachable.has(target)) continue;
   reachable.add(target);
@@ -78,7 +80,7 @@ console.log("\n=== exported symbols no test file mentions ===");
 let dead = 0;
 for (const f of prod.filter((x) => reachable.has(x))) {
   const src = fs.readFileSync(f, "utf8");
-  const names = new Set();
+  const names = new Set<string>();
   for (const m of src.matchAll(/export (?:async )?function ([A-Za-z_]\w*)/g)) names.add(m[1]);
   for (const m of src.matchAll(/export const ([A-Za-z_]\w*)/g)) names.add(m[1]);
   const unused = [...names].filter((n) => !new RegExp(`\\b${n}\\b`).test(testSrc));

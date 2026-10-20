@@ -68,7 +68,7 @@ test("compaction leaves no dangling tool results when summarizing (#8)", async (
     agent.start("t");
     await agent.settled();
     assert.equal(agent.stats.compactions, 1, "compaction ran");
-    assertPaired(agent.messages as ChatMessage[], "summarize path");
+    assertPaired(agent.conversation as ChatMessage[], "summarize path");
     await agent.dispose();
   });
 });
@@ -107,15 +107,15 @@ test("compaction leaves no dangling tool results when the summarizer FAILS (#8)"
     // path now prepends a marker saying the prefix was dropped (a silent cut is
     // undetectable by the model), so counting messages would measure the marker.
     assert.ok(
-      (agent.messages as ChatMessage[]).length < 5,
-      `truncation must drop messages, got ${(agent.messages as ChatMessage[]).length}`,
+      (agent.conversation as ChatMessage[]).length < 5,
+      `truncation must drop messages, got ${(agent.conversation as ChatMessage[]).length}`,
     );
     assert.match(
-      String((agent.messages as ChatMessage[])[0]!.content ?? ""),
+      String((agent.conversation as ChatMessage[])[0]!.content ?? ""),
       /DROPPED, not summarized/,
       "the model must be TOLD its prefix was dropped, not left to guess (#8)",
     );
-    assertPaired(agent.messages as ChatMessage[], "truncate fallback");
+    assertPaired(agent.conversation as ChatMessage[], "truncate fallback");
     await agent.dispose();
   });
 });
@@ -143,7 +143,7 @@ test("a second compaction after the first stays well-formed (#8)", async () => {
       agent.enqueuePrompt(`round ${i}`);
       agent.start("t");
       await agent.settled();
-      assertPaired(agent.messages as ChatMessage[], `after round ${i}`);
+      assertPaired(agent.conversation as ChatMessage[], `after round ${i}`);
     }
     await agent.dispose();
   });
@@ -186,7 +186,7 @@ test("history stays pairable after a restart that follows a compaction (#8)", as
     second.enqueuePrompt("again");
     second.start("t");
     await second.settled();
-    assertPaired(second.messages as ChatMessage[], "after restart + second compaction");
+    assertPaired(second.conversation as ChatMessage[], "after restart + second compaction");
     assert.ok(
       second.stats.compactions >= 1,
       "lifetime compaction count must survive the restart",

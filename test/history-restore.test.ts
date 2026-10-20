@@ -37,7 +37,7 @@ function mk(ws: string, sd: string, chatFn: unknown): Agent {
     autoContinue: false,
   } as any);
 }
-const texts = (a: Agent) => (a.messages as any[]).map((m) => m.content ?? "").filter(Boolean);
+const texts = (a: Agent) => (a.conversation as any[]).map((m) => m.content ?? "").filter(Boolean);
 
 /** drive N prompt/answer turns */
 async function converse(a: Agent, prompts: string[]) {

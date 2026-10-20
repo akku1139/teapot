@@ -146,10 +146,11 @@ test("the header is styled and collapsible (#18)", () => {
   assert.match(app, /setWsCollapsed\(next\)/, "and the click must write it (#18)");
 });
 
-/* ---------- the real DOM check lives in the bundle smoke test ---------- */
-
-test("the smoke test asserts one header per workspace (#18)", () => {
-  const smoke = readFileSync(new URL("../scripts/smoke-web.mjs", import.meta.url), "utf8");
-  assert.match(smoke, /expected one workspace header per project/, "smoke must check the grouping (#18)");
-  assert.match(smoke, /expected both agents in the sidebar/);
-});
+/* ---------- the real DOM check lives in the bundle smoke test ----------
+ *
+ * There used to be a test here that READ scripts/smoke-web.* and asserted it contained
+ * the string "expected one workspace header per project". That protected nothing: it
+ * passed as long as the phrase existed ANYWHERE in the file — including inside a comment
+ * or a console.error that could never run — and it went red when the script was renamed,
+ * which is not a behaviour change. The smoke script itself asserts the grouping against
+ * the real bundle, which is the check that can actually fail for the real reason. */

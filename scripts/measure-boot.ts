@@ -10,10 +10,12 @@ import path from "node:path";
 // repeating a failing request per agent, which is deterministic (unlike wall time)
 const realFetch = globalThis.fetch;
 let modelFetches = 0;
-globalThis.fetch = (...args) => {
-  if (String(args[0]).includes("/models")) modelFetches++;
-  return realFetch(...args);
-};
+// typed as the real fetch signature: a bare rest parameter cannot be forwarded to
+// `realFetch` (TS2556 — a spread argument needs a tuple type or a rest parameter)
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  if (String(input).includes("/models")) modelFetches++;
+  return realFetch(input, init);
+}) as typeof fetch;
 
 const cfgPath = resolveConfigPath(process.argv[2]);
 const t0 = Date.now();
