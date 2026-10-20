@@ -356,19 +356,35 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .tbl th { background: var(--bg-darkest); font-weight: 600; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
-/* A run of rows from the SAME actor (#75). From the second row on there is no icon, and
-   the rows sit flush against each other (`margin-top: 0`) so a run reads as one group.
-
-   Each row keeps ALL FOUR corners rounded. An earlier version squared the left radii to
-   signal "continuation", which read as a stack of boxes with a flattened edge — the
-   report was "角丸になってなくて" (they are not rounded). The grouping is already
-   communicated by the missing icon and the shared head, so the shape does not need to
-   carry it too.
-
-   The rows' own vertical padding goes: `.msg`'s `padding: 3px` on every row in a run was
-   the "数px 謎の空間" between commands. */
-.embed.grouped { margin-top: 0; border-radius: 4px; }
-.msg.grouped { padding-bottom: 0; }
+/* A run of rows from the SAME actor (#75), defined by its BOUNDARIES instead of by
+   per-row padding.
+   
+   Measured before this change: normal→normal was 9px, but a run's HEAD → its first
+   continuation was only 3px, because `.msg`'s own `padding: 3px` applied to the head
+   while the continuation contributed nothing. The run therefore looked detached from
+   the row that introduced it — reported as "1つ目のtool resultの下に適切な空白が
+   挿入されていない".
+   
+   The model, in three rules that agree by construction:
+     - a row INSIDE a run sits flush against the previous row;
+     - a run's HEAD keeps the space ABOVE it (it is the start of a block, not a
+       continuation);
+     - a run's LAST row gives the space BELOW it back.
+   
+   So: 0px inside a run, 9px between blocks, and nothing else. `:has()` is what lets this
+   live in one place — a row otherwise knows only its PREVIOUS sibling, so "am I a head /
+   the last of a run" has to look FORWARD. */
+/* a continuation: no space above OR below it, from either the row or its embed */
+.msg.grouped { padding: 0 18px; }
+.embed.grouped { margin-top: 0; }
+/* a run's HEAD: its bottom padding would open a gap before the first continuation */
+.msg:not(.grouped):has(+ .msg.grouped) { padding-bottom: 0; }
+/* the run ENDS here: restore the space below, which is what separates blocks */
+.msg.grouped:not(:has(+ .msg.grouped)) { padding-bottom: 3px; }
+/* each row keeps ALL FOUR corners rounded: squaring the left ones to signal
+   "continuation" read as a stack of boxes with a flattened edge ("角丸になってなくて").
+   Grouping is carried by the missing icon and the shared head. */
+.embed.grouped { border-radius: 4px; }
 .embed.fail { border-color: var(--err); }
 /* error-retry heartbeat — warning tone, distinct from hard failures */
 .embed.warn-embed { border-color: var(--warn); }

@@ -66,13 +66,16 @@ test("the hang cannot come back through a streaming-shaped input", () => {
 test("a normal fenced block is still a code block", () => {
   const r = renderIsolated("```js\nconst a = 1;\n```");
   assert.ok(r.ok);
-  assert.match(r.ok ? r.html : "", /<pre><code>const a = 1;<\/code><\/pre>/, "fences must survive (#29 audit)");
+  // the INFO STRING is kept as a language class now (it used to be discarded, which made
+  // syntax highlighting impossible) — so the assertion is on the code, not the exact tag
+  assert.match(r.ok ? r.html : "", /<pre><code class="language-js">const a = 1;<\/code><\/pre>/, "fences must survive (#29 audit)");
 });
 
 test("an unclosed fence still runs to EOF rather than hanging", () => {
   const r = renderIsolated("```js\nconst a = 1;");
   assert.ok(r.ok);
-  assert.match(r.ok ? r.html : "", /<pre><code>/, "unclosed fences are legal (#29 audit)");
+  // class-agnostic: the info string now becomes a language class
+  assert.match(r.ok ? r.html : "", /<pre><code[^>]*>/, "unclosed fences are legal (#29 audit)");
 });
 
 test("inline code spans are unaffected", () => {

@@ -4,11 +4,31 @@
  * rules on the escaped text. Output is XSS-safe because raw <,>,& in input
  * can never survive as markup.
  *
- * Blocks: fenced code · headings #–###### · ul/ol incl. one-level nesting &
- * task items · GFM pipe tables (alignment, escaped pipes) · blockquotes ·
- * horizontal rules · paragraphs.
+ * Blocks: fenced code (3+ backticks, info string kept as a language class) ·
+ * headings #–###### · ul/ol incl. one-level nesting, loose lists & task items ·
+ * GFM pipe tables (alignment, escaped pipes) · blockquotes · horizontal rules ·
+ * paragraphs.
  * Inline: code spans (protected), images, links, bare autolinks, ***bold-
  * italic***, **bold**, __bold__, *em*, _em_, ~~strike~~.
+ *
+ * ## Deliberate divergences from CommonMark
+ *
+ * Written down because "is this a bug or a choice?" comes up every time, and an
+ * undocumented choice gets re-reported as a defect.
+ *
+ *   - **A newline inside a paragraph is `<br>`.** CommonMark says a soft break is a
+ *     space. This renders CHAT: an operator typing three short lines means three lines,
+ *     and collapsing them loses meaning that no amount of spec compliance gives back.
+ *   - **Not supported, on purpose**: setext headings, indented code blocks, reference
+ *     links, backslash escapes (other than `\|` in tables), multi-backtick code spans,
+ *     and raw HTML passthrough. Each is either rare in chat or an XSS surface, and the
+ *     escape-first design is what makes the renderer safe to point at model output.
+ *   - **Tab width in `indentOf` is 2, not CommonMark's 4.** Model output is usually
+ *     two-space indented, and honouring 4 would stop most real nested lists from
+ *     nesting at all.
+ *   - **A row is a table before it is a list item**, so `- a | b` followed by a
+ *     separator row becomes a table. Rare, and the alternative misparses far more
+ *     common input.
  */
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 
@@ -30,12 +50,23 @@ function renderEscaped(lines) {
     // (`js`, `/subject/why-qa`, `text .txt`…) — the old /\w*/ pattern rejected
     // slash-y pseudo-paths, which made the line fall through to paragraph
     // handling and HANGED the renderer on such chats.
-    if (/^```[^\n]*$/.test(line) && !/^```.+\`\`\`/.test(line)) {
+    const fence = line.match(/^(`{3,})([^\n]*)$/);
+    if (fence && !/^```.+\`\`\`/.test(line)) {
+      const ticks = fence[1].length;
+      // The INFO STRING is kept as a class, which is what makes syntax highlighting
+      // possible at all — it used to be discarded, so every block rendered unhighlighted.
+      const info = fence[2].trim().split(/\s+/)[0] ?? "";
       const buf = [];
       i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) buf.push(lines[i++]);
+      // A fence closes with AT LEAST as many backticks as opened it. Matching exactly
+      // three meant a four-backtick fence never closed and ran to EOF — and the case
+      // people write it for is nesting a ``` block inside one.
+      const close = new RegExp("^`{" + ticks + ",}\\s*$");
+      while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
       i++; // closing fence (may be missing — unclosed fence just runs to EOF)
-      out.push(`<pre><code>${buf.join("\n")}</code></pre>`);
+      // the language class is escaped like any other attribute value
+      const cls = info ? ` class="language-${info.replace(/[^\w+#.-]/g, "")}"` : "";
+      out.push(`<pre><code${cls}>${buf.join("\n")}</code></pre>`);
       continue;
     }
     // horizontal rule (before list: *** / --- would otherwise look like items)
@@ -144,6 +175,8 @@ function renderEscaped(lines) {
   /** Consumes list lines from i onward; returns HTML. One nesting level. */
   function parseList(minIndent) {
     let ordered = null;
+    /** the first item's number, so `<ol start="3">` survives (it used to be dropped) */
+    let start = 1;
     const items = [];
     while (i < lines.length) {
       const m = lines[i].match(LIST_ITEM);
@@ -153,16 +186,31 @@ function renderEscaped(lines) {
       const ol = /^\d/.test(m[2]);
       if (ordered === null) ordered = ol;
       else if (ol !== ordered) break; // marker type changed → close this list
+      if (ordered && items.length === 0) {
+        const n = Number.parseInt(m[2], 10);
+        // CommonMark: the list starts at the first item's number (any other numbers are
+        // ignored, which is why only the FIRST is read)
+        if (Number.isFinite(n)) start = n;
+      }
       i++;
       let body = m[3];
       // folded continuation lines (wrapped text belonging to this item)
+      //
+      // Every BLOCK-STARTING construct must end the item, or the block is swallowed as
+      // item text. MEASURED: "- item\n---" produced `<li>item ---</li>` instead of an
+      // `<hr>`, and a table directly under a list was absorbed the same way. Headings,
+      // fences and quotes were already excluded — these two were the hole.
       while (
         i < lines.length &&
         /\S/.test(lines[i]) &&
         !LIST_ITEM.test(lines[i]) &&
         !/^#{1,6}\s/.test(lines[i]) &&
-!lines[i].startsWith("```") &&
-        !/^\s*&gt;/.test(lines[i])
+        !lines[i].startsWith("```") &&
+        !/^\s*&gt;/.test(lines[i]) &&
+        // a thematic break (the same predicate the block loop uses, so they agree)
+        !/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
+        // a table START: this line has a pipe and the NEXT is a separator row
+        !(lines[i].includes("|") && i + 1 < lines.length && isSeparatorRow(lines[i + 1]))
       ) {
         body += " " + lines[i].trim();
         i++;
@@ -177,8 +225,26 @@ function renderEscaped(lines) {
         ? `<input type="checkbox" disabled${task[1].toLowerCase() === "x" ? " checked" : ""}> `
         : "";
       items.push(`<li>${box}${inline(task ? task[2] : body)}${sub}</li>`);
+      // A BLANK line between items makes a LOOSE list — still one list. Without this the
+      // list ended at the blank line and the next item started a second one, and (because
+      // the blank line was then consumed as an empty paragraph) the FIRST item was lost
+      // entirely: "- a\n\n- b" rendered as a single <ul> containing "b".
+      //
+      // Only skip the blanks when the next non-blank line is another item at this depth;
+      // otherwise the list really has ended and the blank line belongs to what follows.
+      let look = i;
+      while (look < lines.length && !/\S/.test(lines[look])) look++;
+      const nextItem = lines[look]?.match(LIST_ITEM);
+      if (look > i && nextItem && indentOf(nextItem[1]) === ind && /^\d/.test(nextItem[2]) === ordered) {
+        i = look;
+      }
     }
-    return ordered ? `<ol>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`;
+    // `<ol start="N">` only when the list does not begin at 1 — the attribute is
+    // redundant otherwise, and emitting it always would churn every ordered list.
+    if (!ordered) return `<ul>${items.join("")}</ul>`;
+    return start === 1
+      ? `<ol>${items.join("")}</ol>`
+      : `<ol start="${start}">${items.join("")}</ol>`;
   }
 
   function inline(s) {
@@ -192,14 +258,30 @@ function renderEscaped(lines) {
       codes.push(`<code>${c}</code>`);
       return `\ue000${codes.length - 1}\uE001`;
     });
-    // images before links
+    // LINKS AND IMAGES are placeholdered too, for the same reason as code spans: the
+    // HTML they produce must not be re-scanned by the passes below.
+    //
+    // Measured: `[https://example.com](https://example.com)` produced
+    //   <a href="…"><a href="…">https://example.com</a></a>
+    // because the autolink pass ran afterwards and its lookbehind
+    // `(?<!["'=\w])` accepts the `>` that ends `<a href="…">`. Nested <a> is invalid
+    // HTML, so the browser closes the outer one early and the rest of the row's markup
+    // lands outside it.
+    //
+    // Image first: `![x](url)` must not have its inner part claimed by the link rule.
     s = s.replace(
       /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g,
-      '<img src="$2" alt="$1" loading="lazy">',
+      (_, alt, url) => {
+        codes.push(`<img src="${url}" alt="${alt}" loading="lazy">`);
+        return `\ue000${codes.length - 1}\uE001`;
+      },
     );
     s = s.replace(
       /\[([^\]]+)\]\((https?:\/\/[^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g,
-      '<a href="$2" rel="noopener noreferrer" target="_blank">$1</a>',
+      (_, text, url) => {
+        codes.push(`<a href="${url}" rel="noopener noreferrer" target="_blank">${text}</a>`);
+        return `\ue000${codes.length - 1}\uE001`;
+      },
     );
     // bare autolinks (skip anything already inside an attribute/text)
     s = s.replace(
@@ -259,7 +341,10 @@ function splitRow(line) {
       // suppressed.
       const close = s.indexOf("`", k + 1);
       if (close !== -1) {
-        cur += s.slice(k, close + 1); // the span verbatim, pipes included
+        // The span is copied so its pipes are not boundaries — but the ESCAPE must be
+        // resolved inside it too. GFM renders `a\|b` in a code span as `a|b`, and
+        // copying verbatim left the backslash visible (`<code>a\|b</code>`).
+        cur += s.slice(k, close + 1).replace(/\\\|/g, "|");
         k = close;
         continue;
       }

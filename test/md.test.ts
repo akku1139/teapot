@@ -142,12 +142,95 @@ for (const [name, src] of CASES) {
 
 test("md: slash-lang fence actually renders as code (regression for the UI freeze)", () => {
   const out = renderMarkdown("```/subject/why-qa/trivia-qa-space\n**Q.** text\n```");
-  assert.match(out, /<pre><code>/);
+  // A slash-y info string must be RECOGNISED as a fence (it used to fall through to
+  // paragraph handling and hang the renderer). Assert the fence, not the exact class —
+  // the class is sanitised, and pinning its spelling would break on any change to that.
+  assert.match(out, /<pre><code[^>]*>/);
   assert.match(out, /\*\*Q\.\*\* text/); // inner markdown NOT processed inside code
+});
+
+test("md: a fence keeps its info string as a language class", () => {
+  // This is what makes syntax highlighting possible at all; the info string used to be
+  // discarded so every block rendered unhighlighted.
+  assert.match(renderMarkdown("```js\nx\n```"), /<pre><code class="language-js">/);
+  // an unusable info string is stripped rather than injected
+  assert.match(renderMarkdown("```a\"b><script>\nx\n```"), /<pre><code[^>]*>/);
+  assert.doesNotMatch(renderMarkdown("```a\"b><script>\nx\n```"), /<script>/);
 });
 
 test("md: unclosed fence runs to EOF instead of hanging", () => {
   const out = renderMarkdown("before\n```js\nconst x = 1;");
-  assert.match(out, /<pre><code>/);
+  assert.match(out, /<pre><code/);
   assert.match(out, /const x = 1;/);
+});
+
+/* ---------- a review of the renderer found these; each broke real input ---------- */
+
+test("md: a link whose TEXT is a url does not nest <a>", () => {
+  // Measured before the fix:
+  //   <a href="…"><a href="…">https://example.com</a></a>
+  // The link pass emitted HTML, then the autolink pass matched the URL inside it —
+  // its lookbehind accepts the `>` that ends `<a href="…">`. Nested <a> is invalid, so
+  // the browser closes the outer one early and the row's markup lands outside it.
+  const out = renderMarkdown("[https://example.com](https://example.com)");
+  assert.equal((out.match(/<a /g) || []).length, 1, `exactly one link, got: ${out}`);
+  assert.match(out, /<a href="https:\/\/example\.com"[^>]*>https:\/\/example\.com<\/a>/);
+});
+
+test("md: a real link and a bare url in one line both work", () => {
+  const out = renderMarkdown("[text](https://a.com) and https://b.com");
+  assert.equal((out.match(/<a /g) || []).length, 2, out);
+  assert.match(out, /href="https:\/\/a\.com"/);
+  assert.match(out, /href="https:\/\/b\.com"/);
+});
+
+test("md: a list item does not swallow a following hr or table", () => {
+  // Both were absorbed as item text: "- item\n---" rendered `<li>item ---</li>`.
+  const hr = renderMarkdown("- item\n---\n");
+  assert.match(hr, /<hr>/, `the thematic break must survive, got: ${hr}`);
+  assert.match(hr, /<li>item<\/li>/);
+
+  const table = renderMarkdown("- item\n| a | b |\n| - | - |\n| 1 | 2 |\n");
+  assert.match(table, /<table>/, `the table must survive, got: ${table}`);
+  assert.match(table, /<li>item<\/li>/);
+  // and a plain wrapped line still folds INTO the item
+  assert.match(renderMarkdown("- item\nwrapped\n"), /<li>item wrapped<\/li>/);
+});
+
+test("md: a fence closes with AT LEAST as many backticks as opened it", () => {
+  // Three-or-more could OPEN but only exactly three could CLOSE, so a four-backtick
+  // fence ran to EOF — and that is the form people write to nest a ``` block.
+  const nested = renderMarkdown("````md\n```js\nconst a = 1;\n```\n````");
+  assert.match(nested, /<pre><code class="language-md">/, nested);
+  assert.match(nested, /```js/, "the inner fence is CONTENT, not a nested block");
+  // an over-long closing run also closes (CommonMark allows it)
+  assert.match(renderMarkdown("````\nx\n`````"), /<pre><code[^>]*>x<\/code><\/pre>/);
+});
+
+test("md: \\| inside a code span in a table cell loses the backslash", () => {
+  // GFM renders `a\|b` in a span as `a|b`; copying the span verbatim kept the
+  // backslash visible. The pipe must still not split the cell.
+  const out = renderMarkdown("| a |\n| - |\n| `x\\|y` |");
+  assert.match(out, /<code>x\|y<\/code>/, out);
+  assert.equal((out.match(/<td>/g) || []).length, 1, `still one column: ${out}`);
+});
+
+test("md: a loose list is ONE list and keeps every item", () => {
+  // Before the fix the blank line ended the list AND was consumed as an empty
+  // paragraph, so "- a\n\n- b" rendered a single <ul> containing just "b".
+  const out = renderMarkdown("- a\n\n- b");
+  assert.equal((out.match(/<ul>/g) || []).length, 1, out);
+  assert.match(out, /<li>a<\/li>/);
+  assert.match(out, /<li>b<\/li>/);
+  // but a paragraph after a blank line still ends the list
+  const after = renderMarkdown("- a\n\nafter");
+  assert.match(after, /<\/ul>/);
+  assert.match(after, /<p>after<\/p>/);
+});
+
+test("md: an ordered list keeps its start number", () => {
+  assert.match(renderMarkdown("3. a\n4. b"), /<ol start="3">/);
+  // no `start` attribute when it begins at 1 — it would be redundant
+  assert.match(renderMarkdown("1. a\n2. b"), /<ol>/);
+  assert.doesNotMatch(renderMarkdown("1. a\n2. b"), /start=/);
 });

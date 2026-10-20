@@ -1071,20 +1071,12 @@ console.log("deep render ok: feed rows present");
     {
       const cssOf = (el) => w.document.defaultView.getComputedStyle(el);
       const groupedRows = [...w.document.querySelectorAll(".msg.grouped")];
+      const feedRows = [...w.document.querySelectorAll(".msg")];
       if (groupedRows.length === 0) {
         console.error("#grouped REGRESSION: no grouped rows to measure — the check is vacuous");
         process.exit(1);
       }
       for (const [i, row] of groupedRows.entries()) {
-        // the row's own vertical padding is the dead space
-        const pad = cssOf(row);
-        if (pad.paddingBottom !== "0px") {
-          console.error(
-            `#grouped REGRESSION: grouped row ${i} keeps padding-bottom=${pad.paddingBottom} — ` +
-              "that is the few pixels of dead space between commands",
-          );
-          process.exit(1);
-        }
         const embed = row.querySelector(".embed");
         if (!embed) {
           console.error(`#grouped REGRESSION: grouped row ${i} has no embed`);
@@ -1109,8 +1101,61 @@ console.log("deep render ok: feed rows present");
           }
         }
       }
+
+      // THE GAP MODEL. What "there is no space below the first tool result" was: the
+      // run's HEAD kept `.msg`'s 3px bottom padding while the continuation contributed
+      // nothing, so a run looked detached from the row that introduced it.
+      //
+      // This fixture has ONE run of two rows, so the boundary to measure is
+      // head → first continuation (which must be FLUSH), not continuation →
+      // continuation. Written against the class contract rather than row indices so it
+      // keeps meaning something if the fixture grows.
+      const gaps = [];
+      for (let i = 0; i < feedRows.length - 1; i++) {
+        const a = feedRows[i];
+        const b = feedRows[i + 1];
+        const ae = a.querySelector(".embed");
+        const be = b.querySelector(".embed");
+        if (!ae || !be) continue;
+        // a row that CONTINUES the previous one is the boundary "inside a run"
+        if (!b.classList.contains("grouped")) continue;
+        gaps.push({
+          label: `${a.className.slice(0, 20)} -> ${b.className.slice(0, 20)}`,
+          px:
+            parseFloat(cssOf(a).paddingBottom) +
+            parseFloat(cssOf(b).paddingTop) +
+            parseFloat(cssOf(be).marginTop),
+        });
+      }
+      if (gaps.length === 0) {
+        console.error(
+          "#grouped REGRESSION: no run boundary to measure — the grouping check is vacuous",
+        );
+        process.exit(1);
+      }
+      // every boundary INTO a grouped row must be flush: that is the joined run
+      for (const g of gaps) {
+        if (g.px !== 0) {
+          console.error(
+            `#grouped REGRESSION: a grouped row is ${g.px}px from the row above it (${g.label}) — ` +
+              "the run must be flush, or its head looks detached from its commands",
+          );
+          process.exit(1);
+        }
+      }
+      // and a run's last row must still separate it from what follows (when a row does)
+      const lastGrouped = groupedRows[groupedRows.length - 1];
+      const next = lastGrouped?.nextElementSibling;
+      if (next && next.classList.contains("msg")) {
+        if (parseFloat(cssOf(lastGrouped).paddingBottom) <= 0) {
+          console.error(
+            "#grouped REGRESSION: a run's last row gives no space below it — blocks run together",
+          );
+          process.exit(1);
+        }
+      }
     }
-    console.log("deep render ok: a grouped run joins — rounded corners, no dead space (#grouped)");
+    console.log("deep render ok: a grouped run joins — rounded corners, flush inside, spaced between (#grouped)");
   }
 
   /* ---------- #75: an INVISIBLE row must not split a tool run ------------------
