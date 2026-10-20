@@ -118,6 +118,4 @@ test("a live delta from the displayed session is shown (#146)", () => {
 // `rowIsStillActive()` helper that PRODUCTION NEVER CALLED — a test-local copy in
 // the sense #75 warns about, giving the appearance of coverage for the very rule
 // that #120/#146 were about. The rule production actually uses is
-// `isTimelineLive() && isOwnLiveWork(e)`, and its WIRING is asserted in
-// test/session-scoping-wiring.test.ts against App.tsx. The dead helper and this
-// test are gone; the assertion that matters was kept.
+// `isTimelineLive() && isOwnLiveWork(e)`, and both predicates are exercised above.

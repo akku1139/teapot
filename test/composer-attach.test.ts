@@ -21,7 +21,6 @@ import { readFileSync } from "node:fs";
 import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * Body of the FIRST rule whose SELECTOR list contains `selector`.
@@ -90,21 +89,6 @@ test("the submit and max buttons are pinned too — 📎 now matches them (#44)"
     /\.composer\.maximized\s+\.maxbtn,\s*\n\s*\.composer\.maximized form > button\[type="submit"\]/,
     "submit must be pinned alongside the max button (#44)",
   );
-});
-
-/* ---------- wiring: the button really is an IconBtn in that form ---------- */
-
-test("the attachment control is an IconBtn inside the composer form (#44)", () => {
-  assert.match(
-    app,
-    /icon="📎"[\s\S]{0,200}attach images/,
-    "the 📎 control must still be the IconBtn the CSS targets (#44)",
-  );
-});
-
-test("IconBtn renders the .iconbtn class and the centring glyph (#44)", () => {
-  assert.match(app, /class=\{"iconbtn"/, "IconBtn must render .iconbtn (#44)");
-  assert.match(app, /iconbtn-glyph/, "the glyph wrapper centres the emoji (#44)");
 });
 
 /* ---------- sizing preserved ---------- */

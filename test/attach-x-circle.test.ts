@@ -23,7 +23,6 @@ import { readFileSync } from "node:fs";
 import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /** Body of the FIRST rule whose SELECTOR list contains `selector`. */
 function firstRule(selector: string): string {
@@ -90,23 +89,4 @@ test("the image chip does not clip the ✕ that overhangs its corner (#57)", () 
       "cut the circle in half (#57)",
   );
   assert.match(chip, /position:\s*relative/, "the chip must be the ✕'s positioning context (#57)");
-});
-
-/* ---------- wiring: the ✕ really is the staged-image control ---------- */
-
-test("the ✕ rendered for a staged image uses .imgx (#57)", () => {
-  const idx = app.indexOf("imgchip");
-  assert.notEqual(idx, -1, "the staged-image chip must exist (#57)");
-  const window = app.slice(idx, idx + 1200);
-  assert.match(
-    window,
-    /class="imgx"/,
-    "the staged-image ✕ must carry .imgx (#57)",
-  );
-  const btn = window.indexOf('class="imgx"');
-  const img = window.indexOf("<img");
-  assert.ok(
-    btn !== -1 && img !== -1,
-    "both the thumbnail and its ✕ must be inside the chip (#57)",
-  );
 });

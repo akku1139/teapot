@@ -41,8 +41,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { Window } from "happy-dom";
 import { renderMarkdown } from "../frontend/md.js";
 import { goalLine } from "../frontend/goal-timeline.ts";
+import { cssRuleBody } from "./helpers/css.ts";
 
-const _css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
 /* ---------- the rule ---------- */
 
@@ -99,9 +99,11 @@ test("the shipped CSS has the wrapping rule (#111)", () => {
   }
   if (!name) return;
   const built = readFileSync(new URL(name, dir), "utf8");
+  const body = cssRuleBody(built, ".content pre>code") ?? "";
+  assert.ok(body, `the SHIPPED css must carry the goal-card code rule (#111); ${name}`);
   assert.match(
-    built,
-    /\.content pre>code\{[^}]*white-space:pre-wrap/,
+    body,
+    /white-space:\s*pre-wrap/,
     `the SHIPPED css must wrap goal-card code (#111); ${name}`,
   );
 });

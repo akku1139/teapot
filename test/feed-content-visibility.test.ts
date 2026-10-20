@@ -2,24 +2,16 @@
  * #143 — "最近メモリ使用量増えてきた": the client held 418 MB for one session
  * (600 MB after a reload), while the server was a healthy 195 MB.
  *
- * ## Why the client, and why not virtual scrolling
+ * `content-visibility: auto` lets the browser skip LAYOUT AND PAINT for timeline rows
+ * outside the viewport while leaving them in the DOM. Virtual scrolling would unmount
+ * them instead, and this feed depends on real DOM (scroll anchoring measures the first
+ * visible row, rows are looked up by `data-eid`, cmd-F and text selection span loaded
+ * history). The reservation machinery that used to size those rows from script is
+ * GONE — `frontend/feed-reserve.ts` was deleted — so the declarations below are the
+ * whole mechanism, and a CSS contract is the only way to assert them: happy-dom does
+ * no layout.
  *
- * The timeline loads 2000 events per page (`FEED_PAGE`), and a rendered row is ~11 DOM
- * nodes carrying already-parsed markdown — MEASURED at 11.0 nodes/row in the real
- * bundle, so one page is ~22 000 nodes. Every one of them holds a DOM subtree, a
- * Solid owner, and rendered HTML.
- *
- * Virtual scrolling would cut that, but it is bought by UNMOUNTING rows, and this feed
- * depends on real DOM: scroll anchoring measures `getBoundingClientRect()` on the first
- * visible row, rows are looked up by `data-eid`, and the operator expects cmd-F and
- * text selection to work over loaded history.
- *
- * `content-visibility: auto` instead lets the browser skip LAYOUT AND PAINT for rows
- * outside the viewport while leaving them in the DOM — the same memory win for the
- * expensive part (style/layout/paint of rendered markdown) with none of the
- * unmounting.
- *
- * ## The two declarations that make it safe, and why both are pinned here
+ * ## The two declarations that make it safe
  *
  * 1. `contain-intrinsic-size` is NOT optional. Without a placeholder size a skipped row
  *    collapses to 0px, `scrollHeight` shrinks, and every scroll-anchoring path in

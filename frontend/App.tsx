@@ -38,7 +38,6 @@ import {
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
 import { atTail, shouldFollowAfterChange, type TailSample } from "./scroll-policy";
-import { reserveRowSizes, type ReservedSizes } from "./feed-reserve";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -405,15 +404,37 @@ export default function App() {
     // rows already carry `data-eid` (their log event id), which is stable across
     // a re-wrap — unlike a pixel offset or a row INDEX
     const rows = f.querySelectorAll<HTMLElement>("[data-eid]");
+    if (!rows.length) return null;
     const feedTop = f.getBoundingClientRect().top;
-    for (const el of rows) {
-      const r = el.getBoundingClientRect();
-      if (r.bottom > feedTop) {
-        const eid = el.dataset.eid ?? "";
-        return eid ? { sel: `[data-eid="${CSS.escape(eid)}"]`, top: r.top } : null;
+    const at = (i: number) => rows[i]!.getBoundingClientRect();
+    /**
+     * BINARY SEARCH, not a linear scan (#179).
+     *
+     * MEASURED cost of the old loop: `getBoundingClientRect()` on every row until one was
+     * visible — and with `content-visibility: auto` on `.feed > .msg`, reading a row's box
+     * FORCES IT TO BE LAID OUT. So the scan did not merely read ~1,100 boxes, it laid out
+     * every skipped row it passed, which is the "`content-visibility` との相性" the operator
+     * suspected. It runs on every window resize and every content change.
+     *
+     * Rows are in DOCUMENT ORDER, so "is this row above the viewport" is monotone: a binary
+     * search finds the first visible row in ~10 probes instead of ~1,100, and only the rows
+     * on that path are ever unskipped.
+     */
+    let lo = 0;
+    let hi = rows.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (at(mid).bottom > feedTop) {
+        found = mid;
+        hi = mid - 1; // a visible row — look for an EARLIER one
+      } else {
+        lo = mid + 1; // entirely above the viewport
       }
     }
-    return null;
+    if (found < 0) return null;
+    const eid = rows[found]!.dataset.eid ?? "";
+    return eid ? { sel: `[data-eid="${CSS.escape(eid)}"]`, top: at(found).top } : null;
   }
   const [showRight, setShowRight] = createSignal(
     localStorage.getItem("teapot.panel") !== null
@@ -486,53 +507,22 @@ export default function App() {
     if (off) delete document.documentElement.dataset.feedcv;
     else document.documentElement.dataset.feedcv = "on";
   });
-  /**
-   * Reserve each row's REAL height so `content-visibility` unskipping cannot move the
-   * scroll position (frontend/feed-reserve.ts explains the mechanism and cites the primary
-   * source). Only meaningful when the feature is ON — without `content-visibility` the
-   * placeholder is never used, and writing one would be dead work on every row.
-   *
-   * Re-armed when the rendered rows change, because rows are appended as the feed grows and
-   * the module only measures what it has been handed. What it must NOT do is register its
-   * cleanup from a deferred callback: #177 burned a CPU core exactly that way.
-   *
-   * `onCleanup` is only meaningful while Solid's `Owner` is set, and inside a
-   * `requestAnimationFrame` callback it is already null — solid.js does `if (Owner === null) ;`
-   * and drops the function on the floor. So the old shape
-   *
-   *     const raf = requestAnimationFrame(() => {
-   *       const reserved = reserveRowSizes(root);
-   *       onCleanup(() => reserved.disconnect());   // never registered
-   *     });
-   *
-   * left a full set of observers alive on EVERY `chatEvents()` change. Each one kept
-   * observing every row and re-measured them on every scroll frame, so the cost grew with
-   * renders × rows — the reported 100% CPU.
-   *
-   * The cleanup now lives in the effect BODY, where the owner still exists, and disconnects
-   * whatever that run created (or cancels its pending frame).
-   */
-  createEffect(() => {
-    if (localStorage.getItem("teapot.feedCv") === "0") return;
-    // track the rows so the effect re-runs when the set changes; the module would otherwise
-    // only ever see the rows that existed at mount
-    const rows = chatEvents();
-    const root = feedEl();
-    if (!root || rows.length === 0) return;
-    let reserved: ReservedSizes | null = null;
-    let cancelled = false;
-    // one frame: the rows must be IN the DOM before they can be measured. A row that has
-    // never been laid out reports a zero box, which `reserve` deliberately ignores.
-    const raf = requestAnimationFrame(() => {
-      if (cancelled) return;
-      reserved = reserveRowSizes(root);
-    });
-    onCleanup(() => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-      reserved?.disconnect();
-    });
-  });
+  // NOTE (#179): there used to be a second effect here that walked every row and wrote an
+  // inline `contain-intrinsic-size` from a measured box, with an IntersectionObserver and a
+  // ResizeObserver per row, to stop a `content-visibility` unskip from shifting the scroll.
+  //
+  // It is GONE. MEASURED by the operator: with `teapot.feedCv=0` the UI is light, with it
+  // on the tab is unusable — so the cost was the reservation machinery itself, not the
+  // containment. An inline style on ~1,100 rows plus 2 observers each meant every scroll
+  // and every append invalidated style and layout for the whole feed.
+  //
+  // The mechanism is also self-defeating: writing `<w>px <h>px` REPLACES the stylesheet's
+  // `auto` keyword, so the browser can no longer remember a row's real size itself — which
+  // is exactly what `auto` is for. `contain-intrinsic-size: auto 140px` in app.css does
+  // this job natively, in the engine, with no script.
+  //
+  // happy-dom does no layout, so none of this could ever reproduce in the test harness —
+  // which is why the previous tests were green while the browser burned a core.
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
@@ -2793,27 +2783,48 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   };
   // oxlint-disable-next-line no-unassigned-vars
   let composerEl: HTMLTextAreaElement | undefined;
+  /**
+   * Size the composer to its content, and keep the reader pinned to the tail when THAT
+   * resize is what moved the bottom of the feed.
+   *
+   * ## Why this is not allowed to touch layout on every keystroke (#179)
+   *
+   * Reported: the tab used a full CPU core and 2 GB. `tailSample()` reads
+   * `feed.scrollHeight`, and with ~1,100 rows (many carrying `content-visibility: auto`)
+   * that is a FORCED LAYOUT of the entire feed. This function runs from the draft effect —
+   * i.e. on EVERY keystroke — and v0.29.38 made it sample TWICE (before and after) and
+   * added `void composerEl.clientHeight` to force the reflow in between. So one character
+   * cost three synchronous layouts of a 1,100-row document, indefinitely.
+   *
+   * The reflow is only needed when the composer's height actually CHANGES, which happens
+   * on far fewer keystrokes than there are characters (only when a line wraps or unwraps).
+   * So: measure the textarea, and bail out early — with no `tailSample()` at all — when the
+   * height is unchanged. That keeps the scroll-follow behaviour exactly as it was, because
+   * an unchanged composer height cannot have moved the feed's viewport.
+   */
+  let lastComposerHeight = -1;
   const autosizeComposer = () => {
     if (!composerEl) return;
-    // The composer growing shrinks the feed's VIEWPORT, which raises the gap without
-    // anybody scrolling — one of the growth paths the follow rule exists for.
-    //
-    // THE TIMING IS THE BUG. Reported: "スクロール追従中に2行以上に拡大した入力欄に入力をすると
-    // ちょっと上にスクロールする". The old code sampled `after` inside a rAF, which can run
-    // BEFORE the new composer height has been laid out. The sample then showed the OLD
-    // viewport, `scrollBottom` set `scrollTop` to the OLD maximum, and only afterwards did
-    // the feed get shorter — so the reader was left above the tail by exactly the height the
-    // composer had grown. Nothing scrolled it; the bottom simply moved down out of view.
-    //
-    // The fix is to make the layout happen BEFORE the sample: writing `height` does not lay
-    // out on its own, but READING a geometry property does. `clientHeight` on the composer
-    // forces exactly the reflow whose absence caused the drift.
-    const before = tailSample();
+    const maximized = composerMaximized();
+    // `height: auto` first, or `scrollHeight` never shrinks when text is DELETED — the box
+    // would stay at its tallest. This is a write on ONE element, not a feed measurement.
     composerEl.style.height = "auto";
-    composerEl.style.height = composerMaximized()
-      ? "" // CSS takes over: .composer.maximized textarea fills the column
-      : `${Math.min(composerEl.scrollHeight, MAX_COMPOSER_H)}px`;
-    // force the reflow so the feed's viewport below is the NEW one
+    const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
+    // apply it unconditionally: the early return below must NOT leave the box at `auto`,
+    // which collapses a textarea to its `rows` default and looks like the composer ate the
+    // text. Only the expensive part — the feed measurement — is conditional.
+    composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
+    // The FEED sample is the expensive part: `tailSample()` reads `scrollHeight`, a forced
+    // layout of a 1,100-row document. Skip it unless the box actually resized, because an
+    // unchanged composer height cannot have moved the feed's viewport.
+    if (wanted === lastComposerHeight) return;
+    lastComposerHeight = wanted;
+
+    // From here on the box really resizes, so the feed's viewport changes and the follow
+    // rule has to decide. Sampling is now proportional to HEIGHT CHANGES, not keystrokes.
+    const before = tailSample();
+    // force the reflow so the feed's viewport below is the NEW one: writing `height` does
+    // not lay out on its own, but reading a geometry property does
     void composerEl.clientHeight;
     const after = tailSample();
     // A reader who was at the tail stays there; one who had scrolled up is left alone.

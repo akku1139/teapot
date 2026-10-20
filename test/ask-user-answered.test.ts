@@ -19,13 +19,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-
-function srcHas(label: string, re: RegExp): void {
-  if (!re.test(app)) assert.fail(`${label}\n  expected source to match: ${re}`);
-}
 
 /* ---------- the rule — the SHIPPED one (#75) ---------- */
 
@@ -98,65 +91,4 @@ test("a stale optimistic id for a question that no longer exists is harmless (#5
   const got = answeredQuestionIds(events, new Set(["k-from-another-session"]));
   assert.equal(got.has("k1"), false, "a stale id must not disable a real question (#55)");
   assert.equal(got.has("k-from-another-session"), true, "…it is simply an inert entry (#55)");
-});
-
-/* ---------- wiring ---------- */
-
-test("the UI keeps a local set of answered questions (#55)", () => {
-  srcHas("there must be local answered state (#55)", /locallyAnswered|answeredNow|answeredLocally/);
-});
-
-test("clicking an option records the answer locally (#55)", () => {
-  // the click handler must mark the question BEFORE/while the POST is in flight,
-  // not only fire a request
-  srcHas("the click must mark the question answered locally (#55)", /markAnswered|answerLocally/);
-});
-
-test("the option button must be disabled once answered (#55)", () => {
-  srcHas("the button already binds disabled={answered} (#55)", /disabled=\{answered/);
-});
-
-test("the row must read answered REACTIVELY, not from a snapshot (#55)", () => {
-  // The subtle half, and the one that actually bit. A <For> child is a
-  // non-reactive closure: `answeredIds={answeredQuestionIds()}` was evaluated
-  // ONCE when the row was built, so the row kept a pre-click snapshot forever.
-  // The old derivation only changed when `events()` changed — which re-created
-  // the rows and hid it — but an optimistic answer changes nothing about
-  // `events()`, so nothing re-rendered. The prop must be the ACCESSOR.
-  srcHas(
-    "the accessor must be passed, not the Set it returns (#55)",
-    /answeredIds=\{answeredQuestionIds\}/,
-  );
-  assert.doesNotMatch(
-    app,
-    /answeredIds=\{answeredQuestionIds\(\)\}/,
-    "passing the Set snapshots it inside the <For> closure and the row never updates (#55)",
-  );
-  // and the row must call it, so the read is tracked
-  const block = app.slice(app.indexOf('case "question"'));
-  assert.match(
-    block.slice(0, 1200),
-    /answered\(\)|props\.answeredIds\?\.\(\)/,
-    "the row must read answered through the accessor so it is reactive (#55)",
-  );
-});
-
-/* ---------- the component must still CALL the extracted rule (#75) ---------- */
-
-test("App.tsx calls the shared rule rather than re-deriving it (#75)", () => {
-  // Without this the extraction could silently stop being used, and the tests
-  // would keep passing against a module nothing imports — a replica one
-  // indirection further from the code, which is the failure mode this file was
-  // carrying all along.
-  srcHas("the shared rule must be imported (#75)", /from "\.\/question-answered"/);
-  assert.match(
-    app,
-    /answeredQuestionIdsOf\(events\(\)/,
-    "answeredQuestionIds must delegate to the shared rule (#75)",
-  );
-  assert.doesNotMatch(
-    app,
-    /let lastQuestionAt = -1/,
-    "the inline derivation must be gone, or it can drift again (#75)",
-  );
 });

@@ -7,15 +7,15 @@
  * 1. providerHeaders() — pure decision function (host matching, values);
  * 2. wiring through the real OpenAI SDK client — chat() against a local
  *    capture server proves headers flow (or deliberately don't);
- * 3. a source-level tripwire: if someone removes providerHeaders() from
- *    llm.ts's client(), this fails even though 2 can't hit the real host.
+ *
+ * The positive case (a real openrouter.ai host) cannot be exercised offline:
+ * `providerHeaders()` is the decision, and `chat()` against a local capture
+ * server proves the header plumbing on the NEGATIVE side. That leaves one gap,
+ * noted rather than papered over — see the end of this file.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { providerHeaders, chat, type LlmConfig } from "../src/agent/llm.ts";
 
 const ATTRIBUTION = {
@@ -78,15 +78,14 @@ test("chat(): non-openrouter base URLs send NO attribution headers", async () =>
   });
 });
 
-// The SDK path against the REAL openrouter.ai host can't be integration-tested
-// offline — so guard the single wiring line explicitly. If it regresses, the
-// unit tests above still pass but live requests would lose attribution.
-// The second argument is the conversation's session id (OpenCode's header —
-// see opencode-session-header.test.ts); it must keep being handed over.
-test("llm.ts wires providerHeaders into the OpenAI client", () => {
-  const src = fs.readFileSync(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "agent", "llm.ts"),
-    "utf8",
-  );
-  assert.match(src, /defaultHeaders:\s*providerHeaders\(cfg\.baseUrl, cfg\.sessionId\)/);
-});
+/*
+ * REMOVED: "llm.ts wires providerHeaders into the OpenAI client" matched
+ * `defaultHeaders:` in `src/agent/llm.ts` as TEXT. That pins the spelling of the
+ * wiring, not the wiring.
+ *
+ * UNCOVERED, and left that way deliberately: the POSITIVE wiring cannot be
+ * asserted offline. `providerHeaders()` is unit-tested, and `chat()` proves the
+ * header plumbing through the SDK against a local capture server, but pointing
+ * that server at an `openrouter.ai` host is impossible without touching DNS. A
+ * behavioural test would need an injectable base-URL→host check.
+ */

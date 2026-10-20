@@ -17,7 +17,6 @@ import { readFileSync } from "node:fs";
 import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * #75: this located a rule by `indexOf(token)` — the first textual mention — and
@@ -41,19 +40,4 @@ test("modal controls may shrink below their content width (#36)", () => {
 test("the modelbox rule the fix mirrors really does set min-width:0", () => {
   // guards the comment above it from drifting away from the rule it cites
   assert.match(ruleBody(".modelbox select"), /min-width:\s*0/);
-});
-
-test("the new-agent provider column is shrinkable (#36)", () => {
-  const label = /<label style="([^"]*)">provider/.exec(app);
-  assert.ok(label, "provider label not found in NewAgentModal");
-  const style = label[1]!;
-  assert.match(style, /min-width:\s*0/, "the provider column must be allowed to shrink");
-  assert.match(style, /flex:\s*0 1 auto|flex:1|flex:/, `provider column needs a flex basis: ${style}`);
-});
-
-test("the agent-name and model columns keep sharing the row evenly", () => {
-  // both neighbours are flex:1; the provider column must not claim all the space
-  const name = /<label style="flex:1">agent name/.test(app);
-  const model = /<label style="flex:1">model/.test(app);
-  assert.ok(name && model, "name/model columns should stay flex:1 around the provider");
 });

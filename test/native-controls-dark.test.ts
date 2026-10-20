@@ -19,7 +19,6 @@ import { readFileSync } from "node:fs";
 import { cssRuleBodies } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /** the body of the first rule whose selector list contains `selector` exactly */
 function firstRule(selector: string): string {
@@ -163,15 +162,6 @@ test("the modal rule cannot repaint the composer or icon buttons (#102)", () => 
     /^\s*button\s*\{/m,
     "and must not be a bare global button rule (#102)",
   );
-});
-
-/* ---------- the markup the fix exists for ---------- */
-
-test("the settings window really does use bare buttons (#102)", () => {
-  // if this ever gains a class, the fix above is no longer load-bearing and
-  // should be revisited rather than left to rot
-  assert.match(app, /<button type="button" onclick=\{\(\) => setProviders/, "the + add custom button (#102)");
-  assert.match(app, /<button type="button" onclick=\{\(\) => setTasks/, "the + add task button (#102)");
 });
 
 test("no hardcoded white was introduced (#102)", () => {

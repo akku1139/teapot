@@ -270,6 +270,18 @@ body { background: var(--bg-dark); color: var(--fg); font-size: 15px; }
  * content-visibility unskip (crbug 40733057, by design since M88), so a regression in
  * our own scroll anchoring would be invisible to CLS metrics. That is why the anchoring
  * behaviour has its own tests rather than relying on a metric to catch it.
+ *
+ * ## No script belongs here (#179)
+ *
+ * There was once an effect that wrote each row's measured box as an inline
+ * `contain-intrinsic-size` (with an IntersectionObserver and ResizeObserver per row). It
+ * made the UI unusable on a real session: an inline style on every row invalidates style
+ * and layout for the whole feed on every scroll and append, and it also REPLACES the
+ * `auto` keyword below — so the engine could no longer remember row sizes itself, which is
+ * the entire purpose of `auto`.
+ *
+ * `auto 140px` is the complete solution: `auto` remembers a laid-out row's real size, so a
+ * revisit changes nothing and the scroll holds. Do not reintroduce a script for it.
  */
 html[data-feedcv="on"] .feed > .msg {
   content-visibility: auto;

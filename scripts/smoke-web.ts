@@ -310,75 +310,7 @@ setGlobal(
     }
   },
 );
-// MutationObserver: `frontend/feed-reserve.ts` adopts rows that appear AFTER it was armed by
-// watching the feed's childList. happy-dom has a native MutationObserver but it is NOT
-// installed on globalThis here, so without this stub the module silently skipped adoption
-// and a row added later never got its reservation — the #143 check caught exactly that.
-// The stub records targets and lets the harness pump a notification for added nodes.
-const mutationObservers: { targets: any[]; fire: (added: any[]) => void }[] = [];
-const pumpMutation = (added: any[]) => {
-  for (const mo of mutationObservers) mo.fire(added);
-};
-setGlobal(
-  "MutationObserver",
-  class {
-    cb: (records: unknown[]) => void;
-    targets: any[] = [];
-    constructor(cb: (records: unknown[]) => void) {
-      this.cb = cb;
-      mutationObservers.push(this as any);
-    }
-    observe(el: any) {
-      this.targets.push(el);
-    }
-    disconnect() {
-      this.targets = [];
-    }
-    takeRecords() {
-      return [];
-    }
-    /** harness hook: report `added` as childList additions on every observed target */
-    fire(added: any[]) {
-      if (!this.targets.length || !added.length) return;
-      this.cb(this.targets.map((t) => ({ target: t, addedNodes: added, type: "childList" })));
-    }
-  },
-);
 setGlobal("WebSocket", MockWS);
-// IntersectionObserver: same story — the feed reserves each row's measured height so
-// `content-visibility` unskipping cannot move the scroll position (frontend/feed-reserve.ts).
-// happy-dom has no layout, so "is it intersecting" is decided from the element's own box.
-const intersectionObservers: { check: () => void }[] = [];
-const pumpIntersection = () => {
-  for (const io of intersectionObservers) io.check();
-};
-setGlobal(
-  "IntersectionObserver",
-  class {
-    cb: (entries: unknown[]) => void;
-    targets: any[] = [];
-    constructor(cb: (entries: unknown[]) => void) {
-      this.cb = cb;
-      intersectionObservers.push(this);
-    }
-    observe(el: any) {
-      this.targets.push(el);
-    }
-    unobserve() {}
-    disconnect() {
-      this.targets = [];
-    }
-    check() {
-      // report every target with its current box; the module decides what to do
-      const entries = this.targets.map((el) => ({
-        target: el,
-        boundingClientRect: el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 },
-        intersectionRatio: 1,
-      }));
-      if (entries.length) this.cb(entries);
-    }
-  },
-);
 
 // the app's connectWs() runs at import time; its socket must exist for the
 // pending-echo regression below to push bus events into the app
@@ -1350,59 +1282,6 @@ console.log("deep render ok: feed rows present");
       }
     }
     console.log("deep render ok: a grouped run has rounded corners, a small gap, and no phantom avatar (#grouped)");
-
-    // ---- #143/Firefox: every feed row reserves its REAL height ----
-    //
-    // `content-visibility: auto` uses `contain-intrinsic-size` as a placeholder while a row
-    // is unrendered; when the row is finally laid out, any gap between placeholder and
-    // reality shifts everything above it. Chromium does not report that as CLS, Firefox
-    // shows it as the scroll jumping — so the guarantee has to be asserted here rather than
-    // left to a metric. The rows must carry their measured box, not the stylesheet's guess.
-    {
-      const rowsInFeed = [...w.document.querySelectorAll(".feed [data-eid]")];
-      if (rowsInFeed.length === 0) {
-        console.error("#143 REGRESSION: the feed has no rows to reserve — check is vacuous");
-        process.exit(1);
-      }
-      // happy-dom does no layout, so every row reports a 0x0 box and the module correctly
-      // refuses to reserve it (a 0px placeholder would COLLAPSE the row on its next skip).
-      // To prove the wiring, give one row a real box — exactly what layout would do — then
-      // pump the observers and require that row to carry the measured size.
-      const probe = rowsInFeed[rowsInFeed.length - 1] as HTMLElement;
-      const REAL_W = 640;
-      const REAL_H = 137;
-      probe.getBoundingClientRect = () =>
-        ({ width: REAL_W, height: REAL_H, top: 0, left: 0, bottom: REAL_H, right: REAL_W, x: 0, y: 0, toJSON() {} }) as DOMRect;
-      Object.defineProperty(probe, "offsetHeight", { value: REAL_H, configurable: true });
-      Object.defineProperty(probe, "offsetWidth", { value: REAL_W, configurable: true });
-      // the probe row must be ADOPTED before it can be reserved. The module learns about
-      // rows added after it was armed through its MutationObserver, so pump that too —
-      // without this the check would only ever exercise the rows that existed at mount.
-      pumpMutation([probe]);
-      pumpResize();
-      pumpIntersection();
-      await new Promise((r) => setTimeout(r, 150));
-
-      // PRECONDITION: the probe must be observed by something, or a pass here is vacuous
-      const adopted = intersectionObservers.some((o: any) => o.targets?.includes(probe));
-      if (!adopted) {
-        console.error(
-          "#143 REGRESSION: the probe row was never adopted (no IntersectionObserver watches " +
-            "it), so the reservation could not have been measured — check is vacuous",
-        );
-        process.exit(1);
-      }
-      const v = probe.style.getPropertyValue("contain-intrinsic-size").trim();
-      if (v !== `${REAL_W}px ${REAL_H}px`) {
-        console.error(
-          `#143 REGRESSION: a row measured ${REAL_W}x${REAL_H} did not reserve it ` +
-            `(contain-intrinsic-size=${JSON.stringify(v)}) — content-visibility will shift the ` +
-            "scroll position when that row is laid out",
-        );
-        process.exit(1);
-      }
-    }
-    console.log("deep render ok: feed rows reserve their measured height for content-visibility (#143)");
   }
 
   /* ---------- #75: an INVISIBLE row must not split a tool run ------------------

@@ -29,7 +29,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
   treeRowsOf,
   sidebarRowsOf,
@@ -37,9 +36,6 @@ import {
   chatGroupKeyOf,
   type TreeAgent,
 } from "../frontend/sidebar-tree.ts";
-
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
 const a = (id: string, workspace: string, parent = ""): TreeAgent => ({ id, workspace, parent });
 
@@ -84,12 +80,6 @@ test("no row is a header repeating the chat's own name (#18)", () => {
     rows.filter((r) => r.chatHeader !== undefined).length,
     0,
     "no chat headers may be emitted at all (#18)",
-  );
-  // the label the UI shows for that header is the basename, once
-  assert.match(
-    app,
-    /basenameOf\(row\.wsHeader/,
-    "the directory header keeps the short name (#18)",
   );
 });
 
@@ -190,17 +180,7 @@ test("an empty agent list renders nothing (#18)", () => {
   assert.deepEqual(render([]), []);
 });
 
-/* ---------- wiring ---------- */
-
-test("the chat header element and its CSS are gone (#18)", () => {
-  assert.doesNotMatch(app, /class="chatheader"/, "the chat header row must not be rendered (#18)");
-  assert.doesNotMatch(css, /\.chatheader/, "and its styles must go with it (#18)");
-});
-
-test("a top-level chat row gets a collapse caret (#18)", () => {
-  // the capability now lives on the row, so the row must be able to collapse
-  assert.match(app, /toggleWsGroup\(`chat:\$\{row\.a\.id\}`, row\.a\.id, off\)/, "its caret must toggle the chat group (#18)");
-});
+/* ---------- the caret gate is covered where it can be EXERCISED ---------- */
 
 // #106 narrowed this rule, so the gate itself is asserted where it can actually
 // be exercised — as a pure function over all four states, including the strand

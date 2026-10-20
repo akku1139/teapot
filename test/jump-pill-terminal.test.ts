@@ -21,10 +21,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { cssRuleBodies } from "./helpers/css.ts";
-import { readSourceUrl } from "./helpers/source.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const _app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 
 test("the open-state pill is placed from the drawer height plus the composer's own (#142)", () => {
   const bodies = cssRuleBodies(css, ".channel:has(.termdrawer) .composer:not(.maximized) .jump");
@@ -37,4 +35,3 @@ test("the open-state pill is placed from the drawer height plus the composer's o
   assert.match(body, /100%/, "the composer's contribution must be measured, not guessed (#142)");
   assert.doesNotMatch(body, /56px/, "the fixed 56px stood in for a taller composer (#142)");
 });
-

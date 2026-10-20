@@ -50,7 +50,6 @@ import { readFileSync } from "node:fs";
 import { Agent } from "../src/agent/agent.ts";
 import { EventLog } from "../src/log/events.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
-import { blockFrom } from "./helpers/source.ts";
 
 /* ---------- 1. the ordering test must be synchronous ---------- */
 
@@ -72,24 +71,6 @@ test("onEvent sees the event ALREADY on disk, sampled synchronously (#126)", asy
   } finally {
     await log.close();
   }
-});
-
-test("the ordering test would FAIL against the old notify-first code (#126)", async () => {
-  // the property above is only meaningful if it can detect the regression, so
-  // assert that directly rather than trusting it
-  const src = readFileSync(new URL("../src/log/events.ts", import.meta.url), "utf8");
-  const at = src.indexOf("notify once the write is handed to the OS");
-  assert.notEqual(at, -1, "the write-then-notify path must exist (#126)");
-  const write = src.indexOf("this.stream.write(");
-  assert.ok(
-    write < at,
-    "the notification must be queued AFTER the write is issued (#126)",
-  );
-  assert.doesNotMatch(
-    src.slice(0, at),
-    /onEvent\?\./,
-    "and nothing may notify before that point — that was the bug (#126)",
-  );
 });
 
 /* ---------- 2. control flow must not depend on persistence ---------- */

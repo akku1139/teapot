@@ -25,7 +25,6 @@ import { readFileSync } from "node:fs";
 import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * #75: this scanned the stylesheet itself and returned the RAW rule body, so a
@@ -121,23 +120,8 @@ test("the scrolling list inside it can shrink too (#60)", () => {
 
 /* ---------- the ✓ needs a class to be excluded ---------- */
 
-test("the goal-done tick carries a class so the row can spare it (#60)", () => {
+test("the goal-done tick cannot be squeezed (#60)", () => {
   // The ✓ is a bare fixed-width glyph. Left unclassed it would match the
   // "shrinkable" rule above and be the one badge that could collapse.
-  assert.match(app, /class="goaldone"/, "the ✓ must be classable (#60)");
-  assert.match(firstRule(".agent-item .goaldone"), /flex-shrink:\s*0/, "and must not shrink (#60)");
-});
-
-/* ---------- the badges the report names must still exist ---------- */
-
-test("the three badges from the report are all still rendered (#60)", () => {
-  // Locate the row by its class, then take a generous window: the badges are
-  // ~110 lines apart. This was 6000 chars, which #81's longer comment pushed
-  // past — so the window is now generous enough that adding a comment cannot
-  // silently unpin a badge.
-  const start = app.indexOf('class={"agent-item"');
-  const row = app.slice(start, start + 12_000);
-  assert.match(row, /notifbadge/, "the 🔔 unread badge must remain (#60)");
-  assert.match(row, /subcount/, "the 🧩 sub-agent count must remain (#60)");
-  assert.match(row, /goaldone/, "the ✓ goal tick must remain (#60)");
+  assert.match(firstRule(".agent-item .goaldone"), /flex-shrink:\s*0/, "the ✓ must not shrink (#60)");
 });

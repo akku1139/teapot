@@ -14,9 +14,8 @@
  * leaves **1206 tests green**. Every event still reaches the JSONL log, every
  * REST route still works, and the UI would simply never update.
  *
- * `test/ws-guards.test.ts` claims to cover this area and is 100% source-shape —
- * it greps `api.ts` for the ping and the reaper. A grep cannot see whether the
- * socket is ever written to, which is the entire question.
+ * A grep of `api.ts` cannot see whether the socket is ever written to, which is
+ * the entire question — so this file uses a real server and a real WebSocket.
  *
  * ## What this does instead
  *

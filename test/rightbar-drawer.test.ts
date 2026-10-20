@@ -25,7 +25,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /** the body of the `@media (max-width: 1100px)` block, braces balanced */
 function narrowBlock(): string {
@@ -103,44 +102,7 @@ function baseRuleBody(token: string): string {
   }
 }
 
-/* ---------- 1: the drawer carries its own close button ---------- */
-
-test("the drawer has a close button of its own (#50)", () => {
-  assert.ok(
-    /class="rightbarhead"/.test(app),
-    "the panel needs a row that hosts the ✕ button",
-  );
-  // THE regression this pins: the ✕ must live INSIDE <aside class="rightbar">.
-  // The drawer covers the channel header's ▤ toggle, so the close control has to
-  // travel with the panel itself — anywhere else it is either invisible or behind
-  // the drawer.
-  const aside = app.indexOf('class={"rightbar"');
-  const asideEnd = app.indexOf("</aside>", aside);
-  assert.ok(aside !== -1, 'the <aside class="rightbar"> must exist (#50)');
-  // Find the row GLOBALLY first, so a failure can distinguish "the row is gone"
-  // from "the row exists but sits outside the panel" — two different bugs that
-  // otherwise report as one confusing message.
-  assert.notEqual(
-    app.indexOf('class="rightbarhead"'),
-    -1,
-    "the ✕ row must exist — the drawer has no way out (#50)",
-  );
-  const head = app.indexOf('class="rightbarhead"', aside);
-  assert.ok(
-    head > aside && head < asideEnd,
-    "the ✕ row must be a DESCENDANT of .rightbar, not a sibling beside it (#50)",
-  );
-  assert.ok(
-    /class="rightbarhead"[\s\S]{0,300}?icon="✕"[\s\S]{0,200}?close details panel/i.test(app),
-    "the ✕ must sit on that row, where it is reachable once the drawer covers the header (#50)",
-  );
-  // first child: it must be the first thing the panel shows, above every section
-  const between = app.slice(aside, head);
-  assert.ok(
-    !/<h3|<Show|<For/.test(between.slice(between.indexOf(">") + 1)),
-    "the ✕ row must come before the panel's sections (#50)",
-  );
-});
+/* ---------- 1: the ✕ row is the panel's own sticky header ---------- */
 
 test("the ✕ row is STICKY — the panel scrolls, the close button must not (#50)", () => {
   // THE regression: .rightbar is overflow-y:auto with a long body (session,
@@ -296,51 +258,7 @@ test("narrow-only rules out-specify their base counterparts (#50)", () => {
   );
 });
 
-/* ---------- 2: click outside dismisses the drawer ---------- */
-
-test("a click outside the drawer closes it (#50)", () => {
-  assert.ok(
-    /class="rightbarbackdrop"/.test(app),
-    "a click-outside layer is needed — the drawer covers the ▤ toggle (#50)",
-  );
-  // setRight, not a bare setShowRight: dismissing the drawer must also drop the
-  // persisted "panel open" flag, or the next load re-opens the sheet that was
-  // just dismissed — the same trap the ✕ and Escape paths avoid.
-  assert.ok(
-    /class="rightbarbackdrop"[^>]*onclick=\{\(\) => setRight\(false\)\}/.test(app),
-    "the backdrop must close the panel",
-  );
-  assert.ok(
-    /<Show when=\{narrow\(\) && showRight\(\)\}>/.test(app),
-    "the backdrop must not exist while the drawer is closed — the drawer stays in the DOM " +
-      "translated off-screen, and a full-screen layer would block the whole UI (#50)",
-  );
-});
-
-test("the narrow check is a SIGNAL, not a one-shot read (#50)", () => {
-  // THE regression: `<Show when={isNarrow() && …}>` evaluated window.innerWidth
-  // during render and never again — nothing reactive changed, so no resize
-  // re-ran the branch. The reported flow is NARROWING AN ALREADY-LOADED
-  // WINDOW, so on exactly that path the drawer opened with no click-outside
-  // backdrop at all. scripts/smoke-web.mjs drives a live resize to catch it.
-  assert.ok(
-    /<Show when=\{narrow\(\)/.test(app) &&
-      !/<Show when=\{isNarrow\(\)/.test(app),
-    "the backdrop gate must read the reactive signal, not the plain function (#50)",
-  );
-  assert.ok(
-    /const \[narrow, setNarrow\] = createSignal\(isNarrow\(\)\)/.test(app),
-    "narrow mode needs a signal so the drawer arms on a mid-session resize (#50)",
-  );
-  assert.ok(
-    /window\.addEventListener\("resize", onResize\)/.test(app),
-    "the signal must be updated on resize (#50)",
-  );
-  assert.ok(
-    /window\.removeEventListener\("resize", onResize\)/.test(app),
-    "…and the listener must be removed on cleanup, or every unmount leaks one (#50)",
-  );
-});
+/* ---------- 2: the backdrop's own CSS ---------- */
 
 test("the backdrop sits under the drawer and over the content (#50)", () => {
   assert.match(
@@ -370,43 +288,5 @@ test("the backdrop sits under the drawer and over the content (#50)", () => {
     narrowBlock(),
     /\.rightbarbackdrop\s*\{\s*display:\s*block/,
     "…so the narrow media query is what turns it on (#50)",
-  );
-});
-
-/* ---------- 3: Escape reaches the drawer before the interrupt ---------- */
-
-test("Escape closes the drawer before it can stop a running agent (#50)", () => {
-  // Target the keydown handler's OWN Escape branch, not the earlier `typing`
-  // one (which fires when the caret is in a field and merely blurs it).
-  const start = app.indexOf('if (e.key === "Escape") {', app.indexOf('if (typing)'));
-  assert.notEqual(start, -1, "the global keydown Escape branch must exist");
-  const end = app.indexOf('if (showNew() || showCfg()) return;', start);
-  const handler = app.slice(start, end === -1 ? start + 1400 : end);
-  const drawerIdx = handler.search(/isNarrow\(\) && showRight\(\)/);
-  // anchor on the actual REQUEST, not the "/stop" substring — a comment
-  // mentioning the endpoint would otherwise satisfy this and hide a real
-  // ordering regression behind it
-  const stopIdx = handler.indexOf('api(`/api/agents/${s.id}/stop`');
-  assert.ok(drawerIdx !== -1, "Escape must close the drawer");
-  assert.ok(stopIdx !== -1, "the running-agent interrupt must still exist");
-  assert.ok(
-    drawerIdx < stopIdx,
-    "THE regression: the drawer close must come BEFORE the /stop branch, or Escape " +
-      "interrupts the agent and leaves the panel stuck open (#50)",
-  );
-});
-
-/* ---------- 4: wide screens are untouched ---------- */
-
-test("the backdrop is not rendered on a wide screen (#50)", () => {
-  // the Show gate is asserted above; this pins the PREDICATE itself, which the
-  // CSS media query and the JS must agree on
-  assert.ok(
-    /const isNarrow = \(\) => window\.innerWidth <= NARROW_PX;/.test(app),
-    "narrow mode needs one predicate shared by every drawer-only branch (#50)",
-  );
-  assert.ok(
-    /const NARROW_PX = 1100;/.test(app),
-    "NARROW_PX must match the `@media (max-width: 1100px)` breakpoint in app.css (#50)",
   );
 });

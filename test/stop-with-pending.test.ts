@@ -13,17 +13,15 @@
  * worse than surviving. What matters is that (a) it is never DELIVERED while
  * stopped, and (b) the UI says so plainly rather than implying progress.
  *
- * So the real risk is not "survives" — it is "survives and is MISREPRESENTED".
- * That is what these tests pin.
+ * (b) used to be pinned by matching tooltip strings in App.tsx — source text,
+ * so those are gone; the badge and tooltip are asserted against the real bundle
+ * in scripts/smoke-web.ts.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
-
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 function agentWithQueue(ws: string, sd: string, opts: Record<string, unknown> = {}) {
   return new Agent({
@@ -106,41 +104,11 @@ test("the queue is delivered on a later start (#9)", async () => {
   });
 });
 
-/* ---------- claim 2: the UI must not imply progress ---------- */
-
-test("the badge says STOPPED when the agent is stopped (#9)", () => {
-  assert.match(
-    app,
-    /queued\{sel\(\)!\.status === "stopped" \? " \(stopped\)" : ""\}/,
-    'the badge must read "N of yours queued (stopped)" (#9)',
-  );
-});
-
-test("the tooltip says nothing will run until start (#9)", () => {
-  // the badge alone is easy to miss; the tooltip is where the truth lives
-  assert.match(
-    app,
-    /this agent is STOPPED — nothing will run until you press start/,
-    "the tooltip must say the agent is stopped and idle until resumed (#9)",
-  );
-  assert.match(
-    app,
-    /Each can be withdrawn with ✕ cancel while it is still queued/,
-    "and that cancelling still works while stopped (#9)",
-  );
-});
-
-test("the two tooltip branches are genuinely different (#9)", () => {
-  // A single string used for both states would satisfy either match alone.
-  //
-  // #110: this searched for a hardcoded "\n" between two tokens. Git checks out
-  // CRLF on Windows, so the literal never matched and the test failed there while
-  // passing on Linux. Anchor on the tokens themselves instead of the whitespace.
-  const titleAt = app.indexOf("title={");
-  assert.notEqual(titleAt, -1, "the tooltip must exist (#9)");
-  const at = app.indexOf('sel()!.status === "stopped"', titleAt);
-  assert.notEqual(at, -1, "the tooltip must branch on status (#9)");
-  const block = app.slice(at, app.indexOf("</span>", at));
-  assert.match(block, /stopped[\s\S]*nothing will run[\s\S]*handed to the model at its next turn boundary/,
-    "stopped and running must say different things (#9)");
-});
+/*
+ * The three UI claims that stood here ("the badge says (stopped)", "the tooltip
+ * says nothing will run until start", "the two tooltip branches differ") all
+ * read App.tsx as TEXT and matched the strings they were checking. A test like
+ * that pins the spelling of JSX that has to work at runtime, so they were
+ * deleted. The badge/tooltip text is asserted against the REAL BUNDLE in
+ * scripts/smoke-web.ts, which can actually exercise the stopped state.
+ */

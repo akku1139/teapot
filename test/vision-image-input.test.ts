@@ -10,11 +10,10 @@
  * ## What exists
  *
  * The composer accepts a paste or a 📎 attach, and
- * `POST /api/agents/:id/prompt` takes `images: [{url, name}]`. `drainPendingPrompts`
- * turns them into OpenAI content parts, text first:
- *
- *     { type: "text", text: "look" },
- *     { type: "image_url", image_url: { url: "data:image/png;base64,…" } }
+ * `POST /api/agents/:id/prompt` takes `images: [{url, name}]`. The prompt queue
+ * turns them into OpenAI content parts, text first (see
+ * `test/agent.test.ts` "image attachments flow into multimodal content parts and
+ * survive replay", which drives the real loop).
  *
  * ## What does not
  *
@@ -25,83 +24,111 @@
  *
  * And `read_file` is text-only, so an AGENT cannot look at an image in its own
  * workspace at all. It can `ls` one, and that is the end of it.
+ *
+ * This file drives the REAL route: the filter is a behaviour of `POST
+ * /prompt`, so it is observed by the prompt that reaches the agent, not by
+ * matching the source.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { Master } from "../src/master.ts";
+import { buildApp } from "../src/server/api.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
-const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
-const agent = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
-const tools = readFileSync(new URL("../src/agent/tools.ts", import.meta.url), "utf8");
+const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
+const JSON_HEADERS = { "content-type": "application/json" };
 
-/** the image filter as the /prompt route implements it */
-function accepted(url: string): boolean {
-  if (url.startsWith("data:image/")) return url.length < 12_000_000;
-  return /^https?:\/\//.test(url);
+/** a real Master + app + one agent; returns a poster and the agent's prompts */
+async function withAgent(
+  fn: (
+    post: (body: unknown) => Promise<Response> | Response,
+    prompts: () => { text: string; images?: { url: string }[] }[],
+  ) => Promise<void>,
+): Promise<void> {
+  const dataDir = mkdtempInRootSync("v125d-");
+  const ws = mkdtempInRootSync("v125w-");
+  const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
+  const app = buildApp(m);
+  const agent = await m.addAgent({ id: "a1", workspace: ws }, { persist: false });
+  const seen: { text: string; images?: { url: string }[] }[] = [];
+  const orig = agent.enqueuePrompt.bind(agent);
+  agent.enqueuePrompt = (text: string, source?: string, images?: { url: string; name?: string }[]) => {
+    seen.push({ text: String(text), images: images as { url: string }[] | undefined });
+    return orig(text, source, images as never);
+  };
+  try {
+    await fn(
+      (body: unknown) =>
+        app.request("/api/agents/a1/prompt", {
+          method: "POST",
+          headers: JSON_HEADERS,
+          body: JSON.stringify(body),
+        }),
+      () => seen,
+    );
+  } finally {
+    for (const a of [...m.agents.values()]) a.stop("done");
+    for (const a of [...m.agents.values()]) await a.settled().catch(() => {});
+  }
 }
 
-test("operator → agent: images ride as content parts (#125)", () => {
-  assert.match(
-    agent,
-    /p\.images\.map\(\(i\) => \(\{ type: "image_url" as const, image_url: \{ url: i\.url \} \}\)\)/,
-    "images must reach the model as image_url parts (#125)",
-  );
-  assert.match(
-    agent,
-    /\{ type: "text", text: p\.text \},/,
-    "with the text FIRST, which is what providers require (#125)",
-  );
+test("a data: image URL reaches the agent (#125)", async () => {
+  await withAgent(async (post, prompts) => {
+    const r = await post({ text: "look", images: [{ url: "data:image/png;base64,AAAA", name: "a.png" }] });
+    assert.equal(r.status, 200);
+    assert.equal(prompts().length, 1, "precondition: the prompt was queued (#125)");
+    assert.deepEqual(
+      prompts()[0]!.images?.map((i) => i.url),
+      ["data:image/png;base64,AAAA"],
+      "a data: image must survive the filter (#125)",
+    );
+  });
 });
 
-test("a data: image URL is accepted (#125)", () => {
-  assert.equal(accepted("data:image/png;base64,AAAA"), true);
+test("an http(s) image URL reaches the agent (#125)", async () => {
+  await withAgent(async (post, prompts) => {
+    await post({ text: "look", images: [{ url: "https://example.com/x.png" }] });
+    assert.deepEqual(prompts()[0]?.images?.map((i) => i.url), ["https://example.com/x.png"]);
+  });
 });
 
-test("an http(s) image URL is accepted (#125)", () => {
-  assert.equal(accepted("https://example.com/x.png"), true);
-  assert.equal(accepted("http://example.com/x.png"), true);
-});
-
-test("a FILESYSTEM PATH is silently dropped (#125)", () => {
+test("a FILESYSTEM PATH is silently dropped (#125)", async () => {
   // the gap the question is really about: an image sitting in the workspace
-  assert.equal(
-    accepted("/home/user/work/shot.png"),
-    false,
-    "a path is dropped — so an agent cannot be shown a file on disk (#125)",
-  );
-  assert.equal(accepted("file:///home/user/work/shot.png"), false, "and file:// too (#125)");
-  assert.equal(accepted("./shot.png"), false, "a relative path too (#125)");
+  await withAgent(async (post, prompts) => {
+    const r = await post({
+      text: "look at this",
+      images: [
+        { url: "/home/user/work/shot.png" },
+        { url: "file:///home/user/work/shot.png" },
+        { url: "./shot.png" },
+      ],
+    });
+    assert.equal(r.status, 200, "the request still succeeds (#125)");
+    assert.equal(prompts().length, 1, "precondition: the prompt was queued (#125)");
+    // the route passes `undefined` rather than an empty list when nothing survives
+    assert.deepEqual(
+      prompts()[0]!.images ?? [],
+      [],
+      "every path-shaped image is filtered out, so an agent cannot be shown a file on disk (#125)",
+    );
+    assert.equal(prompts()[0]!.text, "look at this", "and only the text is delivered (#125)");
+  });
 });
 
-test("the drop is silent — no error is raised (#125)", () => {
-  // the worse half: the prompt is delivered as text alone and the operator is
-  // never told the image was discarded
-  assert.match(
-    api,
-    /const images = \(body\.images \?\? \[\]\)\.filter\(/,
-    "images are filtered, not validated with an error (#125)",
-  );
-  assert.doesNotMatch(
-    api,
-    /image.*(unsupported|not allowed|invalid image)/i,
-    "there is no message telling the operator an image was discarded (#125)",
-  );
+test("the drop is silent — the operator is told nothing (#125)", async () => {
+  // the worse half: the prompt is delivered as text alone with no indication
+  await withAgent(async (post) => {
+    const r = await post({ text: "look", images: [{ url: "/workspace/shot.png" }] });
+    assert.equal(r.status, 200, "a dropped image must not be an error (#125)");
+    const body = (await r.json()) as { ok?: boolean; error?: string };
+    assert.equal(body.ok, true);
+    assert.equal(body.error, undefined, `no warning is returned for a discarded image (#125); got ${body.error}`);
+  });
 });
 
-test("an agent cannot read an image in its own workspace (#125)", () => {
-  assert.match(
-    tools,
-    /name: "read_file"/,
-    "read_file exists (#125)",
-  );
-  assert.match(
-    tools,
-    /Read a text file from the workspace/,
-    "and is text-only — no tool returns image bytes (#125)",
-  );
-  assert.doesNotMatch(
-    tools,
-    /type: "image_url"/,
-    "nothing in the tool layer emits an image part (#125)",
-  );
-});
+/*
+ * "no tool returns image BYTES" has no cheap behavioural assertion: `read_file`
+ * reads whatever bytes are in the file and returns them as text, which is not a
+ * refusal this test could pin, and the absence of an `image_url` part in the
+ * tool layer is not observable from the tool's result.
+ */

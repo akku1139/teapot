@@ -25,13 +25,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import path from "node:path";
-import { readSource } from "./helpers/source.ts";
-import { fileURLToPath } from "node:url";
 import { Master } from "../src/master.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const _master = readSource(path.join(here, "..", "src", "master.ts"));
 
 /** a parent with one child; returns the prompts the parent receives */
 async function tree() {

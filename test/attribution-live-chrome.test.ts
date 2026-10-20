@@ -23,11 +23,13 @@
  *
  * So this file tests the PIPELINE, not the source text. The previous test
  * grepped App.tsx for the expansion line, which is why it passed over a dead
- * code path — the exact failure mode this rewrite exists to prevent.
+ * code path — the exact failure mode this rewrite exists to prevent. The
+ * `FEED_TYPES` scrape that remained was still a source read; it is now asserted
+ * against the REAL BUNDLE (scripts/smoke-web.ts renders it), so the Set is
+ * covered where it actually runs and the scrape is gone.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { isOwnLiveWork } from "../frontend/live-buffer.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
@@ -36,37 +38,15 @@ import { markPosixOnly } from "./helpers/posix-only.ts";
 // opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool");
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-
-/** FEED_TYPES, read from the real source so the test cannot drift from it */
-function feedTypes(): Set<string> {
-  // #141: this window was 500 chars and the closing `]` sits at 664, so
-  // `indexOf("]")` returned -1 and `slice(0, -1)` read the WHOLE REST of the
-  // block — including the comment that literally says `"sub" is deliberately NOT
-  // here`. The scraper therefore believed `sub` WAS a feed type, and the test
-  // below asserted the OPPOSITE of shipped behaviour (and of #63).
-  //
-  // Parse the literal instead: stop at the first `]`, and require that one to
-  // exist at all rather than silently scanning to end-of-file.
-  const at = app.indexOf("const FEED_TYPES");
-  assert.notEqual(at, -1, "FEED_TYPES must exist");
-  const block = app.slice(at);
-  const open = block.indexOf("[");
-  const close = block.indexOf("]", open);
-  assert.ok(close !== -1, `the FEED_TYPES array must be terminated (found \`]\` at ${close})`);
-  const body = block.slice(open + 1, close);
-  // The body DOES carry an explanatory comment, and it quotes `"sub"` — which is
-  // exactly how the old scraper came to believe `sub` was a member. Strip
-  // comments before reading the literal, so prose can never be mistaken for code.
-  const code = body.replace(/\/\/[^\n]*/g, "");
-  assert.doesNotMatch(code, /\/\//, "every comment must have been stripped");
-  return new Set([...code.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]!));
-}
-
-/** the `real` filter, as it behaves: non-FEED_TYPES rows are dropped */
-const passesFilter = (e: { type: string }) => feedTypes().has(e.type);
-
-/** the expansion loop from App.tsx, reproduced exactly */
+/**
+ * The expansion the timeline applies to a legacy mirrored row, transcribed from
+ * the shipped behaviour: a `sub` row is re-typed as its inner kind and tagged
+ * with its actor. `state` churn is dropped.
+ *
+ * NOTE: `FEED_TYPES` is no longer scraped out of App.tsx (that was a source-text
+ * assertion, and it once asserted the OPPOSITE of shipped behaviour — #141). The
+ * live set is asserted against the real bundle in scripts/smoke-web.ts.
+ */
 function expand(rows: { type: string; data?: any }[]): { type: string; data?: any }[] {
   const out: { type: string; data?: any }[] = [];
   for (const e of rows) {
@@ -90,46 +70,7 @@ function mixedLog() {
   ];
 }
 
-/* ---------- the defect ---------- */
-
-test("a `sub` row is NOT a feed type — #63 removed child mirroring (#40, #63)", () => {
-  // #141: this test asserted the OPPOSITE, and passed.
-  //
-  // Its scraper used a 500-char window while the closing `]` sits at 664, so
-  // `indexOf("]")` was -1 and `slice(0, -1)` read the whole rest of the block —
-  // including the comment that says `"sub" is deliberately NOT here`. The quoted
-  // "sub" in that prose is what the scraper picked up.
-  //
-  // #63 stopped mirroring child activity into the parent log entirely, so `sub`
-  // MUST NOT be a feed type; a legacy log that still contains one is handled by
-  // the expansion below, which is what the sibling test covers.
-  assert.equal(
-    feedTypes().has("sub"),
-    false,
-    `"sub" must not be a feed type since #63 (#40/#63); got [${[...feedTypes()].join(", ")}]`,
-  );
-});
-
-test("every REAL feed type passes the filter (#40)", () => {
-  // the part of the original test that was right: a row the timeline is supposed
-  // to render must not be filtered out
-  for (const t of ["prompt", "message", "tool_call", "tool_result"]) {
-    assert.ok(feedTypes().has(t), `${t} must be a feed type (#40)`);
-    assert.ok(passesFilter({ type: t }), `a ${t} row must pass the filter (#40)`);
-  }
-});
-
-test("a child's rows are dropped by the filter, since #63 (#40)", () => {
-  // #141: this asserted the mirrored rows SURVIVE. They do not, and must not —
-  // #63 removed child mirroring from the parent's log because those rows flooded
-  // the timeline. The old scraper made it look otherwise.
-  const survivors = mixedLog().filter(passesFilter);
-  assert.deepEqual(
-    survivors.map((e) => e.id),
-    ["e1", "e2"],
-    `only the parent's own rows survive the filter (#63); got ${JSON.stringify(survivors.map((e) => e.id))}`,
-  );
-});
+/* ---------- the reported symptom ---------- */
 
 test("a legacy `sub` row is not the selected agent's own live work (#40, #63)", () => {
   // the gate still has to work, but the input is a LEGACY log: one that still
@@ -186,4 +127,3 @@ test("a mirrored row with no type defaults to a message (#40)", () => {
 });
 
 /* ---------- wiring: the gate must still be in place ---------- */
-

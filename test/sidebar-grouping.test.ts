@@ -20,7 +20,6 @@ import { markPosixOnly } from "./helpers/posix-only.ts";
 // opting out is explicit rather than by filename.
 markPosixOnly("POSIX filesystem paths");
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
 /**
@@ -131,19 +130,12 @@ test("an agent with no workspace does not get a stray header (#18)", () => {
   );
 });
 
-test("the sidebar renders through sidebarRows() (#18)", () => {
-  assert.match(app, /each=\{sidebarRows\(\)\}/, "the For must use the grouped rows (#18)");
-  assert.match(app, /class="wsheader"/, "a workspace header row must exist (#18)");
-  assert.match(app, /basenameOf\(row\.wsHeader/, "the header should show a short name (#18)");
-});
-
-test("the header is styled and collapsible (#18)", () => {
+test("the header is styled (#18)", () => {
+  // the header row itself is rendered by App.tsx from the rows computed here and is
+  // asserted against the real bundle in scripts/smoke-web.ts; its stylesheet rule is
+  // the part this file can pin.
   assert.match(css, /\.wsheader\s*\{/s, "the header needs its own style (#18)");
   assert.match(css, /\.wsheader \.wscaret/, "the collapse caret needs styling (#18)");
-  // the collapse is driven by the persisted group set; assert on the helper
-  // rather than a specific call site, which moves whenever the row markup does
-  assert.match(app, /const toggleWsGroup = /, "groups must be collapsible (#18)");
-  assert.match(app, /setWsCollapsed\(next\)/, "and the click must write it (#18)");
 });
 
 /* ---------- the real DOM check lives in the bundle smoke test ----------

@@ -25,11 +25,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { filterByBranch, type TeapotEvent } from "../src/log/events.ts";
-
-const _app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
-const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
 
 let seq = 0;
 function ev(branch: string, parent: string | null, data: unknown = {}): TeapotEvent {
@@ -145,28 +141,4 @@ test("a dangling parent id is simply not collected (#38)", () => {
 test("an empty log is empty in both modes (#38)", () => {
   assert.deepEqual(filterByBranch([], "br1", true), []);
   assert.deepEqual(filterByBranch([], "br1", false), []);
-});
-
-/* ---------- wiring ---------- */
-
-test("the API exposes the lineage mode and defaults to strict (#38)", () => {
-  assert.match(
-    api,
-    /filterByBranch\(events, branch, c\.req\.query\("lineage"\) === "true"\)/,
-    "the endpoint must pass the lineage opt-in through (#38)",
-  );
-});
-
-/* ---------- #77: BOTH fetch paths must agree about what a filter means ---------- */
-
-test("the server honours lineage only when asked (#77)", () => {
-  // Guard the other half: if the flag stopped mattering, the frontend fix would
-  // be correct but pointless.
-  const log = readFileSync(new URL("../src/log/events.ts", import.meta.url), "utf8");
-  assert.match(log, /if \(!includeInherited\)/, "strict must remain the default (#77)");
-  assert.match(
-    log,
-    /export function filterByBranch\([\s\S]*?includeInherited = false/,
-    "the flag must be an explicit opt-in (#77)",
-  );
 });

@@ -20,13 +20,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-
-// #75: the copy logic moved OUT of App.tsx into frontend/clipboard.ts, so the
-// source assertions below must read it there. Reading App.tsx made them
-// vacuous the moment the extraction landed.
-const app = readFileSync(new URL("../frontend/clipboard.ts", import.meta.url), "utf8");
-const _appTsx = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * #75: this used to be a MIRROR of the shipped copy strategy, so the suite
@@ -39,10 +32,6 @@ const _appTsx = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "u
  */
 import { copyText } from "../frontend/clipboard.ts";
 import { fakeStaging } from "./helpers/staging.ts";
-
-function srcHas(label: string, re: RegExp): void {
-  if (!re.test(app)) assert.fail(`${label}\n  expected source to match: ${re}`);
-}
 
 /* ---------- the crash itself ---------- */
 
@@ -130,43 +119,16 @@ test("both paths failing reports a real failure (#52)", async () => {
   assert.equal(got, "failed", "a genuine failure must be reported, not swallowed (#52)");
 });
 
-/* ---------- wiring: the shipped code must match the mirror ---------- */
-
-test("the shipped handler feature-detects before calling writeText (#52)", () => {
-  // the crash: `navigator.clipboard.writeText(...)` with no guard at all
-  srcHas(
-    "the handler must check clipboard exists / writeText is callable (#52)",
-    /clipboard\?\.writeText/,
-  );
-  srcHas("and must verify it is actually a function before calling (#52)", /typeof\s+writeText\s*===\s*["']function["']/);
-  // and must not chain straight off a possibly-undefined object. Scoped to
-  // CODE lines only: the fix's comment quotes the old chain verbatim to
-  // explain why it was wrong, and matching that would be nonsense.
-  const code = app
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//"))
-    .join("\n");
-  assert.doesNotMatch(
-    code,
-    /\bnavigator\.clipboard\s*\n?\s*\.writeText\(/,
-    "the unguarded navigator.clipboard.writeText(...) chain is the reported crash (#52)",
-  );
-});
-
-test("the legacy execCommand fallback is reachable (#52)", () => {
-  srcHas("the execCommand fallback must exist (#52)", /execCommand\("copy"\)/);
-});
-
 /* ---------- the legacy path must not leak DOM ---------- */
 
-test("the staging textarea is removed in a finally block (#52)", () => {
-  const code = app
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//"))
-    .join("\n");
-  assert.match(
-    code,
-    /finally\s*\{[\s\S]{0,200}ta\?\.remove\(\)/,
-    "the staging textarea must be removed in a finally, not after a call that can throw (#52)",
-  );
+test("the staging textarea is removed even when execCommand throws (#52)", async () => {
+  const ta = fakeStaging();
+  await copyText("x", {
+    makeTextarea: () => ta,
+    clipboard: undefined,
+    execCommand: () => {
+      throw new Error("blocked by policy");
+    },
+  });
+  assert.equal(ta.removed, 1, "a throw must not leak the invisible staging element (#52)");
 });

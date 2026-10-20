@@ -7,15 +7,19 @@
  *
  * Both are harness-prompt bugs, and both are invisible in normal use: the
  * nudge only fails when the model has actually finished, and the duplicate
- * report only shows on the timeline. Asserting on the exported prompt text
- * pins them cheaply and precisely.
+ * report only shows on the timeline. The TEXT asserted here is the RUNTIME
+ * value — the exported constants and the string the loop actually sends — not
+ * a copy of the source.
+ *
+ * The two assertions that read `agent.ts` as source text ("the root branch must
+ * use the shared nudge", "must use PROGRESS_REQUEST") were deleted: they matched
+ * a regex against the file, which pins the spelling of code that has to work at
+ * runtime. `test/auto-continue-carries-goal.test.ts` drives the real loop and
+ * reads what was actually injected.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { AUTO_CONTINUE_NUDGE, PROGRESS_REQUEST } from "../src/agent/agent.ts";
-
-const src = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
 
 /* ---------- #43: the nudge must say how to STOP ---------- */
 
@@ -46,34 +50,6 @@ test("the nudge warns that prose does not stop the loop (#43)", () => {
 test("the nudge still tells it to keep working (#43)", () => {
   // the fix must not break the original purpose of the nudge
   assert.match(AUTO_CONTINUE_NUDGE, /Continue working toward the current goal/i);
-});
-
-test("agent.ts actually sends the shared nudge (#43, #136)", () => {
-  // #136: the root branch now goes through `autoContinueNudge(this.goal.text)`,
-  // which BUILDS ON AUTO_CONTINUE_NUDGE — so the shared instruction still reaches
-  // the model, plus the goal it refers to. The intent of this assertion is
-  // "the root branch must not invent its own nudge", which the builder satisfies.
-  assert.match(
-    src,
-    /: autoContinueNudge\(this\.goal\.text\);/,
-    "the root branch must use the shared nudge, with the goal (#136)",
-  );
-  // and prove the builder really is built on the constant, so the wording cannot
-  // drift into a second copy
-  const fn = src.slice(src.indexOf("export function autoContinueNudge"));
-  assert.match(
-    fn,
-    /return `\$\{AUTO_CONTINUE_NUDGE\}/,
-    "the builder must compose the shared constant, not restate it (#136)",
-  );
-});
-
-test("both the root and the sub-agent nudge mention finish() (#43)", () => {
-  // the sub-agent nudge already did; the root one did not. Neither may regress.
-  const subNudge = /\[harness\] Auto-nudge\.[^`]*/.exec(src)?.[0] ?? "";
-  assert.ok(subNudge.length > 0, "sub-agent nudge not found");
-  assert.match(subNudge, /finish\(\)/, "the sub-agent nudge must keep naming finish() (#43)");
-  assert.match(AUTO_CONTINUE_NUDGE, /finish\(\)/, "the root nudge must name it too (#43)");
 });
 
 /* ---------- #45: ask for the TOOL, not prose ---------- */
@@ -117,10 +93,6 @@ test("the progress request keeps its identifying opening (#45)", () => {
     "the opening sentence must stay recognisable (#45)",
   );
   assert.match(PROGRESS_REQUEST, /Keep it under 10 lines/);
-});
-
-test("agent.ts actually sends the shared progress request (#45)", () => {
-  assert.match(src, /const request = PROGRESS_REQUEST;/, "must use PROGRESS_REQUEST (#45)");
 });
 
 /* ---------- the two must not contradict each other ---------- */

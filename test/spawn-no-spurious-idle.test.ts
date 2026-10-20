@@ -29,14 +29,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 import path from "node:path";
 import { Master } from "../src/master.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
-import { blockFrom } from "./helpers/source.ts";
 
-const master = readFileSync(new URL("../src/master.ts", import.meta.url), "utf8");
 
 async function spawnAndCollectPrompts() {
   const dataDir = mkdtempInRootSync("t130a-");
@@ -78,39 +75,5 @@ test("spawning a sub-agent does NOT tell the parent it is idle (#130)", async ()
     spurious,
     [],
     `a freshly spawned child must not be reported as settled (#130): ${JSON.stringify(spurious[0])}`,
-  );
-});
-
-test("the wakeup itself is NOT gated — only the message is (#130)", async () => {
-  // gating the whole handler would reintroduce #126: a parent's wait_children must
-  // wake on the birth transition too, or it sits until the child really runs
-  // Anchor on the two symbols and compare their positions in the FILE, not in a
-  // fixed-width slice: a 900-char window found the wake at 290 and the gate at
-  // -1, because #130's comment pushed it past the edge — the same trap as #126.
-  const wakeAt = master.indexOf("this.wakeAncestorWaiters(ac.parent);");
-  const gateAt = master.indexOf("this.reportedRunning.has(agentId)");
-  assert.notEqual(wakeAt, -1, "the wake must be there (#126)");
-  assert.notEqual(gateAt, -1, "the report gate must be there (#130)");
-  assert.ok(
-    wakeAt < gateAt,
-    `the wake must not be gated by the report condition (#130): wake@${wakeAt} gate@${gateAt}`,
-  );
-});
-
-test("a settled report requires the child to have run (#130)", async () => {
-  const at = master.indexOf("this.reportedRunning.has(agentId)");
-  assert.notEqual(at, -1, "the gate must exist (#130)");
-  const block = blockFrom(master, 'this.reportedRunning.has(agentId)');
-  assert.match(block, /SETTLED\.has\(status\)/, "and only for a settled status (#130)");
-  // the gate must be ARMED when the child starts, or a real completion never reports
-  assert.match(
-    master,
-    /if \(status === "running"\) this\.reportedRunning\.add\(agentId\);/,
-    "reaching running must arm the gate (#130)",
-  );
-  assert.match(
-    master,
-    /else if \(SETTLED\.has\(status\)\) this\.reportedRunning\.delete\(agentId\);/,
-    "and settling disarms it, so a later idle is not re-reported (#130)",
   );
 });

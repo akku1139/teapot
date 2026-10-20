@@ -27,7 +27,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * The declarations that apply to `selector`.
@@ -100,22 +99,4 @@ test("the editor keeps the styling its inline style used to carry (#124)", () =>
   ] as const) {
     assert.match(body, new RegExp(prop), `the editor lost ${prop} (${why}) (#124)`);
   }
-});
-
-test("the editor no longer carries an inline style (#124)", () => {
-  const i = app.indexOf('id="todo-input"');
-  assert.notEqual(i, -1, "the editor must exist (#124)");
-  const tag = app.slice(i, app.indexOf("/>", i));
-  assert.doesNotMatch(
-    tag,
-    /\sstyle="/,
-    `the editor must take its styling from the sheet (#124); still inline: ${tag.slice(0, 200)}`,
-  );
-});
-
-test("rows={5} stays as the intrinsic minimum (#124)", () => {
-  // the CSS pins the rendered height; rows is the attribute default for anyone
-  // who copies the markup, so removing it would be a silent downgrade
-  const i = app.indexOf('id="todo-input"');
-  assert.match(app.slice(i, app.indexOf("/>", i)), /rows=\{5\}/, "rows must remain (#124)");
 });
