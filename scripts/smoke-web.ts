@@ -929,6 +929,62 @@ console.log("deep render ok: feed rows present");
   }
   console.log("deep render ok: undelivered prompt shows once, as pending");
 
+  /**
+   * SENDING MUST NOT MOVE A READER WHO IS READING HISTORY.
+   *
+   * Reported: "メッセージを送信した直後にスクロールが変な位置になる". The old code fired
+   * `scrollBottom(true)` two frames after the send — `force = true`, so it ignored where the
+   * reader was. Removing it was necessary but the feed's ResizeObserver also has to behave:
+   * a send changes `.feed`'s box (the draft clearing shrinks the composer), and for a reader
+   * who is NOT following the observer re-anchors by `scrollTop += delta`. That is correct
+   * only if the delta is the reflow's, not a second application on top of a settled layout.
+   */
+  {
+    const feed = w.document.querySelector(".feed") as HTMLElement | null;
+    if (!feed) {
+      console.error("#send-scroll check: .feed missing");
+      process.exit(1);
+    }
+    const CONTENT = 5000;
+    let viewport = 700;
+    let top = 0;
+    Object.defineProperty(feed, "scrollHeight", { configurable: true, get: () => CONTENT });
+    Object.defineProperty(feed, "clientHeight", { configurable: true, get: () => viewport });
+    Object.defineProperty(feed, "offsetHeight", { configurable: true, get: () => viewport });
+    Object.defineProperty(feed, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = Math.max(0, Math.min(v, Math.max(0, CONTENT - viewport)));
+      },
+    });
+    // the reader is reading HISTORY, far from the tail
+    top = 1200;
+    feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 60));
+    const before = top;
+
+    // send the way the operator does
+    ta.value = "another";
+    ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    form.dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
+    // the send shrinks the composer, which grows the feed's box
+    viewport += 20;
+    pumpResize();
+    await new Promise((r) => setTimeout(r, 250));
+
+    if (Math.abs(top - before) > 32) {
+      console.error(
+        `#send-scroll REGRESSION: sending moved a reader who was reading history ` +
+          `(scrollTop ${before} -> ${top}). A send must not scroll the feed when the reader ` +
+          `is not following.`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: sending does not move a reader who is reading history (#send-scroll)");
+  }
+
   // DELIVERY: prompt-delivered note arrives -> echo removed, settled row takes over
   pushEvent({ id: "e6", seq: 6, ts: "2026-01-01T10:00:25Z", session: "alpha-s1",
     branch: "br0", parent: null, type: "system_note",

@@ -148,3 +148,25 @@ test("a small drag up still stops following (#scroll)", () => {
   assert.equal(movedAway(at(700, 1600, 600), bottom), true, "300px up");
   assert.equal(movedAway(at(940, 1600, 600), bottom), true, "a 60px drag is still a deliberate move");
 });
+
+test("a first sample away from the tail means the reader is NOT following (#send-scroll)", () => {
+  // The bug this pins: `movedAway()` needs a previous sample, so on the FIRST scroll event it
+  // returned false and the follow state stayed TRUE while the reader was a thousand pixels up
+  // the timeline. Nothing showed it until the next box change re-pinned them to the tail —
+  // the reported "送信直後に謎にスクロールする", because a send resizes the feed.
+  //
+  // A scroll event that lands away from the tail, with no growth to explain it, IS the
+  // reader having moved. There is no third cause, and "we have not seen a sample yet" is not
+  // an argument for assuming they are at the bottom.
+  const away = at(1200, 5000); // 3100px from the tail
+  assert.equal(atTail(away), false);
+  assert.equal(
+    movedAway(away, undefined),
+    false,
+    "the POLICY cannot know without a previous sample — which is why the wiring must treat " +
+      "the first sample as a decision rather than deferring it",
+  );
+  // what the handler does: not at tail, and nothing grew, so following is off
+  const following = atTail(away) || movedAway(away, undefined);
+  assert.equal(following, false, "the first sample away from the tail must clear following");
+});

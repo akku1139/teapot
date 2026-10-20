@@ -3648,6 +3648,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * shrink read as "the reader is now away".
              */
             const away = movedAway(now, lastSample);
+            const firstSample = lastSample === undefined;
             lastSample = now;
             // the pill reads this instead of measuring the DOM itself
             publishGap(now);
@@ -3658,7 +3659,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               // #160: reaching the tail marks this session read — the scroll itself, not a
               // new event arriving while we happen to be here
               markReadIfFollowing();
-            } else if (away) {
+            } else if (away || firstSample) {
+              // FIRST SAMPLE COUNTS (#send-scroll). `movedAway()` needs a previous sample, so
+              // with none it said "not away" — and the follow state therefore stayed TRUE
+              // while the reader was a thousand pixels up the timeline. Nothing showed it
+              // until the next box change re-pinned them to the tail, which is the reported
+              // "送信直後に謎にスクロールする": the send resized the feed, the observer saw
+              // `atBottom() === true`, and pinned.
+              //
+              // A scroll event arriving away from the tail, with the content no taller than
+              // when we last looked, IS the reader having moved — there is no third cause.
+              // The growth case is still excluded by `away` being false there.
               setAtBottom(false);
             }
             // reached the top → pull the next older page (infinite scroll up). Runs BEFORE
