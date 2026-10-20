@@ -1780,6 +1780,62 @@ console.log("deep render ok: feed rows present");
     }
     console.log("deep render ok: an OAuth-required server offers a wired authorize control (#oauth)");
 
+    // ---- saving must SURFACE a newly-discovered OAuth requirement ----
+    //
+    // Reported: "一回設定を補んして設定パネルを閉じて、再度開かないとOAuthのボタンが出ない".
+    // The save CONNECTS every server, and that connect is what discovers "needs a grant" —
+    // but the panel only fetched the status when the section OPENED, so the button stayed
+    // invisible until a reopen.
+    {
+      const saveBtn = w.document.querySelector(".cfgsave");
+      if (!saveBtn) {
+        console.error("#oauth-save: no save button");
+        process.exit(1);
+      }
+      const before = requests.filter((r) => r.url === "/api/mcp/oauth/status").length;
+      saveBtn.click();
+      // the refresh happens during the save handler; poll rather than sleep
+      const deadline = Date.now() + 4000;
+      let after = before;
+      while (Date.now() < deadline) {
+        after = requests.filter((r) => r.url === "/api/mcp/oauth/status").length;
+        if (after > before) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      if (after === before) {
+        console.error(
+          "#oauth-save REGRESSION: saving did not re-fetch the OAuth status, so a server " +
+            "that turns out to need authorization shows no button until the panel is reopened",
+        );
+        process.exit(1);
+      }
+      // The save may KEEP the dialog open on the MCP section (it stays open only when
+      // something needs action) or close it. Either way the later checks drive the same
+      // panel from the runtime section, so restore that state here — a check must not
+      // leave the UI somewhere another check does not expect.
+      if (!w.document.querySelector(".modal")) {
+        const gear = [...w.document.querySelectorAll(".iconbtn")].find(
+          (b) => (b.getAttribute("title") ?? "") === "settings",
+        );
+        if (!gear) {
+          console.error("#oauth-save: could not reopen the settings panel for later checks");
+          process.exit(1);
+        }
+        gear.click();
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const runtimeBtn = [...w.document.querySelectorAll(".cfgmenu-item")].find((b) =>
+        /runtime/.test(b.textContent ?? ""),
+      );
+      if (!runtimeBtn) {
+        console.error("#oauth-save: the settings rail has no runtime section to restore");
+        process.exit(1);
+      }
+      runtimeBtn.click();
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    console.log("deep render ok: saving re-checks OAuth so the button appears without a reopen (#oauth-save)");
+
     // ---- #161: short-context mode is a REAL toggle, and it defaults to OFF ----
     //
     // It discards information early by design, so an accidental default-on would cost
@@ -1822,17 +1878,28 @@ console.log("deep render ok: feed rows present");
         console.error("#161 REGRESSION: no save button to commit the toggle");
         process.exit(1);
       }
-      const before = requestedUrls.length;
+      // the save PUTs /api/config; poll for a NEW one.
+      //
+      // The baseline MUST be taken before the click: taking it afterwards (as an earlier
+      // version of this check did once the click was made to await) counts the request it
+      // is trying to detect and reports "no PUT /api/config — the handler is not wired".
+      //
+      // `requests.find(...)` also scanned from the START, so it matched an EARLIER save in
+      // this run (there are several, and each asserts its own field) and reported the wrong
+      // body: "the saved config does not carry shortContext:true". The request made by
+      // THIS click is the last one.
+      const putsBefore = requests.filter((c) => c.url === "/api/config" && c.method === "PUT").length;
       saveBtn.click();
-      // the save PUTs /api/config; poll for that request
-      const saveDeadline = Date.now() + 3000;
+      const saveDeadline = Date.now() + 4000;
       let put: { url: string; method: string; body: any } | undefined;
       while (Date.now() < saveDeadline) {
-        put = requests.find((c) => c.url === "/api/config" && c.method === "PUT");
-        if (put) break;
+        const puts = requests.filter((c) => c.url === "/api/config" && c.method === "PUT");
+        if (puts.length > putsBefore) {
+          put = puts[puts.length - 1];
+          break;
+        }
         await new Promise((r) => setTimeout(r, 25));
       }
-      void before;
       if (!put) {
         console.error(
           "#161 REGRESSION: toggling short-context did not change the saved config " +

@@ -6770,7 +6770,35 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
           mcpServers: cleanMcp,
         }),
       });
-      props.onSaved(); props.onClose();
+      // The save also CONNECTS every server (`PUT /api/config` → `mcp.connectAll()`), and
+      // THAT is what discovers "this one needs OAuth". The panel only fetched OAuth
+      // status when the section OPENED, so the 🔑 authorize button did not appear until
+      // the operator closed and reopened settings — reported as "一回設定を閉じて、再度
+      // 開かないとOAuthのボタンが出ない".
+      //
+      // `connectAll()` is fired-and-forgotten server-side, so the result lands AFTER this
+      // response: refresh now AND once more shortly after, then let the operator see the
+      // outcome. Closing immediately would hide the very thing the save discovered.
+      await refreshMcpStates();
+      await Promise.all(
+        cleanMcp.map((m, i) => (m.name ? refreshMcpOAuth(i, m.name) : Promise.resolve())),
+      );
+      // one more pass after the connections settle
+      setTimeout(() => {
+        void refreshMcpStates();
+        cleanMcp.forEach((m, i) => {
+          if (m.name) void refreshMcpOAuth(i, m.name);
+        });
+      }, 1200);
+      props.onSaved();
+      // stay on the panel when a save turned up something the operator must act on
+      const needsAction = mcpServers().some((m, i) => mcpOAuth()[i]?.required && !mcpOAuth()[i]?.authorized);
+      if (needsAction) {
+        setSection("mcp");
+        flashHint("a saved MCP server needs authorization — see 🔑 authorize");
+      } else {
+        props.onClose();
+      }
     } catch (ex) { setErr((ex as Error).message); }
   };
 
