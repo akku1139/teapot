@@ -232,6 +232,38 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   `100.x` and `fd7a:…` — an IPv4-only listener is unreachable from an IPv6
   client. `dualStackHost()` in `src/server/api.ts` maps the wildcard to a
   missing hostname for this reason.
+- **A tool the prompt advertises must be a tool the loop can RUN.** Meta tools
+  (`finish`, `set_todo`, `read_memory`, `ask_user`…) are handled by
+  `runTurnsUntilIdle`, not by `executeTool`. Their specs live in
+  `src/agent/meta-tools.ts` and their handlers in `metaHandlers`, typed
+  `Record<MetaToolName, …>` where `MetaToolName` is derived from the table — so a
+  spec without a handler is a COMPILE error. Before that, the mismatch was silent:
+  the call fell through to `executeTool`, which answered **"unknown tool"** for a
+  tool the same request had just described, and the model retried or gave up. A
+  handler with no spec was the quieter half — unreachable code.
+  - Adding one: an entry in `META_TOOLS` **and** a key in `metaHandlers`. The two
+    return kinds are the old if-chain's two control flows: `"next"` is the
+    `continue`, `"end"` is `finish` leaving the whole batch (#105).
+- **An empty element still occupies its box.** A grouped row renders
+  `<div class="avatar avghost ghosted">` as a continuation marker; `avghost` had
+  no rule, so it inherited `.avatar`'s `height: 38px` + `margin-top: 2px` and every
+  continuation carried 40px of INVISIBLE height. That is why a run of tool rows
+  read as sparse while the embed itself was flush. Scope such a reset to the state
+  that needs it (`.msg.grouped`), never to the bare class — `avghost` is on every
+  row's avatar, so unscoped it collapses the icon everywhere.
+- **`content-visibility: auto` moves the scroll unless the placeholder equals the
+  real height.** `contain-intrinsic-size: auto 140px` is a guess, and row heights
+  here span three orders of magnitude, so `frontend/feed-reserve.ts` writes each
+  row's MEASURED box back via IntersectionObserver (with a ±900px skirt, so a row
+  is measured before the scroll reaches it) + ResizeObserver + MutationObserver.
+  Chromium does not report a cv unskip as CLS (crbug 40733057), so this cannot be
+  caught by a metric — hence `test/feed-reserve.test.ts` and the smoke check.
+- **Growing a container and reading its geometry in a later frame is a race.**
+  `autosizeComposer` sampled inside a rAF, which can run before the new height is
+  laid out; `scrollBottom` then used the OLD maximum and left the feed above the
+  tail by exactly the growth. Writing `height` does not lay out, but READING a
+  geometry property does — `void el.clientHeight` forces it, then sample and act
+  synchronously.
 - **Third-party components get a namespace and a containment check.** MCP tools are
   exposed as `mcp__<server>__<tool>`; a plugin's servers are additionally qualified with
   the plugin name (`<plugin>:<server>`) because the registry keys by name and two
