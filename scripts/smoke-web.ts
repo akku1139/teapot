@@ -262,11 +262,13 @@ const pumpResize = () => {
 setGlobal(
   "ResizeObserver",
   class {
-    cb: () => void;
+    // the app's callback destructures ENTRIES, so the stub must pass them — calling it with
+    // no arguments throws "e is not iterable"
+    cb: (entries: unknown[]) => void;
     targets: { el: any; last: number }[] = [];
     // explicit field, NOT a parameter property: Node's type-stripping loader refuses
     // `constructor(private cb)` (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX)
-    constructor(cb: () => void) {
+    constructor(cb: (entries: unknown[]) => void) {
       this.cb = cb;
       resizeObservers.push(this);
     }
@@ -293,7 +295,14 @@ setGlobal(
           fired = true;
         }
       }
-      if (fired) setTimeout(() => this.cb(), 0);
+      if (fired) {
+        // pass ENTRIES: the app's callback destructures them (`for (const e of entries)`),
+        // so calling it with no arguments throws "e is not iterable"
+        const entries = this.targets
+          .filter((t) => t.last > 0)
+          .map((t) => ({ target: t.el, contentRect: { width: 0, height: t.last } }));
+        setTimeout(() => this.cb(entries), 0);
+      }
     }
     unobserve() {}
     disconnect() {
@@ -302,6 +311,41 @@ setGlobal(
   },
 );
 setGlobal("WebSocket", MockWS);
+// IntersectionObserver: same story — the feed reserves each row's measured height so
+// `content-visibility` unskipping cannot move the scroll position (frontend/feed-reserve.ts).
+// happy-dom has no layout, so "is it intersecting" is decided from the element's own box.
+const intersectionObservers: { check: () => void }[] = [];
+const pumpIntersection = () => {
+  for (const io of intersectionObservers) io.check();
+};
+setGlobal(
+  "IntersectionObserver",
+  class {
+    cb: (entries: unknown[]) => void;
+    targets: any[] = [];
+    constructor(cb: (entries: unknown[]) => void) {
+      this.cb = cb;
+      intersectionObservers.push(this);
+    }
+    observe(el: any) {
+      this.targets.push(el);
+    }
+    unobserve() {}
+    disconnect() {
+      this.targets = [];
+    }
+    check() {
+      // report every target with its current box; the module decides what to do
+      const entries = this.targets.map((el) => ({
+        target: el,
+        boundingClientRect: el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 },
+        intersectionRatio: 1,
+      }));
+      if (entries.length) this.cb(entries);
+    }
+  },
+);
+
 // the app's connectWs() runs at import time; its socket must exist for the
 // pending-echo regression below to push bus events into the app
 // every request, with its method and parsed body — a check that needs to prove WHAT
@@ -1184,15 +1228,49 @@ console.log("deep render ok: feed rows present");
         );
         process.exit(1);
       }
-      // every boundary INTO a grouped row must be flush: that is the joined run
+      // Every boundary INTO a grouped row must have a SMALL, deliberate gap.
+      //
+      // It used to assert 0px ("flush"), which was wrong twice over: a continuation's
+      // `avatar avghost ghosted` inherited `.avatar`'s 38px + 2px, so what looked flush had
+      // 40px of INVISIBLE height above the embed — and once that phantom box is removed the
+      // rows really are flush, which makes consecutive commands hard to read. The operator
+      // asked for a few px, so the assertion is "a small gap", not zero.
+      const GAP_MIN = 2;
+      const GAP_MAX = 8;
       for (const g of gaps) {
-        if (g.px !== 0) {
+        if (g.px < GAP_MIN || g.px > GAP_MAX) {
           console.error(
             `#grouped REGRESSION: a grouped row is ${g.px}px from the row above it (${g.label}) — ` +
-              "the run must be flush, or its head looks detached from its commands",
+              `expected ${GAP_MIN}-${GAP_MAX}px: flush rows are hard to read, and a wide gap means ` +
+              "something invisible is adding height (the empty avatar box was doing exactly that)",
           );
           process.exit(1);
         }
+      }
+      // THE PHANTOM BOX: a continuation's avatar must contribute NO height. It is an empty
+      // div whose only job is to keep the column, and `.avatar`'s 38px was making every
+      // grouped row taller than its content.
+      for (const [i, row] of groupedRows.entries()) {
+        const av = row.querySelector(".avatar");
+        if (!av) continue;
+        const h = cssOf(av).height;
+        if (parseFloat(h) > 0) {
+          console.error(
+            `#grouped REGRESSION: a grouped row's empty avatar is ${h} tall (row ${i}) — that is ` +
+              "invisible height above every continuation, which is what made runs look sparse",
+          );
+          process.exit(1);
+        }
+      }
+      // …and an ORDINARY row still shows its icon at full size (the rule is scoped to runs)
+      const ordinary = feedRows.find((r) => !r.classList.contains("grouped"));
+      const ordAv = ordinary?.querySelector(".avatar");
+      if (!ordAv || parseFloat(cssOf(ordAv).height) <= 0) {
+        console.error(
+          "#grouped REGRESSION: an ordinary row's avatar collapsed — a 0px avatar belongs only " +
+            "to continuations, which carry no icon",
+        );
+        process.exit(1);
       }
       // and a run's last row must still separate it from what follows (when a row does)
       const lastGrouped = groupedRows[groupedRows.length - 1];
@@ -1206,7 +1284,47 @@ console.log("deep render ok: feed rows present");
         }
       }
     }
-    console.log("deep render ok: a grouped run joins — rounded corners, flush inside, spaced between (#grouped)");
+    console.log("deep render ok: a grouped run has rounded corners, a small gap, and no phantom avatar (#grouped)");
+
+    // ---- #143/Firefox: every feed row reserves its REAL height ----
+    //
+    // `content-visibility: auto` uses `contain-intrinsic-size` as a placeholder while a row
+    // is unrendered; when the row is finally laid out, any gap between placeholder and
+    // reality shifts everything above it. Chromium does not report that as CLS, Firefox
+    // shows it as the scroll jumping — so the guarantee has to be asserted here rather than
+    // left to a metric. The rows must carry their measured box, not the stylesheet's guess.
+    {
+      const rowsInFeed = [...w.document.querySelectorAll(".feed [data-eid]")];
+      if (rowsInFeed.length === 0) {
+        console.error("#143 REGRESSION: the feed has no rows to reserve — check is vacuous");
+        process.exit(1);
+      }
+      // happy-dom does no layout, so every row reports a 0x0 box and the module correctly
+      // refuses to reserve it (a 0px placeholder would COLLAPSE the row on its next skip).
+      // To prove the wiring, give one row a real box — exactly what layout would do — then
+      // pump the observers and require that row to carry the measured size.
+      const probe = rowsInFeed[rowsInFeed.length - 1] as HTMLElement;
+      const REAL_W = 640;
+      const REAL_H = 137;
+      probe.getBoundingClientRect = () =>
+        ({ width: REAL_W, height: REAL_H, top: 0, left: 0, bottom: REAL_H, right: REAL_W, x: 0, y: 0, toJSON() {} }) as DOMRect;
+      Object.defineProperty(probe, "offsetHeight", { value: REAL_H, configurable: true });
+      Object.defineProperty(probe, "offsetWidth", { value: REAL_W, configurable: true });
+      pumpResize();
+      pumpIntersection();
+      await new Promise((r) => setTimeout(r, 150));
+
+      const v = probe.style.getPropertyValue("contain-intrinsic-size").trim();
+      if (v !== `${REAL_W}px ${REAL_H}px`) {
+        console.error(
+          `#143 REGRESSION: a row measured ${REAL_W}x${REAL_H} did not reserve it ` +
+            `(contain-intrinsic-size=${JSON.stringify(v)}) — content-visibility will shift the ` +
+            "scroll position when that row is laid out",
+        );
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: feed rows reserve their measured height for content-visibility (#143)");
   }
 
   /* ---------- #75: an INVISIBLE row must not split a tool run ------------------

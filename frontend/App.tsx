@@ -38,6 +38,7 @@ import {
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
 import { atTail, shouldFollowAfterChange, type TailSample } from "./scroll-policy";
+import { reserveRowSizes } from "./feed-reserve";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -484,6 +485,29 @@ export default function App() {
     const off = localStorage.getItem("teapot.feedCv") === "0";
     if (off) delete document.documentElement.dataset.feedcv;
     else document.documentElement.dataset.feedcv = "on";
+  });
+  /**
+   * Reserve each row's REAL height so `content-visibility` unskipping cannot move the
+   * scroll position (frontend/feed-reserve.ts explains the mechanism and cites the primary
+   * source). Only meaningful when the feature is ON — without `content-visibility` the
+   * placeholder is never used, and writing one would be dead work on every row.
+   *
+   * Re-armed when the rendered rows change, because rows are appended and replaced as the
+   * feed grows; a stale observer list would leave new rows with only the stylesheet guess.
+   */
+  createEffect(() => {
+    if (localStorage.getItem("teapot.feedCv") === "0") return;
+    // track the rows so the effect re-runs when the set changes
+    const rows = chatEvents();
+    const root = feedEl();
+    if (!root || rows.length === 0) return;
+    // one frame: the rows must be IN the DOM before they can be measured. A row that has
+    // never been laid out reports a zero box, which `reserve` deliberately ignores.
+    const raf = requestAnimationFrame(() => {
+      const reserved = reserveRowSizes(root);
+      onCleanup(() => reserved.disconnect());
+    });
+    onCleanup(() => cancelAnimationFrame(raf));
   });
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
@@ -1639,7 +1663,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     } catch { /* agent may be gone */ }
   }
 
-  function feedEl() { return document.querySelector(".feed"); }
+  function feedEl() { return document.querySelector<HTMLElement>(".feed"); }
   /**
    * The feed's geometry, as the follow rule wants it.
    *
@@ -2723,20 +2747,30 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const autosizeComposer = () => {
     if (!composerEl) return;
     // The composer growing shrinks the feed's VIEWPORT, which raises the gap without
-    // anybody scrolling — one of the growth paths the follow rule exists for. The old
-    // code suppressed scroll processing around the resize and restored `atBottom` from a
-    // snapshot taken BEFORE it, so the decision was made from geometry that was already
-    // stale by one relayout.
+    // anybody scrolling — one of the growth paths the follow rule exists for.
+    //
+    // THE TIMING IS THE BUG. Reported: "スクロール追従中に2行以上に拡大した入力欄に入力をすると
+    // ちょっと上にスクロールする". The old code sampled `after` inside a rAF, which can run
+    // BEFORE the new composer height has been laid out. The sample then showed the OLD
+    // viewport, `scrollBottom` set `scrollTop` to the OLD maximum, and only afterwards did
+    // the feed get shorter — so the reader was left above the tail by exactly the height the
+    // composer had grown. Nothing scrolled it; the bottom simply moved down out of view.
+    //
+    // The fix is to make the layout happen BEFORE the sample: writing `height` does not lay
+    // out on its own, but READING a geometry property does. `clientHeight` on the composer
+    // forces exactly the reflow whose absence caused the drift.
     const before = tailSample();
     composerEl.style.height = "auto";
     composerEl.style.height = composerMaximized()
       ? "" // CSS takes over: .composer.maximized textarea fills the column
       : `${Math.min(composerEl.scrollHeight, MAX_COMPOSER_H)}px`;
-    requestAnimationFrame(() => {
-      const after = tailSample();
-      // A reader who was at the tail stays there; one who had scrolled up is left alone.
-      if (after && shouldFollowAfterChange(before, after)) scrollBottom(true);
-    });
+    // force the reflow so the feed's viewport below is the NEW one
+    void composerEl.clientHeight;
+    const after = tailSample();
+    // A reader who was at the tail stays there; one who had scrolled up is left alone.
+    // Synchronous, not deferred: the geometry is already correct, and a later rAF would
+    // re-introduce the window in which the feed is shorter than the scroll position assumes.
+    if (after && shouldFollowAfterChange(before, after)) scrollBottom(true);
   };
   // user-scroll lock state (see the feed onscroll handler)
   let userScrolledUp = false;

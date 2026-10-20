@@ -356,29 +356,47 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .tbl th { background: var(--bg-darkest); font-weight: 600; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: 4px; padding: 6px 10px; margin-top: 3px; font-size: 13.5px; }
-/* A run of rows from the SAME actor (#75), defined by its BOUNDARIES instead of by
-   per-row padding.
-   
-   Measured before this change: normal→normal was 9px, but a run's HEAD → its first
-   continuation was only 3px, because `.msg`'s own `padding: 3px` applied to the head
-   while the continuation contributed nothing. The run therefore looked detached from
-   the row that introduced it — reported as "1つ目のtool resultの下に適切な空白が
-   挿入されていない".
-   
-   The model, in three rules that agree by construction:
-     - a row INSIDE a run sits flush against the previous row;
-     - a run's HEAD keeps the space ABOVE it (it is the start of a block, not a
-       continuation);
-     - a run's LAST row gives the space BELOW it back.
-   
-   So: 0px inside a run, 9px between blocks, and nothing else. `:has()` is what lets this
-   live in one place — a row otherwise knows only its PREVIOUS sibling, so "am I a head /
-   the last of a run" has to look FORWARD. */
-/* a continuation: no space above OR below it, from either the row or its embed */
+/* A run of rows from the SAME actor (#75).
+ *
+ * THE PHANTOM HEIGHT. A continuation renders `<div class="avatar avghost ghosted">` — an
+ * empty avatar box. `.avghost` had NO rule of its own, so it inherited `.avatar`'s
+ * `height: 38px` + `margin-top: 2px`: every grouped row carried 40px of INVISIBLE height
+ * above its embed. That is what made a run read as sparse while the embed itself had no
+ * margin at all — the operator measured it as "`avatar avghost ghosted` によってメッセージの
+ * 高さが発生していて空白ができてる".
+ *
+ * So: the continuation's avatar contributes NO height, and the separation between rows in a
+ * run is stated explicitly instead of leaking out of an empty box. A few px are wanted —
+ * flush rows made consecutive commands hard to read.
+ *
+ * The model, in four rules that agree by construction:
+ *   - a continuation's avatar box has no height;
+ *   - a continuation sits GAP_PX below the row above it;
+ *   - a run's HEAD keeps the space ABOVE it (it starts a block);
+ *   - a run's LAST row gives the space BELOW it back.
+ *
+ * `--grouped-gap` is one value so the head boundary, the inside gap and the tail boundary
+ * cannot drift apart.
+ */
+.msg { --grouped-gap: 4px; }
+/* the empty avatar of a continuation: no box, no height, no margin */
+/* the empty avatar of a CONTINUATION: no box, no height, no margin.
+   Scoped to `.msg.grouped` — the class `avghost` is on every row's avatar (it carries the
+   faded look), so matching it alone collapsed the icon on ordinary rows too. */
+.msg.grouped .avatar.avghost {
+  width: 38px;
+  height: 0;
+  min-height: 0;
+  margin-top: 0;
+  align-self: flex-start;
+}
+/* a continuation: GAP_PX above it, nothing else */
 .msg.grouped { padding: 0 18px; }
-.embed.grouped { margin-top: 0; }
-/* a run's HEAD: its bottom padding would open a gap before the first continuation */
+.embed.grouped { margin-top: var(--grouped-gap); }
+/* the FIRST continuation follows the head, so it gets the same gap; the head itself must
+   not also carry bottom padding, or the run's first gap is double */
 .msg:not(.grouped):has(+ .msg.grouped) { padding-bottom: 0; }
+.msg:not(.grouped):has(+ .msg.grouped) .embed { margin-bottom: 0; }
 /* the run ENDS here: restore the space below, which is what separates blocks */
 .msg.grouped:not(:has(+ .msg.grouped)) { padding-bottom: 3px; }
 /* each row keeps ALL FOUR corners rounded: squaring the left ones to signal

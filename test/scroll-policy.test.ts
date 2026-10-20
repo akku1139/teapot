@@ -14,6 +14,7 @@ import {
   gapToTail,
   shouldFollowAfterChange,
   shouldShowJumpToPresent,
+  tailOffset,
 } from "../frontend/scroll-policy.ts";
 
 /** geometry helpers: the viewport is 600px tall, content starts at `height` */
@@ -119,4 +120,35 @@ test("no element yet means 'follow' — the first content lands at the tail (#sc
   assert.equal(atTail(undefined), true);
   assert.equal(shouldFollowAfterChange(undefined, at(0, 800)), true);
   assert.equal(gapToTail(at(0, 800)), 200);
+});
+
+test("the composer growing shrinks the VIEWPORT and must not scroll the feed up (#scroll)", () => {
+  // Reported: "スクロール追従中に2行以上に拡大した入力欄に入力をするとちょっと上にスクロールする".
+  //
+  // The composer sits below the feed, so growing it makes the feed's viewport SHORTER while
+  // the content height is unchanged. `top` does not move, so this is growth, not a scroll —
+  // but the same change done in the wrong ORDER (sample the geometry before the reflow) picks
+  // up the OLD viewport, and `scrollTop` then points above the new maximum.
+  const height = 2000;
+  const before = { top: height - 600, height, viewport: 600 }; // at the tail, 600px viewport
+  const after = { top: height - 600, height, viewport: 540 }; // composer grew 60px
+  assert.equal(atTail(before), true, "precondition: the reader was at the tail");
+  assert.equal(
+    shouldFollowAfterChange(before, after),
+    true,
+    "a shorter viewport is content growth, not the reader scrolling — follow must hold",
+  );
+  // and the target to scroll to is the same, so landing there keeps the tail visible
+  assert.equal(tailOffset(after), height);
+  // whereas sampling the OLD viewport and landing on its maximum leaves the reader short:
+  const staleMax = height - before.viewport;
+  assert.ok(
+    staleMax < height - after.viewport,
+    "the old maximum is ABOVE the new one — that is the upward drift, by exactly the growth",
+  );
+});
+
+test("a reader scrolled up is NOT dragged when the composer grows (#scroll)", () => {
+  const before = { top: 300, height: 2000, viewport: 600 };
+  assert.equal(shouldFollowAfterChange(before, { top: 300, height: 2000, viewport: 540 }), false);
 });
