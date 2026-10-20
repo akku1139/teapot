@@ -114,21 +114,62 @@ test("no OTHER tool was newly excluded (#107)", () => {
   assert.equal(out.length, 2, `an ordinary tool must keep its rows; got ${JSON.stringify(out.map((e) => e.type))}`);
 });
 
-test("the handler really does emit both a decision event and a tool pair (#107)", () => {
-  // the premise. If this ever changes, the exclusion becomes dead code and the
-  // comment above it should change with it.
-  const at = agent.indexOf('call.function.name === "record_decision"');
-  assert.notEqual(at, -1, "the handler must exist (#107)");
-  const body = agent.slice(at, at + 2600);
-  assert.match(
-    body,
-    /log\.append\("decision"/,
-    "it appends a decision event (#107)",
-  );
-  assert.match(
-    body,
-    /answerMeta\(/,
-    "and answers the meta tool call (#107) — hence the duplicate",
-  );
+test("a real record_decision call emits the decision event AND its tool pair (#107)", async () => {
+  // THE PREMISE, driven through a real agent rather than read off the source.
+  //
+  // The exclusion above is only correct while `record_decision` really does produce both a
+  // `decision` event (the 📌 card) and a tool_call/tool_result pair. If that ever changed,
+  // the exclusion would be dead code hiding nothing — so the premise needs its own check.
+  //
+  // This used to `assert.match` a 2600-char slice of agent.ts. That cannot fail for a real
+  // reason: it pins the SPELLING of the handler, and it went red here merely because the
+  // handler moved into the meta-tool dispatch table while the behaviour was unchanged.
+  const { mkdtempInRootSync } = await import("./helpers/tmp-root.ts");
+  const { Agent } = await import("../src/agent/agent.ts");
+  const { readEvents } = await import("../src/log/events.ts");
+  const ws = mkdtempInRootSync("dec-");
+  const sd = mkdtempInRootSync("decs-");
+  let n = 0;
+  const a = new Agent({
+    id: "t",
+    workspace: ws,
+    sessionDir: sd,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn: async () => {
+      if (n++ === 0) {
+        return {
+          message: {
+            role: "assistant" as const,
+            content: "",
+            tool_calls: [
+              {
+                id: "d1",
+                type: "function" as const,
+                function: { name: "record_decision", arguments: JSON.stringify({ decision: "use X", rationale: "because Y" }) },
+              },
+            ],
+          },
+        };
+      }
+      return { message: { role: "assistant" as const, content: "done" } };
+    },
+    autoContinue: false,
+  } as never) as InstanceType<typeof Agent>;
+  await a.init();
+  try {
+    a.enqueuePrompt("go", "user");
+    a.start("t");
+    await a.settled().catch(() => {});
+    const events = await readEvents(a.log.filePath);
+    const decisions = events.filter((e) => e.type === "decision");
+    const calls = events.filter((e) => e.type === "tool_call" && (e.data as { name?: string }).name === "record_decision");
+    const results = events.filter((e) => e.type === "tool_result" && (e.data as { callId?: string }).callId === "d1");
+    // PRECONDITION: the call really happened, so the assertions below are not vacuous
+    assert.equal(calls.length, 1, "the record_decision call must be logged");
+    assert.equal(decisions.length, 1, "the 📌 decision card event must be emitted");
+    assert.equal(results.length, 1, "the tool_call must be answered, or its row never completes");
+  } finally {
+    await a.dispose().catch(() => {});
+  }
 });
 

@@ -15,7 +15,7 @@ import { effortChoosable } from "./llm.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
 import { flattenToolName } from "./mcp-registry.ts";
-import { metaToolSpecs, META_TOOL_NAMES } from "./meta-tools.ts";
+import { metaToolSpecs, META_TOOL_NAMES, type MetaToolName } from "./meta-tools.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
@@ -2461,6 +2461,404 @@ export class Agent {
    * produces a final answer without tool calls. Returns true if the agent
    * called finish().
    */
+
+  /**
+   * The meta-tool handlers, keyed by the table's own name union.
+   *
+   * `Record<MetaToolName, …>` is the whole point: because `MetaToolName` is derived from
+   * `META_TOOLS`, advertising a tool without handling it here is a TYPE ERROR rather than a
+   * runtime "unknown tool". That failure used to be silent — the call fell through to
+   * `executeTool`, which answered "unknown tool" for a tool the request had just described.
+   *
+   * Each handler mutates session state and answers its own `tool_call`. The return value is
+   * the only control flow the old if-chain had:
+   *   - `"next"` — the `continue` it replaced: this call is done, move to the next one in
+   *     the assistant batch;
+   *   - `"end"`  — the `return true` it replaced (`finish` only): end the whole batch, so a
+   *     model that emits finish() plus another call cannot keep mutating the workspace
+   *     after reporting completion (#105).
+   */
+  private metaHandlers: Record<
+    MetaToolName,
+    (call: { id: string; function: { name: string; arguments: string } }, m: ChatMessage) => Promise<"next" | "end">
+  > = {
+    finish: async (call, m) => {
+      this.pendingSubReport = ""; // the real summary supersedes it
+      // #128: answer the tool_call BEFORE the audit runs.
+      //
+      // handleFinish() calls the auditor with `buildMessages()`, and at that
+      // moment the history ended at an assistant message carrying
+      // `tool_calls: [finish]` with NO matching `tool` message. Measured, the
+      // auditor received exactly that:
+      //
+      //     assistant(tool_calls=[finish])
+      //     user(audit prompt)          <-- no tool(tool_call_id=…)
+      //
+      // OpenAI-compatible providers require every tool_call to be answered,
+      // and a strict one rejects the request outright — so a CHANGES-REQUIRED
+      // audit would fail with a protocol error rather than a verdict, and
+      // #128's fail-open would then mark the goal done.
+      //
+      // Answering first also makes the log honest: the call really was
+      // completed, it simply did not end the round.
+      await this.answerMeta(call, "(completion submitted for audit)");
+      await this.handleFinish(call.function.arguments);
+      // surface still-running children so the operator knows work may
+      // continue after this agent goes idle
+      try {
+        const running = (this.toolCtx.subAgents?.list?.() ?? []).filter((k) => k.status === "running");
+        if (running.length)
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "subs-still-running",
+            detail: running.map((k) => `${k.id} (${k.status})`).join(", "),
+          });
+      } catch { /* best-effort notice */ }
+      // answer the tool_call so a follow-up round stays API-valid
+      await this.answerMeta(
+        call,
+        this.goal.status === "done" ? "(goal complete)" : "(round ended)",
+      );
+      // the caller marks the round finished when this returns "end"
+      // #105: `continue` advanced the TOOL-CALL loop, so every later call in
+      // this same assistant message still executed — a model emitting
+      // finish() plus one more call got real filesystem writes AFTER it had
+      // reported `final: true` and the goal was already done. The parent was
+      // told the work finished while the workspace was still being mutated.
+      //
+      // So finish ends the BATCH: answer anything still outstanding (so no
+      // tool_call is left unpaired — the provider rejects the next request
+      // otherwise, #76) and leave the tool loop. The outer loop then returns
+      // on `finished`.
+      await this.answerUnansweredToolCalls(m);
+      return "end";
+    },
+    report_progress: async (call, m) => {
+      await this.recordProgress(call.function.arguments);
+      await this.answerMeta(call, "progress recorded");
+      return "next";
+    },
+    set_goal: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const text = String(a.text ?? "").trim();
+      if (text) await this.setGoal(text);
+      // pi-goal-x-style verification contract: plain-text completion
+      // requirements audited before finish(goalComplete=true) is honored
+      if (typeof a.verify === "string" && a.verify.trim())
+        await this.setGoalVerify(a.verify.trim().slice(0, 4000));
+      await this.answerMeta(
+        call,
+        text ? "goal updated" : "empty goal rejected",
+      );
+      return "next";
+    },
+    get_goal: async (call, m) => {
+      await this.answerMeta(
+        call,
+        JSON.stringify(
+          {
+            goal: this.goal.text || "(none set)",
+            status: this.goal.status,
+            ...(this.goal.verify ? { verify: this.goal.verify } : {}),
+            ...(this.goal.audit ? { lastAudit: this.goal.audit } : {}),
+          },
+          null,
+          1,
+        ),
+      );
+      return "next";
+    },
+    ask_user: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const question = String(a.question ?? "").slice(0, 2000);
+      // models sometimes pass objects ({label}, {option}, {value}) —
+      // extract the label instead of rendering "[object Object]" buttons
+      const options = Array.isArray(a.options)
+        ? a.options
+            .slice(0, 6)
+            .map((o: unknown) => {
+              if (typeof o === "string") return o;
+              if (o && typeof o === "object") {
+                const obj = o as Record<string, unknown>;
+                for (const k of ["label", "option", "choice", "value", "text"])
+                  if (typeof obj[k] === "string" && obj[k]) return obj[k] as string;
+              }
+              return "";
+            })
+            .filter((o: string) => o.trim())
+        : [];
+      // the callId lets the UI tell "still open" from "already answered"
+      // (a settled tool_result for this id exists) and disable re-answering
+      await this.log.append("question", this.currentSession, this.currentBranch, {
+        question,
+        options,
+        callId: call.id,
+      });
+      await this.answerMeta(
+        call,
+        "question shown to the operator — the loop is parked until they reply. " +
+          "Their reply (possibly free text, not one of the options) arrives as your next user message.",
+      );
+      this.awaitingUser = true;
+      this.setStatus("waiting", question.slice(0, 80));
+      // control flow: park the loop; the operator's next prompt resumes it
+      //
+      // #54: answer the rest of this assistant batch BEFORE parking. The
+      // throw leaves the whole tool loop, so any EARLIER call in the same
+      // message that was logged but not yet run kept no tool_result — the
+      // comment on the backstop below says as much, and it is exactly the
+      // path that bites in practice because ask_user is common.
+      await this.answerUnansweredToolCalls(m);
+      throw Object.assign(new Error("waiting for user"), { name: "WaitForUser" });
+    },
+    get_todo: async (call, m) => {
+      await this.answerMeta(
+        call,
+        this.todo.trim() || "(todo.md is empty — no task list yet)",
+      );
+      return "next";
+    },
+    set_todo: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      // Surgical item changes — no full rewrite, so the operator's own headings and
+      // notes in todo.md survive. `action` decides what to do; `done` is kept as
+      // shorthand so a model that only sends {item, done} still works.
+      const ACTIONS = new Set(["done", "reopen", "add", "remove"] as const);
+      const updates = Array.isArray(a.updates)
+        ? a.updates
+            .map((u: unknown) => {
+              const o = (u ?? {}) as { item?: unknown; done?: unknown; action?: unknown };
+              const raw = String(o.action ?? "");
+              const action = ACTIONS.has(raw as never)
+                ? (raw as "done" | "reopen" | "add" | "remove")
+                : undefined;
+              return {
+                item: String(o.item ?? ""),
+                done: o.done !== false,
+                ...(action ? { action } : {}),
+              };
+            })
+            .filter((u: { item: string }) => u.item.trim())
+        : [];
+      if (updates.length > 0) {
+        const note = await this.updateTodoItems(updates, "agent");
+        await this.answerMeta(call, `${note} (visible to the operator)`);
+        return "next";
+      }
+      const content = String(a.content ?? "").slice(0, 32_000);
+      if (!content.trim()) {
+        await this.answerMeta(
+          call,
+          "nothing to do: pass updates:[{item, action}] to change items " +
+            "(action: done | reopen | add | remove), or content to replace the whole list",
+        );
+        return "next";
+      }
+      await this.setTodo(content, "agent");
+      await this.answerMeta(call, "task list replaced (visible to the operator)");
+      return "next";
+    },
+    get_feedback: async (call, m) => {
+      const fb = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
+      this.messages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: fb.trim() || "(no feedback rules recorded yet)",
+      });
+      return "next";
+    },
+    add_feedback: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const rule = String(a.rule ?? "").trim().slice(0, 500);
+      if (!rule) {
+        this.messages.push({ role: "tool", tool_call_id: call.id, content: "rule required" });
+        return "next";
+      }
+      // repeated corrections gain weight: [xN] tag counts occurrences
+      const existing = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
+      const lines = existing.split("\n");
+      const idx = lines.findIndex((l) => l.includes(rule.slice(0, 60)));
+      if (idx !== -1 && /^\s*- /.test(lines[idx]!)) {
+        const m = lines[idx].match(/\[x(\d+)\]/);
+        const count = m ? Number(m[1]) + 1 : 2;
+        lines[idx] = lines[idx].replace(/\[x\d+\]\s*/, "").replace(/- /, `- [x${count}] `);
+        await fs.writeFile(this.feedbackFile, lines.join("\n"), "utf8");
+        this.messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: `rule already existed — count raised to ${count}. Repeated violations will be enforced more strictly.`,
+        });
+      } else {
+        const entry = `\n- [x1] ${rule}`;
+        await fs.writeFile(this.feedbackFile, existing + (existing ? "\n" : "") + "# Feedback rules\n" + entry, "utf8");
+        this.messages.push({ role: "tool", tool_call_id: call.id, content: "feedback rule recorded — follow it from now on" });
+      }
+      return "next";
+    },
+    record_decision: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const decision = String(a.decision ?? "").trim().slice(0, 500);
+      const rationale = String(a.rationale ?? "").trim().slice(0, 2000);
+      const alternatives = Array.isArray(a.alternatives) ? a.alternatives.map(String).slice(0, 5) : [];
+      if (!decision || !rationale) {
+        this.messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: "decision and rationale are both required — record why, not just what",
+        });
+        return "next";
+      }
+      await fs.appendFile(
+        this.decisionsFile,
+        `\n## ${new Date().toISOString()} — ${decision}\n` +
+          `- Why: ${rationale}\n` +
+          (alternatives.length ? `- Alternatives considered:\n${alternatives.map((x) => `  - ${x}`).join("\n")}\n` : ""),
+        "utf8",
+      );
+      await this.log.append("decision", this.currentSession, this.currentBranch, {
+        decision,
+        rationale,
+        alternatives,
+      });
+      await this.answerMeta(call, "decision recorded to decisions.md");
+      return "next";
+    },
+    get_decisions: async (call, m) => {
+      const dec = await fs.readFile(this.decisionsFile, "utf8").catch(() => "");
+      this.messages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: dec.trim() || "(decisions.md is empty — no decisions recorded yet)",
+      });
+      return "next";
+    },
+    read_memory: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const query = String(a.query ?? "").trim();
+      const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
+      if (!mem.trim()) {
+        await this.answerMeta(call, "(memory.md is empty — nothing noted yet)");
+        return "next";
+      }
+      // #48: `query` searches instead of dumping the whole file.
+      //
+      // This is the one idea worth taking from the ecosystem. MCP's reference memory
+      // server (the de-facto standard, used by Claude and offered by DSH as a
+      // reference) exposes `search` alongside `read`, and its search is deliberately
+      // a case-insensitive substring match — no embeddings, no model, no provider
+      // dependency. DSH's guidance to the model is the same shape: "when historical
+      // information may be relevant, search memory and use relevant results".
+      //
+      // MEASURED why it matters here: `set_memory` was called 181 times but
+      // `read_memory` only 97 times across every session, and only 13 of those reads
+      // came after a write. Dumping a growing file gives the model no way to ask a
+      // QUESTION, so a big file is all-or-nothing — either burn the whole thing into
+      // the context or do not look at all.
+      if (!query) {
+        await this.answerMeta(call, mem.trim());
+        return "next";
+      }
+      const needle = query.toLowerCase();
+      const hits = mem
+        .split(/\r?\n/)
+        .filter((line) => line.toLowerCase().includes(needle));
+      await this.answerMeta(
+        call,
+        hits.length
+          ? `${hits.length} line(s) matching ${JSON.stringify(query)}:\n${hits.join("\n")}`
+          : `(no line in memory.md matches ${JSON.stringify(query)} — ${mem.split(/\r?\n/).length} lines searched; call read_memory with no query to see all of it)`,
+      );
+      return "next";
+    },
+    list_skills: async (call, m) => {
+      await this.refreshSkills();
+      const list = this.skillsCache.length
+        ? this.skillsCache.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n")
+        : "(no skills yet — create one with save_skill)";
+      await this.answerMeta(call, list);
+      return "next";
+    },
+    set_memory: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const content = String(a.content ?? "").slice(0, 32_000);
+      await fs.writeFile(this.memoryFile, content, "utf8");
+      // #48: this used to say "injected into future prompts", which was false —
+      // memory.md is never injected. The model then behaved as if it already held
+      // its notes. Say what actually happened, and what the model must do instead.
+      await this.answerMeta(
+        call,
+        `memory.md REPLACED (${content.length} bytes). It is not in your prompt — call read_memory when you need it.`,
+      );
+      return "next";
+    },
+    forget_memory: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const query = String(a.query ?? "").trim();
+      if (!query) {
+        await this.answerMeta(call, "forget_memory needs a `query` — nothing removed");
+        return "next";
+      }
+      // #48: notes must be REMOVABLE, not only appendable.
+      //
+      // MCP's reference memory makes observations "added or removed
+      // independently" for exactly this reason: an append-only store accumulates
+      // stale facts ("the build takes 4 minutes" stays long after it takes 40
+      // seconds), and a memory that is confidently wrong is worse than one that is
+      // silent. Without a delete, the only way to correct a file was `set_memory`
+      // with the whole content re-typed — which is how 1028 bytes became 83.
+      const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
+      if (!prev.trim()) {
+        await this.answerMeta(call, "(memory.md is empty — nothing to forget)");
+        return "next";
+      }
+      const needle = query.toLowerCase();
+      const kept: string[] = [];
+      const removed: string[] = [];
+      for (const line of prev.split(/\r?\n/)) {
+        if (line.toLowerCase().includes(needle)) removed.push(line);
+        else kept.push(line);
+      }
+      if (removed.length === 0) {
+        await this.answerMeta(
+          call,
+          `(no line in memory.md matches ${JSON.stringify(query)} — nothing removed)`,
+        );
+        return "next";
+      }
+      // collapse the blank runs a deletion leaves behind, so the file does not
+      // grow holes
+      const next = kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+      await fs.writeFile(this.memoryFile, next, "utf8");
+      await this.answerMeta(
+        call,
+        `removed ${removed.length} line(s) from memory.md:\n${removed.join("\n").slice(0, 1_500)}\n` +
+          `(memory.md is now ${next.length} bytes — re-add with add_memory if that was wrong)`,
+      );
+      return "next";
+    },
+    add_memory: async (call, m) => {
+      const a = safeParse(call.function.arguments);
+      const text = String(a.text ?? "").trim().slice(0, 8_000);
+      if (!text) {
+        await this.answerMeta(call, "add_memory needs non-empty `text` — nothing appended");
+        return "next";
+      }
+      // APPEND rather than replace (#48). `set_memory` overwrites the whole file,
+      // so a model that had not just read it silently ERASED everything it did not
+      // re-send — MEASURED on a real session: 21 writes, with the content dropping
+      // from 1028 to 83 bytes. Appending is the operation "remember this" actually
+      // wants, and it cannot lose what is already there.
+      const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
+      const sep = prev && !prev.endsWith("\n") ? "\n" : "";
+      const next = `${prev}${sep}${text}\n`;
+      await fs.writeFile(this.memoryFile, next.slice(0, 32_000), "utf8");
+      await this.answerMeta(
+        call,
+        `appended to memory.md (now ${next.length} bytes). Not in your prompt — call read_memory to see it.`,
+      );
+      return "next";
+    },
+  };
+
   private async runTurnsUntilIdle(): Promise<boolean> {
     let finished = false;
     // maxTurnsPerRound is a SOFT cap (0 disables): reaching it nudges the
@@ -2657,381 +3055,21 @@ export class Agent {
           await this.answerUnansweredToolCalls(m);
           return finished;
         }
-        if (call.function.name === "finish") {
-          this.pendingSubReport = ""; // the real summary supersedes it
-          // #128: answer the tool_call BEFORE the audit runs.
-          //
-          // handleFinish() calls the auditor with `buildMessages()`, and at that
-          // moment the history ended at an assistant message carrying
-          // `tool_calls: [finish]` with NO matching `tool` message. Measured, the
-          // auditor received exactly that:
-          //
-          //     assistant(tool_calls=[finish])
-          //     user(audit prompt)          <-- no tool(tool_call_id=…)
-          //
-          // OpenAI-compatible providers require every tool_call to be answered,
-          // and a strict one rejects the request outright — so a CHANGES-REQUIRED
-          // audit would fail with a protocol error rather than a verdict, and
-          // #128's fail-open would then mark the goal done.
-          //
-          // Answering first also makes the log honest: the call really was
-          // completed, it simply did not end the round.
-          await this.answerMeta(call, "(completion submitted for audit)");
-          await this.handleFinish(call.function.arguments);
-          // surface still-running children so the operator knows work may
-          // continue after this agent goes idle
-          try {
-            const running = (this.toolCtx.subAgents?.list?.() ?? []).filter((k) => k.status === "running");
-            if (running.length)
-              await this.log.append("system_note", this.currentSession, this.currentBranch, {
-                event: "subs-still-running",
-                detail: running.map((k) => `${k.id} (${k.status})`).join(", "),
-              });
-          } catch { /* best-effort notice */ }
-          // answer the tool_call so a follow-up round stays API-valid
-          await this.answerMeta(
-            call,
-            this.goal.status === "done" ? "(goal complete)" : "(round ended)",
-          );
-          finished = true;
-          // #105: `continue` advanced the TOOL-CALL loop, so every later call in
-          // this same assistant message still executed — a model emitting
-          // finish() plus one more call got real filesystem writes AFTER it had
-          // reported `final: true` and the goal was already done. The parent was
-          // told the work finished while the workspace was still being mutated.
-          //
-          // So finish ends the BATCH: answer anything still outstanding (so no
-          // tool_call is left unpaired — the provider rejects the next request
-          // otherwise, #76) and leave the tool loop. The outer loop then returns
-          // on `finished`.
-          await this.answerUnansweredToolCalls(m);
-          return true;
-        }
-        if (call.function.name === "report_progress") {
-          await this.recordProgress(call.function.arguments);
-          await this.answerMeta(call, "progress recorded");
-          continue;
-        }
-        if (call.function.name === "set_goal") {
-          const a = safeParse(call.function.arguments);
-          const text = String(a.text ?? "").trim();
-          if (text) await this.setGoal(text);
-          // pi-goal-x-style verification contract: plain-text completion
-          // requirements audited before finish(goalComplete=true) is honored
-          if (typeof a.verify === "string" && a.verify.trim())
-            await this.setGoalVerify(a.verify.trim().slice(0, 4000));
-          await this.answerMeta(
-            call,
-            text ? "goal updated" : "empty goal rejected",
-          );
-          continue;
-        }
-        if (call.function.name === "get_goal") {
-          await this.answerMeta(
-            call,
-            JSON.stringify(
-              {
-                goal: this.goal.text || "(none set)",
-                status: this.goal.status,
-                ...(this.goal.verify ? { verify: this.goal.verify } : {}),
-                ...(this.goal.audit ? { lastAudit: this.goal.audit } : {}),
-              },
-              null,
-              1,
-            ),
-          );
-          continue;
-        }
-        if (call.function.name === "ask_user") {
-          const a = safeParse(call.function.arguments);
-          const question = String(a.question ?? "").slice(0, 2000);
-          // models sometimes pass objects ({label}, {option}, {value}) —
-          // extract the label instead of rendering "[object Object]" buttons
-          const options = Array.isArray(a.options)
-            ? a.options
-                .slice(0, 6)
-                .map((o: unknown) => {
-                  if (typeof o === "string") return o;
-                  if (o && typeof o === "object") {
-                    const obj = o as Record<string, unknown>;
-                    for (const k of ["label", "option", "choice", "value", "text"])
-                      if (typeof obj[k] === "string" && obj[k]) return obj[k] as string;
-                  }
-                  return "";
-                })
-                .filter((o: string) => o.trim())
-            : [];
-          // the callId lets the UI tell "still open" from "already answered"
-          // (a settled tool_result for this id exists) and disable re-answering
-          await this.log.append("question", this.currentSession, this.currentBranch, {
-            question,
-            options,
-            callId: call.id,
-          });
-          await this.answerMeta(
-            call,
-            "question shown to the operator — the loop is parked until they reply. " +
-              "Their reply (possibly free text, not one of the options) arrives as your next user message.",
-          );
-          this.awaitingUser = true;
-          this.setStatus("waiting", question.slice(0, 80));
-          // control flow: park the loop; the operator's next prompt resumes it
-          //
-          // #54: answer the rest of this assistant batch BEFORE parking. The
-          // throw leaves the whole tool loop, so any EARLIER call in the same
-          // message that was logged but not yet run kept no tool_result — the
-          // comment on the backstop below says as much, and it is exactly the
-          // path that bites in practice because ask_user is common.
-          await this.answerUnansweredToolCalls(m);
-          throw Object.assign(new Error("waiting for user"), { name: "WaitForUser" });
-        }
-        if (call.function.name === "get_todo") {
-          await this.answerMeta(
-            call,
-            this.todo.trim() || "(todo.md is empty — no task list yet)",
-          );
-          continue;
-        }
-        if (call.function.name === "set_todo") {
-          const a = safeParse(call.function.arguments);
-          // Surgical item changes — no full rewrite, so the operator's own headings and
-          // notes in todo.md survive. `action` decides what to do; `done` is kept as
-          // shorthand so a model that only sends {item, done} still works.
-          const ACTIONS = new Set(["done", "reopen", "add", "remove"] as const);
-          const updates = Array.isArray(a.updates)
-            ? a.updates
-                .map((u: unknown) => {
-                  const o = (u ?? {}) as { item?: unknown; done?: unknown; action?: unknown };
-                  const raw = String(o.action ?? "");
-                  const action = ACTIONS.has(raw as never)
-                    ? (raw as "done" | "reopen" | "add" | "remove")
-                    : undefined;
-                  return {
-                    item: String(o.item ?? ""),
-                    done: o.done !== false,
-                    ...(action ? { action } : {}),
-                  };
-                })
-                .filter((u: { item: string }) => u.item.trim())
-            : [];
-          if (updates.length > 0) {
-            const note = await this.updateTodoItems(updates, "agent");
-            await this.answerMeta(call, `${note} (visible to the operator)`);
-            continue;
-          }
-          const content = String(a.content ?? "").slice(0, 32_000);
-          if (!content.trim()) {
-            await this.answerMeta(
-              call,
-              "nothing to do: pass updates:[{item, action}] to change items " +
-                "(action: done | reopen | add | remove), or content to replace the whole list",
-            );
-            continue;
-          }
-          await this.setTodo(content, "agent");
-          await this.answerMeta(call, "task list replaced (visible to the operator)");
-          continue;
-        }
-        if (call.function.name === "get_feedback") {
-          const fb = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: fb.trim() || "(no feedback rules recorded yet)",
-          });
-          continue;
-        }
-        if (call.function.name === "add_feedback") {
-          const a = safeParse(call.function.arguments);
-          const rule = String(a.rule ?? "").trim().slice(0, 500);
-          if (!rule) {
-            this.messages.push({ role: "tool", tool_call_id: call.id, content: "rule required" });
-            continue;
-          }
-          // repeated corrections gain weight: [xN] tag counts occurrences
-          const existing = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
-          const lines = existing.split("\n");
-          const idx = lines.findIndex((l) => l.includes(rule.slice(0, 60)));
-          if (idx !== -1 && /^\s*- /.test(lines[idx]!)) {
-            const m = lines[idx].match(/\[x(\d+)\]/);
-            const count = m ? Number(m[1]) + 1 : 2;
-            lines[idx] = lines[idx].replace(/\[x\d+\]\s*/, "").replace(/- /, `- [x${count}] `);
-            await fs.writeFile(this.feedbackFile, lines.join("\n"), "utf8");
-            this.messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: `rule already existed — count raised to ${count}. Repeated violations will be enforced more strictly.`,
-            });
-          } else {
-            const entry = `\n- [x1] ${rule}`;
-            await fs.writeFile(this.feedbackFile, existing + (existing ? "\n" : "") + "# Feedback rules\n" + entry, "utf8");
-            this.messages.push({ role: "tool", tool_call_id: call.id, content: "feedback rule recorded — follow it from now on" });
+        // Meta tools dispatch through ONE table (src/agent/meta-tools.ts + metaHandlers
+        // above), so a tool the prompt advertises but the loop does not handle is a
+        // COMPILE error rather than a runtime "unknown tool". The two return kinds are the
+        // two the old if-chain had: "next" is the `continue` it replaced, "end" is
+        // finish() ending the whole batch (#105). Anything not in the table is a real tool
+        // and falls through to executeTool below.
+        const meta = this.metaHandlers[call.function.name as MetaToolName];
+        if (meta) {
+          if ((await meta(call, m)) === "end") {
+            finished = true;
+            return true;
           }
           continue;
         }
-        if (call.function.name === "record_decision") {
-          const a = safeParse(call.function.arguments);
-          const decision = String(a.decision ?? "").trim().slice(0, 500);
-          const rationale = String(a.rationale ?? "").trim().slice(0, 2000);
-          const alternatives = Array.isArray(a.alternatives) ? a.alternatives.map(String).slice(0, 5) : [];
-          if (!decision || !rationale) {
-            this.messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: "decision and rationale are both required — record why, not just what",
-            });
-            continue;
-          }
-          await fs.appendFile(
-            this.decisionsFile,
-            `\n## ${new Date().toISOString()} — ${decision}\n` +
-              `- Why: ${rationale}\n` +
-              (alternatives.length ? `- Alternatives considered:\n${alternatives.map((x) => `  - ${x}`).join("\n")}\n` : ""),
-            "utf8",
-          );
-          await this.log.append("decision", this.currentSession, this.currentBranch, {
-            decision,
-            rationale,
-            alternatives,
-          });
-          await this.answerMeta(call, "decision recorded to decisions.md");
-          continue;
-        }
-        if (call.function.name === "get_decisions") {
-          const dec = await fs.readFile(this.decisionsFile, "utf8").catch(() => "");
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: dec.trim() || "(decisions.md is empty — no decisions recorded yet)",
-          });
-          continue;
-        }
-        if (call.function.name === "read_memory") {
-          const a = safeParse(call.function.arguments);
-          const query = String(a.query ?? "").trim();
-          const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
-          if (!mem.trim()) {
-            await this.answerMeta(call, "(memory.md is empty — nothing noted yet)");
-            continue;
-          }
-          // #48: `query` searches instead of dumping the whole file.
-          //
-          // This is the one idea worth taking from the ecosystem. MCP's reference memory
-          // server (the de-facto standard, used by Claude and offered by DSH as a
-          // reference) exposes `search` alongside `read`, and its search is deliberately
-          // a case-insensitive substring match — no embeddings, no model, no provider
-          // dependency. DSH's guidance to the model is the same shape: "when historical
-          // information may be relevant, search memory and use relevant results".
-          //
-          // MEASURED why it matters here: `set_memory` was called 181 times but
-          // `read_memory` only 97 times across every session, and only 13 of those reads
-          // came after a write. Dumping a growing file gives the model no way to ask a
-          // QUESTION, so a big file is all-or-nothing — either burn the whole thing into
-          // the context or do not look at all.
-          if (!query) {
-            await this.answerMeta(call, mem.trim());
-            continue;
-          }
-          const needle = query.toLowerCase();
-          const hits = mem
-            .split(/\r?\n/)
-            .filter((line) => line.toLowerCase().includes(needle));
-          await this.answerMeta(
-            call,
-            hits.length
-              ? `${hits.length} line(s) matching ${JSON.stringify(query)}:\n${hits.join("\n")}`
-              : `(no line in memory.md matches ${JSON.stringify(query)} — ${mem.split(/\r?\n/).length} lines searched; call read_memory with no query to see all of it)`,
-          );
-          continue;
-        }
-        if (call.function.name === "list_skills") {
-          await this.refreshSkills();
-          const list = this.skillsCache.length
-            ? this.skillsCache.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n")
-            : "(no skills yet — create one with save_skill)";
-          await this.answerMeta(call, list);
-          continue;
-        }
-        if (call.function.name === "set_memory") {
-          const a = safeParse(call.function.arguments);
-          const content = String(a.content ?? "").slice(0, 32_000);
-          await fs.writeFile(this.memoryFile, content, "utf8");
-          // #48: this used to say "injected into future prompts", which was false —
-          // memory.md is never injected. The model then behaved as if it already held
-          // its notes. Say what actually happened, and what the model must do instead.
-          await this.answerMeta(
-            call,
-            `memory.md REPLACED (${content.length} bytes). It is not in your prompt — call read_memory when you need it.`,
-          );
-          continue;
-        }
-        if (call.function.name === "forget_memory") {
-          const a = safeParse(call.function.arguments);
-          const query = String(a.query ?? "").trim();
-          if (!query) {
-            await this.answerMeta(call, "forget_memory needs a `query` — nothing removed");
-            continue;
-          }
-          // #48: notes must be REMOVABLE, not only appendable.
-          //
-          // MCP's reference memory makes observations "added or removed
-          // independently" for exactly this reason: an append-only store accumulates
-          // stale facts ("the build takes 4 minutes" stays long after it takes 40
-          // seconds), and a memory that is confidently wrong is worse than one that is
-          // silent. Without a delete, the only way to correct a file was `set_memory`
-          // with the whole content re-typed — which is how 1028 bytes became 83.
-          const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
-          if (!prev.trim()) {
-            await this.answerMeta(call, "(memory.md is empty — nothing to forget)");
-            continue;
-          }
-          const needle = query.toLowerCase();
-          const kept: string[] = [];
-          const removed: string[] = [];
-          for (const line of prev.split(/\r?\n/)) {
-            if (line.toLowerCase().includes(needle)) removed.push(line);
-            else kept.push(line);
-          }
-          if (removed.length === 0) {
-            await this.answerMeta(
-              call,
-              `(no line in memory.md matches ${JSON.stringify(query)} — nothing removed)`,
-            );
-            continue;
-          }
-          // collapse the blank runs a deletion leaves behind, so the file does not
-          // grow holes
-          const next = kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
-          await fs.writeFile(this.memoryFile, next, "utf8");
-          await this.answerMeta(
-            call,
-            `removed ${removed.length} line(s) from memory.md:\n${removed.join("\n").slice(0, 1_500)}\n` +
-              `(memory.md is now ${next.length} bytes — re-add with add_memory if that was wrong)`,
-          );
-          continue;
-        }
-        if (call.function.name === "add_memory") {
-          const a = safeParse(call.function.arguments);
-          const text = String(a.text ?? "").trim().slice(0, 8_000);
-          if (!text) {
-            await this.answerMeta(call, "add_memory needs non-empty `text` — nothing appended");
-            continue;
-          }
-          // APPEND rather than replace (#48). `set_memory` overwrites the whole file,
-          // so a model that had not just read it silently ERASED everything it did not
-          // re-send — MEASURED on a real session: 21 writes, with the content dropping
-          // from 1028 to 83 bytes. Appending is the operation "remember this" actually
-          // wants, and it cannot lose what is already there.
-          const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
-          const sep = prev && !prev.endsWith("\n") ? "\n" : "";
-          const next = `${prev}${sep}${text}\n`;
-          await fs.writeFile(this.memoryFile, next.slice(0, 32_000), "utf8");
-          await this.answerMeta(
-            call,
-            `appended to memory.md (now ${next.length} bytes). Not in your prompt — call read_memory to see it.`,
-          );
-          continue;
-        }
+
         await this.log.append("tool_call", this.currentSession, this.currentBranch, {
           callId: call.id,
           name: call.function.name,

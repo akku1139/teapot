@@ -36,7 +36,7 @@ export interface MetaTool {
  * Adding one: add the entry here AND the matching branch in `runTurnsUntilIdle`. The test
  * asserts the two agree, so a half-done addition fails rather than shipping.
  */
-export const META_TOOLS: MetaTool[] = [
+export const META_TOOLS = [
   {
     name: "finish",
     spec: {
@@ -340,10 +340,19 @@ export const META_TOOLS: MetaTool[] = [
         },
       },
   },
-];
+] as const satisfies readonly MetaTool[];
+
+/**
+ * The union of meta tool names, DERIVED from the table.
+ *
+ * The handler map in `agent.ts` is typed `Record<MetaToolName, …>`, so this union is what
+ * turns "advertised but not handled" into a compile error instead of a runtime
+ * "unknown tool". Deriving it (rather than writing it out) means the two cannot disagree.
+ */
+export type MetaToolName = (typeof META_TOOLS)[number]["name"];
 
 /** the names the tool loop must handle itself, in wire order */
-export const META_TOOL_NAMES: string[] = META_TOOLS.map((t) => t.name);
+export const META_TOOL_NAMES: MetaToolName[] = META_TOOLS.map((t) => t.name);
 
 /** just the specs, for splicing into the full tool list */
 export function metaToolSpecs(): MetaTool["spec"][] {
