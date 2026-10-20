@@ -3,7 +3,11 @@
 // Never point this at the real data dir: `Master.start()` writes manifests and
 // can rewrite session pointers in config.json (that mistake orphaned 493
 // sessions once). The sandbox is a full copy, so every write lands there.
-const { loadConfig, resolveConfigPath, Master } = await import("/home/ai-agent/work/teapot/src/master.ts");
+//
+// The import is RELATIVE: an absolute path to this checkout was committed once and
+// type-checked nowhere (scripts were not checked at all), so it only broke when CI ran
+// `typecheck:scripts` on a machine where that path does not exist.
+const { loadConfig, resolveConfigPath, Master } = await import("../src/master.ts");
 import path from "node:path";
 
 // count real outbound /models lookups: the negative-cache fix is about NOT
