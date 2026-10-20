@@ -61,8 +61,14 @@ test("the provider stores the grant: access in memory, refresh on disk at 0600 (
   // on disk: the REFRESH token is there, and the file is not world-readable
   const raw = await readFile(path.join(dir, "mcp-oauth.json"), "utf8");
   assert.match(raw, /rt-1/);
-  const mode = (await stat(path.join(dir, "mcp-oauth.json"))).mode & 0o777;
-  assert.equal(mode, 0o600, `a refresh token is a credential; mode was ${mode.toString(8)}`);
+  // POSIX permissions only. Windows has no mode bits — `stat().mode` there reports
+  // 0o666 for anything writable, so asserting 0600 fails for a reason that has nothing to
+  // do with this code. The `mode: 0o600` write option is still correct on POSIX, which is
+  // where the guarantee exists.
+  if (process.platform !== "win32") {
+    const mode = (await stat(path.join(dir, "mcp-oauth.json"))).mode & 0o777;
+    assert.equal(mode, 0o600, `a refresh token is a credential; mode was ${mode.toString(8)}`);
+  }
 
   // a SECOND provider over the same store must see the same grant: this is what makes a
   // restart keep working

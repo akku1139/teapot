@@ -477,8 +477,11 @@ function isRegularFileTarget(p: string): boolean {
     const st = lstatSync(p);
     return st.isFile() && !st.isSymbolicLink();
   } catch {
-    // does not exist yet — the parent decides; a real config path will be created
-    return true;
+    // Does not exist yet. The ATOMIC path needs a real directory to rename within, so
+    // only take it when the parent exists — otherwise a test that passes `/dev/null`
+    // (present on POSIX, absent on Windows) tried to create `/dev/.config.json.tmp…`
+    // and failed with a bare 400 that read like a schema rejection.
+    return existsSync(path.dirname(p));
   }
 }
 
