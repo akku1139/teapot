@@ -81,6 +81,7 @@ import { readEvents, readEventsTail, filterByBranch } from "../log/events.ts";
 import type { Master } from "../master.ts";
 import { mcp } from "../agent/mcp-registry.ts";
 import { connectMcp, McpError, type McpServerConfig } from "../agent/mcp.ts";
+import { oauth } from "../agent/mcp-oauth-manager.ts";
 
 /** media categories the file tree can preview inline */
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
@@ -905,6 +906,89 @@ const MAX_WS_CLIENTS = 64;
       })),
     }),
   );
+
+  /**
+   * Start an OAuth flow for one server.
+   *
+   * Responds with the URL to open IMMEDIATELY; the exchange finishes when the browser
+   * comes back to the loopback listener. That split is what lets the panel show a
+   * clickable link instead of hanging the request for minutes.
+   */
+  app.post("/api/mcp/oauth/start", async (c) => {
+    const body = await c.req
+      .json<{ name?: string; url?: string; scopes?: string[]; clientId?: string; clientSecret?: string }>()
+      .catch(() => null);
+    if (!body?.name) return c.json({ error: "missing name" }, 400);
+    const saved = (master.config.mcpServers ?? []).find((m) => m.name === body.name);
+    const url = body.url ?? saved?.url;
+    if (!url) return c.json({ error: "this server has no url — OAuth needs an http(s) endpoint" }, 400);
+    // Kick the flow off; it settles when the redirect arrives. The promise is NOT
+    // awaited here — awaiting it would hold this request open until the operator
+    // finishes in the browser.
+    const flow = oauth.authorize(body.name, url, {
+      ...(body.scopes?.length ? { scopes: body.scopes } : {}),
+      ...(body.clientId ? { clientId: body.clientId } : {}),
+      ...(body.clientSecret ? { clientSecret: body.clientSecret } : {}),
+    });
+    flow.catch(() => {
+      /* recorded in oauth.status(...).flow; nobody is listening here */
+    });
+    // Wait only long enough for the flow to produce its URL (discovery + registration
+    // are network round-trips, but short ones).
+    const deadline = Date.now() + 20_000;
+    let url_: string | undefined;
+    while (Date.now() < deadline) {
+      const st = oauth.status(body.name);
+      if (st.flow.phase === "authorizing") {
+        url_ = st.flow.url;
+        break;
+      }
+      if (st.flow.phase === "error") break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const st = oauth.status(body.name);
+    if (!url_)
+      return c.json(
+        {
+          ok: false,
+          error:
+            st.flow.phase === "error"
+              ? st.flow.message
+              : "the authorization server did not produce a URL in time",
+        },
+        200,
+      );
+    return c.json({ ok: true, url: url_, redirectUri: "http://127.0.0.1/<port>/callback" });
+  });
+
+  app.get("/api/mcp/oauth/status", async (c) => {
+    const name = c.req.query("name");
+    if (!name) return c.json({ error: "missing name" }, 400);
+    const detect = c.req.query("detect") === "1";
+    // `detect=1` probes the endpoint for a Bearer challenge. That is the ONLY way the
+    // panel can learn "this needs a grant" before the operator has guessed it, and it
+    // is opt-in because the probe is a real request to the server.
+    if (detect && !oauth.status(name).required) {
+      const saved = (master.config.mcpServers ?? []).find((m) => m.name === name);
+      if (saved?.url) {
+        try {
+          await oauth.detect(name, saved.url, {
+            ...(saved.headers ? { headers: saved.headers } : {}),
+          });
+        } catch {
+          /* best-effort: the status is still returned */
+        }
+      }
+    }
+    return c.json(oauth.status(name));
+  });
+
+  app.post("/api/mcp/oauth/disconnect", async (c) => {
+    const body = await c.req.json<{ name?: string }>().catch(() => null);
+    if (!body?.name) return c.json({ error: "missing name" }, 400);
+    await oauth.disconnect(body.name);
+    return c.json({ ok: true });
+  });
 
   app.post("/api/mcp/test", async (c) => {
     const body = await c.req.json<McpServerConfig>().catch(() => null);

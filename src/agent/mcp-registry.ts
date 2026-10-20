@@ -15,6 +15,7 @@
  * original name is what gets sent to the server.
  */
 import { connectMcp, McpError, type McpConnection, type McpServerConfig, type McpTool } from "./mcp.ts";
+import { oauth, type OAuthFlowStatus } from "./mcp-oauth-manager.ts";
 
 /** the prefix a model-visible MCP tool name carries */
 export const MCP_PREFIX = "mcp__";
@@ -44,6 +45,8 @@ export interface McpServerState {
   status: "disconnected" | "connecting" | "connected" | "error" | "disabled";
   lastError?: string;
   lastChecked?: number;
+  /** a 401 challenge said this server wants OAuth; the panel offers "authorize" */
+  oauthRequired?: boolean;
 }
 
 export class McpRegistry {
@@ -87,7 +90,20 @@ export class McpRegistry {
     return [...this.servers.values()];
   }
 
-  /** connect one server (idempotent) and discover its tools */
+  /** the OAuth state for one server, for the settings panel */
+  oauthStatus(name: string): OAuthFlowStatus {
+    return oauth.status(name);
+  }
+
+  /**
+   * Connect one server (idempotent) and discover its tools.
+   *
+   * A 401 is not the end of the story: an OAuth-protected server answers with a Bearer
+   * challenge, so on auth failure we DETECT and RECORD that, which is what lets the
+   * settings panel offer "authorize" instead of showing a bare "error". Detection is
+   * tried BEFORE the challenge reaches the operator — the reference implementations do
+   * the same, and it turns "it just says 401" into "click authorize".
+   */
   async connect(name: string): Promise<McpServerState> {
     const st = this.servers.get(name);
     if (!st) throw new McpError(`no such MCP server: ${name}`);
@@ -98,8 +114,15 @@ export class McpRegistry {
     if (st.status === "connected" && st.connection) return st;
     st.status = "connecting";
     st.lastError = undefined;
+    // Attach the OAuth authorization when a grant exists, resolved PER REQUEST so a
+    // refreshed token takes effect without reconnecting.
+    const withOAuth: McpServerConfig = {
+      ...st.config,
+      oauthAuthorization: () => oauth.authorization(name),
+      onUnauthorized: () => oauth.invalidate(name),
+    };
     try {
-      const conn = await connectMcp(st.config);
+      const conn = await connectMcp(withOAuth);
       const tools = await conn.tools();
       st.connection = conn;
       st.tools = tools;
@@ -112,6 +135,28 @@ export class McpRegistry {
       st.lastChecked = Date.now();
       st.connection = undefined;
       st.tools = [];
+      // A 401 means "find out what auth this wants" — the challenge names it. Only for
+      // HTTP transports: a stdio server has no OAuth to discover.
+      if (err instanceof McpError && err.authRequired && st.config.url) {
+        try {
+          const d = await oauth.detect(name, st.config.url, {
+            ...(st.config.headers ? { headers: st.config.headers } : {}),
+          });
+          if (d.requiresOAuth) {
+            st.oauthRequired = true;
+            st.lastError =
+              `this server requires OAuth` +
+              (d.authServer
+                ? ` (authorization server: ${new URL(d.authServer.authorizationEndpoint).host})`
+                : d.reason
+                  ? ` — ${d.reason}`
+                  : "") +
+              " — use “authorize” in ⚙ settings → MCP servers";
+          }
+        } catch {
+          /* detection is best-effort: the original error stands */
+        }
+      }
       throw err;
     }
   }

@@ -85,6 +85,17 @@ export interface McpServerConfig {
   cwd?: string;
   /** static headers for every request (Authorization, X-Api-Key, …) */
   headers?: Record<string, string>;
+  /**
+   * An OAuth `Authorization` value (`"Bearer …"`), resolved fresh for each connection.
+   *
+   * A FUNCTION rather than a string because the token is refreshed behind the scenes:
+   * capturing one value at connect time would hand every later request a token that
+   * expires mid-session. When present it WINS over a static `authorization` header —
+   * OAuth is the more specific grant, and sending both is ambiguous.
+   */
+  oauthAuthorization?: () => Promise<string | null>;
+  /** called on a 401 so the caller can drop a cached token and re-authorize */
+  onUnauthorized?: () => void;
   /** "http" (default when url is set) | "sse" (legacy) | "stdio" */
   transport?: "http" | "sse" | "stdio";
   /** disabled servers are listed but not connected */
@@ -215,6 +226,21 @@ async function connectHttp(cfg: McpServerConfig): Promise<McpConnection> {
       accept: "application/json, text/event-stream",
       ...(cfg.headers ?? {}),
     };
+    // OAuth wins over a static authorization header: it is the more specific grant, and
+    // resolving it per request is what lets a refresh take effect mid-session.
+    if (cfg.oauthAuthorization) {
+      const auth = await cfg.oauthAuthorization().catch(() => null);
+      if (auth) {
+        // Remove any spelling of the header the CONFIG supplied first. Keys are
+        // case-insensitive on the wire but not in a JS object, so leaving
+        // `Authorization` beside `authorization` would send BOTH and let the server
+        // pick — the exact ambiguity this precedence rule exists to remove.
+        for (const k of Object.keys(headers)) {
+          if (k.toLowerCase() === "authorization") delete headers[k];
+        }
+        headers.authorization = auth;
+      }
+    }
     if (sessionId) headers["mcp-session-id"] = sessionId;
     if (version) headers["mcp-protocol-version"] = version;
     const ac = new AbortController();
@@ -247,6 +273,9 @@ async function connectHttp(cfg: McpServerConfig): Promise<McpConnection> {
           throw new McpError(
             `MCP endpoint answered 405 — it does not accept POST (Streamable HTTP): ${body || "(no body)"}`,
           );
+        // Tell the caller so it can drop a cached token: a 401 here means the access
+        // token was rejected, and retrying with the same one would loop.
+        if (res.status === 401 || res.status === 403) cfg.onUnauthorized?.();
         throw new McpError(
           `MCP server returned HTTP ${res.status}: ${body || "(no body)"}`,
           res.status === 401 || res.status === 403,

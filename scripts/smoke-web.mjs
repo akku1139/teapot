@@ -136,6 +136,17 @@ function apiResponse(url) {
       servers: [{ name: "files", url: "https://mcp.example/mcp", transport: "http", enabled: true }],
       states: [{ name: "files", status: "connected", tools: 4 }],
     };
+  // A server that answers a 401 Bearer challenge in production. The status endpoint
+  // reports it as required-but-not-authorized, which is what draws the "authorize"
+  // button — the whole point of automatic detection.
+  if (u === "/api/mcp/oauth/status")
+    return {
+      required: true,
+      authorized: false,
+      hasRefreshToken: false,
+      scopes: ["mcp.read"],
+      flow: { phase: "idle" },
+    };
   if (u === "/api/plugins") return { pluginsDir: null, plugins: [] };
   if (u === "/api/archived")
     return {
@@ -1494,6 +1505,49 @@ console.log("deep render ok: feed rows present");
       }
     }
     console.log("deep render ok: MCP panel shows server, transport and live tool count");
+
+    // ---- OAuth: a server that demands a grant must OFFER to authorize ----
+    //
+    // The detection is what makes this automatic: a 401 Bearer challenge means "this
+    // needs a grant", and the panel must then show a control that starts the flow.
+    // Without it the operator sees only "error" and cannot tell a wrong url from a
+    // missing grant.
+    {
+      const card = w.document.querySelector(".mcpcard");
+      if (!card) {
+        console.error("#oauth REGRESSION: no MCP card to check");
+        process.exit(1);
+      }
+      const deadline = Date.now() + 4000;
+      let authBtn = null;
+      while (Date.now() < deadline) {
+        authBtn = [...card.querySelectorAll("button")].find((b) => /authorize/.test(b.textContent ?? ""));
+        if (authBtn) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      if (!authBtn) {
+        console.error(
+          "#oauth REGRESSION: a server whose status says OAuth is required shows no " +
+            "authorize control — the operator is left with a bare error",
+        );
+        process.exit(1);
+      }
+      // and it must be WIRED: clicking it must ask the server to start the flow
+      const before = requests.filter((r) => r.url === "/api/mcp/oauth/start").length;
+      authBtn.click();
+      const startDeadline = Date.now() + 4000;
+      let started = 0;
+      while (Date.now() < startDeadline) {
+        started = requests.filter((r) => r.url === "/api/mcp/oauth/start").length;
+        if (started > before) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      if (started === before) {
+        console.error("#oauth REGRESSION: the authorize button did not start a flow");
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: an OAuth-required server offers a wired authorize control (#oauth)");
 
     // ---- #161: short-context mode is a REAL toggle, and it defaults to OFF ----
     //

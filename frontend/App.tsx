@@ -6451,12 +6451,85 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   >({});
   // live per-server state, refreshed when the section is opened
   const [mcpStates, setMcpStates] = createSignal<Record<string, any>>({});
+  // per-server OAuth state, keyed by row index — fetched lazily, because the token
+  // status changes independently of the server list
+  const [mcpOAuth, setMcpOAuth] = createSignal<
+    Record<number, { required?: boolean; authorized?: boolean; hasRefreshToken?: boolean; flow?: { phase: string; url?: string } }>
+  >({});
   const refreshMcpStates = async () => {
     const r = (await api("/api/mcp").catch(() => null)) as { states?: any[] } | null;
     setMcpStates(Object.fromEntries((r?.states ?? []).map((s: any) => [s.name, s])));
   };
+  const refreshMcpOAuth = async (i: number, name: string, detect = false) => {
+    if (!name) return;
+    // `detect=1` asks the server to probe for a 401 Bearer challenge, which is how the
+    // panel discovers "this needs OAuth" without the operator guessing.
+    const r = (await api(
+      `/api/mcp/oauth/status?name=${encodeURIComponent(name)}${detect ? "&detect=1" : ""}`,
+    ).catch(() => null)) as any;
+    if (r && !r.error) setMcpOAuth((m) => ({ ...m, [i]: r }));
+  };
+  /**
+   * Start OAuth for one server and open the authorization page.
+   *
+   * The server answers with a URL as soon as discovery + registration produce one; the
+   * token exchange finishes when the browser hits the loopback callback. So the panel
+   * opens a tab and then POLLS the status — polling is what makes "authorized" appear
+   * on its own, which is the whole point of an automatic flow.
+   */
+  const startMcpOAuth = async (i: number, srv: any) => {
+    if (!srv.name) {
+      setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "give it a name first" } }));
+      return;
+    }
+    setMcpStatus((m) => ({ ...m, [i]: { kind: "testing", text: "discovering the authorization server…" } }));
+    const r = (await api("/api/mcp/oauth/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: srv.name, url: srv.url }),
+    }).catch(() => null)) as { ok?: boolean; url?: string; error?: string } | null;
+    if (!r?.ok || !r.url) {
+      setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: r?.error ?? "no response" } }));
+      await refreshMcpOAuth(i, srv.name);
+      return;
+    }
+    window.open(r.url, "_blank", "noopener");
+    setMcpStatus((m) => ({
+      ...m,
+      [i]: { kind: "testing", text: "waiting for you to finish in the browser…" },
+    }));
+    // poll until the flow settles (the manager gives up after 5 minutes)
+    const deadline = Date.now() + 5 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 1000));
+      const st = (await api(`/api/mcp/oauth/status?name=${encodeURIComponent(srv.name)}`).catch(
+        () => null,
+      )) as any;
+      if (!st || st.error) continue;
+      setMcpOAuth((m) => ({ ...m, [i]: st }));
+      if (st.flow?.phase === "done") {
+        setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "authorized — tools will appear on the next turn" } }));
+        await refreshMcpStates();
+        // `onSaved` re-fetches the agent list, so a newly-authorized server's tools
+        // stop being a "next turn" promise and show up in the panel
+        props.onSaved();
+        return;
+      }
+      if (st.flow?.phase === "error") {
+        setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: st.flow.message ?? "authorization failed" } }));
+        return;
+      }
+    }
+    setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "authorization timed out" } }));
+  };
   createEffect(() => {
-    if (section() === "mcp") void refreshMcpStates();
+    if (section() !== "mcp") return;
+    void refreshMcpStates();
+    // OAuth state is per row and changes independently of the server list, so it is
+    // fetched for every configured server when the section opens.
+    mcpServers().forEach((m, i) => {
+      if (m.name) void refreshMcpOAuth(i, m.name, Boolean(m.url));
+    });
   });
   const [err, setErr] = createSignal("");
 
@@ -6896,9 +6969,43 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
                               ? { kind: "ok", text: `${r.tools?.length ?? 0} tools` }
                               : { kind: "err", text: r?.error ?? "no response" },
                           }));
+                          // A failed test may be a MISSING GRANT rather than a wrong
+                          // url, and only the 401 challenge can tell. Ask the status
+                          // endpoint, which detects and records it.
+                          if (!r?.ok) await refreshMcpOAuth(i, patch.name, true);
                         }}
                         title="connect now and list the tools — nothing is saved"
                       >test</button>
+                      {/* OAuth: offer "authorize" when the 401 challenge said this
+                          server wants a grant. Without this the operator sees only
+                          "error" and has to know the difference between a bad header
+                          and a missing grant. */}
+                      <Show when={mcpOAuth()[i]?.required && !mcpOAuth()[i]?.authorized}>
+                        <button
+                          type="button"
+                          class="archrestore"
+                          onclick={() => void startMcpOAuth(i, srv())}
+                          title="start the OAuth flow: a browser tab opens, and the tools appear when you finish"
+                        >🔑 authorize</button>
+                      </Show>
+                      <Show when={mcpOAuth()[i]?.authorized}>
+                        <span class="mcpstate connected" title="an OAuth access token is usable">
+                          🔑 authorized
+                        </span>
+                        <button
+                          type="button"
+                          onclick={async () => {
+                            await api("/api/mcp/oauth/disconnect", {
+                              method: "POST",
+                              headers: { "content-type": "application/json" },
+                              body: JSON.stringify({ name: srv().name }),
+                            }).catch(() => {});
+                            await refreshMcpOAuth(i, srv().name);
+                            setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "disconnected" } }));
+                          }}
+                          title="forget the stored grant (the refresh token is deleted)"
+                        >disconnect</button>
+                      </Show>
                       <Show when={st()}>
                         <span
                           class={"mcpstate " + (st()?.status ?? "")}

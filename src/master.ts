@@ -33,6 +33,7 @@ import type { LlmConfig, ChatFn } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
 import { mcp } from "./agent/mcp-registry.ts";
+import { initMcpOAuth } from "./agent/mcp-oauth-manager.ts";
 import { loadPlugins, type LoadedPlugin } from "./agent/plugins.ts";
 import type { McpServerConfig } from "./agent/mcp.ts";
 import {
