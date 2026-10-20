@@ -10,6 +10,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
+import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
 
@@ -17,7 +19,11 @@ const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
 test("an MCP server survives save → reopen (#67)", async () => {
   await useTempDirs(["mcprt-root-"], async ([dataDir]) => {
-    const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, "/dev/null");
+    // A REAL config path inside the temp dir, not /dev/null: this test reads the config
+    // back, so the file has to exist — and /dev/null is absent on Windows, where the save
+    // then failed with a bare 400.
+    const configPath = path.join(dataDir!, "config.json");
+    const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, configPath);
     const app = buildApp(m);
 
     const saved = [
@@ -54,6 +60,12 @@ test("an MCP server survives save → reopen (#67)", async () => {
       saved,
       "the in-memory config must carry them, or a restart loses the server",
     );
+
+    // and they reached the FILE — the previous version of this test could not check that,
+    // because it wrote to /dev/null. `saveConfig` is what a restart reads.
+    m.saveConfig();
+    const onDisk = JSON.parse(await readFile(configPath, "utf8")) as { mcpServers?: unknown };
+    assert.deepEqual(onDisk.mcpServers, saved, "the config FILE must carry them too");
   });
 });
 
@@ -61,7 +73,11 @@ test("a rejected MCP server does not silently vanish from the config (#67)", asy
   // The schema gate must FAIL the save rather than dropping a bad entry: a server that
   // disappears without an error is indistinguishable from the round-trip bug above.
   await useTempDirs(["mcprt2-root-"], async ([dataDir]) => {
-    const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, "/dev/null");
+    // A REAL config path inside the temp dir, not /dev/null: this test reads the config
+    // back, so the file has to exist — and /dev/null is absent on Windows, where the save
+    // then failed with a bare 400.
+    const configPath = path.join(dataDir!, "config.json");
+    const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, configPath);
     const app = buildApp(m);
     const bad = await app.request("/api/config", {
       method: "PUT",

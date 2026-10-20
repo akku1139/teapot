@@ -677,6 +677,17 @@ export class Master {
     this.raw.providers = this.config.providers;
     this.raw.defaultProvider = this.config.defaultProvider;
     this.raw.tasks = this.config.tasks;
+    // #67: `raw` is what gets WRITTEN, and it is a hand-maintained mirror of `config`.
+    // `mcpServers` was added to the config and to the API but never to this list, so the
+    // servers existed in memory and in `GET /api/config` and were STILL lost on restart —
+    // a save→reopen appeared to work while the file never carried them.
+    //
+    // Every field that must survive a restart belongs here. Caught by asserting the FILE
+    // contents in test/mcp-config-roundtrip.test.ts, which was impossible while that test
+    // wrote to /dev/null.
+    this.raw.mcpServers = this.config.mcpServers;
+    if (this.config.shortContext !== undefined) this.raw.shortContext = this.config.shortContext;
+    if (this.config.pluginsDir !== undefined) this.raw.pluginsDir = this.config.pluginsDir;
     if (this.raw.progressIntervalMs === undefined && this.config.progressIntervalMs !== undefined)
       this.raw.progressIntervalMs = this.config.progressIntervalMs;
     if (this.raw.progressMinChars === undefined && this.config.progressMinChars !== undefined)
