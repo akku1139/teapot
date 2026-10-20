@@ -37,7 +37,7 @@ import {
 } from "./sidebar-tree";
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
-import { atTail, shouldFollowAfterChange, type TailSample } from "./scroll-policy";
+import { atTail, movedAway, type TailSample } from "./scroll-policy";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -648,21 +648,16 @@ export default function App() {
   createEffect(() => {
     // key on the banner's presence, in BOTH directions
     void compacting();
-    // SAMPLE the geometry now, and re-sample when the DOM has settled. The decision is
-    // `shouldFollowAfterChange`, not the sticky `atBottom` flag: the banner changed the
-    // height between those two moments, and a sticky flag cannot see that (it is only
-    // updated by scroll events, and there is no scroll here).
-    const before = tailSample();
+    // No before/after comparison: while following, the pin is simply applied once the DOM
+    // has settled. Whether the banner ADDED or REMOVED height is irrelevant — a pinned feed
+    // should show its tail either way, and a reader who scrolled up is not followed at all
+    // (`atBottom()` inside `scrollBottom`).
     //
-    // two frames: one for the banner to enter/leave the flow, one to paint
+    // The two frames are still needed: one for the banner to enter/leave the flow, one to
+    // paint. Deferring does not need a decision, because pinning is idempotent.
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        const after = tailSample();
-        if (after && shouldFollowAfterChange(before, after)) {
-          // follow: land on the tail. `scrollBottom(true)` FORCES past atBottom so the
-          // jump happens even though no scroll event has confirmed it yet.
-          scrollBottom(true);
-        }
+        if (atBottom()) pinToTail();
       }),
     );
   });
@@ -769,11 +764,12 @@ export default function App() {
     const txt = liveText();
     const rsn = live()?.reasoning ?? "";
     if (!txt && !rsn) return;
-    const before = tailSample();
-    // wait for the DOM to paint the new text
+    // wait for the DOM to paint the new text, then pin — no comparison needed. Whether this
+    // tick GREW the content is not a question the follow state cares about: if the reader is
+    // following, the tail is where they should be, and if they are not, `atBottom()` keeps
+    // us out of their way.
     requestAnimationFrame(() => {
-      const after = tailSample();
-      if (after && shouldFollowAfterChange(before, after)) scrollBottom(true);
+      if (atBottom()) pinToTail();
     });
   });
   // Browsers pause requestAnimationFrame while a tab is hidden, so scroll
@@ -1724,12 +1720,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const s = tailSample();
     return atTail(s);
   }
-  function scrollBottom(force = false) {
+  /**
+   * PIN the feed to the tail — the ONLY way the view ever moves while following.
+   *
+   * `scrollTop = scrollHeight` is clamped by the browser to the real maximum, so it is
+   * correct without knowing the viewport. That matters: the previous design compared a
+   * `viewport` read before and after the change, and every case where it settled outside
+   * that window (the composer growing above all) produced a different bug.
+   *
+   * Repeating it is harmless, which is why every layout-changing path can call it without
+   * having to reason about order.
+   */
+  function pinToTail() {
     const f = feedEl();
-    if (f && (force || atBottom())) {
-      f.scrollTop = f.scrollHeight;
-      setMissed(0);
-    }
+    if (!f) return;
+    f.scrollTop = f.scrollHeight;
+    setMissed(0);
+  }
+  function scrollBottom(force = false) {
+    if (force || atBottom()) pinToTail();
   }
 
   // Per-session timeline snapshots: switching back to a recently viewed
@@ -1799,7 +1808,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // "jump to present" on a brand-new/empty timeline whose feed had never
       // been scrolled (the pill only disappears once a real scroll lands)
       setAtBottom(true);
-      userScrolledUp = false;
       // a session switch changes the geometry completely, so the previous sample would
       // read as an enormous scroll in whichever direction
       lastSample = undefined;
@@ -2188,7 +2196,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           // a grown live bubble all add height with no scroll — so by then the flag had
           // already been corrected by a scroll handler, or was about to be, and the view
           // jumped away right when a round kicked off.
-          const beforeTail = tailSample();
           const _fetchStartedAt = Date.now();
           await loadEvents(selected()!);
           // #40: reconcile the bubble on EVERY pass, NOT inside the
@@ -2199,11 +2206,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           const buf = live();
           if (buf && !reconcileLiveBuffer(buf, events(), sel()?.status)) setLive(null);
           if (events().at(-1)?.id !== beforeId) {
-            const afterTail = tailSample();
-            // follow iff the reader was at the tail before this content arrived and has
-            // not moved since — the one rule, asked at the moment content changed
-            if (afterTail && shouldFollowAfterChange(beforeTail, afterTail)) {
-              scrollBottom(true);
+            // FOLLOW IS A STATE, so this asks the state and then acts. There is no
+            // before/after geometry comparison any more: the question "did the reader leave
+            // the tail while this fetch was in flight" cannot be answered reliably from
+            // samples (the fetch itself may resize the feed), and it does not need to be —
+            // `atBottom()` is only ever cleared by a real scroll up.
+            if (atBottom()) {
+              pinToTail();
               // following the tail means the operator has seen this session's
               // newest content — its notifications count as read
               markSessionRead(selected()!);
@@ -2820,20 +2829,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (wanted === lastComposerHeight) return;
     lastComposerHeight = wanted;
 
-    // From here on the box really resizes, so the feed's viewport changes and the follow
-    // rule has to decide. Sampling is now proportional to HEIGHT CHANGES, not keystrokes.
-    const before = tailSample();
-    // force the reflow so the feed's viewport below is the NEW one: writing `height` does
-    // not lay out on its own, but reading a geometry property does
-    void composerEl.clientHeight;
-    const after = tailSample();
-    // A reader who was at the tail stays there; one who had scrolled up is left alone.
-    // Synchronous, not deferred: the geometry is already correct, and a later rAF would
-    // re-introduce the window in which the feed is shorter than the scroll position assumes.
-    if (after && shouldFollowAfterChange(before, after)) scrollBottom(true);
+    // The box really resized, so the feed's viewport changed under the reader. There is no
+    // decision to make: if they are following, put the tail back where it was. This is the
+    // reported bug — the old code compared `tailSample()` before and after, but the shrink
+    // is *between* those two samples and reads as "the reader is now 40px from the tail", so
+    // the rule either declared them away (and stopped following) or scrolled them up.
+    //
+    // Pinning needs no reflow forcing: assigning `scrollTop = scrollHeight` reads layout
+    // itself, so it lands on the new maximum.
+    if (atBottom()) pinToTail();
   };
-  // user-scroll lock state (see the feed onscroll handler)
-  let userScrolledUp = false;
   /** the previous scroll sample, for telling a deliberate scroll from a reflow/clamp */
   let lastSample: TailSample | undefined;
   createEffect(() => {
@@ -3509,65 +3514,40 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
           <div class="feed" onscroll={(e) => {
             const el = e.currentTarget;
-            const nb = nearBottom();
-            // USER-SCROLL LOCK. Two jobs, and the discriminator is `scrollTop`:
-            //
-            //  - a DELIBERATE scroll up must switch follow off, and the view
-            //    must not fight the reader ("ガタガタ");
-            //  - content ARRIVING BELOW must NOT, even though it grows the gap
-            //    by exactly as much. `scrollTop` does not move when the browser
-            //    appends below the viewport, and the old gap-only heuristic took
-            //    that for a scroll: a +30px tool result turned follow off by
-            //    itself, which is the reported "sometimes stops following".
-            //
-            // See frontend/scroll-follow.ts — the rule is extracted because the
-            // thresholds and the sample are the whole bug.
-            const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-            const top = el.scrollTop;
-            const height = el.scrollHeight;
-            // ONE decision, taken from the sample. It must be read BEFORE the
-            // sample is overwritten, and it must drive BOTH the lock and the
-            // follow flag — they are the same question.
-            //
-            // `height` is part of the sample because a SHRINK clamps scrollTop down to the
-            // new maximum, which is indistinguishable from the reader scrolling up when
-            // only `top` is compared. That knocked a reader who had not moved out of
-            // follow mode after every compaction, every tool row collapsing, and every
-            // switch to a shorter log.
-            //
-            // The decision comes from the POLICY (frontend/scroll-policy.ts) so this
-            // handler and every other growth path ask the same question.
-            const before = lastSample;
-            const now = { top, height, viewport: el.clientHeight };
-            // A deliberate scroll up = `top` decreased while the content did NOT shrink.
-            const movedUp = before !== undefined && now.top < before.top - 1 && now.height >= before.height;
+            const now: TailSample = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
+            /**
+             * THE FOLLOW STATE, decided from ONE question: did the reader move up?
+             *
+             * That is the only input, because it is the only thing layout cannot fake.
+             * `movedAway()` (frontend/scroll-policy.ts) compares `scrollTop`, and ignores a
+             * decrease that came from the browser clamping after a SHRINK — which used to
+             * lock follow off after every compaction and every collapsing tool row.
+             *
+             * Everything else that changes geometry (content arriving below, the live
+             * bubble streaming, a tool row expanding, THIS composer growing and shrinking
+             * the viewport) leaves `scrollTop` alone and therefore cannot touch the state.
+             * That is the whole fix for "typing into a 2-line composer nudges the feed up":
+             * the old code re-derived follow from a before/after gap, so a 40px viewport
+             * shrink read as "the reader is now away".
+             */
+            const away = movedAway(now, lastSample);
             lastSample = now;
-            if (nb) userScrolledUp = false;
-            else if (movedUp) userScrolledUp = true;
-            // reached the top → pull the next older page (infinite scroll up).
-            // MUST run before the follow-lock return: the lock exists to stop
-            // follow mode from fighting the reader, and a reader at the very
-            // top is by definition not at the bottom — returning here silently
-            // swallowed every loadOlder trigger ("past logs never loaded").
-            if (top <= 4 && selected() && !loadingOlder() && !olderDone() && events().length > 0) {
+            // reaching the tail re-arms following; leaving it is the only thing that clears
+            if (atTail(now)) {
+              setAtBottom(true);
+              if (missed()) setMissed(0);
+              // #160: reaching the tail marks this session read — the scroll itself, not a
+              // new event arriving while we happen to be here
+              markReadIfFollowing();
+            } else if (away) {
+              setAtBottom(false);
+            }
+            // reached the top → pull the next older page (infinite scroll up). Runs BEFORE
+            // any follow logic: a reader at the very top is by definition not at the bottom,
+            // and returning early here silently swallowed every loadOlder trigger.
+            if (now.top <= 4 && selected() && !loadingOlder() && !olderDone() && events().length > 0) {
               void loadOlder();
             }
-            if (userScrolledUp && !nb) {
-              setAtBottom(false);
-              return; // locked: don't re-evaluate follow mode until back at tail
-            }
-            if (nb && missed()) setMissed(0);
-            // #160: reaching the tail is what marks this session read — the
-            // scroll itself, not a new event arriving while we happen to be here.
-            if (nb) markReadIfFollowing();
-            // The follow flag follows the SAME decision, not one raw measurement.
-            // `setAtBottom(nb)` here was the second half of the bug: content
-            // appended below grows the gap, `nearBottom()` reads false for that
-            // frame, and follow switched itself off with the pill appearing while
-            // the operator watched a live stream. Measured: +30px of growth, no
-            // input at all.
-            if (nb) setAtBottom(true);
-            else if (movedUp) setAtBottom(false);
           }}>
             <Show when={compacting()}>
               {(c) => (

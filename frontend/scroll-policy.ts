@@ -1,44 +1,40 @@
 /**
- * Scroll follow, as ONE rule.
+ * Scroll follow, rewritten so "the viewport got shorter" can never be mistaken for
+ * "the reader scrolled up".
  *
- * ## Why this replaces the previous design
+ * ## The bug this replaces
  *
- * Follow mode used to be a sticky `atBottom()` signal, flipped by the feed's `onscroll`
- * handler, with ~13 separate call sites each asking their own variation of the question
- * (`if (atBottom()) scrollBottom()`, `if (!atBottom()) return`, `nearBottom()`,
- * `bottomSlack()`, `suppressScrollEval`, `userScrolledUp`, `lastScrollSample`). The bugs
- * that kept coming back all had the same shape: **content can grow without a scroll
- * event**, so anything decided from the last event is stale by the time it is used.
+ * Reported and never fixed: "スクロール追従中に2行以上に拡大した入力欄に入力をするとちょっと上に
+ * スクロールする" — while following the tail, typing into a composer that has grown to 2+ lines
+ * nudges the feed UP.
  *
- * Concretely, each of these grows the feed with NO scroll:
- *   - the live bubble streaming a delta;
- *   - the 💭 thinking block growing (its own follow loop);
- *   - a tool row EXPANDING when its result arrives (`open={props.orphan}`);
- *   - `<details>` opening on a click;
- *   - an image finishing load;
- *   - a compaction divider appearing;
- *   - the composer growing a line, which shrinks the viewport.
+ * The old rule compared samples taken at two moments and asked
+ * `shouldFollowAfterChange(before, after)`. That cannot work for this case, because growing
+ * the composer changes the feed's *viewport*, not its content:
  *
- * A sticky flag answers "was the reader at the bottom *last time we looked*", which is
- * the wrong question. The right one is: **is the reader at the bottom NOW**, asked at the
- * moment content is about to be added — and "at the bottom" has to be measured with a
- * slack that content growth cannot fake.
+ *     scrollHeight = 2000, scrollTop = 1200, clientHeight = 800   -> gap 0   (at tail)
+ *     composer grows 40px  ->  clientHeight = 760
+ *     scrollHeight = 2000, scrollTop = 1200, clientHeight = 760   -> gap 40  (no longer "at tail")
  *
- * ## The rule
+ * Nothing moved, yet the reader is now 40px from the tail. Every sample-based rule then has
+ * to guess whether that 40px was the reader or the layout, and each guess produces a
+ * different bug: follow sideways, or scroll to "fix" a gap that only exists because the
+ * viewport shrank. The composition of several such guesses is what made the behaviour
+ * drift between releases.
  *
- *   1. Follow while the reader is at the tail.
- *   2. Stop following the moment they move AWAY from the tail themselves.
- *   3. Growing the content never counts as moving away.
+ * ## The rule instead: follow is a STATE, and the tail is enforced continuously
  *
- * (2) and (3) are distinguishable because `scrollTop` decreases only when the reader
- * moves up the content; growth increases `scrollHeight` and leaves `scrollTop` alone.
- * That is `isScrollingAway` in scroll-follow.ts, which stays as-is — it was right.
+ * The only thing that can legitimately turn following OFF is the reader themselves moving
+ * up. So that is the only input to the state, and it is decided from `scrollTop` alone,
+ * which content growth and viewport changes cannot fake. Everything else is not a decision:
+ * while following, the feed is simply PINNED to the tail after any layout change.
  *
- * ## What is NOT claimed
+ *     follow = state, flipped only by a deliberate upward scroll (or reaching the tail again)
+ *     pin()  = "if following, set scrollTop so the tail is visible", called after ANY change
  *
- * This module is the DECISION; wiring it is a separate change. It exists so the rule can
- * be tested against every growth case above without a browser, and so the component stops
- * carrying its own copy of the reasoning.
+ * Pinning is idempotent and cheap to repeat, so the answer does not depend on getting the
+ * timing right. That is the property the old design lacked: it had to sample BEFORE and
+ * AFTER in the same turn, and was wrong whenever layout settled outside that window.
  */
 
 export interface TailSample {
@@ -51,73 +47,74 @@ export interface TailSample {
 }
 
 /**
- * THE slack, in pixels.
+ * Distance from the tail, in pixels. Never negative.
  *
- * A constant on purpose. It used to be `24 + min(composer overflow, 160)`, so the meaning
- * of "at the bottom" changed whenever the composer grew a line — the same jump in
- * coordinates that made follow mode tug at the reader. Content growth is handled by the
- * rule (it never counts as moving away), not by widening the threshold until it fits.
- *
- * 32px: enough for sub-pixel reflow and a one-line composer change; small enough that a
- * deliberate scroll up is detected immediately.
+ * When the content is shorter than the viewport there is no tail to be away from, so 0.
  */
-export const TAIL_SLACK_PX = 32;
-
-/** how far above the tail the viewport currently sits (never negative) */
 export function gapToTail(s: TailSample): number {
   return Math.max(0, s.height - s.top - s.viewport);
 }
 
-/** is the reader at the tail right now? */
+/**
+ * The slack, in pixels, used ONLY to decide whether the reader has come back to the tail.
+ *
+ * A constant. It used to be derived from the composer's overflow, so "at the bottom" meant
+ * a different pixel distance whenever the composer grew a line — the same coordinate jump
+ * that made follow mode tug at the reader.
+ */
+export const TAIL_SLACK_PX = 32;
+
+/** is the tail visible right now (within `slack`)? */
 export function atTail(s: TailSample | undefined | null, slack = TAIL_SLACK_PX): boolean {
-  if (!s) return true; // no element yet: nothing to be away from
+  if (!s) return true; // nothing laid out yet: nothing to be away from
   return gapToTail(s) <= slack;
 }
 
-/** the scroll offset a "jump to the tail" should set */
+/**
+ * Did the reader themself move UP between two samples?
+ *
+ * This is the ONLY thing that may turn following off, so it must be impossible for layout
+ * to fake it. `scrollTop` decreasing is that signal: content growing below the viewport
+ * leaves `scrollTop` alone, and a viewport change (the composer growing) leaves it alone
+ * too. The one thing that DOES move `scrollTop` without the reader is a shrink, where the
+ * browser clamps it down to the new maximum — hence the height check.
+ */
+export function movedAway(
+  now: TailSample,
+  prev: TailSample | undefined,
+  slack = TAIL_SLACK_PX,
+): boolean {
+  if (!prev) return false; // first sample: nothing to compare against
+  if (atTail(now, slack)) return false; // at the tail is never "away"
+  const shrank = now.height < prev.height;
+  if (shrank) return false; // the browser clamped scrollTop; the reader did not move
+  return now.top < prev.top - 1;
+}
+
+/**
+ * The offset that shows the tail.
+ *
+ * `scrollHeight` is not a valid `scrollTop`, but the browser CLAMPS assignments to the real
+ * maximum — which is exactly "show the tail". Using it (rather than
+ * `height - viewport`) means we never have to be right about `viewport`, which is the value
+ * that was changing underneath the old design.
+ */
 export function tailOffset(s: TailSample): number {
-  // `scrollTop = scrollHeight` is what the browser clamps to the real maximum, which is
-  // also what a reader means by "the bottom"
   return s.height;
 }
 
 /**
- * Should the feed scroll to the tail after content changed?
+ * Should the "jump to present" pill be showing?
  *
- * Call this AT the point content is added, with geometry read at that moment. The
- * previous design asked a sticky flag instead, which is why growth arriving between
- * scroll events could leave the feed parked.
- *
- * @param wasAtTail the answer from BEFORE the change; used only to decide whether this
- *                  update should follow. A reader who was at the tail and has not moved
- *                  (their `top` is unchanged) still follows.
+ * Only when the reader has deliberately left the tail. A pill that appears because the
+ * composer grew is noise — there is nothing new below to jump to.
  */
-export function shouldFollowAfterChange(
-  before: TailSample | undefined | null,
-  after: TailSample,
+export function shouldShowJumpToPresent(
+  s: TailSample | undefined | null,
+  following: boolean,
   slack = TAIL_SLACK_PX,
 ): boolean {
-  if (!before) return true; // first content: land at the tail
-  // The reader moved UP since the last measurement, AND content did not shrink. This is
-  // the only way to fall out of follow mode.
-  //
-  // The shrink check matters: when the feed gets SHORTER the browser clamps `scrollTop`
-  // down to the new maximum, which looks exactly like a scroll up. Counting that as
-  // "away" locked follow off after any compaction, any tool row collapsing, and any
-  // session switch to a shorter log — a reader sitting still was treated as having
-  // scrolled.
-  const shrank = after.height < before.height;
-  if (!shrank && after.top < before.top - 1) return false;
-  // Otherwise: follow iff they were at the tail before the content grew. After a shrink
-  // the clamp leaves them at the new tail, so that test passes on its own.
-  return atTail(before, slack) || (shrank && atTail(after, slack));
-}
-
-/**
- * The "jump to present" pill: shown when there IS unseen content below and the reader is
- * not at the tail.
- */
-export function shouldShowJumpToPresent(s: TailSample | undefined | null, slack = TAIL_SLACK_PX): boolean {
   if (!s) return false;
+  if (following) return false;
   return gapToTail(s) > slack;
 }

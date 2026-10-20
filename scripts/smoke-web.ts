@@ -2093,6 +2093,99 @@ console.log("deep render ok: feed rows present");
   }
 }
 
+/* ---------- #scroll: typing into a grown composer must not move the feed ----------
+ * Reported (and unfixed until the state-based rewrite): "スクロール追従中に2行以上に拡大した
+ * 入力欄に入力をするとちょっと上にスクロールする".
+ *
+ * The mechanism, which is why no before/after sample could ever decide it: growing the
+ * composer SHRINKS the feed's viewport. Content and `scrollTop` are untouched, but the gap
+ * to the tail becomes exactly the growth. Any rule that re-derives "is the reader at the
+ * tail" from that gap concludes they moved, and then either stops following or scrolls to
+ * "correct" a gap it thinks is real.
+ *
+ * happy-dom does no layout, so the geometry is simulated precisely: a scrollable feed, the
+ * reader pinned at the tail, then the viewport shrinks by 40px as the composer grows a line.
+ * The invariant is that `scrollTop` comes back to the new maximum — the tail is still shown.
+ */
+{
+  const feed = w.document.querySelector(".feed") as HTMLElement | null;
+  const ta = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+  if (!feed || !ta) {
+    console.error("#scroll check: .feed or the composer textarea is missing");
+    process.exit(1);
+  }
+  const CONTENT = 4000;
+  let viewport = 800;
+  // a real, scrollable feed: scrollHeight is fixed content, clientHeight is the viewport
+  Object.defineProperty(feed, "scrollHeight", { configurable: true, get: () => CONTENT });
+  Object.defineProperty(feed, "clientHeight", { configurable: true, get: () => viewport });
+  let scrollTop = 0;
+  Object.defineProperty(feed, "scrollTop", {
+    configurable: true,
+    get: () => scrollTop,
+    // the browser clamps to the real maximum, which is what `pinToTail` relies on
+    set: (v: number) => {
+      scrollTop = Math.max(0, Math.min(v, Math.max(0, CONTENT - viewport)));
+    },
+  });
+  // The composer must really measure as growing, or `autosizeComposer` sees an unchanged
+  // height and never resizes — the check would then pass without exercising the bug at all.
+  // happy-dom reports 0 for a textarea's scrollHeight, so simulate it: each extra line is
+  // 20px, which is what the real box does.
+  const LINE = 20;
+  const lines = () => Math.max(1, ta.value.split("\n").length);
+  Object.defineProperty(ta, "scrollHeight", {
+    configurable: true,
+    get: () => lines() * LINE,
+  });
+  // start pinned at the tail — the state the report describes ("スクロール追従中")
+  scrollTop = CONTENT - viewport;
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 30));
+  const atTailBefore = CONTENT - scrollTop - viewport;
+  if (atTailBefore > 1) {
+    console.error(`#scroll check: could not place the reader at the tail (gap ${atTailBefore}) — vacuous`);
+    process.exit(1);
+  }
+
+  // The composer grows a line: the VIEWPORT shrinks. This is the whole bug in one line.
+  viewport -= 40;
+  // …and the app is told, the way a keystroke tells it (the draft effect calls autosize)
+  ta.value = "line one\nline two";
+  ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 120));
+
+  const gapAfter = CONTENT - scrollTop - viewport;
+  if (gapAfter > 32) {
+    console.error(
+      `#scroll REGRESSION: the composer growing left the reader ${gapAfter}px above the tail ` +
+        `(scrollTop ${scrollTop}, content ${CONTENT}, viewport ${viewport}) — this is the reported ` +
+        `"入力欄が2行以上に拡大するとちょっと上にスクロールする"`,
+    );
+    process.exit(1);
+  }
+  // A reader who deliberately scrolled up must STILL be left alone: the fix must not have
+  // been bought by following unconditionally.
+  const parked = CONTENT - viewport - 1000;
+  scrollTop = parked;
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 30));
+  viewport -= 40; // another line of composer
+  // grow the CONTENT by a real line too, or `autosizeComposer` correctly does nothing
+  // (the box did not change size) and this half of the check proves nothing
+  ta.value = "line one\nline two\nline three";
+  ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 120));
+  if (Math.abs(scrollTop - parked) > 32) {
+    console.error(
+      `#scroll REGRESSION: a reader who scrolled up was dragged to the tail when the composer ` +
+        `grew (scrollTop ${scrollTop}, expected ~${parked})`,
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: a growing composer does not move the feed, and does not drag a reader who scrolled up (#scroll)");
+}
+
 /* ---------- #30: an in-progress todo edit must survive a panel re-render ----------
  * The operator types into the tasks editor while the right panel re-renders for
  * unrelated reasons (a poll returning a fresh agent snapshot). The typed text
