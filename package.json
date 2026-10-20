@@ -35,6 +35,7 @@
     "build-web": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck-web": "tsc -p tsconfig.frontend.json",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
     "lint": "oxlint src frontend test scripts",
     "start": "node dist/index.js",
     "dev": "node src/index.ts",

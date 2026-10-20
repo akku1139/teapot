@@ -22,42 +22,23 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 // #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
+import { cssRuleBody } from "./helpers/css.ts";
 
-const css = readSource(new URL("../frontend/app.css", import.meta.url));
+const css = readSource(fileURLToPath(new URL("../frontend/app.css", import.meta.url)));
 
-/** Body of the LAST rule whose selector list contains `selector` exactly. */
-function lastRule(selector: string): string {
-  let i = 0;
-  let found = "";
-  for (;;) {
-    const open = css.indexOf("{", i);
-    if (open === -1) break;
-    const prevClose = css.lastIndexOf("}", open);
-    const sel = css
-      .slice(prevClose === -1 ? 0 : prevClose + 1, open)
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .trim();
-    let depth = 0;
-    let close = -1;
-    for (let j = open; j < css.length; j++) {
-      if (css[j] === "{") depth++;
-      else if (css[j] === "}") {
-        depth--;
-        if (depth === 0) {
-          close = j;
-          break;
-        }
-      }
-    }
-    if (close === -1) break;
-    if (sel.split(",").some((p) => p.trim() === selector)) found = css.slice(open + 1, close);
-    i = close + 1;
-  }
-  if (!found) throw new Error(`no rule whose selector is exactly ${selector}`);
-  return found;
-}
+/**
+ * Body of the LAST rule whose selector list contains `selector` exactly.
+ *
+ * This used to be a hand-rolled brace scanner here. `cssRuleBody` in helpers/css.ts does
+ * the same job AND strips comments first — which is the difference that matters: these
+ * assertions look for `color: var(--fg)`, and a rule's own explanatory comment can quote
+ * that text verbatim, so commenting the declaration out would still satisfy them. That
+ * is a measured failure (#75), not a hypothetical, and it is why the helper exists.
+ */
+const lastRule = (selector: string): string => cssRuleBody(css, selector);
 
 /* ---------- the name must be legible ---------- */
 

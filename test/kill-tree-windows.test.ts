@@ -119,7 +119,7 @@ test("a timeout says whether anything was actually killed (#110)", { skip: isWin
         },
       }),
       autoContinue: false,
-    } as never) as Agent;
+    } as never) as InstanceType<typeof Agent>;
     await a.init();
     a.enqueuePrompt("go", "user");
     a.start("t");

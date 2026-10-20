@@ -30,6 +30,11 @@ jobs:
       # would otherwise only explode at render time in the browser)
       - run: pnpm typecheck
       - run: pnpm typecheck-web
+      # scripts/ and test/ are NOT built: Node runs the sources directly, so without
+      # this a type error there is invisible until it runs — and a broken test setup
+      # (an omitted required argument, a wrong import path) fails as "the test passed
+      # for the wrong reason" rather than as a compile error.
+      - run: pnpm typecheck:scripts
       - run: pnpm lint
 
       - run: pnpm build # tsc + vite: catches type and bundling breakage

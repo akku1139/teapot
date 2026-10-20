@@ -64,8 +64,8 @@ async function drive(
   await a.init();
   await a.setGoal("g");
   if (opts.prefill) {
-    a.conversation.push({ role: "user", content: "x".repeat(4000) });
-    a.conversation.push({ role: "assistant", content: "y".repeat(4000) });
+    a.conversationForTest.push({ role: "user", content: "x".repeat(4000) });
+    a.conversationForTest.push({ role: "assistant", content: "y".repeat(4000) });
   }
   a.enqueuePrompt("do the thing", "user");
   a.start("t");

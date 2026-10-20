@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
+import { dataOf } from "./helpers/event-data.ts";
 
 /** a real agent on a real log dir; chatFn is injected so turns are deterministic */
 function mk(ws: string, sd: string, chatFn: unknown): Agent {
@@ -59,8 +60,11 @@ test("editing a prompt: live and restored agree (#69)", async () => {
     await converse(a, ["Q1", "Q2", "Q3"]);
 
     const events = await readEvents(a.log.filePath);
-    const q2 = events.find((e) => e.type === "prompt" && String((e.data as any)?.text) === "Q2")!;
-    await a.editPromptAt(q2.id, "Q2-EDITED");
+    const q2 = events.find((e) => e.type === "prompt" && String(dataOf(e).text) === "Q2")!;
+    // `tail` is REQUIRED: this call used to omit it and pass `undefined`, so the test
+    // exercised a path the production code does not allow ("discard" drops the work
+    // after the edited prompt, which is what this test's comparison relies on).
+    await a.editPromptAt(q2.id, "Q2-EDITED", "discard");
     const live = texts(a);
     await a.dispose();
 

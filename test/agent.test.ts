@@ -6,6 +6,7 @@ import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import type { ChatFn, ChatMessage, LlmConfig, LlmResult, ToolSpec } from "../src/agent/llm.ts";
 import { readEvents } from "../src/log/events.ts";
+import { dataOf } from "./helpers/event-data.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { testTmpRoot } from "./helpers/tmp-root.ts";
@@ -1171,7 +1172,9 @@ test("verification contract: finish(goalComplete) is audited before done", async
     assert.match(agent.goal.audit?.feedback ?? "", /tests were never run/);
     // and the worker got the feedback queued as its next prompt
     assert.ok(
-      calls[2]!.messages.some((m) => m.role === "user" && m.content.includes("completion audit REJECTED")),
+      calls[2]!.messages.some(
+        (m) => m.role === "user" && String(m.content ?? "").includes("completion audit REJECTED"),
+      ),
     );
     await agent.dispose();
   });
@@ -1244,7 +1247,7 @@ test("stopping mid-bash kills the process group and settles immediately", { time
     // the abort is recorded as the tool result with partial output preserved
     const events = await readEvents(agent.log.filePath);
     const tr = events.filter((e) => e.type === "tool_result").at(-1);
-    assert.match(String(tr?.data?.result ?? ""), /ABORTED/);
+    assert.match(String(dataOf(tr!).result ?? ""), /ABORTED/);
     await agent.dispose();
   });
 });

@@ -1,57 +1,45 @@
 /**
  * #40 — "agent2's message is agent1's content, with the writing cursor attached."
  *
- * Shipped in v0.26.1 and STILL REPRODUCING, because the fix was dead code.
- * `pruneDeadLiveBuffers()` was correct and fully unit-tested; the WIRING was
- * wrong:
+ * The history matters because it is why this file is nearly empty.
+ *
+ * `pruneDeadLiveBuffers()` was correct and fully unit-tested, and the bug still shipped:
+ * the WIRING was dead. The effect read `agents()` INSIDE the signal updater —
  *
  *     setLiveByAgent((prev) => {
  *       const statusOf = (id) => agents().find(...)?.status;   // read INSIDE
  *       return pruneDeadLiveBuffers(prev, statusOf);          // the updater
  *     });
  *
- * `liveByAgent` is an empty Map on the first run, so the loop body never
- * executed, `statusOf` was never called, and the effect subscribed to NO signal.
- * It ran exactly once, at mount.
+ * — and `liveByAgent` is an empty Map on the first run, so the loop body never executed,
+ * `statusOf` was never called, and the effect subscribed to NO signal. It ran once, at
+ * mount. Measured with an instrumented bundle: "effect runs: 1, statusOf calls: 0".
  *
- * Proven with an instrumented bundle: "effect runs: 1, statusOf calls: 0".
+ * A test here used to assert the SOURCE SHAPE of that effect — that `agents()` appears
+ * outside the updater and the closure is named `list`. That is the anti-pattern this repo
+ * bans: it pins the spelling of code that has to work at runtime, so it breaks on a
+ * refactor that fixes something and stays green through one that breaks it. (The same
+ * class of test kept the start/stop toggle green while it posted the wrong action.)
  *
- * That is why the pure-helper tests passed and the bug shipped — they test
- * `pruneDeadLiveBuffers` in isolation and cannot see that nothing calls it.
+ * The behaviour it was standing for IS covered, and by a check that can fail for the real
+ * reason: `scripts/smoke-web.ts` pushes an `llm-delta` to make a live bubble appear,
+ * asserts the bubble EXISTS (its own precondition), flips the agent running → idle, and
+ * asserts the bubble is gone. If the sweep stops being wired, that check fails.
  *
- * This test therefore asserts on the SOURCE WIRING rather than the helper, and
- * specifically asserts the dependency is read OUTSIDE the updater — the exact
- * shape that made it dead.
+ * So there is nothing to unit-test here. What remains testable in isolation lives in
+ * `live-buffer-reconcile.test.ts` (the pure helper) and `live-buffer.test.ts`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-// #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
+import { pruneDeadLiveBuffers } from "../frontend/live-buffer.ts";
 
-const app = readSource(new URL("../frontend/App.tsx", import.meta.url));
-
-/** the body of the pruning effect */
-function pruneEffect(): string {
-  const at = app.indexOf("pruneDeadLiveBuffers(prev");
-  assert.notEqual(at, -1, "the pruning sweep must exist (#40)");
-  const start = app.lastIndexOf("createEffect(", at);
-  assert.notEqual(start, -1, "it must be inside an effect (#40)");
-  return app.slice(start, app.indexOf("\n  });", at));
-}
-
-test("the sweep reads agents() OUTSIDE the signal updater (#40)", () => {
-  const body = pruneEffect();
-  // the dependency must be read in the effect body, not lazily inside the
-  // updater — that is the whole bug
-  assert.match(
-    body,
-    /const list = agents\(\)/,
-    `agents() must be read in the effect body (#40); got: ${body.slice(0, 200)}`,
-  );
-  assert.match(
-    body,
-    /pruneDeadLiveBuffers\(prev, \(id\) => list\.find/,
-    "the updater must close over that value, not re-read the signal (#40)",
-  );
+test("the sweep helper itself still drops a stale buffer (#40)", () => {
+  // A minimum contract so this file is not empty: the helper the effect calls must do
+  // the job it is called for. Whether the effect CALLS it is the smoke test's job.
+  const live = new Map([["a", { text: "agent1 was here", reasoning: "", at: 0 }]]);
+  const out = pruneDeadLiveBuffers(live, () => "idle");
+  assert.equal(out.size, 0, "an idle agent's buffer must be pruned (#40)");
+  // and a running one is kept — the other half, so the check above is not vacuous
+  const kept = pruneDeadLiveBuffers(live, () => "running");
+  assert.equal(kept.size, 1, "a running agent's buffer must survive (#40)");
 });
-

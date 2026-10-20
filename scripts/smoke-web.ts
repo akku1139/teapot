@@ -1110,7 +1110,7 @@ console.log("deep render ok: feed rows present");
       // head → first continuation (which must be FLUSH), not continuation →
       // continuation. Written against the class contract rather than row indices so it
       // keeps meaning something if the fixture grows.
-      const gaps = [];
+      const gaps: { label: string; px: number }[] = [];
       for (let i = 0; i < feedRows.length - 1; i++) {
         const a = feedRows[i];
         const b = feedRows[i + 1];

@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent, AUTO_CONTINUE_NUDGE, autoContinueNudge } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
+import { dataOf } from "./helpers/event-data.ts";
 
 /* ---------- the string ---------- */
 
@@ -106,13 +107,13 @@ test("the nudge a never-finishing agent receives names the goal (#136)", async (
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 25));
       nudges = (await readEvents(`${sd}/chat.jsonl`)).filter(
-        (e) => e.type === "prompt" && e.data?.source === "harness",
+        (e) => e.type === "prompt" && dataOf(e).source === "harness",
       );
       if (nudges.length > 0) break;
     }
     try {
       assert.ok(nudges.length > 0, "precondition: the agent was auto-continued (#136)");
-      const last = String(nudges[nudges.length - 1]!.data?.text ?? "");
+      const last = String(dataOf(nudges[nudges.length - 1]!).text ?? "");
       assert.ok(last.startsWith("[harness] "), `the injected nudge must be prefixed (#136); got ${last.slice(0, 40)}`);
       assert.ok(
         last.includes("fix the code based on the current review"),

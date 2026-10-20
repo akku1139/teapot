@@ -551,7 +551,11 @@ function printAgentEvent(e: TeapotEvent): void {
       else if (d.event === "model-changed")
         line = `${c("33", "🧦 model")} → ${d.model} (${d.provider})`;
       else if (d.event === "round-turn-cap")
-        line = `${c("33", "⏸ round cap")} ${d.turns} turns — nudging report + wrap-up, next round continues`;
+        // The code deliberately does NOT nudge the model here (see the note at the
+        // emit site): telling it "the round ended, consider finish()" invited premature
+        // finishes. The old text claimed a nudge that does not happen, which sends
+        // anyone reading the log looking for behaviour that was removed on purpose.
+        line = `${c("33", "⏸ round cap")} ${d.turns} turns — round ended, auto-continue starts the next one`;
       break;
     }
     default:

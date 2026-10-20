@@ -416,7 +416,9 @@ test("regression: a <select> falls back to its first option when the value match
   d.body.innerHTML =
     '<select id="s"><option value="">(none — first provider wins)</option>' +
     '<option value="aaa">aaa</option><option value="zzz">zzz</option></select>';
-  const s = d.getElementById("s") as HTMLSelectElement;
+  // happy-dom's element types and lib.dom's are structurally different, so the cast has
+  // to go through `unknown`; what the test needs is only `.value`
+  const s = d.getElementById("s") as unknown as HTMLSelectElement;
 
   // a default that names a provider with no row (deleted/renamed) has NO
   // matching option, so the browser shows the "none" row instead
@@ -432,7 +434,7 @@ test("regression: a <select> falls back to its first option when the value match
     fixed.appendChild(o);
   }
   d.body.appendChild(fixed);
-  const f = fixed as HTMLSelectElement;
+  const f = fixed as unknown as HTMLSelectElement;
   f.value = "gone";
   assert.equal(f.value, "gone", "rendering the orphan keeps the true default visible");
 });

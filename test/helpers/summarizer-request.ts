@@ -14,7 +14,7 @@
  * the failure reads as a compaction bug rather than a detection bug. That already
  * happened once (the update-mode reword), which is why this lives in one place.
  */
-import type { ChatMessage } from "../src/agent/llm.ts";
+import type { ChatMessage } from "../../src/agent/llm.ts";
 
 /** the opening sentence of the trailing directive (see COMPACT_INSTRUCTION) */
 const SUMMARIZER_MARKER = "You compress a coding agent's conversation";

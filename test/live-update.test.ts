@@ -56,12 +56,18 @@ function freePort(): Promise<number> {
   });
 }
 
-async function waitFor(fn: () => boolean | Promise<boolean>, ms: number): Promise<boolean> {
+async function waitFor(
+  fn: () => boolean | Promise<boolean>,
+  ms: number,
+  /** what was being waited for — a timed-out poll otherwise fails with no clue */
+  label = "condition",
+): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (await fn()) return true;
     await new Promise((r) => setTimeout(r, 100));
   }
+  console.error(`waitFor: ${label} did not become true within ${ms}ms`);
   return false;
 }
 

@@ -13,7 +13,9 @@
  */
 export function resolveTimelineSession(
   owned: readonly string[] | undefined,
-  bound: string | undefined,
+  /** `null` is "this agent has no bound session" — the same as `undefined` to the code
+   * below (`if (bound && …)`), which is why both are accepted. */
+  bound: string | null | undefined,
   requested?: string | null,
 ): string | null {
   const mine = owned ?? [];

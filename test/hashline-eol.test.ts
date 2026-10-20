@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { useTempDir } from "./helpers/tmp.ts";
-import { executeTool } from "../src/agent/tools.ts";
+import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 
 /** run the real read→copy→edit cycle a model performs */
 async function readThenEdit(
@@ -32,7 +32,9 @@ async function readThenEdit(
   lineIndex = 0,
 ): Promise<{ ok: boolean; result: string; after: string }> {
   return useTempDir("p61-", async (ws) => {
-  const ctx = { cwd: ws };
+  // a real ToolContext: only `cwd` was supplied before, which type-checked nothing and
+  // meant any tool reading defaultTimeoutMs/maxOutputBytes would throw here
+  const ctx: ToolContext = { cwd: ws, defaultTimeoutMs: 5_000, maxOutputBytes: 64 * 1024 };
   const p = path.join(ws, "a.js");
   await writeFile(p, file, "utf8");
   const call = (n: string, a: unknown) => executeTool(n, JSON.stringify(a), ctx);

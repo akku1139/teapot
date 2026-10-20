@@ -20,6 +20,12 @@ export interface RowLike {
   type: string;
   session?: string;
   branch?: string;
+  /**
+   * The fields this rule READS, all optional. Deliberately NOT a closed record: an
+   * event's payload carries whatever its type needs (promptId, content, result, …) and
+   * a caller passing a real event must not be rejected for the fields this function
+   * happens to ignore.
+   */
   data?: {
     /** the tool name, used to single out a skill load (#149) */
     name?: unknown;
@@ -27,6 +33,7 @@ export interface RowLike {
     source?: unknown;
     pending?: unknown;
     cancelled?: unknown;
+    [other: string]: unknown;
   };
 }
 

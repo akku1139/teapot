@@ -51,7 +51,12 @@ const notesOf = (events: TeapotEvent[], name: string) =>
 function compactingAgent(
   ws: string,
   sessionDir: string,
-  onSummarize?: () => Promise<string[]> | string[],
+  /**
+   * Called once, during the flatten pass. Its return value is NOT used — the parameter
+   * is `void` so a caller can do async work (read the log mid-pass) without inventing a
+   * return value; it was typed `string[]` for a value nothing ever read.
+   */
+  onSummarize?: () => Promise<void> | void,
 ) {
   const _big = "x".repeat(12_000);
   let n = 0;

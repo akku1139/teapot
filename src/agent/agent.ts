@@ -509,6 +509,18 @@ export class Agent {
   }
 
   /**
+   * The live array, for SEEDING a scenario in a test.
+   *
+   * Separate from `conversation` on purpose: reading and appending are different
+   * intents, and a test that plants 4000-character turns to reach a compaction threshold
+   * should look like what it is. Production code never calls this — history is appended
+   * by the turn loop.
+   */
+  get conversationForTest(): ChatMessage[] {
+    return this.messages;
+  }
+
+  /**
    * The endpoint this agent resolved, for INSPECTION.
    *
    * Tests assert that a per-agent override, a provider preset and the default all land on

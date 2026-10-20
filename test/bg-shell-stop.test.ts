@@ -40,7 +40,13 @@ import type { LlmResult } from "../src/agent/llm.ts";
 markPosixOnly("starts a background shell through the bash tool");
 
 const reply = (content: string, calls?: unknown[]): LlmResult => ({
-  message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
+  // `tool_calls` is a typed array on ChatMessage; the loose `unknown[]` here is a test
+  // convenience, so the cast is local to the fixture
+  message: {
+    role: "assistant",
+    content,
+    ...(calls ? { tool_calls: calls as NonNullable<LlmResult["message"]["tool_calls"]> } : {}),
+  },
 });
 
 /** a `bash` tool call starting a background job that would touch `probe` */

@@ -104,7 +104,7 @@ test("a parked agent (waiting) keeps its buffer (#40)", () => {
 });
 
 test("an empty but streaming buffer is kept while live (#40)", () => {
-  const fresh = { text: "", streaming: true };
+  const fresh: LiveBuf = { text: "", reasoning: "", at: Date.now() };
   assert.equal(reconcileLiveBuffer(fresh, [], "running"), fresh, "first chunk, nothing logged (#40)");
 });
 

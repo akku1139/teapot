@@ -31,7 +31,9 @@ import assert from "node:assert/strict";
 import { readSource } from "./helpers/source.ts";
 import { HARNESS_ACK, PLACEHOLDER_TEXT } from "../src/agent/agent.ts";
 
-const _src = readSource(new URL("../src/agent/agent.ts", import.meta.url));
+// NOTE: a `readSource()` of agent.ts lived here and was never read. Deleted rather than
+// fixed — an unused binding is not an assertion, and keeping it made the file look like
+// it verified the source's shape when it verified nothing.
 
 /**
  * The SHIPPED rules, imported — not re-typed. A copy could drift from the code

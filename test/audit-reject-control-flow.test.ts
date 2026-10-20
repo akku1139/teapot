@@ -40,6 +40,7 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
+import { dataOf } from "./helpers/event-data.ts";
 
 type Call = "work" | "audit";
 
@@ -149,10 +150,10 @@ test("the bound is a log note, and the goal stays ACTIVE (#128)", async () => {
     try {
       const events = await readEvents(`${sd}/chat.jsonl`);
       assert.ok(
-        events.some((e) => e.data?.event === "audit-retry-cap"),
+        events.some((e) => dataOf(e).event === "audit-retry-cap"),
         "hitting the cap must be visible in the log (#128)",
       );
-      const finals = events.filter((e) => e.type === "message" && e.data?.final);
+      const finals = events.filter((e) => e.type === "message" && dataOf(e).final);
       assert.equal(finals.length, 0, "a rejected finish must never be reported as final (#89/#128)");
     } finally {
       a.stop("done");
@@ -192,12 +193,12 @@ test("an APPROVED audit still finishes normally (#128)", async () => {
     try {
       const events = await readEvents(`${sd}/chat.jsonl`);
       assert.equal(
-        events.filter((e) => e.type === "message" && e.data?.final).length,
+        events.filter((e) => e.type === "message" && dataOf(e).final).length,
         1,
         "an approved audit must produce exactly one final (#128)",
       );
       assert.equal(
-        events.filter((e) => e.data?.event === "audit-retry-cap").length,
+        events.filter((e) => dataOf(e).event === "audit-retry-cap").length,
         0,
         "and must not touch the retry cap (#128)",
       );

@@ -144,8 +144,14 @@ test("a clientMetadata is a PUBLIC client with the loopback redirect (#67)", asy
   assert.deepEqual(meta.grant_types, ["authorization_code", "refresh_token"]);
   assert.deepEqual(meta.response_types, ["code"]);
   // a local harness cannot keep a secret meaningful, and the SDK picks
-  // `token_endpoint_auth_method: none` from the absence of one
-  assert.equal(meta.client_secret, undefined);
+  // `token_endpoint_auth_method: none` from the absence of one. The type has no
+  // `client_secret` field at all for a public client, which is the point — so this
+  // checks the whole object rather than a property that cannot exist.
+  assert.equal(
+    (meta as Record<string, unknown>).client_secret,
+    undefined,
+    "a public client declares no secret",
+  );
 });
 
 /* ---------- the loopback callback ---------- */

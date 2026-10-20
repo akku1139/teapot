@@ -82,7 +82,7 @@ async function buildTree() {
 }
 
 async function allowed(from: string, to: string): Promise<{ ok: boolean; msg: string }> {
-  const { m, _kids, stop } = await tree();
+  const { m, stop } = await tree();
   try {
     await (m as unknown as { messageChild(a: string, b: string, t: string): Promise<void> }).messageChild(
       from,

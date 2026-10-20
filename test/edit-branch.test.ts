@@ -28,6 +28,7 @@ import { Master } from "../src/master.ts";
 import { readEvents } from "../src/log/events.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
+import { dataOf } from "./helpers/event-data.ts";
 
 // #110: POSIX-only — runs POSIX commands through the bash tool.
 // The Windows CI job skips this file; see test/helpers/posix-only.ts for why
@@ -278,7 +279,7 @@ test("an edit leaves no queued prompts from the old branch (#38)", async () => {
       (e) =>
         e.type === "system_note" &&
         (e.data as { event?: string })?.event === "prompt-delivered" &&
-        (e.data as { promptId?: string })?.promptId === strandedRow!.data.promptId,
+        dataOf(e).promptId === dataOf(strandedRow!).promptId,
     );
     assert.equal(
       deliveredNote,

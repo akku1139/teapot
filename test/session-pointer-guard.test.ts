@@ -69,12 +69,8 @@ test("a mismatched TEAPOT_DATA_DIR does not rewrite the config's session pointer
     const prev = process.env.TEAPOT_DATA_DIR;
     process.env.TEAPOT_DATA_DIR = otherRoot;
     try {
-      const config = JSON.parse(before) as {
-        dataDir: string;
-        llm: typeof LLM;
-        providers: Record<string, unknown>;
-        agents: { id: string; workspace: string; provider: string; session: string }[];
-      };
+      // the REAL config type, so a field the Master requires cannot go missing here
+      const config = JSON.parse(before) as import("../src/master.ts").TeapotConfig;
       // the process resolves dataDir from the env override, as the CLI does
       config.dataDir = otherRoot;
       const m = new Master(config, configPath);

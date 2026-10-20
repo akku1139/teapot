@@ -145,7 +145,7 @@ test("discovery stops at the depth bound (#27)", async () => {
   await useTempDirs(["n27m-", "n27n-"], async ([root]) => {
     const s = path.join(root, "skills");
     // deeper than any sane layout; must not hang or be reported
-    await mkSkill(s, "a/b/c/d/e/f/g/h/deep-skill");
+    await mkSkill(s, "a/b/c/d/e/f/g/h/deep-skill", "deep-skill");
     const got = await discoverSkills([{ dir: s, source: "workspace" }]);
     assert.ok(
       !names(got).includes("deep-skill"),

@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
+import type { LlmResult } from "../src/agent/llm.ts";
 import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
+import { dataOf } from "./helpers/event-data.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
 // #110: POSIX-only — runs POSIX commands through the bash tool; POSIX filesystem paths.
@@ -204,10 +206,10 @@ test("sub-agent finish forwards the summary PLUS recent conversation context", a
       try {
         const events = await readEvents(pAgent.log.filePath);
         const found = events.find(
-          (e: any) => e.type === "prompt" && /finished\. Final report/.test(String(e.data?.text ?? "")),
+          (e: any) => e.type === "prompt" && /finished\. Final report/.test(String(dataOf(e).text ?? "")),
         );
         if (found) {
-          reportText = String(found.data.text);
+          reportText = String(dataOf(found).text);
           break;
         }
       } catch (err) {
@@ -239,7 +241,9 @@ test("a sub-agent can message its own child, but not a grandchild (#11)", async 
       "/dev/null",
     );
     (m as any).config.defaultProvider = "p";
-    const chat = async () => ({ message: { role: "assistant", content: "ok" } });
+    const chat = async (): Promise<LlmResult> => ({
+      message: { role: "assistant", content: "ok" },
+    });
     const root = await m.addAgent(
       { id: "root", workspace: ws, provider: "p", model: "m", chatFn: chat },
       { fresh: true, persist: false },
@@ -355,7 +359,7 @@ async function runChildEndingWith(
           e.type === "prompt" && /finished\. Final report/.test(String(e.data?.text ?? "")),
       );
       if (found) {
-        report = String(found.data.text);
+        report = String(dataOf(found).text);
         break;
       }
     } catch {

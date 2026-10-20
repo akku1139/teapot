@@ -157,7 +157,9 @@ test("a working stream is never re-issued (#50)", async () => {
     },
     (url) => chatStream(cfg(url), MSGS, []),
   );
-  assert.equal(error, null, error?.message);
+  // `?? undefined` would still be undefined; the message is only for a failure, so name
+  // the empty case explicitly rather than passing a possibly-undefined argument
+  assert.equal(error, null, error ? error.message : "ok");
   assert.ok(
     !shapes.includes(false),
     `a successful stream must not be retried (#50); saw ${JSON.stringify(shapes)}`,

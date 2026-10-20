@@ -306,7 +306,7 @@ test("session restore reproduces byte-identical request payloads", async () => {
     await a.dispose();
 
     // restart on the same session dir; capture the very first request payload
-    const restoredPayloads: string[][] = [];
+    const restoredPayloads: string[] = [];
     const chatB: ChatFn = async (_c, messages) => {
       restoredPayloads.push(JSON.stringify(messages));
       return reply("resumed");

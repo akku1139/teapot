@@ -608,9 +608,13 @@ test("save_skill bundles helper scripts next to SKILL.md (regression)", async ()
     assert.match(r.result, /tool\.py/);
     // helper exists, is executable, and the traversal attempt never landed
     const { stat } = await import("node:fs/promises");
-    const st = await stat(path.join(ctx.skillRoots[0]!.dir, "helper-check", "tool.py"));
+    // PRECONDITION: the ctx must have a skill root, or the paths below are meaningless
+    // (`skillRoots` is optional on ToolContext, so this is also what narrows it)
+    const roots = ctx.skillRoots;
+    assert.ok(roots && roots.length > 0, "the fixture must supply a skill root");
+    const st = await stat(path.join(roots[0]!.dir, "helper-check", "tool.py"));
     assert.equal(st.mode & 0o111 ? true : false, true); // executable bit set
-    await assert.rejects(stat(path.join(ctx.skillRoots[0]!.dir, "escape.sh")));
+    await assert.rejects(stat(path.join(roots[0]!.dir, "escape.sh")));
   });
 });
 

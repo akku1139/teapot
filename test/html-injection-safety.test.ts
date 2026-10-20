@@ -51,7 +51,8 @@ function liveNodes(html: string): { total: number; kinds: string[] } {
     // would otherwise mutate under the loop
     for (const a of Array.from(el.attributes)) {
       if (/^on/i.test(a.name)) kinds.push(`on${a.name}`);
-      const v = a.value.trim().toLowerCase();
+      // `value` is nullable on the lib DOM type; an attribute without one is empty
+      const v = (a.value ?? "").trim().toLowerCase();
       if ((a.name === "href" || a.name === "src" || a.name === "formaction") &&
           /^(javascript|vbscript|data:text\/html)/.test(v))
         kinds.push(`${a.name}=${v.split(":")[0]}`);
