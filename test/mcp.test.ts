@@ -61,7 +61,26 @@ async function serveMcp(
   return {
     url: `http://127.0.0.1:${port}/mcp`,
     requests,
-    close: () => new Promise<void>((r) => server.close(() => r())),
+    /**
+     * Shut the server down.
+     *
+     * `server.close()` only invokes its callback once EVERY connection has ended, and
+     * `fetch` keeps its sockets alive — so the pending keep-alive connection holds the
+     * callback open and the whole test FILE hangs at teardown. It did: Windows CI sat
+     * in "platform-independent tests" for 20+ minutes with a 30-minute job cap and no
+     * failing test to show for it.
+     *
+     * `closeAllConnections()` (Node 18.2+) destroys them first; the `setTimeout` is a
+     * backstop so a future Node change cannot reintroduce the hang.
+     */
+    close: () =>
+      new Promise<void>((r) => {
+        server.closeAllConnections?.();
+        const done = () => r();
+        server.close(done);
+        // never wait forever for a callback that will not come
+        setTimeout(done, 2_000).unref?.();
+      }),
   };
 }
 
