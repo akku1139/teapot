@@ -638,7 +638,11 @@ details.reasoning .thinkscroll {
 .composer form { background: var(--bg-light); border-radius: 10px; display: flex; gap: 8px; padding: 10px 12px; align-items: flex-end; }
 .composer textarea {
   flex: 1; background: none; border: none; outline: none; color: var(--fg); font: inherit;
-  resize: none; max-height: 160px; overflow-y: auto; line-height: 1.4;
+  /* NO max-height here: the JS sets an explicit pixel height capped at MAX_COMPOSER_H
+     (360px). A CSS cap below that silently won the cascade, so every height between 160 and
+     360 was clamped and the box started scrolling instead of growing — the pin then had
+     nothing to correct and the composer appeared frozen. One owner for the height. */
+  resize: none; overflow-y: auto; line-height: 1.4;
 }
 /* slash-command popup */
 .cmds {

@@ -37,7 +37,7 @@ import {
 } from "./sidebar-tree";
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
-import { atTail, movedAway, type TailSample } from "./scroll-policy";
+import { atTail, gapToTail, movedAway, shouldShowJumpToPresent, type TailSample } from "./scroll-policy";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -357,41 +357,77 @@ export default function App() {
    *      stable thing across a re-wrap — a pixel offset is not, since the rows
    *      above it changed height.
    */
+  /**
+   * #103 / #scroll: when the feed's own BOX changes, keep the operator's place.
+   *
+   * This used to listen to `window.resize` only, which misses every change that matters:
+   * the composer growing a line, the terminal drawer opening, the right panel toggling —
+   * each resizes `.feed` WITHOUT touching the window. That omission is why "typing into a
+   * 2-line composer nudges the feed" kept surviving: the viewport shrank, nothing
+   * re-anchored, and the `scrollTop` the browser had clamped to the OLD maximum was left
+   * pointing at a position that was now one line short of the tail.
+   *
+   * A ResizeObserver on the feed sees all of them, because they are all one event as far as
+   * the scroll container is concerned: its box changed.
+   *
+   * Two cases, decided from the FOLLOW STATE rather than from geometry sampled here:
+   *   1. following → re-pin. The tail is where the reader was and where they should be.
+   *   2. not following → keep the topmost VISIBLE row where it is. A pixel offset is not
+   *      stable across a re-wrap (the rows above it changed height), but the row is.
+   */
   onMount(() => {
     let raf = 0;
-    const onResize = () => {
-      // coalesce: a drag-resize fires this continuously, and each measurement
-      // forces layout. One pass per frame is enough.
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        const f = feedEl();
-        if (!f) return;
-        // Sample the geometry: a window resize changes the viewport WITHOUT a scroll, so
-        // reading the sticky `atBottom` flag answers a question about the previous layout.
-        const wasFollowing = atTail(tailSample());
-        const anchorRow =
-          wasFollowing || !f.scrollHeight ? null : firstVisibleRow(f as HTMLElement);
-        if (!wasFollowing && !anchorRow) return;
-        // let the layout settle, then restore
-        requestAnimationFrame(() => {
-          if (!f.isConnected) return;
-          if (wasFollowing) {
-            f.scrollTop = f.scrollHeight;
-            setMissed(0);
-            return;
-          }
-          const el = anchorRow && f.querySelector<HTMLElement>(anchorRow.sel);
-          if (el) {
-            const delta = el.getBoundingClientRect().top - anchorRow.top;
-            if (delta) f.scrollTop += delta;
-          }
-        });
-      });
+    let lastBox = "";
+    const restore = () => {
+      raf = 0;
+      const f = feedEl();
+      if (!f) return;
+      if (atBottom()) {
+        // following: re-pin to the NEW maximum. Assigning scrollHeight lets the browser
+        // clamp, so this is correct without knowing the new viewport height.
+        pinToTail();
+        return;
+      }
+      const anchorRow = firstVisibleRow(f);
+      if (!anchorRow) return;
+      const el = f.querySelector<HTMLElement>(anchorRow.sel);
+      if (!el) return;
+      const delta = el.getBoundingClientRect().top - anchorRow.top;
+      if (delta) f.scrollTop += delta;
+      // the box changed, so the gap did too — keep the pill honest
+      publishGap(tailSample());
     };
-    window.addEventListener("resize", onResize);
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(restore);
+    };
+    const ro = new ResizeObserver((entries) => {
+      // coalesce: a drag-resize fires continuously, and each measurement forces layout
+      const box = entries[0]?.contentRect;
+      const key = box ? `${Math.round(box.width)}x${Math.round(box.height)}` : "";
+      if (key === lastBox) return; // sub-pixel churn
+      lastBox = key;
+      schedule();
+    });
+    const attach = () => {
+      const f = feedEl();
+      if (f) ro.observe(f);
+      return !!f;
+    };
+    // the feed mounts with the first agent, which may be after this runs
+    if (!attach()) {
+      const t = setInterval(() => {
+        if (attach()) clearInterval(t);
+      }, 50);
+      onCleanup(() => clearInterval(t));
+    }
+    // a window resize changes the feed's box, so the observer covers it; it is listed too
+    // because a resize that leaves the feed's box identical (an outer padding change) still
+    // re-wraps the text inside it
+    window.addEventListener("resize", schedule);
     onCleanup(() => {
-      window.removeEventListener("resize", onResize);
+      ro.disconnect();
+      window.removeEventListener("resize", schedule);
       if (raf) cancelAnimationFrame(raf);
     });
   });
@@ -626,6 +662,19 @@ export default function App() {
   const [composerMaximized, setComposerMaximized] = createSignal(false);
   const [atBottom, setAtBottom] = createSignal(true);
   const [missed, setMissed] = createSignal(0);
+  /**
+   * The last measured gap to the tail, as a SIGNAL.
+   *
+   * The jump pill's visibility must not be recomputed by reading the DOM inside a `<Show>`
+   * condition — that runs on every render of the composer and forces layout each time, on
+   * the very feed the #179 fixes went into. The scroll handler and the resize observer
+   * already have the numbers, so they publish the gap and the pill reads a plain signal.
+   *
+   * `-1` means "not measured yet", which shows no pill.
+   */
+  const [gapToTailPx, setGapToTailPx] = createSignal(-1);
+  /** publish the gap from any place that already measured it */
+  const publishGap = (s: TailSample | null) => setGapToTailPx(s ? gapToTail(s) : -1);
   // live compaction progress for the selected session ("summarizing 2138…")
   const [compacting, setCompacting] = createSignal<{ phase: string; summarized?: number } | null>(null);
   // the live bubble is carrying a compaction summarizer stream (prefixed by
@@ -1565,10 +1614,33 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   /** merge fetched page into state by id, seq-ascending, refs stabilized */
   function mergeEvents(incoming: Ev[]): void {
+    const stable = stabilize(incoming);
     setEvents((prev) => {
+      // FAST PATH: the overwhelmingly common case is an APPEND — a new event arrived at the
+      // end. Rebuilding a Map and re-sorting the whole array for that hands `<For>` a new
+      // array of 1,100 entries every frame, which makes it diff every row: that is the
+      // "スクロール中に変にブレたり、一瞬ブランクになったり" report. Appending keeps every
+      // existing reference equal, so Solid patches only the tail.
+      if (stable.length > 0 && prev.length > 0) {
+        const newest = prev[prev.length - 1]!;
+        const allNewer = stable.every((e) => e.seq > newest.seq);
+        const known = new Set(prev.map((e) => e.id));
+        if (allNewer && stable.every((e) => !known.has(e.id))) {
+          return [...prev, ...stable];
+        }
+      }
+      // general path: dedupe by id, then sort. Used for backfill (prepend) and for a
+      // reconnect that fills a gap.
       const map = new Map<string, Ev>();
       for (const e of prev) map.set(e.id, e);
-      for (const e of stabilize(incoming)) if (!map.has(e.id)) map.set(e.id, e);
+      let added = false;
+      for (const e of stable)
+        if (!map.has(e.id)) {
+          map.set(e.id, e);
+          added = true;
+        }
+      // nothing new → return the SAME array, so no re-render happens at all
+      if (!added) return prev;
       return [...map.values()].sort((a, b) => a.seq - b.seq);
     });
   }
@@ -2190,7 +2262,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           // length check never noticed new events (leaving the live bubble
           // blinking forever after the agent went idle)
           const beforeId = events().at(-1)?.id;
-          const beforeTotal = eventsTotal();
+          const beforeLen = events().length;
           // SAMPLE THE GEOMETRY BEFORE THE FETCH. The old code read the sticky
           // `atBottom` flag AFTER new rows had been painted — state events, tool rows and
           // a grown live bubble all add height with no scroll — so by then the flag had
@@ -2217,7 +2289,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               // newest content — its notifications count as read
               markSessionRead(selected()!);
             } else {
-              setMissed(missed() + Math.max(0, eventsTotal() - beforeTotal));
+              // Count from the EVENTS, not from `eventsTotal()`.
+              //
+              // `eventsTotal` is the server's count of every logged event — including ones
+              // that draw no row at all (state changes, deltas, notes) and ones outside the
+              // loaded window. Adding that delta reported "12 new messages" when one message
+              // had arrived, and it never went down as the operator scrolled, so the pill
+              // read as an ever-growing number at the wrong place.
+              setMissed((n) => n + Math.max(0, events().length - beforeLen));
+              // the content below grew, so the pill's gap changed. Published from the
+              // geometry we are about to read anyway, not from a fresh per-render DOM read.
+              publishGap(tailSample());
             }
           }
           // NOTE: don't drop pending echoes when the log's prompt event
@@ -2819,25 +2901,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // would stay at its tallest. This is a write on ONE element, not a feed measurement.
     composerEl.style.height = "auto";
     const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
-    // apply it unconditionally: the early return below must NOT leave the box at `auto`,
-    // which collapses a textarea to its `rows` default and looks like the composer ate the
-    // text. Only the expensive part — the feed measurement — is conditional.
+    // apply it unconditionally: an early return must NOT leave the box at `auto`, which
+    // collapses a textarea to its `rows` default and looks like the composer ate the text.
     composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
-    // The FEED sample is the expensive part: `tailSample()` reads `scrollHeight`, a forced
-    // layout of a 1,100-row document. Skip it unless the box actually resized, because an
-    // unchanged composer height cannot have moved the feed's viewport.
-    if (wanted === lastComposerHeight) return;
-    lastComposerHeight = wanted;
-
-    // The box really resized, so the feed's viewport changed under the reader. There is no
-    // decision to make: if they are following, put the tail back where it was. This is the
-    // reported bug — the old code compared `tailSample()` before and after, but the shrink
-    // is *between* those two samples and reads as "the reader is now 40px from the tail", so
-    // the rule either declared them away (and stopped following) or scrolled them up.
+    // NOTE (#scroll): this function does NOT touch the feed's scroll position any more.
     //
-    // Pinning needs no reflow forcing: assigning `scrollTop = scrollHeight` reads layout
-    // itself, so it lands on the new maximum.
-    if (atBottom()) pinToTail();
+    // The feed is a flex sibling, so growing this box shrinks the feed's viewport. That is
+    // a change to `.feed`'s own BORDER BOX, and the ResizeObserver on the feed (see the
+    // #103 effect) sees it — before paint, with the final layout, and for every other cause
+    // too (the terminal drawer, the right panel, a window resize).
+    //
+    // Pinning from HERE was the bug. This runs inside the input handler, i.e. in the same
+    // task as the `height` write, and `pinToTail()` resolved `scrollHeight` against a layout
+    // that did not yet include the new composer height — so the reader was pinned to the
+    // tail as it was when the box still had its OLD height, which is exactly the reported
+    // "ちょうど1行の高さまで戻る" (one line of drift, every line added).
+    lastComposerHeight = wanted;
   };
   /** the previous scroll sample, for telling a deliberate scroll from a reflow/clamp */
   let lastSample: TailSample | undefined;
@@ -3532,6 +3611,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             const away = movedAway(now, lastSample);
             lastSample = now;
+            // the pill reads this instead of measuring the DOM itself
+            publishGap(now);
             // reaching the tail re-arms following; leaving it is the only thing that clears
             if (atTail(now)) {
               setAtBottom(true);
@@ -3767,7 +3848,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </Show>
 
           <div class={"composer" + (composerMaximized() ? " maximized" : "")}>
-            <Show when={!atBottom() || missed() > 0}>
+            <Show when={gapToTailPx() > 32 && !atBottom()}>
               <button
                 class="jump"
                 onclick={() => {

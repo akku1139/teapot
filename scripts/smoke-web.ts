@@ -2148,12 +2148,31 @@ console.log("deep render ok: feed rows present");
     process.exit(1);
   }
 
-  // The composer grows a line: the VIEWPORT shrinks. This is the whole bug in one line.
-  viewport -= 40;
-  // …and the app is told, the way a keystroke tells it (the draft effect calls autosize)
-  ta.value = "line one\nline two";
-  ta.dispatchEvent(new w.Event("input", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 120));
+  /**
+   * The REAL causal chain, which is what the app relies on:
+   *
+   *   the composer grows a line  ->  the feed's BOX shrinks (they are flex siblings)
+   *                             ->  ResizeObserver on .feed fires
+   *                             ->  the app re-pins if following
+   *
+   * So the check must (a) make the composer measure a new height and (b) make the FEED
+   * report a new box, then pump the observers. Driving only `clientHeight` would test the
+   * harness's model of the app rather than the app.
+   */
+  const growComposer = (value: string, byPx: number) => {
+    ta.value = value;
+    ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+    // the feed's box shrinks by the same amount, as flex layout would do
+    viewport -= byPx;
+    // the ResizeObserver stub reports an element's height from its style/offsetHeight, so
+    // give the feed one it can see change
+    Object.defineProperty(feed, "offsetHeight", { configurable: true, get: () => viewport });
+    pumpResize();
+  };
+
+  // The composer grows a line — the reported action.
+  growComposer("line one\nline two", 40);
+  await new Promise((r) => setTimeout(r, 150));
 
   const gapAfter = CONTENT - scrollTop - viewport;
   if (gapAfter > 32) {
@@ -2164,26 +2183,30 @@ console.log("deep render ok: feed rows present");
     );
     process.exit(1);
   }
+  // PRE-CONDITION for the next half: the mechanism really did fire at least once
+  if (viewport !== 760) {
+    console.error(`#scroll check: the viewport did not shrink as expected (${viewport}) — vacuous`);
+    process.exit(1);
+  }
+
   // A reader who deliberately scrolled up must STILL be left alone: the fix must not have
   // been bought by following unconditionally.
   const parked = CONTENT - viewport - 1000;
   scrollTop = parked;
   feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 30));
-  viewport -= 40; // another line of composer
-  // grow the CONTENT by a real line too, or `autosizeComposer` correctly does nothing
-  // (the box did not change size) and this half of the check proves nothing
-  ta.value = "line one\nline two\nline three";
-  ta.dispatchEvent(new w.Event("input", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 120));
+  await new Promise((r) => setTimeout(r, 40));
+  growComposer("line one\nline two\nline three", 40);
+  await new Promise((r) => setTimeout(r, 150));
   if (Math.abs(scrollTop - parked) > 32) {
     console.error(
-      `#scroll REGRESSION: a reader who scrolled up was dragged to the tail when the composer ` +
-        `grew (scrollTop ${scrollTop}, expected ~${parked})`,
+      `#scroll REGRESSION: a reader who scrolled up was dragged (scrollTop ${scrollTop}, ` +
+        `expected ~${parked}) when the composer grew`,
     );
     process.exit(1);
   }
-  console.log("deep render ok: a growing composer does not move the feed, and does not drag a reader who scrolled up (#scroll)");
+  console.log(
+    "deep render ok: a growing composer re-pins a follower and leaves a scrolled-up reader alone (#scroll)",
+  );
 }
 
 /* ---------- #30: an in-progress todo edit must survive a panel re-render ----------
