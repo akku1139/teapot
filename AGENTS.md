@@ -105,6 +105,22 @@ Never create a fixture with a bare `mkdtemp(path.join(os.tmpdir(), …))` — us
 impossible to clean up without guessing by name, and guessing is how a tidying
 script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
 
+- **A test must not leak a directory it created.** The helper puts every artifact under
+  one root, but nothing deletes them unless the test does (or `pnpm test:clean` runs).
+  MEASURED: one test file that used a bare `mkdtemp` and never cleaned up left **335**
+  `teapot-oauth-*` directories in `/tmp` — the single largest source of litter — while
+  `pnpm test:clean` reported 7,034 entries / 1,088 MB in total. If a test creates a
+  directory, remove it in a `finally`, or create it through the helper and rely on
+  `test:clean`.
+- `pnpm test:tmp` / `test:clean` are the ONLY sanctioned way to tidy test output. Do not
+  `rm -rf /tmp/*` or `rm -rf /tmp/<glob>` by hand: the names are not yours alone.
+- **Scratch files from agent work go in `/tmp/<something-specific>/`, and are deleted
+  before you finish a task.** Backups (`*.bak`), probe scripts and captured logs left in
+  `/tmp` are indistinguishable from a fixture to the next person, and they are what makes
+  "clean up /tmp" a guessing game. A measured example: a session's own leftovers
+  (`app.fixed.tsx`, `fx2.tsx`, `rp.ts`, `t.log`) were sitting next to 335 real test
+  fixtures, with no way to tell which were safe to delete.
+
 ## Testing
 
 - **Never assert on SOURCE TEXT.** Do not read `App.tsx` / `agent.ts` / `app.css`

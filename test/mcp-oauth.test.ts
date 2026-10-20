@@ -18,9 +18,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
-import os from "node:os";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { mkdtempInRoot } from "./helpers/tmp-root.ts";
 import {
   FLOW_TIMEOUT_MS,
   McpAuthStore,
@@ -28,7 +28,12 @@ import {
   listenForCallback,
 } from "../src/agent/mcp-oauth-manager.ts";
 
-const tmp = () => mkdtemp(path.join(os.tmpdir(), "teapot-oauth-"));
+// MUST go through the shared root. This used a bare `mkdtemp(os.tmpdir())` and nothing
+// removed it, so every run of this file left a `teapot-oauth-*` directory behind forever —
+// MEASURED at 335 of them (the largest single source of /tmp litter). `pnpm test:clean`
+// cannot find them without guessing by name, and guessing is what deletes other projects'
+// data (AGENTS.md).
+const tmp = () => mkdtempInRoot("oauth-");
 
 /* ---------- the provider contract ---------- */
 

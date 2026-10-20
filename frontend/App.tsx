@@ -375,60 +375,70 @@ export default function App() {
    *   2. not following → keep the topmost VISIBLE row where it is. A pixel offset is not
    *      stable across a re-wrap (the rows above it changed height), but the row is.
    */
-  onMount(() => {
-    let raf = 0;
-    let lastBox = "";
-    const restore = () => {
-      raf = 0;
-      const f = feedEl();
-      if (!f) return;
-      if (atBottom()) {
-        // following: re-pin to the NEW maximum. Assigning scrollHeight lets the browser
-        // clamp, so this is correct without knowing the new viewport height.
-        pinToTail();
-        return;
-      }
-      const anchorRow = firstVisibleRow(f);
-      if (!anchorRow) return;
-      const el = f.querySelector<HTMLElement>(anchorRow.sel);
-      if (!el) return;
-      const delta = el.getBoundingClientRect().top - anchorRow.top;
-      if (delta) f.scrollTop += delta;
-      // the box changed, so the gap did too — keep the pill honest
-      publishGap(tailSample());
-    };
-    const schedule = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(restore);
-    };
-    const ro = new ResizeObserver((entries) => {
+  let feedRo: ResizeObserver | undefined;
+  let feedRoEl: HTMLElement | undefined;
+  let feedRoRaf = 0;
+  let feedRoLastBox = "";
+  const restoreAfterBoxChange = () => {
+    feedRoRaf = 0;
+    const f = feedEl();
+    if (!f) return;
+    if (atBottom()) {
+      // following: re-pin to the NEW maximum. Assigning scrollHeight lets the browser clamp,
+      // so this is correct without knowing the new viewport height.
+      pinToTail();
+      return;
+    }
+    const anchorRow = firstVisibleRow(f);
+    if (!anchorRow) return;
+    const el = f.querySelector<HTMLElement>(anchorRow.sel);
+    if (!el) return;
+    const delta = el.getBoundingClientRect().top - anchorRow.top;
+    if (delta) f.scrollTop += delta;
+    // the box changed, so the gap did too — keep the pill honest
+    publishGap(tailSample());
+  };
+  const scheduleRestore = () => {
+    if (feedRoRaf) return;
+    feedRoRaf = requestAnimationFrame(restoreAfterBoxChange);
+  };
+  /**
+   * Attach the box observer to the feed element that is ACTUALLY in the DOM.
+   *
+   * This is a function rather than a one-shot `onMount` because the timeline is rendered
+   * inside `<Show when={sel()?.id} keyed>` — switching session REBUILDS `.channel` and with
+   * it `.feed`. A ResizeObserver attached once at mount then keeps watching a DETACHED
+   * node and reports nothing, which is why an `onMount` version of this fix looked correct
+   * and did nothing in the real app (the smoke harness renders once, so it could not catch
+   * that). The `ref` on the feed calls this on every rebuild.
+   */
+  const attachFeedObserver = (f: HTMLElement | null) => {
+    if (!f) return;
+    if (f === feedRoEl) return; // same element, already observed
+    feedRo ??= new ResizeObserver((entries) => {
       // coalesce: a drag-resize fires continuously, and each measurement forces layout
       const box = entries[0]?.contentRect;
       const key = box ? `${Math.round(box.width)}x${Math.round(box.height)}` : "";
-      if (key === lastBox) return; // sub-pixel churn
-      lastBox = key;
-      schedule();
+      if (key === feedRoLastBox) return; // sub-pixel churn
+      feedRoLastBox = key;
+      scheduleRestore();
     });
-    const attach = () => {
-      const f = feedEl();
-      if (f) ro.observe(f);
-      return !!f;
-    };
-    // the feed mounts with the first agent, which may be after this runs
-    if (!attach()) {
-      const t = setInterval(() => {
-        if (attach()) clearInterval(t);
-      }, 50);
-      onCleanup(() => clearInterval(t));
-    }
+    if (feedRoEl) feedRo.unobserve(feedRoEl);
+    feedRoEl = f;
+    feedRoLastBox = "";
+    feedRo.observe(f);
+  };
+  onMount(() => {
     // a window resize changes the feed's box, so the observer covers it; it is listed too
     // because a resize that leaves the feed's box identical (an outer padding change) still
     // re-wraps the text inside it
-    window.addEventListener("resize", schedule);
+    window.addEventListener("resize", scheduleRestore);
     onCleanup(() => {
-      ro.disconnect();
-      window.removeEventListener("resize", schedule);
-      if (raf) cancelAnimationFrame(raf);
+      window.removeEventListener("resize", scheduleRestore);
+      feedRo?.disconnect();
+      feedRo = undefined;
+      feedRoEl = undefined;
+      if (feedRoRaf) cancelAnimationFrame(feedRoRaf);
     });
   });
 
@@ -1225,16 +1235,37 @@ const isTimelineLive = (): boolean => {
    * then a prop comparison, not a reactive dependency on the entire array. `groupedWith()`
    * only needs the immediately preceding row, so nothing else is lost.
    */
+  /**
+   * Each row paired with its neighbours, REUSING the wrapper objects.
+   *
+   * ## Why the wrapper must be reference-stable (#scroll)
+   *
+   * `<For>` keys on the item's IDENTITY (Solid compares `items[0]`, `items[1]` … against the
+   * previous array to decide what to keep). Returning `rows.map(… => ({row, prev, next}))`
+   * allocated a FRESH object for every row on every rebuild, so every item looked new and
+   * Solid disposed and re-created every row — a full remount of the timeline on each
+   * incoming event. That is the reported "新しいメッセージが来るたびにタイムラインがフラッシュ
+   * する": not a rendering fault, but the keying contract being violated.
+   *
+   * The cache below keeps one wrapper per row object for as long as that row object is
+   * unchanged, and only replaces a wrapper when its `prev`/`next` actually moved. Rows
+   * themselves are already reference-stable (`stabilize()`), so in steady state the array
+   * contains the SAME objects and `<For>` patches only what really changed.
+   */
+  const pairCache = new WeakMap<Ev, { row: Ev; prev?: Ev; next?: Ev }>();
   const rowsWithPrev = createMemo(() => {
     const rows = chatEvents();
-    // one array of {row, prev, next} — same length and order as `chatEvents()`.
-    // `next` is what lets the row decide its own spacing instead of leaving it to a
-    // `:has(+ .msg.grouped)` selector that every row pays for on every recalc.
-    return rows.map((row, idx) => ({
-      row,
-      prev: idx > 0 ? rows[idx - 1] : undefined,
-      next: idx < rows.length - 1 ? rows[idx + 1] : undefined,
-    }));
+    return rows.map((row, idx) => {
+      const prev = idx > 0 ? rows[idx - 1] : undefined;
+      const next = idx < rows.length - 1 ? rows[idx + 1] : undefined;
+      const cached = pairCache.get(row);
+      // reuse only when BOTH neighbours are the same objects, or `groupedWith()` would read
+      // a stale neighbour and a run would draw the wrong head/tail
+      if (cached && cached.prev === prev && cached.next === next) return cached;
+      const fresh = { row, prev, next };
+      pairCache.set(row, fresh);
+      return fresh;
+    });
   });
   // Reference-stable echo rows: chatEvents re-runs on EVERY event burst, and
   // rebuilding the echo objects each time handed Solid's <For> a brand-new
@@ -2893,7 +2924,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * height is unchanged. That keeps the scroll-follow behaviour exactly as it was, because
    * an unchanged composer height cannot have moved the feed's viewport.
    */
-  let lastComposerHeight = -1;
   const autosizeComposer = () => {
     if (!composerEl) return;
     const maximized = composerMaximized();
@@ -2916,7 +2946,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // that did not yet include the new composer height — so the reader was pinned to the
     // tail as it was when the box still had its OLD height, which is exactly the reported
     // "ちょうど1行の高さまで戻る" (one line of drift, every line added).
-    lastComposerHeight = wanted;
   };
   /** the previous scroll sample, for telling a deliberate scroll from a reflow/clamp */
   let lastSample: TailSample | undefined;
@@ -2980,14 +3009,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // hidden — and since #134 stopped Enter sending, this is the only way out.
       // Autosize on the next frame: the tall height comes from `.maximized`, so
       // dropping the class alone would leave the textarea expanded.
-      if (composerMaximized()) {
-        setComposerMaximized(false);
-        requestAnimationFrame(() => autosizeComposer());
-      }
-      // scroll to bottom after our message appears. The composer is shrinking
-      // (autosize) in the same frame — wait two frames so the scroll target is
-      // computed against the SETTLED layout, not the still-expanded input.
-      requestAnimationFrame(() => requestAnimationFrame(() => scrollBottom(true)));
+      if (composerMaximized()) setComposerMaximized(false);
+      // NO explicit scroll here (#scroll).
+      //
+      // This used to be `requestAnimationFrame(() => requestAnimationFrame(() =>
+      // scrollBottom(true)))` — a FORCED jump two frames later, which is the reported
+      // "メッセージ送信直後に謎にスクロールする". Two things were wrong with it:
+      //
+      //   - `force = true` ignored whether the reader was following, so sending while
+      //     reading back through history yanked them to the bottom;
+      //   - it was a guess at when layout had settled. Sending clears the draft, the
+      //     composer SHRINKS, the feed GROWS, and the optimistic echo adds a row — the
+      //     scroll target was computed against whichever of those had landed by then.
+      //
+      // None of it is needed now: every one of those changes resizes `.feed`, and the
+      // ResizeObserver on it re-pins iff the reader is following. `autosizeComposer` below
+      // is still required to re-measure the (now empty) box.
+      requestAnimationFrame(() => autosizeComposer());
     } catch (ex) {
       saveDraft(text); // never eat the user's message on a failed send
       console.error("send failed:", ex);
@@ -3591,7 +3629,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </span>
           </header>
 
-          <div class="feed" onscroll={(e) => {
+          <div class="feed" ref={(el) => attachFeedObserver(el)} onscroll={(e) => {
             const el = e.currentTarget;
             const now: TailSample = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
             /**
@@ -3686,8 +3724,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     // a tool body growing) is one of the growth paths — decided by the
                     // policy, from geometry sampled at the moment the row resized.
                     onResize={() => {
-                      const after = tailSample();
-                      if (after && atTail(after)) requestAnimationFrame(() => scrollBottom(true));
+                      // A row that EXPANDS (a `<details>` opening, a tool body growing) moves
+                      // the content under the reader. While following, re-pin; otherwise leave
+                      // them alone. Testing `atTail(after)` HERE was wrong: the row has
+                      // already grown by the time this fires, so a follower is already "not
+                      // at the tail" and the re-pin never ran — the feed drifted by the growth.
+                      if (atBottom()) pinToTail();
                     }}
                     onCancel={
                       // #122: only an OPERATOR prompt can be withdrawn. A harness

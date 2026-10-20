@@ -2207,6 +2207,90 @@ console.log("deep render ok: feed rows present");
   console.log(
     "deep render ok: a growing composer re-pins a follower and leaves a scrolled-up reader alone (#scroll)",
   );
+
+  /**
+   * AND IT MUST STILL WORK AFTER A SESSION SWITCH.
+   *
+   * This is the half that made v0.29.44 pass every check and do nothing in the real app.
+   * The timeline lives inside `<Show when={sel()?.id} keyed>`, so switching session REBUILDS
+   * `.channel` and with it `.feed` — a NEW DOM node. A ResizeObserver attached once at mount
+   * keeps watching the OLD, detached node and never fires again. The harness renders once, so
+   * it could not see that; here we switch and re-run the same growth.
+   */
+  {
+    const switchToBeta = async () => {
+      const row = [...w.document.querySelectorAll(".agent-item")].find((el) =>
+        /\bbeta\b/.test(el.textContent ?? ""),
+      ) as HTMLElement | undefined;
+      if (!row) {
+        console.error("#scroll check: no beta agent row — cannot test the post-switch case");
+        process.exit(1);
+      }
+      row.click();
+      await new Promise((r) => setTimeout(r, 250));
+    };
+    await switchToBeta();
+    const feed2 = w.document.querySelector(".feed") as HTMLElement | null;
+    if (!feed2) {
+      console.error("#scroll check: .feed missing after the switch");
+      process.exit(1);
+    }
+    // PRECONDITION: `<Show … keyed>` must have produced a NEW element, or this proves nothing
+    if (feed2 === feed) {
+      console.error(
+        "#scroll check: the feed element did not change across the session switch — the " +
+          "keyed rebuild this check exists for did not happen, so it is vacuous",
+      );
+      process.exit(1);
+    }
+    const CONTENT2 = 3000;
+    let viewport2 = 700;
+    let top2 = 0;
+    Object.defineProperty(feed2, "scrollHeight", { configurable: true, get: () => CONTENT2 });
+    Object.defineProperty(feed2, "clientHeight", { configurable: true, get: () => viewport2 });
+    Object.defineProperty(feed2, "offsetHeight", { configurable: true, get: () => viewport2 });
+    Object.defineProperty(feed2, "scrollTop", {
+      configurable: true,
+      get: () => top2,
+      set: (v: number) => {
+        top2 = Math.max(0, Math.min(v, Math.max(0, CONTENT2 - viewport2)));
+      },
+    });
+    top2 = CONTENT2 - viewport2;
+    feed2.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    // …now grow the composer, exactly as before
+    const ta2 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+    if (!ta2) {
+      console.error("#scroll check: composer textarea missing after the switch");
+      process.exit(1);
+    }
+    Object.defineProperty(ta2, "scrollHeight", { configurable: true, get: () => 60 });
+    ta2.value = "a\nb\nc";
+    ta2.dispatchEvent(new w.Event("input", { bubbles: true }));
+    viewport2 -= 40;
+    pumpResize();
+    await new Promise((r) => setTimeout(r, 150));
+    const gap2 = CONTENT2 - top2 - viewport2;
+    if (gap2 > 32) {
+      console.error(
+        `#scroll REGRESSION: after a session switch the feed observer is watching a DETACHED ` +
+          `node, so growing the composer left the reader ${gap2}px above the tail. The timeline ` +
+          `is rebuilt by <Show keyed>, so the observer must re-attach (use the feed's ref).`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: the feed box observer survives a session switch (#scroll)");
+
+    // PUT IT BACK. Every later check assumes this document is showing `alpha`; leaving it on
+    // `beta` made an unrelated assertion fail ("no events yet") and would have hidden the
+    // real cause. A check that changes global state must undo it.
+    const back = [...w.document.querySelectorAll(".agent-item")].find((el) =>
+      /\balpha\b/.test(el.textContent ?? ""),
+    ) as HTMLElement | undefined;
+    back?.click();
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 /* ---------- #30: an in-progress todo edit must survive a panel re-render ----------
