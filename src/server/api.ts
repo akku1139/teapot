@@ -80,8 +80,7 @@ import { bus } from "../bus.ts";
 import { readEvents, readEventsTail, filterByBranch } from "../log/events.ts";
 import type { Master } from "../master.ts";
 import { mcp } from "../agent/mcp-registry.ts";
-import { connectMcp, McpError, type McpServerConfig } from "../agent/mcp.ts";
-import { oauth } from "../agent/mcp-oauth-manager.ts";
+import { connectMcp, type McpServerConfig } from "../agent/mcp.ts";
 
 /** media categories the file tree can preview inline */
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
@@ -811,7 +810,13 @@ const MAX_WS_CLIENTS = 64;
       contextTokenBudget: master.config.contextTokenBudget,
       contextWindowTokens: master.config.contextWindowTokens,
       maxSpawnDepth: master.config.maxSpawnDepth,
+      shortContext: master.config.shortContext,
       tasks: master.config.tasks,
+      // #67: the SAVED MCP servers. Without this the settings dialog opened with an
+      // empty list, so adding a server, saving, and reopening showed nothing — the save
+      // had worked, but nothing ever read it back. Headers are returned as saved: they
+      // are ordinary config, and the dialog needs them to round-trip.
+      mcpServers: master.config.mcpServers ?? [],
       agents: master.config.agents.map((a) => ({ id: a.id, workspace: a.workspace, provider: a.provider, model: a.model })),
       version: master.getVersion(),
     });
@@ -915,85 +920,53 @@ const MAX_WS_CLIENTS = 64;
    * clickable link instead of hanging the request for minutes.
    */
   app.post("/api/mcp/oauth/start", async (c) => {
-    const body = await c.req
-      .json<{ name?: string; url?: string; scopes?: string[]; clientId?: string; clientSecret?: string }>()
-      .catch(() => null);
+    const body = await c.req.json<{ name?: string; scopes?: string[] }>().catch(() => null);
     if (!body?.name) return c.json({ error: "missing name" }, 400);
     const saved = (master.config.mcpServers ?? []).find((m) => m.name === body.name);
-    const url = body.url ?? saved?.url;
-    if (!url) return c.json({ error: "this server has no url — OAuth needs an http(s) endpoint" }, 400);
-    // Kick the flow off; it settles when the redirect arrives. The promise is NOT
-    // awaited here — awaiting it would hold this request open until the operator
-    // finishes in the browser.
-    const flow = oauth.authorize(body.name, url, {
-      ...(body.scopes?.length ? { scopes: body.scopes } : {}),
-      ...(body.clientId ? { clientId: body.clientId } : {}),
-      ...(body.clientSecret ? { clientSecret: body.clientSecret } : {}),
-    });
-    flow.catch(() => {
-      /* recorded in oauth.status(...).flow; nobody is listening here */
-    });
-    // Wait only long enough for the flow to produce its URL (discovery + registration
-    // are network round-trips, but short ones).
-    const deadline = Date.now() + 20_000;
-    let url_: string | undefined;
-    while (Date.now() < deadline) {
-      const st = oauth.status(body.name);
-      if (st.flow.phase === "authorizing") {
-        url_ = st.flow.url;
-        break;
-      }
-      if (st.flow.phase === "error") break;
-      await new Promise((r) => setTimeout(r, 50));
+    if (!saved?.url)
+      return c.json({ error: "this server has no url — OAuth needs an http(s) endpoint" }, 400);
+    try {
+      // `startOAuth` drives the SDK's own flow: discovery, dynamic registration, and the
+      // PKCE challenge all happen inside `connectMcp`, so this returns as soon as there
+      // is a URL to open. The exchange finishes when the browser hits the callback.
+      const { url } = await mcp.startOAuth(body.name, {
+        ...(body.scopes?.length ? { scopes: body.scopes } : {}),
+      });
+      const st = mcp.oauthStatus(body.name);
+      if (!url && st.authorized)
+        // a stored refresh token was still good — nothing for the operator to do
+        return c.json({ ok: true, alreadyAuthorized: true });
+      if (!url)
+        return c.json({ ok: false, error: st.lastError ?? "the authorization server produced no url" });
+      return c.json({ ok: true, url });
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message });
     }
-    const st = oauth.status(body.name);
-    if (!url_)
-      return c.json(
-        {
-          ok: false,
-          error:
-            st.flow.phase === "error"
-              ? st.flow.message
-              : "the authorization server did not produce a URL in time",
-        },
-        200,
-      );
-    return c.json({ ok: true, url: url_, redirectUri: "http://127.0.0.1/<port>/callback" });
   });
 
-  app.get("/api/mcp/oauth/status", async (c) => {
+  app.get("/api/mcp/oauth/status", (c) => {
     const name = c.req.query("name");
     if (!name) return c.json({ error: "missing name" }, 400);
-    const detect = c.req.query("detect") === "1";
-    // `detect=1` probes the endpoint for a Bearer challenge. That is the ONLY way the
-    // panel can learn "this needs a grant" before the operator has guessed it, and it
-    // is opt-in because the probe is a real request to the server.
-    if (detect && !oauth.status(name).required) {
-      const saved = (master.config.mcpServers ?? []).find((m) => m.name === name);
-      if (saved?.url) {
-        try {
-          await oauth.detect(name, saved.url, {
-            ...(saved.headers ? { headers: saved.headers } : {}),
-          });
-        } catch {
-          /* best-effort: the status is still returned */
-        }
-      }
-    }
-    return c.json(oauth.status(name));
+    // "needs OAuth" is now discovered by the SDK itself: an unauthorized connect leaves
+    // the server in `oauthRequired`, so there is no separate probe endpoint. The panel
+    // triggers that by calling `/api/mcp/connect` or by `test`.
+    const st = mcp.states().find((s) => s.config.name === name);
+    return c.json({ ...mcp.oauthStatus(name), required: Boolean(st?.oauthRequired) });
   });
 
   app.post("/api/mcp/oauth/disconnect", async (c) => {
     const body = await c.req.json<{ name?: string }>().catch(() => null);
     if (!body?.name) return c.json({ error: "missing name" }, 400);
-    await oauth.disconnect(body.name);
+    await mcp.disconnect(body.name);
     return c.json({ ok: true });
   });
-
   app.post("/api/mcp/test", async (c) => {
     const body = await c.req.json<McpServerConfig>().catch(() => null);
     if (!body?.name) return c.json({ error: "a server needs a name" }, 400);
     try {
+      // no OAuth provider here on purpose: `test` answers "is this reachable and what
+      // does it expose", which an unauthorized server can still answer with a clear 401.
+      // Starting a browser flow from a test button would be a surprise.
       const conn = await connectMcp({ ...body, enabled: true });
       try {
         const tools = await conn.tools();
@@ -1005,8 +978,13 @@ const MAX_WS_CLIENTS = 64;
         await conn.close();
       }
     } catch (err) {
-      const e = err as McpError;
-      return c.json({ ok: false, error: e.message, authRequired: Boolean(e.authRequired) }, 200);
+      const message = (err as Error).message;
+      // The SDK reports a missing grant as an HTTP error with a `status`. Reading that is
+      // reliable; matching the message is not (it is just "Error POSTing to endpoint").
+      const status = (err as { status?: unknown }).status;
+      const needsAuth =
+        status === 401 || status === 403 || /unauthoriz|invalid_token|authorization required/i.test(message);
+      return c.json({ ok: false, error: message, needsOAuth: needsAuth }, 200);
     }
   });
 

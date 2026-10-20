@@ -1,21 +1,28 @@
 /**
- * The MCP server registry (#67): keeps connections, discovers tools, and dispatches
- * calls.
+ * The MCP server registry (#67): connections, tool discovery, dispatch, and the OAuth
+ * flow's plumbing.
  *
  * Why a registry instead of connecting per agent: several agents usually want the same
- * server, and a stdio server is a PROCESS. One connection per agent would spawn one
- * server per agent, each with its own state and its own startup cost. The pool keys by
- * server name, so N agents share one connection — and a `tools/call` is still
- * per-agent, because the arguments are.
+ * server, and a stdio server is a PROCESS. The pool keys by server name, so N agents share
+ * one connection — and a `tools/call` is still per-agent, because the arguments are.
  *
  * Naming. Two servers may both expose `search`, and a server may expose a name that
- * collides with a built-in tool (`bash`, `read_file`). Every MCP tool is therefore
- * exposed to the model as `mcp__<server>__<tool>`, which cannot collide with a
- * built-in (those have no `__`) and tells the model where the result came from. The
- * original name is what gets sent to the server.
+ * collides with a built-in tool (`bash`, `read_file`). Every MCP tool is therefore exposed
+ * as `mcp__<server>__<tool>`, which cannot collide with a built-in (those have no `__`)
+ * and tells the model where a result came from.
+ *
+ * OAuth lives here because it is per SERVER (one grant, shared by every agent) while the
+ * protocol itself belongs to the SDK — see `mcp-oauth-manager.ts` for the provider.
  */
-import { connectMcp, McpError, type McpConnection, type McpServerConfig, type McpTool } from "./mcp.ts";
-import { oauth, type OAuthFlowStatus } from "./mcp-oauth-manager.ts";
+
+import { connectMcp, type McpAuth, type McpConnection, type McpServerConfig, type McpTool } from "./mcp.ts";
+import {
+  FLOW_TIMEOUT_MS,
+  McpAuthStore,
+  ServerAuth,
+  listenForCallback,
+  type OAuthStatus,
+} from "./mcp-oauth-manager.ts";
 
 /** the prefix a model-visible MCP tool name carries */
 export const MCP_PREFIX = "mcp__";
@@ -23,8 +30,8 @@ export const MCP_PREFIX = "mcp__";
 /** `mcp__server__tool` — the flat name handed to the LLM */
 export function flattenToolName(server: string, tool: string): string {
   // `__` is the separator, so a server or tool name containing it would be ambiguous.
-  // Collapse runs rather than rejecting: a server called "my__server" is unusual but
-  // not worth failing over, and the mapping stays stable.
+  // Collapse runs rather than rejecting: a server called "my__server" is unusual but not
+  // worth failing over, and the mapping stays stable.
   const s = server.replace(/__/g, "_");
   return `${MCP_PREFIX}${s}__${tool}`;
 }
@@ -42,20 +49,38 @@ export interface McpServerState {
   config: McpServerConfig;
   connection?: McpConnection;
   tools: McpTool[];
-  status: "disconnected" | "connecting" | "connected" | "error" | "disabled";
+  status: "disconnected" | "connecting" | "connected" | "error" | "disabled" | "authorizing";
   lastError?: string;
   lastChecked?: number;
-  /** a 401 challenge said this server wants OAuth; the panel offers "authorize" */
+  /** a 401 challenge said this server wants OAuth */
   oauthRequired?: boolean;
+}
+
+/** one in-flight authorization: the listener and the server it belongs to */
+interface PendingFlow {
+  server: string;
+  redirectUrl: string;
+  wait: (timeoutMs: number) => Promise<{ code: string; iss?: string }>;
+  close: () => Promise<void>;
 }
 
 export class McpRegistry {
   private servers = new Map<string, McpServerState>();
+  private auths = new Map<string, ServerAuth>();
+  private store: McpAuthStore | null = null;
+  private flows = new Map<string, PendingFlow>();
+
+  /**
+   * Point the registry at its grant store. Called once at boot; until then OAuth is
+   * inert (no grant is read from an assumed location).
+   */
+  init(dataDir: string): void {
+    this.store = new McpAuthStore(dataDir);
+  }
 
   /** replace the configured server list (on boot and after a settings save) */
   apply(configs: McpServerConfig[]): void {
     const wanted = new Set(configs.map((c) => c.name));
-    // drop connections for servers that were removed or renamed
     for (const [name, st] of this.servers) {
       if (!wanted.has(name)) {
         void st.connection?.close();
@@ -70,14 +95,11 @@ export class McpRegistry {
       const reuse = prev && !changed;
       const status: McpServerState["status"] =
         cfg.enabled === false ? "disabled" : reuse ? prev!.status : "disconnected";
-      const next: McpServerState = {
-        config: cfg,
-        tools: reuse ? prev!.tools : [],
-        status,
-      };
+      const next: McpServerState = { config: cfg, tools: reuse ? prev!.tools : [], status };
       if (reuse && prev!.connection) next.connection = prev!.connection;
       if (reuse && prev!.lastError) next.lastError = prev!.lastError;
       if (reuse && prev!.lastChecked) next.lastChecked = prev!.lastChecked;
+      if (reuse && prev!.oauthRequired) next.oauthRequired = true;
       this.servers.set(cfg.name, next);
     }
   }
@@ -90,23 +112,37 @@ export class McpRegistry {
     return [...this.servers.values()];
   }
 
-  /** the OAuth state for one server, for the settings panel */
-  oauthStatus(name: string): OAuthFlowStatus {
-    return oauth.status(name);
+  /** the OAuth state of one server, for the settings panel */
+  oauthStatus(name: string): OAuthStatus {
+    return this.auths.get(name)?.status() ?? { pending: false, authorized: false, expiresAt: null, hasRefreshToken: false, flow: { phase: "idle" } };
   }
 
   /**
-   * Connect one server (idempotent) and discover its tools.
+   * The provider for one server, created on demand.
    *
-   * A 401 is not the end of the story: an OAuth-protected server answers with a Bearer
-   * challenge, so on auth failure we DETECT and RECORD that, which is what lets the
-   * settings panel offer "authorize" instead of showing a bare "error". Detection is
-   * tried BEFORE the challenge reaches the operator — the reference implementations do
-   * the same, and it turns "it just says 401" into "click authorize".
+   * The redirect URL is a placeholder until a flow starts — the SDK reads it when it
+   * builds the authorization request, and by then `startOAuth` has set the real loopback
+   * port. Keeping one long-lived placeholder would pin a port that is not listening.
    */
+  private async authFor(name: string): Promise<ServerAuth | undefined> {
+    if (!this.store) return undefined;
+    const existing = this.auths.get(name);
+    if (existing) return existing;
+    const stored = await this.store.get(name);
+    // a flow needs a redirect; the SDK only reads it during authorize, and
+    // `startOAuth` replaces the instance with one carrying the real port
+    const auth = new ServerAuth(name, "http://127.0.0.1/callback", (server, data) =>
+      this.store!.set(server, data),
+    );
+    await auth.hydrate(stored);
+    this.auths.set(name, auth);
+    return auth;
+  }
+
+  /** connect one server (idempotent) and discover its tools */
   async connect(name: string): Promise<McpServerState> {
     const st = this.servers.get(name);
-    if (!st) throw new McpError(`no such MCP server: ${name}`);
+    if (!st) throw new Error(`no such MCP server: ${name}`);
     if (st.config.enabled === false) {
       st.status = "disabled";
       return st;
@@ -114,20 +150,15 @@ export class McpRegistry {
     if (st.status === "connected" && st.connection) return st;
     st.status = "connecting";
     st.lastError = undefined;
-    // Attach the OAuth authorization when a grant exists, resolved PER REQUEST so a
-    // refreshed token takes effect without reconnecting.
-    const withOAuth: McpServerConfig = {
-      ...st.config,
-      oauthAuthorization: () => oauth.authorization(name),
-      onUnauthorized: () => oauth.invalidate(name),
-    };
+    const auth = await this.authFor(name);
+    const authArg: McpAuth | undefined = auth ? { provider: auth } : undefined;
     try {
-      const conn = await connectMcp(withOAuth);
-      const tools = await conn.tools();
+      const conn = await connectMcp(st.config, authArg);
       st.connection = conn;
-      st.tools = tools;
+      st.tools = await conn.tools();
       st.status = "connected";
       st.lastChecked = Date.now();
+      st.oauthRequired = false;
       return st;
     } catch (err) {
       st.status = "error";
@@ -135,27 +166,21 @@ export class McpRegistry {
       st.lastChecked = Date.now();
       st.connection = undefined;
       st.tools = [];
-      // A 401 means "find out what auth this wants" — the challenge names it. Only for
-      // HTTP transports: a stdio server has no OAuth to discover.
-      if (err instanceof McpError && err.authRequired && st.config.url) {
-        try {
-          const d = await oauth.detect(name, st.config.url, {
-            ...(st.config.headers ? { headers: st.config.headers } : {}),
-          });
-          if (d.requiresOAuth) {
-            st.oauthRequired = true;
-            st.lastError =
-              `this server requires OAuth` +
-              (d.authServer
-                ? ` (authorization server: ${new URL(d.authServer.authorizationEndpoint).host})`
-                : d.reason
-                  ? ` — ${d.reason}`
-                  : "") +
-              " — use “authorize” in ⚙ settings → MCP servers";
-          }
-        } catch {
-          /* detection is best-effort: the original error stands */
-        }
+      // The SDK reports a missing grant as an UnauthorizedError (or an HTTP 401); both
+      // mean "authorize", which is a different situation from "broken".
+      // The SDK reports a missing grant as an HTTP error carrying the STATUS. Reading
+      // `status` is reliable; matching the message text is not, because the SDK's message
+      // is just "Error POSTing to endpoint: <body>" and a server may send an empty body —
+      // MEASURED with a bare 401, which produced no "401" anywhere in the text.
+      const status = (err as { status?: unknown }).status;
+      const msg = (err as Error).message ?? "";
+      const needsAuth =
+        status === 401 ||
+        status === 403 ||
+        /unauthoriz|invalid_token|authorization required/i.test(msg);
+      if (needsAuth) {
+        st.oauthRequired = true;
+        st.lastError = "this server requires OAuth — use 🔑 authorize in ⚙ settings → MCP servers";
       }
       throw err;
     }
@@ -187,9 +212,8 @@ export class McpRegistry {
     if (!parts) return null;
     const st = this.servers.get(parts.server);
     if (!st) return { ok: false, text: `no such MCP server: ${parts.server}` };
-    // a call for a server that is configured but not yet connected should connect on
-    // demand rather than fail: the operator adding a tool mid-session must not need a
-    // restart, and auto-connect is cheap for the HTTP transports
+    // a call for a configured-but-unconnected server connects on demand: adding one
+    // mid-session must not need a restart
     if (st.status !== "connected" || !st.connection) {
       try {
         await this.connect(parts.server);
@@ -205,8 +229,102 @@ export class McpRegistry {
     }
   }
 
+  /**
+   * Start an OAuth flow.
+   *
+   * Opens the loopback listener, points the provider at it, and makes a connect attempt
+   * so the SDK performs discovery and produces the authorization URL. The returned URL is
+   * what the UI opens; the promise behind it settles when the browser comes back.
+   */
+  async startOAuth(name: string, opts: { scopes?: string[] } = {}): Promise<{ url: string }> {
+    const st = this.servers.get(name);
+    if (!st) throw new Error(`no such MCP server: ${name}`);
+    if (!st.config.url) throw new Error("OAuth needs an http(s) url; a stdio server has no authorizer");
+    const existing = this.flows.get(name);
+    if (existing) await this.finishFlow(name, existing);
+
+    const loop = await listenForCallback();
+    // a provider bound to THIS listener's port
+    const auth = new ServerAuth(name, loop.redirectUrl, (server, data) => this.store!.set(server, data));
+    if (this.store) await auth.hydrate(await this.store.get(name));
+    this.auths.set(name, auth);
+
+    const pending: PendingFlow = {
+      server: name,
+      redirectUrl: loop.redirectUrl,
+      wait: loop.wait,
+      close: loop.close,
+    };
+    this.flows.set(name, pending);
+
+    // A connect attempt is what drives the SDK: it discovers the authorization server,
+    // registers a client if needed, and calls redirectToAuthorization before throwing.
+    st.oauthRequired = true;
+    try {
+      const conn = await connectMcp(st.config, { provider: auth });
+      // already authorized (a stored refresh token was good): no flow needed
+      st.connection = conn;
+      st.tools = await conn.tools();
+      st.status = "connected";
+      st.oauthRequired = false;
+      await this.finishFlow(name, pending);
+      return { url: "" };
+    } catch (err) {
+      const url = auth.pendingUrl();
+      if (!url) {
+        const message = (err as Error).message;
+        auth.markError(message);
+        await this.finishFlow(name, pending);
+        throw new Error(`could not start the authorization flow: ${message}`);
+      }
+      st.status = "authorizing";
+      // complete in the background once the browser arrives
+      void (async () => {
+        try {
+          const { code, iss } = await loop.wait(FLOW_TIMEOUT_MS);
+          const conn = await connectMcp(st.config, { provider: auth });
+          await conn.finishAuth(code, iss);
+          st.connection = conn;
+          st.tools = await conn.tools();
+          st.status = "connected";
+          st.oauthRequired = false;
+          st.lastError = undefined;
+          await this.finishFlow(name, pending);
+        } catch (e) {
+          auth.markError((e as Error).message);
+          if (st.status === "authorizing") st.status = "error";
+          st.lastError = (e as Error).message;
+          await this.finishFlow(name, pending);
+        }
+      })();
+      return { url };
+    }
+  }
+
+  /** close a flow's listener and record its outcome */
+  private async finishFlow(name: string, f: PendingFlow): Promise<void> {
+    if (this.flows.get(name) === f) this.flows.delete(name);
+    await f.close().catch(() => {});
+  }
+
+  /** forget a grant (disconnect) */
+  async disconnect(name: string): Promise<void> {
+    const auth = this.auths.get(name);
+    if (auth) await auth.clear();
+    const st = this.servers.get(name);
+    if (st) {
+      await st.connection?.close().catch(() => {});
+      st.connection = undefined;
+      st.tools = [];
+      st.status = st.config.enabled === false ? "disabled" : "disconnected";
+      st.oauthRequired = false;
+    }
+  }
+
   async closeAll(): Promise<void> {
-    for (const st of this.servers.values()) await st.connection?.close();
+    for (const f of this.flows.values()) await f.close().catch(() => {});
+    this.flows.clear();
+    for (const st of this.servers.values()) await st.connection?.close().catch(() => {});
     for (const st of this.servers.values()) {
       st.connection = undefined;
       st.status = st.config.enabled === false ? "disabled" : "disconnected";

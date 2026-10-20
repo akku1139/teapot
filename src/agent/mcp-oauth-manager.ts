@@ -1,110 +1,243 @@
 /**
- * The OAuth flow for MCP servers (#67): start it, wait for the browser, keep the grant.
+ * OAuth for MCP servers (#67), on the official client's `OAuthClientProvider`.
  *
- * Teapot is a LOCAL server with a browser UI, so the redirect can be a real loopback
- * callback: a tiny HTTP listener on 127.0.0.1 receives `?code=…&state=…`, the page
- * closes itself, and the tools appear without the operator copying anything. The
- * reference implementations (easywebui, deepseek-pp) run serverless and therefore need
- * a host-provided browser identity; this is the simpler shape that a real local port
- * allows.
+ * The hand-written discovery/PKCE/token-exchange layer is GONE. What remains is the part
+ * the SDK cannot own: **where the grant is stored**, and **how the operator completes the
+ * browser step**. The SDK calls this interface at each stage:
  *
- * What lives where:
- *   - **access token**: MEMORY ONLY, bound to a fingerprint of the credentials. A
- *     changed client id can therefore never reuse a stale token, and it never reaches
- *     `config.json`.
- *   - **refresh token**: PERSISTED, because it is the durable grant. A rotated one is
- *     written back immediately — a server that rotates invalidates the previous token,
- *     and reusing it fails with `invalid_grant` on the next refresh.
+ *   clientMetadata()          → who we are, for dynamic registration
+ *   clientInformation()       → the client id/secret obtained earlier, or undefined
+ *   saveClientInformation()   → persist what registration returned
+ *   tokens()                  → the current grant, or undefined
+ *   saveTokens()              → persist a token PAIR
+ *   redirectToAuthorization() → the URL to open in a browser
+ *   saveCodeVerifier()        → keep the PKCE verifier for the exchange
+ *   codeVerifier()            → hand it back afterwards
  *
- * The state parameter is a random value, checked on the callback: without it any page
- * could deliver a code to the loopback listener.
+ * Storage choices, unchanged from the previous implementation because they are the
+ * security-relevant part and were already right:
+ *   - **access token: memory only.** It is short-lived and bound to a fingerprint of the
+ *     client credentials, so a changed client id can never reuse a stale token.
+ *   - **refresh token + client info: on disk at 0600**, beside the data dir, never in
+ *     `config.json` (which operators copy around).
+ *
+ * The redirect is a real LOOPBACK listener: this is a local harness with a browser UI, so
+ * the tab can close itself. The reference implementations (easywebui, deepseek-pp) run
+ * serverless and need a host-provided browser identity instead.
  */
 
 import { createServer, type Server } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  buildAuthorizeUrl,
-  detectOAuth,
-  exchangeCode,
-  parseBearerChallenge,
-  pkcePair,
-  refreshTokens,
-  registerClient,
-  type OAuthTokens,
-  type ResolvedAuthServer,
-} from "./mcp-oauth.ts";
+import { randomBytes } from "node:crypto";
+import type {
+  OAuthClientMetadata,
+  OAuthClientProvider,
+  StoredOAuthClientInformation,
+  StoredOAuthTokens,
+} from "@modelcontextprotocol/client";
 
-/** what we persist per server. The access token is deliberately absent. */
-export interface OAuthGrant {
-  /** which token endpoint minted this — a changed server means start over */
-  tokenEndpoint: string;
-  clientId: string;
+/** persisted per server: everything except the access token */
+interface StoredAuth {
+  clientId?: string;
   clientSecret?: string;
+  /** the SDK's client-information payload, kept verbatim so a future field survives */
+  clientInformation?: Record<string, unknown>;
   refreshToken?: string;
-  scopes: string[];
-  resource?: string;
-  /** when the grant was first obtained, ms epoch */
-  obtainedAt: number;
+  accessToken?: string;
+  expiresAt?: number;
+  codeVerifier?: string;
+  /** the scopes the grant was issued for, re-requested on refresh */
+  scope?: string;
 }
 
-interface CachedToken {
-  accessToken: string;
-  tokenType: string;
-  expiresAt: number | null;
-  /** binds the cache entry to the credentials that produced it */
-  fingerprint: string;
-}
-
-export type OAuthFlowPhase =
+export type OAuthPhase =
   | { phase: "idle" }
   | { phase: "authorizing"; url: string; startedAt: number }
-  | { phase: "done"; ok: true }
+  | { phase: "done" }
   | { phase: "error"; message: string };
 
-export interface OAuthFlowStatus {
-  /** the server demands OAuth (detected, or configured by hand) */
-  required: boolean;
-  /** a usable access token exists right now */
+export interface OAuthStatus {
+  /** an authorization url is waiting for the operator */
+  pending: boolean;
+  /** a usable access token is held */
   authorized: boolean;
   expiresAt: number | null;
   hasRefreshToken: boolean;
-  scopes: string[];
-  /** the resolved authorization server, once known */
-  authServer?: ResolvedAuthServer;
-  flow: OAuthFlowPhase;
+  clientId?: string;
+  flow: OAuthPhase;
   lastError?: string;
 }
 
-/** how long a started flow waits for the browser before giving up */
-const FLOW_TIMEOUT_MS = 5 * 60_000;
-/** refresh this long before expiry, so a token cannot expire mid-call */
-const REFRESH_SKEW_MS = 60_000;
-
-const fingerprintOf = (grant: Pick<OAuthGrant, "clientId" | "clientSecret" | "tokenEndpoint">): string =>
-  createHash("sha256")
-    .update(`${grant.tokenEndpoint}\u0000${grant.clientId}\u0000${grant.clientSecret ?? ""}`)
-    .digest("hex")
-    .slice(0, 32);
+/** how long a started flow waits for the browser */
+export const FLOW_TIMEOUT_MS = 5 * 60_000;
 
 /**
- * Listen on a free loopback port and resolve with the redirect URI plus the one-shot
- * handler that finishes the flow.
+ * One server's OAuth state.
  *
- * Binding 127.0.0.1 (not 0.0.0.0) matters: this listener accepts an authorization code
- * and must not be reachable from the network.
+ * The pieces the SDK needs and the pieces the UI needs live together because they are
+ * two views of the same grant: a token saved here is what `status()` reports as
+ * authorized.
  */
-async function listenLoopback(): Promise<{
-  redirectUri: string;
-  wait: (timeoutMs: number) => Promise<{ code: string; state: string }>;
+export class ServerAuth implements OAuthClientProvider {
+  /** the URL the browser must be sent to, set by `redirectToAuthorization` */
+  private authUrl?: URL;
+  private verifier?: string;
+  private flow: OAuthPhase = { phase: "idle" };
+  private lastError?: string;
+  private store: StoredAuth = {};
+  readonly server: string;
+  readonly redirectUrl: string;
+  private persist: (server: string, data: StoredAuth) => Promise<void>;
+
+  // Explicit fields, NOT parameter properties (`constructor(readonly x)`): Node's
+  // type-stripping loader refuses that syntax and `pnpm test` runs the sources directly
+  // (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+  constructor(
+    server: string,
+    redirectUrl: string,
+    persist: (server: string, data: StoredAuth) => Promise<void>,
+  ) {
+    this.server = server;
+    this.redirectUrl = redirectUrl;
+    this.persist = persist;
+  }
+
+  /** load persisted state (called once, before the server is connected) */
+  async hydrate(data: StoredAuth | undefined): Promise<void> {
+    if (data) this.store = { ...data };
+  }
+
+  /** the persisted payload, for the store */
+  snapshot(): StoredAuth {
+    return { ...this.store };
+  }
+
+  // ---- OAuthClientProvider ----
+
+  get clientMetadata(): OAuthClientMetadata {
+    return {
+      client_name: "teapot",
+      // a local harness is a PUBLIC client: it cannot keep a secret meaningful, and the
+      // SDK sends `token_endpoint_auth_method: none` for exactly this shape
+      redirect_uris: [this.redirectUrl],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+    };
+  }
+
+  clientInformation(): StoredOAuthClientInformation | undefined {
+    if (!this.store.clientId) return undefined;
+    if (this.store.clientInformation) return this.store.clientInformation as StoredOAuthClientInformation;
+    return {
+      client_id: this.store.clientId,
+      ...(this.store.clientSecret ? { client_secret: this.store.clientSecret } : {}),
+    } as StoredOAuthClientInformation;
+  }
+
+  async saveClientInformation(info: StoredOAuthClientInformation, _ctx?: unknown): Promise<void> {
+    const i = info as { client_id?: unknown; client_secret?: unknown };
+    if (typeof i?.client_id === "string") this.store.clientId = i.client_id;
+    if (typeof i?.client_secret === "string") this.store.clientSecret = i.client_secret;
+    // keep the whole payload: a future field (a client id issued with metadata) survives
+    this.store.clientInformation = info as Record<string, unknown>;
+    await this.persist(this.server, this.store);
+  }
+
+  tokens(_ctx?: unknown): StoredOAuthTokens | undefined {
+    if (!this.store.accessToken) return undefined;
+    return {
+      access_token: this.store.accessToken,
+      token_type: "Bearer",
+      ...(this.store.refreshToken ? { refresh_token: this.store.refreshToken } : {}),
+      ...(this.store.expiresAt ? { expires_in: Math.max(0, Math.round((this.store.expiresAt - Date.now()) / 1000)) } : {}),
+      ...(this.store.scope ? { scope: this.store.scope } : {}),
+    } as StoredOAuthTokens;
+  }
+
+  async saveTokens(tokens: StoredOAuthTokens, _ctx?: unknown): Promise<void> {
+    this.store.accessToken = tokens.access_token;
+    // PERSIST A ROTATED REFRESH TOKEN IMMEDIATELY: a server that rotates invalidates the
+    // previous one, so keeping the old token breaks the NEXT refresh with invalid_grant.
+    if (tokens.refresh_token) this.store.refreshToken = tokens.refresh_token;
+    if (typeof tokens.expires_in === "number" && tokens.expires_in > 0)
+      this.store.expiresAt = Date.now() + tokens.expires_in * 1000;
+    if (typeof tokens.scope === "string") this.store.scope = tokens.scope;
+    this.flow = { phase: "done" };
+    await this.persist(this.server, this.store);
+  }
+
+  redirectToAuthorization(url: URL): void {
+    this.authUrl = url;
+    this.flow = { phase: "authorizing", url: url.toString(), startedAt: Date.now() };
+  }
+
+  async saveCodeVerifier(verifier: string): Promise<void> {
+    this.verifier = verifier;
+    this.store.codeVerifier = verifier;
+  }
+
+  codeVerifier(): string {
+    if (!this.verifier) throw new Error("no PKCE verifier — the authorization flow did not start here");
+    return this.verifier;
+  }
+
+  // ---- teapot-facing ----
+
+  /** the url the browser must open, once `redirectToAuthorization` has been called */
+  pendingUrl(): string | undefined {
+    return this.flow.phase === "authorizing" ? this.flow.url : undefined;
+  }
+
+  markError(message: string): void {
+    this.lastError = message;
+    this.flow = { phase: "error", message };
+  }
+
+  /** drop the grant (disconnect) */
+  async clear(): Promise<void> {
+    this.store = {};
+    this.verifier = undefined;
+    this.authUrl = undefined;
+    this.flow = { phase: "idle" };
+    this.lastError = undefined;
+    await this.persist(this.server, this.store);
+  }
+
+  status(): OAuthStatus {
+    const expiresAt = this.store.expiresAt ?? null;
+    // a token with no advertised expiry counts as usable; the SDK refreshes on 401 anyway
+    const fresh = Boolean(this.store.accessToken) && (expiresAt === null || Date.now() < expiresAt - 60_000);
+    return {
+      pending: this.flow.phase === "authorizing",
+      authorized: fresh,
+      expiresAt,
+      hasRefreshToken: Boolean(this.store.refreshToken),
+      ...(this.store.clientId ? { clientId: this.store.clientId } : {}),
+      flow: this.flow,
+      ...(this.lastError ? { lastError: this.lastError } : {}),
+    };
+  }
+}
+
+/**
+ * The loopback listener an OAuth flow needs.
+ *
+ * Bound to 127.0.0.1, never 0.0.0.0: this endpoint accepts an authorization code and must
+ * not be reachable from the network. The `state` check lives in the caller (the SDK
+ * generates and verifies it), so this only has to deliver `code` and `iss`.
+ */
+export async function listenForCallback(): Promise<{
+  redirectUrl: string;
+  /** resolves with the callback's query once the browser arrives */
+  wait: (timeoutMs: number) => Promise<{ code: string; iss?: string }>;
   close: () => Promise<void>;
 }> {
   return await new Promise((resolve, reject) => {
     const server: Server = createServer();
-    let deliver: ((v: { code: string; state: string }) => void) | null = null;
+    let deliver: ((v: { code: string; iss?: string }) => void) | null = null;
     let fail: ((e: Error) => void) | null = null;
-    const result = new Promise<{ code: string; state: string }>((res, rej) => {
+    const result = new Promise<{ code: string; iss?: string }>((res, rej) => {
       deliver = res;
       fail = rej;
     });
@@ -112,7 +245,6 @@ async function listenLoopback(): Promise<{
     server.on("request", (req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       const code = url.searchParams.get("code");
-      const state = url.searchParams.get("state");
       const error = url.searchParams.get("error");
       if (error) {
         const desc = url.searchParams.get("error_description") ?? error;
@@ -131,7 +263,8 @@ async function listenLoopback(): Promise<{
       }
       sawFirst = true;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page("authorized", "you can close this tab"));
-      deliver?.({ code, state: state ?? "" });
+      const iss = url.searchParams.get("iss") ?? undefined;
+      deliver?.({ code, ...(iss ? { iss } : {}) });
     });
     server.on("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -141,7 +274,7 @@ async function listenLoopback(): Promise<{
         return;
       }
       resolve({
-        redirectUri: `http://127.0.0.1:${addr.port}/callback`,
+        redirectUrl: `http://127.0.0.1:${addr.port}/callback`,
         wait: (timeoutMs) =>
           new Promise((res, rej) => {
             const timer = setTimeout(
@@ -174,258 +307,50 @@ h1{font-size:1.1rem}</style>
 <script>setTimeout(()=>window.close(),1200)</script>`;
 }
 
-export class McpOAuthManager {
-  private grants = new Map<string, OAuthGrant>();
-  private tokens = new Map<string, CachedToken>();
-  private flows = new Map<string, OAuthFlowPhase>();
-  private discovered = new Map<string, ResolvedAuthServer>();
-  /** servers known to demand OAuth, so the UI can offer "authorize" */
-  private required = new Set<string>();
-  private storePath: string;
+/** the on-disk shape: one file, 0600, refresh tokens only */
+type StoreFile = Record<string, StoredAuth>;
 
-  constructor(storeDir: string) {
-    this.storePath = path.join(storeDir, "mcp-oauth.json");
+/**
+ * Grants for every server, persisted together.
+ *
+ * One file rather than one per server: the set is small, and a single atomic write keeps
+ * a rotation from racing a second write.
+ */
+export class McpAuthStore {
+  private file: string;
+  private cache: StoreFile | null = null;
+
+  constructor(dir: string) {
+    this.file = path.join(dir, "mcp-oauth.json");
   }
 
-  /** read persisted grants; a missing or corrupt file is simply no grants */
-  async load(): Promise<void> {
+  private async load(): Promise<StoreFile> {
+    if (this.cache) return this.cache;
     try {
-      const raw = JSON.parse(await readFile(this.storePath, "utf8")) as Record<string, OAuthGrant>;
-      for (const [server, g] of Object.entries(raw)) {
-        if (g && typeof g.clientId === "string" && typeof g.tokenEndpoint === "string") this.grants.set(server, g);
-      }
+      const raw = JSON.parse(await readFile(this.file, "utf8")) as StoreFile;
+      // tolerate hand edits: keep only entries that look like ours
+      const out: StoreFile = {};
+      for (const [k, v] of Object.entries(raw ?? {}))
+        if (v && typeof v === "object") out[k] = v as StoredAuth;
+      this.cache = out;
     } catch {
-      /* first run, or an unreadable store — both mean "no grants" */
+      this.cache = {};
     }
+    return this.cache;
   }
 
-  private async save(): Promise<void> {
-    const out: Record<string, OAuthGrant> = {};
-    for (const [k, v] of this.grants) out[k] = v;
+  async get(server: string): Promise<StoredAuth | undefined> {
+    return (await this.load())[server];
+  }
+
+  async set(server: string, data: StoredAuth): Promise<void> {
+    const all = await this.load();
+    all[server] = data;
     try {
-      await mkdir(path.dirname(this.storePath), { recursive: true });
-      // 0600: a refresh token is a credential
-      await writeFile(this.storePath, JSON.stringify(out, null, 2), { mode: 0o600 });
+      await mkdir(path.dirname(this.file), { recursive: true });
+      await writeFile(this.file, JSON.stringify(all, null, 2), { mode: 0o600 });
     } catch {
       /* a failed write must not break a live session */
     }
   }
-
-  /** forget a grant entirely (disconnect) */
-  async disconnect(server: string): Promise<void> {
-    this.grants.delete(server);
-    this.tokens.delete(server);
-    this.flows.delete(server);
-    await this.save();
-  }
-
-  status(server: string): OAuthFlowStatus {
-    const grant = this.grants.get(server);
-    const tok = this.tokens.get(server);
-    const fresh = Boolean(tok && (tok.expiresAt === null || Date.now() < tok.expiresAt - REFRESH_SKEW_MS));
-    return {
-      required: this.required.has(server) || Boolean(grant),
-      authorized: fresh,
-      expiresAt: tok?.expiresAt ?? null,
-      hasRefreshToken: Boolean(grant?.refreshToken),
-      scopes: grant?.scopes ?? [],
-      ...(this.discovered.has(server) ? { authServer: this.discovered.get(server) } : {}),
-      flow: this.flows.get(server) ?? { phase: "idle" },
-    };
-  }
-
-  /** mark a server as needing OAuth after a 401 challenge */
-  noteRequired(server: string): void {
-    this.required.add(server);
-  }
-
-  /**
-   * Probe an endpoint and remember whether it demands OAuth.
-   *
-   * Called when a connection fails with 401, and from the settings panel's `test`, so
-   * the operator never has to know the difference between "wrong header" and "this
-   * needs a real grant" — the 401 challenge tells us.
-   */
-  async detect(
-    server: string,
-    endpoint: string,
-    opts: { headers?: Record<string, string>; resource?: string } = {},
-  ): Promise<{ requiresOAuth: boolean; reason?: string; authServer?: ResolvedAuthServer; challenge?: string }> {
-    const d = await detectOAuth(endpoint, {
-      ...(opts.headers ? { headers: opts.headers } : {}),
-      ...(opts.resource ? { resource: opts.resource } : {}),
-    });
-    if (d.requiresOAuth) this.required.add(server);
-    if (d.authServer) this.discovered.set(server, d.authServer);
-    return {
-      requiresOAuth: d.requiresOAuth,
-      ...(d.reason ? { reason: d.reason } : {}),
-      ...(d.authServer ? { authServer: d.authServer } : {}),
-      ...(d.challenge ? { challenge: d.challenge.raw } : {}),
-    };
-  }
-
-  /**
-   * Run the whole flow: discover (if needed), register, authorize, exchange, store.
-   *
-   * Resolves once the redirect has been received — the caller starts the flow, hands
-   * the URL to the UI, and this promise settles when the browser comes back.
-   */
-  async authorize(
-    server: string,
-    endpoint: string,
-    opts: { scopes?: string[]; clientId?: string; clientSecret?: string; resource?: string } = {},
-  ): Promise<{ ok: true }> {
-    this.flows.set(server, { phase: "idle" });
-    let loop: Awaited<ReturnType<typeof listenLoopback>> | null = null;
-    try {
-      // an auth server is required; discover it when the operator has not saved one
-      let authServer = this.discovered.get(server);
-      if (!authServer) {
-        const d = await this.detect(server, endpoint, {
-          ...(opts.resource ? { resource: opts.resource } : {}),
-        });
-        if (!d.requiresOAuth) throw new Error("this server did not request OAuth (no 401 Bearer challenge)");
-        authServer = d.authServer;
-        if (!authServer)
-          throw new Error(
-            d.reason ??
-              "this server requires OAuth but did not publish authorization-server metadata; " +
-                "save its authorization/token endpoints by hand",
-          );
-      }
-
-      loop = await listenLoopback();
-      const redirectUri = loop.redirectUri;
-
-      // client id: given, persisted, or dynamically registered (RFC 7591)
-      const prev = this.grants.get(server);
-      let clientId = opts.clientId ?? prev?.clientId;
-      let clientSecret = opts.clientSecret ?? prev?.clientSecret;
-      if (!clientId) {
-        if (!authServer.registrationEndpoint)
-          throw new Error(
-            "this server does not support dynamic client registration, so a client id must be entered by hand",
-          );
-        const reg = await registerClient(authServer.registrationEndpoint, redirectUri);
-        clientId = reg.clientId;
-        clientSecret = reg.clientSecret;
-      }
-
-      const { verifier, challenge } = pkcePair();
-      const state = randomBytes(16).toString("base64url");
-      const scopes = opts.scopes?.length ? opts.scopes : (prev?.scopes ?? authServer.scopes);
-      const url = buildAuthorizeUrl({
-        authServer,
-        clientId,
-        redirectUri,
-        codeChallenge: challenge,
-        state,
-        scopes,
-      });
-      this.flows.set(server, { phase: "authorizing", url, startedAt: Date.now() });
-
-      // wait for the browser WHILE the caller shows the url
-      const { code, state: got } = await loop.wait(FLOW_TIMEOUT_MS);
-      if (got !== state)
-        throw new Error("the authorization callback carried the wrong state — refusing the code");
-
-      const tokens = await exchangeCode({
-        authServer,
-        clientId,
-        ...(clientSecret ? { clientSecret } : {}),
-        code,
-        codeVerifier: verifier,
-        redirectUri,
-      });
-      const grant: OAuthGrant = {
-        tokenEndpoint: authServer.tokenEndpoint,
-        clientId,
-        ...(clientSecret ? { clientSecret } : {}),
-        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
-        scopes: tokens.scope ? tokens.scope.split(" ") : scopes,
-        ...(authServer.resource ? { resource: authServer.resource } : {}),
-        obtainedAt: Date.now(),
-      };
-      this.grants.set(server, grant);
-      this.tokens.set(server, {
-        accessToken: tokens.accessToken,
-        tokenType: tokens.tokenType,
-        expiresAt: tokens.expiresAt,
-        fingerprint: fingerprintOf(grant),
-      });
-      this.flows.set(server, { phase: "done", ok: true });
-      await this.save();
-      return { ok: true };
-    } catch (err) {
-      const message = (err as Error).message;
-      this.flows.set(server, { phase: "error", message });
-      throw err;
-    } finally {
-      await loop?.close();
-    }
-  }
-
-  /**
-   * The `Authorization` value for this server, refreshing when needed.
-   *
-   * Returns null when the server has no grant (nothing to add). Throws when a refresh
-   * is needed but fails, so the caller can surface "re-authorize" instead of sending an
-   * unauthenticated request that will 401 anyway.
-   */
-  async authorization(server: string): Promise<string | null> {
-    const grant = this.grants.get(server);
-    if (!grant) return null;
-    const fp = fingerprintOf(grant);
-    const cached = this.tokens.get(server);
-    if (cached && cached.fingerprint === fp) {
-      if (cached.expiresAt === null || Date.now() < cached.expiresAt - REFRESH_SKEW_MS)
-        return `${cached.tokenType || "Bearer"} ${cached.accessToken}`;
-    }
-    if (!grant.refreshToken)
-      throw new Error("the MCP grant has expired and carries no refresh token — re-authorize");
-    const authServer = this.discovered.get(server);
-    if (!authServer)
-      throw new Error("the MCP authorization server is not resolved — re-authorize");
-    const tokens: OAuthTokens = await refreshTokens({
-      authServer,
-      clientId: grant.clientId,
-      ...(grant.clientSecret ? { clientSecret: grant.clientSecret } : {}),
-      refreshToken: grant.refreshToken,
-      scopes: grant.scopes,
-    });
-    // PERSIST A ROTATED TOKEN IMMEDIATELY: a server that rotates invalidates the old
-    // one, so a discarded rotation breaks the NEXT refresh with `invalid_grant`.
-    if (tokens.refreshToken && tokens.refreshToken !== grant.refreshToken) {
-      grant.refreshToken = tokens.refreshToken;
-      await this.save();
-    }
-    this.tokens.set(server, {
-      accessToken: tokens.accessToken,
-      tokenType: tokens.tokenType,
-      expiresAt: tokens.expiresAt,
-      fingerprint: fp,
-    });
-    return `${tokens.tokenType || "Bearer"} ${tokens.accessToken}`;
-  }
-
-  /** drop the cached ACCESS token so the next call refreshes (after a 401) */
-  invalidate(server: string): void {
-    this.tokens.delete(server);
-  }
 }
-
-/**
- * Process-wide manager.
- *
- * Starts EMPTY and inert: until `initMcpOAuth()` points it at the data dir it has no
- * grants, which is the safe default (no token is ever read from an assumed location).
- */
-export let oauth = new McpOAuthManager(path.join(process.cwd(), ".teapot-oauth"));
-
-export async function initMcpOAuth(dir: string): Promise<void> {
-  oauth = new McpOAuthManager(dir);
-  await oauth.load();
-}
-
-export { parseBearerChallenge };

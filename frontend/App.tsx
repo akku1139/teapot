@@ -6458,45 +6458,58 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
     const r = (await api("/api/mcp").catch(() => null)) as { states?: any[] } | null;
     setMcpStates(Object.fromEntries((r?.states ?? []).map((s: any) => [s.name, s])));
   };
-  const refreshMcpOAuth = async (i: number, name: string, detect = false) => {
+  const refreshMcpOAuth = async (i: number, name: string) => {
     if (!name) return;
-    // `detect=1` asks the server to probe for a 401 Bearer challenge, which is how the
-    // panel discovers "this needs OAuth" without the operator guessing.
-    const r = (await api(
-      `/api/mcp/oauth/status?name=${encodeURIComponent(name)}${detect ? "&detect=1" : ""}`,
-    ).catch(() => null)) as any;
+    // "needs OAuth" is discovered by the server itself now: an unauthorized connect
+    // leaves the state flagged, so there is no separate probe to trigger here.
+    const r = (await api(`/api/mcp/oauth/status?name=${encodeURIComponent(name)}`).catch(
+      () => null,
+    )) as any;
     if (r && !r.error) setMcpOAuth((m) => ({ ...m, [i]: r }));
   };
   /**
    * Start OAuth for one server and open the authorization page.
    *
-   * The server answers with a URL as soon as discovery + registration produce one; the
+   * The server answers as soon as the SDK's discovery + registration produce a URL; the
    * token exchange finishes when the browser hits the loopback callback. So the panel
-   * opens a tab and then POLLS the status — polling is what makes "authorized" appear
-   * on its own, which is the whole point of an automatic flow.
+   * opens a tab and POLLS — polling is what makes "authorized" appear on its own, which
+   * is the whole point of an automatic flow.
    */
   const startMcpOAuth = async (i: number, srv: any) => {
     if (!srv.name) {
       setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "give it a name first" } }));
       return;
     }
-    setMcpStatus((m) => ({ ...m, [i]: { kind: "testing", text: "discovering the authorization server…" } }));
+    setMcpStatus((m) => ({
+      ...m,
+      [i]: { kind: "testing", text: "discovering the authorization server…" },
+    }));
     const r = (await api("/api/mcp/oauth/start", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: srv.name, url: srv.url }),
-    }).catch(() => null)) as { ok?: boolean; url?: string; error?: string } | null;
+      body: JSON.stringify({ name: srv.name }),
+    }).catch(() => null)) as
+      | { ok?: boolean; url?: string; error?: string; alreadyAuthorized?: boolean }
+      | null;
+    if (r?.alreadyAuthorized) {
+      setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "already authorized" } }));
+      await refreshMcpOAuth(i, srv.name);
+      await refreshMcpStates();
+      return;
+    }
     if (!r?.ok || !r.url) {
       setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: r?.error ?? "no response" } }));
       await refreshMcpOAuth(i, srv.name);
       return;
     }
+    // Open the authorization page. `noopener` is deliberate: the page must not get a
+    // handle on this window.
     window.open(r.url, "_blank", "noopener");
     setMcpStatus((m) => ({
       ...m,
       [i]: { kind: "testing", text: "waiting for you to finish in the browser…" },
     }));
-    // poll until the flow settles (the manager gives up after 5 minutes)
+    // poll until the flow settles (the server gives up after 5 minutes)
     const deadline = Date.now() + 5 * 60_000;
     while (Date.now() < deadline) {
       await new Promise((res) => setTimeout(res, 1000));
@@ -6505,16 +6518,22 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
       )) as any;
       if (!st || st.error) continue;
       setMcpOAuth((m) => ({ ...m, [i]: st }));
-      if (st.flow?.phase === "done") {
-        setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "authorized — tools will appear on the next turn" } }));
+      if (st.authorized) {
+        setMcpStatus((m) => ({
+          ...m,
+          [i]: { kind: "ok", text: "authorized — the tools are available now" },
+        }));
         await refreshMcpStates();
-        // `onSaved` re-fetches the agent list, so a newly-authorized server's tools
-        // stop being a "next turn" promise and show up in the panel
+        // `onSaved` re-fetches the agent list, so a newly-authorized server's tools are
+        // usable on the next turn rather than being a promise
         props.onSaved();
         return;
       }
       if (st.flow?.phase === "error") {
-        setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: st.flow.message ?? "authorization failed" } }));
+        setMcpStatus((m) => ({
+          ...m,
+          [i]: { kind: "err", text: st.flow.message ?? st.lastError ?? "authorization failed" },
+        }));
         return;
       }
     }
@@ -6526,7 +6545,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
     // OAuth state is per row and changes independently of the server list, so it is
     // fetched for every configured server when the section opens.
     mcpServers().forEach((m, i) => {
-      if (m.name) void refreshMcpOAuth(i, m.name, Boolean(m.url));
+      if (m.name) void refreshMcpOAuth(i, m.name);
     });
   });
   const [err, setErr] = createSignal("");
@@ -6967,10 +6986,10 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
                               ? { kind: "ok", text: `${r.tools?.length ?? 0} tools` }
                               : { kind: "err", text: r?.error ?? "no response" },
                           }));
-                          // A failed test may be a MISSING GRANT rather than a wrong
-                          // url, and only the 401 challenge can tell. Ask the status
-                          // endpoint, which detects and records it.
-                          if (!r?.ok) await refreshMcpOAuth(i, patch.name, true);
+                          // A failed test may be a MISSING GRANT rather than a wrong url.
+                          // The status endpoint reports what the connect attempt found, so
+                          // "authorize" appears without the operator diagnosing a 401.
+                          if (!r?.ok) await refreshMcpOAuth(i, patch.name);
                         }}
                         title="connect now and list the tools — nothing is saved"
                       >test</button>

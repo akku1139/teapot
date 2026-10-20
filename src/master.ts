@@ -33,7 +33,6 @@ import type { LlmConfig, ChatFn } from "./agent/llm.ts";
 import type { TeapotEvent } from "./log/events.ts";
 import { bus, type BusEvent } from "./bus.ts";
 import { mcp } from "./agent/mcp-registry.ts";
-import { initMcpOAuth } from "./agent/mcp-oauth-manager.ts";
 import { loadPlugins, type LoadedPlugin } from "./agent/plugins.ts";
 import type { McpServerConfig } from "./agent/mcp.ts";
 import {
@@ -966,6 +965,10 @@ export class Master {
     // MCP connect below so a plugin's servers connect in the same pass as configured
     // ones, and before any agent starts so its skills are discoverable on turn one.
     if (this.config.mcpServers?.length || this.config.pluginsDir !== false) {
+      // OAuth grants live beside the data, not in config.json (a refresh token is a
+      // credential, and config.json is the file operators copy around). Must be pointed
+      // at the data dir BEFORE any server connects, or a stored grant is invisible.
+      mcp.init(this.config.dataDir);
       const allMcp = await this.loadPluginsAndMcp();
       if (allMcp.length) {
         mcp.apply(allMcp);
