@@ -250,6 +250,57 @@ setGlobal("location", w.location);
 setGlobal("history", w.history);
 setGlobal("CustomEvent", w.CustomEvent);
 setGlobal("requestAnimationFrame", (cb) => setTimeout(() => cb(Date.now()), 16));
+// happy-dom has no ResizeObserver, and the bundle uses one (the terminal always has, and
+// the tasks pane uses it to remember a dragged height). Without a stub the whole bundle
+// throws on import. Instances register here so a check can PUMP them — a one-shot fire at
+// mount is not enough, because a drag (or a test) changes the height later, which is the
+// event an observer exists to report.
+const resizeObservers: { check: () => void }[] = [];
+const pumpResize = () => {
+  for (const ro of resizeObservers) ro.check();
+};
+setGlobal(
+  "ResizeObserver",
+  class {
+    cb: () => void;
+    targets: { el: any; last: number }[] = [];
+    // explicit field, NOT a parameter property: Node's type-stripping loader refuses
+    // `constructor(private cb)` (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX)
+    constructor(cb: () => void) {
+      this.cb = cb;
+      resizeObservers.push(this);
+    }
+    observe(el: any) {
+      this.targets.push({ el, last: -1 });
+      this.check();
+    }
+    /**
+     * Report a size when it CHANGES.
+     *
+     * A one-shot fire is not enough: the component arms the observer at mount, and a test
+     * (or a real drag) changes the height AFTERWARDS — which is exactly the event an
+     * observer exists to report. Polling keeps the stub honest without pretending
+     * happy-dom can dispatch layout.
+     */
+    check() {
+      let fired = false;
+      for (const t of this.targets) {
+        const set = Number(String(t.el.style?.height ?? "").replace("px", ""));
+        const h = Number.isFinite(set) && set > 0 ? set : (t.el.offsetHeight ?? 0);
+        if (h > 0 && h !== t.last) {
+          t.last = h;
+          Object.defineProperty(t.el, "offsetHeight", { value: h, configurable: true });
+          fired = true;
+        }
+      }
+      if (fired) setTimeout(() => this.cb(), 0);
+    }
+    unobserve() {}
+    disconnect() {
+      this.targets = [];
+    }
+  },
+);
 setGlobal("WebSocket", MockWS);
 // the app's connectWs() runs at import time; its socket must exist for the
 // pending-echo regression below to push bus events into the app
@@ -2029,6 +2080,79 @@ console.log("deep render ok: feed rows present");
     process.exit(1);
   }
   console.log("deep render ok: in-progress todo survives a panel re-render (#30)");
+
+  // ---- a DRAGGED height must survive the edit/preview toggle ----
+  //
+  // The textarea is natively resizable, so the browser applies a drag as an INLINE height
+  // on that one element. The preview is a DIFFERENT element and fell back to the
+  // stylesheet's `11.5em`, so the height was lost on every switch. The component now
+  // remembers it (and persists it), which is what this asserts.
+  {
+    const edit = w.document.getElementById("todo-input");
+    if (!edit) {
+      console.error("#todo-height: the editor is gone — the check would be vacuous");
+      process.exit(1);
+    }
+    // happy-dom does no layout, so a real drag cannot be simulated; set the inline height
+    // the browser would have written, then PUMP the observer the way a real drag would
+    edit.style.height = "260px";
+    pumpResize();
+    // the component's callback is deferred, so let it run
+    await new Promise((r) => setTimeout(r, 80));
+
+    const toggle = [...w.document.querySelectorAll("button")].find(
+      (b) => (b.getAttribute("title") ?? "") === "rendered checklist",
+    );
+    if (!toggle) {
+      console.error("#todo-height: no toggle to the preview");
+      process.exit(1);
+    }
+    toggle.click();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const pane = w.document.querySelector(".todopane");
+    if (!pane) {
+      console.error("#todo-height: the preview pane never rendered");
+      process.exit(1);
+    }
+    // PRECONDITION: the preview really is the OTHER element, or "the height survived"
+    // would just mean we measured the same node twice
+    if (pane.id === "todo-input") {
+      console.error("#todo-height: the preview is the editor — the check is vacuous");
+      process.exit(1);
+    }
+    if ((pane as HTMLElement).style.height !== "260px") {
+      console.error(
+        `#todo-height REGRESSION: the dragged height was lost switching to the preview ` +
+          `(style.height=${JSON.stringify((pane as HTMLElement).style.height)})`,
+      );
+      process.exit(1);
+    }
+
+    // and back again: the EDITOR must come back at the same height
+    const back = [...w.document.querySelectorAll("button")].find(
+      (b) => (b.getAttribute("title") ?? "") === "edit markdown",
+    );
+    back?.click();
+    await new Promise((r) => setTimeout(r, 100));
+    const edit2 = w.document.getElementById("todo-input") as HTMLElement | null;
+    if (!edit2 || edit2.style.height !== "260px") {
+      console.error(
+        `#todo-height REGRESSION: the height was lost coming back to the editor ` +
+          `(style.height=${JSON.stringify(edit2?.style.height ?? null)})`,
+      );
+      process.exit(1);
+    }
+    // it must also be REMEMBERED, so a reload or a panel re-render keeps it
+    if (localStorage.getItem("teapot.todoH") !== "260") {
+      console.error(
+        `#todo-height REGRESSION: the height was not persisted ` +
+          `(teapot.todoH=${JSON.stringify(localStorage.getItem("teapot.todoH"))})`,
+      );
+      process.exit(1);
+    }
+  }
+  console.log("deep render ok: a dragged tasks height survives the edit/preview toggle (#todo-height)");
 }
 
 /* ---------- #18: the sidebar marks which workspace each chat belongs to ------ */

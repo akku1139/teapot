@@ -5663,6 +5663,40 @@ function TodoEditor(props: {
   // `viewMode` signal in this file (the file-viewer's code/md/media mode) and the
   // two were being confused. The branches are also swapped, so the name states what
   // actually renders.
+  //
+  // HEIGHT IS SHARED BY THE TWO VIEWS. The textarea is natively resizable
+  // (`resize: vertical`), so the browser applies the drag as an INLINE height on that
+  // one element — and the preview is a DIFFERENT element, which fell back to the
+  // stylesheet's `11.5em`. Dragging the editor therefore lost its height the moment you
+  // switched to the checklist. Observed with a ResizeObserver and applied to both, so a
+  // drag survives the toggle; persisted so it also survives a reload.
+  const stored = Number(localStorage.getItem("teapot.todoH") ?? "");
+  const [todoHeight, setTodoHeight] = createSignal<number>(
+    Number.isFinite(stored) && stored > 0 ? stored : 0,
+  );
+  const heightStyle = () => (todoHeight() > 0 ? { height: `${todoHeight()}px` } : undefined);
+  /**
+   * Track a height the user produced by dragging.
+   *
+   * A ResizeObserver rather than `onpointerup`: the native resize handle does not have to
+   * involve a pointer event this listener sees (a touch drag, a keyboard/assistive
+   * resize), and the observer reports the real box either way. It is armed per element, so
+   * whichever view is mounted feeds the same signal.
+   */
+  const trackHeight = (el: HTMLElement) => {
+    const ro = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      if (h <= 0) return;
+      setTodoHeight((cur) => {
+        if (Math.abs(cur - h) < 1) return cur; // no churn from sub-pixel reflow
+        localStorage.setItem("teapot.todoH", String(h));
+        return h;
+      });
+    });
+    ro.observe(el);
+    onCleanup(() => ro.disconnect());
+  };
+
   return (
     <Show
       when={props.preview}
@@ -5672,6 +5706,8 @@ function TodoEditor(props: {
           id="todo-input"
           class="mono todopane-edit"
           rows={5}
+          style={heightStyle()}
+          ref={trackHeight}
           placeholder={"- task one\n- task two"}
           value={props.draft}
           oninput={(e) => props.onDraft(e.currentTarget.value)}
@@ -5680,8 +5716,13 @@ function TodoEditor(props: {
       }
     >
       {/* rendered checklist; #124: both views take their height from `.todopane`,
-          so they cannot drift again */}
-      <div class="content mdpreview todopane" innerHTML={renderMarkdownCached(props.draft)} />
+          so they cannot drift again — plus the shared dragged height above */}
+      <div
+        class="content mdpreview todopane"
+        style={heightStyle()}
+        ref={trackHeight}
+        innerHTML={renderMarkdownCached(props.draft)}
+      />
     </Show>
   );
 }
