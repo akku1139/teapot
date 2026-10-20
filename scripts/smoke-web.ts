@@ -310,6 +310,40 @@ setGlobal(
     }
   },
 );
+// MutationObserver: `frontend/feed-reserve.ts` adopts rows that appear AFTER it was armed by
+// watching the feed's childList. happy-dom has a native MutationObserver but it is NOT
+// installed on globalThis here, so without this stub the module silently skipped adoption
+// and a row added later never got its reservation — the #143 check caught exactly that.
+// The stub records targets and lets the harness pump a notification for added nodes.
+const mutationObservers: { targets: any[]; fire: (added: any[]) => void }[] = [];
+const pumpMutation = (added: any[]) => {
+  for (const mo of mutationObservers) mo.fire(added);
+};
+setGlobal(
+  "MutationObserver",
+  class {
+    cb: (records: unknown[]) => void;
+    targets: any[] = [];
+    constructor(cb: (records: unknown[]) => void) {
+      this.cb = cb;
+      mutationObservers.push(this as any);
+    }
+    observe(el: any) {
+      this.targets.push(el);
+    }
+    disconnect() {
+      this.targets = [];
+    }
+    takeRecords() {
+      return [];
+    }
+    /** harness hook: report `added` as childList additions on every observed target */
+    fire(added: any[]) {
+      if (!this.targets.length || !added.length) return;
+      this.cb(this.targets.map((t) => ({ target: t, addedNodes: added, type: "childList" })));
+    }
+  },
+);
 setGlobal("WebSocket", MockWS);
 // IntersectionObserver: same story — the feed reserves each row's measured height so
 // `content-visibility` unskipping cannot move the scroll position (frontend/feed-reserve.ts).
@@ -1310,10 +1344,23 @@ console.log("deep render ok: feed rows present");
         ({ width: REAL_W, height: REAL_H, top: 0, left: 0, bottom: REAL_H, right: REAL_W, x: 0, y: 0, toJSON() {} }) as DOMRect;
       Object.defineProperty(probe, "offsetHeight", { value: REAL_H, configurable: true });
       Object.defineProperty(probe, "offsetWidth", { value: REAL_W, configurable: true });
+      // the probe row must be ADOPTED before it can be reserved. The module learns about
+      // rows added after it was armed through its MutationObserver, so pump that too —
+      // without this the check would only ever exercise the rows that existed at mount.
+      pumpMutation([probe]);
       pumpResize();
       pumpIntersection();
       await new Promise((r) => setTimeout(r, 150));
 
+      // PRECONDITION: the probe must be observed by something, or a pass here is vacuous
+      const adopted = intersectionObservers.some((o: any) => o.targets?.includes(probe));
+      if (!adopted) {
+        console.error(
+          "#143 REGRESSION: the probe row was never adopted (no IntersectionObserver watches " +
+            "it), so the reservation could not have been measured — check is vacuous",
+        );
+        process.exit(1);
+      }
       const v = probe.style.getPropertyValue("contain-intrinsic-size").trim();
       if (v !== `${REAL_W}px ${REAL_H}px`) {
         console.error(

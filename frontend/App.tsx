@@ -38,7 +38,7 @@ import {
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
 import { atTail, shouldFollowAfterChange, type TailSample } from "./scroll-policy";
-import { reserveRowSizes } from "./feed-reserve";
+import { reserveRowSizes, type ReservedSizes } from "./feed-reserve";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -492,22 +492,46 @@ export default function App() {
    * source). Only meaningful when the feature is ON — without `content-visibility` the
    * placeholder is never used, and writing one would be dead work on every row.
    *
-   * Re-armed when the rendered rows change, because rows are appended and replaced as the
-   * feed grows; a stale observer list would leave new rows with only the stylesheet guess.
+   * Re-armed when the rendered rows change, because rows are appended as the feed grows and
+   * the module only measures what it has been handed. What it must NOT do is register its
+   * cleanup from a deferred callback: #177 burned a CPU core exactly that way.
+   *
+   * `onCleanup` is only meaningful while Solid's `Owner` is set, and inside a
+   * `requestAnimationFrame` callback it is already null — solid.js does `if (Owner === null) ;`
+   * and drops the function on the floor. So the old shape
+   *
+   *     const raf = requestAnimationFrame(() => {
+   *       const reserved = reserveRowSizes(root);
+   *       onCleanup(() => reserved.disconnect());   // never registered
+   *     });
+   *
+   * left a full set of observers alive on EVERY `chatEvents()` change. Each one kept
+   * observing every row and re-measured them on every scroll frame, so the cost grew with
+   * renders × rows — the reported 100% CPU.
+   *
+   * The cleanup now lives in the effect BODY, where the owner still exists, and disconnects
+   * whatever that run created (or cancels its pending frame).
    */
   createEffect(() => {
     if (localStorage.getItem("teapot.feedCv") === "0") return;
-    // track the rows so the effect re-runs when the set changes
+    // track the rows so the effect re-runs when the set changes; the module would otherwise
+    // only ever see the rows that existed at mount
     const rows = chatEvents();
     const root = feedEl();
     if (!root || rows.length === 0) return;
+    let reserved: ReservedSizes | null = null;
+    let cancelled = false;
     // one frame: the rows must be IN the DOM before they can be measured. A row that has
     // never been laid out reports a zero box, which `reserve` deliberately ignores.
     const raf = requestAnimationFrame(() => {
-      const reserved = reserveRowSizes(root);
-      onCleanup(() => reserved.disconnect());
+      if (cancelled) return;
+      reserved = reserveRowSizes(root);
     });
-    onCleanup(() => cancelAnimationFrame(raf));
+    onCleanup(() => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      reserved?.disconnect();
+    });
   });
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");

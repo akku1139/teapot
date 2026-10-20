@@ -70,6 +70,13 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
     // a zero box means "not laid out yet" (or a detached node) — reserving 0 would make the
     // row collapse on its next skip, which is worse than the default guess
     if (box.height <= 0) return;
+    // ROUND FIRST, and compare only the rounded values (#177). IntersectionObserver reports
+    // a FRACTIONAL `boundingClientRect` while ResizeObserver's `offsetHeight` is an INTEGER,
+    // so the same row measured by both produced e.g. 137.6 then 138 — always ≥1px apart,
+    // never settling. Each write to `contain-intrinsic-size` can itself trigger a resize, so
+    // the two together could alternate forever. Rounding makes both agree on the same row.
+    box = { width: Math.round(box.width), height: Math.round(box.height) };
+    if (box.height <= 0) return;
     const prev = reserved.get(el);
     // 1px of hysteresis: sub-pixel reflow would otherwise rewrite a style on every frame
     if (prev && Math.abs(prev.h - box.height) < 1 && Math.abs(prev.w - box.width) < 1) return;
@@ -92,9 +99,6 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
       ? new IntersectionObserver(
           (entries) => {
             for (const e of entries) reserve(e.target as HTMLElement, e.boundingClientRect);
-            // adopt anything that appeared since the last callback, so a row is never left
-            // with only the stylesheet's guess
-            adoptAll();
           },
           // a tall skirt: rows are measured while still off-screen, so the reservation is in
           // place BEFORE the scroll reaches them
@@ -111,7 +115,6 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
             // placeholder has to match (`.msg` has vertical padding)
             reserve(el, { width: el.offsetWidth, height: el.offsetHeight });
           }
-          adoptAll();
         })
       : null;
 
@@ -124,14 +127,24 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
    * in the smoke harness, one snapshot caught 5 of 10 rows, and the rest would have kept the
    * stylesheet's guess forever.
    */
+  const adopt = (el: HTMLElement) => {
+    if (adopted.has(el)) return;
+    adopted.add(el);
+    observe(el);
+    io?.observe(el);
+    ro?.observe(el);
+  };
+  /**
+   * Adopt every row currently in the DOM.
+   *
+   * NOT called from the observers. #177: it was, which made each scroll frame or resize do
+   * a `querySelectorAll` over every row and then a Set membership test for each — on a long
+   * feed that is a full DOM query per frame, for a result that can only change when the DOM
+   * changes. The MutationObserver below already reports exactly that, so adoption happens
+   * when a row is ADDED and nowhere else.
+   */
   const adoptAll = () => {
-    for (const el of root.querySelectorAll<HTMLElement>("[data-eid]")) {
-      if (adopted.has(el)) continue;
-      adopted.add(el);
-      observe(el);
-      io?.observe(el);
-      ro?.observe(el);
-    }
+    for (const el of root.querySelectorAll<HTMLElement>("[data-eid]")) adopt(el);
   };
   adoptAll();
 
@@ -143,7 +156,20 @@ export function reserveRowSizes(root: HTMLElement, onReserve?: () => void): Rese
    */
   const mo =
     typeof MutationObserver !== "undefined"
-      ? new MutationObserver(() => adoptAll())
+      ? new MutationObserver((records) => {
+          for (const r of records) {
+            for (const node of r.addedNodes) {
+              // `nodeType === 1` rather than `instanceof Element`: the module is also loaded
+              // in harnesses and workers where the `Element` global is not defined, and the
+              // `instanceof` check threw there (a ReferenceError inside the observer)
+              if ((node as Node).nodeType !== 1) continue;
+              const el = node as HTMLElement;
+              if (el.matches?.("[data-eid]")) adopt(el);
+              // a wrapper row can carry rows
+              for (const inner of el.querySelectorAll?.<HTMLElement>("[data-eid]") ?? []) adopt(inner);
+            }
+          }
+        })
       : null;
   mo?.observe(root, { childList: true, subtree: true });
 

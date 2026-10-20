@@ -136,3 +136,132 @@ test("disconnect stops the observers, and is safe to call twice (#143)", () => {
   }
   void flush;
 });
+
+/* ---------- #177: the reservation must not cost CPU per frame ---------- */
+
+test("an observer callback does NOT re-scan the whole feed (#177)", () => {
+  // Reported: the frontend pegged a CPU core after v0.29.38.
+  //
+  // `adoptAll()` used to run on EVERY IntersectionObserver and ResizeObserver callback —
+  // that is, on every scroll frame and every resize — and it was a `querySelectorAll` over
+  // every row plus a Set membership test for each. On a long feed the result can only change
+  // when the DOM changes, so a full query per frame bought nothing and cost O(rows).
+  //
+  // The invariant: pumping the observers must not scan the feed.
+  (globalThis as unknown as { __obs: (() => void)[] }).__obs = [];
+  let scans = 0;
+  const rows = [fakeRow(100), fakeRow(120)];
+  const root = {
+    querySelectorAll: () => {
+      scans++;
+      return rows;
+    },
+  } as unknown as HTMLElement;
+  const roCbs: ((e: unknown[]) => void)[] = [];
+  const RealRO = globalThis.ResizeObserver;
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+    constructor(cb: (e: unknown[]) => void) {
+      roCbs.push(cb);
+    }
+    observe() {}
+    disconnect() {}
+  };
+  try {
+    reserveRowSizes(root);
+    // PRECONDITION: the initial adoption really scanned, or "0 further scans" is vacuous
+    assert.ok(scans >= 1, `the initial adoption must scan the feed at least once; got ${scans}`);
+    const afterMount = scans;
+    // now pump both observers several times, as a scroll would
+    for (let frame = 0; frame < 10; frame++) {
+      for (const cb of roCbs) cb(rows.map((el) => ({ target: el, contentRect: { width: 400, height: 100 } })));
+    }
+    assert.equal(
+      scans,
+      afterMount,
+      `observers re-scanned the feed ${scans - afterMount} time(s) for 10 frames — that is a ` +
+        `full DOM query per frame, which is what burned the CPU (#177)`,
+    );
+  } finally {
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RealRO;
+  }
+});
+
+test("a fractional rect is ROUNDED, so both observers speak the same units (#177)", () => {
+  // IntersectionObserver reports a fractional `boundingClientRect` (137.6) while
+  // ResizeObserver's `offsetHeight` is always an integer. If the reservation stored the
+  // fractional value, the row would carry `contain-intrinsic-size: 400.4px 137.6px` — and a
+  // fractional placeholder is itself a source of sub-pixel drift: the row's real height is
+  // an integer, so every visit differs by a fraction and the scroll nudges.
+  //
+  // This asserts the CONTRACT (the written value is integral), which is what makes the two
+  // sources comparable. It is deliberately not a "cannot oscillate" test: the 1px
+  // hysteresis already absorbs that, so such a test would pass on the unfixed code too.
+  (globalThis as unknown as { __obs: (() => void)[] }).__obs = [];
+  const els = [fakeRow(137.6, 400.4), fakeRow(212.5, 640.5)];
+  reserveRowSizes(fakeRoot(els));
+  assert.equal(
+    els[0]!.__style.get("contain-intrinsic-size"),
+    "400px 138px",
+    "a fractional box must be rounded, not written through",
+  );
+  assert.equal(els[1]!.__style.get("contain-intrinsic-size"), "641px 213px");
+});
+
+test("dispose() releases every observer, so a re-arm cannot leak (#177)", () => {
+  // The CPU burn came from the WIRING, not this module: App.tsx re-ran the effect on every
+  // `chatEvents()` change and registered its cleanup from inside a requestAnimationFrame
+  // callback, where Solid's Owner is already null — so `onCleanup` silently did nothing and
+  // each render left a full set of observers alive.
+  //
+  // The module's half of that contract is that `disconnect()` really does release everything
+  // it created. If it ever stopped, the (now correctly-registered) cleanup would be a no-op
+  // and the leak would come back the moment anything re-armed it.
+  (globalThis as unknown as { __obs: (() => void)[] }).__obs = [];
+  const row = fakeRow(100);
+  const asked: DOMRect = { width: 400, height: 100 } as DOMRect;
+  let ioDisconnects = 0;
+  let roDisconnects = 0;
+  let moDisconnects = 0;
+  let roObserved = 0;
+  const RealIO = globalThis.IntersectionObserver;
+  const RealRO = globalThis.ResizeObserver;
+  const RealMO = globalThis.MutationObserver;
+  (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = class {
+    constructor(_cb: (e: unknown[]) => void) {}
+    observe() {}
+    unobserve() {}
+    disconnect() {
+      ioDisconnects++;
+    }
+  };
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+    constructor(_cb: (e: unknown[]) => void) {}
+    observe() {
+      roObserved++;
+    }
+    disconnect() {
+      roDisconnects++;
+    }
+  };
+  (globalThis as unknown as { MutationObserver: unknown }).MutationObserver = class {
+    constructor(_cb: () => void) {}
+    observe() {}
+    disconnect() {
+      moDisconnects++;
+    }
+  };
+  try {
+    const r = reserveRowSizes(fakeRoot([row]));
+    // PRECONDITION: both row observers were really handed the row
+    assert.equal(roObserved, 1, "the ResizeObserver must have been given the row");
+    r.disconnect();
+    assert.equal(ioDisconnects, 1, "the IntersectionObserver must be released");
+    assert.equal(roDisconnects, 1, "the ResizeObserver must be released");
+    assert.equal(moDisconnects, 1, "the MutationObserver must be released — it holds the feed");
+  } finally {
+    (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = RealIO;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RealRO;
+    (globalThis as unknown as { MutationObserver: unknown }).MutationObserver = RealMO;
+  }
+  void asked;
+});
