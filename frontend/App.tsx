@@ -48,6 +48,7 @@ import {
   type ScrollCause,
   type TailSample,
 } from "./scroll-policy";
+import { needsRemeasure } from "./composer-size";
 import {
   applyCustomTheme,
   loadCustomThemes,
@@ -3295,6 +3296,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * content height. SHRINKING does, because a box taller than its content reports its own
      * height — and that is exactly the case `lastAppliedContentH` identifies.
      */
+    /**
+     * The content height read WITHOUT collapsing — valid exactly when the content did not
+     * shrink, which is the fast path below (`scrollHeight` of a fixed-height box reports
+     * `max(height, content)`, so while content grew it IS the content; once content shrank it is
+     * the stale box height and says nothing).
+     */
     const rawContentH = composerEl.scrollHeight;
     /**
      * An EMPTY box is always exactly one line — never `scrollHeight`.
@@ -3323,11 +3330,28 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * this collapse therefore either never shrinks the box or is always true — both were tried
      * and both shipped a bug.
      *
-     * So the round-trip stays, and the transient one-line layout it produces is suppressed where
-     * it does damage: `suppressFeedResize` below makes the feed's ResizeObserver skip the box
-     * change caused by this measurement. The layout still happens (it must, to measure), but the
-     * follow logic never sees it — which is what "入力時にスクロールが戻る" was.
+    * So the round-trip is now taken ONLY when the content actually got SHORTER.
+     *
+     * That is the whole fix for "2行以上の入力欄に入力するとタイムラインのスクロールが1行目の高さ
+     * に合わせて戻る", and it works for both shapes of the report:
+     *
+     *   - typing that WRAPS a new line grows the content, so `scrollHeight` already reports it
+     *     and no measurement is needed;
+     *   - typing that does NOT wrap leaves the content height unchanged, so there is nothing to
+     *     measure either.
+     *
+     * Both used to take the round-trip anyway: `height: "auto"` collapsed the box to one line,
+     * the browser LAID THAT OUT, `.feed` grew by the difference, and the follow logic — which
+     * cannot tell that box change from a reader action — re-pinned to the floor as it was at ONE
+     * LINE. That is precisely the reported drift. Deleting text keeps the round-trip, because
+     * only a shrink genuinely cannot be measured without it.
      */
+    // content did not shrink ⇒ `scrollHeight` is the content height; no round-trip needed
+    if (!needsRemeasure(rawContentH, lastAppliedContentH, maximized)) {
+      composerEl.style.height = `${Math.min(rawContentH, MAX_COMPOSER_H)}px`;
+      lastAppliedContentH = Math.min(rawContentH, MAX_COMPOSER_H);
+      return;
+    }
     composerEl.style.height = "auto";
     const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
     // apply it unconditionally: an early return must NOT leave the box at `auto`, which
@@ -4207,19 +4231,29 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             const cause = classifyScroll(now, ledger, lastSampleHeight, lastSampleViewport);
             /**
-             * A `layout` cause far from the tail MAY be a content-visibility unskip, and Gecko
-             * does not hold the reader's position across one (see `resyncAfterUnskip`).
+             * A `layout` cause MAY be a `content-visibility` unskip, which moves the viewport.
              *
-             * MEASURED why this is gated so tightly. An earlier version ran on any large height
-             * delta, which caught the reader's OWN scroll: a wheel step changes `scrollTop`, and
-             * `firstVisibleRow()` then forces rows to lay out, so the delivery arrives with a
-             * changed height and was mistaken for an unskip. The correction immediately undid
-             * the wheel, so "after following, the wheel does not scroll until the next message
-             * arrives". It must be a `layout` cause — a delivery the reader did NOT cause.
+             * Both engines do this now. It was Firefox-only while `.feed` kept native scroll
+             * anchoring on: Blink special-cases `anchor_is_cv_auto_without_layout_` (see
+             * `docs/firefox-scroll-defects.md`) and absorbed the shift for us. Disabling native
+             * anchoring for the Firefox composer fix (`ca15d77`) removed that absorption, so
+             * Chrome started showing the same drift — which is why this is no longer gated on
+             * "not the tail".
+             *
+             * `!atBottom()` was here because a reader-scrolled viewport was assumed to be the
+             * only one that could shift. While FOLLOWING, a row above unskipping moves the
+             * floor too, and the visible result is the timeline jittering under a pinned tail.
+             * Both cases need the same correction, so the condition is now purely "did layout
+             * move us", with the anchor telling us where to put it back.
+             *
+             * Still gated on a `layout` cause, and the reason is measured: an earlier version
+             * ran on any large height delta and caught the reader's OWN wheel step —
+             * `firstVisibleRow()` forces rows to lay out, so the delivery arrives with a
+             * changed height and was mistaken for an unskip, undoing the wheel. A delivery the
+             * reader did NOT cause is the only safe trigger.
              */
             if (
               cause === "layout" &&
-              !atBottom() &&
               resyncBudget > 0 &&
               Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1
             ) {
@@ -4239,19 +4273,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             publishGap(now);
             const wasFollowing = atBottom();
             /**
-             * Keep the unskip anchor current while the reader is parked. Throttled: finding the
-             * row costs a binary search over row boxes, and a drag fires scroll continuously.
-             * 100ms is well under the time it takes to read one row, so the anchor is never
-             * meaningfully stale.
+             * Keep the unskip anchor current — WHETHER OR NOT we are following.
+             *
+             * It used to be captured only for a parked reader, and cleared while following,
+             * because the tail was assumed to be the only position that mattered there. Once
+             * native scroll anchoring was disabled (`ca15d77`) that stopped being true: a row
+             * above unskipping moves the floor under a pinned tail too, and with no anchor
+             * recorded there is nothing to restore against — the correction had nothing to aim
+             * at and the timeline jittered.
+             *
+             * Throttled: finding the row costs a binary search over row boxes, and a drag fires
+             * scroll continuously. 100ms is well under the time it takes to read one row.
              */
-            if (!wasFollowing) {
-              const t = performance.now();
-              if (t - unskipAnchorAt > 100) {
-                unskipAnchorAt = t;
-                unskipAnchor = firstVisibleRow(el);
-              }
-            } else {
-              unskipAnchor = null;
+            const t = performance.now();
+            if (t - unskipAnchorAt > 100) {
+              unskipAnchorAt = t;
+              unskipAnchor = firstVisibleRow(el);
             }
             const follow = nextFollowing(wasFollowing, cause, now);
             if (follow !== wasFollowing) setAtBottom(follow);

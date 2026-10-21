@@ -572,14 +572,22 @@ body {
  * placeholder and the real size "might force a new layout" — and when that row is ABOVE the
  * reader, the whole feed shifts under them.
  *
- * In Chromium that shift is absorbed: Blink tracks "the last anchor we have selected is a
- * 'content-visibility: auto' element that did not yet have a layout after becoming visible"
- * in `anchor_is_cv_auto_without_layout_` and special-cases the scroll adjustment for it.
- * Gecko has no equivalent — its `ScrollAnchorContainer.cpp` mentions content-visibility
- * nowhere — and its own WPT metadata marks the off-screen case `expected: FAIL`. Both the
- * flag and the test expectations are quoted in `docs/firefox-scroll-defects.md`.
- * MEASURED in this app: scrolling up through a loaded session in Firefox makes the timeline
- * creep a few pixels per unskipped row, in the direction of travel.
+ * In Chromium that shift is absorbed natively: Blink tracks "the last anchor we have selected is
+ * a 'content-visibility: auto' element that did not yet have a layout after becoming visible" in
+ * `anchor_is_cv_auto_without_layout_` and special-cases the scroll adjustment for it. Gecko has
+ * no equivalent — its `ScrollAnchorContainer.cpp` mentions content-visibility nowhere — and its
+ * own WPT metadata marks the off-screen case `expected: FAIL`. Both the flag and the test
+ * expectations are quoted in `docs/firefox-scroll-defects.md`.
+ *
+ * IMPORTANT: that Chromium absorption goes away with `overflow-anchor: none` (below), which was
+ * added for the composer bug. So Chrome now needs the same script compensation Firefox does —
+ * reported as "前はFirefoxで content-visibility: auto のときにスクロールがブレるって言ったんだけど、
+ * Chromeでも起きるようになった". Do not assume the engine protects this scrollport: it does not,
+ * because we turned the mechanism off ourselves. `resyncAfterUnskip()` must therefore stay
+ * active while FOLLOWING as well, not only while the reader is parked.
+ *
+ * MEASURED in this app: scrolling up through a loaded session makes the timeline creep a few
+ * pixels per unskipped row, in the direction of travel.
  *
  * The compensation is in `resyncAfterUnskip()` (App.tsx): before a row can unskip, the row the
  * reader is looking at is recorded, and after the frame it is put back where it was. That is
