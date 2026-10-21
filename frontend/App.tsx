@@ -3571,7 +3571,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     Either way, hide the badge only when nothing is hidden. */}
                 <Show
                   when={
-                    collapsedSubs().has(row.a.id) ||
+                    // #panel: this read the RAW persisted set, but sub-agent groups are now
+                    // COLLAPSED BY DEFAULT — "not in the set" means CLOSED, not open. So the
+                    // badge was hidden on every default-collapsed row, which is nearly all of
+                    // them: a caret appeared (there ARE children) but the count that explains
+                    // it did not. `subsCollapsed()` is the same predicate the caret uses.
+                    subsCollapsed(row.a.id) ||
                     (row.chatCollapsedGroup === true && chatCollapsed().has(`chat:${row.a.id}`))
                   }
                 >

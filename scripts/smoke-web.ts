@@ -3104,6 +3104,42 @@ console.log("deep render ok: feed rows present");
   headerFor(AGENT.workspace)?.click();
   await sleep(200);
 
+  /* ---------- a caret row must always carry its count ----------
+   * Reported: "サブエージェントが存在する(折りたたみのアイコンが有る)のに、サブエージェント数が
+   * カウントされていないセッションがあります".
+   *
+   * Sub-agent groups are COLLAPSED BY DEFAULT now, so the predicate deciding "is this subtree
+   * hidden?" is `subsCollapsed()`. The 🧩 badge still read the RAW persisted set, where
+   * "absent" means OPEN — so on every default-collapsed row the badge was suppressed, while
+   * the count was exactly what the caret was promising. The two must agree.
+   *
+   * Only COLLAPSED rows are checked: an expanded row shows its children, so a count there
+   * would restate what is already on screen.
+   */
+  {
+    const withCaret = [...w.document.querySelectorAll(".agent-item")].filter((el) =>
+      el.querySelector(".caret"),
+    );
+    const collapsed = withCaret.filter((el) =>
+      (el.querySelector(".caret")?.textContent ?? "").includes("▸"),
+    );
+    if (collapsed.length === 0) {
+      fail("#panel check: no COLLAPSED caret rows — the count check would be vacuous");
+    }
+    const missing = collapsed.filter((el) => !el.querySelector(".subcount"));
+    if (missing.length > 0) {
+      const names = missing.map((el) => el.textContent?.trim().slice(0, 24)).slice(0, 4);
+      fail(
+        `${missing.length} row(s) offer a collapse caret but show NO sub-agent count ` +
+          `(e.g. ${JSON.stringify(names)}). The caret says "there is more under here" and the ` +
+          `badge is the only thing that says how much.`,
+      );
+    }
+    console.log(
+      `deep render ok: every COLLAPSED caret row carries its sub-agent count (#panel, ${collapsed.length} rows)`,
+    );
+  }
+
   setGlobal("fetch", origFetch);
   console.log("deep render ok: chats sharing one directory are SEPARATE groups (#18)");
 }
