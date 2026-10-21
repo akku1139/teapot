@@ -544,6 +544,26 @@ body {
  * our own scroll anchoring would be invisible to CLS metrics. That is why the anchoring
  * behaviour has its own tests rather than relying on a metric to catch it.
  *
+ * ## Firefox shifts the viewport when a row unskips, and we compensate in script
+ *
+ * `content-visibility: auto` replaces a row with `contain-intrinsic-size` until it is near
+ * the viewport, then lays it out for real. MDN is explicit that a mismatch between the
+ * placeholder and the real size "might force a new layout" — and when that row is ABOVE the
+ * reader, the whole feed shifts under them.
+ *
+ * In Chromium that shift is absorbed: the engine keeps the reader's position stable across an
+ * unskip, and reports no layout shift for it at all (crbug 40733057). Gecko does not, and the
+ * gap is tracked: Bugzilla 1940025 ("navigating to a URL with an anchor scrolls to an
+ * incorrect location with content-visibility: auto") and Bugzilla 1908582 (WPT
+ * `content-visibility-anchor-positioning-002` / `-003` failing) are both still open.
+ * MEASURED in this app: scrolling up through a loaded session in Firefox makes the timeline
+ * creep a few pixels per unskipped row, in the direction of travel.
+ *
+ * The compensation is in `resyncAfterUnskip()` (App.tsx): before a row can unskip, the row the
+ * reader is looking at is recorded, and after the frame it is put back where it was. That is
+ * the same anchor mechanism already used for box resizes — the unskip simply does not fire a
+ * ResizeObserver, so it needs its own trigger.
+ *
  * ## No script belongs here (#179)
  *
  * There was once an effect that wrote each row's measured box as an inline

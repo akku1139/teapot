@@ -450,6 +450,35 @@ export default function App() {
     // the box changed, so the gap did too — keep the pill honest
     publishGap(tailSample());
   };
+
+  /**
+   * Put the reader back where they were after a `content-visibility` unskip.
+   *
+   * Gecko lays a row out for real the moment it approaches the viewport, replacing its
+   * `contain-intrinsic-size` placeholder. When that row is ABOVE the reader, everything below it
+   * moves — and unlike Chromium, Gecko does not keep the scroll position stable across the
+   * unskip (Bugzilla 1940025 and 1908582 are both still open; WPT
+   * `content-visibility-anchor-positioning-00{2,3}.html` fails). MEASURED in this app: scrolling
+   * up through a loaded session creeps a few pixels per unskipped row.
+   *
+   * The unskip does NOT fire a ResizeObserver — the feed's own box is unchanged — so it needs
+   * its own trigger. It DOES change `scrollHeight`, which is exactly the signature the scroll
+   * handler already sees as `layout`; this runs on that path and re-applies the row anchor.
+   *
+   * Bounded deliberately: at most a few corrections per animation frame, and never while
+   * following (there the tail is the only position that matters and `pinToTail` already handles
+   * it).
+   */
+  function resyncAfterUnskip(f: HTMLElement, anchor: { sel: string; top: number } | null): void {
+    if (!anchor) return;
+    const el = f.querySelector<HTMLElement>(anchor.sel);
+    if (!el) return;
+    const delta = el.getBoundingClientRect().top - anchor.top;
+    // a sub-pixel diff is rounding, not an unskip: correcting it would ADD jitter
+    if (Math.abs(delta) < 1) return;
+    f.scrollTop += delta;
+    ledger = { top: f.scrollTop, height: f.scrollHeight };
+  }
   const scheduleRestore = () => {
     if (feedRoRaf) return;
     feedRoRaf = requestAnimationFrame(restoreAfterBoxChange);
@@ -3172,6 +3201,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let ledger: { top: number; height: number } | null = null;
   /** content height at the previous delivery, so a height change can be attributed to layout */
   let lastSampleHeight: number | undefined;
+  /**
+   * The row the reader is looking at, refreshed whenever they settle.
+   *
+   * Gecko unskips a `content-visibility` row as it approaches the viewport and does not hold
+   * the scroll position across it, so the anchor must be captured BEFORE the unskip and
+   * re-applied after. Captured on every scroll delivery while not following: cheap (one row,
+   * found by the same binary search a resize already uses) and always current.
+   */
+  let unskipAnchor: { sel: string; top: number } | null = null;
+  let unskipAnchorAt = 0;
   /** the viewport height at the previous delivery, so a composer resize is attributable */
   let lastSampleViewport: number | undefined;
   createEffect(() => {
@@ -3967,6 +4006,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             const cause = classifyScroll(now, ledger, lastSampleHeight, lastSampleViewport);
             /**
+             * A `layout` cause far from the tail is usually a content-visibility UNSKIP, and
+             * Gecko does not hold the reader's position across one (see `resyncAfterUnskip`).
+             * Re-apply the row anchor before the samples move, so the correction itself is not
+             * then re-classified.
+             */
+            if (cause === "layout" && !atBottom() && Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1) {
+              resyncAfterUnskip(el, unskipAnchor);
+            }
+            /**
              * The ledger is consumed AFTER use, but a write whose delivery never arrived would
              * otherwise authorise the reader's NEXT move too. Any intervening layout (`layout`
              * cause) invalidates it, because the position it recorded no longer means anything.
@@ -3978,6 +4026,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             // the pill reads this instead of measuring the DOM itself
             publishGap(now);
             const wasFollowing = atBottom();
+            /**
+             * Keep the unskip anchor current while the reader is parked. Throttled: finding the
+             * row costs a binary search over row boxes, and a drag fires scroll continuously.
+             * 100ms is well under the time it takes to read one row, so the anchor is never
+             * meaningfully stale.
+             */
+            if (!wasFollowing) {
+              const t = performance.now();
+              if (t - unskipAnchorAt > 100) {
+                unskipAnchorAt = t;
+                unskipAnchor = firstVisibleRow(el);
+              }
+            } else {
+              unskipAnchor = null;
+            }
             const follow = nextFollowing(wasFollowing, cause, now);
             if (follow !== wasFollowing) setAtBottom(follow);
             if (follow) {

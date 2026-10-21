@@ -202,3 +202,30 @@ test("a reader parked mid-history is not rescued by being near the tail (#scroll
   assert.ok(!atTail(parked), "precondition: genuinely away");
   assert.equal(nextFollowing(true, "reader", parked), false, "a real departure still unpins");
 });
+
+test("a content-visibility unskip is a LAYOUT cause, so it cannot drop follow (#firefox)", () => {
+  /**
+   * Gecko lays a `content-visibility: auto` row out for real when it approaches the viewport,
+   * replacing its `contain-intrinsic-size` placeholder. Chromium holds the scroll position
+   * across that; Gecko does not (Bugzilla 1940025 / 1908582, both open).
+   *
+   * The unskip does NOT fire a ResizeObserver — the feed's own box is unchanged — so the only
+   * signal is that `scrollHeight` changed. The policy must classify that as layout, never as
+   * the reader, or browsing upward through a loaded session would silently drop follow.
+   */
+  const before = vp(600, 4000); // parked mid-history
+  assert.ok(!atTail(before), "precondition: the reader is not at the tail");
+
+  // a row above unskips: real size replaces the 140px placeholder, so the content grows
+  const after = vp(600, 4000 + 260);
+  assert.equal(
+    classifyScroll(after, null, before.height, before.viewport),
+    "layout",
+    "a height change is layout — the reader cannot change scrollHeight",
+  );
+  assert.equal(nextFollowing(false, "layout", after), false, "a parked reader stays parked");
+
+  // …and the same in the other direction, which is the creep direction (placeholder was too big)
+  const shrank = vp(600, 4000 - 260);
+  assert.equal(classifyScroll(shrank, null, before.height, before.viewport), "layout");
+});
