@@ -35,7 +35,15 @@ if (!asset) {
 const AGENT = {
   id: "alpha",
   status: "idle",
-  statusReason: "",
+  /**
+   * The REAL value an idle agent carries.
+   *
+   * `setStatus` writes a reason on every transition, and the loop ends with "round complete" —
+   * so an idle agent in production always has one. The fixture said "" and that made the
+   * bare-ℹ check below pass VACUOUSLY: the glyph only rendered when the reason was set, so it
+   * could never have caught the thing it was written for.
+   */
+  statusReason: "round complete",
   workspace: "/tmp/ws",
   session: "alpha-s1",
   branch: "br0",
@@ -1609,6 +1617,24 @@ console.log("deep render ok: feed rows present");
     console.log(
       `deep render ok: fork / stop-subs / archive / start-stop are in the header, not behind the panel (#panel, panelOpen=${panelOpen})`,
     );
+    /**
+     * No bare ℹ glyph in the header.
+     *
+     * It used to render whenever `statusReason` was set, which the server fills on every status
+     * write — so it sat there permanently, carrying one mechanical fact behind a hover. The rule
+     * this pins: a control in the header must say what it is without being hovered. The status
+     * BADGE is allowed, because it renders a readable word.
+     */
+    const glyphs = [...header.querySelectorAll(".sub")].filter(
+      (s) => (s.textContent ?? "").trim() === "ℹ",
+    );
+    if (glyphs.length > 0) {
+      console.error(
+        "#panel REGRESSION: the header shows a bare ℹ with no readable label — " +
+          "the status reason belongs on the badge's tooltip, not behind an unlabelled glyph",
+      );
+      process.exit(1);
+    }
   }
 
   /* ---------- #170: a provider can hold SEVERAL keys ------------------------

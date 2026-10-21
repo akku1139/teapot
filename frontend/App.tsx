@@ -3788,7 +3788,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <header class="chan-head">
             <span class="hash">#</span>
             <span class="title">{sel()!.id}</span>
-            <span class={`badge ${sel()!.status}`}>{sel()!.status}</span>
+            {/**
+             * The badge carries the status; its tooltip carries the REASON, and only when the
+             * reason adds something.
+             *
+             * The server writes a reason on every status change, so it is usually mechanical
+             * ("round complete", "prompt", "goal set") — repeating it was what made a bare ℹ
+             * glyph appear on almost every session. But one case IS worth reading: a tool that
+             * parked the agent (`wait_children`) sets idle with an explanation of how to take
+             * over. Saying so on the badge keeps that available without a glyph that stands for
+             * nothing on its own.
+             */}
+            <span
+              class={`badge ${sel()!.status}`}
+              title={
+                sel()!.statusReason && !/^(round complete|prompt|api start|goal set|created via web|start)$/.test(sel()!.statusReason)
+                  ? `${sel()!.status} — ${sel()!.statusReason}`
+                  : undefined
+              }
+            >
+              {sel()!.status}
+            </span>
             <Show when={(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 0}>
               <span
                 class="badge queued"
@@ -3813,9 +3833,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               {sel()!.model} · {sel()!.session}/{sel()!.branch} · {sel()!.stats.turns}↻ {sel()!.stats.toolCalls}⚙
             </span>
             <span class="head-actions">
-              <Show when={sel()!.statusReason}>
-                <span class="sub" title={sel()!.statusReason}>ℹ</span>
-              </Show>
+              {/* No ℹ glyph here.
+                  It appeared whenever `statusReason` was set, which the server fills on EVERY
+                  status write — "round complete" after each idle, "prompt", "goal set". So it
+                  was almost always on screen, and it said nothing the `badge` beside it had not
+                  already said: the one fact it carried was hidden behind a hover, and that fact
+                  was mechanical. A glyph you cannot read without hovering, repeating a word
+                  already on screen, is noise. */}
               {/* THE primary action, moved out of the details panel.
                   Starting and stopping is what an operator does most, and it was
                   only reachable by opening a side panel — every other control was
