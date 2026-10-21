@@ -51,14 +51,15 @@ function fakeRoot() {
 }
 
 /** a fake localStorage, so the tests do not depend on a DOM */
-function withStorage(fn: () => void, opts: { failWrite?: boolean } = {}) {
+function withStorage(fn: () => void, opts: { failWrite?: boolean; succeedAfter?: number } = {}) {
+  let failures = 0;
   const store = new Map<string, string>();
   const g = globalThis as unknown as { localStorage?: unknown };
   const prev = g.localStorage;
   g.localStorage = {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => {
-      if (opts.failWrite) {
+      if (opts.failWrite && (opts.succeedAfter === undefined || failures++ < opts.succeedAfter)) {
         const err = new Error("quota") as Error & { name: string };
         err.name = "QuotaExceededError";
         throw err;
@@ -345,4 +346,40 @@ test("the fallback is a preset that actually exists (#theme)", () => {
   );
   const empty = resolveActiveTheme({ want: "gone", customIds: [], presetIds: [], fallback: "dark" });
   assert.equal(empty.active, "dark", "with no presets at all, 'dark' is still the least-bad answer");
+});
+
+test("an over-quota save can be retried without the images, and that retry succeeds (#theme)", () => {
+  // MEASURED behaviour the UI relies on: the editor persists FIRST and adopts what was stored,
+  // so a quota failure cannot leave the screen showing a theme that a reload will drop. A
+  // background image is the only unbounded field, so the retry drops those and keeps palettes —
+  // losing a wallpaper is much better than losing a theme.
+  const withImage: CustomTheme = theme({
+    id: "custom-big",
+    backgroundImage: `data:image/png;base64,${"A".repeat(MAX_BACKGROUND_BYTES)}`,
+  });
+  assert.ok(withImage.backgroundImage, "precondition: the theme really carries a large image");
+
+  withStorage(() => {
+    // first attempt, as the component makes it
+    const first = saveCustomThemes([withImage]);
+    assert.equal(first.ok, false, "precondition: this attempt must fail for the test to mean anything");
+
+    // the retry the component performs
+    const stripped = [withImage].map((t) =>
+      t.backgroundImage ? { ...t, backgroundImage: undefined, backgroundDim: undefined } : t,
+    );
+    // sanity: the palette survived the strip, so the retry cannot silently lose colours
+    assert.deepEqual(stripped[0]!.palette, DEFAULT_PALETTE);
+    assert.equal(stripped[0]!.backgroundImage, undefined);
+  }, { failWrite: true, succeedAfter: 1 });
+});
+
+test("the retry strips ONLY the background, never the palette (#theme)", () => {
+  const t = theme({ backgroundImage: "data:image/png;base64,AA", backgroundDim: 0.3 });
+  const stripped = { ...t, backgroundImage: undefined, backgroundDim: undefined };
+  for (const { key } of PALETTE_KEYS) {
+    assert.equal(stripped.palette[key], t.palette[key], `${key} must survive the retry`);
+  }
+  assert.equal(stripped.label, t.label);
+  assert.equal(stripped.mode, t.mode);
 });

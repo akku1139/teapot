@@ -7785,10 +7785,35 @@ function ConfigModal(props: {
           <ThemeEditor
             themes={customThemes()}
             activeId={fixedTheme()}
-            onChange={(next) => {
-              setCustomThemes(next);
-              const saved = saveCustomThemes(next);
-              if (!saved.ok) flashHint(saved.error ?? "could not save theme");
+            onChange={(requested) => {
+              /**
+               * Persist FIRST, then adopt what was actually stored.
+               *
+               * The old order was `setCustomThemes(next)` then save, so a quota failure left
+               * memory ahead of storage: the theme worked, looked saved, and vanished on the next
+               * reload with only a transient toast. A background image is the only unbounded
+               * field here, so an over-quota save retries without the images — losing a
+               * wallpaper is much better than losing a palette — and only then reports failure,
+               * in which case the on-screen state is rolled BACK so it matches what is stored.
+               */
+              let saved = saveCustomThemes(requested);
+              let adopted = requested;
+              if (!saved.ok) {
+                const stripped = requested.map((t) =>
+                  t.backgroundImage ? { ...t, backgroundImage: undefined, backgroundDim: undefined } : t,
+                );
+                const retry = saveCustomThemes(stripped);
+                if (retry.ok) {
+                  adopted = stripped;
+                  flashHint("storage was full — saved without the background image(s)");
+                } else {
+                  // nothing could be stored: keep the screen in step with disk rather than
+                  // showing a theme that a reload will silently drop
+                  flashHint(retry.error ?? "could not save theme");
+                  return;
+                }
+              }
+              setCustomThemes(adopted);
               /**
                * Deleting a theme must not leave ANY of the three theme ids pointing at it.
                *
@@ -7802,7 +7827,7 @@ function ConfigModal(props: {
                * localStorage so a reload agrees with the screen.
                */
               const alive = (id: string) =>
-                next.some((t) => t.id === id) || THEMES.some((t) => t.key === id);
+                adopted.some((t) => t.id === id) || THEMES.some((t) => t.key === id);
               if (!alive(fixedTheme())) {
                 setFixedTheme("dark");
                 localStorage.setItem("teapot.theme", "dark");
