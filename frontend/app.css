@@ -1734,3 +1734,31 @@ input[type="number"] {
    The RENDERED checklist is prose the operator reads; monospace made it visibly
    hard to scan (fixed-width digits and cramped kanji), so it inherits the UI font. */
 .todopane-edit { font-family: ui-monospace, Menlo, monospace; }
+
+/* ---- content surfaces are OPAQUE whenever a background image is set ----
+ *
+ * Reported: "背景画像入れてるときにコードブロックとかtoolログとかが透明度0で表示されてる".
+ *
+ * Cause: a palette value can carry alpha — `normalizeColour` accepts 8-digit hex, so a theme
+ * whose `surface (deepest)` was saved as `#1a1c2200` renders `.embed` and `pre` at zero opacity
+ * and the photo shows straight through the code. A translucent surface is a legitimate choice
+ * for a plain theme, which is why this is not enforced in the palette.
+ *
+ * But code and tool output are the one place where a transparency decision must not reach:
+ * they are read character by character, and they are already distinguished by their BORDER and
+ * their monospace face rather than by their fill. So with an image behind the app they get the
+ * solid surface, whatever the palette says.
+ *
+ * Scoped to `[data-bg-image]` so a plain theme keeps whatever the author intended.
+ */
+html[data-bg-image="on"] .embed,
+html[data-bg-image="on"] .content pre,
+html[data-bg-image="on"] .content pre > code,
+html[data-bg-image="on"] .card,
+html[data-bg-image="on"] .mcpresult,
+html[data-bg-image="on"] .bgpreview {
+  /* `--bg-darkest-solid` is written by applyCustomTheme with any alpha stripped, so this is
+     opaque even when the palette's own `--bg-darkest` is not */
+  background-color: var(--bg-darkest-solid, var(--bg-darkest));
+  background-image: none;
+}

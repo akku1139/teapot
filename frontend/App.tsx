@@ -416,37 +416,28 @@ export default function App() {
     const f = feedEl();
     if (!f) return;
     /**
-     * Ignore the box change caused by the composer MEASURING itself.
+     * Re-pin on EVERY box change while following — including the composer's own measuring.
      *
-     * `autosizeComposer` has to collapse the textarea to read its content height (a tall box
-     * reports its own height), and that collapse shrinks the feed for one layout. Acting on it
-     * is the reported "入力欄が2行以上に拡大すると入力時にスクロールが戻る": the observer re-pinned the
-     * tail against the collapsed geometry, and the real height landed afterwards.
+     * Three previous fixes all circled this one line, so the reasoning is worth keeping:
      *
-     * The flag is cleared on the next frame, by which point the box is back at its real height —
-     * so every OTHER reason the feed can resize (a window resize, the drawer, the right panel, a
-     * row expanding) still reaches this function.
+     *   v0.34.7  `if (contentHeight <= offsetHeight) height = "auto"` — MEASURED always true, so
+     *            the collapse stayed unconditional.
+     *   v0.34.8  compared against a remembered content height read from a box that was still
+     *            tall, so the guard never fired and deleting never shrank the box.
+     *   v0.34.9  skipped this observer entirely while measuring. That removed the damage from
+     *            the collapsed layout AND removed the only pin — when the composer grows,
+     *            `scrollTop` does not change (only the floor moves down), so NO scroll event
+     *            fires and this observer is the sole thing that restores the tail.
+     *
+     * The measurement round-trip is unavoidable: a textarea with an explicit height reports
+     * `max(height, content)`, so the content height is unrecoverable while it is tall.
+     *
+     * But `pinToTail()` is `scrollTop = scrollHeight`, which the browser clamps to whatever the
+     * floor is AT THAT MOMENT. Pinning during the collapsed layout lands on the collapsed floor
+     * and is corrected by the next box change; pinning twice is idempotent, skipping it is not.
+     * So there is nothing to suppress — the flag is gone.
      */
-    /**
-     * While the composer is MEASURING itself, still PIN — but never re-anchor.
-     *
-     * `autosizeComposer` must collapse the textarea to read its content height (a tall box
-     * reports its own height, so the content height is otherwise unrecoverable). That collapse
-     * shrinks the feed's box for one layout, and this observer is the ONLY thing that re-pins
-     * after the composer grows — no scroll event fires, because `scrollTop` does not change when
-     * the floor moves down.
-     *
-     * So returning early here (v0.34.9) stopped the transient layout from doing damage but also
-     * removed the only pin, which is why "2行でのスクロール戻り" survived that release.
-     *
-     * What the transient layout must NOT do is decide the reader left: `atBottom()` is a state, so
-     * it is unaffected by geometry, and re-pinning is idempotent. The anchor path is the one that
-     * could compute a delta against the collapsed box, so that is what gets skipped.
-     */
-    if (suppressFeedResizeUntilFrame) {
-      if (atBottom()) pinToTail();
-      return;
-    }
+
     /**
      * Record the geometry on EVERY box change, not only on scroll deliveries.
      *
@@ -3286,16 +3277,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * only then can the box be taller than its content.
    */
   let lastAppliedContentH = 0;
-  /**
-   * True while `autosizeComposer` is doing its `height: auto` round-trip.
-   *
-   * Measuring a textarea's content height REQUIRES collapsing it to one line first — a tall box
-   * reports `max(height, content)`, so there is no way to read the content height otherwise. That
-   * collapse changes the feed's box for one layout, and the feed's ResizeObserver would otherwise
-   * act on it, which is the reported "入力時にスクロールが戻る". The layout is unavoidable; reacting
-   * to it is not.
-   */
-  let suppressFeedResizeUntilFrame = false;
   const autosizeComposer = () => {
     if (!composerEl) return;
     const maximized = composerMaximized();
@@ -3347,15 +3328,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * change caused by this measurement. The layout still happens (it must, to measure), but the
      * follow logic never sees it — which is what "入力時にスクロールが戻る" was.
      */
-    suppressFeedResizeUntilFrame = true;
     composerEl.style.height = "auto";
     const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
     // apply it unconditionally: an early return must NOT leave the box at `auto`, which
     // collapses a textarea to its `rows` default and looks like the composer ate the text.
     composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
     lastAppliedContentH = composerEl.scrollHeight;
-    // the box is back at its real height; let the observer resume next frame
-    requestAnimationFrame(() => { suppressFeedResizeUntilFrame = false; });
     // NOTE (#scroll): this function does NOT touch the feed's scroll position any more.
     //
     // The feed is a flex sibling, so growing this box shrinks the feed's viewport. That is
@@ -7866,23 +7844,35 @@ function ConfigModal(props: {
   >({});
   // live per-server state, refreshed when the section is opened
   const [mcpStates, setMcpStates] = createSignal<Record<string, any>>({});
-  // per-server OAuth state, keyed by row index — fetched lazily, because the token
-  // status changes independently of the server list
+  /**
+   * Per-server OAuth state, keyed by NAME.
+   *
+   * It was keyed by row INDEX, and that silently broke in two directions. The save path
+   * iterates `cleanMcp` (which SKIPS blank rows) while the row UI iterates `mcpServers()`, so
+   * the two disagree the moment any row is blank — the status fetched for server N got stored
+   * under a different row's index, and the save then read a stale flag and redirected to the MCP
+   * section on saves that had nothing to do with MCP ("テーマ編集後に save settings をすると
+   * MCP servers のセクションに飛ぶ").
+   *
+   * A name is the server's identity everywhere else (the server itself looks states up by name),
+   * so it is the only key that cannot drift.
+   */
   const [mcpOAuth, setMcpOAuth] = createSignal<
-    Record<number, { required?: boolean; authorized?: boolean; hasRefreshToken?: boolean; flow?: { phase: string; url?: string } }>
+    Record<string, { required?: boolean; authorized?: boolean; hasRefreshToken?: boolean; flow?: { phase: string; url?: string } }>
   >({});
   const refreshMcpStates = async () => {
     const r = (await api("/api/mcp").catch(() => null)) as { states?: any[] } | null;
     setMcpStates(Object.fromEntries((r?.states ?? []).map((s: any) => [s.name, s])));
   };
-  const refreshMcpOAuth = async (i: number, name: string) => {
-    if (!name) return;
+  const refreshMcpOAuth = async (name: string) => {
+    const key = String(name ?? "").trim();
+    if (!key) return;
     // "needs OAuth" is discovered by the server itself now: an unauthorized connect
     // leaves the state flagged, so there is no separate probe to trigger here.
-    const r = (await api(`/api/mcp/oauth/status?name=${encodeURIComponent(name)}`).catch(
+    const r = (await api(`/api/mcp/oauth/status?name=${encodeURIComponent(key)}`).catch(
       () => null,
     )) as any;
-    if (r && !r.error) setMcpOAuth((m) => ({ ...m, [i]: r }));
+    if (r && !r.error) setMcpOAuth((m) => ({ ...m, [key]: r }));
   };
   /**
    * Start OAuth for one server and open the authorization page.
@@ -7910,13 +7900,13 @@ function ConfigModal(props: {
       | null;
     if (r?.alreadyAuthorized) {
       setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "already authorized" } }));
-      await refreshMcpOAuth(i, srv.name);
+      await refreshMcpOAuth(srv.name);
       await refreshMcpStates();
       return;
     }
     if (!r?.ok || !r.url) {
       setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: r?.error ?? "no response" } }));
-      await refreshMcpOAuth(i, srv.name);
+      await refreshMcpOAuth(srv.name);
       return;
     }
     // Open the authorization page. `noopener` is deliberate: the page must not get a
@@ -7962,7 +7952,7 @@ function ConfigModal(props: {
     // OAuth state is per row and changes independently of the server list, so it is
     // fetched for every configured server when the section opens.
     mcpServers().forEach((m, i) => {
-      if (m.name) void refreshMcpOAuth(i, m.name);
+      if (m.name) void refreshMcpOAuth(m.name);
     });
   });
   const [err, setErr] = createSignal("");
@@ -8153,13 +8143,13 @@ function ConfigModal(props: {
       // outcome. Closing immediately would hide the very thing the save discovered.
       await refreshMcpStates();
       await Promise.all(
-        cleanMcp.map((m, i) => (m.name ? refreshMcpOAuth(i, m.name) : Promise.resolve())),
+        cleanMcp.map((m, i) => (m.name ? refreshMcpOAuth(m.name) : Promise.resolve())),
       );
       // one more pass after the connections settle
       setTimeout(() => {
         void refreshMcpStates();
         cleanMcp.forEach((m, i) => {
-          if (m.name) void refreshMcpOAuth(i, m.name);
+          if (m.name) void refreshMcpOAuth(m.name);
         });
       }, 1200);
       props.onSaved();
@@ -8177,12 +8167,12 @@ function ConfigModal(props: {
        * save does what the operator asked it to do — save and close.
        */
       const savedNames = new Set(cleanMcp.map((m) => m.name).filter(Boolean));
-      const needing = mcpServers().filter(
-        (m, i) =>
-          savedNames.has(String(m.name ?? "").trim()) &&
-          mcpOAuth()[i]?.required &&
-          !mcpOAuth()[i]?.authorized,
-      );
+      const needing = mcpServers().filter((m) => {
+        const key = String(m.name ?? "").trim();
+        return (
+          savedNames.has(key) && mcpOAuth()[key]?.required && !mcpOAuth()[key]?.authorized
+        );
+      });
       const newlyNeeding = needing.filter((m) => !props.announcedOAuth.has(String(m.name ?? "")));
       const needsAction = newlyNeeding.length > 0;
       if (needsAction) {
@@ -8669,7 +8659,7 @@ function ConfigModal(props: {
                           // A failed test may be a MISSING GRANT rather than a wrong url.
                           // The status endpoint reports what the connect attempt found, so
                           // "authorize" appears without the operator diagnosing a 401.
-                          if (!r?.ok) await refreshMcpOAuth(i, patch.name);
+                          if (!r?.ok) await refreshMcpOAuth(patch.name);
                         }}
                         title="connect now and list the tools — nothing is saved"
                       >test</button>
@@ -8677,7 +8667,7 @@ function ConfigModal(props: {
                           server wants a grant. Without this the operator sees only
                           "error" and has to know the difference between a bad header
                           and a missing grant. */}
-                      <Show when={mcpOAuth()[i]?.required && !mcpOAuth()[i]?.authorized}>
+                      <Show when={mcpOAuth()[String(srv().name ?? "").trim()]?.required && !mcpOAuth()[String(srv().name ?? "").trim()]?.authorized}>
                         <button
                           type="button"
                           class="archrestore"
@@ -8685,7 +8675,7 @@ function ConfigModal(props: {
                           title="start the OAuth flow: a browser tab opens, and the tools appear when you finish"
                         >🔑 authorize</button>
                       </Show>
-                      <Show when={mcpOAuth()[i]?.authorized}>
+                      <Show when={mcpOAuth()[String(srv().name ?? "").trim()]?.authorized}>
                         <span class="mcpstate connected" title="an OAuth access token is usable">
                           🔑 authorized
                         </span>
@@ -8697,7 +8687,7 @@ function ConfigModal(props: {
                               headers: { "content-type": "application/json" },
                               body: JSON.stringify({ name: srv().name }),
                             }).catch(() => {});
-                            await refreshMcpOAuth(i, srv().name);
+                            await refreshMcpOAuth(srv().name);
                             setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "disconnected" } }));
                           }}
                           title="forget the stored grant (the refresh token is deleted)"

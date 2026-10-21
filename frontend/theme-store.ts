@@ -253,6 +253,45 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
     if (want) root.style.setProperty(prop, want);
     else root.style.removeProperty(prop);
   }
+  /**
+   * `data-bg-image` lets the stylesheet force CONTENT surfaces opaque.
+   *
+   * With a photo behind the app, anything that is not fully opaque lets it show through text —
+   * and a palette value legitimately can be semi-transparent: `normalizeColour` accepts
+   * `#rrggbbaa`, so a theme whose `--bg-darkest` was saved as `#1a1c2200` renders code blocks and
+   * tool logs at ZERO opacity. Reported as "背景画像入れてるときにコードブロックとかtoolログとかが
+   * 透明度0で表示されてる".
+   *
+   * Rather than police the palette (a translucent surface is a legitimate design choice for a
+   * plain theme), the stylesheet uses this attribute to guarantee that the surfaces holding
+   * CODE AND TOOL OUTPUT are opaque whenever there is an image to see through them. Legibility of
+   * machine output is not a place for a transparency decision to reach.
+   */
+  // `dataset` is optional in the signature's shape because a test can pass a bare style holder;
+  // the attribute is only an optimisation for the stylesheet and its absence must not throw
+  if (theme?.backgroundImage) {
+    if (root.dataset) root.dataset.bgImage = "on";
+    /**
+     * A guaranteed-opaque version of the deepest surface.
+     *
+     * The CSS cannot strip alpha from a colour it is handed, so it is stripped here: `#rrggbbaa`
+     * becomes `#rrggbb`. Code and tool output then sit on a solid fill regardless of the palette
+     * (see the `[data-bg-image]` block in app.css).
+     */
+    const solid = opaque(theme.palette.bgDarkest);
+    if (root.style.getPropertyValue("--bg-darkest-solid") !== solid) {
+      root.style.setProperty("--bg-darkest-solid", solid);
+    }
+  } else {
+    if (root.dataset) delete root.dataset.bgImage;
+    root.style.removeProperty("--bg-darkest-solid");
+  }
+}
+
+/** `#rrggbbaa` → `#rrggbb`; anything else is returned unchanged (it has no alpha to strip) */
+export function opaque(colour: string): string {
+  const m = /^#([0-9a-f]{6})[0-9a-f]{2}$/i.exec(colour.trim());
+  return m ? `#${m[1]}` : colour;
 }
 
 /**

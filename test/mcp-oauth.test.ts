@@ -175,6 +175,18 @@ test("the callback listener delivers code and iss, then closes (#67)", async () 
     const waiting = loop.wait(5_000);
     const res = await fetch(`${loop.redirectUrl}?code=abc&iss=https%3A%2F%2Fas.example`);
     assert.equal(res.status, 200);
+    /**
+     * The success page must NOT close its own tab.
+     *
+     * It used to run `window.close()` after 1200ms, which rendered as "dev tools ではリダイレクト
+     * されてるのに、ブラウザ画面ではリダイレクトされてない" — the navigation happened, the page
+     * appeared, and then it vanished, which is indistinguishable from never navigating. It also
+     * silently failed on a user-navigated tab, so the behaviour varied by browser.
+     */
+    const body = await res.text();
+    assert.doesNotMatch(body, /window\.close/, "the callback page must not close its own tab");
+    assert.match(body, /close this tab/i, "…it should tell the operator to close it instead");
+
     const got = await waiting;
     assert.equal(got.code, "abc");
     assert.equal(got.iss, "https://as.example");

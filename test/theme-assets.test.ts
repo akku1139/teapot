@@ -112,3 +112,29 @@ test("a stored background reference must point at something this server serves (
     assert.equal(t?.backgroundImage, undefined, `${bad} must be dropped`);
   }
 });
+
+test("code and tool output get an OPAQUE surface when a background image is set (#ui)", async () => {
+  /**
+   * Reported: "背景画像入れてるときにコードブロックとかtoolログとかが透明度0で表示されてる".
+   *
+   * A palette value can carry alpha — `normalizeColour` accepts 8-digit hex — so a theme whose
+   * `surface (deepest)` was saved as `#1a1c2200` renders `.embed` and `pre` fully transparent and
+   * the photo shows through the code. `applyCustomTheme` now also writes `--bg-darkest-solid`
+   * with the alpha stripped, and the stylesheet uses it for machine output when an image is set.
+   */
+  const { opaque } = await import("../frontend/theme-store.ts");
+  assert.equal(opaque("#1a1c2200"), "#1a1c22", "alpha must be stripped");
+  assert.equal(opaque("#1A1C22"), "#1A1C22", "an opaque colour is unchanged");
+  assert.equal(opaque("rgb(0 0 0 / 0%)"), "rgb(0 0 0 / 0%)", "non-hex is left alone");
+
+  const css = await (await import("./helpers/source.ts")).readSource("frontend/app.css");
+  const { cssRuleBody } = await import("./helpers/css.ts");
+  const rule = cssRuleBody(css, 'html[data-bg-image="on"] .embed');
+  assert.match(
+    rule,
+    /--bg-darkest-solid/,
+    "with an image set, .embed must use the ALPHA-STRIPPED surface — otherwise a translucent " +
+      "palette renders tool output at zero opacity over the photo",
+  );
+  assert.match(rule, /background-image:\s*none/, "and must not paint a gradient over it");
+});

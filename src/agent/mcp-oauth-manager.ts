@@ -299,12 +299,29 @@ export async function listenForCallback(): Promise<{
 }
 
 /** the page the operator sees in the callback tab */
+/**
+ * The page the browser lands on after authorizing.
+ *
+ * ## Why it does not close itself any more
+ *
+ * It used to end with `setTimeout(() => window.close(), 1200)`. Reported as "Notionから認証終わって
+ * http://127.0.0.1:41621/callback?code=xxx に飛ぶはずなのに、dev toolsを見るとリダイレクトされてる
+ * んだけど、ブラウザ画面ではリダイレクトされてない(謎)" — the redirect DOES happen, the page renders,
+ * and then it vanishes on its own. Nothing in DevTools distinguishes "loaded and closed itself" from
+ * "never navigated", so the symptom reads as a broken callback.
+ *
+ * It also only works for a tab a script opened: `window.close()` silently fails on a
+ * user-navigated tab, so the behaviour differed by browser and by how the flow started.
+ *
+ * Saying what happened and leaving the tab alone is both honest and unambiguous. The operator
+ * closes it when they are done reading.
+ */
 function page(title: string, body: string): string {
   return `<!doctype html><meta charset="utf-8"><title>${title}</title>
 <style>body{font:15px system-ui;margin:12vh auto;max-width:34rem;text-align:center;color:#222}
-h1{font-size:1.1rem}</style>
+h1{font-size:1.1rem}p{color:#555}</style>
 <h1>${title}</h1><p>${body}</p>
-<script>setTimeout(()=>window.close(),1200)</script>`;
+<p>You can close this tab and return to teapot.</p>`;
 }
 
 /** the on-disk shape: one file, 0600, refresh tokens only */

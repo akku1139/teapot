@@ -225,65 +225,46 @@ test("creating or selecting a theme ADOPTS it, or every edit is invisible (#ui)"
   );
 });
 
-test("the composer's measuring round-trip cannot move the feed (#scroll)", async () => {
+test("every feed box change re-pins a follower — measurement included (#scroll)", async () => {
   /**
-   * Reported three times, and the first two fixes were wrong for the same reason.
+   * Reported four times, and the first three fixes were wrong in instructive ways:
    *
-   * `autosizeComposer` must collapse the textarea to `height: auto` before reading
-   * `scrollHeight`: a box with an explicit height reports `max(height, content)`, so while it is
-   * tall the CONTENT height is unrecoverable (MEASURED: a 60px box holding one line reports 60,
-   * and no expression yields 20). Any conditional version therefore either never shrinks the box
-   * or is always true — both were shipped as fixes and both were wrong.
+   *   v0.34.7  guarded the `height: auto` collapse with `contentHeight <= offsetHeight` —
+   *            MEASURED always true once the box is sized, so the collapse stayed unconditional.
+   *   v0.34.8  compared against a remembered content height, but read it from a box that was
+   *            still tall, so the guard never fired and deleting never shrank the box.
+   *   v0.34.9  skipped the feed's ResizeObserver entirely while measuring. That removed the
+   *            damage from the collapsed layout AND removed the only pin: when the composer
+   *            grows, `scrollTop` does not change, so no scroll event fires and this observer is
+   *            the sole thing that restores the tail.
    *
-   * What must not happen is the feed treating that one-line layout as a real resize. So the
-   * measurement raises a flag the feed's ResizeObserver honours, and the layout happens without
-   * the follow logic ever seeing it.
+   * The collapse is unavoidable (a tall box reports `max(height, content)`), and pinning during
+   * it is harmless — `pinToTail()` is `scrollTop = scrollHeight`, which the browser clamps to the
+   * floor at that moment, and the next box change pins again. So there is no suppression
+   * machinery any more, and this test asserts its absence: a flag that skips the pin is how the
+   * bug survived a release.
    */
   const app = await readSource("frontend/App.tsx");
-  const fn = app.slice(app.indexOf("const autosizeComposer = () => {"));
-  const body = fn.slice(0, fn.indexOf("\n  };"));
-
-  assert.match(
-    body,
-    /style\.height\s*=\s*"auto"/,
-    "precondition: the measuring collapse exists — it is required, not optional",
-  );
-  assert.match(
-    body,
-    /suppressFeedResizeUntilFrame\s*=\s*true/,
-    "the measuring collapse must SUPPRESS the feed's resize handling — otherwise the observer " +
-      "acts on a one-line layout the operator never sees, which is the reported scroll-back",
-  );
-  assert.match(
-    body,
-    /suppressFeedResizeUntilFrame\s*=\s*false/,
-    "…and clear the flag once the real height is written, or every later resize is ignored too",
-  );
-
-  // the feed observer must actually honour it
   const obs = app.slice(app.indexOf("const restoreAfterBoxChange = () => {"));
   const obsBody = obs.slice(0, obs.indexOf("\n  };"));
-  /**
-   * While measuring, the observer must STILL PIN if the reader is following.
-   *
-   * v0.34.9 returned early here, and that was wrong: no scroll event fires when the composer
-   * grows (scrollTop does not change, only the floor does), so this observer is the ONLY thing
-   * that restores the tail. Skipping it entirely is why "2行でのスクロール戻り" survived that
-   * release. What the transient layout must not do is decide the reader left — `atBottom()` is a
-   * state, so it cannot — nor re-anchor against a collapsed box.
-   */
-  const suppressAt = obsBody.indexOf("suppressFeedResizeUntilFrame");
-  assert.ok(suppressAt > 0, "precondition: the observer consults the flag");
-  const branch = obsBody.slice(suppressAt, suppressAt + 300);
-  assert.match(
-    branch,
-    /pinToTail\(\)/,
-    "the measuring branch must still pin a following reader — this observer is the only pin " +
-      "after a composer grow, since no scroll event fires",
+
+  // the pin sits under `if (atBottom()) { … pinToTail() … }`; assert both parts exist in order
+  const followAt = obsBody.indexOf("if (atBottom())");
+  assert.ok(followAt > 0, "the observer must consult the follow state");
+  const pinAfter = obsBody.indexOf("pinToTail()", followAt);
+  assert.ok(
+    pinAfter > followAt,
+    "a following reader must be re-pinned on every box change — this observer is the only pin " +
+      "after a composer grow, because no scroll event fires",
   );
-  // and it must NOT fall through to the anchor path, which would compute a delta against the
-  // collapsed box
-  assert.match(branch, /return;/, "…and must not continue into the re-anchor path");
+  assert.doesNotMatch(
+    obsBody,
+    /suppressFeedResize/i,
+    "no suppression flag: skipping the pin is exactly what made the bug survive v0.34.9",
+  );
+  // and the measuring round-trip itself must still exist — it is required, not optional
+  const fn = app.slice(app.indexOf("const autosizeComposer = () => {"));
+  assert.match(fn.slice(0, fn.indexOf("\n  };")), /style\.height\s*=\s*"auto"/);
 });
 
 test("an EMPTY composer is one line, whatever its placeholder wraps to (#ui)", async () => {
