@@ -382,8 +382,9 @@ Most session state is not injected into prompts — fetch it with tools instead:
   → your durable notes (memory.md). add_memory appends and cannot lose earlier
   notes; forget_memory removes the lines matching a substring, so a stale note can
   be corrected instead of piling up; set_memory REPLACES the whole file. Pass a
-  query to read_memory to search rather than dumping everything. The notes are NOT
-  in your prompt — read them.
+  query to read_memory to search rather than dumping everything. Your prompt carries
+  a DIGEST (headings and one line each) — the notes themselves are not in it, so
+  read_memory(query) is how you actually get one.
 - get_todo() / set_todo(content) → the operator-maintained task list
   (todo.md); check it when picking up work, keep it current as you go.
 - When corrected, add_feedback(rule) so it sticks; review via get_feedback().
@@ -777,6 +778,59 @@ export class Agent {
    * against, so a skill with a poor description is effectively undiscoverable;
    * that is worth knowing when authoring one.
    */
+  /**
+   * A bounded DIGEST of memory.md: every heading, plus its first line.
+   *
+   * MEASURED reason this exists. The notes are agent-scoped now (they outlive a session) and
+   * they are genuinely long — 2.6KB is the median, and the largest hold full project briefs. A
+   * model that never sees them cannot decide to consult them: that is the whole finding of #48
+   * (182 writes, 13 reads after a write). A model that sees the WHOLE file pays for it on every
+   * request and breaks the prefix cache.
+   *
+   * Codex solves this with a `MEMORY_SUMMARY` in the prompt plus a searchable registry on disk.
+   * This is the same shape: the digest says what memory HOLDS, `read_memory(query)` fetches the
+   * part that matters.
+   *
+   * The budget is deliberately small. This is an index, and an index that costs as much as the
+   * content has no reason to be an index.
+   */
+  private memoryDigestText(): string {
+    let text: string;
+    try {
+      text = readFileSync(this.memoryFile, "utf8");
+    } catch {
+      return ""; // no notes yet
+    }
+    if (!text.trim()) return "";
+    const MAX_CHARS = 1_400;
+    const lines = text.split(/\r?\n/);
+    const out: string[] = [];
+    let used = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!.trim();
+      if (!line) continue;
+      // provenance markers are bookkeeping, not content
+      if (/^<!--/.test(line)) continue;
+      const isHeading = /^#{1,6}\s/.test(line);
+      const isBullet = /^[-*]\s/.test(line);
+      // headings and the FIRST line under one: enough to recognise a topic without
+      // reproducing the note. A bullet is included only as a one-line sample.
+      if (!isHeading && !isBullet) {
+        // a continuation of the previous line — skip, the heading already names the topic
+        if (!out.length) out.push(line.slice(0, 100));
+        continue;
+      }
+      const rendered = isHeading ? line.slice(0, 90) : `  · ${line.slice(0, 80)}`;
+      if (used + rendered.length > MAX_CHARS) {
+        out.push(`(… ${lines.length} lines total — call read_memory(query) to search the rest)`);
+        break;
+      }
+      out.push(rendered);
+      used += rendered.length + 1;
+    }
+    return out.join("\n").trim();
+  }
+
   private skillCatalogueText(): string {
     if (!this.skillsCache.length) return "";
     const lines = this.skillsCache.map((s) => {
@@ -3338,6 +3392,8 @@ export class Agent {
    * for the session and the provider prefix cache survives.
    */
   private skillCatalogue = "";
+  /** the compact digest of memory.md put into the frozen prompt (Codex's MEMORY_SUMMARY) */
+  private memoryDigest = "";
 
   private systemPrompt(): string {
     if (!this.agentsMdLoaded) {
@@ -3403,6 +3459,7 @@ export class Agent {
       // #31: capture the skill catalogue in the SAME one-shot block, so the
       // system prompt stays byte-identical for the session (prefix cache).
       this.skillCatalogue = this.skillCatalogueText();
+      this.memoryDigest = this.memoryDigestText();
     }
     let sys = SYSTEM_TEMPLATE;
     if (this.agentsMd.trim()) {
@@ -3426,6 +3483,27 @@ export class Agent {
         `Load one with load_skill(name, instructions) when its description matches your task — ` +
         `pass what you want done so the instructions arrive with the playbook. ` +
         `list_skills() shows the full detail.`;
+    }
+    /**
+     * A DIGEST of the durable notes — Codex's `MEMORY_SUMMARY`, not the notes themselves.
+     *
+     * The full file cannot go here (it is unbounded, and re-injecting it every turn is the
+     * prefix-cache break that made takos' design a bad fit). But leaving the notes entirely
+     * behind a tool call was measured to fail the other way: the model never learned they
+     * existed, so it never asked. Codex resolves exactly this by injecting a compact summary
+     * and telling the model to search the rest — the summary names WHAT is in memory, the tool
+     * fetches the detail.
+     *
+     * Captured in the same one-shot block as AGENTS.md and the skills catalogue, so the prompt
+     * stays byte-identical for the session.
+     */
+    if (this.memoryDigest) {
+      sys +=
+        `\n\n## Your durable notes (memory.md — a DIGEST, not the whole file)\n${this.memoryDigest}\n` +
+        `The full notes are NOT in this prompt. When any of the above may bear on the task — ` +
+        `prior decisions, gotchas, where you left off — search them: ` +
+        `read_memory(query) returns the matching lines, read_memory() with no query returns everything. ` +
+        `Write with add_memory(text) (appends; never loses an earlier note).`;
     }
     return sys;
   }

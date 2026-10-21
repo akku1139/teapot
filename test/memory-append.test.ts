@@ -418,3 +418,60 @@ test("notes survive a NEW session for the same agent (#48)", async () => {
   );
 
 });
+
+/**
+ * The digest: the model must KNOW what memory holds without paying for all of it.
+ *
+ * Two failure modes measured in #48, and this has to avoid both:
+ *
+ *   - the whole file in the prompt → paid for on every request, breaks the prefix cache
+ *   - nothing in the prompt        → the model never learns the notes exist, so it never
+ *                                    asks (182 writes, 13 reads after a write)
+ *
+ * Codex's answer is a `MEMORY_SUMMARY` plus a searchable registry. This is the same
+ * shape, so the test asserts both halves: the digest NAMES the topics, and the full note
+ * body is still only reachable through the tool.
+ */
+test("the prompt carries a bounded DIGEST of the notes — names, not contents (#48)", async () => {
+  const ws = mkdtempInRootSync("memd-");
+  const root = mkdtempInRootSync("memds-");
+  const sd = path.join(root, "alpha-a1b2c3d4");
+  fs.mkdirSync(sd, { recursive: true });
+  // agent-scoped, so the digest sees it
+  // BULLETS, not plain lines: a bullet IS included in the digest, so an unbounded
+  // builder really does dump these. Plain continuation lines are skipped by design,
+  // which made an earlier version of this test pass while the budget was ignored.
+  const long = Array.from({ length: 200 }, (_, i) => `- BODY-BULLET-${i} ${"x".repeat(60)}`).join("\n");
+  fs.writeFileSync(
+    path.join(root, "memory.md"),
+    `# Project alpha\n\n## Build\nrun pnpm build\n\n## Gotchas\nthe cache lies\n\n${long}\n`,
+  );
+
+  const agent = new Agent({
+    id: "alpha",
+    workspace: ws,
+    sessionDir: sd,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn: async (): Promise<LlmResult> => ({ message: { role: "assistant", content: "done" } }),
+    autoContinue: false,
+  } as never) as Agent;
+  await agent.init();
+  try {
+    const sys = (agent as unknown as { systemPrompt(): string }).systemPrompt();
+    // it must NAME the topics, so the model can tell whether to look
+    assert.match(sys, /Build/, "the digest must name a section heading");
+    assert.match(sys, /Gotchas/, "…and the next one");
+    // …but must NOT reproduce the body, or this is just the whole file again
+    assert.doesNotMatch(sys, /BODY-BULLET-19\b/, "the note BODY must not be in the prompt");
+    // the budget is an index budget, not a content budget
+    const digest = sys.slice(sys.indexOf("Your durable notes"));
+    assert.ok(
+      digest.length < 3_000,
+      `the digest must stay small; it was ${digest.length} chars, which is not an index`,
+    );
+    // and it must point at the tool, or the model has names it cannot follow up on
+    assert.match(digest, /read_memory\(query\)/, "the digest must say how to fetch the rest");
+  } finally {
+    await agent.dispose();
+  }
+});
