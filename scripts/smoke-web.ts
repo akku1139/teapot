@@ -1770,6 +1770,63 @@ console.log("deep render ok: feed rows present");
     }
     console.log("deep render ok: settings is a menu — one section shown, edits survive switching");
 
+    /* ---------- theme cards must show the THEME, not an empty box ----------
+     * Reported: "appearanceのテーマカードが左上に赤い点が付いてるだけで、中身の色がついてない".
+     *
+     * The preview is a miniature of the UI. Its root is a `<span>`, and an inline box ignores
+     * `width`/`height: 100%` — so the positioned children collapsed to nothing and only the
+     * fixed-size DOTS were painted. One red dot in the corner was all that survived.
+     *
+     * Asserted as COLOUR, not as a class: every card must actually carry a background from its
+     * palette, and the miniature's own elements must have non-zero size.
+     */
+    {
+      const appearanceFail = (msg: string) => {
+        console.error(`#appearance REGRESSION: ${msg}`);
+        process.exit(1);
+      };
+      const appearanceItem = [...w.document.querySelectorAll(".cfgmenu-item")].find((b) =>
+        /appearance/i.test(b.textContent ?? ""),
+      );
+      if (!appearanceItem) {
+        appearanceFail("#appearance check: no appearance section in the settings menu");
+      }
+      appearanceItem.click();
+      await new Promise((r) => setTimeout(r, 300));
+
+      const cards = [...w.document.querySelectorAll(".themecard")];
+      if (cards.length < 3) {
+        appearanceFail(`#appearance check: only ${cards.length} theme card(s) — nothing to compare`);
+      }
+      const noColour = cards.filter((c) => {
+        const prev = c.querySelector(".tprev") as HTMLElement | null;
+        const bg = prev ? w.document.defaultView.getComputedStyle(prev).backgroundColor : "";
+        // a transparent/empty background means the miniature painted nothing
+        return !bg || bg === "transparent" || /rgba\(0, 0, 0, 0\)/.test(bg);
+      });
+      if (noColour.length > 0) {
+        const names = noColour.map((c) => c.textContent?.trim().slice(0, 20)).slice(0, 4);
+        appearanceFail(
+          `${noColour.length} of ${cards.length} theme cards paint NO background ` +
+            `(e.g. ${JSON.stringify(names)}) — the miniature collapsed and only its dots show`,
+        );
+      }
+      // and the miniature must be a BLOCK: an inline box ignores width/height, which is what
+      // collapsed it. happy-dom does no layout (every rect is 0x0), so the computable fact is
+      // `display` — anything inline means the preview cannot size itself however it is coloured.
+      const first = cards[0]!.querySelector(".tprev") as HTMLElement | null;
+      const disp = first ? w.document.defaultView.getComputedStyle(first).display : "";
+      if (!first || disp === "inline" || disp === "") {
+        appearanceFail(
+          `the theme preview computes display:${JSON.stringify(disp)} — an inline box ignores ` +
+            `width/height, so its positioned children collapse and only the dots paint`,
+        );
+      }
+      console.log(
+        `deep render ok: ${cards.length} theme cards paint their palette, preview display:${disp} (#appearance)`,
+      );
+    }
+
     // ---- the layout itself: a left rail, and a footer that cannot scroll away ----
     //
     // Asserted on COMPUTED geometry, because these are the properties the operator

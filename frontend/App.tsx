@@ -3754,6 +3754,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   persistent-element trick as its old home (a `() =>` wrapper, not a
                   bare expression, or the handler freezes to the label it was born
                   with — see the #59 note on the original). */}
+              {/* The PRIMARY action carries its WORD, not just a glyph.
+                  "▶" alone was indistinguishable from the four other square buttons beside it,
+                  so the one control an operator uses constantly looked like decoration. A
+                  labelled button also says what pressing it does before you press it. */}
               <button
                 class={"runbtn" + (isSelLive() ? " danger" : "")}
                 title={
@@ -3763,25 +3767,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 }
                 onclick={() => (isSelLive() ? act("/stop") : act("/start"))()}
               >
-                {isSelLive() ? "■" : "▶"}
+                {isSelLive() ? "■ stop" : "▶ start"}
               </button>
-              <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
-              {/* ⏯ CONTROLS, moved out of the right panel (#panel). The panel was mostly a
-                  wall of reference numbers, and the controls an operator actually reaches for
-                  were buried at the top of it — behind opening the panel at all. A control
-                  belongs next to the thing it controls, and this header already names the
-                  agent, so start/stop, fork, stop-subs and archive live here.
-                  OpenCode's session header does the same: a ghost icon button with
-                  `aria-expanded` for the panel, and the actions beside it. */}
-              <IconBtn icon="⑂" title="fork: branch off the conversation here — try things without disturbing the main line" onClick={forkSelected} />
+              {/* SECONDARY actions, visually separated so they read as a group rather than as
+                  five more things of equal weight. Stop-subs is the one exception that stays
+                  close to ▶/■: it is the same "interrupt" family, and it is only present when
+                  there are sub-agents to stop. */}
               <Show when={agents().some((a) => a.parent === selected())}>
                 <IconBtn icon="⏹" title="stop every sub-agent this agent spawned (descendants included)" onClick={stopChildren} />
               </Show>
-              <IconBtn icon="🗄" title="archive this agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)" onClick={archiveSelected} />
+              <span class="head-sep" aria-hidden="true" />
+              <IconBtn icon="⑂" title="fork: branch off the conversation here — try things without disturbing the main line" onClick={forkSelected} />
+              <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
               {/* the panel toggle advertises its STATE, not just its action: `active` fills
                   it when the panel is open, so the button answers "is it showing?" without a
                   click. `aria-expanded` says the same thing to a screen reader. */}
               <IconBtn icon="▤" title="toggle details panel (d)" active={showRight()} onClick={toggleRight} />
+              <IconBtn icon="🗄" title="archive this agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)" onClick={archiveSelected} />
             </span>
           </header>
 
