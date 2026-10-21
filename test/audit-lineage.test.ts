@@ -242,3 +242,36 @@ test("a capped-unaudited run emits NO final that could claim approval (#128 tie-
     }
   });
 });
+
+test("an APPROVED final after a rejection reports the work BEFORE it too (#94)", async () => {
+  /**
+   * Reported: "audit reject後の finish() で初回finishからの作業差分をおもに説明するから親エージェントが
+   * 理解しにくい".
+   *
+   * `recentContext` is the last six meaningful messages, which after a changes-required verdict
+   * is exactly the RETRY — a narrow fix-up. So the parent was told about the last few minutes of
+   * a multi-hour task and nothing else, and had no basis to judge whether the goal was met. The
+   * pre-rejection work is captured when the reject arrives and must be reported too, labelled so
+   * the parent can tell which part came when.
+   */
+  await useTempDirs(["al9-", "al10-"], async ([ws, sd]) => {
+    const r = await runLineage(
+      ws!, sd!,
+      ["CHANGES-REQUIRED: the Kconfig symbol does not exist", "APPROVED: fixed and verified"],
+      true,
+    );
+    const f = r.finals.at(-1)! as unknown as { recentContext?: string[] };
+    const ctx = f.recentContext ?? [];
+    assert.ok(ctx.length > 0, "the final must carry context at all");
+    const joined = ctx.join("\n");
+    assert.match(
+      joined,
+      /before the audit rejected/i,
+      "the report must say which part was done before the rejection — otherwise the parent " +
+        "cannot tell the original work from the fix-up",
+    );
+    assert.match(joined, /after the rejection/i, "and where the retry begins");
+    // the original work must actually be IN there, not just announced
+    assert.match(joined, /work/i, "the pre-rejection activity must be present");
+  });
+});

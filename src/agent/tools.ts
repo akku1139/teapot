@@ -616,6 +616,74 @@ function trailingWsMatches(srcLines: string[], patLines: string[]): number[] {
   return hits;
 }
 
+/**
+ * Did `anchor` resolve to a span far larger than it asked for? Returns the refusal, or null.
+ *
+ * ## Why this is a separate function
+ *
+ * The first version was inlined and measured `text.indexOf(anchor)` — which by definition finds
+ * exactly `anchor.length` characters, so it could NEVER fire, and its test passed with the guard
+ * disabled. The overshoot does not come from the exact match: it comes from the TOLERANT path,
+ * where a model that omits indentation or trailing spaces hands over a short anchor and the
+ * per-line comparison then accepts a much longer region.
+ *
+ * So the question is: how many file lines does the anchor's FIRST line's text actually cover
+ * once tolerance is applied? If that region is more than twice the anchor's own line count, the
+ * anchor is not specific enough and the edit would rewrite something unintended.
+ *
+ * MEASURED basis (#83): `old_text not found` is 117 of 168 edit failures, and the near-miss
+ * cases are exactly the ones where tolerance decides what matched. Being wrong there is silent.
+ */
+export function disproportionateSpan(text: string, anchor: string): string | null {
+  const anchorLines = anchor.split("\n");
+  const askedLines = anchorLines.length;
+  if (askedLines < 2) return null; // a single line cannot span disproportionately
+  /**
+   * Do NOT require an exact substring match.
+   *
+   * The whole point is the near-miss case: the anchor does not appear verbatim, which is why the
+   * tolerant path is consulted at all and why it can overshoot. Requiring `indexOf` here made
+   * the guard unreachable exactly when it matters.
+   */
+  const anchorFirst = anchorLines[0]!.trimEnd();
+  const start = text.split("\n").findIndex((l) => l.trimEnd() === anchorFirst);
+  if (start < 0) return null; // its first line is not in the file at all: not this guard's case
+
+  /**
+   * How many file lines does the anchor COVER, allowing the same trailing-whitespace tolerance
+   * the tolerant matcher uses?
+   *
+   * This walks the file and the anchor together, and counts file lines consumed. If matching
+   * the anchor requires consuming more than twice its own line count, the anchor is too loose:
+   * applying it would replace a region the model did not point at.
+   */
+  const srcLines = text.split("\n");
+  const firstLine = start;
+  let fileAt = firstLine;
+  let consumed = 0;
+  for (let a = 0; a < anchorLines.length; a++) {
+    const want = anchorLines[a]!.trimEnd();
+    let found = -1;
+    for (let f = fileAt; f < srcLines.length; f++) {
+      if (srcLines[f]!.trimEnd() === want) {
+        found = f;
+        break;
+      }
+    }
+    if (found < 0) return null; // did not resolve under tolerance; not this guard's business
+    consumed = found - firstLine + 1;
+    if (consumed > askedLines * 2) {
+      return (
+        `old_text spans ${askedLines} line(s) but only resolves after covering ${consumed} ` +
+        `lines of the file — refusing a disproportionate match. An anchor this loose would ` +
+        `rewrite a region you did not intend. Re-read the file and copy a tighter block.`
+      );
+    }
+    fileAt = found + 1;
+  }
+  return null;
+}
+
 export const DEFAULT_TIMEOUT_MS = 120_000;
 
 /* ---------- read_url cache ---------- */
@@ -1521,6 +1589,29 @@ export const TOOLS: ToolDef[] = [
         }
       }
       let count = hashNote ? 0 : text.split(oldText).length - 1;
+      /**
+       * A MINIMUM ANCHOR LENGTH, from Gemini's `edit.ts`.
+       *
+       * Below this, an anchor cannot identify anything: "  }" or "\n\n" appear everywhere, and
+       * any tolerant matching on them either fails ambiguously or picks a wrong span. MEASURED
+       * across every session (#83): `old_text not found` is 117 of 168 edit failures, and a
+       * large share of those are anchors too short to be unique, sent by a model that believed
+       * them specific.
+       *
+       * Short anchors are still ACCEPTED when they match exactly once — a one-character edit is
+       * legitimate. What is refused is trying to make a short anchor work by relaxing the match.
+       */
+      const MIN_FUZZY_ANCHOR = 10;
+      /**
+       * A MULTI-LINE anchor is specific by construction: two matching lines pin both a start
+       * and a continuation, which is far stronger evidence than 10 characters on one line.
+       * Gemini's floor is about single-line anchors, where "  }" and "foo();" genuinely cannot
+       * identify anything. Applying it by raw character count rejected `foo\nbar` — a perfectly
+       * unambiguous two-line anchor — which is the guard making normal editing harder, the
+       * exact failure mode #157 warns about.
+       */
+      const anchorLines = oldText.split("\n").length;
+      const anchorTooShort = anchorLines < 2 && oldText.trim().length < MIN_FUZZY_ANCHOR;
       let normalized = false;
       if (count === 0 && oldText.includes("\n") && text.includes("\r\n")) {
         const lf = text.replace(/\r\n/g, "\n");
@@ -1534,7 +1625,7 @@ export const TOOLS: ToolDef[] = [
 
       // tolerate patterns whose only difference is trailing whitespace per line
       // (the most common near-miss) — applied only when it resolves uniquely
-      if (count === 0) {
+      if (count === 0 && !anchorTooShort) {
         const srcLines = text.replace(/\r\n/g, "\n").split("\n");
         const patLines = oldText.replace(/\r\n/g, "\n").split("\n");
         const hits = trailingWsMatches(srcLines, patLines);
@@ -1584,6 +1675,17 @@ export const TOOLS: ToolDef[] = [
           ok: false,
           result: `old_text matched ${count} times (lines ${at.slice(0, 5).join(", ")}) and must be unique — add surrounding lines to old_text, or pass replace_all=true`,
         };
+      }
+      /**
+       * DISPROPORTIONATE MATCH guard, from OpenCode's `isDisproportionateMatch`.
+       *
+       * The dangerous shape is not "no match" — that is loud and recoverable — but a match far
+       * LARGER than the anchor, where asking to change one call site silently rewrites a whole
+       * function. A confident wrong edit is worse than a failed one.
+       */
+      if (!hashSpan) {
+        const over = disproportionateSpan(text, oldText);
+        if (over) return { ok: false, result: over };
       }
       // A verified hashline block is addressed BY LINE INDEX: the anchors
       // already proved which lines it means, so a block whose content occurs

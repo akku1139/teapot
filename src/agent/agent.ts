@@ -653,6 +653,15 @@ export class Agent {
    */
   private auditAttempts = 0;
   private lastRejectedAudit: { feedback: string; attempt: number } | null = null;
+  /**
+   * What the agent had done BEFORE an audit rejected its first finish (#94).
+   *
+   * Captured at rejection time because that is the last moment the pre-rejection work is still
+   * the bulk of the history. The eventual approved final would otherwise report only the retry,
+   * which is a narrow fix-up — the parent would be judging hours of work from its last few
+   * minutes.
+   */
+  private preRejectionTurns: string[] = [];
   private lastAuditOutcome: {
     audited: boolean;
     verdict: string;
@@ -3714,6 +3723,14 @@ export class Agent {
             // #94: the rejection survives in memory so the eventual approved
             // final can name what the first attempt was told
             this.lastRejectedAudit = { feedback, attempt: this.auditAttempts };
+            /**
+             * …AND capture the work that was just rejected, once. This runs before the retry
+             * prompt is queued, so the history still holds the original task; capturing later
+             * (at the approved finish) would read only the fix-up.
+             */
+            if (!this.preRejectionTurns.length) {
+              this.preRejectionTurns = await this.captureRecentTurns();
+            }
           }
           // `operatorFacing: true` — the verdict is written for the TIMELINE
           // only. The audit ran in its own side conversation (a tools-less call
@@ -3822,6 +3839,29 @@ export class Agent {
   /** The `final: true` event — the parent's notification (#89: never before the goal settles). */
   private async appendFinalMessage(args: { summary?: unknown }): Promise<void> {
     const recent = await this.captureRecentTurns();
+    /**
+     * #94: an APPROVED finish after a REJECTION must describe the WHOLE task.
+     *
+     * `captureRecentTurns()` reads the last six meaningful messages, which after a
+     * changes-required verdict is exactly the RETRY — so the parent was told about the last few
+     * minutes of work and nothing about the hours that came before it. The rejection branch
+     * already queues the auditor's feedback as the retry prompt, so the retry is a narrow fix-up;
+     * reporting only that makes the work look trivial and the parent has no basis to judge it.
+     *
+     * The pre-rejection activity is captured when the reject arrives (`preRejectionTurns`) and is
+     * prepended here, clearly labelled, so the parent reads "this is what was done, and this is
+     * what the audit then required". Bounded to the same six entries so the report stays a report.
+     */
+    const before = this.preRejectionTurns;
+    this.preRejectionTurns = [];
+    const combined = before.length
+      ? [
+          `[before the audit rejected the first finish — ${before.length} entries]`,
+          ...before,
+          `[after the rejection — the retry — ${recent.length} entries]`,
+          ...recent,
+        ]
+      : recent;
     // #91/#94: the final says how it relates to the audit — approved on which
     // attempt, what the previous attempt was told. Cleared on emit: a later
     // unaudited finish must not inherit stale lineage.
@@ -3831,7 +3871,7 @@ export class Agent {
       role: "assistant",
       final: true,
       content: String(args.summary ?? ""),
-      ...(recent.length ? { recentContext: recent } : {}),
+      ...(combined.length ? { recentContext: combined } : {}),
       ...(outcome
         ? {
             audited: outcome.audited,
