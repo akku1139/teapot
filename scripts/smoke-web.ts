@@ -382,14 +382,41 @@ console.log("deep render ok: sidebar shows agent");
 if (!(await waitFor("runtime gauge", () => bodyText().includes("61.7% of 200k")))) process.exit(1);
 console.log("deep render ok: context gauge shows '61.7% of 200k'");
 
-// stats grid + cached pill + compaction line from the redesigned runtime card
-for (const marker of ["turns", "in / 2.0k out", "60% cached"]) {
+/**
+ * The runtime numbers must be VISIBLE, not folded.
+ *
+ * They used to live inside `<details class="rtmore">` — "usage & cost" — which meant every
+ * glance at the cost or turn count required a click, and a closed `<details>` HIDES its content
+ * from the panel just as surely as not rendering it. Asserting the text alone would pass while
+ * the numbers were still behind a summary, so this checks that no ancestor `<details>` in the
+ * right panel is closed around them.
+ */
+for (const marker of ["turns", "tokens", "compacted"]) {
   if (!bodyText().includes(marker)) {
     console.error(`DEEP RENDER MISSING RUNTIME STAT: ${marker}`);
     process.exit(1);
   }
 }
-console.log("deep render ok: runtime stats present");
+{
+  const panel = [...document.querySelectorAll(".rightbar")].at(-1);
+  if (!panel) {
+    console.error("DEEP RENDER: the right panel is missing");
+    process.exit(1);
+  }
+  // precondition: the grid exists at all, or the check below passes vacuously
+  const cells = panel.querySelectorAll(".rtgrid .rtcell");
+  if (cells.length < 3) {
+    console.error(`DEEP RENDER: expected a runtime stat grid, found ${cells.length} cells`);
+    process.exit(1);
+  }
+  for (const d of panel.querySelectorAll("details")) {
+    if (!d.open) {
+      console.error(`DEEP RENDER: a panel section is folded shut: ${d.querySelector("summary")?.textContent}`);
+      process.exit(1);
+    }
+  }
+}
+console.log("deep render ok: runtime stats visible, nothing folded");
 
 // workspace file tree renders its lazy listing
 if (!(await waitFor("file tree", () => bodyText().includes("README.md")))) process.exit(1);

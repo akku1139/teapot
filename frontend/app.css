@@ -599,6 +599,13 @@ html[data-feedcv="on"] .feed > .msg {
 .pill { margin-left: auto; border-radius: var(--radius-pill); padding: 1px 8px; font-size: var(--text-xs); background: var(--bg-mid); white-space: nowrap; }
 .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.crit { color: var(--err); background: #ed42451a; }
 .bartrack { height: 6px; border-radius: var(--radius-sm); background: var(--bg-light); overflow: hidden; margin-top: 2px; }
+.rtgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(74px, 1fr)); gap: var(--space-2); }
+.rtcell { background: var(--bg-dark); border-radius: var(--radius-md); padding: 5px 7px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rtcell > span { color: var(--dim); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rtcell > b { font-size: var(--text-md); font-weight: 600; line-height: 1.15; white-space: nowrap; }
+.rtcell > em { font-style: normal; color: var(--dim); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the separator inside a combined cell ("12k/3.4k") must not read as part of either number */
+.rtsep { color: var(--dim); font-weight: 400; padding: 0 2px; }
 .barfill { height: 100%; border-radius: var(--radius-sm); transition: width .3s ease; background: var(--ok); min-width: 2px; }
 .barfill.warn { background: var(--warn); } .barfill.crit { background: var(--err); }
 .author { font-weight: 600; font-size: var(--text-md); letter-spacing: var(--tracking-tight); }
@@ -989,32 +996,6 @@ details.reasoning .thinkscroll {
    the panel's first child, so `:first-child` stopped matching and the heading
    gained a stray 14px gap under the ✕ bar on a narrow screen. */
 .rightbar h3:first-of-type { margin-top: 0; }
-/* A COLLAPSIBLE reference section (session / branches / schedule / usage).
- *
- * The panel had nine sections all expanded at the same weight, so the two the operator
- * actually works in (🎯 goal, ✅ todo) had no more presence than 🎛 session's storage paths.
- * A folded section keeps its heading visible — the label is how you find it — and reveals
- * the body on click. `summary` is natively keyboard-operable, so this needs no script. */
-.rightbar details.rbsec > summary {
-  cursor: pointer; user-select: none;
-  list-style: none; /* replaced by the ▸/▾ marker below, which inherits the heading type */
-  font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em;
-  color: var(--dim);
-  margin: var(--space-5) 0 var(--space-3);
-  display: flex; align-items: center; gap: var(--space-2);
-  transition: color var(--dur-fast) ease;
-}
-.rightbar details.rbsec > summary::-webkit-details-marker { display: none; }
-.rightbar details.rbsec > summary::before {
-  content: "▾";
-  font-size: 9px;
-  /* the marker is the only thing that moves, so the heading text never shifts */
-  transition: transform var(--dur-fast) var(--ease-out);
-  color: var(--dim);
-}
-.rightbar details.rbsec:not([open]) > summary::before { transform: rotate(-90deg); }
-.rightbar details.rbsec > summary:hover { color: var(--fg); }
-.rightbar details.rbsec[open] > summary { margin-bottom: var(--space-3); }
 .card { background: var(--bg-darkest); border-radius: var(--radius-lg); padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
 /* the 📊 runtime card must NOT scroll internally: no max-height here — it
    grows with its content and the PANEL (.rightbar, overflow-y:auto) scrolls

@@ -4704,51 +4704,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             )}
           </Show>
 
-          {/* 📊 runtime — TWO LAYERS.
-              What an operator watches while working is the CONTEXT GAUGE: it is the
-              only number here that changes fast enough to act on. Everything else
-              (billed tokens, cost, turns, how often it compacted) is reference.
+          {/* 📊 runtime — ONE GAUGE, THEN A GRID.
+              The previous two-layer version folded "usage & cost" into <details>. That was
+              the wrong shape: folding is for things you rarely need, and these numbers are
+              read constantly — a `<details>` is a click tax on every glance, and it hides
+              the very thing (cost, turns, how often it compacted) that says whether the
+              session is behaving.
 
-              MEASURED before this change: nine data rows were always visible, with
-              the context shown TWICE (a used-tokens gauge and a compaction-budget
-              gauge) and the compaction threshold stated THREE times (the `compact`
-              row, the "75% of window" suffix, and a sentence underneath). Three
-              separate statements of one number is what made the panel feel dense
-              without saying more.
-
-              So: one gauge, one threshold, and the rest folded into <details>. */}
+              The rows were dense because they were ROWS: each number got a label column, a
+              value, and its own line. As a 3-column grid the same facts occupy three lines
+              instead of seven, so nothing has to be hidden to keep the panel readable. */}
           <h3 title="context is how much of the model's window the live conversation occupies. Past the threshold, the oldest turns are summarized into notes so work can continue.">📊 runtime</h3>
           <div class="card runcard">
-            {/* the folded reference layer: opened only when the numbers are the question */}
-            <details class="rtmore">
-              <summary title="billed totals for this session">usage &amp; cost</summary>
-              <div class="statrow">
-                <span class="k">tokens</span>
-                <b>{fmtK(sel()!.stats.inputTokens)} in / {fmtK(sel()!.stats.outputTokens)} out</b>
-                <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
-                  <span
-                    class="pill ok"
-                    title={`${fmtK(sel()!.stats.cachedInputTokens)} tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
-                  >
-                    ⚡ {(Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 1000) / 10)}% cached
-                  </span>
-                </Show>
-              </div>
-              <div class="statrow">
-                <span class="k">turns</span><b>{sel()!.stats.turns}</b>
-                <span class="k" style="margin-left:8px">tools</span><b>{sel()!.stats.toolCalls}</b>
-                <span class="k" style="margin-left:8px">compacted</span><b>{sel()!.stats.compactions ?? 0}</b>
-              </div>
-            <Show when={(sel()!.stats.costUsd ?? 0) > 0}>
-              <div
-                class="statrow"
-                title={`≈ ${(sel()!.stats.costUsd ?? 0).toFixed(4)} this session, from the model's USD/token pricing and per-turn usage. Cached input is estimated at ~10% of the prompt rate; treat as an approximation, not an invoice.`}
-              >
-                <span class="k">cost</span>
-                <b>${costFmt(sel()!.stats.costUsd ?? 0)}</b>
-              </div>
-            </Show>
-            </details>
             <Show
               when={sel()!.ctx}
               keyed
@@ -4853,6 +4820,47 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 );
               }}
             </Show>
+            {/* the reference numbers: always visible, as a grid rather than as rows */}
+            <div class="rtgrid">
+              <div class="rtcell" title="tokens billed this session: prompt (in) and completion (out)">
+                <span>tokens</span>
+                <b>{fmtK(sel()!.stats.inputTokens)}<span class="rtsep">/</span>{fmtK(sel()!.stats.outputTokens)}</b>
+                <em>in / out</em>
+              </div>
+              <div class="rtcell" title="assistant turns and tool calls made this session">
+                <span>turns</span>
+                <b>{sel()!.stats.turns}<span class="rtsep">/</span>{sel()!.stats.toolCalls}</b>
+                <em>turns / tools</em>
+              </div>
+              <div
+                class="rtcell"
+                title={`how many times old turns were summarized into notes to make room. ${sel()!.stats.compactions ? "Each one keeps the recent stretch verbatim." : "Not yet — the context has fit so far."}`}
+              >
+                <span>compacted</span>
+                <b>{sel()!.stats.compactions ?? 0}</b>
+                <em>{sel()!.stats.compactions ? "times" : "never"}</em>
+              </div>
+              <Show when={(sel()!.stats.costUsd ?? 0) > 0}>
+                <div
+                  class="rtcell"
+                  title={`≈ ${(sel()!.stats.costUsd ?? 0).toFixed(4)} this session, from the model's USD/token pricing and per-turn usage. Cached input is estimated at ~10% of the prompt rate; treat as an approximation, not an invoice.`}
+                >
+                  <span>cost</span>
+                  <b>${costFmt(sel()!.stats.costUsd ?? 0)}</b>
+                  <em>this session</em>
+                </div>
+              </Show>
+              <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
+                <div
+                  class="rtcell"
+                  title={`${fmtK(sel()!.stats.cachedInputTokens)} input tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
+                >
+                  <span>cached</span>
+                  <b>{Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}%</b>
+                  <em>of input</em>
+                </div>
+              </Show>
+            </div>
           </div>
 
           {/* 🌿 branches stays OPEN: each row FILTERS the feed, so it is an active control,
@@ -4902,10 +4910,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             )}
           </For>
 
-          {/* ⏰ schedule is the one section where folding earns its place: it lists cron
-              tasks for ALL agents, so it is unrelated to the agent being viewed. */}
-          <details class="rbsec">
-            <summary>⏰ schedule <span class="muted" style="text-transform:none;letter-spacing:0">· cron tasks, all agents · edit in settings</span></summary>
+          {/* ⏰ schedule — OPEN, not folded.
+              It was folded on the argument that it lists cron tasks for all agents and so is
+              unrelated to the agent being viewed. That reasoning justified SHOWING it less
+              prominently, not hiding it: an unread schedule is a schedule you forget is
+              running, and the section is short (a few rows) so folding saved no real space. */}
+          <h3 title="cron tasks, all agents — click a row to open that agent. Edit them in ⚙ settings → scheduled tasks.">
+            ⏰ schedule
+            <Show when={tasks().length > 0}>
+              <span class="muted" style="text-transform:none;letter-spacing:0">· {tasks().length} · all agents</span>
+            </Show>
+          </h3>
           <Show
             when={tasks().length > 0}
             fallback={<div class="muted">no scheduled tasks — add them in ⚙ settings ("scheduled tasks")</div>}
@@ -4933,7 +4948,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               )}
             </For>
           </Show>
-          </details>
           </>
           )}
         </Show>
