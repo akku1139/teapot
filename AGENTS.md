@@ -117,13 +117,25 @@ Never create a fixture with a bare `mkdtemp(path.join(os.tmpdir(), …))` — us
 impossible to clean up without guessing by name, and guessing is how a tidying
 script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
 
-- **A test must not leak a directory it created.** The helper puts every artifact under
-  one root, but nothing deletes them unless the test does (or `pnpm test:clean` runs).
-  MEASURED: one test file that used a bare `mkdtemp` and never cleaned up left **335**
-  `teapot-oauth-*` directories in `/tmp` — the single largest source of litter — while
-  `pnpm test:clean` reported 7,034 entries / 1,088 MB in total. If a test creates a
-  directory, remove it in a `finally`, or create it through the helper and rely on
-  `test:clean`.
+- **The helper now REMOVES what it hands out — do not rely on `test:clean` for a normal run.**
+  `mkdtempInRoot` / `mkdtempInRootSync` register each directory they create and delete it on
+  process exit, which fires however the run ends (including a failing assertion). So a test
+  that uses the helper leaks nothing, and `pnpm test:clean` is for the case a process was
+  SIGKILLed before the hook ran.
+
+  Why this replaced a rule: the previous text said the helper merely "puts every artifact
+  under one root, but nothing deletes them unless the test does **or `pnpm test:clean`
+  runs**". That reads as permission, and it was taken as such — `/tmp/teapot-tests` reached
+  **2350 directories / 723 MB**, with one file writing ~1000 files per invocation and never
+  deleting them (195 MB on its own). Making cleanup *possible* is not the same as making it
+  *happen*; moving the responsibility into the helper is what closed it.
+
+  MEASURED after the change: a full `pnpm test` leaves 0 directories / 0 bytes.
+
+  An earlier rule also asked each test file to clean up in a `finally`. Enforcing that found
+  **32 offenders** — which is the wrong shape of fix, because it makes correctness depend on
+  32 independent authors remembering. One owner (the helper) is better. If you genuinely need
+  a directory to outlive the run, say so where you create it.
 - `pnpm test:tmp` / `test:clean` are the ONLY sanctioned way to tidy test output. Do not
   `rm -rf /tmp/*` or `rm -rf /tmp/<glob>` by hand: the names are not yours alone.
 - **Scratch files from agent work go in `/tmp/<something-specific>/`, and are deleted
