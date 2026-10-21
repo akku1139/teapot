@@ -3211,6 +3211,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    */
   let unskipAnchor: { sel: string; top: number } | null = null;
   let unskipAnchorAt = 0;
+  /**
+   * How many unskip corrections may run before the next reader gesture.
+   *
+   * A correction writes `scrollTop`, and a large unskip can produce a burst of deliveries —
+   * each of which looks like another `layout` cause. Without a budget the two can chase each
+   * other and the feed never settles. It refills on any delivery the READER caused, which is the
+   * only signal that they are driving again.
+   */
+  let resyncBudget = 0;
+  const RESYNC_BUDGET_PER_GESTURE = 4;
   /** the viewport height at the previous delivery, so a composer resize is attributable */
   let lastSampleViewport: number | undefined;
   createEffect(() => {
@@ -3304,6 +3314,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        * observer then measures, so there is no stale intermediate state to pin against.
        */
       autosizeComposer();
+      /**
+       * …and PIN, right here, if the reader was following.
+       *
+       * MEASURED why the observer alone is not enough: the send adds the optimistic echo as a
+       * NEW ROW, which grows content AFTER this turn. That does not resize `.feed` — the feed's
+       * border box is unchanged when content inside it grows — so the ResizeObserver never
+       * fires, and follow was one interaction behind: the view caught up only when something
+       * else happened to change the box. Reported as "送信したときに追従が維持されることを
+       * 期待するけど、追従されてなさそう / ちょっと遅れて追従してる".
+       *
+       * `atBottom()` is a STATE here, not a measurement: only a real reader scroll clears it,
+       * so a follower reads true and a reader parked in history reads false.
+       */
+      if (atBottom()) {
+        requestAnimationFrame(() => {
+          // after the echo has been painted, so the pin target includes its height
+          if (atBottom()) pinToTail();
+        });
+      }
     } catch (ex) {
       saveDraft(text); // never eat the user's message on a failed send
       console.error("send failed:", ex);
@@ -4006,12 +4035,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             const cause = classifyScroll(now, ledger, lastSampleHeight, lastSampleViewport);
             /**
-             * A `layout` cause far from the tail is usually a content-visibility UNSKIP, and
-             * Gecko does not hold the reader's position across one (see `resyncAfterUnskip`).
-             * Re-apply the row anchor before the samples move, so the correction itself is not
-             * then re-classified.
+             * A `layout` cause far from the tail MAY be a content-visibility unskip, and Gecko
+             * does not hold the reader's position across one (see `resyncAfterUnskip`).
+             *
+             * MEASURED why this is gated so tightly. An earlier version ran on any large height
+             * delta, which caught the reader's OWN scroll: a wheel step changes `scrollTop`, and
+             * `firstVisibleRow()` then forces rows to lay out, so the delivery arrives with a
+             * changed height and was mistaken for an unskip. The correction immediately undid
+             * the wheel, so "after following, the wheel does not scroll until the next message
+             * arrives". It must be a `layout` cause — a delivery the reader did NOT cause.
              */
-            if (cause === "layout" && !atBottom() && Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1) {
+            if (
+              cause === "layout" &&
+              !atBottom() &&
+              resyncBudget > 0 &&
+              Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1
+            ) {
+              resyncBudget--;
               resyncAfterUnskip(el, unskipAnchor);
             }
             /**
@@ -4043,6 +4083,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             }
             const follow = nextFollowing(wasFollowing, cause, now);
             if (follow !== wasFollowing) setAtBottom(follow);
+            // a delivery the READER caused means they are driving: refill the unskip budget
+            if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow) {
               if (missed()) setMissed(0);
               // #160: reaching the tail marks this session read — the scroll itself, not a
@@ -6513,6 +6555,18 @@ function ThemeEditor(props: {
     };
     props.onChange([...props.themes(), theme]);
     setEditingId(id);
+    /**
+     * ADOPT the copy as the active theme.
+     *
+     * `applyCustomTheme()` only paints the theme that is ACTIVE — a custom theme the operator
+     * is merely editing has no effect on the document. "Duplicate current" creates an editable
+     * copy, so without this the operator got a copy they could edit with no visible result:
+     * changing a colour, choosing a background image, none of it reached the screen. Reported
+     * as "choose image… で画像選択したのに何も変わらない".
+     *
+     * Selecting the thing you just created is also what the button implies.
+     */
+    props.onPick(id);
   };
 
   const importFile = (file: File | undefined) => {
@@ -6540,8 +6594,19 @@ function ThemeEditor(props: {
         <Show when={props.themes().length > 0}>
           <select
             value={editingId()}
-            onchange={(e) => setEditingId(e.currentTarget.value)}
-            title="which custom theme to edit"
+            onchange={(e) => {
+              setEditingId(e.currentTarget.value);
+              /**
+               * Selecting a theme to edit also MAKES IT ACTIVE.
+               *
+               * `applyCustomTheme()` paints only the active theme, so editing an inactive one
+               * showed the operator an editor whose every change went nowhere — the same
+               * invisible-edit bug "duplicate" had. You cannot meaningfully tune a theme you
+               * cannot see, so picking one for editing means looking at it.
+               */
+              props.onPick(e.currentTarget.value);
+            }}
+            title="which custom theme to edit — selecting one also applies it"
           >
             <For each={props.themes()}>
               {(t) => <option value={t.id}>{t.label}</option>}

@@ -229,3 +229,4 @@ test("a content-visibility unskip is a LAYOUT cause, so it cannot drop follow (#
   const shrank = vp(600, 4000 - 260);
   assert.equal(classifyScroll(shrank, null, before.height, before.viewport), "layout");
 });
+

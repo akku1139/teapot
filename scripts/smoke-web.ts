@@ -984,7 +984,7 @@ console.log("deep render ok: feed rows present");
       console.error("#send-scroll check: .feed missing");
       process.exit(1);
     }
-    const CONTENT = 5000;
+    let CONTENT = 5000; // `let`: the follower case below grows it to model the echo arriving
     let viewport = 700;
     let top = 0;
     Object.defineProperty(feed, "scrollHeight", { configurable: true, get: () => CONTENT });
@@ -1022,6 +1022,95 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: sending does not move a reader who is reading history (#send-scroll)");
+
+    /**
+     * …and the OTHER half, which is the reported bug: a reader who WAS following must STILL be
+     * following after a send, immediately.
+     *
+     * Reported as "追従が維持されることを期待するけど、追従されてなさそう / ちょっと遅れて追従してる?"
+     * — the tail caught up a moment later, which means something asynchronous was doing it
+     * rather than the send itself. The send must leave the view at the tail in the same turn.
+     */
+    top = CONTENT - viewport; // at the tail
+    feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 60));
+
+    ta.value = "following";
+    ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    form.dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
+    // the composer shrinks, so the feed grows
+    viewport += 20;
+    pumpResize();
+    // the optimistic echo arrives as content growth, still in the same user action
+    CONTENT += 120;
+    await new Promise((r) => setTimeout(r, 60));
+    pumpResize();
+    await new Promise((r) => setTimeout(r, 120));
+
+    const gapAfterSend = CONTENT - top - viewport;
+    if (gapAfterSend > 8) {
+      console.error(
+        `#send-scroll REGRESSION: a follower was left ${gapAfterSend}px above the tail after ` +
+          `sending (scrollTop ${top}, content ${CONTENT}, viewport ${viewport}) — following must ` +
+          `survive a send immediately, not catch up a frame later`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: sending keeps a follower AT the tail, immediately (#send-scroll)");
+
+    /**
+     * AND A WHEEL MUST STILL WORK.
+     *
+     * Reported: "追従がされたあとは次のメッセージが来るとかじゃないとマウスホイールでタイムラインの
+     * スクロールができない". The unskip compensation fired on ANY large height change while parked,
+     * and a wheel step changes BOTH `scrollTop` and (via forced layout on the rows it passes) the
+     * content height — so the correction undid the wheel and the feed felt frozen until something
+     * else changed the box.
+     *
+     * The guard is the correction budget: it is spent by layout-driven corrections and refilled
+     * only by a delivery the READER caused. So several wheel steps in a row must each MOVE the
+     * view, never be pulled back.
+     */
+    /**
+     * A WHEEL MUST STILL SCROLL — the observable half only.
+     *
+     * Reported: "追従がされたあとは次のメッセージが来るとかじゃないとマウスホイールでタイムラインの
+     * スクロールができない". A wheel step changes `scrollTop` AND (via the forced layout that
+     * finding a visible row causes) the content height, so an unskip compensation that fired on
+     * any height change would undo it.
+     *
+     * HONEST LIMIT: happy-dom does no layout, so every row measures 0×0 and the compensation's
+     * own `Math.abs(delta) < 1` guard skips it — the correction cannot be exercised here
+     * (measured: removing the `cause === "layout"` gate leaves this check green, while a debug
+     * print confirms the code path IS entered). What this check does prove is the invariant that
+     * matters to the operator: successive wheel steps keep moving the view and are never pulled
+     * back. The guard itself is pinned by `test/scroll-policy.test.ts`.
+     */
+    top = CONTENT - viewport;
+    feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 60));
+    // park mid-history, then wheel UP repeatedly, growing content each time as forced layout on
+    // unskipped rows would
+    top = CONTENT - viewport - 400;
+    feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 60));
+    for (let step = 0; step < 3; step++) {
+      const beforeWheel = top;
+      top = Math.max(0, top - 200);
+      CONTENT += 150; // unskipped rows report their real height
+      feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+      if (top >= beforeWheel) {
+        console.error(
+          `#wheel-scroll REGRESSION: a wheel step did not move the view (scrollTop stayed ` +
+            `${top}) — the unskip compensation pulled the reader back, which is the reported ` +
+            `"マウスホイールでスクロールできない"`,
+        );
+        process.exit(1);
+      }
+    }
+    console.log("deep render ok: a wheel still scrolls after following (#wheel-scroll)");
   }
 
   // DELIVERY: prompt-delivered note arrives -> echo removed, settled row takes over
@@ -1946,6 +2035,32 @@ console.log("deep render ok: feed rows present");
         bgFail(`choosing a file submitted the settings form (${submitted}x) — that is a full PUT /api/config`);
       }
       console.log("deep render ok: the image control reports its own state and cannot submit the form (#bgimage)");
+
+      /**
+       * …AND THE THEME MUST ACTUALLY BE APPLIED.
+       *
+       * This is the half that was missing, and it is why the bug shipped twice: the control was
+       * fixed, the store was fixed, and every edit still went nowhere because the theme being
+       * edited was not ACTIVE — `applyCustomTheme()` paints only the active one.
+       *
+       * Asserting on `data-theme` plus the inline custom property is the only observable that
+       * proves the operator would SEE a change: the data attribute names the active theme, and
+       * the palette property is what actually repaints the document.
+       */
+      const html = w.document.documentElement;
+      const activeId = html.dataset.theme ?? "";
+      if (!/^custom-/.test(activeId)) {
+        bgFail(
+          `after creating a theme the active theme is ${JSON.stringify(activeId)}, not the new ` +
+            `custom one — edits cannot be visible because applyCustomTheme only paints the ACTIVE theme`,
+        );
+      }
+      // the palette is applied as INLINE custom properties (they outrank the stylesheet's)
+      const painted = html.style.getPropertyValue("--bg-dark") || html.style.getPropertyValue("--fg");
+      if (!painted) {
+        bgFail("the active custom theme painted no palette variables — the document is unchanged");
+      }
+      console.log("deep render ok: creating a theme ADOPTS it, so edits are visible (#bgimage)");
     }
 
     /* ---------- theme cards must show the THEME, not an empty box ----------
