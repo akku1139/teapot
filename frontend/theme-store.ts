@@ -252,3 +252,33 @@ export function normalizeColour(input: string): string | null {
   if (hex.length === 3) return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`;
   return `#${hex}`;
 }
+
+/**
+ * Decide which theme id to actually apply, given what was stored.
+ *
+ * A stored id can name a theme that no longer exists: deleted in another tab, dropped by
+ * `saveCustomThemes` when storage was full, or left over from an older build. `data-theme` was
+ * set to that dead id, which matches neither `:root` nor any `[data-theme]` block — so the page
+ * had NO palette at all: every surface transparent and unreadable, with no visible way back.
+ *
+ * Returns the id to use and whether the caller should repair the stored value (so a reload
+ * agrees with the screen instead of retrying the dead id forever).
+ */
+export function resolveActiveTheme(args: {
+  /** the id read from storage / state */
+  want: string;
+  /** ids of the custom themes that exist */
+  customIds: readonly string[];
+  /** ids of the built-in themes that exist */
+  presetIds: readonly string[];
+  /** used when nothing matches; must itself be a valid preset */
+  fallback?: string;
+}): { active: string; repaired: boolean } {
+  const known = args.customIds.includes(args.want) || args.presetIds.includes(args.want);
+  if (known) return { active: args.want, repaired: false };
+  const fallback = args.fallback && args.presetIds.includes(args.fallback) ? args.fallback : "dark";
+  return {
+    active: args.presetIds.includes(fallback) ? fallback : (args.presetIds[0] ?? "dark"),
+    repaired: true,
+  };
+}

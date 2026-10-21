@@ -48,6 +48,7 @@ import {
   MAX_BACKGROUND_BYTES,
   PALETTE_KEYS,
   PRESET_PALETTES,
+  resolveActiveTheme,
   type CustomTheme,
   type ThemePalette,
 } from "./theme-store";
@@ -544,16 +545,39 @@ export default function App() {
   });
   // single writer: resolves the active theme and slaps it on <html>
   createEffect(() => {
-    const active = themeAuto()
+    const want = themeAuto()
       ? sysPrefersLight()
         ? sysLightTheme()
         : sysDarkTheme()
       : fixedTheme();
+    /**
+     * A stored id can name a theme that no longer exists: deleted in another tab, dropped by
+     * `saveCustomThemes` when storage was full, or written by an older build. The attribute was
+     * set to that dead id, and since it matches neither `:root` nor a `[data-theme]` block the
+     * page then had NO palette at all — every surface transparent, unreadable, with no obvious
+     * way back except editing localStorage.
+     *
+     * Falling back to the dark preset keeps the app usable, and the write-back means the next
+     * reload agrees with what is on screen instead of retrying the dead id forever.
+     */
+    const resolved = resolveActiveTheme({
+      want,
+      customIds: customThemes().map((t) => t.id),
+      presetIds: THEMES.map((t) => t.key),
+      fallback: "dark",
+    });
+    const active = resolved.active;
+    const custom = customThemes().find((t) => t.id === active) ?? null;
+    if (resolved.repaired) {
+      // rewrite the STORED value, not just the attribute: otherwise every effect run re-reads
+      // the dead id and the fallback is permanent rather than a one-time repair
+      if (themeAuto()) localStorage.setItem(sysPrefersLight() ? "teapot.theme.light" : "teapot.theme.dark", active);
+      else localStorage.setItem("teapot.theme", active);
+    }
     document.documentElement.dataset.theme = active;
     // A CUSTOM theme is applied as inline custom properties, which outrank the stylesheet's
     // `:root`/`[data-theme]` values. `null` clears them, so switching back to a preset cannot
     // leave half a palette behind (a leftover `--bg-dark` would keep overriding the preset).
-    const custom = customThemes().find((t) => t.id === active) ?? null;
     applyCustomTheme(document.documentElement, custom);
     // light/dark appearance for components that ship their own palettes
     // (e.g. shiki dual-theme code blocks)
@@ -7669,9 +7693,12 @@ function ConfigModal(props: {
               />
             </label>
           </div>
-          <Show
-            when={themeAuto()}
-            fallback={
+          {/* The per-mode pickers appear ONLY when following the system: that is the one
+              case where two choices exist. It used to be inverted — turning "follow the system"
+              OFF showed two pickers (so you chose a dark AND a light theme while following
+              neither) and turning it ON showed a read-only sentence instead of letting you pick.
+              The sentence was also redundant with the picker below it. */}
+          <Show when={themeAuto()}>
               <div class="cfggrid" style="margin-top:8px">
                 <label class="trow">dark theme →
                   <select
@@ -7702,11 +7729,6 @@ function ConfigModal(props: {
                   </select>
                 </label>
               </div>
-            }
-          >
-            <div class="muted" style="margin-top:6px">
-              following the system: dark → <b>{sysDarkTheme()}</b>, light → <b>{sysLightTheme()}</b>
-            </div>
           </Show>
 
           <h4 class="cfgsub">themes</h4>
@@ -7767,10 +7789,33 @@ function ConfigModal(props: {
               setCustomThemes(next);
               const saved = saveCustomThemes(next);
               if (!saved.ok) flashHint(saved.error ?? "could not save theme");
-              // dropping the theme you were using must not leave the app on a dead id
-              if (!next.some((t) => t.id === fixedTheme()) && !THEMES.some((t) => t.key === fixedTheme())) {
+              /**
+               * Deleting a theme must not leave ANY of the three theme ids pointing at it.
+               *
+               * There are three places an id is stored — the fixed theme and the two per-mode
+               * choices — and the old code only checked the first. With "follow the system" on,
+               * the per-mode `<select>`s kept the dead id: `<select value=…>` with no matching
+               * `<option>` silently displays the FIRST option while the state still held the dead
+               * one, so the picker showed a theme that was not the one in use.
+               *
+               * Each falls back to a preset that still exists, and is written back to
+               * localStorage so a reload agrees with the screen.
+               */
+              const alive = (id: string) =>
+                next.some((t) => t.id === id) || THEMES.some((t) => t.key === id);
+              if (!alive(fixedTheme())) {
                 setFixedTheme("dark");
                 localStorage.setItem("teapot.theme", "dark");
+              }
+              // the per-mode fallback keeps its APPEARANCE: a deleted dark theme must fall back
+              // to a dark preset, not to whatever happens to be first
+              if (!alive(sysDarkTheme())) {
+                setSysDarkTheme("dark");
+                localStorage.setItem("teapot.theme.dark", "dark");
+              }
+              if (!alive(sysLightTheme())) {
+                setSysLightTheme("light");
+                localStorage.setItem("teapot.theme.light", "light");
               }
             }}
             onPick={(id) => {

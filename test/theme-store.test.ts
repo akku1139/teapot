@@ -22,6 +22,7 @@ import {
   normalizeColour,
   PALETTE_KEYS,
   PRESET_PALETTES,
+  resolveActiveTheme,
   sanitizeTheme,
   saveCustomThemes,
   type CustomTheme,
@@ -311,4 +312,37 @@ test("PRESET_PALETTES matches the [data-theme] blocks in app.css (#theme)", () =
       );
     }
   }
+});
+
+test("a stored id naming a DELETED theme falls back instead of blanking the UI (#theme)", () => {
+  // A dead id matches neither `:root` nor any `[data-theme]` block, so `data-theme` pointed at
+  // nothing and every surface went transparent — unreadable, with no visible way back except
+  // editing localStorage. The fallback also has to be REPAIRED in storage, or every effect run
+  // re-reads the dead id and the broken state is permanent.
+  const presetIds = ["dark", "light"];
+  const customIds = ["custom-a"];
+
+  const live = resolveActiveTheme({ want: "custom-a", customIds, presetIds });
+  assert.deepEqual(live, { active: "custom-a", repaired: false }, "a live custom id is used as-is");
+
+  const preset = resolveActiveTheme({ want: "light", customIds, presetIds });
+  assert.deepEqual(preset, { active: "light", repaired: false });
+
+  for (const dead of ["custom-deleted", "", "no-such-theme"]) {
+    const r = resolveActiveTheme({ want: dead, customIds, presetIds });
+    assert.equal(r.active, "dark", `${JSON.stringify(dead)} must fall back to a real preset`);
+    assert.equal(r.repaired, true, "the caller must be told to rewrite storage");
+  }
+});
+
+test("the fallback is a preset that actually exists (#theme)", () => {
+  // a fallback id that is not in presetIds would reproduce the same blank UI one level down
+  const r = resolveActiveTheme({ want: "gone", customIds: [], presetIds: ["tea"], fallback: "dark" });
+  assert.equal(
+    r.active,
+    "tea",
+    "asking for a non-existent fallback must land on a real preset, not on 'dark' by name",
+  );
+  const empty = resolveActiveTheme({ want: "gone", customIds: [], presetIds: [], fallback: "dark" });
+  assert.equal(empty.active, "dark", "with no presets at all, 'dark' is still the least-bad answer");
 });
