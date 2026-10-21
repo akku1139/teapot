@@ -19,13 +19,6 @@ import { executeTool } from "../src/agent/tools.ts";
 
 const ctx = (cwd: string) => ({ cwd, defaultTimeoutMs: 20_000, maxOutputBytes: 100_000 }) as never;
 
-/** is a POSIX shell reachable? mirrors toolShellFor so the test asks the same question */
-function hasBash(): boolean {
-  if (process.platform !== "win32") return true;
-  const p = process.env.PATH ?? "";
-  return p.split(";").some((d) => d && (existsSync(path.join(d, "bash.exe")) || existsSync(path.join(d, "bash"))));
-}
-
 test("the bash tool runs a command on this platform (#win)", async () => {
   const ws = mkdtempInRootSync("winsh-");
   const r = await executeTool("bash", JSON.stringify({ command: "echo TEAPOT_SHELL_OK" }), ctx(ws));
@@ -35,20 +28,28 @@ test("the bash tool runs a command on this platform (#win)", async () => {
 
 test("the bash tool reports the RIGHT working directory (#win)", async () => {
   /**
-   * The reason this matters more on Windows than elsewhere: there is no `/bin/bash`, so the
-   * shell is `bash.exe` (Git for Windows, on PATH) or `cmd.exe`. `cmd` does not understand
-   * `pwd` — so this also proves the chosen shell can run the command the model actually writes.
+   * The reason this matters more on Windows than elsewhere: there is no `/bin/bash`, so the shell
+   * is `bash.exe` (Git for Windows, on PATH) or `cmd.exe` — and the two print a cwd in different
+   * forms. MEASURED on the Windows runner: comparing `pwd`'s OUTPUT against the workspace string
+   * failed while the shell had in fact run in the right place, because Git Bash's `/tmp` mount and
+   * Node's `C:\\tmp` name the same directory differently.
+   *
+   * So assert the INVARIANT, not the spelling: have the shell create a file, then check it is
+   * where the workspace says it should be. That is the thing callers depend on — a command must
+   * see the workspace's files — and it is representation-independent.
    */
   const ws = mkdtempInRootSync("wincwd-");
-  // `pwd` in bash, `cd` in cmd (bare `cd` prints the cwd only there; `bash -c cd` prints
-  // nothing). Pick per shell so the assertion is about the STARTING DIRECTORY, not about which
-  // shell got chosen.
-  const cmd = process.platform === "win32" && !hasBash() ? "cd" : "pwd";
-  const r = await executeTool("bash", JSON.stringify({ command: cmd }), ctx(ws));
-  const out = String(r.result ?? "").replace(/\//g, "\\").toLowerCase();
+  const probe = "teapot-cwd-probe.txt";
+  const r = await executeTool(
+    "bash",
+    JSON.stringify({ command: `echo OK > ${probe}` }),
+    ctx(ws),
+  );
+  assert.equal(r.ok, true, `writing into the workspace must work; got: ${r.result}`);
+  const landed = path.join(ws, probe);
   assert.ok(
-    out.includes(ws.replace(/\//g, "\\").toLowerCase()),
-    `the shell must start in the workspace, not somewhere else; got: ${r.result}`,
+    existsSync(landed),
+    `the shell must start in the workspace: expected the file at ${landed}, and the command said ${JSON.stringify(r.result)}`,
   );
 });
 
