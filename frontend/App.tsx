@@ -3273,6 +3273,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * height — and that is exactly the case `lastAppliedContentH` identifies.
      */
     const rawContentH = composerEl.scrollHeight;
+    /**
+     * An EMPTY box is always exactly one line — never `scrollHeight`.
+     *
+     * Reported: shrink the window (the placeholder now wraps), type something, delete it, and
+     * the placeholder is left WRAPPED because the box grew to fit it. `scrollHeight` of an empty
+     * textarea includes the wrapped placeholder in Chromium, so the measurement that the box
+     * height comes from depends on how the PLACEHOLDER happens to wrap — which changes with the
+     * window width and has nothing to do with the message being written.
+     *
+     * A textarea's own `height: auto` is `rows` × line-height, independent of both content and
+     * placeholder, so clearing the height is the exact, stable answer for an empty box. This is
+     * also the state the composer starts in, so before-typing and after-deleting now match.
+     */
+    if (!composerEl.value && !maximized) {
+      composerEl.style.height = "";
+      lastAppliedContentH = 0;
+      return;
+    }
     if (rawContentH < lastAppliedContentH) composerEl.style.height = "auto";
     const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
     // apply it unconditionally: an early return must NOT leave the box at `auto`, which

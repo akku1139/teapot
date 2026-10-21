@@ -268,3 +268,34 @@ test("autosizeComposer collapses to `auto` only when the content SHRANK (#scroll
     );
   }
 });
+
+test("an EMPTY composer is one line, whatever its placeholder wraps to (#ui)", async () => {
+  /**
+   * Reported: shrink the window, type something, delete it — and the placeholder is left
+   * WRAPPED. `scrollHeight` of an empty textarea includes the PLACEHOLDER in Chromium, so a
+   * measurement meant to describe the message ends up describing how the placeholder happens to
+   * wrap at the current width.
+   *
+   * A textarea's own `height: auto` is `rows` × line-height — independent of both content and
+   * placeholder — so clearing the height is the exact answer for an empty box, and it is the
+   * state the composer starts in. Before-typing and after-deleting then agree.
+   */
+  const app = await readSource("frontend/App.tsx");
+  const fn = app.slice(app.indexOf("const autosizeComposer = () => {"));
+  const body = fn.slice(0, fn.indexOf("\n  };"));
+
+  assert.match(
+    body,
+    /if\s*\(\s*!composerEl\.value/,
+    "autosizeComposer must special-case an EMPTY box — otherwise the placeholder's wrapping " +
+      "decides the height and it stays wrapped after the text is deleted",
+  );
+  // and the empty branch must clear the height rather than measure the placeholder
+  const emptyAt = body.indexOf("!composerEl.value");
+  const branch = body.slice(emptyAt, emptyAt + 300);
+  assert.match(
+    branch,
+    /style\.height\s*=\s*""/,
+    "the empty branch must CLEAR the height (falling back to `rows`) instead of setting a px value",
+  );
+});
