@@ -5821,6 +5821,32 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
             {files.length ? <div class="meta">bundled: {files.join(", ")}</div> : null}
             {res() ? <div class="meta">{oneLine(out(), 160)} · {fmtDur(res()!.data?.durationMs)}</div> : <div class="meta">saving…</div>}
           </>
+);
+        break;
+      }
+      default: {
+        /**
+         * EVERY other tool: show the arguments AND the result.
+         *
+         * There was no `default:` branch, so any tool without an explicit case — every MCP
+         * tool, `wait_children`, `read_memory`, the meta tools, `web` — kept the initial `body`,
+         * which is the JSON of its INPUT. Reported as "bashやfile系以外のツールは入力パラメータは
+         * 表示されるのに出力がタイムラインに表示されない". The output was in the log and paired
+         * correctly; it simply had no case that rendered it.
+         *
+         * The generic view is the right fallback in shape (the input is often what you want to
+         * see first), but it must not be the WHOLE view: for a tool whose effect is its return
+         * value — `read_memory`, an MCP lookup, `wait_children` — showing only the arguments
+         * tells the operator nothing about what happened.
+         */
+        label = name;
+        // the duration is the only summary fact a generic tool has; the outcome is in the body
+        hint = res() ? fmtDur(res()!.data?.durationMs) : null;
+        body = (
+          <>
+            <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>
+            {resultBlock(4000)}
+          </>
         );
         break;
       }

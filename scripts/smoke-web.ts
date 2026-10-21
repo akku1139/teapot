@@ -2727,6 +2727,47 @@ console.log("deep render ok: feed rows present");
       `deep render ok: an appended message re-uses all ${before.length} existing rows, keeps <details> open, and preserves an inner scroll offset (#rerender)`,
     );
   }
+
+  /**
+   * A tool WITHOUT an explicit case must still show its OUTPUT.
+   *
+   * Reported: "bashやfile系以外のツールは入力パラメータは表示されるのに出力がタイムラインに表示され
+   * ない". The `switch` in ToolRow had cases for bash/read_file/write_file/edit_file/
+   * apply_patch/list_dir/read_url/bash_output/load_skill/save_skill and NO `default`, so every
+   * other tool — MCP tools, wait_children, read_memory, the meta tools — kept the initial body,
+   * which is the JSON of its INPUT. The result was in the log and paired correctly; nothing
+   * rendered it.
+   */
+  {
+    const outToken = "MCP_TOOL_OUTPUT_9c3f";
+    pushEvent({
+      id: "defcall", seq: 91001, ts: new Date().toISOString(), session: "alpha-s1",
+      branch: "br0", parent: null, type: "tool_call",
+      data: { callId: "cd1", name: "mcp__notion__search", args: { query: "IN_TOKEN_4a2b" } },
+    });
+    pushEvent({
+      id: "defres", seq: 91002, ts: new Date().toISOString(), session: "alpha-s1",
+      branch: "br0", parent: null, type: "tool_result",
+      data: { callId: "cd1", ok: true, result: outToken, durationMs: 12 },
+    });
+    flushRefreshes();
+    // PRECONDITION: the row exists and rendered its INPUT, or a missing output proves nothing
+    if (!(await waitFor("the generic tool row renders", () => bodyText().includes("IN_TOKEN_4a2b"), 8000))) {
+      console.error(
+        "#toolout check: the row for a non-bash tool never rendered its input args — vacuous",
+      );
+      process.exit(1);
+    }
+    if (!bodyText().includes(outToken)) {
+      console.error(
+        "#toolout REGRESSION: a non-bash/file tool rendered its INPUT but not its OUTPUT — the " +
+          "row's switch has no `default`, so every tool without an explicit case shows only " +
+          "its arguments (reported: bashやfile系以外のツールは出力が表示されない)",
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a tool with no explicit case still shows its output (#toolout)");
+  }
 }
 
 /* ---------- #scroll: typing into a grown composer must not move the feed ----------
