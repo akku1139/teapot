@@ -27,6 +27,27 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import { toolShellFor } from "../agent/tools.ts";
+
+/**
+ * Which shell an interactive terminal should spawn.
+ *
+ * Exported so a test can call it: an earlier version of this rule lived inline in `open()`, and
+ * the obvious unit test could only pin `toolShellFor`, which is shared with the `bash` tool — so
+ * reverting THIS file to the buggy order left that test green. The rule has to be callable for
+ * its own failure to be observable.
+ *
+ * Only the file name is taken from `toolShellFor` (a terminal is spawned with no `-c`, so the
+ * args builder does not apply), but the "which shell" question is answered in one place so the
+ * two cannot drift.
+ */
+export function terminalShellFor(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  exists: (p: string) => boolean = existsSync,
+): string {
+  return toolShellFor(platform, env, exists).file;
+}
 
 export interface TerminalInfo {
   id: string;
@@ -135,10 +156,19 @@ export function createTerminal(
    * `%TEAPOT_SHELL%` overrides on both platforms, so an operator who wants `pwsh` or a specific
    * bash does not have to change their login shell.
    */
-  const shell =
-    process.env.TEAPOT_SHELL?.trim() ||
-    process.env.SHELL ||
-    (process.platform === "win32" ? process.env.COMSPEC || "cmd.exe" : "/bin/bash");
+  /**
+   * The SAME choice the `bash` tool makes — deliberately shared, not re-derived.
+   *
+   * `$SHELL` used to be consulted before the platform check. On Windows that is a trap: Git
+   * Bash / MSYS / some CI images export `SHELL=/usr/bin/bash`, which `spawn()` cannot execute
+   * there, so the tab opened and died with ENOENT. MEASURED: `SHELL=/usr/bin/bash` with
+   * `COMSPEC=C:\Windows\system32\cmd.exe` resolved to `/usr/bin/bash` under the old chain.
+   *
+   * A terminal needs an INTERACTIVE shell (spawned with no `-c`), so only the file name is taken
+   * from `toolShellFor`; the two answer the "which shell" question in one place so a fix to one
+   * cannot leave the other broken.
+   */
+  const shell = terminalShellFor(process.platform, process.env);
   const hasScript = process.platform !== "win32" && existsSync("/usr/bin/script");
   // `script` reports a 0x0 winsize, so the shell falls back to these until a client resizes
   const env = { ...process.env, TERM: "xterm-256color", COLUMNS: "100", LINES: "30" };
