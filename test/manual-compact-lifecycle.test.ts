@@ -79,7 +79,14 @@ test("manual compact is observable in the snapshot from the FIRST progress event
         done = true;
         return r;
       });
-      await wait(300);
+      // POLL, do not sleep a fixed duration (AGENTS.md). This asserted `chatCalls === 1`
+      // after `wait(300)`, which is a bet that the summarizer call has STARTED within 300ms —
+      // false on a loaded CI runner, where it failed as "precondition: the summarizer call is
+      // the one in flight" with no hint that the test merely ran out of clock.
+      const deadline = Date.now() + 8000;
+      while (chatCalls === 0 && Date.now() < deadline) await wait(10);
+      // …and wait for the progress event, which is what the assertion below is about
+      while (!snapAtFirstProgress && Date.now() < deadline) await wait(10);
       assert.equal(done, false, "precondition: the manual compact is still running");
       assert.equal(chatCalls, 1, "precondition: the summarizer call is the one in flight");
 

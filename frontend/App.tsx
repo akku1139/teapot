@@ -4254,12 +4254,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         <Show when={sel()?.id} keyed fallback={null}>
           {(_aid) => (
           <>
-          <h3 title="identity + storage locations for this agent">🎛 session</h3>
-          <div class="card sesscard">
-            <div class="sessrow"><span class="k">agent</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
-            <div class="sessrow"><span class="k">workspace</span><span class="mono ellip" title={sel()!.workspace}>{sel()!.workspace}</span></div>
-            <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
-          </div>
+          {/* 🎛 session is REFERENCE (storage paths, ids) — folded by default so the two
+              sections an operator works in (🎯 goal, ✅ todo) are the ones in view. The
+              heading stays visible, which is what makes it findable. */}
+          <details class="rbsec">
+            <summary title="identity + storage locations for this agent">🎛 session</summary>
+            <div class="card sesscard">
+              <div class="sessrow"><span class="k">agent</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
+              <div class="sessrow"><span class="k">workspace</span><span class="mono ellip" title={sel()!.workspace}>{sel()!.workspace}</span></div>
+              <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
+            </div>
+          </details>
 
           {/* keyed by agent id: Solid re-runs the JSX expression on every
               snapshot update, but <Show keyed> + primitive props keep the
@@ -4797,7 +4802,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </Show>
           </div>
 
-          <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span>
+          <details class="rbsec">
+            {/* the explanation lives BELOW the summary: a click anywhere inside <summary>
+                toggles the section, so an interactive/explaining node there would swallow it */}
+            <summary>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span></summary>
             {/* Say what the filter actually does. A fork INHERITS everything
                 before its fork point, and that history is now included, so the
                 view matches the context the agent actually reasons over. Say
@@ -4808,7 +4816,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 showing <b>{branchFilter()}</b> and the history it inherited before forking
               </div>
             </Show>
-          </h3>
           <For each={branches()}>
             {(b) => (
               <div
@@ -4840,8 +4847,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               </div>
             )}
           </For>
+          </details>
 
-          <h3>⏰ schedule <span class="muted" style="text-transform:none;letter-spacing:0">· cron tasks, all agents · edit in settings</span></h3>
+          <details class="rbsec">
+            <summary>⏰ schedule <span class="muted" style="text-transform:none;letter-spacing:0">· cron tasks, all agents · edit in settings</span></summary>
           <Show
             when={tasks().length > 0}
             fallback={<div class="muted">no scheduled tasks — add them in ⚙ settings ("scheduled tasks")</div>}
@@ -4869,6 +4878,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               )}
             </For>
           </Show>
+          </details>
           </>
           )}
         </Show>
