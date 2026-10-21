@@ -1823,6 +1823,42 @@ console.log("deep render ok: feed rows present");
     }
     console.log("deep render ok: settings is a menu — one section shown, edits survive switching");
 
+    /**
+     * The help section, and the promise that made it: the explanations that used to sit in the
+     * way are GONE from the working UI and available here.
+     *
+     * The composer hint is the concrete one — a keyboard cheat-sheet printed permanently under
+     * the input, read once and then looked past forever. It must not be in the composer any
+     * more, and its content must be reachable from settings.
+     */
+    {
+      const helpItem = menu.find((b) => /help/i.test(b.textContent ?? ""));
+      if (!helpItem) {
+        console.error("#help REGRESSION: settings has no help section");
+        process.exit(1);
+      }
+      helpItem.click();
+      await new Promise((r) => setTimeout(r, 250));
+      const shown = visible()[0]?.textContent ?? "";
+      for (const want of ["shift+enter", "auto-continue", "auto-compact"]) {
+        if (!shown.toLowerCase().includes(want)) {
+          console.error(`#help REGRESSION: the help section does not mention ${want}`);
+          process.exit(1);
+        }
+      }
+      // and the static cheat-sheet must be out of the composer (flash messages still show)
+      const hint = w.document.querySelector(".composerwrap .hint, .hint");
+      if (hint && /enter send ·/i.test(hint.textContent ?? "")) {
+        console.error("#help REGRESSION: the keyboard cheat-sheet is still printed under the composer");
+        process.exit(1);
+      }
+      // go back so the theme checks below find the appearance section
+      const appearance = menu.find((b) => /appearance/i.test(b.textContent ?? ""));
+      appearance?.click();
+      await new Promise((r) => setTimeout(r, 250));
+      console.log("deep render ok: help section carries the keyboard + toggle explanations (#help)");
+    }
+
     /* ---------- theme cards must show the THEME, not an empty box ----------
      * Reported: "appearanceのテーマカードが左上に赤い点が付いてるだけで、中身の色がついてない".
      *

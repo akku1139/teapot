@@ -965,6 +965,15 @@ details.reasoning .thinkscroll {
 .composer button:hover { opacity: .9; }
 .composer label { color: var(--dim); font-size: var(--text-xs); display: flex; gap: var(--space-2); align-items: center; white-space: nowrap; }
 .hint { color: var(--dim); font-size: var(--text-xs); margin-top: 5px; }
+/* help section: a labelled reference list. Each row is a term and its explanation, with the
+   term in its own column so the eye can scan down it without reading the prose. */
+.helpsec { margin-bottom: var(--space-5); }
+.helprow { display: grid; grid-template-columns: minmax(96px, auto) 1fr; gap: var(--space-4); align-items: baseline; padding: 4px 0; font-size: var(--text-sm); border-bottom: 1px solid var(--bg-light); }
+.helprow:last-child { border-bottom: none; }
+.helprow > b { color: var(--fg); font-weight: 600; white-space: nowrap; }
+.helprow > span { color: var(--dim); line-height: 1.5; }
+.helprow kbd { display: inline-block; min-width: 20px; text-align: center; background: var(--bg-light); border-radius: var(--radius-sm); padding: 1px 5px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: var(--text-xs); color: var(--fg); }
+.helprow code { background: var(--bg-darkest); border-radius: var(--radius-sm); padding: 0 4px; font-size: 11.5px; }
 
 /* ---- right bar ---- */
 /* Drawer-only click-outside layer (#50), same trick as .notifbackdrop.

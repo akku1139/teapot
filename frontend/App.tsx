@@ -4352,10 +4352,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 }}
               />
             </form>
-            <div class="hint">
-              {flash() ||
-                "enter send · shift+enter newline · ↑↓ sessions · / commands & focus · t terminal · d panel · esc interrupt · messages sent while the agent works queue up and land at the next turn boundary"}
-            </div>
+            {/**
+             * The hint line is for FLASH messages only.
+             *
+             * It used to hold a permanent keyboard cheat-sheet under the composer, which the
+             * operator reads once and then has to look past forever. The same text now lives in
+             * ⚙ settings → ❔ help, where it is found when it is needed; a keyboard reference is
+             * something you consult, not something you stare at while typing.
+             */}
+            <Show when={flash()}>
+              <div class="hint">{flash()}</div>
+            </Show>
           </div>
         </Show>
       </section>
@@ -4560,10 +4567,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               />
               auto-continue
             </label>
-            <span class="muted">loops while goal is active · stops on done / stop</span>
           </div>
 
-          <h3 title="what the agent is working toward — auto-continue keeps looping while the status is 'active'">🎯 goal
+          <h3 title="what the agent is working toward. Stored with the session; the agent reads it via get_goal(). Auto-continue keeps looping while the status is 'active' and stops when marked done.">🎯 goal
             <Show
               when={!!sel()!.goal.text.trim()}
               fallback={<span class="badge" title="no goal set yet">no goal</span>}
@@ -4634,9 +4640,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               )}
             </Show>
           </Show>
-          <div class="muted" style="font-size:11px;margin-top:4px">
-            stored with the session · the agent reads it via get_goal() · auto-continue loops while status is "working" and stops when marked done
-          </div>
+          {/* the explanation is the heading's tooltip: it never changes, so printing it under
+              the goal permanently costs a line in the panel every time the operator looks */}
           <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-top:8px;margin-bottom:6px">
             <textarea
               id="goal-input"
@@ -4838,7 +4843,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         />
                         auto-compact
                       </label>
-                      <span class="muted" style="font-size:11.5px">summarizes old turns when budget exceeded</span>
                     </div>
                   </div>
                 );
@@ -7488,7 +7492,7 @@ function ConfigModal(props: {
    * The SAVE button stays outside the menu: it applies the whole form, so it must not
    * look like it belongs to whichever section happens to be visible.
    */
-  type Section = "providers" | "runtime" | "appearance" | "mcp" | "tasks" | "archive" | "agents" | "update";
+  type Section = "providers" | "runtime" | "appearance" | "mcp" | "tasks" | "archive" | "agents" | "update" | "help";
   const [section, setSection] = createSignal<Section>("providers");
   // the archive list is SERVER state (which entries are archived), fetched on open
   // and after every action — not derived from props.cfg, which carries the config as
@@ -7536,6 +7540,8 @@ function ConfigModal(props: {
     { key: "archive", label: "🗄 archive", hint: "agents you put away — restore or delete for good" },
     { key: "agents", label: "👥 agents", hint: "what exists (read-only)" },
     { key: "update", label: "⬆️ live update", hint: "restart onto a newer build" },
+    // where the explanations that used to sit permanently under the UI now live
+    { key: "help", label: "❔ help", hint: "keyboard shortcuts and what each toggle does" },
   ];
 
   const agentIds = () => (props.cfg.agents ?? []).map((a: any) => a.id);
@@ -8040,9 +8046,8 @@ function ConfigModal(props: {
               onchange={(e) => setShortContext(e.currentTarget.checked)}
             />
             short-context mode (#161)
-            <span class="muted" style="font-size:11px">
-              — prune old tool output early; for 32k–262k windows, not large ones
-            </span>
+            {/* no inline repeat of the tooltip: the label already carries the whole
+                explanation, including the window range that makes it worth using */}
           </label>
         </fieldset>
 
@@ -8395,6 +8400,58 @@ function ConfigModal(props: {
               update & restart
             </button>
             <span class="muted" style="margin-left:8px;font-size:12px">gracefully stops all agents, spawns new process, then reloads this page</span>
+          </div>
+        </fieldset>
+
+        <fieldset classList={{ hide: section() !== "help" }}>
+          <legend>help</legend>
+          {/* Everything here used to sit permanently in the UI — a keyboard cheat-sheet under
+              the composer and a sentence beside each toggle. Read once, then in the way
+              forever. Gathered here it is found when someone actually asks. */}
+          <div class="helpsec">
+            <h4 class="cfgsub">keyboard</h4>
+            <div class="helprow"><kbd>enter</kbd><span>send (shift+enter for a newline)</span></div>
+            <div class="helprow"><kbd>↑</kbd><kbd>↓</kbd><span>move between sessions</span></div>
+            <div class="helprow"><kbd>/</kbd><span>command palette — commands and focus</span></div>
+            <div class="helprow"><kbd>t</kbd><span>open the terminal panel</span></div>
+            <div class="helprow"><kbd>d</kbd><span>toggle the details panel</span></div>
+            <div class="helprow"><kbd>esc</kbd><span>interrupt the running turn</span></div>
+          </div>
+
+          <div class="helpsec">
+            <h4 class="cfgsub">what the toggles do</h4>
+            <div class="helprow">
+              <b>auto-continue</b>
+              <span>
+                fires after a round only when all hold: the toggle is on, a goal is set and its
+                status is <code>active</code>, and the round ended cleanly (not an error, not
+                stopped). It stops when the goal is marked done, or when you press ■ stop.
+                Sending any prompt starts an idle agent regardless.
+              </span>
+            </div>
+            <div class="helprow">
+              <b>auto-compact</b>
+              <span>
+                when the live context passes the budget shown under 📊 runtime, older turns are
+                summarized into notes and the recent stretch is kept verbatim, so work continues
+                without losing the thread. Off means you compact by hand (<code>/compact</code>).
+              </span>
+            </div>
+            <div class="helprow">
+              <b>messages while it works</b>
+              <span>
+                anything you send queues up and is handed to the model at its next turn
+                boundary — the timeline shows it as "pending (queued)…" until then. Withdraw it
+                with ✕ cancel while it is still queued.
+              </span>
+            </div>
+            <div class="helprow">
+              <b>👻 ghost sessions</b>
+              <span>
+                a session whose workspace directory no longer exists on disk. The session log is
+                intact — recreate the directory and it stops being a ghost.
+              </span>
+            </div>
           </div>
         </fieldset>
           </div>
