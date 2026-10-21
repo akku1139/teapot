@@ -331,6 +331,14 @@ export default function App() {
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
   const [showCfg, setShowCfg] = createSignal(false);
+  /**
+   * MCP servers whose missing grant has already pulled the operator to that section.
+   *
+   * Deliberately module/mount-lifetime, NOT per-dialog: "this server needs authorization" is a
+   * property of the server, so re-opening settings must not re-announce it and make every save
+   * jump to MCP again.
+   */
+  const announcedOAuth = new Set<string>();
   /* Below NARROW_PX the right bar stops being a grid column and becomes a
    * fixed drawer over the content — which hides the ▤ toggle that opens it.
    * That is why the drawer needs its own close button, and why the breakpoint
@@ -3198,7 +3206,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // None of it is needed now: every one of those changes resizes `.feed`, and the
       // ResizeObserver on it re-pins iff the reader is following. `autosizeComposer` below
       // is still required to re-measure the (now empty) box.
-      requestAnimationFrame(() => autosizeComposer());
+      /**
+       * Shrink the composer BEFORE the frame, not in one.
+       *
+       * MEASURED: this used to be `requestAnimationFrame(() => autosizeComposer())`. The
+       * draft effect had already written the empty value, so the box sat one frame at its
+       * OLD multi-line height while the feed's ResizeObserver ran. The observer re-pinned
+       * the tail against THAT layout, and only then did the composer collapse — which grew
+       * the feed by however many lines the composer had been using, leaving the timeline
+       * scrolled as if the box were still tall. That is the reported "入力欄が複数行に拡大して
+       * いるときに送ると、拡大していない高さをベースにスクロールが戻る".
+       *
+       * Doing it synchronously makes the composer's final height part of the SAME layout the
+       * observer then measures, so there is no stale intermediate state to pin against.
+       */
+      autosizeComposer();
     } catch (ex) {
       saveDraft(text); // never eat the user's message on a failed send
       console.error("send failed:", ex);
@@ -5051,6 +5073,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       <ConfigModal
         cfg={cfg()}
         onClose={() => setShowCfg(false)}
+        announcedOAuth={announcedOAuth}
         onSaved={() => {
           loadCfg();
           loadTasks();
@@ -6254,7 +6277,17 @@ function ThemePreview(props: { palette: ThemePalette }) {
 }
 
 function ThemeEditor(props: {
-  themes: CustomTheme[];
+  /**
+   * An ACCESSOR, not the array.
+   *
+   * Passing `props.themes={customThemes()}` hands the editor a snapshot of the list as it was
+   * when the component was created, so every later change was invisible to it — pressing
+   * "＋ duplicate current" persisted a theme to localStorage and the editor still rendered
+   * "no custom themes yet". That is the same freeze AGENTS.md describes for destructured props
+   * ("same for destructuring a getter's RESULT: pass the accessor down"), and it only showed up
+   * in the browser: the persistence worked, so nothing failed loudly.
+   */
+  themes: () => CustomTheme[];
   activeId: string;
   onChange: (next: CustomTheme[]) => void;
   onPick: (id: string) => void;
@@ -6262,7 +6295,7 @@ function ThemeEditor(props: {
   // which theme the editor is open on: the active one if it is custom, else the first custom,
   // else none (nothing to edit until one exists)
   const [editingId, setEditingId] = createSignal<string>(
-    props.themes.some((t) => t.id === props.activeId) ? props.activeId : (props.themes[0]?.id ?? ""),
+    props.themes().some((t) => t.id === props.activeId) ? props.activeId : (props.themes()[0]?.id ?? ""),
   );
   /**
    * `editingId` is a plain signal, so it can outlive the theme it names — deleting the theme
@@ -6273,7 +6306,7 @@ function ThemeEditor(props: {
    * theme that EXISTS: the named one if it is still there, otherwise the first remaining one.
    */
   const editing = () => {
-    const list = props.themes;
+    const list = props.themes();
     return list.find((t) => t.id === editingId()) ?? list[0];
   };
   /**
@@ -6284,13 +6317,15 @@ function ThemeEditor(props: {
    * The draft is cleared on blur, at which point the field shows the colour that was applied.
    */
   const [hexDraft, setHexDraft] = createSignal<Record<string, string>>({});
+  /** the hidden file input the 🖼 button opens (see the button's comment for why) */
+  let filePick: HTMLInputElement | undefined;
 
   /** write one field of the theme being edited, and persist immediately */
   const patch = (fn: (t: CustomTheme) => CustomTheme) => {
     const id = editingId();
     if (!id) return;
     // apply the palette live so the operator sees the change as they type
-    const next = props.themes.map((t) => (t.id === id ? fn(t) : t));
+    const next = props.themes().map((t) => (t.id === id ? fn(t) : t));
     props.onChange(next);
   };
   const setColour = (key: keyof ThemePalette, raw: string) => {
@@ -6307,7 +6342,7 @@ function ThemeEditor(props: {
     // duplicating a CUSTOM theme silently produced "Dark copy" with `mode: "dark"`, because the
     // lookup missed and fell back to THEMES[0]. MEASURED: active=custom-x (mode light) produced
     // a dark copy labelled after the wrong theme.
-    const activeCustom = props.themes.find((t) => t.id === props.activeId);
+    const activeCustom = props.themes().find((t) => t.id === props.activeId);
     const activePreset = THEMES.find((t) => t.key === props.activeId);
     const base = activeCustom ?? activePreset ?? THEMES[0]!;
     // Colours come from the LIVE document, which is what the operator is looking at: for a
@@ -6320,7 +6355,7 @@ function ThemeEditor(props: {
       const v = normalizeColour(cs.getPropertyValue(cssVar));
       if (v) palette[key] = v;
     }
-    const id = newThemeId(props.themes.map((t) => t.id).concat(THEMES.map((t) => t.key)));
+    const id = newThemeId(props.themes().map((t) => t.id).concat(THEMES.map((t) => t.key)));
     const theme: CustomTheme = {
       id,
       label: `${base.label}${activeCustom ? "" : " copy"}`.slice(0, 40),
@@ -6331,7 +6366,7 @@ function ThemeEditor(props: {
         ? { backgroundImage: activeCustom.backgroundImage, backgroundDim: activeCustom.backgroundDim }
         : {}),
     };
-    props.onChange([...props.themes, theme]);
+    props.onChange([...props.themes(), theme]);
     setEditingId(id);
   };
 
@@ -6357,13 +6392,13 @@ function ThemeEditor(props: {
         <button type="button" onclick={duplicatePreset} title="copy the theme you are using into a new editable one — presets themselves are never modified">
           ＋ duplicate current
         </button>
-        <Show when={props.themes.length > 0}>
+        <Show when={props.themes().length > 0}>
           <select
             value={editingId()}
             onchange={(e) => setEditingId(e.currentTarget.value)}
             title="which custom theme to edit"
           >
-            <For each={props.themes}>
+            <For each={props.themes()}>
               {(t) => <option value={t.id}>{t.label}</option>}
             </For>
           </select>
@@ -6456,8 +6491,8 @@ function ThemeEditor(props: {
                   // re-rendered — the same expression then means two different things
                   const doomed = editing()?.id;
                   if (!doomed) return;
-                  props.onChange(props.themes.filter((x) => x.id !== doomed));
-                  setEditingId(props.themes.find((x) => x.id !== doomed)?.id ?? "");
+                  props.onChange(props.themes().filter((x) => x.id !== doomed));
+                  setEditingId(props.themes().find((x) => x.id !== doomed)?.id ?? "");
                 }}
                 title="delete this custom theme"
               >
@@ -6467,23 +6502,35 @@ function ThemeEditor(props: {
 
             <h4 class="cfgsub">background image</h4>
             <div class="cfggrid">
-              <label class="trow">
-                <span class="muted">image</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onchange={(e) => {
-                    importFile(e.currentTarget.files?.[0]);
-                    /**
-                     * Clear the input so the SAME file can be picked twice — but that also
-                     * resets the browser's own filename label to "no file chosen", which reads
-                     * as "your upload failed" right after it succeeded. The state we actually
-                     * care about is the imported image, so report THAT instead of the file input.
-                     */
-                    e.currentTarget.value = "";
-                  }}
-                />
-              </label>
+              {/* A BUTTON that opens the file picker, not a bare <input type="file">.
+                  The native control always shows "no file chosen" once its value is cleared —
+                  and it MUST be cleared so the same file can be picked twice — so the one piece
+                  of state it displays was permanently wrong, immediately after a successful
+                  upload. Reported twice. The button reports what actually happened instead. */}
+              <button
+                type="button"
+                class="trow"
+                onclick={() => filePick?.click()}
+                title="PNG/JPG/WebP. Stored in this browser, applied behind the panels."
+              >
+                {editing()!.backgroundImage ? "🖼 replace image…" : "🖼 choose image…"}
+              </button>
+              <input
+                ref={filePick}
+                type="file"
+                accept="image/*"
+                style="display:none"
+                oninput={(e) => e.stopPropagation()}
+                onchange={(e) => {
+                  // stop the change from reaching the settings <form>: it was firing a full
+                  // PUT /api/config (saving every setting and running connectAll) on an upload
+                  e.stopPropagation();
+                  importFile(e.currentTarget.files?.[0]);
+                  // clear so the SAME file can be picked again; the button above, not this
+                  // input, is what tells the operator what is applied
+                  e.currentTarget.value = "";
+                }}
+              />
               <Show when={editing()!.backgroundImage}>
                 <div class="bgpreview">
                   <img src={editing()!.backgroundImage} alt="theme background preview" />
@@ -7292,6 +7339,14 @@ function ConfigModal(props: {
   cfg: any;
   onClose: () => void;
   onSaved: () => void;
+  /**
+   * MCP servers whose missing grant has already been announced.
+   *
+   * Owned by App and shared across opens, because "this server needs authorization" is a fact
+   * about the SERVER, not about this dialog instance: a per-mount Set would forget it every
+   * time the dialog was closed and re-open the same interruption on the next save.
+   */
+  announcedOAuth: Set<string>;
   /** theme state, owned by App because it paints `<html>` */
   theme: {
     themes: () => CustomTheme[];
@@ -7677,22 +7732,30 @@ function ConfigModal(props: {
       }, 1200);
       props.onSaved();
       /**
-       * Only the servers THIS save touched can pull the operator to the MCP section.
+       * Move to the MCP section only when THIS save NEWLY discovered a missing grant.
        *
-       * `mcpOAuth` is keyed by the row INDEX and is never pruned, so it accumulates entries from
-       * every earlier save and every earlier visit to the section. Scanning it wholesale meant a
-       * server that had once needed a grant — or a stale index that no longer names a server at
-       * all — hijacked every subsequent save: "save settings をすると何故か MCP servers の
-       * セクションに移動する". Ask the just-saved names instead.
+       * Reported twice ("save settings をすると何故か MCP servers のセクションに移動する"), and
+       * the first fix was not enough. It narrowed the scan to the names this save wrote, but a
+       * server that needs a grant KEEPS needing it until someone authorizes it — so once that
+       * was true, every later save jumped again. The condition described an ongoing state, not
+       * an event.
+       *
+       * A redirect earns its interruption only once: the moment the panel learns there is
+       * something to act on. After that the 🔑 badge in the row is the standing notice, and the
+       * save does what the operator asked it to do — save and close.
        */
       const savedNames = new Set(cleanMcp.map((m) => m.name).filter(Boolean));
-      const needsAction = mcpServers().some(
+      const needing = mcpServers().filter(
         (m, i) =>
           savedNames.has(String(m.name ?? "").trim()) &&
           mcpOAuth()[i]?.required &&
           !mcpOAuth()[i]?.authorized,
       );
+      const newlyNeeding = needing.filter((m) => !props.announcedOAuth.has(String(m.name ?? "")));
+      const needsAction = newlyNeeding.length > 0;
       if (needsAction) {
+        // remember it, so the NEXT save closes instead of interrupting again
+        for (const m of newlyNeeding) props.announcedOAuth.add(String(m.name ?? ""));
         setSection("mcp");
         flashHint("a saved MCP server needs authorization — see 🔑 authorize");
       } else {
@@ -7951,7 +8014,7 @@ function ConfigModal(props: {
           </For>
 
           <ThemeEditor
-            themes={customThemes()}
+            themes={customThemes}
             activeId={fixedTheme()}
             onChange={(requested) => {
               /**

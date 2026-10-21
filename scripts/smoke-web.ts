@@ -247,6 +247,10 @@ const setGlobal = (name, value) => {
 };
 setGlobal("window", w);
 setGlobal("document", w.document);
+// `duplicatePreset` and the theme helpers call the BARE global `getComputedStyle`, so the
+// harness must provide it or every theme write throws "getComputedStyle is not defined" and
+// silently does nothing. It resolves against the window's document, like a browser's.
+setGlobal("getComputedStyle", (el: Element, pseudo?: string) => w.getComputedStyle(el, pseudo));
 setGlobal("localStorage", {
   store: {},
   getItem(k) { return this.store[k] ?? null; },
@@ -1857,6 +1861,91 @@ console.log("deep render ok: feed rows present");
       appearance?.click();
       await new Promise((r) => setTimeout(r, 250));
       console.log("deep render ok: help section carries the keyboard + toggle explanations (#help)");
+    }
+
+    /* ---------- the background-image control must not lie ----------
+     * Reported twice: "ファイルをアップロードしたのに no file chosen になってる".
+     *
+     * The native `<input type="file">` always reads "no file chosen" once its value is cleared,
+     * and it MUST be cleared so the same file can be picked again — so the control's one piece of
+     * state was permanently wrong immediately after a successful upload. It is now a button that
+     * reports the real outcome, with the input hidden.
+     *
+     * Also pinned: choosing a file must not reach the settings <form>. It used to fire a full
+     * PUT /api/config (saving every setting and running connectAll) on an upload.
+     */
+    {
+      const bgFail = (msg: string) => {
+        console.error(`#bgimage REGRESSION: ${msg}`);
+        process.exit(1);
+      };
+      const modal = w.document.querySelector(".modal");
+      if (!modal) bgFail("the settings dialog is closed — cannot check the image control");
+
+      // the APPEARANCE section owns the theme editor, so select it through the rail first
+      const apprBtn = [...modal!.querySelectorAll("button")].find((b) =>
+        /appearance/i.test(b.textContent ?? ""),
+      );
+      if (!apprBtn) bgFail("no appearance section in the settings rail");
+      apprBtn!.click();
+      await new Promise((r) => setTimeout(r, 250));
+
+      // the editor (and its background-image control) only exists once a CUSTOM theme does, so
+      // create one through the real button rather than assuming it is there
+      const dup = () =>
+        [...w.document.querySelectorAll(".themeeditor button")].find((b) =>
+          /duplicate current/i.test(b.textContent ?? ""),
+        );
+      if (!dup()) bgFail("no way to create a custom theme — the editor cannot be reached");
+      // a real click event, not just .click(): Solid delegates, and the test harness has to
+      // deliver the same event a browser would or the handler never runs
+      // instrument the shim so a write is visible even if something later clears it
+      let bubbled = 0;
+      w.document.addEventListener("click", () => { bubbled++; });
+      dup()!.click();
+      await new Promise((r) => setTimeout(r, 300));
+      dup()!.click();
+      await new Promise((r) => setTimeout(r, 400));
+
+      // PRECONDITION: the editor rendered its controls, or everything below is vacuous
+      if (!w.document.querySelector(".themeeditor .paletterow")) {
+        bgFail("the theme editor did not render after creating a theme — nothing to check");
+      }
+
+      // 1. no VISIBLE native file input: that is the thing that always says "no file chosen"
+      const visibleFile = [...modal!.querySelectorAll('input[type="file"]')].find((i) => {
+        const cs = w.document.defaultView.getComputedStyle(i);
+        return cs.display !== "none";
+      });
+      if (visibleFile) {
+        bgFail('a native file input is still visible — its label always says "no file chosen"');
+      }
+
+      // 2. a BUTTON opens the picker instead, and says what is applied
+      const btn = [...w.document.querySelectorAll(".themeeditor button")].find((b) =>
+        /choose image|replace image/i.test(b.textContent ?? ""),
+      );
+      if (!btn) bgFail("no button opens the file picker, so the hidden input is unreachable");
+
+      // 3. picking a file must not submit the settings form
+      let submitted = 0;
+      const form = w.document.querySelector("form");
+      const onSubmit = (e: Event) => {
+        submitted += 1;
+        e.preventDefault();
+      };
+      form?.addEventListener("submit", onSubmit);
+      const fileIn = w.document.querySelector('input[type="file"][accept="image/*"]') as
+        | HTMLInputElement
+        | null;
+      if (!fileIn) bgFail("no image file input at all");
+      fileIn!.dispatchEvent(new w.Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      form?.removeEventListener("submit", onSubmit);
+      if (submitted > 0) {
+        bgFail(`choosing a file submitted the settings form (${submitted}x) — that is a full PUT /api/config`);
+      }
+      console.log("deep render ok: the image control reports its own state and cannot submit the form (#bgimage)");
     }
 
     /* ---------- theme cards must show the THEME, not an empty box ----------
