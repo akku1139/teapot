@@ -2245,8 +2245,73 @@ console.log("deep render ok: feed rows present");
       );
       process.exit(1);
     }
+
+    /**
+     * …and the SAME cause resets an inner scroll position.
+     *
+     * Reported: "bash 出力をスクロールしているとスクロール位置がリセットされる". A tool body is
+     * `.embed .mono { max-height; overflow-y: auto }` — its scroll offset lives on that
+     * ELEMENT. If the row is re-created, the offset dies with it; if only the row survives but
+     * a CHILD is rebuilt (Solid re-runs a subtree whose props changed), the offset dies too.
+     * So measure the scrolling element itself, not just the row.
+     */
+    const scrollable = [...w.document.querySelectorAll(".feed .embed .mono, .feed .toolbody")]
+      .find((el) => (el as HTMLElement).scrollHeight > 0 || el.textContent.length > 0);
+    if (!scrollable) {
+      console.error(
+        "#rerender check: no tool body in the feed — the inner-scroll half would be vacuous",
+      );
+      process.exit(1);
+    }
+    const scroller = scrollable as HTMLElement;
+    // happy-dom does not lay out, so give it a real scrollable box and pin an offset
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => 900 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 300 });
+    let innerTop = 200;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => innerTop,
+      set: (v: number) => {
+        innerTop = Math.max(0, Math.min(v, 600));
+      },
+    });
+    if (innerTop !== 200) {
+      console.error("#rerender check: could not pin the inner scroll offset — vacuous");
+      process.exit(1);
+    }
+
+    // another message arrives; the scrolled tool body must be the SAME element afterwards
+    pushEvent({
+      id: "rerender-2",
+      seq: 90002,
+      ts: new Date().toISOString(),
+      session: "alpha-s1",
+      branch: "br0",
+      parent: null,
+      type: "message",
+      data: { role: "assistant", content: "AFTER_APPEND_2" },
+    });
+    flushRefreshes();
+    await waitFor("the second appended row renders", () => bodyText().includes("AFTER_APPEND_2"), 8000);
+    await new Promise((r) => setTimeout(r, 120));
+
+    if (!scroller.isConnected) {
+      console.error(
+        "#rerender REGRESSION: the tool body that was scrolled is GONE after an append — its " +
+          "subtree was re-created, which resets the scroll offset (the reported スクロール位置" +
+          "がリセットされる)",
+      );
+      process.exit(1);
+    }
+    if (innerTop !== 200) {
+      console.error(
+        `#rerender REGRESSION: a scrolled tool body lost its offset (200 -> ${innerTop}) after ` +
+          `an unrelated message arrived — the element was re-created under the row`,
+      );
+      process.exit(1);
+    }
     console.log(
-      `deep render ok: an appended message re-uses all ${before.length} existing rows and keeps <details> open (#rerender)`,
+      `deep render ok: an appended message re-uses all ${before.length} existing rows, keeps <details> open, and preserves an inner scroll offset (#rerender)`,
     );
   }
 }

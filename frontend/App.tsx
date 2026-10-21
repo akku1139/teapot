@@ -3809,7 +3809,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     // branch (a fork). With a single branch every row repeated the
                     // same constant.
                     showBranch={branches().length > 1}
-                    res={pairInfo().resFor.get(row.id)}
+                    res={() => pairInfo().resFor.get(row.id)}
                     // #54: an unpaired tool_result is rendered as a COMPLETED
                     // tool row of its own — its call fell out of the events
                     // window while the command ran. Without this the result was
@@ -5042,7 +5042,7 @@ function ThinkingTimer(props: { startedAt: number }) {
 
 /* ---------- per-tool timeline rendering ---------- */
 
-function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
+function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   // GROUPING (#75 pattern, again). `groupedWith()` is the shared rule and it
   // ALWAYS said these two bash calls group — but ToolRow never received `prev`, so
@@ -5058,9 +5058,15 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentAct
   // #54: read the result prop REACTIVELY. `<For each={chatEvents()}>` builds the
   // row while its result is still undefined, and a destructured `const res =
   // props.res` is bound once — so the row kept rendering "running…" forever when
-  // the result arrived. A getter: the compiler tracks `props.x` reads, so every
-  // use below becomes reactive with no other change.
-  const res = () => props.res;
+  // the result arrived.
+  //
+  // `props.res` is now an ACCESSOR from the caller, not a value: `pairInfo()` re-runs on
+  // every append, so passing `pairInfo().resFor.get(id)` inline re-evaluated the prop and
+  // re-built this row's whole JSX tree — harmless for a label, fatal for a `<pre>` whose
+  // scroll offset lives on the element. MEASURED: a scrolled bash-output block lost its
+  // offset whenever an unrelated message arrived, with the row ELEMENT itself reused. An
+  // accessor makes the row's tree a one-time build that reads a fresh value on demand.
+  const res = () => props.res?.();
   // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
   // cannot still be in flight (its result event was missed — e.g. logged while
   // the tab was hidden). Rendering it forever as "running…" was exactly that:
@@ -5119,7 +5125,30 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentAct
   // run once in the component body, which is why a row created before its result
   // arrived kept the pre-result label and body for good: only the class (re-read
   // from the prop) changed. See the note on `res` above.
-  const derived = createMemo(() => {
+  /**
+   * The per-tool summary AND its body, built once per RESULT.
+   *
+   * `body` is a JSX value, so every re-run of this memo builds a NEW element tree — and a
+   * `<pre>` replaced that way loses its scroll offset even when the row element itself is
+   * reused. MEASURED: a scrolled bash-output block reset whenever an unrelated message
+   * arrived, with `ownerWasReused=true`.
+   *
+   * Two things were needed:
+   *
+   *  1. read `res()` through a local so the memo's dependencies are explicit;
+   *  2. give `createMemo` an `equals` that compares the RESULT ID. Without it the memo's
+   *     return value is a fresh `{label, hint, body}` object every run, which never equals
+   *     the previous one, so Solid re-rendered the body on every `pairInfo()` recompute —
+   *     and `pairInfo()` recomputes on every append, because its `resFor` Map is new even
+   *     when the `Ev` inside it is the same object.
+   *
+   * With the `equals`, the only re-run left is a result that actually changed, which is
+   * exactly when the body must be rebuilt.
+   */
+  const derived = createMemo(
+    () => {
+  const r = res();
+  void r;
   // per-tool summary line: [label, hint]. There is no icon: the default was "⚙" for
   // every tool and no case ever overrode it, so it identified nothing — the tool NAME
   // is already in the row's author slot, and a grouped row showed no ⚙ at all, which is
@@ -5294,8 +5323,18 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; agentAct
   } catch {
     /* fall back to the generic view on anything unexpected */
   }
-    return { label, hint, body };
-  });
+    // `key` is what the memo's `equals` compares: the RESULT's identity plus the label. Two
+    // runs that would build the same body must produce the same key, or the `<pre>` inside is
+    // discarded and its scroll offset with it.
+    return { label, hint, body, key: `${res()?.id ?? "none"}|${label}|${hint ?? ""}` };
+    },
+    undefined,
+    {
+      // compare the RESULT the memo was built from, not the returned object (which is always
+      // a fresh `{label, hint, body}` and would therefore never compare equal)
+      equals: (a, b) => (a as { key?: string }).key === (b as { key?: string }).key,
+    },
+  );
 
   return (
     <details
@@ -5360,7 +5399,7 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: Ev; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: () => Ev | undefined; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Grouping is `groupedWith()` from ./row-grouping — extracted so the rule can
@@ -5591,7 +5630,7 @@ function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => vo
   );
 }
 
-function SwitchContent(props: { e: Ev; prev?: Ev; res?: Ev; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   switch (e.type) {
     case "prompt": {
