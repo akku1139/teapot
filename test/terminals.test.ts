@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// every test here spawns a real shell (and most a `script` pty): Windows has no /bin/bash and
+// no pty, so the whole file is POSIX. Without this it fails on Windows CI with
+// "spawn /bin/bash ENOENT" from asynchronous activity AFTER the tests had ended.
+markPosixOnly("spawns a real shell and a pty");
 import {
   _resetTerminalsForTest,
   attachTerminal,
