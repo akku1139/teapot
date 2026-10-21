@@ -351,6 +351,46 @@ function shellEnv(): NodeJS.ProcessEnv {
 }
 
 /**
+ * The shell to run a `bash` tool command in, per platform.
+ *
+ * Both call sites used to hardcode `/bin/bash`, so on Windows every `bash` tool invocation
+ * failed with ENOENT — the tool was entirely unavailable on a platform this package claims to
+ * support. Windows has no `/bin/bash`; `cmd.exe` is always present, and Git for Windows (which
+ * the CI runner has) provides `bash.exe` on PATH.
+ *
+ * Preference order on Windows: `%TEAPOT_SHELL%`, then `bash.exe` if it is on PATH, then
+ * `cmd.exe`. `bash.exe` first because teapot's tool prompts and most commands the model writes
+ * are POSIX (`&&`, `$VAR`, single quotes); a `cmd.exe` fallback keeps the tool working on a bare
+ * install rather than failing outright.
+ *
+ * POSIX is unchanged: `$SHELL`, else `/bin/bash`.
+ */
+export function toolShellFor(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  exists: (p: string) => boolean = existsSync,
+): { file: string; args: (cmd: string) => string[] } {
+  const override = env.TEAPOT_SHELL?.trim();
+  if (override) return { file: override, args: (cmd) => ["-c", cmd] };
+  if (platform !== "win32") {
+    return { file: env.SHELL || "/bin/bash", args: (cmd) => ["-c", cmd] };
+  }
+  const pathVar = env.PATH ?? "";
+  const sep = pathVar.includes(";") ? ";" : ":";
+  const hasBash = pathVar
+    .split(sep)
+    .filter(Boolean)
+    .some((dir) => exists(dir.includes("\\") ? `${dir}\\bash.exe` : path.join(dir, "bash.exe")));
+  if (hasBash) return { file: "bash", args: (cmd) => ["-c", cmd] };
+  return { file: env.COMSPEC || "cmd.exe", args: (cmd) => ["/d", "/s", "/c", cmd] };
+}
+
+/** the shell for THIS process — see `toolShellFor` for the rules and why they exist */
+function toolShell(): { file: string; args: (cmd: string) => string[] } {
+  return toolShellFor(process.platform, process.env);
+}
+
+/**
  * Human-readable elapsed-time suffix appended to a shell result so the MODEL
  * sees how long a command actually took (#26). Only the operator saw it — the
  * model happily re-issued commands that ran for tens of minutes.
@@ -371,7 +411,8 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   const id = `bg${++bgSeq}`;
   // plain `-c`, not `-lc`: a login shell sources ~/.bash_profile, whose `cd`
   // would move background jobs out of the workspace (#34)
-  const child = spawn("/bin/bash", ["-c", cmd], {
+  const shellSpec = toolShell();
+  const child = spawn(shellSpec.file, shellSpec.args(cmd), {
     cwd: ctx.cwd,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -519,7 +560,8 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
     // `bash -l` sources /etc/profile + ~/.bash_profile, either of which may
     // `cd` somewhere — which silently moved every later relative path out of
     // the workspace (#34). Plain `-c` starts in ctx.cwd and stays there.
-    const child = spawn("/bin/bash", ["-c", cmd], {
+    const sh = toolShell();
+    const child = spawn(sh.file, sh.args(cmd), {
       cwd: ctx.cwd,
       detached: true, // own process group
       stdio: ["ignore", "pipe", "pipe"],

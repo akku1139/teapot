@@ -123,8 +123,23 @@ export function createTerminal(
   if (live.length >= MAX_PER_AGENT) {
     return { ok: false, error: `too many terminals for this agent (max ${MAX_PER_AGENT})` };
   }
-  const shell = process.env.SHELL || "/bin/bash";
-  const hasScript = existsSync("/usr/bin/script");
+  /**
+   * The shell to run, per platform.
+   *
+   * `process.env.SHELL || "/bin/bash"` was the whole story, which on Windows spawns a path that
+   * does not exist — a terminal tab that opens and immediately dies, on a platform this package
+   * claims to support. Windows also has no `script` and no pty (see `hasScript` below), so it
+   * gets the plain-pipe path with `cmd.exe` (or `%COMSPEC%`), which is what the fallback branch
+   * was always for.
+   *
+   * `%TEAPOT_SHELL%` overrides on both platforms, so an operator who wants `pwsh` or a specific
+   * bash does not have to change their login shell.
+   */
+  const shell =
+    process.env.TEAPOT_SHELL?.trim() ||
+    process.env.SHELL ||
+    (process.platform === "win32" ? process.env.COMSPEC || "cmd.exe" : "/bin/bash");
+  const hasScript = process.platform !== "win32" && existsSync("/usr/bin/script");
   // `script` reports a 0x0 winsize, so the shell falls back to these until a client resizes
   const env = { ...process.env, TERM: "xterm-256color", COLUMNS: "100", LINES: "30" };
   // `detached` puts the pty provider and the shell it forks into their OWN process group, so
