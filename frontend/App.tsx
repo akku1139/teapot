@@ -427,7 +427,26 @@ export default function App() {
      * so every OTHER reason the feed can resize (a window resize, the drawer, the right panel, a
      * row expanding) still reaches this function.
      */
-    if (suppressFeedResizeUntilFrame) return;
+    /**
+     * While the composer is MEASURING itself, still PIN — but never re-anchor.
+     *
+     * `autosizeComposer` must collapse the textarea to read its content height (a tall box
+     * reports its own height, so the content height is otherwise unrecoverable). That collapse
+     * shrinks the feed's box for one layout, and this observer is the ONLY thing that re-pins
+     * after the composer grows — no scroll event fires, because `scrollTop` does not change when
+     * the floor moves down.
+     *
+     * So returning early here (v0.34.9) stopped the transient layout from doing damage but also
+     * removed the only pin, which is why "2行でのスクロール戻り" survived that release.
+     *
+     * What the transient layout must NOT do is decide the reader left: `atBottom()` is a state, so
+     * it is unaffected by geometry, and re-pinning is idempotent. The anchor path is the one that
+     * could compute a delta against the collapsed box, so that is what gets skipped.
+     */
+    if (suppressFeedResizeUntilFrame) {
+      if (atBottom()) pinToTail();
+      return;
+    }
     /**
      * Record the geometry on EVERY box change, not only on scroll deliveries.
      *
@@ -6748,19 +6767,43 @@ function ThemeEditor(props: {
     props.onPick(id);
   };
 
-  const importFile = (file: File | undefined) => {
+  /**
+   * Upload the image to the SERVER and store its URL.
+   *
+   * It used to be read into a data URI and kept in `localStorage`, which forced a 1.5MB cap
+   * because the whole origin shares a ~5MB quota — one wallpaper could break every other setting
+   * the UI stores there, and a phone photo is bigger than that anyway. The bytes now live in
+   * `<dataDir>/assets/` and the theme holds a short URL, so there is no size limit worth
+   * mentioning and nothing competes with the theme palette for storage.
+   *
+   * The raw `File` is the request body (no multipart), because the server only needs the bytes
+   * and its content type.
+   */
+  const importFile = async (file: File | undefined) => {
     if (!file) return;
-    if (file.size > MAX_BACKGROUND_BYTES) {
-      flashHint(`that image is ${Math.round(file.size / 1024)}KB — the limit is ${Math.round(MAX_BACKGROUND_BYTES / 1024)}KB`);
+    if (!/^image\//.test(file.type)) {
+      flashHint(`that file is ${JSON.stringify(file.type || "unknown")} — pick an image`);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = String(reader.result ?? "");
-      // store the data URI itself, so the image survives a reload with no server involved
-      if (/^data:image\//.test(url)) patch((t) => ({ ...t, backgroundImage: url }));
-    };
-    reader.readAsDataURL(file);
+    flashHint(`uploading ${file.name} (${Math.round(file.size / 1024)}KB)…`);
+    try {
+      const r = (await fetch("/api/assets", {
+        method: "POST",
+        headers: { "content-type": file.type },
+        body: file,
+      }).then(async (res) => ({ ok: res.ok, body: await res.json().catch(() => null) }))) as {
+        ok: boolean;
+        body: { url?: string; error?: string } | null;
+      };
+      if (!r.ok || !r.body?.url) {
+        flashHint(r.body?.error ?? "upload failed");
+        return;
+      }
+      patch((t) => ({ ...t, backgroundImage: r.body!.url! }));
+      flashHint("background image set");
+    } catch (ex) {
+      flashHint(`upload failed: ${(ex as Error).message}`);
+    }
   };
 
   return (
@@ -6947,8 +6990,8 @@ function ThemeEditor(props: {
               </Show>
             </div>
             <div class="muted" style="margin-top:6px;font-size:var(--text-xs)">
-              the image is stored in this browser ({Math.round(MAX_BACKGROUND_BYTES / 1024)}KB limit) and sits behind
-              the panels, dimmed so text stays readable.
+              the image is uploaded to the server and sits behind the panels, dimmed so text
+              stays readable. No size limit — it is a file now, not browser storage.
             </div>
           </>
         )}

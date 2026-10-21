@@ -1629,6 +1629,85 @@ const MAX_WS_CLIENTS = 64;
     }
   });
 
+  /**
+   * Theme background images, stored SERVER-side.
+   *
+   * These used to live in `localStorage` as a data URI, which forced a hard 1.5MB cap: the quota
+   * is ~5MB for the WHOLE origin, so one wallpaper could brick every other setting the UI keeps
+   * there (themes, panel state, session history). A 1.5MB limit is also absurdly small for a
+   * photograph — the operator hits it with anything from a phone camera.
+   *
+   * Now the file is a FILE: uploaded once, referenced by name from the theme, and served back.
+   * No quota, so no cap; the only limit is what the upload route is willing to read.
+   *
+   * Written by hand rather than with `serveStatic` because the API is awkward and this needs
+   * three things it does not obviously give: a traversal-proof path, an immutable cache header,
+   * and a name→file mapping that cannot escape the assets dir.
+   */
+  const assetsDir = path.join(master.config.dataDir, "assets");
+  const assetName = (raw: string): string | null => {
+    // only the shapes we mint: hex + a known extension. Anything else cannot name a file here.
+    const m = /^([a-f0-9]{32})\.(png|jpg|jpeg|gif|webp|avif)$/i.exec(raw);
+    return m ? `${m[1]!.toLowerCase()}.${m[2]!.toLowerCase()}` : null;
+  };
+  const assetMime: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    avif: "image/avif",
+  };
+
+  app.get("/api/assets/:name", async (c) => {
+    const name = assetName(c.req.param("name") ?? "");
+    if (!name) return c.notFound();
+    const ext = name.split(".").pop()!;
+    try {
+      const buf = await fs.readFile(path.join(assetsDir, name));
+      return c.body(buf, 200, {
+        "content-type": assetMime[ext] ?? "application/octet-stream",
+        // the name is a content hash-ish id and never reused, so it can be cached forever
+        "cache-control": "public, max-age=31536000, immutable",
+      });
+    } catch {
+      return c.notFound();
+    }
+  });
+
+  app.post("/api/assets", async (c) => {
+    /**
+     * Accepts the raw image body, not a multipart form.
+     *
+     * The client already holds a `File`; `fetch(url, {body: file})` sends its bytes directly, so
+     * there is no parser, no boundary handling and no temp file. The extension comes from the
+     * content type, which keeps the stored name within `assetName`'s accepted set.
+     */
+    const type = (c.req.header("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+    const ext = Object.entries(assetMime).find(([, m]) => m === type)?.[0];
+    if (!ext) {
+      return c.json({ error: `unsupported image type: ${type || "(none)"}` }, 415);
+    }
+    const buf = Buffer.from(await c.req.arrayBuffer());
+    if (!buf.length) return c.json({ error: "empty body" }, 400);
+    // a sanity ceiling, not a UX limit: it exists so one request cannot fill the disk
+    const MAX_UPLOAD = 64 * 1024 * 1024;
+    if (buf.length > MAX_UPLOAD) {
+      return c.json({ error: `image is larger than ${MAX_UPLOAD / 1024 / 1024}MB` }, 413);
+    }
+    await fs.mkdir(assetsDir, { recursive: true });
+    const name = `${crypto.randomUUID().replace(/-/g, "")}.${ext}`;
+    await fs.writeFile(path.join(assetsDir, name), buf);
+    return c.json({ name, url: `/api/assets/${name}`, bytes: buf.length });
+  });
+
+  app.delete("/api/assets/:name", async (c) => {
+    const name = assetName(c.req.param("name") ?? "");
+    if (!name) return c.notFound();
+    await fs.rm(path.join(assetsDir, name), { force: true }).catch(() => {});
+    return c.json({ ok: true });
+  });
+
   return app;
 }
 

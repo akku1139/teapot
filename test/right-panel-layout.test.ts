@@ -263,11 +263,27 @@ test("the composer's measuring round-trip cannot move the feed (#scroll)", async
   // the feed observer must actually honour it
   const obs = app.slice(app.indexOf("const restoreAfterBoxChange = () => {"));
   const obsBody = obs.slice(0, obs.indexOf("\n  };"));
+  /**
+   * While measuring, the observer must STILL PIN if the reader is following.
+   *
+   * v0.34.9 returned early here, and that was wrong: no scroll event fires when the composer
+   * grows (scrollTop does not change, only the floor does), so this observer is the ONLY thing
+   * that restores the tail. Skipping it entirely is why "2行でのスクロール戻り" survived that
+   * release. What the transient layout must not do is decide the reader left — `atBottom()` is a
+   * state, so it cannot — nor re-anchor against a collapsed box.
+   */
+  const suppressAt = obsBody.indexOf("suppressFeedResizeUntilFrame");
+  assert.ok(suppressAt > 0, "precondition: the observer consults the flag");
+  const branch = obsBody.slice(suppressAt, suppressAt + 300);
   assert.match(
-    obsBody,
-    /if\s*\(\s*suppressFeedResizeUntilFrame\s*\)\s*return/,
-    "the feed's ResizeObserver must skip while the composer is measuring itself",
+    branch,
+    /pinToTail\(\)/,
+    "the measuring branch must still pin a following reader — this observer is the only pin " +
+      "after a composer grow, since no scroll event fires",
   );
+  // and it must NOT fall through to the anchor path, which would compute a delta against the
+  // collapsed box
+  assert.match(branch, /return;/, "…and must not continue into the re-anchor path");
 });
 
 test("an EMPTY composer is one line, whatever its placeholder wraps to (#ui)", async () => {

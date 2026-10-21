@@ -145,9 +145,26 @@ export function sanitizeTheme(raw: unknown): CustomTheme | null {
     palette[key] = p[key]!;
   }
   const out: CustomTheme = { id: t.id, label: t.label.slice(0, 40), mode: t.mode, palette };
-  if (typeof t.backgroundImage === "string" && t.backgroundImage.length <= MAX_BACKGROUND_BYTES) {
-    // only the two shapes the picker can produce, so a stored value cannot smuggle `url(javascript:)`
-    if (/^(data:image\/|https?:\/\/)/.test(t.backgroundImage)) out.backgroundImage = t.backgroundImage;
+  /**
+   * Three accepted shapes, and each is a decision rather than a convenience.
+   *
+   * `data:image/` — a theme saved by an older build. Still loaded, so an upgrade does not
+   * silently drop someone's wallpaper.
+   * `/api/assets/<name>` — where images live NOW: uploaded once, served by the server, unlimited
+   * in size. This is the point of the change: a data URI had to fit in the ~5MB `localStorage`
+   * quota shared with every other setting, so one phone photo broke the whole panel.
+   * `http(s)://` — a theme pointing at an external image.
+   *
+   * Nothing else, so a stored value cannot smuggle `url(javascript:)` into the stylesheet.
+   * The old length check is gone with the quota that justified it; the DATA-URI branch keeps a
+   * bound because those still consume storage.
+   */
+  if (typeof t.backgroundImage === "string") {
+    const img = t.backgroundImage;
+    const isAsset = /^\/api\/assets\/[a-f0-9]{32}\.(png|jpe?g|gif|webp|avif)$/i.test(img);
+    const isData = /^data:image\//.test(img) && img.length <= MAX_BACKGROUND_BYTES;
+    const isRemote = /^https?:\/\//.test(img);
+    if (isAsset || isData || isRemote) out.backgroundImage = img;
   }
   if (typeof t.backgroundDim === "number" && Number.isFinite(t.backgroundDim)) {
     out.backgroundDim = Math.min(0.9, Math.max(0, t.backgroundDim));
