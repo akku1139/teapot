@@ -7839,8 +7839,62 @@ function ConfigModal(props: {
     ),
   );
   const [mcpHeaderErr, setMcpHeaderErr] = createSignal<Record<number, string>>({});
+  /**
+   * Which auth input to show per row, and its value.
+   *
+   * "headers as JSON" was the only way to authenticate, reported as "正直わかりやすいとは言い難い":
+   * a bearer token meant knowing the header name, the "Bearer " prefix and JSON quoting — to do
+   * the one thing every server needs. A choice with one input per case makes the common path a
+   * paste; the JSON box stays for anything unusual.
+   *
+   * Derived from the saved headers so re-opening settings shows the right control rather than
+   * resetting everything to "no auth".
+   */
+  const [mcpAuthKind, setMcpAuthKind] = createSignal<
+    Record<number, "none" | "bearer" | "header" | "json">
+  >(
+    Object.fromEntries(
+      (props.cfg.mcpServers ?? []).map((m: any, i: number) => {
+        const h = (m.headers ?? {}) as Record<string, string>;
+        const keys = Object.keys(h);
+        if (!keys.length) return [i, "none"];
+        const only = keys.length === 1 ? keys[0]! : "";
+        if (only === "Authorization" && /^Bearer /i.test(h[only] ?? "")) return [i, "bearer"];
+        return [i, keys.length === 1 ? "header" : "json"];
+      }),
+    ),
+  );
+  const [mcpAuthValue, setMcpAuthValue] = createSignal<Record<number, string>>(
+    Object.fromEntries(
+      (props.cfg.mcpServers ?? []).map((m: any, i: number) => {
+        const h = (m.headers ?? {}) as Record<string, string>;
+        const keys = Object.keys(h);
+        if (keys.length !== 1) return [i, ""];
+        const only = keys[0]!;
+        return [i, only === "Authorization" ? (h[only] ?? "").replace(/^Bearer /i, "") : (h[only] ?? "")];
+      }),
+    ),
+  );
+  const [mcpHeaderName, setMcpHeaderName] = createSignal<Record<number, string>>(
+    Object.fromEntries(
+      (props.cfg.mcpServers ?? []).map((m: any, i: number) => {
+        const keys = Object.keys((m.headers ?? {}) as Record<string, string>);
+        const only = keys.length === 1 ? keys[0]! : "";
+        return [i, only && only !== "Authorization" ? only : ""];
+      }),
+    ),
+  );
   const [mcpStatus, setMcpStatus] = createSignal<
-    Record<number, { kind: "testing" | "ok" | "err"; text: string }>
+    Record<
+      number,
+      {
+        kind: "testing" | "ok" | "err";
+        text: string;
+        /** what the connect found — a COUNT alone cannot tell you it is the right server */
+        tools?: { name: string; description?: string }[];
+        needsOAuth?: boolean;
+      }
+    >
   >({});
   // live per-server state, refreshed when the section is opened
   const [mcpStates, setMcpStates] = createSignal<Record<string, any>>({});
@@ -8614,26 +8668,108 @@ function ConfigModal(props: {
                         </>
                       </Show>
                     </div>
+                    {/* AUTH as a CHOICE, not a JSON textarea.
+                        "headers as JSON" was the only way to authenticate, reported as
+                        "正直わかりやすいとは言い難い": a bearer token meant knowing the header name,
+                        the "Bearer " prefix and JSON quoting, to do the one thing every server
+                        needs. The JSON box stays under "advanced" for anything unusual — the
+                        same shape open-webui uses (a select whose sibling region swaps). */}
                     <div class="cfgrow">
-                      <input
-                        placeholder="headers as JSON, e.g. {&quot;Authorization&quot;:&quot;Bearer …&quot;}"
-                        value={mcpHeadersText()[i] ?? ""}
-                        oninput={(e) => {
-                          const t = e.currentTarget.value;
-                          setMcpHeadersText((m) => ({ ...m, [i]: t }));
-                          // parse eagerly so a typo is visible here, not as a 401 later
-                          if (!t.trim()) upd({ headers: undefined });
-                          else {
-                            try {
-                              upd({ headers: JSON.parse(t) });
-                              setMcpHeaderErr((m) => ({ ...m, [i]: "" }));
-                            } catch {
-                              setMcpHeaderErr((m) => ({ ...m, [i]: "not valid JSON — not applied" }));
-                            }
+                      <select
+                        value={mcpAuthKind()[i] ?? "none"}
+                        onchange={(e) => {
+                          const kind = e.currentTarget.value as "none" | "bearer" | "header" | "json";
+                          setMcpAuthKind((m) => ({ ...m, [i]: kind }));
+                          // switching away must actually REMOVE the header, or the old token keeps
+                          // being sent and a 403 looks like a broken server
+                          if (kind === "none") upd({ headers: undefined });
+                          else if (kind === "bearer") {
+                            const v = mcpAuthValue()[i] ?? "";
+                            upd({ headers: v ? { Authorization: `Bearer ${v}` } : undefined });
+                          } else if (kind === "header") {
+                            const hname = mcpHeaderName()[i] ?? "";
+                            const v = mcpAuthValue()[i] ?? "";
+                            upd({ headers: hname && v ? { [hname]: v } : undefined });
                           }
                         }}
-                        title="static headers for every request — the local equivalent of a token store"
-                      />
+                        title="how this server authenticates"
+                      >
+                        <option value="none">no auth</option>
+                        <option value="bearer">bearer token</option>
+                        <option value="header">custom header</option>
+                        <option value="json">headers as JSON (advanced)</option>
+                      </select>
+                      <Show when={mcpAuthKind()[i] === "bearer"}>
+                        <input
+                          type="password"
+                          placeholder="paste the token"
+                          value={mcpAuthValue()[i] ?? ""}
+                          oninput={(e) => {
+                            const v = e.currentTarget.value;
+                            setMcpAuthValue((m) => ({ ...m, [i]: v }));
+                            upd({ headers: v ? { Authorization: `Bearer ${v}` } : undefined });
+                          }}
+                          title="sent as Authorization: Bearer <token>"
+                          style="flex:1"
+                        />
+                      </Show>
+                      <Show when={mcpAuthKind()[i] === "header"}>
+                        <input
+                          placeholder="header name"
+                          value={mcpHeaderName()[i] ?? ""}
+                          oninput={(e) => {
+                            const hname = e.currentTarget.value;
+                            setMcpHeaderName((m) => ({ ...m, [i]: hname }));
+                            const v = mcpAuthValue()[i] ?? "";
+                            upd({ headers: hname && v ? { [hname]: v } : undefined });
+                          }}
+                          style="flex:0 1 150px"
+                        />
+                        <input
+                          type="password"
+                          placeholder="value"
+                          value={mcpAuthValue()[i] ?? ""}
+                          oninput={(e) => {
+                            const v = e.currentTarget.value;
+                            setMcpAuthValue((m) => ({ ...m, [i]: v }));
+                            const hname = mcpHeaderName()[i] ?? "";
+                            upd({ headers: hname && v ? { [hname]: v } : undefined });
+                          }}
+                          style="flex:1"
+                        />
+                      </Show>
+                    </div>
+                    <Show when={mcpAuthKind()[i] === "json"}>
+                      <div class="cfgrow">
+                        <textarea
+                          class="mono"
+                          rows={2}
+                          placeholder={'{"Authorization": "Bearer …", "X-Team": "infra"}'}
+                          value={mcpHeadersText()[i] ?? ""}
+                          oninput={(e) => {
+                            const t = e.currentTarget.value;
+                            setMcpHeadersText((m) => ({ ...m, [i]: t }));
+                            // parse eagerly so a typo is visible here, not as a 401 later
+                            if (!t.trim()) upd({ headers: undefined });
+                            else {
+                              try {
+                                const parsed = JSON.parse(t);
+                                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                                  throw new Error("not an object");
+                                }
+                                upd({ headers: parsed });
+                                setMcpHeaderErr((m) => ({ ...m, [i]: "" }));
+                              } catch {
+                                setMcpHeaderErr((m) => ({ ...m, [i]: "must be a JSON object — not applied" }));
+                              }
+                            }
+                          }}
+                          title="static headers for every request. Use the bearer option unless the server needs something unusual."
+                          style="flex:1"
+                        />
+                      </div>
+                    </Show>
+                    <div class="cfgrow">
                       <button
                         type="button"
                         onclick={async () => {
@@ -8648,13 +8784,26 @@ function ConfigModal(props: {
                             headers: { "content-type": "application/json" },
                             body: JSON.stringify(patch),
                           }).catch(() => null)) as
-                            | { ok?: boolean; tools?: { name: string }[]; error?: string }
+                            | {
+                                ok?: boolean;
+                                tools?: { name: string; description?: string }[];
+                                error?: string;
+                                needsOAuth?: boolean;
+                              }
                             | null;
                           setMcpStatus((m) => ({
                             ...m,
                             [i]: r?.ok
-                              ? { kind: "ok", text: `${r.tools?.length ?? 0} tools` }
-                              : { kind: "err", text: r?.error ?? "no response" },
+                              ? {
+                                  kind: "ok",
+                                  text: `${r.tools?.length ?? 0} tool${r.tools?.length === 1 ? "" : "s"}`,
+                                  tools: r.tools ?? [],
+                                }
+                              : {
+                                  kind: "err",
+                                  text: r?.error ?? "no response",
+                                  ...(r?.needsOAuth ? { needsOAuth: true } : {}),
+                                },
                           }));
                           // A failed test may be a MISSING GRANT rather than a wrong url.
                           // The status endpoint reports what the connect attempt found, so
@@ -8712,10 +8861,36 @@ function ConfigModal(props: {
                       <div class="muted" style="font-size:11px;color:var(--warn)">{mcpHeaderErr()[i]}</div>
                     </Show>
                     <Show when={mcpStatus()[i]}>
-                      <div
-                        class="mcpresult"
-                        style={mcpStatus()[i]?.kind === "err" ? "color:var(--err)" : "color:var(--ok)"}
-                      >{mcpStatus()[i]?.text}</div>
+                      {(st2) => (
+                        <div class={"mcpresult " + (st2().kind === "err" ? "err" : "ok")}>
+                          <div class="mcpresult-head">
+                            <b>{st2().text}</b>
+                            <Show when={st2().needsOAuth}>
+                              <span class="muted"> · needs a grant (🔑 authorize)</span>
+                            </Show>
+                          </div>
+                          {/* The TOOL LIST, not just the count.
+                              "4 tools" says nothing about whether this is the server you meant,
+                              or whether the tool you wanted is among them — a wrong URL and a
+                              working URL with the wrong scopes looked identical. The names
+                              answer "did that do what I wanted"; the description says which one
+                              to reach for. */}
+                          <Show when={(st2().tools?.length ?? 0) > 0}>
+                            <ul class="mcptools">
+                              <For each={st2().tools ?? []}>
+                                {(t2) => (
+                                  <li title={t2.description ?? ""}>
+                                    <code class="mono">{t2.name}</code>
+                                    <Show when={t2.description}>
+                                      <span class="mcptool-desc">{t2.description}</span>
+                                    </Show>
+                                  </li>
+                                )}
+                              </For>
+                            </ul>
+                          </Show>
+                        </div>
+                      )}
                     </Show>
                   </div>
                 );

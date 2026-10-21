@@ -1302,7 +1302,17 @@ details.reasoning .thinkscroll {
 }
 .mcpcard .cfgrow { margin-bottom: 5px; }
 .mcpcard .cfgrow:last-child { margin-bottom: 0; }
-.mcpresult { font-size: var(--text-xs); margin-top: 3px; overflow-wrap: anywhere; }
+.mcpresult { font-size: var(--text-xs); margin-top: 4px; overflow-wrap: anywhere; }
+.mcpresult.err { color: var(--err); }
+.mcpresult.ok { color: var(--ok); }
+.mcpresult-head { margin-bottom: 2px; }
+/* the discovered tool list. Two lines per tool at most — name, then a truncated description —
+   because the point is RECOGNITION ("is the one I want in here"), not documentation. The full
+   description is the row's `title`. */
+.mcptools { list-style: none; margin: 3px 0 0; padding: 0 0 0 2px; display: flex; flex-direction: column; gap: 2px; }
+.mcptools li { display: flex; gap: var(--space-3); align-items: baseline; min-width: 0; color: var(--dim); }
+.mcptools code { color: var(--fg); font-size: 11px; flex-shrink: 0; }
+.mcptool-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; min-width: 0; }
 /* live connection state — a coloured dot reads faster than the word does */
 .mcpstate { font-size: var(--text-xs); white-space: nowrap; color: var(--dim); }
 .mcpstate.connected { color: var(--ok); }

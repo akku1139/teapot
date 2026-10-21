@@ -138,3 +138,34 @@ test("code and tool output get an OPAQUE surface when a background image is set 
   );
   assert.match(rule, /background-image:\s*none/, "and must not paint a gradient over it");
 });
+
+test("the auth choice is derived from the saved headers, not reset (#mcpui)", async () => {
+  /**
+   * The form now offers none / bearer / custom header / headers-as-JSON instead of a single JSON
+   * textarea ("正直わかりやすいとは言い難い"). The derivation has to be reversible: re-opening
+   * settings must show the control that matches what is SAVED, or the server silently loses its
+   * auth the moment the operator touches anything else on the row.
+   *
+   * The rule, mirrored from the component: one `Authorization: Bearer …` header is the bearer
+   * case; one other header is the custom case; anything else falls back to JSON.
+   */
+  const derive = (h: Record<string, string> | undefined) => {
+    const keys = Object.keys(h ?? {});
+    if (!keys.length) return "none";
+    const only = keys.length === 1 ? keys[0]! : "";
+    if (only === "Authorization" && /^Bearer /i.test(h![only] ?? "")) return "bearer";
+    return keys.length === 1 ? "header" : "json";
+  };
+  assert.equal(derive(undefined), "none");
+  assert.equal(derive({}), "none");
+  assert.equal(derive({ Authorization: "Bearer sk-123" }), "bearer");
+  assert.equal(derive({ Authorization: "bearer lower" }), "bearer");
+  assert.equal(derive({ "X-Api-Key": "abc" }), "header");
+  assert.equal(derive({ Authorization: "Basic abc" }), "header", "not a bearer token");
+  assert.equal(derive({ A: "1", B: "2" }), "json", "more than one header needs the JSON form");
+
+  // and the value must be the token WITHOUT the prefix, or every edit re-prepends it
+  const value = (h: Record<string, string>) =>
+    Object.keys(h).length === 1 ? (h.Authorization ?? "").replace(/^Bearer /i, "") : "";
+  assert.equal(value({ Authorization: "Bearer sk-123" }), "sk-123");
+});
