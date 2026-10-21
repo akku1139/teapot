@@ -95,6 +95,30 @@ export const DEFAULT_PALETTE: ThemePalette = {
   termFg: "#dcdee4",
 };
 
+/**
+ * The BUILT-IN themes' palettes, mirroring the `[data-theme="…"]` blocks in app.css.
+ *
+ * These exist so a theme can be PREVIEWED without applying it: the picker draws each theme as a
+ * miniature of the UI (Misskey's `MkThemePreview` idea), which needs that theme's colours. A
+ * preview used to probe the live document, but inserting a node from inside a render broke the
+ * settings dialog (MEASURED: "the config dialog renders no key inputs at all").
+ *
+ * `test/theme-store.test.ts` fails if any of these drifts from app.css — the duplication is
+ * unavoidable (a stylesheet cannot be read as data), so it is CHECKED instead of trusted.
+ */
+export const PRESET_PALETTES: Record<string, ThemePalette> = {
+  "dark": { bgDarkest: "#1a1c22", bgDark: "#232630", bgMid: "#2b2e39", bgLight: "#343845", fg: "#dcdee4", dim: "#9298a5", line: "#1d2027", acc: "#5865f2", ok: "#3ba55d", warn: "#faa81a", err: "#ed4245", tool: "#3ba0c9", termBg: "#0d0e12", termFg: "#dcdee4" },
+  "midnight": { bgDarkest: "#0d0f18", bgDark: "#12141f", bgMid: "#1b1f31", bgLight: "#252a42", fg: "#dfe2f2", dim: "#8a90ad", line: "#0a0c14", acc: "#8b7cf7", ok: "#54c08a", warn: "#e5b567", err: "#ef6a6a", tool: "#6aa9e9", termBg: "#0a0c13", termFg: "#dfe2f2" },
+  "tea": { bgDarkest: "#241c16", bgDark: "#2e241c", bgMid: "#3b2f24", bgLight: "#493b2d", fg: "#f0e4d2", dim: "#b39d82", line: "#1b140f", acc: "#d98e32", ok: "#7fa653", warn: "#e0b058", err: "#cf5b47", tool: "#c9975f", termBg: "#1d1712", termFg: "#ecdcc3" },
+  "coffee": { bgDarkest: "#191410", bgDark: "#211a14", bgMid: "#30271e", bgLight: "#403527", fg: "#ede3d0", dim: "#a89478", line: "#120d07", acc: "#c68a4b", ok: "#8aa15c", warn: "#d9a441", err: "#c25450", tool: "#a67c52", termBg: "#15100c", termFg: "#e8dcc5" },
+  "matcha": { bgDarkest: "#1b2217", bgDark: "#232b1e", bgMid: "#2f3a28", bgLight: "#3c4a33", fg: "#e8eeda", dim: "#9aab84", line: "#131a10", acc: "#8db64e", ok: "#6fae4e", warn: "#d8b13c", err: "#cd5c50", tool: "#5da88f", termBg: "#151b11", termFg: "#dfe8cb" },
+  "matrix": { bgDarkest: "#060a06", bgDark: "#0a0f0a", bgMid: "#122116", bgLight: "#18301d", fg: "#c9f2cf", dim: "#6fa075", line: "#030603", acc: "#2fd558", ok: "#39c95f", warn: "#b8d977", err: "#ff6b6b", tool: "#57c99b", termBg: "#030503", termFg: "#33ff77" },
+  "sunset": { bgDarkest: "#1c1422", bgDark: "#241b2b", bgMid: "#33253e", bgLight: "#452f52", fg: "#f2e6ea", dim: "#ab93a8", line: "#150e1b", acc: "#f2784b", ok: "#63b46f", warn: "#eda63d", err: "#e25563", tool: "#b06ac9", termBg: "#170f1d", termFg: "#f0dfe4" },
+  "light": { bgDarkest: "#eceef4", bgDark: "#f6f7fa", bgMid: "#e2e5ee", bgLight: "#ffffff", fg: "#24272f", dim: "#5d6470", line: "#d8dbe4", acc: "#4757d8", ok: "#2b8a4b", warn: "#b97a0f", err: "#d83c3f", tool: "#2278a8", termBg: "#ffffff", termFg: "#24272f" },
+  "strawberry": { bgDarkest: "#fbe4ea", bgDark: "#fdf0f3", bgMid: "#f7d4de", bgLight: "#fffafb", fg: "#4a2733", dim: "#96707e", line: "#f0ccd6", acc: "#e05575", ok: "#4d9e63", warn: "#c98a2d", err: "#d43d51", tool: "#b05687", termBg: "#fff5f8", termFg: "#4a2733" },
+  "ramune": { bgDarkest: "#ddeff7", bgDark: "#ecf7fb", bgMid: "#c9e7f4", bgLight: "#fbfeff", fg: "#173342", dim: "#5b7d90", line: "#c2e2ef", acc: "#1d86ae", ok: "#3a9e6e", warn: "#cf9a2a", err: "#d64f5c", tool: "#3a9db8", termBg: "#f4fbfd", termFg: "#173342" },
+};
+
 /** is this a colour a CSS custom property can hold? */
 const isColour = (v: unknown): v is string =>
   typeof v === "string" && v.length > 0 && v.length <= 64 && !/[;{}]/.test(v);
@@ -183,16 +207,34 @@ export function newThemeId(taken: readonly string[]): string {
  * colours and the UI would be half one theme and half the other.
  */
 export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): void {
-  for (const { cssVar } of PALETTE_KEYS) root.style.removeProperty(cssVar);
-  root.style.removeProperty("--bg-image");
-  root.style.removeProperty("--bg-image-dim");
-  if (!theme) return;
-  for (const { key, cssVar } of PALETTE_KEYS) root.style.setProperty(cssVar, theme.palette[key]);
-  if (theme.backgroundImage) {
-    // `url("…")` with the value quoted: a data: URI can contain characters that end an
-    // unquoted url(), and a truncated background is worse than none
-    root.style.setProperty("--bg-image", `url("${theme.backgroundImage}")`);
-    root.style.setProperty("--bg-image-dim", String(theme.backgroundDim ?? 0.55));
+  /**
+   * Write ONLY what changed.
+   *
+   * The editor calls this on every keystroke of a colour field, and the effect driving it runs
+   * whenever the theme list changes. This used to remove all 14 variables and re-set all 14 on
+   * every call, and every `setProperty` invalidates style for the whole document — so typing
+   * `#5865f2` into the hex field re-resolved the entire UI six times.
+   *
+   * Comparing against what is already on `<html>` makes an unchanged palette a no-op, which is
+   * what keeps a live preview affordable.
+   */
+  for (const { key, cssVar } of PALETTE_KEYS) {
+    const want = theme ? theme.palette[key] : "";
+    if (root.style.getPropertyValue(cssVar) === want) continue;
+    if (want) root.style.setProperty(cssVar, want);
+    else root.style.removeProperty(cssVar);
+  }
+  // `url("…")` quoted: a data: URI can contain characters that end an unquoted url(), and a
+  // truncated background is worse than none
+  const wantImage = theme?.backgroundImage ? `url("${theme.backgroundImage}")` : "";
+  const wantDim = theme?.backgroundImage ? String(theme.backgroundDim ?? 0.55) : "";
+  for (const [prop, want] of [
+    ["--bg-image", wantImage],
+    ["--bg-image-dim", wantDim],
+  ] as const) {
+    if (root.style.getPropertyValue(prop) === want) continue;
+    if (want) root.style.setProperty(prop, want);
+    else root.style.removeProperty(prop);
   }
 }
 

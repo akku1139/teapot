@@ -47,6 +47,7 @@ import {
   DEFAULT_PALETTE,
   MAX_BACKGROUND_BYTES,
   PALETTE_KEYS,
+  PRESET_PALETTES,
   type CustomTheme,
   type ThemePalette,
 } from "./theme-store";
@@ -6083,6 +6084,38 @@ const fileUiFor = (agentId: string): FileUiState => {
  * work (people copy `#5865F2` from a design tool) and the input is what makes picking
  * work; `normalizeColour` reconciles `#RGB`, `#RRGGBB` and `#RRGGBBAA`.
  */
+/**
+ * A theme drawn as a MINIATURE OF THE UI, not as a row of dots.
+ *
+ * Taken from Misskey's `MkThemePreview.vue`: a nav strip, a header, a panel with text lines and
+ * accent dots, all from the theme's own colours. Choosing a theme then means looking at what you
+ * will be staring at, rather than translating three swatches in your head — which is the
+ * difference between a picker that is usable and one that is decorative.
+ *
+ * Pure presentational: it takes a palette and paints it, so a preset and a custom theme render
+ * through exactly the same path and cannot drift apart.
+ */
+function ThemePreview(props: { palette: ThemePalette }) {
+  const p = () => props.palette;
+  return (
+    <span class="tprev" style={{ background: p().bgDark }}>
+      <span class="tprev-nav" style={{ background: p().bgDarkest }} />
+      <span class="tprev-head" style={{ background: p().bgDarkest }} />
+      <span class="tprev-panel" style={{ background: p().bgMid }} />
+      {/* text lines: two "words" then a shorter one, so it reads as prose */}
+      <span class="tprev-line" style={{ left: "32%", top: "38%", width: "34%", background: p().fg, opacity: 0.85 }} />
+      <span class="tprev-line" style={{ left: "32%", top: "50%", width: "22%", background: p().acc }} />
+      <span class="tprev-line" style={{ left: "32%", top: "62%", width: "40%", background: p().dim }} />
+      {/* the accent and status dots: what tells two dark themes apart at a glance */}
+      <span class="tprev-dot" style={{ left: "6%", top: "20%", background: p().acc }} />
+      <span class="tprev-dot" style={{ left: "6%", top: "40%", background: p().dim }} />
+      <span class="tprev-dot" style={{ left: "6%", top: "60%", background: p().ok }} />
+      <span class="tprev-dot" style={{ left: "70%", top: "12%", background: p().warn }} />
+      <span class="tprev-dot" style={{ left: "84%", top: "12%", background: p().err }} />
+    </span>
+  );
+}
+
 function ThemeEditor(props: {
   themes: CustomTheme[];
   activeId: string;
@@ -6094,7 +6127,18 @@ function ThemeEditor(props: {
   const [editingId, setEditingId] = createSignal<string>(
     props.themes.some((t) => t.id === props.activeId) ? props.activeId : (props.themes[0]?.id ?? ""),
   );
-  const editing = () => props.themes.find((t) => t.id === editingId());
+  /**
+   * `editingId` is a plain signal, so it can outlive the theme it names — deleting the theme
+   * being edited left it pointing at a dead id, and the editor then rendered `<Show>`'s
+   * fallback ("no custom themes yet — press duplicate") while other themes existed.
+   *
+   * Resolving through the list instead of trusting the signal means the editor always shows a
+   * theme that EXISTS: the named one if it is still there, otherwise the first remaining one.
+   */
+  const editing = () => {
+    const list = props.themes;
+    return list.find((t) => t.id === editingId()) ?? list[0];
+  };
 
   /** write one field of the theme being edited, and persist immediately */
   const patch = (fn: (t: CustomTheme) => CustomTheme) => {
@@ -6114,10 +6158,17 @@ function ThemeEditor(props: {
 
   /** copy the CURRENT preset into a new custom theme, so presets never drift */
   const duplicatePreset = () => {
-    const base = THEMES.find((t) => t.key === props.activeId) ?? THEMES[0]!;
-    // the preset's own colours come from the stylesheet, so read them back off <html> after
-    // switching to it: a hardcoded copy in JS would drift from app.css the first time a palette
-    // was retuned
+    // Copy whatever is ACTIVE — preset or custom. Looking the id up in THEMES alone meant that
+    // duplicating a CUSTOM theme silently produced "Dark copy" with `mode: "dark"`, because the
+    // lookup missed and fell back to THEMES[0]. MEASURED: active=custom-x (mode light) produced
+    // a dark copy labelled after the wrong theme.
+    const activeCustom = props.themes.find((t) => t.id === props.activeId);
+    const activePreset = THEMES.find((t) => t.key === props.activeId);
+    const base = activeCustom ?? activePreset ?? THEMES[0]!;
+    // Colours come from the LIVE document, which is what the operator is looking at: for a
+    // preset that is the stylesheet's value, and for a custom theme the inline value it
+    // applied. A hardcoded copy in JS would drift from app.css the first time a palette was
+    // retuned, and copying a custom theme from DEFAULT_PALETTE would silently lose its colours.
     const cs = getComputedStyle(document.documentElement);
     const palette = { ...DEFAULT_PALETTE } as ThemePalette;
     for (const { key, cssVar } of PALETTE_KEYS) {
@@ -6125,10 +6176,18 @@ function ThemeEditor(props: {
       if (v) palette[key] = v;
     }
     const id = newThemeId(props.themes.map((t) => t.id).concat(THEMES.map((t) => t.key)));
-    const theme: CustomTheme = { id, label: `${base.label} copy`, mode: base.mode, palette };
+    const theme: CustomTheme = {
+      id,
+      label: `${base.label}${activeCustom ? "" : " copy"}`.slice(0, 40),
+      mode: base.mode,
+      palette,
+      // carry the background too, or duplicating a themed setup loses the image
+      ...(activeCustom?.backgroundImage
+        ? { backgroundImage: activeCustom.backgroundImage, backgroundDim: activeCustom.backgroundDim }
+        : {}),
+    };
     props.onChange([...props.themes, theme]);
     setEditingId(id);
-    void base;
   };
 
   const importFile = (file: File | undefined) => {
@@ -6226,8 +6285,13 @@ function ThemeEditor(props: {
               <button
                 type="button"
                 onclick={() => {
-                  props.onChange(props.themes.filter((x) => x.id !== editingId()));
-                  setEditingId(props.themes.find((x) => x.id !== editingId())?.id ?? "");
+                  // capture the doomed id BEFORE mutating: `props.themes` is a getter, and
+                  // reading it again after `onChange` depends on whether the parent has already
+                  // re-rendered — the same expression then means two different things
+                  const doomed = editing()?.id;
+                  if (!doomed) return;
+                  props.onChange(props.themes.filter((x) => x.id !== doomed));
+                  setEditingId(props.themes.find((x) => x.id !== doomed)?.id ?? "");
                 }}
                 title="delete this custom theme"
               >
@@ -7317,6 +7381,27 @@ function ConfigModal(props: {
   const setSysLightTheme = (v: string) => props.theme.setLight(v);
   const setCustomThemes = (v: CustomTheme[]) => props.theme.setThemes(v);
 
+  /**
+   * A PRESET's palette, read back from the stylesheet so a preview can be drawn for it.
+   *
+   * The presets live as `[data-theme="…"]` blocks in app.css, and duplicating all ten palettes
+   * into JS would be a second source of truth that silently drifts the first time a theme is
+   * retuned. Instead the variables are read for real: a detached probe carries the
+   * `data-theme` attribute, and `getComputedStyle` resolves the cascade for it.
+   *
+   * Memoised per key — this touches computed style, so it must not run per render.
+   */
+  /**
+   * A PRESET's palette, for drawing its preview.
+   *
+   * A static table (`PRESET_PALETTES`), NOT a probe: the first version appended an element to
+   * `document.body` to resolve the CSS cascade, and doing that from inside a `<For>` render broke
+   * the settings dialog (MEASURED: "the config dialog renders no key inputs at all"). The table
+   * duplicates app.css, which is unavoidable — a bundler inlines the stylesheet as a blob and
+   * its rules are not readable back — so `test/theme-store.test.ts` asserts the two agree.
+   */
+  const presetPalette = (key: string): ThemePalette => PRESET_PALETTES[key] ?? DEFAULT_PALETTE;
+
   const saveProviders = (): Record<string, any> | null => {
     const out: Record<string, any> = {};
     for (const p of providers()) {
@@ -7625,44 +7710,55 @@ function ConfigModal(props: {
           </Show>
 
           <h4 class="cfgsub">themes</h4>
-          <div class="themegrid">
-            {/* customs FIRST: they are what the operator just made, so they belong where the
-                eye lands. A preset is never edited in place — see ThemeEditor's "duplicate". */}
-            <For each={customThemes()}>
-              {(t) => (
-                <button
-                  type="button"
-                  class={"themebtn" + (fixedTheme() === t.id ? " on" : "")}
-                  title={`${t.label} (custom)${t.backgroundImage ? " · with a background image" : ""}`}
-                  onclick={() => {
-                    setFixedTheme(t.id);
-                    localStorage.setItem("teapot.theme", t.id);
-                  }}
-                >
-                  <span class="swdots">
-                    {[t.palette.bgDarkest, t.palette.bgMid, t.palette.acc].map((c) => <i style={{ background: c }} />)}
-                  </span>
-                  <span class="themebtn-label">{t.label} ★</span>
-                </button>
-              )}
-            </For>
-            <For each={THEMES}>
-              {(t) => (
-                <button
-                  type="button"
-                  class={"themebtn" + (fixedTheme() === t.key ? " on" : "")}
-                  title={`${t.label} (${t.mode})`}
-                  onclick={() => {
-                    setFixedTheme(t.key);
-                    localStorage.setItem("teapot.theme", t.key);
-                  }}
-                >
-                  <span class="swdots">{t.sw.map((c) => <i style={{ background: c }} />)}</span>
-                  <span class="themebtn-label">{t.label}</span>
-                </button>
-              )}
-            </For>
-          </div>
+          {/* Grouped by LIGHT and DARK, as Misskey does — "which theme do I want" is almost
+              always "which dark theme", so one mixed grid makes the eye filter the half it does
+              not want. Custom themes appear in their own group first: they are what the operator
+              just made, so they belong where the eye lands. */}
+          <For each={[{ mode: "dark" as const, title: "dark themes" }, { mode: "light" as const, title: "light themes" }]}>
+            {(group) => (
+              <Show when={[...customThemes(), ...THEMES].some((t) => t.mode === group.mode)}>
+                <div class="cfgsub" style="margin-bottom:var(--space-1)">{group.title}</div>
+                <div class="themepick">
+                  <For each={customThemes().filter((t) => t.mode === group.mode)}>
+                    {(t) => (
+                      <button
+                        type="button"
+                        class={"themecard" + (fixedTheme() === t.id ? " on" : "")}
+                        title={`${t.label} (custom)${t.backgroundImage ? " · with a background image" : ""}`}
+                        aria-pressed={fixedTheme() === t.id}
+                        onclick={() => {
+                          setFixedTheme(t.id);
+                          localStorage.setItem("teapot.theme", t.id);
+                        }}
+                      >
+                        <span class="themecard-preview"><ThemePreview palette={t.palette} /></span>
+                        <span class="themecard-label">{t.label} ★</span>
+                      </button>
+                    )}
+                  </For>
+                  <For each={THEMES.filter((t) => t.mode === group.mode)}>
+                    {(t) => (
+                      <button
+                        type="button"
+                        class={"themecard" + (fixedTheme() === t.key ? " on" : "")}
+                        title={`${t.label} (${t.mode})`}
+                        aria-pressed={fixedTheme() === t.key}
+                        onclick={() => {
+                          setFixedTheme(t.key);
+                          localStorage.setItem("teapot.theme", t.key);
+                        }}
+                      >
+                        <span class="themecard-preview">
+                          <ThemePreview palette={presetPalette(t.key)} />
+                        </span>
+                        <span class="themecard-label">{t.label}</span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            )}
+          </For>
 
           <ThemeEditor
             themes={customThemes()}

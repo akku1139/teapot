@@ -12,6 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   applyCustomTheme,
   DEFAULT_PALETTE,
@@ -20,6 +21,7 @@ import {
   newThemeId,
   normalizeColour,
   PALETTE_KEYS,
+  PRESET_PALETTES,
   sanitizeTheme,
   saveCustomThemes,
   type CustomTheme,
@@ -260,4 +262,53 @@ test("a new id cannot collide with a preset or an existing custom theme (#theme)
   const id = newThemeId(taken);
   assert.ok(!taken.includes(id), `generated ${id} collided`);
   assert.match(id, /^custom-[a-z0-9-]+$/);
+});
+
+test("PRESET_PALETTES matches the [data-theme] blocks in app.css (#theme)", () => {
+  // The preview needs each preset's colours as DATA, and a bundled stylesheet cannot be read
+  // back — so the table duplicates app.css. That duplication is the risk: retune a preset in
+  // CSS and the picker keeps showing the OLD palette, silently, until someone notices the
+  // preview does not match the theme it applies. This test is the guard.
+  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+
+  /** the declarations inside `selector { … }` */
+  const blockOf = (selector: string): string => {
+    const i = css.indexOf(selector);
+    assert.notEqual(i, -1, `app.css must contain ${selector}`);
+    const open = css.indexOf("{", i);
+    const close = css.indexOf("}", open);
+    return css.slice(open + 1, close);
+  };
+  const colourIn = (body: string, cssVar: string): string | null => {
+    const m = new RegExp(`\\${cssVar}:\\s*(#[0-9a-fA-F]{3,8})`).exec(body);
+    return m ? normalizeColour(m[1]!) : null;
+  };
+
+  // :root IS the dark theme (the stylesheet says so), and every preset is a [data-theme] block
+  const sources: Record<string, string> = {
+    dark: blockOf(":root {"),
+    ...Object.fromEntries(
+      Object.keys(PRESET_PALETTES)
+        .filter((k) => k !== "dark")
+        .map((k) => [k, blockOf(`[data-theme="${k}"]`)]),
+    ),
+  };
+
+  assert.deepEqual(
+    Object.keys(PRESET_PALETTES).sort(),
+    Object.keys(sources).sort(),
+    "every preset in the table must have a stylesheet block, and vice versa",
+  );
+
+  for (const [key, body] of Object.entries(sources)) {
+    for (const { key: pk, cssVar } of PALETTE_KEYS) {
+      const want = colourIn(body, cssVar);
+      assert.equal(
+        PRESET_PALETTES[key]![pk],
+        want,
+        `${key}.${pk} (${cssVar}) is ${PRESET_PALETTES[key]![pk]} in theme-store.ts but ${want} ` +
+          `in app.css — the preview would draw a palette the theme does not apply`,
+      );
+    }
+  }
 });

@@ -261,6 +261,53 @@ body {
 .themebtn.on { border-color: var(--acc); }
 .swdots { display: inline-flex; gap: var(--space-1); flex-shrink: 0; }
 
+/* ---- theme picker, following Misskey's approach ----
+ *
+ * Misskey (packages/frontend/src/pages/settings/theme.vue) does NOT show a name plus a few
+ * dots. Each theme is a MINIATURE OF THE UI — nav strip, header, a panel, text lines, accent
+ * dots — drawn from the theme's own colours (`MkThemePreview.vue`). The effect is that you
+ * choose by looking at what you will be staring at all day, instead of translating three
+ * arbitrary swatches in your head.
+ *
+ * It also groups the grid by LIGHT and DARK sections, and uses `repeat(auto-fill, minmax(...))`
+ * so the tiles stay a sensible size at any dialog width. Both are taken directly.
+ */
+.themepick {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.themecard {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: 0; background: none; border: none; cursor: pointer;
+  color: var(--fg); font-size: var(--text-xs); text-align: left; min-width: 0;
+}
+/* the preview IS the button: a rounded card of the theme's own colours, with a ring when
+   selected so the choice is visible without reading the caption */
+.themecard-preview {
+  display: block; width: 100%; height: 62px; border-radius: var(--radius-md);
+  overflow: hidden; border: 1px solid var(--line);
+  transition: border-color var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
+}
+.themecard:hover .themecard-preview { border-color: var(--dim); transform: translateY(-1px); }
+.themecard.on .themecard-preview {
+  border-color: var(--acc);
+  /* a ring rather than a thicker border, so selecting a tile does not resize the grid */
+  box-shadow: 0 0 0 2px var(--acc);
+}
+.themecard-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim);
+}
+.themecard.on .themecard-label { color: var(--fg); font-weight: 600; }
+/* the miniature itself: absolutely-positioned bars over the theme's own background */
+.tprev { position: relative; width: 100%; height: 100%; }
+.tprev-nav { position: absolute; inset: 0 auto 0 0; width: 22%; }
+.tprev-head { position: absolute; top: 0; left: 22%; right: 0; height: 18%; }
+.tprev-panel { position: absolute; top: 18%; left: 22%; right: 0; bottom: 0; margin: 5%; border-radius: 3px; }
+.tprev-line { position: absolute; height: 5%; border-radius: 2px; }
+.tprev-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%; }
+
 /* ---- custom theme editor ----
  *
  * The palette is 14 rows, which is far too many for a plain vertical list inside a settings
