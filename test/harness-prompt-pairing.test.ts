@@ -68,11 +68,45 @@ test("the harness never sends two prompts back to back (#95)", { timeout: 30_000
     await agent.setGoal("keep going");
     agent.enqueuePrompt("go", "user");
     agent.start("t");
-    // Bounded: with the suppression removed the agent pairs prompts forever, so
-    // an unbounded wait would hang the suite instead of failing it.
-    await new Promise((r) => setTimeout(r, 300));
+    /**
+     * POLL until the round boundary that the bug happens AT, do not sleep.
+     *
+     * A fixed 300ms was the whole precondition, and it failed on the Windows runner with `0 !== 1`
+     * — the agent had not got far enough. AGENTS.md names this failure: on a loaded runner a fixed
+     * duration expires as "precondition not met" with nothing to say the test merely ran out of
+     * clock.
+     *
+     * Bounded as before — with the suppression removed the agent pairs prompts forever, and an
+     * unbounded wait would hang the suite instead of failing it.
+     */
+    const msgs = () => (agent as unknown as { messages: unknown[] }).messages;
+    /**
+     * Wait for the RUN TO END, not for a message count.
+     *
+     * MEASURED with the suppression disabled: the agent has 61 messages at 50ms and 204 by 150ms,
+     * then stops. So any "poll until N messages" condition is satisfied long before the pairing
+     * this test exists to catch has happened — a first attempt at fixing the flake that way made
+     * the test pass with the bug present, i.e. vacuous. `maxTurns: 2` bounds the run, so "not
+     * running any more" is the state where the message list is final.
+     */
+    /**
+     * Poll on the MESSAGE COUNT SETTLING, not on `status`.
+     *
+     * `start()` returns before the loop flips status to `running` (MEASURED: it is still
+     * `stopped` on the line after `start("t")`), so `while (status === "running")` exits
+     * immediately and the test then asserts on an empty list — it failed with "precondition: the
+     * agent must have run" for exactly that reason. The observable signal is the list growing and
+     * then stopping: `maxTurns: 2` guarantees it stops.
+     */
+    let last = -1;
+    for (let i = 0; i < 600; i++) {
+      const n = msgs().length;
+      if (n > 0 && n === last) break; // unchanged across two polls → the run is over
+      last = n;
+      await new Promise((r) => setTimeout(r, 10));
+    }
     assert.ok(
-      (agent as unknown as { messages: unknown[] }).messages.length > 0,
+      msgs().length > 0,
       "precondition: the agent must have run (#95)",
     );
     assert.equal(
