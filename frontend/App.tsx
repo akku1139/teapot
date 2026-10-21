@@ -3202,9 +3202,32 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const autosizeComposer = () => {
     if (!composerEl) return;
     const maximized = composerMaximized();
-    // `height: auto` first, or `scrollHeight` never shrinks when text is DELETED — the box
-    // would stay at its tallest. This is a write on ONE element, not a feed measurement.
-    composerEl.style.height = "auto";
+    /**
+     * Collapse to `auto` ONLY when the content actually shrank.
+     *
+     * MEASURED from the operator's log at 3 lines: typing line 3 moved the feed's scrollTop
+     * back to 99992.398, which is precisely its value when the composer held ONE line. The
+     * cause is this round-trip:
+     *
+     *   1. `height = "auto"`  → the textarea collapses to `rows={1}` (20px)
+     *   2. read `scrollHeight` → FORCES A LAYOUT at that collapsed height, so `.feed` is 39px
+     *      taller, and the ResizeObserver on it is queued
+     *   3. `height = "59px"`  → layout again, the feed shrinks back
+     *
+     * The observer fires between 2 and 3 — it sees "the feed grew", and the app responds to a
+     * real intermediate layout that the operator never should have been shown. The scroll lands
+     * where the ONE-line box put it. At two lines the same thing happens but the feed happens to
+     * be scrolled such that it is invisible; by three the error exceeds `AT_TAIL_PX` and follow
+     * drops, which is why the report says "2行の時は問題ない".
+     *
+     * Growing does NOT need the round-trip: with a fixed height, `scrollHeight` already reports
+     * the content's height. Only SHRINKING needs it, because a box taller than its content
+     * reports its own height. So the collapse is now conditional.
+     */
+    const current = composerEl.offsetHeight;
+    const contentHeight = composerEl.scrollHeight;
+    // content fits (or shrank) — the only case that needs the `auto` round-trip to re-measure
+    if (contentHeight <= current + 1) composerEl.style.height = "auto";
     const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
     // apply it unconditionally: an early return must NOT leave the box at `auto`, which
     // collapses a textarea to its `rows` default and looks like the composer ate the text.

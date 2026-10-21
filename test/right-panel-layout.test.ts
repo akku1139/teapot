@@ -224,3 +224,49 @@ test("creating or selecting a theme ADOPTS it, or every edit is invisible (#ui)"
     "selecting a theme to edit must apply it, for the same reason",
   );
 });
+
+test("autosizeComposer does not collapse the box while GROWING (#scroll)", async () => {
+  /**
+   * Reported with a worked example: "3行以上に入力欄が拡大してると入力時にスクロールが戻る（2行の時は
+   * 問題ない）", with a log showing the feed's `scrollTop` returning to 99992.398 — the value it
+   * had when the composer was ONE line — on the third line's first keystroke.
+   *
+   * Cause: `height = "auto"` collapses the textarea to `rows={1}` (20px), then reading
+   * `scrollHeight` forces layout at THAT height, which grows the feed by 39px and queues its
+   * ResizeObserver. The handler then writes the real height back and the feed shrinks again. The
+   * observer fires in the middle — on a layout the operator should never have been shown — and
+   * the follow logic acts on it.
+   *
+   * Growing needs no round-trip: with a fixed height, `scrollHeight` already reports the content
+   * height. Only SHRINKING needs the collapse, because a box taller than its content reports its
+   * own height. So the collapse must be conditional on the content not having grown.
+   */
+  const app = await readSource("frontend/App.tsx");
+  const fn = app.slice(app.indexOf("const autosizeComposer = () => {"));
+  const body = fn.slice(0, fn.indexOf("\n  };"));
+  assert.ok(body.length > 0, "precondition: autosizeComposer exists");
+
+  /**
+   * The `auto` write must be GUARDED by a condition on the content height.
+   *
+   * Asserted on the LINE that writes it, because that is the statement whose placement matters:
+   * `if (contentHeight <= current + 1) composerEl.style.height = "auto";`. Searching backwards
+   * for a preceding `if (` picked up an unrelated one across a comment and reported a guarded
+   * write as unguarded.
+   */
+  const autoLine = body
+    .split("\n")
+    .filter((l) => /style\.height\s*=\s*"auto"/.test(l));
+  assert.ok(autoLine.length >= 1, "precondition: the `auto` path still exists (shrinking needs it)");
+  for (const line of autoLine) {
+    assert.match(
+      line,
+      /if\s*\(.*scrollHeight|if\s*\(.*contentHeight/,
+      "`height = \"auto\"` must be conditional on the content height on the SAME line — an " +
+        "unconditional collapse forces an intermediate layout where the box is one line tall, " +
+        "the feed's ResizeObserver fires on it, and the scroll lands there (the reported " +
+        "3-line scroll-back)",
+    );
+  }
+
+});
