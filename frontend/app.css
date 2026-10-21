@@ -540,9 +540,11 @@ body {
  *   - `140px` is only the initial guess for rows never yet rendered.
  *
  * Note what this does NOT solve: Chromium reports no layout shift for a
- * content-visibility unskip (crbug 40733057, by design since M88), so a regression in
- * our own scroll anchoring would be invisible to CLS metrics. That is why the anchoring
- * behaviour has its own tests rather than relying on a metric to catch it.
+ * content-visibility unskip, so a regression in our own scroll anchoring would be invisible
+ * to CLS metrics. That is why the anchoring behaviour has its own tests rather than relying
+ * on a metric to catch it. (The flag that suppresses it is
+ * `anchor_is_cv_auto_without_layout_` in Blink's `scroll_anchor.h`; see
+ * `docs/firefox-scroll-defects.md`.)
  *
  * ## Firefox shifts the viewport when a row unskips, and we compensate in script
  *
@@ -551,11 +553,12 @@ body {
  * placeholder and the real size "might force a new layout" — and when that row is ABOVE the
  * reader, the whole feed shifts under them.
  *
- * In Chromium that shift is absorbed: the engine keeps the reader's position stable across an
- * unskip, and reports no layout shift for it at all (crbug 40733057). Gecko does not, and the
- * gap is tracked: Bugzilla 1940025 ("navigating to a URL with an anchor scrolls to an
- * incorrect location with content-visibility: auto") and Bugzilla 1908582 (WPT
- * `content-visibility-anchor-positioning-002` / `-003` failing) are both still open.
+ * In Chromium that shift is absorbed: Blink tracks "the last anchor we have selected is a
+ * 'content-visibility: auto' element that did not yet have a layout after becoming visible"
+ * in `anchor_is_cv_auto_without_layout_` and special-cases the scroll adjustment for it.
+ * Gecko has no equivalent — its `ScrollAnchorContainer.cpp` mentions content-visibility
+ * nowhere — and its own WPT metadata marks the off-screen case `expected: FAIL`. Both the
+ * flag and the test expectations are quoted in `docs/firefox-scroll-defects.md`.
  * MEASURED in this app: scrolling up through a loaded session in Firefox makes the timeline
  * creep a few pixels per unskipped row, in the direction of travel.
  *

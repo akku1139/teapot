@@ -39,8 +39,10 @@ The CSS Scroll Anchoring spec lists **suppression triggers** — operations that
 adjustment. A height/margin/padding change on "any element in the path from the anchor node to
 the scrollable element" suppresses it (csswg-drafts `css-scroll-anchoring-1/Overview.bs`).
 
-The composer is **not** on that path: it is not an ancestor of any row inside the scroller. So
-the spec does not suppress the adjustment here, and Gecko's behaviour is within spec.
+The composer is **not** on that path: it is not an ancestor of any row inside the scroller.
+That reading means the spec does not suppress the adjustment here — so Gecko's behaviour is
+**not a conformance bug**, which is the point. (Stated as a reading of the normative text, not a
+citation: the spec does not discuss a sibling resizing the scroller's own box.)
 
 teapot already owns this responsibility:
 
@@ -52,6 +54,22 @@ sanctioned exclusion (MDN: "if a node doesn't seem to be an appropriate anchor, 
 it using `overflow-anchor`"). The surveyed harnesses all make the same choice: fluxer sets
 `overflow-anchor: none` on its scroller and content column, opencode and deepseek-harness toggle
 it off while following.
+
+**Verified in Gecko's source, not just in the spec.** `layout/generic/ScrollAnchorContainer.cpp`
+bails out of anchor selection when the scroll frame carries the property:
+
+```cpp
+const nsStyleDisplay& disp = *Frame()->StyleDisplay();
+// Don't select a scroll anchor if the scroll frame has `overflow-anchor:
+// none`.
+if (disp.mOverflowAnchor != mozilla::StyleOverflowAnchor::Auto) {
+  return false;
+}
+```
+
+That is `CanMaintainAnchor()`, i.e. the first gate before any adjustment work. So the CSS fix is
+not a "maybe it helps" — Gecko has an explicit, first-class off switch, and we are using it for
+the purpose it exists. Blink honours the same property.
 
 ### Second half of the fix: sample geometry on box changes too
 
@@ -78,18 +96,128 @@ viewport, then laid out for real.
 MDN is explicit that a mismatch between placeholder and real size "might force a new layout".
 When the unskipped row is **above** the reader, everything below shifts.
 
-- **Chromium** keeps the reader's position stable across an unskip, and reports **no layout
-  shift** for it at all — by design since M88 (`crbug 40733057`). That is why CLS metrics never
-  flagged this and why the bug looked Firefox-only rather than "unskip is uncompensated".
+- **Chromium deliberately compensates, and the source proves it.** This is not inference: Blink
+  carries a dedicated flag for exactly this case in
+  `third_party/blink/renderer/core/layout/scroll_anchor.h`:
+
+  ```cpp
+  // This is set to true if the last anchor we have selected is a
+  // 'content-visibility: auto' element that did not yet have a layout after
+  // becoming visible.
+  bool anchor_is_cv_auto_without_layout_ = false;
+  ```
+
+  set in `scroll_anchor.cc` right after the anchor is chosen:
+
+  ```cpp
+  anchor_is_cv_auto_without_layout_ =
+      DisplayLockUtilities::IsAutoWithoutLayout(*anchor_object);
+  ```
+
+  and then **consulted when computing the adjustment** (`scroll_anchor.cc`, `ComputeAdjustment`):
+
+  ```cpp
+  if (anchor_is_cv_auto_without_layout_) {
+    // See the effect delta would have on the anchor rect.
+    // If the anchor is now off-screen (in block direction) then make sure it's
+    // just at the edge.
+    anchor_rect.Move(-PhysicalOffset(delta));
+    ...
+      delta.set_y(delta.y() + anchor_rect.Bottom().ToInt());
+  }
+  ```
+
+  `IsAutoWithoutLayout` (`display_lock_utilities.cc`) is
+  `!context->IsLocked() && context->IsAuto() && !context->HadLifecycleUpdateSinceLastUnlock()` —
+  i.e. "this is a `content-visibility: auto` box that has not been laid out since it unlocked".
+
+  So Blink names the situation in a comment, tracks it through anchor selection, and
+  special-cases the scroll adjustment for it. This is the mechanical reason the bug is
+  Firefox-only, and it is why the workaround belongs in our code: we are reproducing a
+  deliberate engine behaviour that only one engine implements.
+
+  (The `crbug 40733057` reference in `frontend/app.css` — "no layout shift for an unskip" — could
+  not be re-verified when this was written, because both Google issue trackers require
+  authentication. It is consistent with the code above and is left in place, but the code is the
+  evidence, not the bug number.)
+
+- **Gecko has no equivalent, verified by reading its side.** MEASURED against
+  `mozilla-firefox/firefox` @ `main`:
+
+  ```
+  $ gh search code "content-visibility|DisplayLock" \
+      --repo mozilla-firefox/firefox layout/generic/ScrollAnchorContainer.cpp
+  (no matches)
+  ```
+
+  `layout/generic/ScrollAnchorContainer.cpp` — Gecko's whole scroll-anchoring implementation —
+  contains **no reference to `content-visibility`, `DisplayLock`, or any display-lock utility**.
+  Its adjustment path (`ApplyAdjustments`) computes the anchor's movement and applies it; there
+  is no branch that asks whether the anchor was a not-yet-laid-out `content-visibility: auto`
+  box. So a placeholder being replaced by a real layout is, to Gecko, just content moving —
+  and it compensates by exactly the amount of the mismatch, which is the drift.
+
+  Blink's equivalent branch exists because someone wrote it on purpose for this case; Gecko
+  simply never got one. That is the asymmetry, in source.
+
+  **And Gecko's own test expectations admit it.** Its WPT metadata — checked into
+  `mozilla-firefox/firefox` — marks the off-screen case as a known failure:
+
+  ```
+  testing/web-platform/meta/layout-instability/content-visibility-auto-offscreen.html.ini
+  [content-visibility-auto-offscreen.html]
+    [off-screen content-visibility:auto]
+      expected: FAIL
+
+  testing/web-platform/meta/layout-instability/content-visibility-auto-resize.html.ini
+  [content-visibility-auto-resize.html]
+    [off-screen content-visibility:auto]
+      expected: FAIL
+  ```
+
+  An `expected: FAIL` in that tree is the engine team's own record that the behaviour is wrong
+  and unimplemented. So this is not "our app misusing the feature" and not something to wait
+  out: it is a documented Gecko gap, in Gecko's repository, for the exact scenario the operator
+  hit.
+
+  For completeness, both engines otherwise agree in shape: Gecko has
+  `ScrollAnchorContainer::SuppressAdjustments()` called from `RestyleManager.cpp` for
+  style/anchor-node changes, and its `ApplyAdjustments()` bails on the same kinds of conditions
+  Blink does (`mAnchorNodeIsDirty`, pending restoration, script-driven animation, zero scroll
+  position). The divergence is narrow and specific: the `content-visibility: auto` unskip.
 - **Gecko** does not, and the gaps are tracked upstream and still **OPEN**:
   - Bugzilla **1940025** (`NEW`; last activity 2025-02-11) — "Navigating to URL with anchor
     scrolls to incorrect location in nodejs.org (with content-visibility: auto)"
   - Bugzilla **1908582** (`NEW`) — WPT `content-visibility-anchor-positioning-002` and `-003`
-    failing
+    failing. **These are about CSS *anchor positioning* (`anchor-name`, `position: absolute`),
+    which is a DIFFERENT feature from scroll anchoring** — the titles are
+    "hidden never anchors" / "auto still anchors even if the anchor and positioned element are
+    both skipped". They are evidence that Gecko's content-visibility has open anchor-related
+    gaps, not evidence about the scroll-anchoring interaction this document is about. Read them
+    as context, not as proof.
   - Bugzilla **1660384** is the implementation bug for the property itself.
 
   Both are unfixed in **159.0b3**, the beta build this was reported on, so this is not something
   a release upgrade will clear.
+
+  **No upstream test covers `auto` unskip, which is why the asymmetry survives.**
+  MEASURED by listing the WPT tree: `css/css-scroll-anchoring/` holds 93 tests and exactly one
+  mentions `content-visibility` — `content-visibility-hidden-in-size-container.html`, whose
+  assertion is about *`: hidden`* being added or locked inside a size container. **Nothing tests
+  `: auto` unskipping.** The `content-visibility-anchor-positioning-*` files in
+  `css-contain/` all exercise CSS *anchor positioning* (`anchor-name`, `position: absolute`),
+  a different feature again.
+
+  So neither engine can fail a shared test here. Chromium's handling exists because a Blink
+  engineer wrote it deliberately (the `anchor_is_cv_auto_without_layout_` flag above), not
+  because a test forced it — and Gecko simply never implemented the equivalent. That is the
+  mechanical reason one engine does what users expect and the other does not.
+
+  The css-contain-2 spec is silent on it too — searching the normative text for
+  "scroll position" / "scroll anchoring" / "preserve" turns up nothing about unskip — so
+  preserving the reader's position is **implementation-defined**, not a conformance
+  requirement. That is why the fix is a workaround in our code rather than a bug we can point
+  at.
 
 So this is not a teapot bug and not a spec violation we can point at — it is a known Gecko gap
 in an otherwise shipped feature.
@@ -130,12 +258,39 @@ fragile and a UA check would silently stop compensating the moment Firefox chang
 
 ## Sources
 
-- MDN, *Scroll anchoring overview* — mechanism, suppression triggers, `overflow-anchor` as the
-  exclusion API, and the `about:config` switches for debugging it.
+Primary — **engine source, read directly** (`gh api`, no clones):
+
+- `chromium/chromium` @ `main`, `third_party/blink/renderer/core/layout/scroll_anchor.h` — the
+  `anchor_is_cv_auto_without_layout_` flag and its explanatory comment.
+- `chromium/chromium` @ `main`, `.../layout/scroll_anchor.cc` — where the flag is set
+  (`IsAutoWithoutLayout`) and where `ComputeAdjustment` branches on it.
+- `chromium/chromium` @ `main`, `.../core/display_lock/display_lock_utilities.cc` —
+  `IsAutoWithoutLayout` (`!IsLocked && IsAuto && !HadLifecycleUpdateSinceLastUnlock`).
+- `mozilla-firefox/firefox` @ `main`, `layout/generic/ScrollAnchorContainer.cpp` — no
+  `content-visibility` / display-lock reference anywhere; `CanMaintainAnchor()` honouring
+  `overflow-anchor: none`; `ApplyAdjustments()` and its bail conditions.
+- `mozilla-firefox/firefox` @ `main`,
+  `testing/web-platform/meta/layout-instability/content-visibility-auto-{offscreen,resize}.html.ini`
+  — the checked-in `expected: FAIL` for off-screen `content-visibility: auto`.
+
+Specification and vendor documentation:
+
 - W3C csswg-drafts, `css-scroll-anchoring-1/Overview.bs` — the normative list of suppression
-  triggers quoted above.
+  triggers, and the exclusion API.
+- W3C csswg-drafts, `css-contain-2/Overview.bs` — silent on scroll position across an unskip,
+  i.e. implementation-defined.
+- MDN, *Scroll anchoring overview* — mechanism, `overflow-anchor`, and the `about:config`
+  switches for debugging it.
 - MDN, *`contain-intrinsic-size`* — "if there is a difference between the placeholder and
   calculated size this might force a new layout".
-- MDN, *Scroll anchoring for web developers* (Chromium, 2017) — the original rationale.
+
+Bug trackers:
+
 - Bugzilla 1940025, 1908582, 1660384 — the open Gecko gaps.
-- `crbug 40733057` — Chromium deliberately reports no layout shift for an unskip.
+- `crbug 40733057` — cited in `frontend/app.css`. **Could not be re-verified**: both
+  `issuetracker.google.com` and `bugs.chromium.org` require authentication. Left as a pointer
+  only; the Blink source above is the evidence.
+
+Test coverage: WPT `css/css-scroll-anchoring/` (93 tests) contains exactly one `content-visibility`
+test and it covers `: hidden`, not `: auto` unskip — which is why no shared test forces either
+engine to agree here.
