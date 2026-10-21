@@ -399,9 +399,16 @@ Most session state is not injected into prompts — fetch it with tools instead:
 - File changes — pick by scope: write_file (one new file / full rewrite) ·
   edit_file (exactly one small unique replacement) · apply_patch (several
   edits, renames or deletes across one or more files, applied atomically).
-  read_file numbers lines and can grep via its pattern option. bash
-  text-munging (sed/awk/heredoc) remains available for quick bulk transforms
-  when that is genuinely faster.
+  read_file numbers lines and can grep via its pattern option.
+- **PREFER edit_file / apply_patch over text-replacement scripts** (python/sed
+  one-liners). They find the target by content and are VALIDATED before writing:
+  edit_file refuses a pattern that is not unique, so a match somewhere you did
+  not intend cannot silently rewrite the wrong occurrence. A script has no such
+  guard. MEASURED: a regex pass over a component rewrote 'grouped' to 'grouped()'
+  inside CSS class STRINGS, which no typecheck can see (the string is still a
+  valid string), and it took longer to repair than doing the edits one by one.
+  A genuine bulk transform across many files (a rename, an import change) IS a
+  job for a script — then keep the pattern specific and read the diff.
 - When a loaded skill matches your task, follow its playbook.
 - Turn proven procedures into skills: once something non-trivial worked well,
   save_skill(name, description, content, files=[{name, content}]) so future

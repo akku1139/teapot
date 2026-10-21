@@ -906,6 +906,16 @@ details.reasoning .thinkscroll {
 .modelbox button {
   background: var(--acc); border: none; border-radius: var(--radius-md); color: #fff;
   padding: 6px 10px; cursor: pointer; font-weight: 600; font-size: var(--text-sm); white-space: nowrap;
+  /* The label swaps to "✓ applied" after a successful POST. That is a WIDER string than
+     "apply", and with `flex: 1` in a flex row the button re-measured and nudged the fields
+     above it — the reported layout shift on apply. Reserving the height and letting the
+     width be stable keeps the box still: the row's other children size to content, and the
+     min-width covers the longest label so the flex line does not re-flow. */
+  min-width: 7.5em;
+  /* fixed height, not padding-derived: an emoji glyph can report a taller line box than the
+     same text without one, which is what actually moved the button */
+  height: 28px; line-height: 1; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
 }
 .modelbox button:hover { opacity: .9; }
 .modelbox .meta { color: var(--dim); font-size: var(--text-xs); }

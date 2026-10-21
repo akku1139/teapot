@@ -437,11 +437,20 @@ changing code for one of them:
 
 ## Editing many files at once
 
-A one-off script that deletes or rewrites hundreds of call sites across `test/`
-cut four files in half, because a brace-matching walker is confused by braces
-inside template literals and strings. If you must batch-edit:
+**Default to `edit_file` / `apply_patch`, not a text-replacement script.** They locate the
+target by content and are validated before writing, so a pattern that matches somewhere you
+did not intend is REFUSED (`edit_file` demands a unique match) instead of silently rewritten.
+A `python`/`sed` replace has no such guard, and MEASURED here: a regex pass over `App.tsx`
+rewrote `grouped` → `grouped()` inside the CSS class STRINGS (`" grouped"` became
+`" grouped()"`), which broke grouping in a way no typecheck sees — the string is still a
+valid string. Repairing it cost more time than making the edits one at a time would have.
 
-- verify EACH file after the edit and revert just that file on failure
-  (`node --experimental-strip-types --check <file>` catches TS parse errors that
-  plain `node --check` accepts), and
-- prefer many small, reviewable edits over one clever transform.
+- A one-off script IS the right tool when you genuinely want a bulk transform across many
+  files (a rename, a wholesale import change). The rule is "no guard rail by accident", not
+  "never script": if you script a scoped edit, make the pattern specific and verify the diff.
+- One-off scripts that delete or rewrite hundreds of call sites cut four files in half,
+  because a brace-matching walker is confused by braces inside template literals and strings.
+  Verify EACH file after the edit and revert just that file on failure
+  (`node --experimental-strip-types --check <file>` catches TS parse errors that plain
+  `node --check` accepts).
+- Prefer many small, reviewable edits over one clever transform.

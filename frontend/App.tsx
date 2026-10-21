@@ -1414,7 +1414,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const loadTasks = () => api("/api/tasks").then((d) => setTasks(d.tasks)).catch(() => {});
   const agentTasks = (id: string | null) => tasks().filter((t) => t.agent === id);
 
-  // sidebar tree: subs hang under their parent, collapsible per parent
+  /**
+   * Sidebar: sub-agent groups are CLOSED by default.
+   *
+   * They used to default to OPEN, so loading the app expanded every sub-agent tree at once —
+   * on a session with nested agents that buried the top-level chats the operator actually
+   * scans. Collapsed-by-default keeps the sidebar to one row per top-level agent, and a group
+   * opens only when asked.
+   *
+   * The stored set keeps its old meaning (`keys = collapsed ids`) so existing profiles and
+   * `treeRowsOf()` are unchanged; `expandedSubs` below is the small override set that records
+   * a deliberate expansion.
+   */
+  const [expandedSubs, setExpandedSubs] = createSignal<Set<string>>((() => {
+    try {
+      const keys: string[] = JSON.parse(localStorage.getItem("teapot.expandedSubs") ?? "[]");
+      return new Set(keys.filter((k) => typeof k === "string"));
+    } catch { return new Set(); }
+  })());
   const [collapsedSubs, setCollapsedSubs] = createSignal<Set<string>>((() => {
     try {
       const keys: string[] = JSON.parse(localStorage.getItem("teapot.collapsed") ?? "[]");
@@ -1431,12 +1448,29 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       return new Set(keys.filter((k) => typeof k === "string" && !k.startsWith("chat:")));
     } catch { return new Set(); }
   })());
+  /**
+   * Is this sub-agent group collapsed RIGHT NOW?
+   *
+   * DEFAULT IS COLLAPSED. The persisted legacy `teapot.collapsed` set is still honoured (so
+   * an existing profile keeps whatever it had), but "not mentioned" now means CLOSED — that is
+   * `!expandedSubs().has(id)`.
+   */
+  const subsCollapsed = (id: string): boolean =>
+    collapsedSubs().has(id) || !expandedSubs().has(id);
   const toggleCollapse = (id: string) => {
-    const next = new Set(collapsedSubs());
+    // only an explicit EXPANSION is recorded; collapsing just drops the override
+    const next = new Set(expandedSubs());
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    setCollapsedSubs(next);
-    localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
+    setExpandedSubs(next);
+    localStorage.setItem("teapot.expandedSubs", JSON.stringify([...next]));
+    // and clear any legacy collapse entry, or the group stays shut with the caret open
+    if (next.has(id) && collapsedSubs().has(id)) {
+      const cleared = new Set(collapsedSubs());
+      cleared.delete(id);
+      setCollapsedSubs(cleared);
+      localStorage.setItem("teapot.collapsed", JSON.stringify([...cleared]));
+    }
   };
   // The tree and grouping rules live in ./sidebar-tree so they can be unit
   // tested without a DOM (happy-dom does no layout). These wrappers only feed
@@ -1501,7 +1535,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const treeRows = createMemo(() =>
     // 👻 toggle: drop ghost sessions (workspace missing on disk) from the
     // sidebar tree entirely — they are noise once you know about them
-    treeRowsOf(agents(), collapsedSubs(), hideGhosts(), chatCollapsed()),
+    treeRowsOf(
+      agents(),
+      // every sub-agent group the operator has NOT explicitly expanded (default: closed)
+      new Set(
+        agents()
+          .filter((a) => subsCollapsed(a.id))
+          .map((a) => a.id),
+      ),
+      hideGhosts(),
+      chatCollapsed(),
+    ),
   );
   /**
    * Toggle a group header.
@@ -3380,9 +3424,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     // So `off` is true if EITHER set says collapsed, and clicking
                     // clears both — otherwise the caret could point open at a
                     // hidden subtree, or clear one key and leave the other.
+                    // a top-level chat's caret hides its CHILD rows too, so it is
+                    // collapsed if either the chat group or its own sub-group says so;
+                    // both default to closed now
                     const off = isChat
-                      ? chatCollapsed().has(`chat:${row.a.id}`) || collapsedSubs().has(row.a.id)
-                      : collapsedSubs().has(row.a.id);
+                      ? chatCollapsed().has(`chat:${row.a.id}`) || subsCollapsed(row.a.id)
+                      : subsCollapsed(row.a.id);
                     return (
                       <span
                         class="caret"
@@ -3401,13 +3448,29 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                           // reload keeps them collapsed; sub-agent collapse is
                           // its own set, as before
                           if (isChat) {
-                            // clear the OTHER set too, or the subtree stays hidden
-                            // while the caret now claims to be open
-                            if (collapsedSubs().has(row.a.id)) {
-                              const next = new Set(collapsedSubs());
+                            // SUB-GROUPS ARE COLLAPSED BY DEFAULT, so `off` is true for a chat
+                            // purely because its sub-group was never expanded. Toggling only the
+                            // ws-group then EXPANDED the group while the caret still read
+                            // closed — the click looked like it did nothing. Clear BOTH sources
+                            // of "off" when opening, and set both when closing.
+                            if (off) {
+                              if (!expandedSubs().has(row.a.id)) {
+                                const next = new Set(expandedSubs());
+                                next.add(row.a.id);
+                                setExpandedSubs(next);
+                                localStorage.setItem("teapot.expandedSubs", JSON.stringify([...next]));
+                              }
+                              if (collapsedSubs().has(row.a.id)) {
+                                const next = new Set(collapsedSubs());
+                                next.delete(row.a.id);
+                                setCollapsedSubs(next);
+                                localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
+                              }
+                            } else if (expandedSubs().has(row.a.id)) {
+                              const next = new Set(expandedSubs());
                               next.delete(row.a.id);
-                              setCollapsedSubs(next);
-                              localStorage.setItem("teapot.collapsed", JSON.stringify([...next]));
+                              setExpandedSubs(next);
+                              localStorage.setItem("teapot.expandedSubs", JSON.stringify([...next]));
                             }
                             toggleWsGroup(`chat:${row.a.id}`, row.a.id, off);
                           } else toggleCollapse(row.a.id);

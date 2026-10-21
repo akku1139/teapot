@@ -2877,6 +2877,21 @@ console.log("deep render ok: feed rows present");
   // THE ASSERTION THE BUG WAS ABOUT: collapsing ONE chat must leave its
   // sibling in the SAME directory visible. Sharing one group (the old
   // behaviour) made this impossible — they collapsed together.
+  //
+  // Sub-agent groups are now COLLAPSED BY DEFAULT, so this starts from an explicit
+  // expansion: a default-collapsed caret that was never clicked would make the
+  // "collapsing hides the child" assertion below pass without exercising anything.
+  caretIn(rowFor("gamma"))?.click();
+  await sleep(200);
+  const expandedGamma = [...w.document.querySelectorAll(".agent-item")]
+    .map((el) => el.textContent.match(/\b(gamma-sub|alpha|beta|gamma)\b/)?.[1])
+    .filter(Boolean);
+  if (!expandedGamma.includes("gamma-sub")) {
+    fail(
+      `precondition: expanding gamma must reveal gamma-sub, got ${JSON.stringify(expandedGamma)} — ` +
+        `without this the collapse check below proves nothing`,
+    );
+  }
   caretIn(rowFor("gamma"))?.click();
   await sleep(200);
   const afterOne = [...w.document.querySelectorAll(".agent-item")]
