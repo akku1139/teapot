@@ -13,6 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { cssRuleBody } from "./helpers/css.ts";
 import {
   applyCustomTheme,
   DEFAULT_PALETTE,
@@ -382,4 +383,31 @@ test("the retry strips ONLY the background, never the palette (#theme)", () => {
   }
   assert.equal(stripped.label, t.label);
   assert.equal(stripped.mode, t.mode);
+});
+
+test("the background-image rule keeps the image behind the app, and has a usable default (#theme)", () => {
+  // The image is painted on `body` as a layer, dimmed by a gradient whose alpha is
+  // `--bg-image-dim`. Two properties make it safe, and both are easy to lose in a refactor:
+  //
+  //   - the dim value has a FALLBACK in `var(--bg-image-dim, …)`. Without one, `color-mix(… calc(
+  //     var(--bg-image-dim) * 100%) …)` is invalid at computed-value time and the WHOLE
+  //     `background-image` declaration is dropped — the theme silently loses its wallpaper;
+  //   - `--bg-image` defaults to `none`, so a theme without an image paints only the dim layer
+  //     rather than inheriting `none` as an invalid url.
+  //
+  // This is a CSS contract, which is the one case where reading the stylesheet is legitimate:
+  // happy-dom does no layout and cannot compute `color-mix`.
+  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+  const body = cssRuleBody(css, "body");
+  assert.ok(body, "app.css must still define the background-image layer on body");
+  assert.match(
+    body,
+    /var\(--bg-image-dim,\s*0?\.\d+\)/,
+    "the dim value needs a fallback, or the declaration is invalid when the custom property is unset",
+  );
+  assert.match(body, /var\(--bg-image,\s*none\)/, "--bg-image must default to none");
+  // `fixed` keeps the photo still while the timeline scrolls over it; without it the image
+  // slides with the content and reads as a moving background
+  assert.match(body, /background-attachment:\s*fixed/);
+  assert.match(body, /background-size:\s*cover/);
 });
