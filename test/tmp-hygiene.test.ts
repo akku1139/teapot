@@ -68,3 +68,46 @@ test("no test creates a temp dir outside the shared root (#tmp)", () => {
       offenders.join("\n"),
   );
 });
+
+/**
+ * A file that creates temp dirs must also REMOVE them.
+ *
+ * MEASURED: `/tmp/teapot-tests` had grown to 2350 directories / 723MB, and the largest single
+ * source was one test file writing ~1000 files per invocation across six tests and never
+ * deleting any of it — 195MB on its own. The shared root makes cleanup POSSIBLE (`pnpm
+ * test:clean` can find everything); nothing made it HAPPEN, so the directory only grew.
+ *
+ * The rule is deliberately about the FILE, not each call site: a `finally`/`after` that removes
+ * the dirs is enough, whatever shape it takes. Threading cleanup through every helper's return
+ * value is more code than it is worth.
+ */
+test("the shared helpers REMOVE what they hand out (#tmp)", () => {
+  /**
+   * MEASURED: `/tmp/teapot-tests` had reached 2350 directories / 723MB and nothing removed them.
+   * The shared root made cleanup *possible* (`pnpm test:clean` could find everything); nothing
+   * made it HAPPEN, so it only grew. One file was writing ~1000 files per invocation and never
+   * deleting them — 195MB on its own.
+   *
+   * The first version of this check asked every test FILE to clean up after itself. That found
+   * 32 offenders, which is the wrong shape of fix: it makes correctness depend on 32 independent
+   * authors remembering. Registering ownership in the helper means one place is responsible, and
+   * a test cannot forget.
+   */
+  const helper = readSource(path.join(here, "helpers", "tmp-root.ts"));
+
+  for (const fn of ["mkdtempInRoot", "mkdtempInRootSync"]) {
+    const at = helper.indexOf(`export ${fn === "mkdtempInRoot" ? "async " : ""}function ${fn}`);
+    assert.ok(at > 0, `precondition: ${fn} exists`);
+    const body = helper.slice(at, helper.indexOf("\n}", at));
+    assert.match(
+      body,
+      /ownDir\(/,
+      `${fn} must REGISTER the directory it creates. Cleanup cannot depend on each of the ~30 ` +
+        `call sites remembering — measured: 32 files did not, and the root grew to 723MB`,
+    );
+  }
+
+  // and the registration must actually remove, on a hook that fires even when a test fails
+  assert.match(helper, /process\.on\("exit"/, "removal must run on process exit, not per test");
+  assert.match(helper, /rmSync\(/, "…and actually delete");
+});

@@ -19,7 +19,7 @@
  *
  * These tests pin what teapot now does about each.
  */
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { cacheControlForRequest, type LlmConfig } from "../src/agent/llm.ts";
@@ -28,6 +28,7 @@ import { readEvents } from "../src/log/events.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
+import { rm } from "node:fs/promises";
 
 const OR: LlmConfig = { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", model: "m" };
 const OTHER: LlmConfig = { baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m" };
@@ -56,6 +57,19 @@ const tc = (id: string, name: string, args: unknown) => ({
   id,
   type: "function" as const,
   function: { name, arguments: JSON.stringify(args) },
+});
+
+/**
+ * Every workspace/session dir this file created, removed once the file's tests finish.
+ *
+ * `after` rather than per-test `finally` because the helper is shared by six tests and threading
+ * the paths back through each of them adds noise for no benefit — the file's lifetime is the
+ * right scope for cleanup.
+ */
+const madeDirs: string[] = [];
+after(async () => {
+  for (const d of madeDirs) await rm(d, { recursive: true, force: true }).catch(() => {});
+  madeDirs.length = 0;
 });
 
 /** an agent whose chatFn answers, and records whether the summarizer was called */
@@ -97,6 +111,15 @@ async function compactingAgent(opts: {
     agent.start("t");
     await agent.settled();
   }
+  /**
+   * Register the directories for removal when this test file finishes.
+   *
+   * MEASURED: this helper writes ~1000 files per invocation and its six tests each called it,
+   * leaving 40 directories of ~6.4MB in `/tmp/teapot-tests` — 195MB, the single largest source
+   * of litter. `dispose()` closes the log; it does not delete the workspace, and nothing else
+   * did either.
+   */
+  madeDirs.push(ws, sd);
   return { agent, summaries: () => summaries };
 }
 
@@ -156,6 +179,7 @@ test("the previous notes are in the summarizer's INPUT, not just its instruction
   // update and the section would silently become a fresh summary.
   const ws = mkdtempInRootSync("cu-");
   const sd = mkdtempInRootSync("cus-");
+  madeDirs.push(ws, sd);
   let sawPriorNotes = false;
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
@@ -204,6 +228,7 @@ test("dropping history tells the model, so a gap is not mistaken for a fact", as
   // mid-way and cannot tell "I forgot" from "this never happened".
   const ws = mkdtempInRootSync("ct-");
   const sd = mkdtempInRootSync("cts-");
+  madeDirs.push(ws, sd);
   let n = 0;
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
     if (isSummarizerRequest(messages)) throw new Error("summarizer down — force the truncate path");

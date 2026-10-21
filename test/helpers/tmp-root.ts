@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm, readdir, stat } from "node:fs/promises";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -24,6 +24,37 @@ import path from "node:path";
  *   const dir  = await mkdtemp(path.join(root, prefix));
  */
 
+/**
+ * Directories handed out by the helpers, removed when the process exits.
+ *
+ * MEASURED before this: a full suite run left 2350 directories / 723MB in `/tmp/teapot-tests`
+ * and NOTHING removed them — the shared root only made cleanup *possible*. The single largest
+ * source was one file writing ~1000 files per invocation and never deleting them (195MB).
+ *
+ * Registering here rather than in each test is the difference between "every test must remember"
+ * and "the helper owns it". A test that needs its dirs to outlive the process can pass
+ * `{ keep: true }`.
+ *
+ * Removal runs on `exit`, which fires however the process ends, so a failing assertion does not
+ * leak either. `pnpm test:clean` remains for the case where the process is SIGKILLed.
+ */
+const ownedDirs = new Set<string>();
+let exitHookInstalled = false;
+function ownDir(dir: string): void {
+  ownedDirs.add(dir);
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.on("exit", () => {
+    for (const d of ownedDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        /* best effort: an exit hook cannot await, and a failure here must not mask a result */
+      }
+    }
+  });
+}
+
 /** the shared parent of every test artifact */
 export function testTmpRoot(): string {
   return process.env.TEAPOT_TEST_TMP || path.join(tmpdir(), "teapot-tests");
@@ -38,14 +69,18 @@ export function testTmpRoot(): string {
 export async function mkdtempInRoot(prefix: string): Promise<string> {
   const root = testTmpRoot();
   await mkdir(root, { recursive: true });
-  return mkdtemp(path.join(root, prefix));
+  const dir = await mkdtemp(path.join(root, prefix));
+  ownDir(dir);
+  return dir;
 }
 
 /** the same, synchronously — for module-level fixtures in tests that cannot await */
 export function mkdtempInRootSync(prefix: string): string {
   const root = testTmpRoot();
   mkdirSync(root, { recursive: true });
-  return mkdtempSync(path.join(root, prefix));
+  const dir = mkdtempSync(path.join(root, prefix));
+  ownDir(dir);
+  return dir;
 }
 
 /**
