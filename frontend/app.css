@@ -539,12 +539,13 @@ body {
  *     scrollbar jump around as rows come into view.
  *   - `140px` is only the initial guess for rows never yet rendered.
  *
- * Note what this does NOT solve: Chromium reports no layout shift for a
- * content-visibility unskip, so a regression in our own scroll anchoring would be invisible
- * to CLS metrics. That is why the anchoring behaviour has its own tests rather than relying
- * on a metric to catch it. (The flag that suppresses it is
- * `anchor_is_cv_auto_without_layout_` in Blink's `scroll_anchor.h`; see
- * `docs/firefox-scroll-defects.md`.)
+ * Note what this does NOT solve: Chromium deliberately does not COUNT an unskip as a layout
+ * shift in CLS (`crbug 1151526`, fixed M88 — it stopped charging pages for a UA-chosen
+ * optimisation; the shift itself still happens), so a regression in our own scroll anchoring
+ * would be invisible to CLS metrics. That is why the anchoring behaviour has its own tests
+ * rather than relying on a metric to catch it. The scroll compensation is separate code again:
+ * `anchor_is_cv_auto_without_layout_` in Blink's `scroll_anchor.h`. See
+ * `docs/firefox-scroll-defects.md`.
  *
  * ## Firefox shifts the viewport when a row unskips, and we compensate in script
  *

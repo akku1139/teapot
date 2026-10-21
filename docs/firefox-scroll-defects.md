@@ -96,8 +96,19 @@ viewport, then laid out for real.
 MDN is explicit that a mismatch between placeholder and real size "might force a new layout".
 When the unskipped row is **above** the reader, everything below shifts.
 
-- **Chromium deliberately compensates, and the source proves it.** This is not inference: Blink
-  carries a dedicated flag for exactly this case in
+Blink's own account of the mechanism, from the issue that fixed the related CLS reporting
+(`crbug 1151526`, comment 11), is worth quoting because it names the ordering that makes this
+observable at all:
+
+> The bug has to do with the way we do a double-layout to show `content-visibility:auto`
+> elements that intersect the screen. […] For each `content-visibility:auto` element that is
+> found to be on-screen, mark its subtree as not-skipped. Re-run style and layout if any element
+> subtrees were marked as not-skipped. **Step 4 causes a layout shift at present, and in general
+> can require two paints.**
+
+That is the shift Gecko does not compensate for.
+
+- **Chromium absorbs it, and the source proves it.** Blink carries a dedicated flag in
   `third_party/blink/renderer/core/layout/scroll_anchor.h`:
 
   ```cpp
@@ -136,10 +147,47 @@ When the unskipped row is **above** the reader, everything below shifts.
   Firefox-only, and it is why the workaround belongs in our code: we are reproducing a
   deliberate engine behaviour that only one engine implements.
 
-  (The `crbug 40733057` reference in `frontend/app.css` — "no layout shift for an unskip" — could
-  not be re-verified when this was written, because both Google issue trackers require
-  authentication. It is consistent with the code above and is left in place, but the code is the
-  evidence, not the bug number.)
+#### What `crbug 1151526` / `40733057` actually says — and what it does NOT
+
+This needed correcting, because it is easy to read the bug number as proof of something it does
+not say.
+
+**What it says.** The bug was about **CLS *reporting***, not about scroll position. Title:
+"Using content-visibility results in layout shifts that aren't reported without it" — filed
+because a page *without* `content-visibility` reported no layout shift while the same page
+*with* it reported one for an off-screen paragraph. Fixed in Nov–Dec 2020 by Chris Harrelson
+(`bcff0ea`, `c5191c8b`), landed M88:
+
+> `content-visibility:auto` elements have different sizing behavior when near the viewport vs
+> not. This sizing behavior is an intentional part of the platform, and should not be considered
+> a layout shift. […] The rationale for this change is that `content-visibility` is a
+> UA-controlled best practice, and it is mostly up to the UA to avoid layout shifts when using
+> this feature.
+
+**What it does NOT say.** The word *scroll* does not appear in it. It is about the **layout
+shift metric** — whether a shift is *counted and reported*. So:
+
+- It is **not** evidence that Chromium preserves the scroll position across an unskip. The flag
+  in `scroll_anchor.cc` above is that evidence, and it is separate code.
+- The fix explicitly **removed shifts from the CLS metric**, which means a real shift still
+  occurs in Blink. It is deliberately not counted, not prevented.
+
+That distinction matters for the original citation in `frontend/app.css`, which said "by design
+since M88" as though M88 made unskips shift-free. What M88 did was stop *charging* pages for
+them. The shift is real; Blink compensates for it in the scroll-anchoring path (so users do not
+see it) and excludes it from CLS (so authors are not punished for a UA-chosen optimisation).
+
+It also explains the reporting asymmetry that started this investigation: in Chromium the shift
+is both compensated *and* uncounted, so nothing observable happens; in Gecko it is neither.
+
+Also note the fix's own caveat, which is still true:
+
+> there will still be layout shifts reported for elements adjacent to (but not descendants of)
+> `content-visibility:auto` elements if the `content-visibility:auto` element resizes and causes
+> a shift.
+
+In teapot the rows below an unskipped row are exactly such adjacent elements — which is the
+drift.
 
 - **Gecko has no equivalent, verified by reading its side.** MEASURED against
   `mozilla-firefox/firefox` @ `main`:
@@ -287,9 +335,11 @@ Specification and vendor documentation:
 Bug trackers:
 
 - Bugzilla 1940025, 1908582, 1660384 — the open Gecko gaps.
-- `crbug 40733057` — cited in `frontend/app.css`. **Could not be re-verified**: both
-  `issuetracker.google.com` and `bugs.chromium.org` require authentication. Left as a pointer
-  only; the Blink source above is the evidence.
+- `crbug 1151526` / `40733057` — "Using content-visibility results in layout shifts that aren't
+  reported without it". **Verified**: the operator supplied the full issue text. It is about the
+  **CLS metric**, not scroll position — fixed in M88 by `bcff0ea` / `c5191c8b`, which *stopped
+  counting* the shift rather than preventing it. The scroll compensation is separate code, cited
+  above. Do not use this bug as evidence about scroll behaviour.
 
 Test coverage: WPT `css/css-scroll-anchoring/` (93 tests) contains exactly one `content-visibility`
 test and it covers `: hidden`, not `: auto` unskip — which is why no shared test forces either
