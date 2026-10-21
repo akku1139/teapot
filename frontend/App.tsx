@@ -3218,6 +3218,65 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const act = (path: string) =>
     () => selected() && api(`/api/agents/${selected()}${path}`, { method: "POST" }).then(refreshAgents);
 
+  /**
+   * Archive this agent and its subtree.
+   *
+   * Lifted out of the right panel's `⏯ controls` block so the HEADER can own it (#panel):
+   * those controls were only reachable with the details panel open, so pausing or archiving
+   * the agent you were reading required opening a second surface first.
+   */
+  const archiveSelected = async () => {
+    const id = selected();
+    if (!id) return;
+    // The whole SUBTREE goes too: a sub-agent cannot run once its parent is archived (the
+    // parent is what spawns and messages it), so leaving the descendants in the list produced
+    // entries that looked usable and were not.
+    const doomed = new Set([id, ...descendantsOf(agents(), id).map((a) => a.id)]);
+    const subs = doomed.size - 1;
+    if (
+      !confirm(
+        `archive agent ${id}?\n\n` +
+          (subs > 0 ? `Its ${subs} sub-agent${subs === 1 ? "" : "s"} will be archived too.\n\n` : "") +
+          "They stop running and leave the list, but the config and full session history are " +
+          "KEPT — restore any of them from ⚙ settings → archive.",
+      )
+    )
+      return;
+    await api(`/api/agents/${id}/archive`, { method: "POST" }).catch(() => {});
+    setAgents(agents().filter((a) => !doomed.has(a.id)));
+    // the agent is gone, so its session is too — drop the cached index or the UI keeps
+    // routing to a session that no longer exists (#39)
+    void refreshSessionIndex(true);
+    // Switch to a USABLE neighbour. `rest[0]` was picked blindly, and the first remaining row
+    // can be a 👻 ghost (workspace gone) — landing the operator on a dead session right after
+    // they tidied up is the opposite of what archiving is for.
+    const next = pickAfterArchive(agents(), doomed);
+    if (next) select(next.id);
+    else {
+      setSelected(null);
+      setEvents([]);
+    }
+  };
+
+  /** stop every sub-agent this agent spawned (descendants included) */
+  const stopChildren = async () => {
+    if (!selected()) return;
+    const r = await api(`/api/agents/${selected()}/stop-children`, { method: "POST" });
+    flashHint(`stopped: ${((r as any).stopped ?? []).join(", ") || "(none)"}`);
+    refreshAgents();
+  };
+
+  /** fork: branch off the conversation here without disturbing the main line */
+  const forkSelected = () =>
+    api(`/api/agents/${sel()!.id}/fork`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async () => {
+      await refreshSessionIndex(true);
+      await select(sel()!.id);
+    });
+
   // Goal input as SIGNALS (not uncontrolled DOM): the right panel re-renders
   // on every agent snapshot, and status flips / <Show> boundary crossings
   // rebuilt the form subtree — silently wiping half-typed goals mid-input.
@@ -3720,7 +3779,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 {isSelLive() ? "■" : "▶"}
               </button>
               <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
-              <IconBtn icon="▤" title="toggle details panel (d)" onClick={toggleRight} />
+              {/* ⏯ CONTROLS, moved out of the right panel (#panel). The panel was mostly a
+                  wall of reference numbers, and the controls an operator actually reaches for
+                  were buried at the top of it — behind opening the panel at all. A control
+                  belongs next to the thing it controls, and this header already names the
+                  agent, so start/stop, fork, stop-subs and archive live here.
+                  OpenCode's session header does the same: a ghost icon button with
+                  `aria-expanded` for the panel, and the actions beside it. */}
+              <IconBtn icon="⑂" title="fork: branch off the conversation here — try things without disturbing the main line" onClick={forkSelected} />
+              <Show when={agents().some((a) => a.parent === selected())}>
+                <IconBtn icon="⏹" title="stop every sub-agent this agent spawned (descendants included)" onClick={stopChildren} />
+              </Show>
+              <IconBtn icon="🗄" title="archive this agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)" onClick={archiveSelected} />
+              {/* the panel toggle advertises its STATE, not just its action: `active` fills
+                  it when the panel is open, so the button answers "is it showing?" without a
+                  click. `aria-expanded` says the same thing to a screen reader. */}
+              <IconBtn icon="▤" title="toggle details panel (d)" active={showRight()} onClick={toggleRight} />
             </span>
           </header>
 
@@ -4254,17 +4328,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         <Show when={sel()?.id} keyed fallback={null}>
           {(_aid) => (
           <>
-          {/* 🎛 session is REFERENCE (storage paths, ids) — folded by default so the two
-              sections an operator works in (🎯 goal, ✅ todo) are the ones in view. The
-              heading stays visible, which is what makes it findable. */}
-          <details class="rbsec">
-            <summary title="identity + storage locations for this agent">🎛 session</summary>
-            <div class="card sesscard">
-              <div class="sessrow"><span class="k">agent</span><b>{sel()!.id}</b><span class={`badge ${sel()!.status}`}>{sel()!.status}</span></div>
-              <div class="sessrow"><span class="k">workspace</span><span class="mono ellip" title={sel()!.workspace}>{sel()!.workspace}</span></div>
-              <div class="sessrow"><span class="k">session</span><span class="mono">{sel()!.session}/{sel()!.branch}</span></div>
-            </div>
-          </details>
+          {/* 🎛 session used to be a CARD here: agent / workspace / session+branch.
+              Every one of those was already on screen — the header shows the agent, its
+              status, the model and session/branch, and the file tree below is rooted at the
+              workspace. Folding it would have hidden the duplication rather than removed it
+              (#panel), so the card is gone and the workspace path moved onto the header
+              title as a tooltip: the one fact it added, at zero cost in width. */}
 
           {/* keyed by agent id: Solid re-runs the JSX expression on every
               snapshot update, but <Show keyed> + primitive props keep the
@@ -4385,86 +4454,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </Show>
           </div>
 
-          <h3>⏯ controls</h3>
-          <div class="btnrow">
-            {/* ONE persistent button: swapping ▶ start / ■ stop via <Show> destroyed
-                and recreated the node on every idle→running transition, which
-                visibly reflowed the panel (width jump + row wrap). Toggling
-                class/text keeps the same element, so layout never moves. */}
-            <button
-              class={isSelLive() ? "danger" : "runbtn"}
-              title={
-                isSelLive()
-                  ? "interrupt: aborts the current LLM call; the running tool finishes first"
-                  : "run toward the goal (starts the loop)"
-              }
-              // #59: key off the server's `live` flag, not `status`. A parked
-              // tool (wait_children) and queued prompts both read "idle" while
-              // the agent is very much alive, so the old check offered START on
-              // a working agent and the user could not stop it.
-              //
-              // The `() =>` wrapper is the WHOLE POINT, not a style choice: a bare
-              // expression in `onclick={…}` is evaluated ONCE, when the element is
-              // created, so the handler froze to whichever action was right at that
-              // moment. Solid DOES re-evaluate the label and `class` (they are
-              // tracked reads), so the button could read "▶ start" while its frozen
-              // handler still posted `/stop`:
-              //
-              //     label="■ stop"  ->  click  ->  POST /start   (measured)
-              //
-              // Reported as "stop した後に start が機能しない": stopping while the
-              // agent ran froze the handler to `/stop`, and every press afterwards
-              // re-sent a stop — so the agent never restarted.
-              onclick={() => (isSelLive() ? act("/stop") : act("/start"))()}
-            >{isSelLive() ? "■ stop" : "▶ start"}</button>
-            <button
-              title="branch off the conversation here — try things without disturbing the main line"
-              onclick={() => api(`/api/agents/${sel()!.id}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then(async () => { await refreshSessionIndex(true); await select(sel()!.id); })}
-            >⑂ fork</button>
-            <button onclick={async () => {
-              const id = selected();
-              if (!id) return;
-              // The whole SUBTREE goes too: a sub-agent cannot run once its parent is
-              // archived (the parent is what spawns and messages it), so leaving the
-              // descendants in the list produced entries that looked usable and were not.
-              const doomed = new Set([id, ...descendantsOf(agents(), id).map((a) => a.id)]);
-              const subs = doomed.size - 1;
-              if (
-                !confirm(
-                  `archive agent ${id}?\n\n` +
-                    (subs > 0 ? `Its ${subs} sub-agent${subs === 1 ? "" : "s"} will be archived too.\n\n` : "") +
-                    "They stop running and leave the list, but the config and full session history are " +
-                    "KEPT — restore any of them from ⚙ settings → archive.",
-                )
-              )
-                return;
-              await api(`/api/agents/${id}/archive`, { method: "POST" }).catch(() => {});
-              const rest = agents().filter((a) => !doomed.has(a.id));
-              setAgents(rest);
-              // the agent is gone, so its session is too — drop the cached
-              // index or the UI keeps routing to a session that no longer
-              // exists (#39)
-              void refreshSessionIndex(true);
-              // Switch to a USABLE neighbour. `rest[0]` was picked blindly, and the
-              // first remaining row can be a 👻 ghost (workspace gone) — landing the
-              // operator on a dead session right after they tidied up is the opposite
-              // of what archiving is for.
-              const next = pickAfterArchive(agents(), doomed);
-              if (next) select(next.id);
-              else { setSelected(null); setEvents([]); }
-              }} title="archive agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)">🗄 archive</button>
-              <Show when={agents().some((a) => a.parent === selected())}>
-                <button
-                  onclick={async () => {
-                    if (!selected()) return;
-                    const r = await api(`/api/agents/${selected()}/stop-children`, { method: "POST" });
-                    flashHint(`stopped: ${((r as any).stopped ?? []).join(", ") || "(none)"}`);
-                    refreshAgents();
-                  }}
-                  title="stop every sub-agent this agent spawned (descendants included)"
-                >⏹ subs</button>
-              </Show>
-          </div>
+          {/* ⏯ CONTROLS MOVED TO THE HEADER (#panel).
+              start/stop, fork, stop-subs and archive used to live here, which meant the
+              operator had to open the details panel to pause the agent they were reading.
+              A control belongs next to the thing it controls, and the header already names
+              the agent. What remains here is a SETTING rather than a control: auto-continue
+              describes how the loop behaves, so it sits with the goal it loops for. */}
           <div class="ctrlrow">
             <label
               title="auto-continue fires after a round ONLY when all hold: ① this toggle is on ② a goal is set and its status is 'active' ③ the round ended cleanly (no error / not stopped). It stops when the goal is marked done, or if you press ■ stop. Sending any prompt also starts an idle agent regardless."
@@ -4802,10 +4797,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </Show>
           </div>
 
-          <details class="rbsec">
-            {/* the explanation lives BELOW the summary: a click anywhere inside <summary>
-                toggles the section, so an interactive/explaining node there would swallow it */}
-            <summary>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span></summary>
+          {/* 🌿 branches stays OPEN: each row FILTERS the feed, so it is an active control,
+              not reference data. Folding it was the "hiding instead of shaping" mistake — a
+              filter you cannot see is a filter you forget exists. */}
+          <h3>🌿 branches <span class="muted" style="text-transform:none;letter-spacing:0">· click to filter the feed</span>
             {/* Say what the filter actually does. A fork INHERITS everything
                 before its fork point, and that history is now included, so the
                 view matches the context the agent actually reasons over. Say
@@ -4816,6 +4811,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 showing <b>{branchFilter()}</b> and the history it inherited before forking
               </div>
             </Show>
+          </h3>
           <For each={branches()}>
             {(b) => (
               <div
@@ -4847,8 +4843,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               </div>
             )}
           </For>
-          </details>
 
+          {/* ⏰ schedule is the one section where folding earns its place: it lists cron
+              tasks for ALL agents, so it is unrelated to the agent being viewed. */}
           <details class="rbsec">
             <summary>⏰ schedule <span class="muted" style="text-transform:none;letter-spacing:0">· cron tasks, all agents · edit in settings</span></summary>
           <Show

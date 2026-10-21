@@ -1483,21 +1483,28 @@ console.log("deep render ok: feed rows present");
       console.error("#59 check: no app socket to drive");
       process.exit(1);
     }
-    const toggle = () => [...w.document.querySelectorAll("button")].find((b) => /start|stop/.test(b.textContent ?? ""));
+    // The ▶/■ toggle lives in the channel header now (#panel) and shows a GLYPH rather than
+    // the words "start"/"stop", so find it by its class. What the check is about is unchanged:
+    // the handler must be chosen at CLICK time, not at element-creation time.
+    const toggle = () => w.document.querySelector(".chan-head .runbtn");
+    const readsStop = (b: Element | null) => !!b && b.classList.contains("danger");
 
     // live agent -> the button must offer stop AND send /stop
     sockT.onmessage({ data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "running", live: true } }) });
     await new Promise((r) => setTimeout(r, 300));
     const stopBtn = toggle();
-    if (!stopBtn || !/stop/.test(stopBtn.textContent ?? "")) {
-      console.error(`#59 check could not reach the stop state — got ${JSON.stringify(stopBtn?.textContent)}`);
+    if (!stopBtn || !readsStop(stopBtn)) {
+      console.error(
+        `#59 check could not reach the stop state — got class=${JSON.stringify(stopBtn?.className)} ` +
+          `(expected the header ▶/■ toggle to be in its danger state)`,
+      );
       process.exit(1);
     }
     stopBtn.click();
     await new Promise((r) => setTimeout(r, 300));
     if (posted.at(-1) !== "/stop") {
       console.error(
-        `#59 REGRESSION: a button reading "■ stop" posted ${JSON.stringify(posted.at(-1))} — the click handler is frozen at element creation`,
+        `#59 REGRESSION: a button showing ■ (danger) posted ${JSON.stringify(posted.at(-1))} — the click handler is frozen at element creation`,
       );
       process.exit(1);
     }
@@ -1506,8 +1513,10 @@ console.log("deep render ok: feed rows present");
     sockT.onmessage({ data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "stopped", live: false } }) });
     await new Promise((r) => setTimeout(r, 300));
     const startBtn = toggle();
-    if (!startBtn || !/start/.test(startBtn.textContent ?? "")) {
-      console.error(`#59 check could not reach the start state — got ${JSON.stringify(startBtn?.textContent)}`);
+    if (!startBtn || readsStop(startBtn)) {
+      console.error(
+        `#59 check could not reach the start state — got class=${JSON.stringify(startBtn?.className)}`,
+      );
       process.exit(1);
     }
     startBtn.click();
@@ -1519,6 +1528,60 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: the start/stop toggle sends what its label says (#59)");
+  }
+
+  /* ---------- the agent's controls are reachable WITHOUT opening the panel ----------
+   * Reported: "右パネルの機能をいろいろ折りたたみにしたのが微妙 / 折りたたむことで隠してるだけ".
+   * The panel used to hold start/stop, fork, stop-subs and archive under a `⏯ controls`
+   * heading, so pausing the agent you were reading meant opening the details panel first.
+   *
+   * They live in the channel header now (#panel). This asserts the move actually happened:
+   * the buttons must exist with the panel CLOSED, in the header, and the panel must not still
+   * be carrying its own copy (two controls for one action is worse than one in the wrong
+   * place).
+   */
+  {
+    const header = w.document.querySelector(".chan-head");
+    if (!header) {
+      console.error("#panel check: no .chan-head to inspect");
+      process.exit(1);
+    }
+    // the panel must be CLOSED for this to prove anything about reachability
+    const panelOpen = !w.document.querySelector(".layout.right-hidden") &&
+      !!w.document.querySelector(".rightbar");
+    const actions = [...header.querySelectorAll("button")];
+    const titles = actions.map((b) => b.getAttribute("title") ?? "");
+    const has = (re: RegExp) => titles.some((t) => re.test(t));
+    if (!has(/fork/i)) {
+      console.error(`#panel REGRESSION: no fork button in the channel header — titles: ${JSON.stringify(titles)}`);
+      process.exit(1);
+    }
+    if (!has(/archive/i)) {
+      console.error(`#panel REGRESSION: no archive button in the channel header — titles: ${JSON.stringify(titles)}`);
+      process.exit(1);
+    }
+    // the ▶/■ toggle is checked by #59 above; what matters here is that it is IN the header
+    if (!header.querySelector(".runbtn")) {
+      console.error("#panel REGRESSION: the start/stop toggle is not in the channel header");
+      process.exit(1);
+    }
+    // …and the panel must not still offer its own copy
+    const panel = w.document.querySelector(".rightbar");
+    if (panel) {
+      const panelBtns = [...panel.querySelectorAll("button")].map((b) => b.getAttribute("title") ?? "");
+      const dup = panelBtns.filter((t) => /fork|archive|stop every sub-agent/i.test(t));
+      if (dup.length > 0) {
+        console.error(
+          `#panel REGRESSION: the details panel still carries controls that moved to the ` +
+            `header — ${JSON.stringify(dup)}. Two places for one action is worse than one in ` +
+            `the wrong place.`,
+        );
+        process.exit(1);
+      }
+    }
+    console.log(
+      `deep render ok: fork / stop-subs / archive / start-stop are in the header, not behind the panel (#panel, panelOpen=${panelOpen})`,
+    );
   }
 
   /* ---------- #170: a provider can hold SEVERAL keys ------------------------
