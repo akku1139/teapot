@@ -159,6 +159,32 @@
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg-dark); color: var(--fg); font-size: var(--text-md); }
 
+/* ---- background image (custom themes) ----
+ *
+ * A custom theme may carry a background image. It is painted on `body` as an extra LAYER
+ * behind the app surfaces, then dimmed by a `linear-gradient` overlay whose alpha comes from
+ * `--bg-image-dim`.
+ *
+ * Two decisions worth keeping:
+ *   - the overlay is a GRADIENT rather than a separate element, so nothing is added to the
+ *     DOM and no element can swallow a click;
+ *   - the app's own surfaces (`--bg-dark`, `--bg-darkest`) stay opaque on top, so the image
+ *     shows through the gaps and behind the feed rather than behind text. Without that, a
+ *     busy photo makes every message unreadable and the cure is worse than the plain theme.
+ */
+body {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--bg-dark) calc(var(--bg-image-dim, 0.55) * 100%), transparent),
+      color-mix(in srgb, var(--bg-dark) calc(var(--bg-image-dim, 0.55) * 100%), transparent)
+    ),
+    var(--bg-image, none);
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
 .layout {
   display: grid;
   /* The details panel gets a MINIMUM, and the chat takes everything else.
@@ -234,6 +260,50 @@ body { background: var(--bg-dark); color: var(--fg); font-size: var(--text-md); 
 .themebtn:hover { filter: brightness(1.15); }
 .themebtn.on { border-color: var(--acc); }
 .swdots { display: inline-flex; gap: var(--space-1); flex-shrink: 0; }
+
+/* ---- custom theme editor ----
+ *
+ * The palette is 14 rows, which is far too many for a plain vertical list inside a settings
+ * panel — it would push the background picker off the bottom. A two-column grid keeps the
+ * whole palette visible at once, so the operator can compare colours while editing rather than
+ * scrolling between them.
+ */
+.themeeditor { margin-top: var(--space-5); }
+.cfgsub {
+  font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em;
+  color: var(--dim); margin: var(--space-5) 0 var(--space-3);
+  font-weight: 600;
+}
+.paletterows {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-3) 0;
+}
+.paletterow {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-xs); min-width: 0;
+}
+/* the swatch is the control: a native colour input, sized so it can actually be hit */
+.paletterow input[type="color"] {
+  width: 26px; height: 22px; padding: 0; border: 1px solid var(--line);
+  border-radius: var(--radius-sm); background: none; cursor: pointer; flex-shrink: 0;
+}
+.paletterow-label { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paletterow-hex {
+  width: 8.5em; flex-shrink: 0;
+  background: var(--bg-darkest); border: 1px solid var(--line); color: var(--fg);
+  border-radius: var(--radius-sm); padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+}
+.paletterow-hex:focus { border-color: var(--acc); outline: none; }
+/* the chosen image: shown small, because it is a REFERENCE for the dim slider — the real
+   preview is the app behind the dialog */
+.bgpreview { margin-top: var(--space-3); }
+.bgpreview img {
+  max-width: 100%; max-height: 120px; object-fit: cover;
+  border-radius: var(--radius-md); border: 1px solid var(--line); display: block;
+}
+.bgpreview .btnrow { margin-top: var(--space-2); align-items: center; }
 .swdots i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-shadow: inset 0 0 0 1px #0004; }
 .agent-list { flex: 1; overflow-y: auto; min-height: 0; min-width: 0; }
 /* workspace header: which project the chats below belong to (#18). The sidebar

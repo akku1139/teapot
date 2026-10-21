@@ -1,0 +1,263 @@
+/**
+ * Custom themes: validation, application, and the background-image contract.
+ *
+ * A custom theme is the first thing in the app that is **operator-authored and persisted**, so
+ * the risk is different from the rest of the UI: `localStorage` can hold a half-written value,
+ * a theme from a future version, or something edited by hand. A palette that reached
+ * `style.setProperty` with a missing field would leave the UI with transparent panels — a
+ * broken app, not a broken theme — so every field is validated before use.
+ *
+ * These are unit tests of that logic. The EDITOR's UI lives in App.tsx and is covered by the
+ * bundle smoke path; what matters here is that no input can produce a half-applied palette.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  applyCustomTheme,
+  DEFAULT_PALETTE,
+  loadCustomThemes,
+  MAX_BACKGROUND_BYTES,
+  newThemeId,
+  normalizeColour,
+  PALETTE_KEYS,
+  sanitizeTheme,
+  saveCustomThemes,
+  type CustomTheme,
+} from "../frontend/theme-store.ts";
+
+const palette = () => ({ ...DEFAULT_PALETTE });
+const theme = (over: Partial<CustomTheme> = {}): CustomTheme => ({
+  id: "custom-1",
+  label: "mine",
+  mode: "dark",
+  palette: palette(),
+  ...over,
+});
+
+/** a fake `<html>`: records what a theme wrote, and what it cleared */
+function fakeRoot() {
+  const props = new Map<string, string>();
+  return {
+    style: {
+      setProperty: (k: string, v: string) => props.set(k, v),
+      removeProperty: (k: string) => props.delete(k),
+      getPropertyValue: (k: string) => props.get(k) ?? "",
+    },
+    props,
+  } as unknown as HTMLElement & { props: Map<string, string> };
+}
+
+/** a fake localStorage, so the tests do not depend on a DOM */
+function withStorage(fn: () => void, opts: { failWrite?: boolean } = {}) {
+  const store = new Map<string, string>();
+  const g = globalThis as unknown as { localStorage?: unknown };
+  const prev = g.localStorage;
+  g.localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      if (opts.failWrite) {
+        const err = new Error("quota") as Error & { name: string };
+        err.name = "QuotaExceededError";
+        throw err;
+      }
+      store.set(k, v);
+    },
+    removeItem: (k: string) => store.delete(k),
+  };
+  try {
+    fn();
+  } finally {
+    g.localStorage = prev;
+  }
+}
+
+/* ---------- validation ---------- */
+
+test("every palette key app.css relies on is covered by the token table (#theme)", () => {
+  // PRECONDITION for everything below: if the table missed a variable, a custom theme would
+  // silently leave that one at the preset's value and the UI would be half one theme and half
+  // another — the exact failure the sanitizer exists to prevent.
+  const vars = PALETTE_KEYS.map((k) => k.cssVar);
+  assert.deepEqual(
+    [...vars].sort(),
+    [
+      "--acc", "--bg-dark", "--bg-darkest", "--bg-light", "--bg-mid", "--dim", "--err",
+      "--fg", "--line", "--ok", "--term-bg", "--term-fg", "--tool", "--warn",
+    ].sort(),
+    "the palette must define exactly the variables the themes in app.css define",
+  );
+  for (const k of PALETTE_KEYS) {
+    assert.equal(typeof DEFAULT_PALETTE[k.key], "string", `${k.key} must have a default`);
+  }
+});
+
+test("a valid theme round-trips (#theme)", () => {
+  const t = sanitizeTheme(theme({ backgroundImage: "data:image/png;base64,AAA", backgroundDim: 0.4 }));
+  assert.ok(t, "a well-formed theme must survive");
+  assert.equal(t!.id, "custom-1");
+  assert.equal(t!.palette.acc, DEFAULT_PALETTE.acc);
+  assert.equal(t!.backgroundDim, 0.4);
+});
+
+test("a theme missing ANY palette field is rejected, not partially applied (#theme)", () => {
+  for (const { key } of PALETTE_KEYS) {
+    const broken = palette() as Record<string, string>;
+    delete broken[key];
+    assert.equal(
+      sanitizeTheme(theme({ palette: broken as never })),
+      null,
+      `dropping ${key} must reject the whole theme — applying it would leave one surface at ` +
+        `the preset's colour and the app looking broken`,
+    );
+  }
+});
+
+test("a colour that could break out of a declaration is rejected (#theme)", () => {
+  // the value goes straight into style.setProperty, so a `;` or `}` could inject another
+  // declaration. Nothing in the UI can produce one, but localStorage is hand-editable.
+  for (const bad of ["red; background: url(x)", "#fff}", "", "x".repeat(100)]) {
+    assert.equal(
+      sanitizeTheme(theme({ palette: { ...palette(), acc: bad } })),
+      null,
+      `${JSON.stringify(bad.slice(0, 20))} must be rejected as a colour`,
+    );
+  }
+});
+
+test("a bad id, label, or mode is rejected (#theme)", () => {
+  assert.equal(sanitizeTheme(theme({ id: "" })), null);
+  assert.equal(sanitizeTheme(theme({ id: "../evil" })), null, "the id becomes a data-theme value");
+  assert.equal(sanitizeTheme(theme({ label: "  " })), null);
+  assert.equal(sanitizeTheme(theme({ mode: "auto" as never })), null);
+  assert.equal(sanitizeTheme(null), null);
+  assert.equal(sanitizeTheme("nope"), null);
+});
+
+test("only a data: or http(s) background image is accepted (#theme)", () => {
+  // `url(javascript:…)` cannot execute in CSS in any current browser, but the same field also
+  // ends up in an <img src> preview, where it could. The picker only ever produces these two
+  // shapes, so anything else is refused rather than reasoned about.
+  for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "url(x)", "//evil.example/x.png"]) {
+    assert.equal(
+      sanitizeTheme(theme({ backgroundImage: bad }))?.backgroundImage,
+      undefined,
+      `${bad} must not be stored as a background image`,
+    );
+  }
+  assert.ok(sanitizeTheme(theme({ backgroundImage: "https://example.com/a.png" }))?.backgroundImage);
+  assert.ok(sanitizeTheme(theme({ backgroundImage: "data:image/png;base64,AA" }))?.backgroundImage);
+});
+
+test("an oversized background is dropped rather than stored (#theme)", () => {
+  const huge = `data:image/png;base64,${"A".repeat(MAX_BACKGROUND_BYTES + 10)}`;
+  assert.equal(
+    sanitizeTheme(theme({ backgroundImage: huge }))?.backgroundImage,
+    undefined,
+    "a value too large to be the one that was picked must not be stored — it would fail to " +
+      "save later and look like the theme was lost",
+  );
+});
+
+test("backgroundDim is clamped into a usable range (#theme)", () => {
+  // 0 = the image undimmed (unreadable text), >1 = the image invisible
+  assert.equal(sanitizeTheme(theme({ backgroundDim: -5 }))?.backgroundDim, 0);
+  assert.equal(sanitizeTheme(theme({ backgroundDim: 99 }))?.backgroundDim, 0.9);
+});
+
+/* ---------- storage ---------- */
+
+test("one corrupt entry does not lose the other stored themes (#theme)", () => {
+  withStorage(() => {
+    localStorage.setItem(
+      "teapot.customThemes",
+      JSON.stringify([theme({ id: "good" }), { id: "bad" }, null, theme({ id: "also-good" })]),
+    );
+    const loaded = loadCustomThemes();
+    assert.deepEqual(
+      loaded.map((t) => t.id),
+      ["good", "also-good"],
+      "a malformed entry must be dropped individually — throwing the whole list away would " +
+        "delete themes the operator still has",
+    );
+  });
+});
+
+test("unreadable storage is treated as 'no themes', not a crash (#theme)", () => {
+  withStorage(() => {
+    localStorage.setItem("teapot.customThemes", "{not json");
+    assert.deepEqual(loadCustomThemes(), []);
+    localStorage.setItem("teapot.customThemes", '"a string"');
+    assert.deepEqual(loadCustomThemes(), []);
+  });
+});
+
+test("a full quota is reported, not silently swallowed (#theme)", () => {
+  withStorage(
+    () => {
+      const r = saveCustomThemes([theme()]);
+      assert.equal(r.ok, false, "the write must report failure");
+      assert.match(String(r.error), /quota|too large/i, `got: ${r.error}`);
+    },
+    { failWrite: true },
+  );
+});
+
+/* ---------- application ---------- */
+
+test("applying a theme writes every palette variable (#theme)", () => {
+  const root = fakeRoot();
+  applyCustomTheme(root, theme());
+  for (const { cssVar, key } of PALETTE_KEYS) {
+    assert.equal(root.style.getPropertyValue(cssVar), DEFAULT_PALETTE[key], `${cssVar} must be set inline`);
+  }
+});
+
+test("clearing a theme removes every variable it could have set (#theme)", () => {
+  // switching from a custom theme back to a preset must not leave an inline override behind:
+  // inline properties outrank the stylesheet, so a leftover would keep the OLD palette on top
+  // of the newly chosen preset — half one theme, half the other.
+  const root = fakeRoot();
+  applyCustomTheme(root, theme({ backgroundImage: "data:image/png;base64,AA" }));
+  applyCustomTheme(root, null);
+  for (const { cssVar } of PALETTE_KEYS) {
+    assert.equal(
+      root.style.getPropertyValue(cssVar),
+      "",
+      `${cssVar} must be cleared (an inline value outranks the stylesheet)`,
+    );
+  }
+  assert.equal(root.style.getPropertyValue("--bg-image"), "");
+});
+
+test("the background image is written quoted, and only when there is one (#theme)", () => {
+  const root = fakeRoot();
+  applyCustomTheme(root, theme());
+  assert.equal(root.style.getPropertyValue("--bg-image"), "", "no image means no property");
+
+  const withImg = fakeRoot();
+  applyCustomTheme(withImg, theme({ backgroundImage: "data:image/png;base64,AA", backgroundDim: 0.3 }));
+  // quoted: a data: URI can contain characters that end an unquoted url()
+  assert.equal(withImg.style.getPropertyValue("--bg-image"), 'url("data:image/png;base64,AA")');
+  assert.equal(withImg.style.getPropertyValue("--bg-image-dim"), "0.3");
+});
+
+/* ---------- the colour field ---------- */
+
+test("pasted colours are normalised to #rrggbb (#theme)", () => {
+  assert.equal(normalizeColour("#5865F2"), "#5865f2");
+  assert.equal(normalizeColour("5865f2"), "#5865f2", "a bare hex is what Design tools copy");
+  assert.equal(normalizeColour("#abc"), "#aabbcc", "#RGB is valid CSS and people type it");
+  assert.equal(normalizeColour("  #FFFFFF  "), "#ffffff");
+  // alpha is kept: a native colour input cannot hold it, but the text field can
+  assert.equal(normalizeColour("#11223344"), "#11223344");
+  for (const bad of ["", "red", "#12345", "rgb(1,2,3)", "#gggggg"]) {
+    assert.equal(normalizeColour(bad), null, `${JSON.stringify(bad)} is not a colour we accept`);
+  }
+});
+
+test("a new id cannot collide with a preset or an existing custom theme (#theme)", () => {
+  const taken = ["dark", "light", "custom-abc"];
+  const id = newThemeId(taken);
+  assert.ok(!taken.includes(id), `generated ${id} collided`);
+  assert.match(id, /^custom-[a-z0-9-]+$/);
+});

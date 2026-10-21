@@ -38,6 +38,18 @@ import {
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
 import { atTail, gapToTail, movedAway, shouldShowJumpToPresent, type TailSample } from "./scroll-policy";
+import {
+  applyCustomTheme,
+  loadCustomThemes,
+  newThemeId,
+  normalizeColour,
+  saveCustomThemes,
+  DEFAULT_PALETTE,
+  MAX_BACKGROUND_BYTES,
+  PALETTE_KEYS,
+  type CustomTheme,
+  type ThemePalette,
+} from "./theme-store";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -500,7 +512,6 @@ export default function App() {
   };
 
   /* ---------- theme picker (per-browser, localStorage-backed) ---------- */
-  const [showThemes, setShowThemes] = createSignal(false);
   // fixed theme…
   const [fixedTheme, setFixedTheme] = createSignal(localStorage.getItem("teapot.theme") ?? "dark");
   // …or follow the OS, with an explicit choice per system appearance
@@ -508,6 +519,15 @@ export default function App() {
   const [sysLightTheme, setSysLightTheme] = createSignal(
     localStorage.getItem("teapot.theme.light") ?? "light",
   );
+  /**
+   * Operator-authored themes, persisted separately from the preset choice.
+   *
+   * A preset is a `[data-theme]` block in app.css; a custom theme cannot be one (nothing in the
+   * browser can write a stylesheet), so it is applied as INLINE custom properties on `<html>`.
+   * That is why the two are separate signals: `fixedTheme` names a preset OR a custom id, and
+   * `customThemes` is the palette behind that id.
+   */
+  const [customThemes, setCustomThemes] = createSignal<CustomTheme[]>(loadCustomThemes());
   const [sysDarkTheme, setSysDarkTheme] = createSignal(
     localStorage.getItem("teapot.theme.dark") ?? "dark",
   );
@@ -529,10 +549,15 @@ export default function App() {
         : sysDarkTheme()
       : fixedTheme();
     document.documentElement.dataset.theme = active;
+    // A CUSTOM theme is applied as inline custom properties, which outrank the stylesheet's
+    // `:root`/`[data-theme]` values. `null` clears them, so switching back to a preset cannot
+    // leave half a palette behind (a leftover `--bg-dark` would keep overriding the preset).
+    const custom = customThemes().find((t) => t.id === active) ?? null;
+    applyCustomTheme(document.documentElement, custom);
     // light/dark appearance for components that ship their own palettes
     // (e.g. shiki dual-theme code blocks)
     document.documentElement.dataset.appearance =
-      THEMES.find((t) => t.key === active)?.mode ?? "dark";
+      custom?.mode ?? THEMES.find((t) => t.key === active)?.mode ?? "dark";
   });
   /**
    * #143 A/B: paint/layout containment for timeline rows, toggleable at runtime.
@@ -2479,7 +2504,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * open, mutating the app behind a visible overlay.
    */
   const anyOverlayOpen = (): boolean =>
-    showNew() || showCfg() || showThemes() || editing() !== null || (isNarrow() && showRight());
+    showNew() || showCfg() || editing() !== null || (isNarrow() && showRight());
 
   window.addEventListener("keydown", (e) => {
     const t = e.target as HTMLElement | null;
@@ -2493,7 +2518,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // predicate so the two cannot disagree about what counts as an overlay.
       if (showNew()) { setShowNew(false); return; }
       if (showCfg()) { setShowCfg(false); return; }
-      if (showThemes()) { setShowThemes(false); return; }
       if (editing()) { setEditing(null); return; }
       // BEFORE the running-agent interrupt (#50): narrow, the drawer is a modal
       // sheet over the content and Escape must close THAT first. It used to
@@ -3611,75 +3635,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </For>
         </div>
         <div class="sidebar-footer">
-          <Show when={showThemes()}>
-            <div class="themepop">
-              <label class="trow" title="switch automatically when the OS switches appearance — pick which theme to use for each">
-                <input
-                  type="checkbox"
-                  checked={themeAuto()}
-                  onchange={(e) => {
-                    const v = e.currentTarget.checked;
-                    setThemeAuto(v);
-                    localStorage.setItem("teapot.theme.auto", v ? "1" : "0");
-                  }}
-                />
-                follow system
-              </label>
-              <Show
-                when={!themeAuto()}
-                fallback={
-                  <>
-                    <label class="trow">system light →
-                      <select
-                        class="w100"
-                        value={sysLightTheme()}
-                        onchange={(e) => {
-                          setSysLightTheme(e.currentTarget.value);
-                          localStorage.setItem("teapot.theme.light", e.currentTarget.value);
-                        }}
-                      >
-                        <For each={THEMES.filter((t) => t.mode === "light")}>
-                          {(t) => <option value={t.key}>{t.label}</option>}
-                        </For>
-                      </select>
-                    </label>
-                    <label class="trow">system dark →
-                      <select
-                        class="w100"
-                        value={sysDarkTheme()}
-                        onchange={(e) => {
-                          setSysDarkTheme(e.currentTarget.value);
-                          localStorage.setItem("teapot.theme.dark", e.currentTarget.value);
-                        }}
-                      >
-                        <For each={THEMES.filter((t) => t.mode === "dark")}>
-                          {(t) => <option value={t.key}>{t.label}</option>}
-                        </For>
-                      </select>
-                    </label>
-                  </>
-                }
-              >
-                <div class="themegrid">
-                  <For each={THEMES}>
-                    {(t) => (
-                      <button
-                        class={"themebtn" + (fixedTheme() === t.key ? " on" : "")}
-                        title={`${t.label} (${t.mode})`}
-                        onclick={() => {
-                          setFixedTheme(t.key);
-                          localStorage.setItem("teapot.theme", t.key);
-                        }}
-                      >
-                        <span class="swdots">{t.sw.map((c) => <i style={{ background: c }} />)}</span>
-                        {t.label}
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </div>
-          </Show>
           {/* row 1: buttons (incl. notification bell) — row 2: branding + live dot */}
           <div class="footer-row" style="justify-content:flex-end">
             <button
@@ -3710,7 +3665,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               }}
             />
             <IconBtn icon="＋" title="new agent" onClick={() => { loadCfg(); setShowNew(true); }} />
-            <IconBtn icon="🎨" title="themes" onClick={() => setShowThemes(!showThemes())} />
+            {/* 🎨 themes moved into ⚙ settings → appearance: a theme is a PREFERENCE, not a
+                per-session action, and the editor (palette rows + a background picker) needs
+                room a popover cannot give. */}
             <IconBtn icon="⚙" title="settings" onClick={() => { loadCfg(); setShowCfg(true); }} />
           </div>
           <div class="brand-row">
@@ -4953,7 +4910,28 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       />
     </Show>
     <Show when={showCfg()}>
-      <ConfigModal cfg={cfg()} onClose={() => setShowCfg(false)} onSaved={() => { loadCfg(); loadTasks(); }} />
+      <ConfigModal
+        cfg={cfg()}
+        onClose={() => setShowCfg(false)}
+        onSaved={() => {
+          loadCfg();
+          loadTasks();
+        }}
+        // theme state lives in App (it paints `<html>`), so the appearance panel edits it
+        // through these rather than keeping a second copy that would drift
+        theme={{
+          themes: customThemes,
+          activeId: fixedTheme,
+          auto: themeAuto,
+          setAuto: setThemeAuto,
+          dark: sysDarkTheme,
+          setDark: setSysDarkTheme,
+          light: sysLightTheme,
+          setLight: setSysLightTheme,
+          setThemes: setCustomThemes,
+          setActive: setFixedTheme,
+        }}
+      />
     </Show>
     <Show when={editing()} fallback={null}>
       {(ed) => {
@@ -6090,7 +6068,221 @@ const fileUiFor = (agentId: string): FileUiState => {
  *
  * `renderMarkdownCached` still renders the checklist preview from the draft.
  */
+/**
+ * The custom-theme editor: palette rows, a background image, and duplicate/delete.
+ *
+ * ## Why a component with primitive-ish props
+ *
+ * It renders a live PREVIEW (`applyCustomTheme` on the real `<html>`), so it must be the only
+ * writer while open — otherwise the settings form's own colour changes would fight the
+ * committed theme. Edits therefore apply immediately and are persisted on every change: a
+ * "save" button would leave the preview and the stored state disagreeing whenever the dialog
+ * was closed with Escape.
+ *
+ * Colours are edited as TEXT plus a native colour input. The text field is what makes paste
+ * work (people copy `#5865F2` from a design tool) and the input is what makes picking
+ * work; `normalizeColour` reconciles `#RGB`, `#RRGGBB` and `#RRGGBBAA`.
+ */
+function ThemeEditor(props: {
+  themes: CustomTheme[];
+  activeId: string;
+  onChange: (next: CustomTheme[]) => void;
+  onPick: (id: string) => void;
+}) {
+  // which theme the editor is open on: the active one if it is custom, else the first custom,
+  // else none (nothing to edit until one exists)
+  const [editingId, setEditingId] = createSignal<string>(
+    props.themes.some((t) => t.id === props.activeId) ? props.activeId : (props.themes[0]?.id ?? ""),
+  );
+  const editing = () => props.themes.find((t) => t.id === editingId());
+
+  /** write one field of the theme being edited, and persist immediately */
+  const patch = (fn: (t: CustomTheme) => CustomTheme) => {
+    const id = editingId();
+    if (!id) return;
+    // apply the palette live so the operator sees the change as they type
+    const next = props.themes.map((t) => (t.id === id ? fn(t) : t));
+    props.onChange(next);
+  };
+  const setColour = (key: keyof ThemePalette, raw: string) => {
+    const norm = normalizeColour(raw);
+    // a half-typed value must not repaint the app with an empty colour: an unparseable string
+    // leaves the LAST valid colour applied, which is what the operator sees while typing
+    if (!norm) return;
+    patch((t) => ({ ...t, palette: { ...t.palette, [key]: norm } }));
+  };
+
+  /** copy the CURRENT preset into a new custom theme, so presets never drift */
+  const duplicatePreset = () => {
+    const base = THEMES.find((t) => t.key === props.activeId) ?? THEMES[0]!;
+    // the preset's own colours come from the stylesheet, so read them back off <html> after
+    // switching to it: a hardcoded copy in JS would drift from app.css the first time a palette
+    // was retuned
+    const cs = getComputedStyle(document.documentElement);
+    const palette = { ...DEFAULT_PALETTE } as ThemePalette;
+    for (const { key, cssVar } of PALETTE_KEYS) {
+      const v = normalizeColour(cs.getPropertyValue(cssVar));
+      if (v) palette[key] = v;
+    }
+    const id = newThemeId(props.themes.map((t) => t.id).concat(THEMES.map((t) => t.key)));
+    const theme: CustomTheme = { id, label: `${base.label} copy`, mode: base.mode, palette };
+    props.onChange([...props.themes, theme]);
+    setEditingId(id);
+    void base;
+  };
+
+  const importFile = (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > MAX_BACKGROUND_BYTES) {
+      flashHint(`that image is ${Math.round(file.size / 1024)}KB — the limit is ${Math.round(MAX_BACKGROUND_BYTES / 1024)}KB`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result ?? "");
+      // store the data URI itself, so the image survives a reload with no server involved
+      if (/^data:image\//.test(url)) patch((t) => ({ ...t, backgroundImage: url }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div class="themeeditor">
+      <h4 class="cfgsub">your themes</h4>
+      <div class="btnrow">
+        <button type="button" onclick={duplicatePreset} title="copy the theme you are using into a new editable one — presets themselves are never modified">
+          ＋ duplicate current
+        </button>
+        <Show when={props.themes.length > 0}>
+          <select
+            value={editingId()}
+            onchange={(e) => setEditingId(e.currentTarget.value)}
+            title="which custom theme to edit"
+          >
+            <For each={props.themes}>
+              {(t) => <option value={t.id}>{t.label}</option>}
+            </For>
+          </select>
+        </Show>
+      </div>
+
+      <Show
+        when={editing()}
+        fallback={
+          <div class="muted" style="margin:6px 0">
+            no custom themes yet — press <b>＋ duplicate current</b> to start from the palette you are using.
+          </div>
+        }
+      >
+        {(t) => (
+          <>
+            <div class="cfggrid" style="margin-top:8px">
+              <label class="trow">name
+                <input
+                  class="w100"
+                  value={editing()!.label}
+                  oninput={(e) => patch((cur) => ({ ...cur, label: e.currentTarget.value.slice(0, 40) }))}
+                />
+              </label>
+              <label class="trow">appearance
+                <select
+                  value={editing()!.mode}
+                  onchange={(e) => patch((cur) => ({ ...cur, mode: e.currentTarget.value as "dark" | "light" }))}
+                >
+                  <option value="dark">dark</option>
+                  <option value="light">light</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="paletterows">
+              <For each={PALETTE_KEYS}>
+                {(k) => (
+                  <label class="paletterow" title={k.cssVar}>
+                    <input
+                      type="color"
+                      value={normalizeColour(editing()!.palette[k.key]) ?? "#000000"}
+                      oninput={(e) => setColour(k.key, e.currentTarget.value)}
+                    />
+                    <span class="paletterow-label">{k.label}</span>
+                    <input
+                      class="mono paletterow-hex"
+                      value={editing()!.palette[k.key]}
+                      spellcheck={false}
+                      oninput={(e) => setColour(k.key, e.currentTarget.value)}
+                    />
+                  </label>
+                )}
+              </For>
+            </div>
+            <div class="btnrow">
+              <button
+                type="button"
+                title="put every colour back to the palette this theme was created from"
+                onclick={() => patch((cur) => ({ ...cur, palette: { ...DEFAULT_PALETTE } }))}
+              >
+                ↺ reset palette
+              </button>
+              <button
+                type="button"
+                onclick={() => {
+                  props.onChange(props.themes.filter((x) => x.id !== editingId()));
+                  setEditingId(props.themes.find((x) => x.id !== editingId())?.id ?? "");
+                }}
+                title="delete this custom theme"
+              >
+                🗑 delete
+              </button>
+            </div>
+
+            <h4 class="cfgsub">background image</h4>
+            <div class="cfggrid">
+              <label class="trow">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onchange={(e) => {
+                    importFile(e.currentTarget.files?.[0]);
+                    e.currentTarget.value = ""; // allow re-picking the same file
+                  }}
+                />
+              </label>
+              <Show when={editing()!.backgroundImage}>
+                <div class="bgpreview">
+                  <img src={editing()!.backgroundImage} alt="theme background preview" />
+                  <div class="btnrow">
+                    <label class="trow" title="how much the image is dimmed so text stays readable">
+                      dim
+                      <input
+                        type="range"
+                        min="0"
+                        max="0.9"
+                        step="0.05"
+                        value={editing()!.backgroundDim ?? 0.55}
+                        oninput={(e) => patch((cur) => ({ ...cur, backgroundDim: Number(e.currentTarget.value) }))}
+                      />
+                      <span class="muted mono">{Math.round((editing()!.backgroundDim ?? 0.55) * 100)}%</span>
+                    </label>
+                    <button type="button" onclick={() => patch((cur) => ({ ...cur, backgroundImage: undefined }))}>
+                      ✕ remove
+                    </button>
+                  </div>
+                </div>
+              </Show>
+            </div>
+            <div class="muted" style="margin-top:6px;font-size:var(--text-xs)">
+              the image is stored in this browser ({Math.round(MAX_BACKGROUND_BYTES / 1024)}KB limit) and sits behind
+              the panels, dimmed so text stays readable.
+            </div>
+          </>
+        )}
+      </Show>
+    </div>
+  );
+}
+
 function TodoEditor(props: {
+
   draft: string;
   preview: boolean;
   onDraft: (text: string) => void;
@@ -6856,7 +7048,24 @@ function SetupWizard(props: { onDone: () => void }) {
   );
 }
 
-function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void }) {
+function ConfigModal(props: {
+  cfg: any;
+  onClose: () => void;
+  onSaved: () => void;
+  /** theme state, owned by App because it paints `<html>` */
+  theme: {
+    themes: () => CustomTheme[];
+    activeId: () => string;
+    auto: () => boolean;
+    setAuto: (v: boolean) => void;
+    dark: () => string;
+    setDark: (v: string) => void;
+    light: () => string;
+    setLight: (v: string) => void;
+    setThemes: (v: CustomTheme[]) => void;
+    setActive: (v: string) => void;
+  };
+}) {
   /**
    * #170: a provider row holds a LIST of keys, rotated round-robin by the server.
    *
@@ -7043,7 +7252,7 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
    * The SAVE button stays outside the menu: it applies the whole form, so it must not
    * look like it belongs to whichever section happens to be visible.
    */
-  type Section = "providers" | "runtime" | "mcp" | "tasks" | "archive" | "agents" | "update";
+  type Section = "providers" | "runtime" | "appearance" | "mcp" | "tasks" | "archive" | "agents" | "update";
   const [section, setSection] = createSignal<Section>("providers");
   // the archive list is SERVER state (which entries are archived), fetched on open
   // and after every action — not derived from props.cfg, which carries the config as
@@ -7082,6 +7291,9 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   });
   const SECTIONS: { key: Section; label: string; hint: string }[] = [
     { key: "providers", label: "🧦 providers", hint: "endpoints, API keys, default models" },
+    // themes moved here from a sidebar icon: it is a preference, not a per-session action,
+    // and the editor needs room a popover does not have
+    { key: "appearance", label: "🎨 appearance", hint: "theme, custom palettes, background image" },
     { key: "runtime", label: "⚙️ runtime", hint: "context budget, retries, spawn depth" },
     { key: "tasks", label: "⏰ scheduled tasks", hint: "cron prompts run against an agent" },
     { key: "mcp", label: "🔌 MCP servers", hint: "external tool servers exposed to every agent" },
@@ -7091,6 +7303,19 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
   ];
 
   const agentIds = () => (props.cfg.agents ?? []).map((a: any) => a.id);
+
+  // Theme state is owned by App (it paints `<html>`); these local names keep the appearance
+  // panel readable without implying a second copy of the state.
+  const customThemes = () => props.theme.themes();
+  const fixedTheme = () => props.theme.activeId();
+  const setFixedTheme = (v: string) => props.theme.setActive(v);
+  const themeAuto = () => props.theme.auto();
+  const setThemeAuto = (v: boolean) => props.theme.setAuto(v);
+  const sysDarkTheme = () => props.theme.dark();
+  const setSysDarkTheme = (v: string) => props.theme.setDark(v);
+  const sysLightTheme = () => props.theme.light();
+  const setSysLightTheme = (v: string) => props.theme.setLight(v);
+  const setCustomThemes = (v: CustomTheme[]) => props.theme.setThemes(v);
 
   const saveProviders = (): Record<string, any> | null => {
     const out: Record<string, any> = {};
@@ -7339,6 +7564,124 @@ function ConfigModal(props: { cfg: any; onClose: () => void; onSaved: () => void
               fall back to the first provider.
             </div>
           </Show>
+        </fieldset>
+
+        {/* 🎨 appearance. Moved out of the sidebar's 🎨 popover: a theme is a PREFERENCE, so
+            it belongs beside the other settings, and an editor (palette rows, a background
+            picker) needs the room a popover does not have. */}
+        <fieldset classList={{ hide: section() !== "appearance" }}>
+          <legend>appearance</legend>
+
+          <div class="cfggrid">
+            <label class="trow">follow the system
+              <input
+                type="checkbox"
+                checked={themeAuto()}
+                onchange={(e) => {
+                  setThemeAuto(e.currentTarget.checked);
+                  localStorage.setItem("teapot.theme.auto", e.currentTarget.checked ? "1" : "0");
+                }}
+              />
+            </label>
+          </div>
+          <Show
+            when={themeAuto()}
+            fallback={
+              <div class="cfggrid" style="margin-top:8px">
+                <label class="trow">dark theme →
+                  <select
+                    class="w100"
+                    value={sysDarkTheme()}
+                    onchange={(e) => {
+                      setSysDarkTheme(e.currentTarget.value);
+                      localStorage.setItem("teapot.theme.dark", e.currentTarget.value);
+                    }}
+                  >
+                    <For each={customThemes().filter((t) => t.mode === "dark").map((t) => ({ key: t.id, label: `${t.label} (custom)` })).concat(THEMES.filter((t) => t.mode === "dark"))}>
+                      {(t) => <option value={t.key}>{t.label}</option>}
+                    </For>
+                  </select>
+                </label>
+                <label class="trow">light theme →
+                  <select
+                    class="w100"
+                    value={sysLightTheme()}
+                    onchange={(e) => {
+                      setSysLightTheme(e.currentTarget.value);
+                      localStorage.setItem("teapot.theme.light", e.currentTarget.value);
+                    }}
+                  >
+                    <For each={customThemes().filter((t) => t.mode === "light").map((t) => ({ key: t.id, label: `${t.label} (custom)` })).concat(THEMES.filter((t) => t.mode === "light"))}>
+                      {(t) => <option value={t.key}>{t.label}</option>}
+                    </For>
+                  </select>
+                </label>
+              </div>
+            }
+          >
+            <div class="muted" style="margin-top:6px">
+              following the system: dark → <b>{sysDarkTheme()}</b>, light → <b>{sysLightTheme()}</b>
+            </div>
+          </Show>
+
+          <h4 class="cfgsub">themes</h4>
+          <div class="themegrid">
+            {/* customs FIRST: they are what the operator just made, so they belong where the
+                eye lands. A preset is never edited in place — see ThemeEditor's "duplicate". */}
+            <For each={customThemes()}>
+              {(t) => (
+                <button
+                  type="button"
+                  class={"themebtn" + (fixedTheme() === t.id ? " on" : "")}
+                  title={`${t.label} (custom)${t.backgroundImage ? " · with a background image" : ""}`}
+                  onclick={() => {
+                    setFixedTheme(t.id);
+                    localStorage.setItem("teapot.theme", t.id);
+                  }}
+                >
+                  <span class="swdots">
+                    {[t.palette.bgDarkest, t.palette.bgMid, t.palette.acc].map((c) => <i style={{ background: c }} />)}
+                  </span>
+                  <span class="themebtn-label">{t.label} ★</span>
+                </button>
+              )}
+            </For>
+            <For each={THEMES}>
+              {(t) => (
+                <button
+                  type="button"
+                  class={"themebtn" + (fixedTheme() === t.key ? " on" : "")}
+                  title={`${t.label} (${t.mode})`}
+                  onclick={() => {
+                    setFixedTheme(t.key);
+                    localStorage.setItem("teapot.theme", t.key);
+                  }}
+                >
+                  <span class="swdots">{t.sw.map((c) => <i style={{ background: c }} />)}</span>
+                  <span class="themebtn-label">{t.label}</span>
+                </button>
+              )}
+            </For>
+          </div>
+
+          <ThemeEditor
+            themes={customThemes()}
+            activeId={fixedTheme()}
+            onChange={(next) => {
+              setCustomThemes(next);
+              const saved = saveCustomThemes(next);
+              if (!saved.ok) flashHint(saved.error ?? "could not save theme");
+              // dropping the theme you were using must not leave the app on a dead id
+              if (!next.some((t) => t.id === fixedTheme()) && !THEMES.some((t) => t.key === fixedTheme())) {
+                setFixedTheme("dark");
+                localStorage.setItem("teapot.theme", "dark");
+              }
+            }}
+            onPick={(id) => {
+              setFixedTheme(id);
+              localStorage.setItem("teapot.theme", id);
+            }}
+          />
         </fieldset>
 
         <fieldset classList={{ hide: section() !== "runtime" }}>
