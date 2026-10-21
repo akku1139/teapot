@@ -225,48 +225,46 @@ test("creating or selecting a theme ADOPTS it, or every edit is invisible (#ui)"
   );
 });
 
-test("autosizeComposer does not collapse the box while GROWING (#scroll)", async () => {
+test("autosizeComposer collapses to `auto` only when the content SHRANK (#scroll)", async () => {
   /**
-   * Reported with a worked example: "3行以上に入力欄が拡大してると入力時にスクロールが戻る（2行の時は
-   * 問題ない）", with a log showing the feed's `scrollTop` returning to 99992.398 — the value it
-   * had when the composer was ONE line — on the third line's first keystroke.
+   * Reported twice. First at 3 lines ("3行以上に入力欄が拡大してると入力時にスクロールが戻る"), then,
+   * after a wrong fix, at TWO lines — because the guard I used was always true.
    *
-   * Cause: `height = "auto"` collapses the textarea to `rows={1}` (20px), then reading
-   * `scrollHeight` forces layout at THAT height, which grows the feed by 39px and queues its
-   * ResizeObserver. The handler then writes the real height back and the feed shrinks again. The
-   * observer fires in the middle — on a layout the operator should never have been shown — and
-   * the follow logic acts on it.
+   * The bug: `height = "auto"` collapses the textarea to `rows={1}`, reading `scrollHeight`
+   * then forces layout at that collapsed height (growing `.feed` and queueing its
+   * ResizeObserver), and the real height is written back afterwards. The observer fires in the
+   * middle, on a layout the operator never should have seen.
    *
-   * Growing needs no round-trip: with a fixed height, `scrollHeight` already reports the content
-   * height. Only SHRINKING needs the collapse, because a box taller than its content reports its
-   * own height. So the collapse must be conditional on the content not having grown.
+   * The first fix compared `scrollHeight` against `offsetHeight`. MEASURED: once the box is
+   * sized to its content those are EQUAL, so `contentHeight <= current + 1` is true at one, two
+   * and three lines alike — the collapse stayed unconditional, which is why the bug simply moved
+   * down to two lines.
+   *
+   * The only signal that distinguishes "grew" from "shrank" is the content height this function
+   * last APPLIED. Growing needs no round-trip at all; shrinking does, because a box taller than
+   * its content reports its own height.
    */
   const app = await readSource("frontend/App.tsx");
   const fn = app.slice(app.indexOf("const autosizeComposer = () => {"));
   const body = fn.slice(0, fn.indexOf("\n  };"));
-  assert.ok(body.length > 0, "precondition: autosizeComposer exists");
 
-  /**
-   * The `auto` write must be GUARDED by a condition on the content height.
-   *
-   * Asserted on the LINE that writes it, because that is the statement whose placement matters:
-   * `if (contentHeight <= current + 1) composerEl.style.height = "auto";`. Searching backwards
-   * for a preceding `if (` picked up an unrelated one across a comment and reported a guarded
-   * write as unguarded.
-   */
-  const autoLine = body
-    .split("\n")
-    .filter((l) => /style\.height\s*=\s*"auto"/.test(l));
-  assert.ok(autoLine.length >= 1, "precondition: the `auto` path still exists (shrinking needs it)");
-  for (const line of autoLine) {
+  const autoLines = body.split("\n").filter((l) => /style\.height\s*=\s*"auto"/.test(l));
+  assert.ok(autoLines.length >= 1, "precondition: the `auto` path still exists (shrinking needs it)");
+
+  for (const line of autoLines) {
     assert.match(
       line,
-      /if\s*\(.*scrollHeight|if\s*\(.*contentHeight/,
-      "`height = \"auto\"` must be conditional on the content height on the SAME line — an " +
-        "unconditional collapse forces an intermediate layout where the box is one line tall, " +
-        "the feed's ResizeObserver fires on it, and the scroll lands there (the reported " +
-        "3-line scroll-back)",
+      /if\s*\(.*<\s*lastAppliedContentH|if\s*\(.*shrank/i,
+      '`height = "auto"` must be guarded by a SHRINK test against the last applied content ' +
+        "height. Comparing scrollHeight to offsetHeight cannot work: once the box is sized to " +
+        "its content they are equal, so the guard is always true and every keystroke forces an " +
+        "intermediate one-line layout (the reported scroll-back)",
+    );
+    // and it must NOT be the broken comparison
+    assert.doesNotMatch(
+      line,
+      /offsetHeight|contentHeight\s*<=/,
+      "comparing the box height to the content height is always true and was the wrong fix",
     );
   }
-
 });

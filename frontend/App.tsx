@@ -2859,6 +2859,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: d }));
       });
       let last = { cols: 0, rows: 0 };
+      let pendingRetry: ReturnType<typeof setInterval> | undefined;
       const resizeTimer: ReturnType<typeof setTimeout>[] = [];
       const pushResize = () => {
         try { f.fit(); } catch { /* hidden */ }
@@ -2874,6 +2875,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
            * Leaving `last` alone means the next call still sees a difference and retries; `open`
            * below also calls it, so the size lands as soon as the socket can carry it.
            */
+          scheduleRetry();
           return;
         }
         if (t.cols !== last.cols || t.rows !== last.rows) {
@@ -2881,13 +2883,55 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           w.send(JSON.stringify({ kind: "resize", cols: t.cols, rows: t.rows }));
         }
       };
+      /**
+       * A resize that could not be sent must be retried, not forgotten (#172).
+       *
+       * Reported as "1回だけ中途半端にリサイズが効くことがある". A reconnect (or any moment the
+       * socket is not OPEN) made `pushResize` return early — correct, since `w.send` would throw
+       * — but the only things that call it again are the ResizeObserver and `open`. If the box
+       * does not change again, the size the operator dragged to is simply lost, and the pty keeps
+       * whatever geometry reached it last. That is the "half worked" shape: one resize landed,
+       * the next did not.
+       *
+       * A short interval retries while a send is outstanding, and stops as soon as it lands.
+       */
+      function scheduleRetry() {
+        if (pendingRetry) return;
+        pendingRetry = setInterval(() => {
+          if (!liveTerms.has(tab.key)) {
+            clearInterval(pendingRetry);
+            pendingRetry = undefined;
+            return;
+          }
+          if (w.readyState === WebSocket.OPEN) {
+            clearInterval(pendingRetry);
+            pendingRetry = undefined;
+            pushResize();
+          }
+        }, 400);
+      };
       // the socket may not have been open for the initial pushResize — send the size now
       w.addEventListener("open", () => pushResize());
+      /**
+       * Observe the element `fit()` MEASURES, not the one we created.
+       *
+       * `FitAddon.proposeDimensions()` reads `window.getComputedStyle(this._terminal.element
+       * .parentElement)` — so the height and width that decide cols/rows come from the PARENT,
+       * which here is `.termhost`. This used to observe `el` (`.termsession`), a child. While
+       * those two resize together that is harmless, but they can diverge: `el` is
+       * `position: absolute; inset: 0`, so it tracks its own containing block, and a full-screen
+       * program (nano) repainting through xterm can leave `el` unchanged while the box that
+       * `fit()` measures changed. The observer then never fires, no `resize` is sent, and the
+       * pty keeps the old geometry — reported as "nano のリサイズが効かない" with an occasional
+       * "中途半端に効く" when some other change happened to trigger a fit.
+       */
+      const measureEl = el.parentElement ?? el;
       const ro = new ResizeObserver(() => {
         if (resizeTimer[0]) clearTimeout(resizeTimer[0]);
         resizeTimer[0] = setTimeout(pushResize, 250);
       });
-      ro.observe(el);
+      ro.observe(measureEl);
+      if (measureEl !== el) ro.observe(el); // both, since either can move first
       setTimeout(pushResize, 60);
       s = { el, term: t, fit: f, ws: w, ro };
       liveTerms.set(tab.key, s);
@@ -3199,39 +3243,42 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * height is unchanged. That keeps the scroll-follow behaviour exactly as it was, because
    * an unchanged composer height cannot have moved the feed's viewport.
    */
+  /**
+   * The content height this function last applied.
+   *
+   * `scrollHeight` cannot tell us whether the box needs re-measuring: once the box is sized to
+   * its content they are equal, so any comparison of the two is always "fits" (MEASURED: the
+   * first attempt at this guard used `contentHeight <= current + 1`, which is true at 1, 2 and
+   * 3 lines alike, so the collapse stayed unconditional and the 3-line bug came back at 2
+   * lines). What actually matters is whether the CONTENT SHRANK since the last measurement —
+   * only then can the box be taller than its content.
+   */
+  let lastAppliedContentH = 0;
   const autosizeComposer = () => {
     if (!composerEl) return;
     const maximized = composerMaximized();
     /**
-     * Collapse to `auto` ONLY when the content actually shrank.
+     * Re-measure with `height: auto` ONLY when the content shrank.
      *
-     * MEASURED from the operator's log at 3 lines: typing line 3 moved the feed's scrollTop
-     * back to 99992.398, which is precisely its value when the composer held ONE line. The
-     * cause is this round-trip:
+     * MEASURED from the operator's log: typing into a 3-line composer moved the feed's
+     * scrollTop back to the value it had when the box was ONE line. The round-trip is the
+     * cause — `height = "auto"` collapses the textarea to `rows={1}`, reading `scrollHeight`
+     * then FORCES LAYOUT at that collapsed height, `.feed` grows by the difference and its
+     * ResizeObserver is queued, and the real height is written back afterwards. The observer
+     * fires in the middle, on a layout the operator should never have been shown, and the
+     * follow logic acts on it.
      *
-     *   1. `height = "auto"`  → the textarea collapses to `rows={1}` (20px)
-     *   2. read `scrollHeight` → FORCES A LAYOUT at that collapsed height, so `.feed` is 39px
-     *      taller, and the ResizeObserver on it is queued
-     *   3. `height = "59px"`  → layout again, the feed shrinks back
-     *
-     * The observer fires between 2 and 3 — it sees "the feed grew", and the app responds to a
-     * real intermediate layout that the operator never should have been shown. The scroll lands
-     * where the ONE-line box put it. At two lines the same thing happens but the feed happens to
-     * be scrolled such that it is invisible; by three the error exceeds `AT_TAIL_PX` and follow
-     * drops, which is why the report says "2行の時は問題ない".
-     *
-     * Growing does NOT need the round-trip: with a fixed height, `scrollHeight` already reports
-     * the content's height. Only SHRINKING needs it, because a box taller than its content
-     * reports its own height. So the collapse is now conditional.
+     * Growing needs no round-trip: with a fixed height `scrollHeight` already reports the
+     * content height. SHRINKING does, because a box taller than its content reports its own
+     * height — and that is exactly the case `lastAppliedContentH` identifies.
      */
-    const current = composerEl.offsetHeight;
-    const contentHeight = composerEl.scrollHeight;
-    // content fits (or shrank) — the only case that needs the `auto` round-trip to re-measure
-    if (contentHeight <= current + 1) composerEl.style.height = "auto";
+    const rawContentH = composerEl.scrollHeight;
+    if (rawContentH < lastAppliedContentH) composerEl.style.height = "auto";
     const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
     // apply it unconditionally: an early return must NOT leave the box at `auto`, which
     // collapses a textarea to its `rows` default and looks like the composer ate the text.
     composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
+    lastAppliedContentH = composerEl.scrollHeight;
     // NOTE (#scroll): this function does NOT touch the feed's scroll position any more.
     //
     // The feed is a flex sibling, so growing this box shrinks the feed's viewport. That is

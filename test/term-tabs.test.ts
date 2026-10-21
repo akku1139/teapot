@@ -14,6 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readSource } from "./helpers/source.ts";
 import {
   clampPaneIndex,
   indexAfterAppend,
@@ -95,4 +96,28 @@ test("an out-of-range pane index is repaired to a real tab (#172)", async () => 
   // `-1` is "deliberately showing nothing" (the right pane in single-pane mode), so it stays:
   // the effect only revives it when the OTHER pane would otherwise be empty
   assert.equal(clampPaneIndex(-1, 3), -1, "-1 means no pane chosen, not the first tab");
+});
+
+/**
+ * #172 — "nano のリサイズが効かない、閉じて再度開けば効く".
+ *
+ * `FitAddon.proposeDimensions()` reads `getComputedStyle(this._terminal.element.parentElement)`
+ * — the cols/rows come from the PARENT of the element we create. The ResizeObserver used to
+ * watch that child (`.termsession`, which is `position: absolute; inset: 0` and tracks its own
+ * containing block). While both resize together that is harmless, but a full-screen program
+ * repainting through xterm can change the measured box while the child's own box is unchanged.
+ * The observer then never fires, no `resize` is sent, and the pty keeps the old geometry until
+ * the tab is re-attached — which is exactly "reopening fixes it".
+ */
+test("the resize observer watches the element fit() MEASURES (#172)", async () => {
+  const app = await readSource("frontend/App.tsx");
+  const at = app.indexOf("const measureEl = el.parentElement ?? el;");
+  assert.ok(
+    at > 0,
+    "the observer must be bound to the PARENT of the session element — that is what " +
+      "FitAddon.proposeDimensions() measures, so watching the child misses a repaint that " +
+      "changes the measured box",
+  );
+  const after = app.slice(at, at + 600);
+  assert.match(after, /ro\.observe\(measureEl\)/, "…and the parent must actually be observed");
 });
