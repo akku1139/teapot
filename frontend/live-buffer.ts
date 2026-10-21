@@ -49,7 +49,7 @@ export function isTurnBoundary(ev: unknown): boolean {
 
 /** "Live" = mid-reply (`running`) or parked on an `ask_user` answer (`waiting`). */
 export function isLiveStatus(status: string | undefined): boolean {
-  return status === "running" || status === "waiting";
+  return status === "running" || status === "waiting" || status === "needs_operator";
 }
 
 /**
@@ -213,6 +213,8 @@ export function clearThinkClockIfDone(
   const a = agents.find((x) => x.id === selected);
   // the displayed agent is mid-turn: reasoning may arrive again on the next chunk, and
   // re-arming would restart an elapsed time the operator is already reading
-  if (a?.status === "running" || a?.status === "waiting") return startedAt;
+  if (a?.status === "running" || a?.status === "waiting" || a?.status === "needs_operator") {
+    return startedAt;
+  }
   return 0;
 }

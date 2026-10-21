@@ -75,7 +75,28 @@ export const PROGRESS_REQUEST =
   "Record it with the report_progress TOOL (doing, goalStatus, recent, problems, next) — " +
   "call that tool; do NOT answer in prose, which would just duplicate this request.";
 
-export type AgentStatus = "idle" | "running" | "stopped" | "error" | "waiting";
+/**
+ * `waiting` and `needs_operator` are DIFFERENT STATES, not one state with a flag.
+ *
+ * Both mean "alive and not working", but they call for opposite responses: `waiting` resumes on
+ * its own (a parked `wait_children`, a running background job) and nothing is required of the
+ * operator, while `needs_operator` is an `ask_user` question and the loop will not move until a
+ * human answers.
+ *
+ * They were one `waiting` status plus a `waitingFor` field. That is the same fact stored twice:
+ * every consumer had to remember to consult the second field, and any that forgot treated "needs
+ * you" as "leave it alone". Making them sibling states means the type system enforces the
+ * distinction wherever a status is branched on.
+ */
+export type AgentStatus =
+  | "idle"
+  | "running"
+  | "stopped"
+  | "error"
+  /** alive, waiting on its own work — resumes without the operator */
+  | "waiting"
+  /** alive, parked on an `ask_user` question — needs the operator to reply */
+  | "needs_operator";
 
 export interface GoalState {
   text: string;
@@ -1092,7 +1113,11 @@ export class Agent {
       // pressing it cleared awaitingUser, silently discarding the open question
       // while master.waitChildren's own active() kept counting the same child
       // as working (three definitions of "alive" disagreeing about one state).
-      this.awaitingUser
+      this.awaitingUser ||
+      // `needs_operator` IS that state now, named. Leaving the check on the flag alone would let
+      // the status and `live` disagree — #59's exact class of bug — and it is why a
+      // `needs_operator` snapshot reported `live: false` until this was added.
+      this.status === "needs_operator"
     );
   }
 
@@ -1120,6 +1145,7 @@ export class Agent {
     return (
       this.status === "running" ||
       this.status === "waiting" ||
+      this.status === "needs_operator" ||
       this.parkedByTool ||
       this.compactPhase !== ""
     );
@@ -2802,7 +2828,7 @@ export class Agent {
           "Their reply (possibly free text, not one of the options) arrives as your next user message.",
       );
       this.awaitingUser = true;
-      this.setStatus("waiting", question.slice(0, 80));
+      this.setStatus("needs_operator", question.slice(0, 80));
       // control flow: park the loop; the operator's next prompt resumes it
       //
       // #54: answer the rest of this assistant batch BEFORE parking. The

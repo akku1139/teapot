@@ -90,7 +90,15 @@ const MAX_SPAWN_DEPTH = 3;
  */
 const MODEL_META_BOOT_MS = 1_500;
 /** statuses that mean a child has finished working, for #130 */
-const SETTLED: ReadonlySet<string> = new Set(["idle", "stopped", "waiting", "error"]);
+// `needs_operator` is settled too: the child has stopped working and is waiting on a human, so
+// the parent must not treat it as "still busy" and wait forever for it to finish.
+const SETTLED: ReadonlySet<string> = new Set([
+  "idle",
+  "stopped",
+  "waiting",
+  "needs_operator",
+  "error",
+]);
 
 /**
  * Skills shipped with the package — resolved relative to this module so it

@@ -63,6 +63,12 @@ jobs:
           pnpm exec node --test
           test/windows-tilde-expansion.test.ts
           test/kill-tree-windows.test.ts
+          test/windows-bash-tool.test.ts
+
+      # The gap that let `/bin/bash` stay hardcoded for months: `test:portable` skips every test
+      # that EXECUTES the bash tool (they are all `markPosixOnly`), so no Windows job ever spawned
+      # a shell. `windows-bash-tool.test.ts` closes it by running a real command through the tool
+      # on this platform — the outcome, not just the selection.
 
       - name: platform-independent tests
         run: pnpm run test:portable

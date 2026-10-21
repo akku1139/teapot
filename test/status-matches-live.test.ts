@@ -96,3 +96,40 @@ test("the invariant holds for EVERY live state, not just a park (#status)", asyn
     }
   });
 });
+
+test("waiting and needs_operator are DISTINCT states (#ui)", async () => {
+  /**
+   * Reported: "wait_children と ask_user で非パネルのアイコン色が同じなのが微妙 / わかりにくいし、
+   * 点滅してるせいで圧迫感もある".
+   *
+   * They were one `waiting` status plus a `waitingFor` field — the same fact stored twice, so any
+   * consumer that forgot to read the second field treated "needs you" as "leave it alone". They
+   * are sibling states now, which makes the distinction impossible to miss at a branch.
+   */
+  await useTempDirs(["smw3-", "sms3-"], async ([ws, sd]) => {
+    const a = mk(ws!, sd!);
+    await a.init();
+    try {
+      const inner = a as unknown as { status: string; statusReason: string; parkedByTool: boolean };
+
+      // a parked tool: ALIVE, and it resumes on its own
+      inner.status = "waiting";
+      inner.parkedByTool = true;
+      const selfWait = a.snapshot() as unknown as { status: string; live: boolean };
+      assert.equal(selfWait.status, "waiting");
+      assert.equal(selfWait.live, true, "a self-wait is still work in flight — stop must be offered");
+
+      // ask_user: ALIVE, and it will not move until a human answers
+      inner.status = "needs_operator";
+      inner.parkedByTool = false;
+      const forYou = a.snapshot() as unknown as { status: string; live: boolean };
+      assert.equal(forYou.status, "needs_operator");
+      assert.equal(forYou.live, true);
+
+      // the two must never collapse into one value, which is what made them indistinguishable
+      assert.notEqual(selfWait.status, forYou.status);
+    } finally {
+      await a.dispose().catch(() => {});
+    }
+  });
+});

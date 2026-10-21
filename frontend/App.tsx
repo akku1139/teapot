@@ -1073,7 +1073,7 @@ export default function App() {
   const isSelLive = (): boolean => {
     const a = sel();
     if (!a) return false;
-    return a.live ?? (a.status === "running" || a.status === "waiting");
+    return a.live ?? (a.status === "running" || a.status === "waiting" || a.status === "needs_operator");
   };
   /**
    * Is the TIMELINE BEING DISPLAYED the one that is live?
@@ -3947,7 +3947,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     );
                   })()}
                 </Show>
-                <span class={`dot ${row.a.status}`} />
+                {/* Two different waits, two different marks. `waiting` covers both a parked tool
+                    (resumes by itself) and an ask_user question (needs the operator), and one
+                    pulsing accent dot for both said "something is happening" without saying
+                    whether it is waiting on YOU. */}
+                <span
+                  class={`dot ${row.a.status}`}
+                  title={
+                    row.a.status === "needs_operator"
+                      ? "waiting for your answer"
+                      : row.a.status === "waiting"
+                        ? "waiting on its own work — resumes by itself"
+                        : row.a.status
+                  }
+                />
                 <span
                   class={row.a.workspaceMissing ? " ghost" : ""}
                   /* #155: show the session's own title when it has one, so several
@@ -3997,7 +4010,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     // This is the same recursion `subtreeUnread` uses, so the
                     // badge and the unread badge can no longer disagree.
                     const kids = descendantsOf(agents(), row.a.id);
-                    const running = kids.filter((k) => k.live ?? (k.status === "running" || k.status === "waiting")).length;
+                    const running = kids.filter(
+            (k) => k.live ?? (k.status === "running" || k.status === "waiting" || k.status === "needs_operator"),
+          ).length;
                     return kids.length > 0 ? (
                       <span
                         class={"subcount" + (running > 0 ? " live" : "")}

@@ -669,9 +669,17 @@ test("ask_user waits for the operator and resumes with their answer", { timeout:
     await agent.setGoal("decide something");
     agent.enqueuePrompt("go");
     agent.start("t");
-    for (let i = 0; i < 40 && agent.status !== "waiting"; i++)
+    /**
+     * `ask_user` parks on the OPERATOR, which is now its own state.
+     *
+     * It used to be `waiting`, the same status a parked `wait_children` or a running background
+     * job uses — so the sidebar showed one identical pulsing dot for "needs your answer" and
+     * "will continue by itself", which are opposite things to do about it. Splitting the state
+     * means every consumer that branches on status is forced to consider both.
+     */
+    for (let i = 0; i < 40 && agent.status !== "needs_operator"; i++)
       await new Promise((r) => setTimeout(r, 10));
-    assert.equal(agent.status, "waiting");
+    assert.equal(agent.status, "needs_operator");
     assert.equal(agent.snapshot().awaiting, true);
 
     const events = await readEvents(agent.log.filePath);

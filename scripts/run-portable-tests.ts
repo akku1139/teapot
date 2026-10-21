@@ -22,6 +22,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
+import { stripSourceComments } from "../test/helpers/source.ts";
 
 const MARKER = "markPosixOnly";
 
@@ -33,7 +34,16 @@ function testDir() {
 function isPosixOnly(file) {
   try {
     const src = readFileSync(path.join(testDir(), file), "utf8");
-    return src.includes(MARKER);
+    /**
+     * Match the CALL, not the word.
+     *
+     * A plain `src.includes("markPosixOnly")` also matched a file that merely MENTIONED the
+     * helper in a comment — which silently dropped that file from the portable set, i.e. out of
+     * Windows coverage, which is the exact failure this classifier exists to prevent. MEASURED:
+     * `windows-bash-tool.test.ts` explains the marker in prose and was excluded from
+     * `test:portable` for that reason alone.
+     */
+    return new RegExp(`\\b${MARKER}\\s*\\(`).test(stripSourceComments(src));
   } catch {
     return false;
   }

@@ -424,7 +424,25 @@ body {
 .agent-item.sub-row.sel { color: var(--fg); }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .dot.running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
-.dot.waiting { background: var(--acc); box-shadow: 0 0 6px var(--acc); animation: pulse 1.6s ease-in-out infinite; }
+/**
+ * Two states, two marks — because only one of them needs the operator.
+ *
+ * `waiting` resumes on its own (a parked `wait_children`, a running background job): nothing is
+ * required of you, so the dot is quiet and steady.
+ *
+ * `needs_operator` is an `ask_user` question: the loop will not move until a human replies. It
+ * gets the accent colour and a ring — the one mark on the sidebar that means "you".
+ *
+ * They used to share one pulsing accent dot, reported as "wait_children と ask_user でアイコン色が
+ * 同じなのが微妙 / 点滅してるせいで圧迫感もある". Neither pulses now: a pulse draws the eye
+ * continuously, and on the self-wait there was nothing for the eye to find.
+ */
+.dot.waiting { background: var(--dim); box-shadow: none; }
+.dot.needs_operator {
+  background: var(--acc);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--acc) 35%, transparent);
+}
+.badge.needs_operator { color: var(--acc); }
 .badge.waiting { color: var(--acc); }
 .dot.idle { background: var(--warn); }
 .dot.stopped { background: var(--dim); }
