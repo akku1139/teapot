@@ -346,6 +346,17 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   "get past" it**; that ships a second, identical release. Wait for the tarball.
 - `npm cache clean --force` before trusting `npm view` / `npm pack` / `npm i -g`;
   the cache served stale metadata repeatedly here.
+- **Do not sit in a foreground loop waiting for the tarball.** It is one slow,
+  dumb wait (MEASURED 5–20 min) and blocking the session on it wastes the whole
+  turn. `scripts/wait-npm-version.ts <version>` polls the tarball, clears the
+  cache, installs and verifies the INSTALLED `package.json`, then exits 0:
+
+  ```sh
+  node scripts/wait-npm-version.ts 0.29.48     # run in a BACKGROUND bash job
+  ```
+
+  Start it in the background and keep working; the notification arrives when the
+  version is installed.
 
 ## Fixing a bug that has been "fixed" before
 

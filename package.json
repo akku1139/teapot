@@ -43,7 +43,8 @@
     "test": "node --test test/*.test.ts",
     "test:portable": "node scripts/run-portable-tests.ts",
     "test:clean": "node scripts/clean-test-tmp.ts --apply",
-    "test:tmp": "node scripts/clean-test-tmp.ts"
+    "test:tmp": "node scripts/clean-test-tmp.ts",
+    "release:wait": "node scripts/wait-npm-version.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.4",
