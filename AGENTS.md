@@ -78,10 +78,15 @@ Run all of these and make them pass. "It typechecks" is not one of them.
 ```sh
 pnpm typecheck      # server
 pnpm typecheck-web  # frontend
+pnpm typecheck:scripts  # test/ + scripts/ — CI runs it and a local run does NOT cover it
 pnpm lint           # oxlint
 pnpm build          # required before pnpm test — the web bundle tests need it
 pnpm test           # node --test test/*.test.ts
 ```
+
+`typecheck` and `typecheck-web` skip `test/` and `scripts/`, so a type error in a TEST file
+passes every local gate and fails CI. That happened on v0.34.0: `tsconfig.json` omits `test/`,
+and the only symptom was a red Test workflow after the tag was already pushed.
 
 `pnpm build` is **mandatory** before `pnpm test`: `test/web-bundle.test.ts`
 FAILS (not skips) when `public/` is missing or older than the sources, because a

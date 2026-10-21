@@ -362,7 +362,7 @@ test("notes survive a NEW session for the same agent (#48)", async () => {
     fs.mkdirSync(d, { recursive: true });
     return d;
   };
-  const writeIn = async (sd: string, script: unknown[]) => {
+  const writeIn = async (sd: string, script: (() => LlmResult)[]) => {
     let n = 0;
     const a = new Agent({
       id: "alpha",
