@@ -5,12 +5,25 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { serve, upgradeWebSocket } from "@hono/node-server";
 import { WebSocketServer } from "ws";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { currentSkills } from "../agent/tools.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseSchedule } from "../scheduler/cron.ts";
+import {
+  attachTerminal,
+  closeTerminal,
+  closeTerminalsFor,
+  createTerminal,
+  detachTerminal,
+  forgetTerminalSize,
+  listTerminals,
+  reapIdleTerminals,
+  resizeTerminal,
+  setTerminalResize,
+  writeTerminal,
+} from "./terminals.ts";
 import { TermSizeTracker, resolvePtySlave } from "./term-size.ts";
 import { expandTilde, homeDir } from "../home.ts";
 import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
@@ -172,8 +185,9 @@ const MAX_WS_CLIENTS = 64;
     return c.json({ error: "unauthorized" }, 401);
   });
 
-  // per-agent terminal spawn guard
-  const termCounts = new Map<string, number>();
+  // The per-agent terminal cap lives in `terminals.ts` now, next to the registry that owns the
+  // shells — a counter here could drift from the shells it was meant to bound (it did once:
+  // #70, where a refused connection decremented a slot it never took).
 
   /**
    * Live `/api/ws` event-stream connections (#79).
@@ -330,102 +344,139 @@ const MAX_WS_CLIENTS = 64;
   // ---- human terminal: interactive shell in the agent's workspace ----
   // Uses util-linux `script` as a zero-dependency PTY when available (colors,
   // line editing, ctrl+c); falls back to plain pipes otherwise.
+
+  /*
+   * Terminals are SERVER state now (#term-shared): the list survives a reload and several
+   * clients see the same shells. These REST routes own creation and closing; the WebSocket
+   * below only ATTACHES to an existing terminal (or creates one when asked).
+   */
+  setTerminalResize(setTermSize, resolvePtySlave);
+  // Terminals outlive a disconnect on purpose, but a CLOSED tab never re-attaches. Sweep the
+  // ones nobody has held for hours so an abandoned shell does not live as long as the process.
+  {
+    const t = setInterval(() => {
+      const n = reapIdleTerminals();
+      if (n) console.log(`[teapot] ⌨ reaped ${n} idle terminal(s)`);
+    }, 30 * 60_000);
+    t.unref?.();
+  }
+
+  /** every live terminal, so a fresh page can rebuild the tab strip */
+  app.get("/api/terminals", (c) => c.json({ terminals: listTerminals() }));
+
+  app.post("/api/terminals", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as
+      | { agentId?: string; title?: string }
+      | null;
+    if (!body) return c.json({ error: "a JSON body is required" }, 400);
+    const agentId = String(body.agentId ?? "").trim();
+    const agent = agentId ? master.agents.get(agentId) : undefined;
+    if (!agent) return c.json({ error: `no such agent: ${agentId}` }, 404);
+    const r = createTerminal(agentId, agent.workspace, body.title);
+    if (!r.ok) return c.json({ error: r.error }, 409);
+    return c.json({ terminal: r.terminal });
+  });
+
+  app.delete("/api/terminals/:tid", (c) => {
+    const closed = closeTerminal(c.req.param("tid") ?? "");
+    return c.json({ closed });
+  });
+
+  // every terminal of one agent (the UI groups tabs by agent)
+  app.delete("/api/agents/:id/terminals", (c) => {
+    const n = closeTerminalsFor(c.req.param("id") ?? "");
+    return c.json({ closed: n });
+  });
+
   app.get(
     "/api/agents/:id/term",
     upgradeWebSocket((c) => {
       const agentId = c.req.param("id") ?? "";
-      let child: ChildProcess | null = null;
-      // #70: whether THIS connection was admitted to the per-agent terminal
-      // budget. Declared per connection (not inside onOpen) because onClose is a
-      // sibling handler: a connection refused at the cap never incremented the
-      // counter, so onClose must not decrement for it — that asymmetry walked
-      // the counter below the live-shell count and disabled the cap entirely.
-      let admitted = false;
-      const cleanup = () => {
-        if (!child) return;
+      /**
+       * `?terminal=<id>` ATTACHES to an existing shell; without it a new one is created.
+       *
+       * The distinction is the whole point of moving terminals server-side: a reload sends the
+       * id it already knows and gets its screen back, while a new tab sends nothing and gets a
+       * fresh shell.
+       */
+      const wanted = c.req.query("terminal") ?? "";
+      let attachedId = "";
+      // the sink is a stable identity for THIS connection, so the registry can key per-client
+      // sizes by it and detach exactly this one
+      const sink = (msg: { kind: "data"; data: string } | { kind: "exit"; code: number | null }) => {
         try {
-          child.kill("SIGHUP");
+          ws.send(JSON.stringify(msg));
         } catch {
-          /* already gone */
+          /* client gone; onClose detaches */
         }
-        child = null;
       };
+      let ws: { send: (s: string) => void; close: () => void };
       return {
-        onOpen(_evt, ws) {
+        onOpen(_evt, socket) {
+          ws = socket;
           const agent = master.agents.get(agentId);
-          const send = (d: unknown) => {
-            try {
-              ws.send(JSON.stringify(d));
-            } catch {
-              /* client gone */
-            }
-          };
-          const cur = termCounts.get(agentId) ?? 0;
-          if (cur >= 10) {
-            // soft safeguard only — the UI allows up to 10 tabs per agent
-            send({ kind: "exit", error: "too many terminals for this agent (max 10)" });
-            return;
-          }
-          termCounts.set(agentId, cur + 1);
-          admitted = true;
           if (!agent) {
-            // the slot was just taken and this connection owns it, so release
-            // it here rather than leaving onClose to work it out
-            termCounts.set(agentId, cur);
-            admitted = false;
-            send({ kind: "exit", error: `no such agent: ${agentId}` });
+            sink({ kind: "exit", code: null });
+            try {
+              socket.send(JSON.stringify({ kind: "exit", error: `no such agent: ${agentId}` }));
+            } catch {
+              /* ignore */
+            }
             return;
           }
-          const shell = process.env.SHELL || "/bin/bash";
-          const hasScript = existsSync("/usr/bin/script");
-          // script's pty reports a 0x0 winsize, so shells fall back to these
-          const env = { ...process.env, TERM: "xterm-256color", COLUMNS: "100", LINES: "30" };
-          child = hasScript
-            ? spawn("script", ["-qec", shell, "/dev/null"], { cwd: agent.workspace, env })
-            : spawn(shell, [], { cwd: agent.workspace, env: { ...env, TERM: "dumb" } });
-          console.log(
-            `[teapot] ⌨ terminal open: ${agentId} @ ${agent.workspace} (${hasScript ? "pty" : "pipe"})`,
-          );
-          child.stdout?.on("data", (b: Buffer) => {
-            send({ kind: "data", data: b.toString("utf8") });
-          });
-          child.stderr?.on("data", (b: Buffer) => {
-            send({ kind: "data", data: b.toString("utf8") });
-          });
-          child.on("close", (code) => {
-            send({ kind: "exit", code });
-            console.log(`[teapot] ⌨ terminal exit: ${agentId} (${code ?? "signal"})`);
-            child = null;
-          });
+          let id = wanted;
+          if (!id) {
+            const created = createTerminal(agentId, agent.workspace);
+            if (!created.ok) {
+              try {
+                socket.send(JSON.stringify({ kind: "exit", error: created.error }));
+              } catch {
+                /* ignore */
+              }
+              return;
+            }
+            id = created.terminal.id;
+          }
+          const r = attachTerminal(id, sink);
+          if (!r.ok) {
+            try {
+              socket.send(JSON.stringify({ kind: "exit", error: r.error }));
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+          attachedId = id;
+          // tell the client WHICH terminal this connection is for, then REPLAY the backlog so
+          // the screen is correct before live output starts arriving
+          try {
+            socket.send(JSON.stringify({ kind: "attach", terminal: r.terminal }));
+            if (r.replay) socket.send(JSON.stringify({ kind: "data", data: r.replay }));
+          } catch {
+            /* ignore */
+          }
         },
         onMessage(evt) {
-          if (!child?.stdin?.writable) return;
           let m: { kind?: string; data?: string; rows?: number; cols?: number };
           try {
             m = JSON.parse(String(evt.data));
           } catch {
             return;
           }
-          if (m.kind === "input") child.stdin.write(String(m.data ?? ""));
+          if (!attachedId) return;
+          if (m.kind === "input") writeTerminal(attachedId, String(m.data ?? ""));
           else if (m.kind === "resize") {
             const r = Number(m.rows) | 0;
             const cl = Number(m.cols) | 0;
-            if (r > 0 && cl > 0) setTermSize(child, r, cl);
+            if (r > 0 && cl > 0) resizeTerminal(attachedId, sink, r, cl);
           }
         },
         onClose() {
-          // capture BEFORE cleanup() nulls the child out
-          const dead = child;
-          // drop the pending resize timer so we can't write into a dead child
-          if (dead) termSizes.forget(dead);
-          cleanup();
-          // #70: only an ADMITTED connection owns a slot. A connection refused
-          // at the cap never incremented, so decrementing for it is exactly
-          // what drove the counter negative and disabled the limit.
-          if (!admitted) return;
-          const n = (termCounts.get(agentId) ?? 1) - 1;
-          if (n <= 0) termCounts.delete(agentId);
-          else termCounts.set(agentId, n);
+          // DETACH, do not kill: a reload must not destroy the shell (#term-shared)
+          if (!attachedId) return;
+          detachTerminal(attachedId, sink);
+          // the pty outlives us; drop this client's size so it stops constraining the others
+          forgetTerminalSize(attachedId, sink);
         },
       };
     }),

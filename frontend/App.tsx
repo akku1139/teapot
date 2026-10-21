@@ -2596,6 +2596,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     localStorage.setItem("teapot.term", next ? "1" : "0");
   };
 
+  /**
+   * A terminal tab. `key` IS the server's terminal id (#term-shared).
+   *
+   * It used to be a client-local `agent#N` counter because the tab was the only thing that knew
+   * a shell existed. The server owns them now, so the id comes from `/api/terminals` and a
+   * reload re-attaches to the same shells instead of losing them.
+   */
   type TermTab = { key: string; agentId: string; title: string };
   type TermSession = {
     el: HTMLDivElement;
@@ -2646,39 +2653,49 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   const addFromSelected = () => addTab();
 
-  function addTab(agentId?: string) {
+  /**
+   * Create a terminal ON THE SERVER, then show it.
+   *
+   * The shell is created by a POST, not by opening the WebSocket, because the tab list has to
+   * be server state: a reload asks for the list and re-attaches, and a second window sees the
+   * same shells. Opening a socket would give the reload a NEW shell every time, which is the
+   * bug this replaces ("タブをリロードしたらターミナル消失").
+   */
+  async function addTab(agentId?: string) {
     const who = agentId ?? selected();
     if (!who) return;
-    const perAgent = termTabs().filter((t) => t.agentId === who).length;
-    if (perAgent >= 10) {
+    if (termTabs().filter((t) => t.agentId === who).length >= 10) {
       flashHint(`max 10 shells per agent (${who}) — that's already a lot`);
       return;
     }
-    const tab: TermTab = {
-      // UNIQUE per tab for its whole life, never reused. The key used to be
-      // derived from the agent's CURRENT tab count ("" / "#2" / "#3"), so
-      // closing a tab freed its key and the next addTab regenerated it —
-      // liveTerms is keyed by this, and ensureSession() reuses any session it
-      // finds there. A reopened tab therefore adopted the closed tab's
-      // (disposed) xterm/websocket, or two live terminals collided on one
-      // entry (#10). A monotonic counter cannot collide.
-      key: `${who}#${++termSeq}`,
-      agentId: who,
-      title: perAgent === 0 ? who : `${who}·${perAgent + 1}`,
-    };
-    // land in the focused pane. The index must come from the list BEFORE the append:
-    // a Solid setter applies synchronously, so reading `termTabs().length` afterwards
-    // returns the NEW length — one past the end — and the pane then points outside the
-    // array, which renders as "no shell here" while a tab visibly exists (#172).
-    const at = indexAfterAppend(termTabs());
-    setTermTabs((list) => [...list, tab]);
-    if (focusedPane() === 0) setPaneL(at);
-    else setPaneR(at);
+    try {
+      const r = (await api("/api/terminals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agentId: who }),
+      })) as { terminal?: { id: string; agentId: string; title: string } };
+      const t = r.terminal;
+      if (!t) {
+        flashHint("could not open a shell");
+        return;
+      }
+      // the index comes from the list BEFORE the append: a Solid setter applies synchronously,
+      // so `termTabs().length` read afterwards is one past the end (#172)
+      const at = indexAfterAppend(termTabs());
+      setTermTabs((list) => [...list, { key: t.id, agentId: t.agentId, title: t.title }]);
+      if (focusedPane() === 0) setPaneL(at);
+      else setPaneR(at);
+    } catch (ex) {
+      flashHint(`could not open a shell: ${(ex as Error).message}`);
+    }
   }
 
   function closeTab(i: number) {
     const tab = termTabs()[i];
     if (!tab) return;
+    // closing is explicit and must END the shell, not just detach it: the whole point of
+    // detaching on disconnect is that a reload keeps it, so ✕ is the only thing that stops it
+    void api(`/api/terminals/${encodeURIComponent(tab.key)}`, { method: "DELETE" }).catch(() => {});
     const s = liveTerms.get(tab.key);
     if (s) {
       s.ro?.disconnect();
@@ -2748,11 +2765,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       t.loadAddon(f);
       t.open(el);
       const proto = location.protocol === "https:" ? "wss://" : "ws://";
-      const w = new WebSocket(`${proto}${location.host}/api/agents/${tab.agentId}/term${wsTokenQuery()}`);
+      // ATTACH to the server-side terminal this tab represents, by its id. Without
+      // `?terminal=`, the server would create a fresh shell and this tab would be looking at a
+      // different process than the one the list says it is (#term-shared).
+      const w = new WebSocket(
+        `${proto}${location.host}/api/agents/${encodeURIComponent(tab.agentId)}/term?terminal=${encodeURIComponent(tab.key)}${wsTokenQuery()}`,
+      );
       w.onmessage = (m) => {
         const msg = JSON.parse(m.data);
         if (msg.kind === "data") t.write(msg.data);
-        else if (msg.kind === "exit") t.write(`\r\n\x1b[2m[terminal exited ${msg.code ?? ""}]\x1b[0m\r\n`);
+        else if (msg.kind === "exit") {
+          t.write(`\r\n\x1b[2m[terminal exited ${msg.code ?? ""}]\x1b[0m\r\n`);
+          // the shell is gone on the server too, so drop the tab rather than leaving a dead
+          // one that re-attaches forever
+          setTermTabs((list) => list.filter((x) => x.key !== tab.key));
+          liveTerms.get(tab.key)?.term.dispose();
+          liveTerms.delete(tab.key);
+        } else if (msg.kind === "attach" && msg.error) {
+          t.write(`\r\n\x1b[2m[${msg.error}]\x1b[0m\r\n`);
+        }
       };
       t.onData((d: string) => {
         if (w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: d }));
@@ -2761,11 +2792,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const resizeTimer: ReturnType<typeof setTimeout>[] = [];
       const pushResize = () => {
         try { f.fit(); } catch { /* hidden */ }
-        if ((t.cols !== last.cols || t.rows !== last.rows) && w.readyState === WebSocket.OPEN) {
+        if (w.readyState !== WebSocket.OPEN) {
+          /**
+           * Do NOT record `last` here, and do NOT give up.
+           *
+           * The initial `setTimeout(pushResize, 60)` routinely fires while the socket is still
+           * CONNECTING. The old code simply returned — so the FIRST size was never sent, the pty
+           * stayed at `script`'s 0x0 default, and a shell reported "0 0" until the operator
+           * happened to drag the window. That is the reported "リサイズしても中身に伝わらない".
+           *
+           * Leaving `last` alone means the next call still sees a difference and retries; `open`
+           * below also calls it, so the size lands as soon as the socket can carry it.
+           */
+          return;
+        }
+        if (t.cols !== last.cols || t.rows !== last.rows) {
           last = { cols: t.cols, rows: t.rows };
           w.send(JSON.stringify({ kind: "resize", cols: t.cols, rows: t.rows }));
         }
       };
+      // the socket may not have been open for the initial pushResize — send the size now
+      w.addEventListener("open", () => pushResize());
       const ro = new ResizeObserver(() => {
         if (resizeTimer[0]) clearTimeout(resizeTimer[0]);
         resizeTimer[0] = setTimeout(pushResize, 250);
@@ -2930,6 +2977,28 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     loadTasks();
     loadPersonas();
     connectWs();
+    /**
+     * Restore the terminal tabs from the SERVER.
+     *
+     * A reload used to lose them, because the list only existed in this tab. The shells kept
+     * running on the server (a detach, not a kill), so this re-attaches to exactly the ones
+     * that are still alive — including ones another window opened, which is the point of
+     * sharing the list.
+     */
+    void api("/api/terminals")
+      .then((r: { terminals?: { id: string; agentId: string; title: string }[] }) => {
+        const list = r.terminals ?? [];
+        if (!list.length) return;
+        setTermTabs(list.map((t) => ({ key: t.id, agentId: t.agentId, title: t.title })));
+        // show the first one rather than an empty pane with tabs above it
+        if (termOpen()) {
+          setPaneL(0);
+          setPaneR(-1);
+        }
+      })
+      .catch(() => {
+        /* an older server without /api/terminals: keep working with local tabs */
+      });
     const mi = setInterval(() => {
       refreshMetrics();
       loadTasks();
@@ -6165,6 +6234,14 @@ function ThemeEditor(props: {
     const list = props.themes;
     return list.find((t) => t.id === editingId()) ?? list[0];
   };
+  /**
+   * What the hex field SHOWS while it is being typed in, keyed by palette key.
+   *
+   * A half-typed "#ff" is not a colour, so it cannot be stored — but it must still be visible,
+   * or the input jumps back to the old value on every keystroke and a hex can never be entered.
+   * The draft is cleared on blur, at which point the field shows the colour that was applied.
+   */
+  const [hexDraft, setHexDraft] = createSignal<Record<string, string>>({});
 
   /** write one field of the theme being edited, and persist immediately */
   const patch = (fn: (t: CustomTheme) => CustomTheme) => {
@@ -6292,9 +6369,30 @@ function ThemeEditor(props: {
                     <span class="paletterow-label">{k.label}</span>
                     <input
                       class="mono paletterow-hex"
-                      value={editing()!.palette[k.key]}
+                      /**
+                       * The DRAFT, not the stored colour.
+                       *
+                       * Bound to the palette value, every keystroke was normalised and reverted:
+                       * typing "#ff" stores nothing (not a valid colour yet), so the input
+                       * snapped back to the old value and the operator could never finish
+                       * typing a hex. `#{hexDraft()[k.key] ?? stored}` lets an incomplete value
+                       * sit in the field while only valid colours repaint the app.
+                       */
+                      value={hexDraft()[k.key] ?? editing()!.palette[k.key]}
                       spellcheck={false}
-                      oninput={(e) => setColour(k.key, e.currentTarget.value)}
+                      oninput={(e) => {
+                        const raw = e.currentTarget.value;
+                        setHexDraft((d) => ({ ...d, [k.key]: raw }));
+                        setColour(k.key, raw);
+                      }}
+                      onblur={() =>
+                        // leave the field showing the colour that actually got applied
+                        setHexDraft((d) => {
+                          const next = { ...d };
+                          delete next[k.key];
+                          return next;
+                        })
+                      }
                     />
                   </label>
                 )}
@@ -6328,18 +6426,28 @@ function ThemeEditor(props: {
             <h4 class="cfgsub">background image</h4>
             <div class="cfggrid">
               <label class="trow">
+                <span class="muted">image</span>
                 <input
                   type="file"
                   accept="image/*"
                   onchange={(e) => {
                     importFile(e.currentTarget.files?.[0]);
-                    e.currentTarget.value = ""; // allow re-picking the same file
+                    /**
+                     * Clear the input so the SAME file can be picked twice — but that also
+                     * resets the browser's own filename label to "no file chosen", which reads
+                     * as "your upload failed" right after it succeeded. The state we actually
+                     * care about is the imported image, so report THAT instead of the file input.
+                     */
+                    e.currentTarget.value = "";
                   }}
                 />
               </label>
               <Show when={editing()!.backgroundImage}>
                 <div class="bgpreview">
                   <img src={editing()!.backgroundImage} alt="theme background preview" />
+                  <span class="muted" title="this image is stored inside the theme">
+                    ✓ image set — {Math.round(((editing()!.backgroundImage?.length ?? 0) * 3) / 4 / 1024)} KB
+                  </span>
                   <div class="btnrow">
                     <label class="trow" title="how much the image is dimmed so text stays readable">
                       dim
@@ -7524,8 +7632,22 @@ function ConfigModal(props: {
         });
       }, 1200);
       props.onSaved();
-      // stay on the panel when a save turned up something the operator must act on
-      const needsAction = mcpServers().some((m, i) => mcpOAuth()[i]?.required && !mcpOAuth()[i]?.authorized);
+      /**
+       * Only the servers THIS save touched can pull the operator to the MCP section.
+       *
+       * `mcpOAuth` is keyed by the row INDEX and is never pruned, so it accumulates entries from
+       * every earlier save and every earlier visit to the section. Scanning it wholesale meant a
+       * server that had once needed a grant — or a stale index that no longer names a server at
+       * all — hijacked every subsequent save: "save settings をすると何故か MCP servers の
+       * セクションに移動する". Ask the just-saved names instead.
+       */
+      const savedNames = new Set(cleanMcp.map((m) => m.name).filter(Boolean));
+      const needsAction = mcpServers().some(
+        (m, i) =>
+          savedNames.has(String(m.name ?? "").trim()) &&
+          mcpOAuth()[i]?.required &&
+          !mcpOAuth()[i]?.authorized,
+      );
       if (needsAction) {
         setSection("mcp");
         flashHint("a saved MCP server needs authorization — see 🔑 authorize");

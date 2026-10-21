@@ -878,8 +878,20 @@ export class Agent {
     return this.opts.workspace;
   }
 
-  /** true while the workspace directory does not exist on disk yet */
+  /**
+   * True while the workspace directory does not exist on disk.
+   *
+   * Re-checked here rather than trusting the flag set at `init()`: the directory can come BACK
+   * (the operator recreates it, another agent in the same project makes it, a new session is
+   * created in it), and a boot-time snapshot then leaves every older session flagged 👻 forever.
+   * That is the reported symptom: a recreated directory shows its session count, but the sidebar
+   * lists only the session that was just created, because all the older ones still say "ghost".
+   */
   get isGhost(): boolean {
+    const exists = existsSync(this.workspace);
+    // only ever CLEAR from here: a sync getter must not claim a directory exists when it does
+    // not, but it can safely notice that it does again
+    if (exists) this.workspaceMissing = false;
     return this.workspaceMissing;
   }
 
@@ -1773,7 +1785,8 @@ export class Agent {
        */
       live: this.isLive(),
       workspace: this.workspace,
-      workspaceMissing: this.workspaceMissing,
+      // through the getter, so a workspace that came back stops being reported as 👻
+      workspaceMissing: this.isGhost,
       session: this.currentSession,
       // #155: a human label for this session, so the sidebar does not ask the
       // operator to read `teapot-10-16854917`. Absent when the first prompt had

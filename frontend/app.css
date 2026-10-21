@@ -846,7 +846,11 @@ details.reasoning .thinkscroll {
   color: var(--dim); font-size: var(--text-xs); white-space: nowrap;
   background: var(--bg-mid);
 }
-.termtab.active { color: var(--fg); outline: 1px solid var(--acc); }
+/* An accent OUTLINE on the active tab and an accent RING on the focused pane meant a blue line
+   ran along the tab strip AND around the terminal at once — two competing "you are here" marks
+   for one idea, both shouting. Selection is now carried by a filled tab plus the pane's own
+   background, which is how VS Code and Alacritty read: the surface tells you, not a border. */
+.termtab.active { color: var(--fg); background: var(--bg-light); }
 .termtab:hover { filter: brightness(1.15); }
 .tabx { background: none; border: none; color: inherit; opacity: .5; cursor: pointer; font-size: var(--text-xs); padding: 0; }
 .tabx:hover { opacity: 1; color: var(--err); }
@@ -854,7 +858,8 @@ details.reasoning .thinkscroll {
 .termbody.split .termpane { width: 50%; }
 .termpane { flex: 1; min-width: 0; position: relative; border-radius: var(--radius-md); overflow: hidden; background: var(--term-bg); }
 .termpane:not(.focused) { opacity: .9; }
-.termpane.focused { box-shadow: inset 0 0 0 2px var(--acc); }
+/* no ring: the terminal already sits on its own darker surface. */
+.termpane.focused { box-shadow: none; }
 .termhost { position: absolute; inset: 0; }
 .termsession { position: absolute; inset: 0; padding: 4px 6px; }
 .termsplit { width: 3px; background: var(--line); border-radius: var(--radius-sm); flex-shrink: 0; cursor: col-resize; }
@@ -1343,7 +1348,12 @@ details.reasoning .thinkscroll {
   display: flex; align-items: center; gap: var(--space-2); white-space: nowrap;
   color: var(--dim); font-size: var(--text-xs); cursor: pointer;
 }
-.dirlist { background: var(--bg-darkest); border-radius: var(--radius-md); max-height: 160px; overflow-y: auto; padding: 4px; }
+/* A FIXED height, not max-height.
+   The new-agent dialog is a directory browser, so its natural height is however many entries the
+   current directory holds — the window visibly jumped while the operator navigated, and on an
+   empty directory it collapsed to almost nothing. Settings solved the same problem with a real
+   height; this does too, so the dialog stays put as you browse. */
+.dirlist { background: var(--bg-darkest); border-radius: var(--radius-md); height: 220px; overflow-y: auto; padding: 4px; }
 .direntry { padding: 4px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: var(--text-md); }
 .direntry:hover { background: var(--bg-light); }
 
