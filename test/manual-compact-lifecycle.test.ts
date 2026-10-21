@@ -105,7 +105,20 @@ test("manual compact is observable in the snapshot from the FIRST progress event
       // and mid-flight (not just at the first event) the state stays consistent
       const mid = a.snapshot();
       assert.equal(mid.ctx?.compacting, "summarizing", "mid-compact snapshot shows the phase");
-      assert.equal(mid.status, "idle", "the minimal contract keeps the status enum unchanged");
+      /**
+       * The DISPLAYED status must not contradict `live`.
+       *
+       * This used to assert `idle`, which pinned the exact inconsistency the operator
+       * reported elsewhere: a compacting agent has work in flight (stop would stop it), so a
+       * badge reading "idle" next to a ■ stop button is the UI lying about its own state. The
+       * enum is unchanged — "waiting" is a member of it — and `live` is still what logic keys
+       * off.
+       */
+      assert.equal(
+        mid.status,
+        "waiting",
+        "a compacting agent is waiting on work in flight, so the badge must not read idle",
+      );
 
       release();
       const r = await Promise.race([p, wait(5000)]);

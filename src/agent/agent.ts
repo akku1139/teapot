@@ -1163,8 +1163,20 @@ export class Agent {
     if (this.pendingPrompts.length > 0) return false;
     this.parkedByTool = true;
     this.preParkedStatus = { status: this.status, reason: this.statusReason };
-    this.status = "idle";
-    this.statusReason = `${reason} (idle — send a message to take over; resumes automatically when a sub-agent settles)`;
+    /**
+     * `waiting`, NOT `idle`.
+     *
+     * A parked loop is alive and will resume by itself, so showing "idle" contradicted the
+     * stop button beside it: the badge read idle while the header offered ■ stop, and the
+     * operator reasonably concluded the UI was broken. `live` was already true for exactly this
+     * reason (a parked tool counts as work in flight), so only the DISPLAYED status was wrong.
+     *
+     * The two park reasons are named separately because they mean different things to the
+     * operator: a `wait_children` park resumes when a sub-agent settles, and a background-shell
+     * park resumes when a `wait_children`/round-end wakes it.
+     */
+    this.status = "waiting";
+    this.statusReason = `${reason} — send a message to take over; resumes by itself`;
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
     return true;
   }
@@ -1907,7 +1919,20 @@ export class Agent {
   snapshot() {
     return {
       id: this.opts.id,
-      status: this.status,
+      /**
+       * The DISPLAYED status, which must never contradict `live`.
+       *
+       * MEASURED report: "バックグラウンドbash待ちで finish_reason: stop でAIが止まると表示は
+       * idle なのにコントロールは stop ボタンが表示されてて微妙" — and the same for
+       * `wait_children`. `live` was already true for both (a parked tool and a running
+       * background shell are work in flight, and stop() ends them), so only the badge was
+       * wrong: it said idle while the header offered ■ stop.
+       *
+       * Rather than patch each site, the contradiction is fixed HERE: if there is work in
+       * flight that stop would stop, the status says "waiting", never "idle". Callers that
+       * need the raw state for logic use `live`, which is unchanged.
+       */
+      status: this.status === "idle" && this.isLive() ? "waiting" : this.status,
       statusReason: this.statusReason,
       /**
        * Is there work in flight that `stop` would actually stop?
