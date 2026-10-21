@@ -1331,11 +1331,22 @@ export class Agent {
    */
   private get memoryFile(): string {
     const perSession = path.join(this.opts.sessionDir, "memory.md");
-    const agentWide = path.join(path.dirname(this.opts.sessionDir), "memory.md");
-    // `sessionDir` may itself be the agent-level directory in older layouts; only use the
-    // parent when the basename looks like a session (<agent>-<hex>)
-    const looksPerSession = /-[0-9a-f]{6,}$/i.test(path.basename(this.opts.sessionDir));
-    return looksPerSession ? agentWide : perSession;
+    const parent = path.dirname(this.opts.sessionDir);
+    /**
+     * Agent-scoped when the session dir sits inside a `sessions/` ROOT, session-scoped otherwise.
+     *
+     * The previous test was `/-[0-9a-f]{6,}$/` against the basename — "looks like
+     * `<agent>-<hex>`". MEASURED: `mkdtemp` suffixes are 6 alphanumerics, so ~0.2% of them are
+     * all-hex and match. That made the memory file's LOCATION depend on a random temp name, which
+     * is why a test asserting `read_memory(query)` failed in CI and passed locally: the fixture
+     * `mems-AbCdEf` resolved to the agent-wide file, and a sibling test's notes were then in
+     * scope.
+     *
+     * The structural fact is reliable: `Master.resolveSessionDir` always mints session dirs
+     * inside its `sessions/` root, so a parent named `sessions` means "one level down from the
+     * agent". A bare temp dir has no such parent and stays session-scoped.
+     */
+    return path.basename(parent) === "sessions" ? path.join(parent, "memory.md") : perSession;
   }
 
   /** the pre-migration location, read once so notes are not lost on upgrade */

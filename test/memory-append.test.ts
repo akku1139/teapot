@@ -357,8 +357,10 @@ test("the prompt tells the model to write AND search, since nothing is injected 
 test("notes survive a NEW session for the same agent (#48)", async () => {
   const root = mkdtempInRootSync("memsess-");
   // the real layout: sessions/<agent>-<hex>/  — the per-session dirs sit one level down
+  // the REAL layout Master mints: <root>/sessions/<agent>-<hex>. The agent-scope rule keys on
+  // that `sessions` parent, so a fixture without it would test a different code path.
   const mkSession = (name: string) => {
-    const d = path.join(root, name);
+    const d = path.join(root, "sessions", name);
     fs.mkdirSync(d, { recursive: true });
     return d;
   };
@@ -389,7 +391,7 @@ test("notes survive a NEW session for the same agent (#48)", async () => {
   await a1.settled().catch(() => {});
 
   // PRECONDITION: the note was written somewhere, or the check below proves nothing
-  const agentWide = path.join(root, "memory.md");
+  const agentWide = path.join(root, "sessions", "memory.md");
   assert.ok(fs.existsSync(agentWide), "the note must live at agent scope, above the session dirs");
 
   // session 2 is a DIFFERENT session dir for the same agent — it must see the note, via the
@@ -440,7 +442,7 @@ test("notes survive a NEW session for the same agent (#48)", async () => {
 test("the prompt carries a bounded DIGEST of the notes — names, not contents (#48)", async () => {
   const ws = mkdtempInRootSync("memd-");
   const root = mkdtempInRootSync("memds-");
-  const sd = path.join(root, "alpha-a1b2c3d4");
+  const sd = path.join(root, "sessions", "alpha-a1b2c3d4");
   fs.mkdirSync(sd, { recursive: true });
   // agent-scoped, so the digest sees it
   // BULLETS, not plain lines: a bullet IS included in the digest, so an unbounded
@@ -448,7 +450,7 @@ test("the prompt carries a bounded DIGEST of the notes — names, not contents (
   // which made an earlier version of this test pass while the budget was ignored.
   const long = Array.from({ length: 200 }, (_, i) => `- BODY-BULLET-${i} ${"x".repeat(60)}`).join("\n");
   fs.writeFileSync(
-    path.join(root, "memory.md"),
+    path.join(root, "sessions", "memory.md"),
     `# Project alpha\n\n## Build\nrun pnpm build\n\n## Gotchas\nthe cache lies\n\n${long}\n`,
   );
 
@@ -491,7 +493,7 @@ test("the prompt carries a bounded DIGEST of the notes — names, not contents (
  */
 test("a harvested lesson carries READABLE provenance (#48)", async () => {
   const root = mkdtempInRootSync("memprov-");
-  const sd = path.join(root, "alpha-a1b2c3d4");
+  const sd = path.join(root, "sessions", "alpha-a1b2c3d4");
   fs.mkdirSync(sd, { recursive: true });
 
   const agent = new Agent({
@@ -507,7 +509,8 @@ test("a harvested lesson carries READABLE provenance (#48)", async () => {
     await (agent as unknown as { harvestLessons(s: string): Promise<void> }).harvestLessons(
       "## Durable lessons\n- the cache lies after a rename\n",
     );
-    const written = fs.readFileSync(path.join(root, "memory.md"), "utf8");
+    // agent-scoped: one level up from the session dirs, i.e. <root>/sessions/memory.md
+    const written = fs.readFileSync(path.join(root, "sessions", "memory.md"), "utf8");
     assert.match(written, /^## lessons from compaction/m, "the heading must say it came from a compaction");
     assert.match(written, /^_from: session alpha-a1b2c3d4/m, "and name the session it came from");
     assert.doesNotMatch(written, /^<!--/, "as text the model can read, not an HTML comment it cannot");
@@ -524,11 +527,11 @@ test("a harvested lesson carries READABLE provenance (#48)", async () => {
 
 test("a search hit shows the heading and provenance it belongs to (#48)", async () => {
   const root = mkdtempInRootSync("memhit-");
-  const sd = path.join(root, "alpha-b1c2d3e4");
+  const sd = path.join(root, "sessions", "alpha-b1c2d3e4");
   fs.mkdirSync(sd, { recursive: true });
   // a line that is meaningless without its heading
   fs.writeFileSync(
-    path.join(root, "memory.md"),
+    path.join(root, "sessions", "memory.md"),
     "## Build\nrun pnpm build\n\n## Gotchas\n_the cache lies_\n\n## lessons from compaction 2026-01-02 03:04\n_from: session alpha-old, branch br0\n- the cache lies after a rename\n",
   );
   const seen: string[] = [];
@@ -561,4 +564,43 @@ test("a search hit shows the heading and provenance it belongs to (#48)", async 
   } finally {
     await agent.dispose();
   }
+});
+
+test("memory scope is decided by STRUCTURE, not by a random temp suffix (#48)", async () => {
+  /**
+   * The agent-scope rule used to test the basename against `/-[0-9a-f]{6,}$/` — "looks like
+   * `<agent>-<hex>`". MEASURED: `mkdtemp` suffixes are six alphanumerics, so ~0.2% of them are
+   * all-hex and match. That made the file's LOCATION depend on a random temp name, and it is why
+   * `read_memory(query) returns only the matching lines` failed in CI while passing locally: one
+   * fixture's random suffix was hex, so its notes landed in the shared agent-wide file and a
+   * sibling test could see them.
+   *
+   * The rule is now structural: a `sessions/` parent means "one level down from the agent".
+   * These two dirs differ ONLY in that structure, so the assertion cannot pass by luck.
+   */
+  const mk = async (root: string, sd: string) => {
+    const a = new Agent({
+      id: "alpha",
+      workspace: root,
+      sessionDir: sd,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async (): Promise<LlmResult> => ({ message: { role: "assistant", content: "done" } }),
+      autoContinue: false,
+    } as never) as Agent;
+    await a.init();
+    return a as unknown as { memoryFile: string };
+  };
+
+  const root = mkdtempInRootSync("memstruct-");
+  // (a) under sessions/ with an all-hex suffix — the case that used to be misread
+  const under = path.join(root, "sessions", "alpha-a1b2c3");
+  fs.mkdirSync(under, { recursive: true });
+  const a1 = await mk(root, under);
+  assert.equal(a1.memoryFile, path.join(root, "sessions", "memory.md"), "agent-scoped");
+
+  // (b) NOT under sessions/, but with a suffix that still looks like a session
+  const outside = path.join(root, "alpha-a1b2c3");
+  fs.mkdirSync(outside, { recursive: true });
+  const a2 = await mk(root, outside);
+  assert.equal(a2.memoryFile, path.join(outside, "memory.md"), "session-scoped: no sessions/ parent");
 });
