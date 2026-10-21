@@ -1252,21 +1252,32 @@ const isTimelineLive = (): boolean => {
    * themselves are already reference-stable (`stabilize()`), so in steady state the array
    * contains the SAME objects and `<For>` patches only what really changed.
    */
-  const pairCache = new WeakMap<Ev, { row: Ev; prev?: Ev; next?: Ev }>();
-  const rowsWithPrev = createMemo(() => {
-    const rows = chatEvents();
-    return rows.map((row, idx) => {
-      const prev = idx > 0 ? rows[idx - 1] : undefined;
-      const next = idx < rows.length - 1 ? rows[idx + 1] : undefined;
-      const cached = pairCache.get(row);
-      // reuse only when BOTH neighbours are the same objects, or `groupedWith()` would read
-      // a stale neighbour and a run would draw the wrong head/tail
-      if (cached && cached.prev === prev && cached.next === next) return cached;
-      const fresh = { row, prev, next };
-      pairCache.set(row, fresh);
-      return fresh;
-    });
+  /**
+   * The row `delta` positions away from `row`, as an ACCESSOR.
+   *
+   * Neighbours are needed for grouping (`groupedWith`) and for the spacing classes, but they
+   * must not become part of the `<For>` item: keying on a `{row, prev, next}` wrapper meant a
+   * row whose neighbour changed was DISPOSED and re-created, dropping its DOM state — an
+   * expanded `<details>` slammed shut whenever the next event arrived (measured: 1 of 18 rows
+   * per append, and 4 before the pipeline's own identity bugs were fixed).
+   *
+   * Because `<For>` now iterates `chatEvents()` directly, the item identity is the row, which
+   * is reference-stable (`stabilize()`). The neighbour is derived on read, so `grouped` still
+   * re-evaluates when it changes, without touching the row's identity.
+   */
+  // index by ROW IDENTITY once per rebuild (a WeakMap keeps it O(1) per lookup and cannot
+  // leak). `chatEvents().indexOf(row)` inside every row would be O(n) per row — which is the
+  // #178 quadratic pattern this file already had to remove once.
+  const rowIndex = createMemo(() => {
+    const m = new WeakMap<Ev, number>();
+    chatEvents().forEach((r, i) => m.set(r, i));
+    return m;
   });
+  const neighbourOf = (row: Ev, delta: number): Ev | undefined => {
+    const idx = rowIndex().get(row);
+    if (idx === undefined) return undefined;
+    return chatEvents()[idx + delta];
+  };
   // Reference-stable echo rows: chatEvents re-runs on EVERY event burst, and
   // rebuilding the echo objects each time handed Solid's <For> a brand-new
   // reference — remounting the pending row (and, with the tail-anchor race,
@@ -3617,13 +3628,34 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 ⏰ {agentTasks(sel()!.id).length}
               </span>
             </Show>
-            <span class="sub">
-              {sel()!.model} · {sel()!.session}/{sel()!.branch} · turns {sel()!.stats.turns} · tools {sel()!.stats.toolCalls}
+            {/* Metadata recedes: it is REFERENCE, not something read while
+                working. It used to be the same weight as the controls beside it,
+                so the header read as one undifferentiated row of text. */}
+            <span class="sub" title={`${sel()!.model} · ${sel()!.session}/${sel()!.branch} · turns ${sel()!.stats.turns} · tools ${sel()!.stats.toolCalls}`}>
+              {sel()!.model} · {sel()!.session}/{sel()!.branch} · {sel()!.stats.turns}↻ {sel()!.stats.toolCalls}⚙
             </span>
-            <span style="margin-left:auto;display:flex;gap:4px">
+            <span class="head-actions">
               <Show when={sel()!.statusReason}>
                 <span class="sub" title={sel()!.statusReason}>ℹ</span>
               </Show>
+              {/* THE primary action, moved out of the details panel.
+                  Starting and stopping is what an operator does most, and it was
+                  only reachable by opening a side panel — every other control was
+                  closer to hand than the one that matters. It keeps the same
+                  persistent-element trick as its old home (a `() =>` wrapper, not a
+                  bare expression, or the handler freezes to the label it was born
+                  with — see the #59 note on the original). */}
+              <button
+                class={"runbtn" + (isSelLive() ? " danger" : "")}
+                title={
+                  isSelLive()
+                    ? "interrupt: aborts the current LLM call; the running tool finishes first"
+                    : "run toward the goal (starts the loop)"
+                }
+                onclick={() => (isSelLive() ? act("/stop") : act("/start"))()}
+              >
+                {isSelLive() ? "■" : "▶"}
+              </button>
               <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
               <IconBtn icon="▤" title="toggle details panel (d)" onClick={toggleRight} />
             </span>
@@ -3695,23 +3727,31 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <Show when={chatEvents().length > 0} fallback={
               <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
             }>
-              <For each={rowsWithPrev()}>
-                {(pair) => (
+              {/* `<For>` iterates the ROWS THEMSELVES, not a wrapper object.
+                  The wrapper existed to avoid `chatEvents()[i() - 1]` (which made every
+                  row a subscriber of the whole memo — #178), but keying `<For>` on a
+                  WRAPPER reintroduces the remount problem: a row whose neighbour changed
+                  gets a new wrapper, so `<For>` disposes the row and its DOM state with it
+                  (an expanded <details> slams shut). Neighbours are therefore passed as
+                  ACCESSORS derived from the row's own position — the row object stays the
+                  <For> item forever, while `grouped` still re-evaluates when the neighbour
+                  changes. */}
+              <For each={chatEvents()}>
+                {(row) => (
                   <MessageRow
-                    e={pair.row}
-                    // plain value: NOT `chatEvents()[i() - 1]` — see `rowsWithPrev`
-                    prev={pair.prev}
-                    next={pair.next}
+                    e={row}
+                    prev={() => neighbourOf(row, -1)}
+                    next={() => neighbourOf(row, 1)}
                     // #32: only worth labelling when the session HAS more than one
                     // branch (a fork). With a single branch every row repeated the
                     // same constant.
                     showBranch={branches().length > 1}
-                    res={pairInfo().resFor.get(pair.row.id)}
+                    res={pairInfo().resFor.get(row.id)}
                     // #54: an unpaired tool_result is rendered as a COMPLETED
                     // tool row of its own — its call fell out of the events
                     // window while the command ran. Without this the result was
                     // a bare anonymous row and the run read as unfinished.
-                    orphan={pairInfo().orphanCalls.has(pair.row.id)}
+                    orphan={pairInfo().orphanCalls.has(row.id)}
                     onOption={(t) => void sendText(t)}
                     // #55: pass the ACCESSOR, not the Set. A <For> child is a
                     // non-reactive closure, so `answeredQuestionIds()` was
@@ -3729,7 +3769,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     agentActive={
                       // #146: the DISPLAYED session must be the live one, not
                       // merely the same agent (#120, #133)
-                      isTimelineLive() && isOwnLiveWork(pair.row)
+                      isTimelineLive() && isOwnLiveWork(row)
                     }
                     // A row that EXPANDS when its result arrives (a `<details>` opening,
                     // a tool body growing) is one of the growth paths — decided by the
@@ -3746,10 +3786,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       // #122: only an OPERATOR prompt can be withdrawn. A harness
                       // prompt has no composer draft to return to — cancelling it
                       // would discard a system message the operator never wrote.
-                      pair.row.data?.source === "user" &&
-                      pair.row.data?.pending && pair.row.data?.promptId && pair.row.data?.sent !== true
+                      row.data?.source === "user" &&
+                      row.data?.pending && row.data?.promptId && row.data?.sent !== true
                         ? () => {
-                            const pid = String(pair.row.data.promptId);
+                            const pid = String(row.data.promptId);
                             api(`/api/agents/${selected()}/prompt/cancel`, {
                               method: "POST",
                               headers: { "content-type": "application/json" },
@@ -3772,10 +3812,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       // reached the model, so there is nothing to fork from —
                       // cancel (✕) returns its text to the composer instead.
                       // A withdrawn message likewise never reached the model.
-                      pair.row.type === "prompt" &&
-                      pair.row.data?.source === "user" &&
-                      !(pair.row.data?.pending && pair.row.data?.sent !== true) &&
-                      !pair.row.data?.cancelled &&
+                      row.type === "prompt" &&
+                      row.data?.source === "user" &&
+                      !(row.data?.pending && row.data?.sent !== true) &&
+                      !row.data?.cancelled &&
                       // #129: do NOT offer the editor while the agent is live.
                       //
                       // `editPromptAt` refuses a running agent ("agent is running —
@@ -3788,7 +3828,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       // The server-side guard is correct and stays; this just stops
                       // offering an action that cannot succeed.
                       !isSelLive()
-                        ? () => setEditing({ eventId: pair.row.id, text: String(pair.row.data?.text ?? "") })
+                        ? () => setEditing({ eventId: row.id, text: String(row.data?.text ?? "") })
                         : undefined
                     }
                   />
@@ -4543,27 +4583,41 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             )}
           </Show>
 
-          <h3 title="cumulative billed totals · the cached pill counts tokens served from the provider's prompt cache (far cheaper) · context bar turns orange ≥70% and red ≥85% of the model window">📊 runtime</h3>
+          {/* 📊 runtime — TWO LAYERS.
+              What an operator watches while working is the CONTEXT GAUGE: it is the
+              only number here that changes fast enough to act on. Everything else
+              (billed tokens, cost, turns, how often it compacted) is reference.
+
+              MEASURED before this change: nine data rows were always visible, with
+              the context shown TWICE (a used-tokens gauge and a compaction-budget
+              gauge) and the compaction threshold stated THREE times (the `compact`
+              row, the "75% of window" suffix, and a sentence underneath). Three
+              separate statements of one number is what made the panel feel dense
+              without saying more.
+
+              So: one gauge, one threshold, and the rest folded into <details>. */}
+          <h3 title="context is how much of the model's window the live conversation occupies. Past the threshold, the oldest turns are summarized into notes so work can continue.">📊 runtime</h3>
           <div class="card runcard">
-            <div class="statgrid">
-              <div class="stat" title="LLM turns taken this session"><span>turns</span><b>{sel()!.stats.turns}</b></div>
-              <div class="stat" title="tool calls executed"><span>tools</span><b>{sel()!.stats.toolCalls}</b></div>
-              <div class="stat" title="times old turns were summarized to free context"><span>compacted</span><b>{sel()!.stats.compactions ?? 0}</b></div>
-            </div>
-            <div class="statrow">
-              <span class="k">tokens</span>
-              <b>{fmtK(sel()!.stats.inputTokens)} in / {fmtK(sel()!.stats.outputTokens)} out</b>
-              <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
-                <span
-                  class="pill ok"
-                  title={`${fmtK(sel()!.stats.cachedInputTokens)} tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
-                >
-                  ⚡ {(Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 1000) / 10)}% cached
-                </span>
-              </Show>
-            </div>
-            {/* session cost estimate — only when the provider publishes pricing
-                (OpenRouter does; local endpoints usually don't) */}
+            {/* the folded reference layer: opened only when the numbers are the question */}
+            <details class="rtmore">
+              <summary title="billed totals for this session">usage &amp; cost</summary>
+              <div class="statrow">
+                <span class="k">tokens</span>
+                <b>{fmtK(sel()!.stats.inputTokens)} in / {fmtK(sel()!.stats.outputTokens)} out</b>
+                <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
+                  <span
+                    class="pill ok"
+                    title={`${fmtK(sel()!.stats.cachedInputTokens)} tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
+                  >
+                    ⚡ {(Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 1000) / 10)}% cached
+                  </span>
+                </Show>
+              </div>
+              <div class="statrow">
+                <span class="k">turns</span><b>{sel()!.stats.turns}</b>
+                <span class="k" style="margin-left:8px">tools</span><b>{sel()!.stats.toolCalls}</b>
+                <span class="k" style="margin-left:8px">compacted</span><b>{sel()!.stats.compactions ?? 0}</b>
+              </div>
             <Show when={(sel()!.stats.costUsd ?? 0) > 0}>
               <div
                 class="statrow"
@@ -4573,6 +4627,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <b>${costFmt(sel()!.stats.costUsd ?? 0)}</b>
               </div>
             </Show>
+            </details>
             <Show
               when={sel()!.ctx}
               keyed
@@ -4634,18 +4689,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         <div class={`barfill ${v().cls}`} style={{ width: `${Math.min(100, v().pct)}%` }} />
                       </div>
                     </Show>
+                    {/* ONE threshold, stated once. This used to appear three times —
+                        the `compact` row, a "(75% of window)" suffix, and a sentence
+                        below — plus a SECOND gauge measuring the same thing against
+                        `derivedBudget`. Two bars for one quantity is what made the
+                        panel read as dense while conveying less. */}
                     <div class="statrow" style="margin-top:4px">
-                      <span class="k">compact</span>
+                      <span class="k">compact at</span>
                       <b>{fmtK(v().usingDerived ? v().derivedBudget : v().compactAt)} tok</b>
-                      <span class="muted" style="font-size:11px;color:var(--dim)">
-                        {v().usingDerived ? ` (75% of window)` : ` (manual override)`}
+                      <span class="muted" style="color:var(--dim)">
+                        {v().usingDerived ? "75% of window" : "manual"}
                       </span>
                     </div>
-                    <Show when={v().effectiveWindow}>
-                      <div class="bartrack" style="margin-top:4px">
-                        <div class={`barfill ${v().cls}`} style={{ width: `${Math.min(100, Math.round((v().usedTokens / v().derivedBudget) * 100))}%` }} />
-                      </div>
-                    </Show>
                     <Show when={compacting() || v().compacting}>
                       <div class="statrow" title="a compaction pass is running right now — the summarizer's output streams in the timeline">
                         <span class="k">🗜</span>
@@ -4672,9 +4727,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         auto-compact
                       </label>
                       <span class="muted" style="font-size:11.5px">summarizes old turns when budget exceeded</span>
-                    </div>
-                    <div class="muted" style="font-size:11px;margin-top:4px">
-                      compaction starts around ~{fmtK(v().compactAt)} tok — older turns get summarized, recent ones stay intact
                     </div>
                   </div>
                 );
@@ -5245,14 +5297,14 @@ function rawOf(e: Ev): string {
   return "";
 }
 
-function MessageRow(props: { e: Ev; prev?: Ev; next?: Ev; res?: Ev; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: Ev; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
   // Grouping is `groupedWith()` from ./row-grouping — extracted so the rule can
   // be tested against the code that runs (#75). It used to live inline here,
   // and the tests re-implemented it, which is why deleting the real #49 fix left
   // them all green.
-  const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
+  const grouped = () => groupedWith(props.prev?.() as RowLike | undefined, e as RowLike);
   /**
    * Whether the row BELOW continues this run — computed here rather than in CSS.
    *
@@ -5262,7 +5314,10 @@ function MessageRow(props: { e: Ev; prev?: Ev; next?: Ev; res?: Ev; orphan?: boo
    * every style recalc — and this feed renders ~1,100 rows on open (#178). The component
    * already knows the next event, so the answer is free here and the selector disappears.
    */
-  const nextGrouped = !!props.next && groupedWith(e as RowLike, props.next as RowLike);
+  const nextGrouped = () => {
+    const n = props.next?.();
+    return !!n && groupedWith(e as RowLike, n as RowLike);
+  };
 
   // non-chat-looking events become divider lines
   if (e.type === "fork") {
@@ -5374,10 +5429,10 @@ function MessageRow(props: { e: Ev; prev?: Ev; next?: Ev; res?: Ev; orphan?: boo
     <div
       class={
         "msg" +
-        (grouped ? " grouped" : "") +
+        (grouped() ? " grouped" : "") +
         // the row BELOW continues this run — replaces a `:has(+ .msg.grouped)` selector,
         // which made every row pay for a sibling match on every recalc (#178)
-        (nextGrouped ? " next-grouped" : "") +
+        (nextGrouped() ? " next-grouped" : "") +
         (e.data?.pending ? " pending" : "") +
         (e.data?.cancelled ? " withdrawn" : "")
       }
@@ -5388,15 +5443,15 @@ function MessageRow(props: { e: Ev; prev?: Ev; next?: Ev; res?: Ev; orphan?: boo
           faint 🧩s read as separate "sub messages" instead of continuation
           lines. Hover still shows time+branch via the title. */}
       <div
-        class={"avatar avghost" + (grouped ? " ghosted" : "")}
-        style={{ background: grouped ? "transparent" : a.color + "33", border: grouped ? "1px solid transparent" : `1px solid ${a.color}66` }}
-        title={grouped ? `${fmtTs(e.ts)} · ${e.branch}` : undefined}
+        class={"avatar avghost" + (grouped() ? " ghosted" : "")}
+        style={{ background: grouped() ? "transparent" : a.color + "33", border: grouped() ? "1px solid transparent" : `1px solid ${a.color}66` }}
+        title={grouped() ? `${fmtTs(e.ts)} · ${e.branch}` : undefined}
       >
-        {grouped ? "" : a.icon}
+        {grouped() ? "" : a.icon}
       </div>
       <div class="msg-body">
-        {grouped && <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`} />}
-        <Show when={!grouped}>
+        {grouped() && <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`} />}
+        <Show when={!grouped()}>
           <div class="msg-head">
             <span class="author" style={{ color: a.color }}>{a.name}</span>
             <Show when={e.data?.actor}>
@@ -5435,7 +5490,7 @@ function MessageRow(props: { e: Ev; prev?: Ev; next?: Ev; res?: Ev; orphan?: boo
           </div>
         </Show>
 
-        <SwitchContent e={e} prev={props.prev} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} />
+        <SwitchContent e={e} prev={props.prev?.()} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} />
       </div>
     </div>
   );

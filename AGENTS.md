@@ -195,6 +195,37 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   writes the DOM on every keystroke, which ends an in-flight IME composition and
   discards the kana being typed. Sync the value through the gated effect in
   `frontend/composer-ime.ts`.
+- **Never destructure `props`.** `const { a, b } = props` reads once, at
+  creation, so the component stops updating — the same shape as the frozen
+  handler above, and the reason `splitProps()` exists. Use `props.x` in the
+  body (it is tracked on read), or `splitProps()` when a subset must be
+  forwarded. Same for destructuring a getter's RESULT: pass the accessor down
+  (`parent={() => …}`), not its value.
+- **`<For>` keys on ITEM IDENTITY — `items[i] === nextItems[i]`.** A row rebuilt
+  as a new object is DISPOSED and re-created, and its DOM state goes with it: an
+  expanded `<details>` slams shut, text selection and inner scroll are lost, and
+  the timeline flickers. This shipped twice:
+  - `rowsWithPrev()` returned `{row, prev, next}` and was passed to `<For>`, so
+    every row whose neighbour changed was remounted. Iterate the ROWS and pass
+    neighbours as ACCESSORS.
+  - `buildTimeline()` gave a queued prompt `seq = max(seq) + 1`, which moves
+    whenever anything is logged — a new object per event. Anchor a derived value
+    to the row's OWN data, or cache the derivation against the input row.
+  A remount renders IDENTICAL HTML, so **no DOM assertion can see it**: measure
+  element identity (`scripts/smoke-web.ts` `#rerender`) or pipeline identity
+  (`test/timeline-identity.test.ts`). Do not reach for memoisation first — find
+  which value moved.
+- **`<Show when={…}>` must receive a stable value or a boolean.** `when={{a: 1}}`
+  is a new object every run, so the child is torn down and rebuilt on every
+  update. `keyed` changes the contract further: with it the child receives the
+  VALUE (and is recreated when the value's identity changes), without it the
+  child receives an ACCESSOR — and an unkeyed `<Show>` builds its children once,
+  so anything derived must be a `createMemo` inside them or it freezes at the
+  first snapshot (that is the `#108` gauge-stuck-at-0 bug).
+- **A `createEffect` must not register `onCleanup` from a deferred callback.**
+  Inside `requestAnimationFrame`/`setTimeout` the Owner is already `null` and
+  `onCleanup` silently does nothing (solid.js: `if (Owner === null) ;`), so the
+  effect leaks whatever it armed — this pegged a CPU core (#177).
 - CSS custom properties inherit **down** the tree only. A variable set on one
   sibling cannot be read by another; publish it on their common ancestor.
 - Keep the JS breakpoint (`NARROW_PX` in `App.tsx`) equal to the CSS
@@ -202,6 +233,18 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   column disagree about which mode they are in.
 - Prefer `:has()`/class contracts over one-off inline styles: the tests can pin
   a class, and a class cannot drift from its twin.
+- **Use the design tokens in `frontend/app.css`, do not invent a px value.**
+  The UI read as "企業製ソフト" because there was no scale: MEASURED at 14
+  distinct font sizes (9, 10, 11, 11.5, 12, 12.5, 13, 13.5, 14, 15, 17, 20px),
+  13 spacing values and 8 radii, each picked by eye for its own rule. A font
+  size comes from `--text-*`, a gap or padding from `--space-*`, a corner from
+  `--radius-*`; if none fits, add a STEP to the scale rather than a one-off.
+  The scales follow `sst/opencode` (four type sizes, 130/150/180% leading) and
+  Misskey (`--MI-radius: 12px`, one generous radius for panels and controls —
+  most of why its UI reads as friendly rather than administrative).
+- Structural dividers are **1px**. A 2px rule under a title bar or beside a
+  panel is the single strongest "enterprise chrome" cue; the weight only earns
+  its place where it IS the signal (the added/removed bars in a diff).
 
 ## Architecture notes worth knowing
 

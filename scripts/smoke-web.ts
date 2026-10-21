@@ -1212,20 +1212,40 @@ console.log("deep render ok: feed rows present");
         // ALL FOUR corners stay rounded. Grouping is carried by the missing icon and the
         // shared head; squaring the corners to signal "continuation" read as a flattened
         // box and was reported as "角丸になってなくて".
-        for (const corner of [
-          "borderTopLeftRadius",
-          "borderTopRightRadius",
-          "borderBottomLeftRadius",
-          "borderBottomRightRadius",
-        ]) {
-          if (r[corner] !== "4px") {
-            console.error(
-              `#grouped REGRESSION: a grouped row's ${corner} is ${r[corner]}, not 4px — ` +
-                "every corner must stay rounded",
-            );
-            process.exit(1);
-          }
+        // ALL FOUR CORNERS stay rounded, and AGREE with each other. The old assertion
+      // pinned the literal "4px", which was the radius at the time — so raising the
+      // design token (4px -> 6px, part of the Misskey-derived radius scale) failed a
+      // test whose subject was "corners are rounded", not "corners are 4px". Pin the
+      // INVARIANT: nonzero, and identical on every corner.
+      const cornerValues = [
+        "borderTopLeftRadius",
+        "borderTopRightRadius",
+        "borderBottomLeftRadius",
+        "borderBottomRightRadius",
+      ].map((c) => r[c]);
+      const first = cornerValues[0];
+      for (const [i, corner] of [
+        "borderTopLeftRadius",
+        "borderTopRightRadius",
+        "borderBottomLeftRadius",
+        "borderBottomRightRadius",
+      ].entries()) {
+        const v = cornerValues[i];
+        if (!v || parseFloat(v) <= 0) {
+          console.error(
+            `#grouped REGRESSION: a grouped row's ${corner} is ${JSON.stringify(v)} — every ` +
+              "corner must stay rounded (a squared corner made a run read as a stack of boxes)",
+          );
+          process.exit(1);
         }
+        if (v !== first) {
+          console.error(
+            `#grouped REGRESSION: a grouped row's corners disagree (${cornerValues.join(", ")}) — ` +
+              "a run must be one surface, not mismatched edges",
+          );
+          process.exit(1);
+        }
+      }
       }
 
       // THE GAP MODEL. What "there is no space below the first tool result" was: the
@@ -2146,6 +2166,88 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: scrolling to the tail marks the session read (#160)");
+  }
+
+  /* ---------- a new message must not re-mount the rows above it ----------
+   * Reported: "apply_patch のカードを展開していたのに、新しいメッセージが来ると展開していた
+   * のが閉じられる". A `<details open>` that CLOSES on its own is proof the row was
+   * disposed and re-created — the browser drops the open state with the node.
+   *
+   * That is why this is measured rather than asserted on markup: a remount renders
+   * IDENTICAL HTML, so every DOM-shaped check passes while the operator watches their
+   * work collapse. The observable difference is DOM IDENTITY — the element that was on
+   * screen must still be the same element afterwards.
+   *
+   * This is the re-render test the timeline never had: it counts how many rows an append
+   * actually recreated.
+   */
+  {
+    const rowsNow = () => [...w.document.querySelectorAll(".feed .msg")] as HTMLElement[];
+    const details = [...w.document.querySelectorAll(".feed details")].filter(
+      (d): d is HTMLDetailsElement => d instanceof w.HTMLDetailsElement,
+    );
+    if (details.length === 0) {
+      console.error("#rerender check: no <details> in the feed — check would be vacuous");
+      process.exit(1);
+    }
+    const watched = details[0]!;
+    watched.open = true;
+    // remember the row ELEMENTS before the append; identity is the thing being measured
+    const before = rowsNow();
+    const beforeIds = before.map((r) => r.dataset.eid ?? "");
+    if (before.length < 2) {
+      console.error(`#rerender check: only ${before.length} row(s) — cannot tell a remount from a no-op`);
+      process.exit(1);
+    }
+
+    // one new message arrives, exactly as during a run
+    pushEvent({
+      id: "rerender-1",
+      seq: 90001,
+      ts: new Date().toISOString(),
+      session: "alpha-s1",
+      branch: "br0",
+      parent: null,
+      type: "message",
+      data: { role: "assistant", content: "AFTER_APPEND" },
+    });
+    flushRefreshes();
+    await waitFor("the appended row renders", () => bodyText().includes("AFTER_APPEND"), 8000);
+    await new Promise((r) => setTimeout(r, 120));
+
+    if (!bodyText().includes("AFTER_APPEND")) {
+      console.error("#rerender check: the appended message never rendered");
+      process.exit(1);
+    }
+
+    const after = rowsNow();
+    const afterById = new Map(after.map((r) => [r.dataset.eid ?? "", r]));
+    let remounted = 0;
+    const examples: string[] = [];
+    for (const [i, id] of beforeIds.entries()) {
+      if (!id) continue;
+      if (afterById.get(id) !== before[i]) {
+        remounted++;
+        if (examples.length < 3) examples.push(id);
+      }
+    }
+    if (remounted > 0) {
+      console.error(
+        `#rerender REGRESSION: appending ONE message re-created ${remounted} of ${before.length} ` +
+          `row(s) (e.g. ${examples.join(", ")}). A remount renders identical HTML but drops DOM ` +
+          `state — that is why an expanded <details> slams shut, and why the timeline flickers.`,
+      );
+      process.exit(1);
+    }
+    if (!watched.isConnected || !watched.open) {
+      console.error(
+        "#rerender REGRESSION: the open <details> did not survive the append — its row was re-created",
+      );
+      process.exit(1);
+    }
+    console.log(
+      `deep render ok: an appended message re-uses all ${before.length} existing rows and keeps <details> open (#rerender)`,
+    );
   }
 }
 

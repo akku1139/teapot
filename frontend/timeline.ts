@@ -216,14 +216,52 @@ export function dropInvisibleRows(
  *
  * Returns NEW rows; the input is never mutated (#timeline-refactor, reason 1).
  */
+/**
+ * Cache for rows that this pipeline DERIVES (rather than returns unchanged).
+ *
+ * ## The rule this enforces
+ *
+ * `buildTimeline()` runs on every event burst. `<For>` keys on item IDENTITY, so a row that
+ * comes back as a new object is disposed and re-created — its DOM state (an open
+ * `<details>`, text selection, scroll position inside it) is thrown away with the node.
+ *
+ * Any stage that has to build a new row for the same input must therefore return the SAME
+ * object next time. Keying a WeakMap by the input row does that: the input row is stable
+ * (it comes from `stabilize()` in the events store), so the derived object is too.
+ *
+ * This is NOT a workaround for the ordering bug that came before it — that was a genuine
+ * `seq` that moved on every rebuild, and it is fixed at its source (`pendingFloor` anchors
+ * to the row). This cache exists for derivations that are legitimately one-time work.
+ */
+const cancelledCache = new WeakMap<TimelineEvent, Map<number, TimelineEvent>>();
+
+/** the same input row + the same cancellation note must yield the same OUTPUT object */
+function withCancelled(e: TimelineEvent, noteSeq: number): TimelineEvent {
+  let byNote = cancelledCache.get(e);
+  if (!byNote) {
+    byNote = new Map();
+    cancelledCache.set(e, byNote);
+  }
+  const hit = byNote.get(noteSeq);
+  if (hit) return hit;
+  const marked = { ...e, data: { ...(e.data ?? {}), cancelled: true } };
+  byNote.set(noteSeq, marked);
+  return marked;
+}
+
 export function resequencePrompts(
   events: readonly TimelineEvent[],
   lifecycle: ReturnType<typeof promptLifecycle>,
 ): TimelineEvent[] {
-  // `pendingFloor` looks at the whole array, and an undelivered prompt must land below
-  // ALL settled rows — including ones this loop has not visited yet — so the floor is
-  // computed once from the input rather than from the partially built output.
-  const floor = pendingFloor(events as TimelineEvent[]);
+  // An undelivered prompt must land below ALL settled rows, so the floor is computed from
+  // the whole input rather than the partially built output.
+  //
+  // It must also be STABLE for a given row: `pendingFloor()` used to return `max(seq) + 1`,
+  // which moves whenever anything new is logged, so a queued prompt got a new `seq` (and
+  // therefore a new OBJECT) on every rebuild — and `<For>` remounts on identity, so that
+  // row was re-created per incoming event. A prompt's own `seq` is below everything logged
+  // after it, so anchoring there keeps the value fixed for as long as the row is unchanged.
+  const floorOf = (own: number) => pendingFloor(events as TimelineEvent[], own);
   const out: TimelineEvent[] = [];
   for (const e of events) {
     if (e.type !== "prompt" || e.data?.source !== "user") {
@@ -238,13 +276,30 @@ export function resequencePrompts(
     // a `settled` seq (its cancellation), so it took the resequence branch and lost the
     // marker entirely — the row then rendered as an ordinary sent message, which is
     // exactly the #19 symptom the marker exists to prevent.
+    // ── IDENTITY, not just correctness ────────────────────────────────────────────
+    //
+    // These rewrites used object spreads unconditionally, so every prompt row came back as
+    // a BRAND NEW object on every rebuild — even when nothing about it had changed. That is
+    // invisible to a value-equality assertion and fatal to `<For>`, which keys on IDENTITY:
+    // the row was disposed and re-created on every incoming event, so an expanded
+    // `<details>` inside it slammed shut and the timeline flickered on each message.
+    //
+    // MEASURED before this change: appending one event replaced 4 of 18 rows in the real
+    // bundle, and `e1` (a plain user prompt) here. The rule is now: allocate only when a
+    // value actually changes, otherwise return the SAME object. Anything else in this file
+    // that derives a row must follow it (see `expandSubRows`).
+    // The marker is DERIVED from a note, so it must be cached against the input row: the
+    // source event never carries `cancelled`, so "does it already have the flag?" is always
+    // false and a fresh object was allocated on every rebuild.
     const marked =
-      cancelSeq !== undefined ? { ...e, data: { ...(e.data ?? {}), cancelled: true } } : e;
+      cancelSeq !== undefined ? withCancelled(e, cancelSeq) : e;
     if (settled !== undefined) {
       out.push(resequenceToDelivery(marked, settled));
       continue;
     }
-    out.push({ ...marked, seq: floor });
+    // only move the row when the position actually differs
+    const floor = floorOf(marked.seq);
+    out.push(marked.seq === floor ? marked : { ...marked, seq: floor });
   }
   return out;
 }

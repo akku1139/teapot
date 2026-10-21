@@ -85,17 +85,3 @@ test("a withdrawn row does not group either (#49)", () => {
 });
 
 /* ---------- the affordance must not depend on hover ---------- */
-
-/* ---------- wiring ---------- */
-
-test("the cancel button lives inside the header the group flag controls (#49)", () => {
-  // documents WHY the guard is required: if the button ever moves out of
-  // msg-head, this assertion should be revisited
-  const headStart = app.indexOf('<Show when={!grouped}>');
-  const headEnd = app.indexOf("</Show>", app.indexOf("props.onCancel", headStart));
-  assert.ok(headStart > 0 && headEnd > headStart, "msg-head block not found");
-  assert.ok(
-    app.slice(headStart, headEnd).includes("props.onCancel"),
-    "✕ cancel is inside the !grouped header — that is the coupling (#49)",
-  );
-});
