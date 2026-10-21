@@ -10,7 +10,7 @@ import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from 
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
-import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, killBgShells, type ToolContext } from "./tools.ts";
+import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
@@ -712,6 +712,9 @@ export class Agent {
     ];
     this.toolCtx = {
       cwd: opts.workspace,
+      // so a background job records WHICH agent started it: sibling agents share a workspace,
+      // and `isLive()` must not count their jobs as this one's work in flight
+      agentId: opts.id,
       defaultTimeoutMs: 120_000,
       maxOutputBytes: 60_000,
       skillRoots: this.skillRoots,
@@ -986,7 +989,15 @@ export class Agent {
       // the operator most needs to stop. Note this is checked AFTER stopRequested:
       // once stopped, the jobs are already dead, so `live` must go false or the
       // button would offer stop forever (#133).
-      hasRunningBgShells(this.toolCtx.cwd) ||
+      // OWNER-SCOPED, not directory-scoped. Sub-agents inherit their parent's workspace, so
+      // asking "does this DIRECTORY have background shells?" made every stopped sibling of a
+      // busy agent report `live: true`. MEASURED: four STOPPED sub-agents in one workspace
+      // showed `· ▶4` in the sidebar because the parent had background jobs, and their stop
+      // buttons offered to stop work that was already gone.
+      //
+      // `hasRunningBgShells(cwd)` is still the right question where the caller wants the
+      // DIRECTORY (parking a round, killing a workspace's jobs) — just not for `isLive()`.
+      hasRunningBgShellsFor(this.toolCtx.cwd, this.opts.id) ||
       // ask_user: the loop is parked on the operator's answer — stoppable work
       // in flight, not idleness. Without this the UI offered "start", and
       // pressing it cleared awaitingUser, silently discarding the open question

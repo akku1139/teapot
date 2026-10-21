@@ -20,6 +20,16 @@ import { mcp, MCP_PREFIX } from "./mcp-registry.ts";
 
 export interface ToolContext {
   cwd: string;
+  /**
+   * Which agent is running this tool.
+   *
+   * Needed because background shells are stored per WORKSPACE (`bgShellsByWs`) — a dev
+   * server serves a directory, and `killBgShells` clears a directory. But "is this agent
+   * busy?" cannot be read from that map: several agents routinely share one workspace (every
+   * sub-agent inherits its parent's), so one agent's `sleep 300` made its stopped siblings
+   * report `live: true`.
+   */
+  agentId?: string;
   /** hard cap per command */
   defaultTimeoutMs: number;
   maxOutputBytes: number;
@@ -301,6 +311,17 @@ interface BgShell {
   startedAt: number;
   exited: boolean;
   code: number | null;
+  /**
+   * Which AGENT started this job.
+   *
+   * Shells are stored per WORKSPACE, because that is what a dev server serves and what
+   * `killBgShells` must clear. But "is this agent busy?" must not be answered from that map:
+   * several agents routinely share one workspace (every sub-agent inherits its parent's), so
+   * one agent's `sleep 300` made every sibling report `live: true`. MEASURED: four STOPPED
+   * sub-agents in one workspace showed `· ▶4` in the sidebar because the parent had background
+   * jobs, and their stop buttons read "stop" for work that was already gone.
+   */
+  owner: string;
 }
 /** per-workspace background shells (key: workspace path) */
 const bgShellsByWs = new Map<string, Map<string, BgShell>>();
@@ -360,6 +381,7 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     id, cmd, child,
     out: "", truncated: false,
     startedAt: Date.now(), exited: false, code: null,
+    owner: ctx.agentId ?? "",
   };
   const collect = (chunk: Buffer) => {
     if (sh.out.length < 200_000) sh.out += chunk.toString("utf8");
@@ -436,6 +458,28 @@ export function hasRunningBgShells(cwd: string): boolean {
       continue;
     }
     if (!sh.exited) return true;
+  }
+  return false;
+}
+
+/**
+ * Does THIS agent have a background job still running?
+ *
+ * `hasRunningBgShells(cwd)` answers for a DIRECTORY, which is the right question for
+ * `killBgShells` and the wrong one for "is this agent busy". Sub-agents inherit their parent's
+ * workspace, so a shared directory made every sibling of a busy agent report `live: true` —
+ * MEASURED: four STOPPED sub-agents showed `· ▶4` because the parent had background jobs, and
+ * their stop buttons offered to stop work that was already gone.
+ *
+ * An empty owner means a job started before owners were recorded; those are treated as
+ * belonging to nobody, so they cannot make an unrelated agent look busy.
+ */
+export function hasRunningBgShellsFor(cwd: string, owner: string): boolean {
+  const m = bgShellsByWs.get(cwd);
+  if (!m || !owner) return false;
+  for (const sh of m.values()) {
+    if (sh.exited) continue;
+    if (sh.owner === owner) return true;
   }
   return false;
 }

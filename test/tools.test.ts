@@ -676,3 +676,78 @@ test("a normally-exiting background shell still notifies exactly once (#23)", as
     assert.deepEqual(exits, [0], "exactly one notification, with the real code");
   });
 });
+
+test("a background job makes ONLY its own agent live, not its workspace siblings (#panel)", async () => {
+  // MEASURED: four STOPPED sub-agents in one workspace showed `· ▶4` in the sidebar because
+  // their PARENT had background jobs. Sub-agents inherit the parent's workspace, and
+  // `isLive()` asked "does this DIRECTORY have running shells?" — so one agent's `sleep 300`
+  // made every sibling look busy, and their stop buttons offered to stop work that was gone.
+  //
+  // Shells must stay keyed by workspace (a dev server serves a directory, and
+  // `killBgShells` clears a directory), so the fix is to record WHICH agent started each job
+  // and ask the owner-scoped question from `isLive()`.
+  await useTempDir("teapot-bg-owner-", async (dir) => {
+    const { executeTool, hasRunningBgShells, hasRunningBgShellsFor, killBgShells } = await import(
+      "../src/agent/tools.ts"
+    );
+    const base = { cwd: dir, defaultTimeoutMs: 5_000, maxOutputBytes: 10_000 };
+    const alice = { ...base, agentId: "alice" } as never;
+    const bob = { ...base, agentId: "bob" } as never;
+
+    const r = await executeTool("bash", JSON.stringify({ command: "sleep 30", background: true }), alice);
+    assert.ok(r.ok, r.result);
+
+    // the DIRECTORY really does have a live shell — that part must keep working
+    assert.equal(hasRunningBgShells(dir), true, "precondition: alice's job is running");
+    // …but only alice owns it
+    assert.equal(hasRunningBgShellsFor(dir, "alice"), true, "the owner must see its own job");
+    assert.equal(
+      hasRunningBgShellsFor(dir, "bob"),
+      false,
+      "a sibling in the SAME workspace must not be reported as busy — that is the · ▶N bug",
+    );
+    // an unknown owner (a job recorded before owners existed) belongs to nobody
+    assert.equal(hasRunningBgShellsFor(dir, ""), false, "no owner must never mean 'everyone'");
+
+    // cleanup: the job sleeps 30s, so kill it rather than leaving it running
+    assert.ok(killBgShells(dir) >= 1, "the job must be killable");
+    assert.equal(hasRunningBgShellsFor(dir, "alice"), false, "after the kill nothing is live");
+  });
+});
+
+test("a stop aborts a foreground bash, so `sleep` cannot swallow the interrupt (#stop)", async () => {
+  // Reported: "bashでsleepされると途中で割り込みできないので微妙".
+  //
+  // `runShell` wires `ctx.signal`, and `stop()` aborts that controller — so the capability
+  // exists. What has never been asserted is that it WORKS for the ordinary foreground case:
+  // the signal listener kills the process group, and the promise resolves with an ABORTED
+  // result rather than waiting out the timeout. Without this test, a future change that stops
+  // publishing `ctx.signal` (or that re-registers the listener after the abort) would only be
+  // noticed by an operator pressing stop and watching nothing happen.
+  await useTempDir("teapot-stop-bash-", async (dir) => {
+    const { executeTool } = await import("../src/agent/tools.ts");
+    const ac = new AbortController();
+    const ctx = {
+      cwd: dir,
+      defaultTimeoutMs: 60_000, // long: only the ABORT can end this in time
+      maxOutputBytes: 10_000,
+      signal: ac.signal,
+    } as never;
+
+    const started = Date.now();
+    const p = executeTool("bash", JSON.stringify({ command: "sleep 30" }), ctx);
+    // let the shell actually start, then press stop
+    await new Promise((r) => setTimeout(r, 300));
+    ac.abort();
+    const res = await p;
+    const elapsed = Date.now() - started;
+
+    assert.equal(res.ok, false, "an aborted command is not a success");
+    assert.match(res.result, /ABORT/i, `the result must say it was aborted, got: ${res.result.slice(0, 120)}`);
+    assert.ok(
+      elapsed < 5_000,
+      `the command must die on the abort, not run out its 30s (took ${elapsed}ms) — that is ` +
+        `"sleep されると割り込めない"`,
+    );
+  });
+});
