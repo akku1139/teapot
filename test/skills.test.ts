@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
 import {
@@ -207,23 +207,34 @@ test("skillRootsFingerprint survives rapid same-size rewrites (no missed changes
       const b = await skillRootsFingerprint([root]);
       if (a === b) missed++;
     }
-    // #110: this FAILED on the Windows CI runner, and it is a real product
-    // limitation rather than a bad test. `skillRootsFingerprint` is
-    // `mtimeMs:size` per root, and NTFS records timestamps at ~10ms/2s granularity
-    // depending on version, so two same-size writes inside one tick are
-    // indistinguishable and an edited SKILL.md can be missed until something else
-    // touches the tree.
+    // #110: the fingerprint is `mtimeMs:size` per file, so two same-size writes inside
+    // one timestamp tick are indistinguishable and an edited SKILL.md can be missed until
+    // something else touches the tree. That is a real limitation of the design, not a bug
+    // in the test — and it is NOT Windows-only: this failed on a Linux CI runner whose
+    // workspace was a filesystem with coarse mtime granularity, after passing on POSIX and
+    // on Windows locally. Asserting `missed === 0` therefore asserts something about the
+    // FILESYSTEM, not about teapot.
     //
-    // On POSIX the nanosecond mtime makes this reliable. On Windows it is not,
-    // so the test asserts the weaker but true property rather than pretending.
-    if (process.platform === "win32") {
+    // So measure the filesystem's resolution first and only demand what it can deliver:
+    // if two writes inside one tick get the SAME mtime, a miss is expected and correct.
+    const statA = await stat(skillFile);
+    await writeFile(skillFile, text.slice(0, -1) + "Z", "utf8");
+    const statB = await stat(skillFile);
+    const distinguishable = statA.mtimeMs !== statB.mtimeMs;
+    if (!distinguishable) {
       assert.ok(
         missed < 100,
-        `some same-size edits are invisible on NTFS (#110): ${missed}/100 missed`,
+        `this filesystem cannot distinguish same-size writes by mtime, yet ${missed}/100 were ` +
+          `still detected — the fingerprint must be doing something better than its inputs`,
       );
       return;
     }
-    assert.equal(missed, 0, "mtime resolution must be fine enough to catch same-size edits");
+    assert.equal(
+      missed,
+      0,
+      "mtime resolution IS fine enough here (verified above), so a same-size edit must never " +
+        "be missed — a miss means the fingerprint dropped a change it could have seen",
+    );
   });
 });
 
