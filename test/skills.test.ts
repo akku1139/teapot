@@ -207,33 +207,45 @@ test("skillRootsFingerprint survives rapid same-size rewrites (no missed changes
       const b = await skillRootsFingerprint([root]);
       if (a === b) missed++;
     }
-    // #110: the fingerprint is `mtimeMs:size` per file, so two same-size writes inside
-    // one timestamp tick are indistinguishable and an edited SKILL.md can be missed until
-    // something else touches the tree. That is a real limitation of the design, not a bug
-    // in the test — and it is NOT Windows-only: this failed on a Linux CI runner whose
-    // workspace was a filesystem with coarse mtime granularity, after passing on POSIX and
-    // on Windows locally. Asserting `missed === 0` therefore asserts something about the
-    // FILESYSTEM, not about teapot.
+    // #110: the fingerprint is `mtimeMs:size` per file, so two same-size writes inside one
+    // timestamp tick are indistinguishable, and an edited SKILL.md can be missed until
+    // something else touches the tree. That is a real limitation of the DESIGN, not a bug in
+    // the test — and it is NOT Windows-specific: this failed on a Linux CI runner whose
+    // workspace had coarse mtime granularity, after passing locally and on Windows.
     //
-    // So measure the filesystem's resolution first and only demand what it can deliver:
-    // if two writes inside one tick get the SAME mtime, a miss is expected and correct.
-    const statA = await stat(skillFile);
-    await writeFile(skillFile, text.slice(0, -1) + "Z", "utf8");
-    const statB = await stat(skillFile);
-    const distinguishable = statA.mtimeMs !== statB.mtimeMs;
-    if (!distinguishable) {
+    // Asserting `missed === 0` therefore asserts a property of the FILESYSTEM. Measure that
+    // property instead of assuming it: write repeatedly and see how often two consecutive
+    // same-size writes actually get a different `mtimeMs`. That ratio is the fraction of the
+    // loop's iterations the filesystem could even distinguish, so it bounds how many misses
+    // are blameless.
+    let distinguishable = 0;
+    const PROBES = 40;
+    for (let i = 0; i < PROBES; i++) {
+      const b1 = await stat(skillFile);
+      await writeFile(skillFile, text.slice(0, -1) + (i % 2 ? "P" : "Q"), "utf8");
+      const b2 = await stat(skillFile);
+      if (b1.mtimeMs !== b2.mtimeMs) distinguishable++;
+    }
+    if (distinguishable === 0) {
+      // the filesystem cannot tell same-size writes apart at all: a miss is correct behaviour
       assert.ok(
         missed < 100,
-        `this filesystem cannot distinguish same-size writes by mtime, yet ${missed}/100 were ` +
-          `still detected — the fingerprint must be doing something better than its inputs`,
+        `this filesystem cannot distinguish same-size writes, yet ${missed}/100 were still ` +
+          `detected — the fingerprint is doing better than its inputs, which this test does ` +
+          `not expect`,
       );
       return;
     }
-    assert.equal(
-      missed,
-      0,
-      "mtime resolution IS fine enough here (verified above), so a same-size edit must never " +
-        "be missed — a miss means the fingerprint dropped a change it could have seen",
+    // Some ticks are coarse even on a fine-grained filesystem (a same-mtime pair is a real
+    // event), so allow a miss rate up to the observed indistinguishability, with slack for
+    // the loop's own timing differing from the probe's.
+    const undistinguishableRate = 1 - distinguishable / PROBES;
+    const allowed = Math.ceil(100 * undistinguishableRate) + 2;
+    assert.ok(
+      missed <= allowed,
+      `missed ${missed}/100 same-size rewrites, but the filesystem only makes ` +
+        `${Math.round(undistinguishableRate * 100)}% of them indistinguishable (allowed ${allowed}) ` +
+        `— a miss beyond that means the fingerprint dropped a change it could have seen`,
     );
   });
 });
