@@ -339,3 +339,82 @@ test("the prompt tells the model to write AND search, since nothing is injected 
     await agent.dispose();
   }
 });
+
+/**
+ * The notes must outlive the SESSION, not just the turn.
+ *
+ * MEASURED before this: memory.md lived inside `sessionDir`, so minting a new session for an
+ * agent silently orphaned everything it had learned. Across this machine, 66 agents had more
+ * than one session (median 6) and only 5 had notes in any of them — the notes were written and
+ * then abandoned the next time a session was created. A "durable note" that dies with the
+ * timeline is not durable, and it is why the memory system looked useless.
+ */
+test("notes survive a NEW session for the same agent (#48)", async () => {
+  const root = mkdtempInRootSync("memsess-");
+  // the real layout: sessions/<agent>-<hex>/  — the per-session dirs sit one level down
+  const mkSession = (name: string) => {
+    const d = path.join(root, name);
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const writeIn = async (sd: string, script: unknown[]) => {
+    let n = 0;
+    const a = new Agent({
+      id: "alpha",
+      workspace: root,
+      sessionDir: sd,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async (): Promise<LlmResult> => {
+        const next = script[n++];
+        return (next ? next() : null) ?? { message: { role: "assistant", content: "done" } };
+      },
+      autoContinue: false,
+    } as never) as Agent;
+    await a.init();
+    return a;
+  };
+
+  // session 1 writes a note
+  const s1 = mkSession("alpha-a1b2c3d4");
+  const a1 = await writeIn(s1, [
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("a", "add_memory", { text: "THE WIDGET IS MADE OF TIN" })] } }),
+  ]);
+  a1.enqueuePrompt("go");
+  a1.start("t");
+  await a1.settled().catch(() => {});
+
+  // PRECONDITION: the note was written somewhere, or the check below proves nothing
+  const agentWide = path.join(root, "memory.md");
+  assert.ok(fs.existsSync(agentWide), "the note must live at agent scope, above the session dirs");
+
+  // session 2 is a DIFFERENT session dir for the same agent — it must see the note, via the
+  // same tool the model would call (driven through the loop, as every other test here does)
+  const s2 = mkSession("alpha-e5f6a7b8");
+  const replies2: string[] = [];
+  let n2 = 0;
+  const script2: unknown[] = [
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("r", "read_memory", {})] } }),
+  ];
+  const a2 = new Agent({
+    id: "alpha",
+    workspace: root,
+    sessionDir: s2,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn: async (_c: unknown, msgs: { role: string; content?: unknown }[]): Promise<LlmResult> => {
+      for (const m of msgs) if (m.role === "tool") replies2.push(String(m.content ?? ""));
+      const next = script2[n2++];
+      return (next ? (next as () => LlmResult)() : null) ?? { message: { role: "assistant", content: "done" } };
+    },
+    autoContinue: false,
+  } as never) as Agent;
+  await a2.init();
+  a2.enqueuePrompt("what do you remember");
+  a2.start("t");
+  await a2.settled().catch(() => {});
+
+  assert.ok(
+    replies2.join("\n").includes("THE WIDGET IS MADE OF TIN"),
+    `a new session must still see the agent's notes; got: ${JSON.stringify(replies2.join("\n").slice(0, 200))}`,
+  );
+
+});

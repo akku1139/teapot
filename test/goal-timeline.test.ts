@@ -160,3 +160,44 @@ test("a non-audit goal event keeps its text (#41)", () => {
 
 /* ---------- App.tsx wiring ---------- */
 
+
+/**
+ * The goal text is MARKDOWN, and it must be rendered as such.
+ *
+ * Reported: "タイムラインに出るgoal関連のカードがマークダウンレンダリングされてない". The card
+ * component already called `renderMarkdown`, but `goalLine()` set `markdown: false` for every
+ * branch carrying real prose, so the renderer wrapped it in a code fence and the operator's own
+ * goal came back showing literal `## Heading` and `- item`.
+ *
+ * The distinction that matters: a FIXED sentence ("the audit rejected the finish — work
+ * continues on the same goal") needs no markdown, but anything taken from `d.text`, `d.verify`
+ * or `d.feedback` is prose someone wrote.
+ */
+test("operator/agent prose in a goal card is rendered as MARKDOWN (#goal-md)", () => {
+  // a goal the operator wrote with common markdown
+  const goalText = "## Ship it\n\n- [ ] tests pass\n- run `pnpm typecheck`";
+  const cases: { name: string; data: Record<string, unknown> }[] = [
+    { name: "goal text (default branch)", data: { text: goalText } },
+    { name: "goal status with text", data: { status: "active", text: goalText } },
+    { name: "goal status with no text", data: { status: "paused" } },
+  ];
+  // the audit VERDICT's feedback is prose too
+  cases.push({ name: "audit feedback", data: { event: "audit", verdict: "approved", feedback: goalText } });
+
+  for (const c of cases) {
+    const line = goalLine(c.data as never);
+    assert.equal(
+      line.markdown,
+      true,
+      `${c.name}: a card carrying prose must be markdown, or its headings and lists render literally`,
+    );
+  }
+
+  // …and a branch whose body is a FIXED sentence stays plain: there is no markdown in it, and
+  // treating it as markdown would invite the model's wording to be reinterpreted as structure
+  // `event: "status"` is required: without it this routes to the catch-all branch, which is
+  // the "unknown event with prose" case and IS markdown. The fixture was what was wrong.
+  const fixed = goalLine({ event: "status", status: "done" } as never);
+  assert.equal(fixed.markdown, false, "a canned sentence is not markdown");
+  assert.ok(fixed.detail.length > 0, "precondition: it still carries a body");
+});

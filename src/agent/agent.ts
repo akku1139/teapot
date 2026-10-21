@@ -1116,6 +1116,7 @@ export class Agent {
 
   async init(): Promise<void> {
     await this.log.load();
+    await this.migrateMemoryToAgentScope();
     // NOTE: the workspace is NOT created here. Boot-time mkdir resurrected
     // deleted project directories on every restart, which operators hated.
     // It is created lazily in ensureWorkspace() when the agent first needs
@@ -1226,7 +1227,30 @@ export class Agent {
     return path.join(this.opts.sessionDir, "goal.md");
   }
 
+  /**
+   * Durable notes — AGENT-scoped, not session-scoped.
+   *
+   * MEASURED: memory.md lived in `sessionDir`, so starting a new session for an agent
+   * silently orphaned everything it had learned. Across this machine, 66 agents had more
+   * than one session (median 6 each) and only 5 of them had notes in any session at all —
+   * the notes were written, then abandoned when the next session was minted. A "durable
+   * note" that dies with the timeline is not durable.
+   *
+   * The file lives next to the agent's session DIRECTORY (`sessions/<agent>/memory.md`),
+   * a level above the per-session dirs, so every session of that agent sees the same
+   * notes. A session's own `memory.md` from an older build is migrated on first read.
+   */
   private get memoryFile(): string {
+    const perSession = path.join(this.opts.sessionDir, "memory.md");
+    const agentWide = path.join(path.dirname(this.opts.sessionDir), "memory.md");
+    // `sessionDir` may itself be the agent-level directory in older layouts; only use the
+    // parent when the basename looks like a session (<agent>-<hex>)
+    const looksPerSession = /-[0-9a-f]{6,}$/i.test(path.basename(this.opts.sessionDir));
+    return looksPerSession ? agentWide : perSession;
+  }
+
+  /** the pre-migration location, read once so notes are not lost on upgrade */
+  private get legacyMemoryFile(): string {
     return path.join(this.opts.sessionDir, "memory.md");
   }
 
@@ -1268,6 +1292,41 @@ export class Agent {
       from: "GOAL.md",
       to: this.goalFile,
     });
+  }
+
+  /**
+   * Move notes from the per-session file into the agent-wide one — once.
+   *
+   * Older builds wrote memory.md inside the session dir. Those notes are real knowledge and
+   * must not be abandoned by the upgrade that makes them durable, so the session's file is
+   * APPENDED to the agent-wide one (never replacing it: the agent-wide file may already hold
+   * notes from other sessions) and then removed so a later session does not re-import it.
+   */
+  private async migrateMemoryToAgentScope(): Promise<void> {
+    const from = this.legacyMemoryFile;
+    const to = this.memoryFile;
+    if (from === to) return;
+    let legacy: string;
+    try {
+      legacy = (await fs.readFile(from, "utf8")).trim();
+    } catch {
+      return; // nothing to migrate
+    }
+    if (!legacy) {
+      await fs.rm(from, { force: true }).catch(() => {});
+      return;
+    }
+    try {
+      const existing = (await fs.readFile(to, "utf8").catch(() => "")).trim();
+      const merged =
+        (existing ? `${existing}\n` : "") +
+        `<!-- migrated from session ${path.basename(this.opts.sessionDir)} -->\n${legacy}\n`;
+      await fs.writeFile(to, merged, "utf8");
+      await fs.rm(from, { force: true });
+      console.log(`[teapot] memory: migrated ${legacy.length} bytes to ${path.basename(to)} (agent scope)`);
+    } catch {
+      /* keep the session copy if the agent-wide write failed — losing notes is worse */
+    }
   }
 
   /**

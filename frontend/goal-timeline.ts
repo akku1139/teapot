@@ -100,6 +100,10 @@ export function goalLine(d: GoalEventData): GoalLine {
         label: "🔍 completion audit started",
         detail: String(d.verify ?? "").trim() || "checking the verification contract…",
         tone: "",
+        // NOT markdown, deliberately (#41): the contract is a COMMAND-shaped string
+        // ("npm test passes"). Rendering it as markdown invites `*` globs and `_` in a command
+        // to be reinterpreted as emphasis, which silently mangles the thing being verified.
+        // Code-fenced, so it is shown exactly as it will be checked.
         markdown: false,
         hasCard: true,
       };
@@ -141,7 +145,7 @@ export function goalLine(d: GoalEventData): GoalLine {
           label: "🎯 goal status updated",
           detail: String(d.text ?? "").trim() || "no status recorded",
           tone: "",
-          markdown: false,
+          markdown: true,
           hasCard: true,
         };
       // "done" is logged BEFORE the audit runs, so it must not read as final
@@ -171,7 +175,8 @@ export function goalLine(d: GoalEventData): GoalLine {
         // that was never delivered.
         detail: String(d.text ?? "").trim() || `the goal is now ${s}`,
         tone: "",
-        markdown: false,
+        // carries the goal TEXT when there is one, so it is markdown too
+        markdown: true,
         hasCard: true,
       };
     }
@@ -186,7 +191,11 @@ export function goalLine(d: GoalEventData): GoalLine {
         // that was never delivered (#51).
         detail: what || `the "${name || "goal"}" event carried no further detail`,
         tone: "",
-        markdown: false,
+        // the goal text is PROSE someone wrote, and it is routinely markdown
+        // (headings, lists, backticked paths). Rendering it as a fenced code block meant the
+        // operator's own goal came back as literal `## Foo` / `- bar`. `renderMarkdown` escapes
+        // all HTML first, so pointing it at this text is safe.
+        markdown: true,
         hasCard: true,
       };
     }
