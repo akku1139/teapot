@@ -165,14 +165,25 @@ export function shouldPin(following: boolean, v: Viewport): boolean {
  * @param v          the viewport as delivered
  */
 export function nextFollowing(following: boolean, cause: ScrollCause, v: Viewport): boolean {
-  // arriving at the tail always re-acquires following, whoever caused it: the reader has put
-  // themselves where the tail is, which is the definition of wanting to follow
-  if (atTail(v)) return true;
-  // everything except a person leaves intent alone — this is the line that stops our own
-  // writes and browser clamps from silently unpinning the view
-  if (cause !== "reader") return following;
-  // a person, and not at the tail: they left
-  return false;
+  /**
+   * A LAYOUT delivery never changes intent; it only re-acquires when the tail is in view.
+   *
+   * The order matters. This used to test `atTail(v)` FIRST and return true, which meant a
+   * reader who wheeled up 40px — still inside the 24px-plus-slack band around the tail — had
+   * follow silently re-granted on the very delivery that recorded their move, and the next
+   * layout change pinned them back. Reported as "スクロール追従時にユーザーからのスクロールが
+   * 無効化される". A person moving away is intent, whatever distance they moved.
+   */
+  if (cause !== "reader") {
+    // our own write, a browser clamp, or a resize: keep the state, but a delivery that lands
+    // at the tail (because WE put it there) means the tail is being followed
+    return following || atTail(v);
+  }
+  /**
+   * A person moved. Arriving AT the tail (within the acquire tolerance) is them choosing to
+   * follow again; anywhere else is them leaving.
+   */
+  return atTail(v);
 }
 
 /**

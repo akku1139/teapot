@@ -2825,6 +2825,34 @@ console.log("deep render ok: feed rows present");
     process.exit(1);
   }
 
+  /**
+   * A FOLLOWER growing to 3+ lines — the case reported as "3行以上に入力欄が拡大してると入力時に
+   * スクロールが戻る (2行の時は問題ない)".
+   *
+   * The case below this only ever grew the composer while PARKED, so it never exercised a
+   * follower at 3 lines. Two lines leaves the reader 40px from the tail, which is outside
+   * `AT_TAIL_PX`; each further line adds more distance, so if anything mis-measures the floor
+   * the error compounds with height rather than appearing at a threshold.
+   */
+  scrollTop = CONTENT - viewport;
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40));
+  for (const value of ["a", "a\nb", "a\nb\nc", "a\nb\nc\nd"]) {
+    growComposer(value, 20);
+    await new Promise((r) => setTimeout(r, 80));
+    const gap = CONTENT - scrollTop - viewport;
+    if (gap > 8) {
+      console.error(
+        `#scroll REGRESSION: a follower was left ${gap}px above the tail while the composer ` +
+          `grew to ${value.split("\n").length} line(s) (scrollTop ${scrollTop}, content ` +
+          `${CONTENT}, viewport ${viewport}) — reported as "3行以上に入力欄が拡大してると入力時に` +
+          `スクロールが戻る"`,
+      );
+      process.exit(1);
+    }
+  }
+  console.log("deep render ok: a follower stays at the tail as the composer grows line by line (#scroll)");
+
   // A reader who deliberately scrolled up must STILL be left alone: the fix must not have
   // been bought by following unconditionally.
   const parked = CONTENT - viewport - 1000;

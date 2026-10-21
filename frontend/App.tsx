@@ -4117,7 +4117,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             if (follow !== wasFollowing) setAtBottom(follow);
             // a delivery the READER caused means they are driving: refill the unskip budget
             if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
-            if (follow) {
+            /**
+             * NEVER re-pin a delivery the READER caused.
+             *
+             * `shouldPin()` allows pinning while within `STICKY_PX` of the tail, which is right
+             * for layout-driven deliveries — a streaming bubble that overshoots for one frame
+             * must not drop follow. Applied to a reader's own scroll it is a trap: they wheel up
+             * 40px, the delivery is classified `reader`, `nextFollowing` keeps follow because
+             * they are still inside the sticky range, and this line immediately drags them back
+             * to the tail. Reported as "スクロール追従時にユーザーからのスクロールが無効化される".
+             *
+             * A reader who moved away from the tail has expressed intent, whether or not they
+             * are still inside the sticky band. Sticky exists to survive LAYOUT, not to
+             * overrule a person.
+             */
+            if (follow && cause !== "reader") {
               if (missed()) setMissed(0);
               // #160: reaching the tail marks this session read — the scroll itself, not a
               // new event arriving while we happen to be here
@@ -4125,6 +4139,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               // a delivery we caused can land a few pixels short of the floor (fractional
               // heights, content still being laid out). While following, keep it exact.
               if (shouldPin(follow, now) && distanceToTail(now) > 0) pinToTail();
+            } else if (follow && atTail(now)) {
+              // the reader arrived AT the tail: nothing to correct, but the read marker and the
+              // missed counter still apply
+              if (missed()) setMissed(0);
+              markReadIfFollowing();
             }
             // reached the top → pull the next older page (infinite scroll up). Runs BEFORE
             // any follow logic: a reader at the very top is by definition not at the bottom,

@@ -256,3 +256,44 @@ async function waitFor(cond: () => boolean, ms = 8000): Promise<void> {
   }
   assert.fail("condition not met within the deadline");
 }
+
+test("a client size that arrives BEFORE the seed wins — the seed must stand down (#172)", async () => {
+  /**
+   * Reported: "稼働中のnanoにリサイズが効かない、nanoを一旦閉じて再度開けばリサイズが効いてる".
+   *
+   * The seed fires at ~30ms to give the pty a sane size before the shell prints its first
+   * prompt (`script` starts it at 0x0). A client that attached fast enough lost that race: the
+   * seed overwrote its size, and the program opened at the SEED's geometry. Re-opening the tab
+   * sent a fresh size, which is why that appeared to fix it.
+   *
+   * The rule: once a client has reported a size, its size is the truth and seeding stands down.
+   */
+  _resetTerminalsForTest();
+  const calls: { rows: number; cols: number }[] = [];
+  setTerminalResize(
+    (_child, rows, cols) => calls.push({ rows, cols }),
+    () => "/dev/pts/999",
+  );
+  const dir = mkdtempInRootSync("term-seedrace");
+  const r = createTerminal("a1", dir);
+  assert.ok(r.ok);
+
+  // a client attaches IMMEDIATELY and reports its real size, before the seed timer fires
+  const sink = () => {};
+  attachTerminal(r.terminal.id, sink);
+  resizeTerminal(r.terminal.id, sink, 55, 190);
+
+  //…now let the seed run
+  await new Promise((res) => setTimeout(res, 150));
+
+  // PRECONDITION: the seed really did get a chance to fire
+  assert.ok(calls.length >= 1, "the seed must have run, or this proves nothing");
+  const last = calls.at(-1)!;
+  assert.deepEqual(
+    last,
+    { rows: 55, cols: 190 },
+    "the client's size must be the FINAL one — a seed that lands after it leaves a running " +
+      "program (nano) at the wrong geometry until the tab is reopened",
+  );
+  closeTerminal(r.terminal.id);
+});

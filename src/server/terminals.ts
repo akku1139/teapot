@@ -69,6 +69,15 @@ export function setTerminalResize(fn: ResizeFn, slave: SlaveFn): void {
   slaveFn = slave;
 }
 
+/**
+ * The size a pty is seeded with before any client reports one.
+ *
+ * Only a placeholder: `script` starts the pty at 0x0, so the shell would print its first prompt
+ * wrapped at zero columns. Chosen to be a plausible terminal so that prompt looks normal.
+ */
+const SEED_ROWS = 30;
+const SEED_COLS = 100;
+
 /** keep this much recent output — enough for a full repaint after a reload */
 const BUFFER_BYTES = 200_000;
 /** how many terminals one agent may hold, matching the UI's 10-tab cap */
@@ -168,10 +177,22 @@ export function createTerminal(
    */
   const seed = (tries: number) => {
     if (t.exited) return;
-    // stop as soon as the slave resolves: re-applying to a pty that already has this size is
-    // a no-op inside the tracker, but there is no reason to keep a timer alive
     if (slaveFn?.(child)) {
-      resizeFn?.(child, 30, 100);
+      /**
+       * Seed the size ONLY if no client has reported one yet (#172).
+       *
+       * MEASURED bug: "稼働中のnanoにリサイズが効かない、閉じて再度開けば効く". The seed runs at
+       * ~30ms, applying 30x100 to the pty. A client that had already attached and sent its real
+       * size lost that race — and because the seed went through the same tracker, the client's
+       * size was then deduped as "already applied" if it happened to equal the seed, or simply
+       * overwritten by it. The program opened at the seed's geometry and only a NEW size (which
+       * arrives when the tab is re-attached, i.e. "close and reopen nano") fixed it.
+       *
+       * The seed exists for one reason: `script` starts the pty at 0x0, so a shell prints its
+       * prompt wrapped at zero columns before any client speaks. Once a client HAS spoken, its
+       * size is the truth and seeding must stand down.
+       */
+      if (t.sizes.size === 0) resizeFn?.(child, SEED_ROWS, SEED_COLS);
       return;
     }
     if (tries > 0) setTimeout(() => seed(tries - 1), 50);
