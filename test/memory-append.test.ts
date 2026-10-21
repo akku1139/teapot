@@ -335,6 +335,11 @@ test("the prompt tells the model to write AND search, since nothing is injected 
     assert.match(sys, /add_memory/, "must name the write tool");
     assert.match(sys, /read_memory\(query\)/, "and the search form");
     assert.match(sys, /unread note is an unwritten note/i, "and say plainly that nothing is injected");
+    // the DECISION BOUNDARY, taken from Codex's read_path.md: "always search" and "never
+    // search" are both wrong, and only the boundary stops a trivial request paying for a scan
+    assert.match(sys, /skip it for a self-contained request/i, "must say when NOT to search");
+    assert.match(sys, /by DEFAULT when/i, "and when to search by default");
+    assert.match(sys, /at most one or two/i, "and bound the cost of a pass");
   } finally {
     await agent.dispose();
   }
@@ -471,6 +476,88 @@ test("the prompt carries a bounded DIGEST of the notes — names, not contents (
     );
     // and it must point at the tool, or the model has names it cannot follow up on
     assert.match(digest, /read_memory\(query\)/, "the digest must say how to fetch the rest");
+  } finally {
+    await agent.dispose();
+  }
+});
+
+/**
+ * A note you cannot DATE is a note you cannot safely act on.
+ *
+ * `harvestLessons()` has always stamped lessons with where they came from — and the model
+ * could never see it, because the stamp was an HTML comment. So a lesson observed twenty
+ * minutes ago read with exactly the same authority as one inherited from a compaction three
+ * weeks ago.
+ */
+test("a harvested lesson carries READABLE provenance (#48)", async () => {
+  const root = mkdtempInRootSync("memprov-");
+  const sd = path.join(root, "alpha-a1b2c3d4");
+  fs.mkdirSync(sd, { recursive: true });
+
+  const agent = new Agent({
+    id: "alpha",
+    workspace: root,
+    sessionDir: sd,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn: async (): Promise<LlmResult> => ({ message: { role: "assistant", content: "done" } }),
+    autoContinue: false,
+  } as never) as Agent;
+  await agent.init();
+  try {
+    await (agent as unknown as { harvestLessons(s: string): Promise<void> }).harvestLessons(
+      "## Durable lessons\n- the cache lies after a rename\n",
+    );
+    const written = fs.readFileSync(path.join(root, "memory.md"), "utf8");
+    assert.match(written, /^## lessons from compaction/m, "the heading must say it came from a compaction");
+    assert.match(written, /^_from: session alpha-a1b2c3d4/m, "and name the session it came from");
+    assert.doesNotMatch(written, /^<!--/, "as text the model can read, not an HTML comment it cannot");
+    assert.match(written, /the cache lies/, "the lesson itself must survive");
+
+    // and the DIGEST must not be cluttered by the provenance line
+    const sys = (agent as unknown as { systemPrompt(): string }).systemPrompt();
+    const digest = sys.slice(sys.indexOf("Your durable notes"));
+    assert.doesNotMatch(digest, /_from:/, "provenance belongs to a search hit, not the index");
+  } finally {
+    await agent.dispose();
+  }
+});
+
+test("a search hit shows the heading and provenance it belongs to (#48)", async () => {
+  const root = mkdtempInRootSync("memhit-");
+  const sd = path.join(root, "alpha-b1c2d3e4");
+  fs.mkdirSync(sd, { recursive: true });
+  // a line that is meaningless without its heading
+  fs.writeFileSync(
+    path.join(root, "memory.md"),
+    "## Build\nrun pnpm build\n\n## Gotchas\n_the cache lies_\n\n## lessons from compaction 2026-01-02 03:04\n_from: session alpha-old, branch br0\n- the cache lies after a rename\n",
+  );
+  const seen: string[] = [];
+  let n = 0;
+  const script = [
+    () => ({ message: { role: "assistant", content: "", tool_calls: [toolCall("r", "read_memory", { query: "cache lies" })] } }),
+  ];
+  const agent = new Agent({
+    id: "alpha",
+    workspace: root,
+    sessionDir: sd,
+    llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+    chatFn: async (_c: unknown, msgs: { role: string; content?: unknown }[]): Promise<LlmResult> => {
+      for (const m of msgs) if (m.role === "tool") seen.push(String(m.content ?? ""));
+      const next = script[n++];
+      return (next ? (next as () => LlmResult)() : null) ?? { message: { role: "assistant", content: "done" } };
+    },
+    autoContinue: false,
+  } as never) as Agent;
+  await agent.init();
+  agent.enqueuePrompt("what do you know about the cache");
+  agent.start("t");
+  await agent.settled().catch(() => {});
+  try {
+    const out = seen.join("\n");
+    assert.ok(out.includes("cache lies"), "precondition: the query matched");
+    assert.match(out, /↳/, "each hit must be shown with its context");
+    assert.match(out, /Gotchas/, "…naming the section it sits under");
+    assert.match(out, /from: session alpha-old/, "…and where it came from");
   } finally {
     await agent.dispose();
   }

@@ -431,10 +431,21 @@ Most session state is not injected into prompts — fetch it with tools instead:
   panel) — do NOT also repeat the same content as a chat message; end the
   turn right after the call (a short "reported." is fine).
 - Be frugal: prefer small precise edits, avoid runaway loops.
-- When the operator asks you to remember something, WRITE it with add_memory. When
-  earlier context might be relevant again (a decision, a gotcha, where you left off),
-  SEARCH it with read_memory(query) and use what you find. Nothing is injected: an
-  unread note is an unwritten note.`;
+- When the operator asks you to remember something, WRITE it with add_memory.
+  Write the KIND of thing that stays true and saves work later: a decision and
+  why, a gotcha that cost time, a command that works here, where you left off.
+  Do not write a narrative of what you did — the log already has that.
+- WHEN to consult your notes — a decision boundary, not "always search":
+  skip it for a self-contained request (a one-line shell command, a simple
+  rewrite, a question about the current file). Use it by DEFAULT when the task
+  touches this workspace's history, conventions or prior choices; when the
+  operator asks for consistency with earlier work; when the task is ambiguous in
+  a way earlier context would settle; or when you are picking up something you
+  started before. If unsure, do one quick pass.
+- A quick pass is cheap and bounded: search the digest in your prompt with
+  read_memory(query), open at most one or two of the notes that match, and stop.
+  If nothing is relevant, carry on — do not keep searching, and do not read the
+  whole file "just in case". An unread note is an unwritten note.`;
 
 /**
  * A message whose ENTIRE text is parenthesised is an acknowledgement, not work.
@@ -810,7 +821,10 @@ export class Agent {
       const line = lines[i]!.trim();
       if (!line) continue;
       // provenance markers are bookkeeping, not content
-      if (/^<!--/.test(line)) continue;
+      // bookkeeping, not content: an old-style provenance comment, or a `_from:_` line — the
+      // latter is reachable through read_memory(query), where it is useful, but in a DIGEST it
+      // would be noise under every heading
+      if (/^<!--/.test(line) || /^_from:/.test(line)) continue;
       const isHeading = /^#{1,6}\s/.test(line);
       const isBullet = /^[-*]\s/.test(line);
       // headings and the FIRST line under one: enough to recognise a topic without
@@ -2902,13 +2916,44 @@ export class Agent {
         return "next";
       }
       const needle = query.toLowerCase();
-      const hits = mem
-        .split(/\r?\n/)
-        .filter((line) => line.toLowerCase().includes(needle));
+      const lines = mem.split(/\r?\n/);
+      const hits = lines.filter((line) => line.toLowerCase().includes(needle));
+      /**
+       * Give each hit its CONTEXT, not just the bare line.
+       *
+       * A matching line on its own is often meaningless — "the cache lies" says nothing
+       * without the heading it sits under. And a note needs to be dateable to be usable: a
+       * lesson harvested from a compaction three weeks ago should not read with the same
+       * authority as one from today. So each hit is reported with its nearest preceding
+       * heading and any `_from:_` provenance line.
+       */
+      const headingAt = (idx: number): string => {
+        for (let i = idx; i >= 0; i--) {
+          const l = lines[i]!.trim();
+          if (/^#{1,6}\s/.test(l)) return l;
+        }
+        return "";
+      };
+      const provenanceAt = (idx: number): string => {
+        // the `_from:_` line lives within a few lines above its lesson block
+        for (let i = idx; i >= Math.max(0, idx - 6); i--) {
+          const l = lines[i]!.trim();
+          if (/^_from:/.test(l)) return l.replace(/^_|_$/g, "");
+        }
+        return "";
+      };
+      const rendered = hits.slice(0, 40).map((line) => {
+        const idx = lines.indexOf(line);
+        const head = headingAt(idx);
+        const prov = provenanceAt(idx);
+        const where = [head, prov].filter(Boolean).join(" · ");
+        return where ? `${line}\n    ↳ ${where}` : line;
+      });
       await this.answerMeta(
         call,
         hits.length
-          ? `${hits.length} line(s) matching ${JSON.stringify(query)}:\n${hits.join("\n")}`
+          ? `${hits.length} line(s) matching ${JSON.stringify(query)}` +
+            `${hits.length > 40 ? ` (showing the first 40)` : ""}:\n${rendered.join("\n")}`
           : `(no line in memory.md matches ${JSON.stringify(query)} — ${mem.split(/\r?\n/).length} lines searched; call read_memory with no query to see all of it)`,
       );
       return "next";
@@ -4563,7 +4608,23 @@ export class Agent {
     const m = summary.match(/##\s*Durable lessons?\s*\n([\s\S]*?)(?=\n##\s|$)/i);
     const lessons = m?.[1]?.trim();
     if (!lessons) return;
-    const stamped = `\n<!-- lessons harvested from compaction ${new Date().toISOString()} -->\n${lessons}\n`;
+    /**
+     * PROVENANCE, in a form the model can READ.
+     *
+     * The stamp used to be an HTML comment. It recorded exactly the right thing — which
+     * session and which compaction a note came from — and nothing ever read it back: a
+     * `read_memory(query)` returned the lesson with no way to tell whether it was observed
+     * today or inherited from a compaction three weeks ago. A note you cannot date is a note
+     * you cannot safely act on.
+     *
+     * It is now a visible `_from:_` line, which survives search, survives the digest (it is
+     * indented under the heading and skipped as a continuation), and answers "where did this
+     * come from?" in the reply itself.
+     */
+    const session = path.basename(this.opts.sessionDir);
+    const stamped =
+      `\n## lessons from compaction ${new Date().toISOString().slice(0, 16).replace("T", " ")}\n` +
+      `_from: session ${session}, branch ${this.currentBranch}_\n${lessons}\n`;
     await fs.appendFile(this.memoryFile, stamped, "utf8").catch(() => {});
   }
 
