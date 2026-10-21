@@ -416,6 +416,19 @@ export default function App() {
     const f = feedEl();
     if (!f) return;
     /**
+     * Ignore the box change caused by the composer MEASURING itself.
+     *
+     * `autosizeComposer` has to collapse the textarea to read its content height (a tall box
+     * reports its own height), and that collapse shrinks the feed for one layout. Acting on it
+     * is the reported "入力欄が2行以上に拡大すると入力時にスクロールが戻る": the observer re-pinned the
+     * tail against the collapsed geometry, and the real height landed afterwards.
+     *
+     * The flag is cleared on the next frame, by which point the box is back at its real height —
+     * so every OTHER reason the feed can resize (a window resize, the drawer, the right panel, a
+     * row expanding) still reaches this function.
+     */
+    if (suppressFeedResizeUntilFrame) return;
+    /**
      * Record the geometry on EVERY box change, not only on scroll deliveries.
      *
      * `classifyScroll()` decides "layout vs reader" by comparing the delivered viewport height
@@ -3254,6 +3267,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * only then can the box be taller than its content.
    */
   let lastAppliedContentH = 0;
+  /**
+   * True while `autosizeComposer` is doing its `height: auto` round-trip.
+   *
+   * Measuring a textarea's content height REQUIRES collapsing it to one line first — a tall box
+   * reports `max(height, content)`, so there is no way to read the content height otherwise. That
+   * collapse changes the feed's box for one layout, and the feed's ResizeObserver would otherwise
+   * act on it, which is the reported "入力時にスクロールが戻る". The layout is unavoidable; reacting
+   * to it is not.
+   */
+  let suppressFeedResizeUntilFrame = false;
   const autosizeComposer = () => {
     if (!composerEl) return;
     const maximized = composerMaximized();
@@ -3291,12 +3314,29 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       lastAppliedContentH = 0;
       return;
     }
-    if (rawContentH < lastAppliedContentH) composerEl.style.height = "auto";
+    /**
+     * The `auto` round-trip is UNAVOIDABLE, and the real fix is elsewhere.
+     *
+     * A box with an explicit height reports `max(its height, its content)` as `scrollHeight`, so
+     * while it is tall the CONTENT height is unrecoverable (MEASURED: a 60px box holding one line
+     * of text reports 60; there is no expression that yields 20). Any conditional version of
+     * this collapse therefore either never shrinks the box or is always true — both were tried
+     * and both shipped a bug.
+     *
+     * So the round-trip stays, and the transient one-line layout it produces is suppressed where
+     * it does damage: `suppressFeedResize` below makes the feed's ResizeObserver skip the box
+     * change caused by this measurement. The layout still happens (it must, to measure), but the
+     * follow logic never sees it — which is what "入力時にスクロールが戻る" was.
+     */
+    suppressFeedResizeUntilFrame = true;
+    composerEl.style.height = "auto";
     const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
     // apply it unconditionally: an early return must NOT leave the box at `auto`, which
     // collapses a textarea to its `rows` default and looks like the composer ate the text.
     composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
     lastAppliedContentH = composerEl.scrollHeight;
+    // the box is back at its real height; let the observer resume next frame
+    requestAnimationFrame(() => { suppressFeedResizeUntilFrame = false; });
     // NOTE (#scroll): this function does NOT touch the feed's scroll position any more.
     //
     // The feed is a flex sibling, so growing this box shrinks the feed's viewport. That is

@@ -225,48 +225,49 @@ test("creating or selecting a theme ADOPTS it, or every edit is invisible (#ui)"
   );
 });
 
-test("autosizeComposer collapses to `auto` only when the content SHRANK (#scroll)", async () => {
+test("the composer's measuring round-trip cannot move the feed (#scroll)", async () => {
   /**
-   * Reported twice. First at 3 lines ("3行以上に入力欄が拡大してると入力時にスクロールが戻る"), then,
-   * after a wrong fix, at TWO lines — because the guard I used was always true.
+   * Reported three times, and the first two fixes were wrong for the same reason.
    *
-   * The bug: `height = "auto"` collapses the textarea to `rows={1}`, reading `scrollHeight`
-   * then forces layout at that collapsed height (growing `.feed` and queueing its
-   * ResizeObserver), and the real height is written back afterwards. The observer fires in the
-   * middle, on a layout the operator never should have seen.
+   * `autosizeComposer` must collapse the textarea to `height: auto` before reading
+   * `scrollHeight`: a box with an explicit height reports `max(height, content)`, so while it is
+   * tall the CONTENT height is unrecoverable (MEASURED: a 60px box holding one line reports 60,
+   * and no expression yields 20). Any conditional version therefore either never shrinks the box
+   * or is always true — both were shipped as fixes and both were wrong.
    *
-   * The first fix compared `scrollHeight` against `offsetHeight`. MEASURED: once the box is
-   * sized to its content those are EQUAL, so `contentHeight <= current + 1` is true at one, two
-   * and three lines alike — the collapse stayed unconditional, which is why the bug simply moved
-   * down to two lines.
-   *
-   * The only signal that distinguishes "grew" from "shrank" is the content height this function
-   * last APPLIED. Growing needs no round-trip at all; shrinking does, because a box taller than
-   * its content reports its own height.
+   * What must not happen is the feed treating that one-line layout as a real resize. So the
+   * measurement raises a flag the feed's ResizeObserver honours, and the layout happens without
+   * the follow logic ever seeing it.
    */
   const app = await readSource("frontend/App.tsx");
   const fn = app.slice(app.indexOf("const autosizeComposer = () => {"));
   const body = fn.slice(0, fn.indexOf("\n  };"));
 
-  const autoLines = body.split("\n").filter((l) => /style\.height\s*=\s*"auto"/.test(l));
-  assert.ok(autoLines.length >= 1, "precondition: the `auto` path still exists (shrinking needs it)");
+  assert.match(
+    body,
+    /style\.height\s*=\s*"auto"/,
+    "precondition: the measuring collapse exists — it is required, not optional",
+  );
+  assert.match(
+    body,
+    /suppressFeedResizeUntilFrame\s*=\s*true/,
+    "the measuring collapse must SUPPRESS the feed's resize handling — otherwise the observer " +
+      "acts on a one-line layout the operator never sees, which is the reported scroll-back",
+  );
+  assert.match(
+    body,
+    /suppressFeedResizeUntilFrame\s*=\s*false/,
+    "…and clear the flag once the real height is written, or every later resize is ignored too",
+  );
 
-  for (const line of autoLines) {
-    assert.match(
-      line,
-      /if\s*\(.*<\s*lastAppliedContentH|if\s*\(.*shrank/i,
-      '`height = "auto"` must be guarded by a SHRINK test against the last applied content ' +
-        "height. Comparing scrollHeight to offsetHeight cannot work: once the box is sized to " +
-        "its content they are equal, so the guard is always true and every keystroke forces an " +
-        "intermediate one-line layout (the reported scroll-back)",
-    );
-    // and it must NOT be the broken comparison
-    assert.doesNotMatch(
-      line,
-      /offsetHeight|contentHeight\s*<=/,
-      "comparing the box height to the content height is always true and was the wrong fix",
-    );
-  }
+  // the feed observer must actually honour it
+  const obs = app.slice(app.indexOf("const restoreAfterBoxChange = () => {"));
+  const obsBody = obs.slice(0, obs.indexOf("\n  };"));
+  assert.match(
+    obsBody,
+    /if\s*\(\s*suppressFeedResizeUntilFrame\s*\)\s*return/,
+    "the feed's ResizeObserver must skip while the composer is measuring itself",
+  );
 });
 
 test("an EMPTY composer is one line, whatever its placeholder wraps to (#ui)", async () => {
