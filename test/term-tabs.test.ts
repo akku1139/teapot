@@ -75,3 +75,24 @@ test("the right pane seeds on a DIFFERENT tab than the left (#172)", () => {
   assert.equal(rightPaneSeed(0, 1), -1);
   assert.equal(rightPaneSeed(-1, 0), -1);
 });
+
+/**
+ * #172 — a visible tab must never sit above "no shell here".
+ *
+ * The panes render "no shell here" when their index is out of range. The list can shrink behind
+ * their back in three ways now that terminals are server-owned: another client closes one, the
+ * reload restore replaces the whole list, and the server drops a terminal whose shell exited.
+ *
+ * The repair rule is pure, so it is tested rather than trusted.
+ */
+test("an out-of-range pane index is repaired to a real tab (#172)", async () => {
+  const { clampPaneIndex } = await import("../frontend/term-tabs.ts");
+  // the tab that was shown is gone and the list is shorter
+  assert.equal(clampPaneIndex(3, 2), 1, "past the end clamps to the last tab");
+  assert.equal(clampPaneIndex(1, 1), 0, "one past a single tab clamps to it");
+  assert.equal(clampPaneIndex(0, 0), -1, "an empty list has no tab to show");
+  assert.equal(clampPaneIndex(1, 3), 1, "a valid index is left alone");
+  // `-1` is "deliberately showing nothing" (the right pane in single-pane mode), so it stays:
+  // the effect only revives it when the OTHER pane would otherwise be empty
+  assert.equal(clampPaneIndex(-1, 3), -1, "-1 means no pane chosen, not the first tab");
+});

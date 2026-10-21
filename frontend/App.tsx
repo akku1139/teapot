@@ -79,7 +79,7 @@ function renderMarkdownCached(src: string): string {
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./term-tabs";
+import { clampPaneIndex, indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./term-tabs";
 import { pickAfterArchive } from "./archive-target";
 
 declare const __APP_VERSION__: string;
@@ -2959,23 +2959,55 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (!id) return;
     if (id === _termFollowAgent) return;
     _termFollowAgent = id;
-    if (!termTabs().some((t) => t.agentId === id)) {
-      // the selected agent has no tab yet (other agents own all tabs).
-      // The old code tried focusTab(findIndex→-1) and silently did nothing,
-      // leaving the pane stuck on "no shell here" or another agent's shell.
-      addTab(id);
-    } else {
-      // its tab exists — focus the LAST one for it, so returning to an agent
-      // lands on the shell you most recently opened rather than its first.
-      let last = -1;
-      termTabs().forEach((t, i) => {
-        if (t.agentId === id) last = i;
-      });
-      if (last >= 0) focusTab(last);
+    /**
+     * Do NOT spawn a shell on an agent switch (#172).
+     *
+     * This used to call `addTab(id)` whenever the newly selected agent had no tab, which meant
+     * every click through the sidebar started a shell on the server: "勝手に新しいタブを作る".
+     * With the terminals now server-owned the tab list is shared and survives a reload, so
+     * merely looking at another agent was accumulating shells nobody asked for — and each one
+     * held a pty.
+     *
+     * A shell is created when the operator asks for one (＋, or a keybinding), never as a side
+     * effect of selecting an agent. If the selected agent HAS a tab, focus it — that part is
+     * what makes the panel feel attached to the selection.
+     */
+    const mine = termTabs()
+      .map((t, i) => ({ t, i }))
+      .filter((x) => x.t.agentId === id);
+    if (mine.length) {
+      // its tab exists — focus the LAST one for it, so returning to an agent lands on the shell
+      // you most recently opened rather than its first
+      focusTab(mine[mine.length - 1]!.i);
     }
   });
 
-  // drawer height drag (double-click resets)
+  /**
+   * Keep both pane indices pointing at a real tab (#172).
+   *
+   * The panes render "no shell here" when their index is out of range, so ANY change that
+   * shortens the list behind their back leaves a visible tab with an empty pane beneath it —
+   * reported as "タブが生えたのに no shell here のことがある". Three ways that happens:
+   *
+   *   - another client closes a terminal (the list is server-owned now, so a remote ✕ removes a
+   *     row here with no local `closeTab`)
+   *   - the reload restore replaces the whole list with the server's
+   *   - the server drops a terminal whose shell exited (`kind: "exit"` filters the list)
+   *
+   * This runs as an effect rather than at each site, because every one of those paths lands in
+   * the same signal — and the next such path will too.
+   */
+  createEffect(() => {
+    const n = termTabs().length;
+    // one rule, shared with the close path: `clampPaneIndex` in term-tabs.ts
+    const l = clampPaneIndex(paneL(), n);
+    if (l !== paneL()) setPaneL(l);
+    if (splitView()) {
+      const r = clampPaneIndex(paneR(), n);
+      if (r !== paneR()) setPaneR(r);
+    }
+  });
+
   const startGrip = (e: PointerEvent) => {
     e.preventDefault();
     const startY = e.clientY;
