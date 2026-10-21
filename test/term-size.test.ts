@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import {
+  applyPtySize,
   TermSizeTracker,
   TERM_RESIZE_DEBOUNCE_MS,
 } from "../src/server/term-size.ts";
@@ -142,4 +143,51 @@ test("resolvePtySlave returns null for a plain pipe — never a bogus path (#20)
   } finally {
     child.kill("SIGKILL");
   }
+});
+
+test("applying a size never writes to stdin — it is stty -F on the pty device", async () => {
+  // The reported bug: the size was applied by writing `stty rows R cols C\n` into the child's
+  // stdin. That only works while a SHELL is reading; when vim/less/a REPL owns the tty the line
+  // arrives as KEYSTROKES and lands in the operator's document. This pins the mechanism.
+  const executed: { cmd: string; args: string[] }[] = [];
+  const fakeSpawn = ((cmd: string, args: string[]) => {
+    executed.push({ cmd, args });
+    return { on: () => {}, kill: () => {} };
+  }) as unknown as typeof import("node:child_process").spawn;
+
+  // a REAL pty via `script`, so the slave genuinely resolves (a fake pid would prove nothing:
+  // resolution walks /proc for the device, and the whole point is that the device is what
+  // receives the ioctl)
+  const child = spawn("script", ["-qec", "sleep 5", "/dev/null"], { stdio: "pipe" });
+  try {
+    let slave: string | null = null;
+    for (let i = 0; i < 40 && !slave; i++) {
+      await sleep(50);
+      slave = resolvePtySlave(child);
+    }
+    assert.ok(slave, "precondition: the pty must resolve, or this proves nothing");
+
+    const applied = applyPtySize(child, 40, 120, fakeSpawn);
+    assert.equal(applied, true, "a resolvable pty must be resized");
+    assert.equal(executed.length, 1);
+    assert.equal(executed[0]!.cmd, "stty");
+    // `-F <device>` is the ioctl form; a bare `stty rows` would be the stdin form
+    assert.deepEqual(executed[0]!.args.slice(0, 2), ["-F", slave]);
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
+test("an unresolvable pty does NOTHING rather than typing into the terminal", async () => {
+  const executed: string[] = [];
+  const fakeSpawn = ((cmd: string) => {
+    executed.push(cmd);
+    return { on: () => {}, kill: () => {} };
+  }) as unknown as typeof import("node:child_process").spawn;
+  // pid 0 / a dead pid cannot be walked, so no slave resolves. The old fallback would have
+  // written `stty rows 40 cols 120` to stdin here — the exact bug, on the exact path.
+  const child = { pid: 0, stdin: { writable: true } } as unknown as import("node:child_process").ChildProcess;
+  const applied = applyPtySize(child, 40, 120, fakeSpawn);
+  assert.equal(applied, false, "nothing to apply to");
+  assert.deepEqual(executed, [], "nothing may be spawned — and nothing typed");
 });

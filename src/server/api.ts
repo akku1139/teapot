@@ -24,7 +24,7 @@ import {
   setTerminalResize,
   writeTerminal,
 } from "./terminals.ts";
-import { TermSizeTracker, resolvePtySlave } from "./term-size.ts";
+import { applyPtySize, TermSizeTracker, resolvePtySlave } from "./term-size.ts";
 import { expandTilde, homeDir } from "../home.ts";
 import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
@@ -227,31 +227,16 @@ const MAX_WS_CLIENTS = 64;
   //
   // The slave is resolved per call rather than cached: `script` may have exited
   // and been replaced, and a stale device path would resize someone else's pty.
-  // The stdin write stays as the fallback for hosts without /proc (macOS), so
-  // no platform loses resize — it only loses the improvement.
+  //
+  // There is deliberately NO stdin fallback. Writing `stty rows R cols C` into the child's
+  // stdin is the bug that was reported twice: when a full-screen program owns the tty it
+  // receives that line as KEYSTROKES, so it lands in the operator's document. A resize that
+  // cannot be applied is better than one that types into vim — so this does nothing instead.
+  // Hosts without /proc are covered by `resolvePtySlave`'s `ps` path.
   const setTermSize = (child: ChildProcess, rows: number, cols: number): void =>
     termSizes.request(child, rows, cols, (r, c) => {
-      const slave = resolvePtySlave(child);
-      if (slave) {
-        const r2 = spawn("stty", ["-F", slave, "rows", String(r), "cols", String(c)], {
-          stdio: "ignore",
-        });
-        // a failed ioctl must fall through to the stdin path, not silently drop
-        // the resize: `stty` exits non-zero when the device is not a tty
-        r2.on("error", () => writeSizeViaStdin(child, r, c));
-        r2.on("close", (code) => {
-          if (code !== 0) writeSizeViaStdin(child, r, c);
-        });
-        return;
-      }
-      writeSizeViaStdin(child, r, c);
+      applyPtySize(child, r, c);
     });
-
-  /** last-resort resize for a host with no /proc: type it into the shell */
-  const writeSizeViaStdin = (child: ChildProcess, r: number, c: number): void => {
-    if (!child.stdin?.writable) return;
-    child.stdin.write(`stty rows ${r} cols ${c} >/dev/null 2>&1\n`);
-  };
 
 
   // ---- realtime events over WebSocket (replaces SSE for the web UI) ----

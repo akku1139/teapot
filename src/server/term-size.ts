@@ -44,8 +44,8 @@
  *   - keys state by CHILD, not agent: one agent may hold up to 10 terminals,
  *     each with its own size and its own foreground program
  */
-import type { ChildProcess } from "node:child_process";
 import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 /**
  * The pty slave device behind a child, or null when it cannot be determined.
@@ -76,8 +76,59 @@ export function resolvePtySlave(child: ChildProcess | null | undefined): string 
     const found = ptySlaveOf(candidate);
     if (found) return found;
   }
-  return null;
+  // No /proc (macOS): ask `ps` which tty the child's descendants are on. This is what makes
+  // it safe to drop the old "type `stty` into stdin" fallback — that path put a command line
+  // into the terminal itself, so a foreground program (vim, less, a REPL) received it as
+  // KEYSTROKES and it landed in the operator's buffer. A tty name from `ps` can be resized
+  // with `stty -F`, which emits nothing into the stream.
+  return ptySlaveViaPs(pid);
 }
+
+/**
+ * The controlling tty of `pid` or any descendant, via `ps` (for hosts without /proc).
+ *
+ * `ps -o tty=` prints "ttys003" or "pts/3"; both name a device under /dev. A process with no
+ * controlling terminal prints "??" (Linux) or "-", and those are skipped.
+ */
+function ptySlaveViaPs(pid: number): string | null {
+  try {
+    /**
+     * Only the child's OWN tty, never one inherited from our process.
+     *
+     * `ps -o tty=` reports the CONTROLLING terminal, which a plain-pipe child still inherits
+     * from whoever started the server — so naively taking it returns the tty of the shell that
+     * launched teapot, and a resize would then ioctl THAT. Measured: a piped `/bin/sh` "resolved"
+     * to the test runner's own tty. So require that the process has a tty which is NOT ours and
+     * NOT our parent's, or report nothing.
+     */
+    const self = process.pid;
+    const out = spawnSync("ps", ["-e", "-o", "pid=,ppid=,tty="], { encoding: "utf8" }).stdout ?? "";
+    const rows = out
+      .split("\n")
+      .map((l) => l.trim().split(/\s+/))
+      .filter((c) => c.length >= 3 && Number.isInteger(Number(c[0])))
+      .map((c) => ({ pid: Number(c[0]), ppid: Number(c[1]), tty: c[2]! }));
+    const ttyOf = (p: number) => rows.find((r) => r.pid === p)?.tty;
+    // the tty we and our own shell are on is inherited by children and proves nothing
+    const inherited = new Set([ttyOf(self), ttyOf(process.ppid)].filter(Boolean) as string[]);
+
+    const seen = new Set<number>();
+    const stack = [pid];
+    let found: string | null = null;
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      const tty = ttyOf(cur);
+      if (tty && tty !== "??" && tty !== "-" && !inherited.has(tty)) found = tty;
+      for (const r of rows) if (r.ppid === cur) stack.push(r.pid);
+    }
+    return found ? `/dev/${found}` : null;
+  } catch {
+    return null;
+  }
+}
+
 
 /** pids whose parent is `pid` (empty on a host without /proc) */
 function childrenOf(pid: number): number[] {
@@ -173,4 +224,32 @@ export class TermSizeTracker {
     for (const st of this.states.values()) if (st.timer) clearTimeout(st.timer);
     this.states.clear();
   }
+}
+
+/**
+ * Apply a size to a child's pty — the ONLY way this codebase resizes a terminal.
+ *
+ * It shells out to `stty -F <slave>`, which is ioctl(TIOCSWINSZ) on the pty DEVICE. Nothing is
+ * written to the child's stdin, so nothing can be typed into a foreground program.
+ *
+ * That distinction is the whole point (reported twice): writing `stty rows R cols C\n` into
+ * stdin only works while a SHELL is reading it. When vim, less or a REPL owns the tty, the
+ * PROGRAM reads, so the line arrives as KEYSTROKES and lands in the operator's document.
+ *
+ * When the slave cannot be resolved this does NOTHING. A resize that cannot be applied is
+ * strictly better than one that types into somebody's buffer.
+ *
+ * `spawnFn` is injectable so a test can observe what would have been executed.
+ */
+export function applyPtySize(
+  child: ChildProcess | null | undefined,
+  rows: number,
+  cols: number,
+  spawnFn: typeof spawn = spawn,
+): boolean {
+  if (!child || rows <= 0 || cols <= 0) return false;
+  const slave = resolvePtySlave(child);
+  if (!slave) return false;
+  spawnFn("stty", ["-F", slave, "rows", String(rows), "cols", String(cols)], { stdio: "ignore" });
+  return true;
 }
