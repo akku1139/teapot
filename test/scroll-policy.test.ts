@@ -156,3 +156,49 @@ test("gapToTail never goes negative (#scroll)", () => {
   assert.equal(gapToTail(vp(0)), 1200);
   assert.equal(gapToTail(null), Number.POSITIVE_INFINITY);
 });
+
+test("a delivery that arrives BEFORE the resize is observed is still layout (#scroll, Firefox)", () => {
+  /**
+   * Reported as Firefox-only: with the composer grown, typing pulled the timeline back to the
+   * un-grown height. The cause is ORDERING, not geometry.
+   *
+   * Firefox can deliver the scroll produced by native scroll anchoring BEFORE the app has
+   * observed the resize. If the policy's remembered height/viewport only advance inside the
+   * scroll handler, that delivery is compared against the PRE-resize geometry — no change is
+   * seen — and the movement is attributed to the reader, dropping follow.
+   *
+   * The fix is to record the geometry on every box change as well, so whichever fires first,
+   * the comparison is against current geometry. These two assertions pin both orderings:
+   */
+  const grown = vp(TAIL, 2000, 760); // composer grew: viewport 800 -> 760
+
+  // (a) resize observed first (Chrome's ordering): classified as layout, follow survives
+  assert.equal(classifyScroll(grown, null, 2000, 800), "layout");
+  assert.equal(nextFollowing(true, "layout", grown), true);
+
+  /**
+   * (b) THE FIREFOX ORDERING: the resize was NOT yet observed when the delivery arrived, so
+   * there is no viewport delta to see and the movement is misattributed to the reader.
+   *
+   * This is why the observer must record the geometry on every box change: with that record
+   * present, (b) never happens. The assertion here documents the residual damage if it did —
+   * and the reason follow is still recoverable rather than lost forever is `shouldPin()` plus
+   * the re-pin the observer performs while following.
+   */
+  assert.equal(classifyScroll(grown, null, 2000, 760), "reader");
+  // the reader did not move; the FLOOR did. The sticky range is what keeps follow alive across
+  // that 40px, which is the whole reason it exists.
+  assert.ok(shouldPin(true, grown), "a viewport shrink of 40px is inside the sticky range");
+  assert.equal(
+    nextFollowing(true, "reader", grown),
+    false,
+    "misattributed, follow is dropped — which is the bug, and why the geometry must be recorded",
+  );
+});
+
+test("a reader parked mid-history is not rescued by being near the tail (#scroll)", () => {
+  // the counterpart: the tolerance must not be so wide that a real departure reads as at-tail
+  const parked = vp(TAIL - STICKY_PX - 200, 2000, 760);
+  assert.ok(!atTail(parked), "precondition: genuinely away");
+  assert.equal(nextFollowing(true, "reader", parked), false, "a real departure still unpins");
+});

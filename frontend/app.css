@@ -562,7 +562,20 @@ html[data-feedcv="on"] .feed > .msg {
 }
 /* symmetric vertical padding: 14/8 was asymmetric for no reason and left the
    last row hugging the composer while the first had room */
-.feed { flex: 1; overflow-y: auto; padding: var(--space-5) 0; min-height: 0; overscroll-behavior: contain; }
+/* `overflow-anchor: none` is REQUIRED, and only Firefox shows what happens without it.
+   Browser scroll anchoring adjusts `scrollTop` to keep a "anchor" element in place when content
+   above changes size. Firefox applies it aggressively when the COMPOSER resizes, so typing into
+   a multi-line composer moved `scrollTop` by the exact height the composer gained — with no
+   reader input at all. That adjustment arrives as a normal scroll event, so from the feed's
+   point of view the reader pulled the timeline up, and follow was dropped. Chrome's anchoring
+   is conservative enough here that the same code looked correct, which is why this reproduced
+   in one browser only.
+
+   teapot does its own anchoring where it needs it (`firstVisibleRow()` / `scrollTop += delta`
+   when NOT following), and re-pins when following, so the native mechanism is pure
+   interference: it moves the viewport behind the policy's back. Off, deliberately — the same
+   choice fluxer, opencode and deepseek-harness all make on their scrollport. */
+.feed { flex: 1; overflow-y: auto; padding: var(--space-5) 0; min-height: 0; overscroll-behavior: contain; overflow-anchor: none; }
 .msg {
   display: flex; gap: var(--space-6); padding: var(--space-2) var(--space-6);
   /* a hover tint that FADES reads as a considered surface; one that snaps on
@@ -980,6 +993,20 @@ details.reasoning .thinkscroll {
 .composer button:hover { opacity: .9; }
 .composer label { color: var(--dim); font-size: var(--text-xs); display: flex; gap: var(--space-2); align-items: center; white-space: nowrap; }
 .hint { color: var(--dim); font-size: var(--text-xs); margin-top: 5px; }
+/* The FLASH hint takes no layout space.
+   It used to be a normal child of the composer block, so every flash ("copied", "memory saved",
+   a background job finishing) grew the column by a line and pushed the composer and the
+   timeline up, then dropped them back when it cleared. Absolutely positioned under the box
+   instead: readable while it is there, zero layout at any other moment.
+   `pointer-events: none` because it overlaps the composer's padding and must not swallow
+   clicks meant for the textarea. */
+.composer .flashhint {
+  position: absolute; left: 22px; bottom: 3px; right: 22px;
+  margin: 0; pointer-events: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  animation: flashhint-in var(--dur-fast) var(--ease-out);
+}
+@keyframes flashhint-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 /* help section: a labelled reference list. Each row is a term and its explanation, with the
    term in its own column so the eye can scan down it without reading the prose. */
 .helpsec { margin-bottom: var(--space-5); }

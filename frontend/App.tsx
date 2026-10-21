@@ -415,16 +415,25 @@ export default function App() {
     feedRoRaf = 0;
     const f = feedEl();
     if (!f) return;
+    /**
+     * Record the geometry on EVERY box change, not only on scroll deliveries.
+     *
+     * `classifyScroll()` decides "layout vs reader" by comparing the delivered viewport height
+     * against the previous sample. Those samples used to advance only inside the scroll handler
+     * — so when the composer resized and the browser delivered a scroll event in the SAME frame,
+     * the handler compared against the PRE-resize height, saw no change, and attributed the
+     * movement to the reader. Follow was dropped.
+     *
+     * That ordering is browser-dependent, which is why this reproduced in Firefox only: Chrome
+     * delivered the scroll after the resize had been observed, Firefox before. Taking the
+     * sample here removes the dependency on which fires first.
+     */
+    lastSampleHeight = f.scrollHeight;
+    lastSampleViewport = f.clientHeight;
     if (atBottom()) {
       // following: re-pin to the NEW maximum. Assigning scrollHeight lets the browser clamp,
       // so this is correct without knowing the new viewport height.
       pinToTail();
-      // The pin is a layout response, so any scroll event it produces must not be attributed
-      // to the reader — but it must not authorise the reader's NEXT move either. Record the
-      // new geometry so `classifyScroll` sees a matching sample, and let the delivery (if any)
-      // consume the ledger.
-      lastSampleHeight = f.scrollHeight;
-      lastSampleViewport = f.clientHeight;
       return;
     }
     const anchorRow = firstVisibleRow(f);
@@ -432,7 +441,12 @@ export default function App() {
     const el = f.querySelector<HTMLElement>(anchorRow.sel);
     if (!el) return;
     const delta = el.getBoundingClientRect().top - anchorRow.top;
-    if (delta) f.scrollTop += delta;
+    if (delta) {
+      f.scrollTop += delta;
+      // this write is ours: record it so the scroll event it produces cannot be read as the
+      // reader having moved (see `classifyScroll`)
+      ledger = { top: f.scrollTop, height: f.scrollHeight };
+    }
     // the box changed, so the gap did too — keep the pill honest
     publishGap(tailSample());
   };
@@ -4412,8 +4426,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * ⚙ settings → ❔ help, where it is found when it is needed; a keyboard reference is
              * something you consult, not something you stare at while typing.
              */}
+            {/**
+             * The hint is an OVERLAY, not a sibling.
+             *
+             * When it was a normal child of the composer block, showing it pushed the whole
+             * column up by its height and hiding it dropped it back — so every flash message
+             * (a background job finishing, "copied", "memory saved") bounced the composer and
+             * with it the timeline. Reported as "時々届く通知によって入力欄が上下する".
+             *
+             * Absolutely positioned below the box, so it is readable when it appears and costs
+             * zero layout at any other moment.
+             */}
             <Show when={flash()}>
-              <div class="hint">{flash()}</div>
+              <div class="hint flashhint">{flash()}</div>
             </Show>
           </div>
         </Show>
@@ -4936,7 +4961,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               >
                 <span>compacted</span>
                 <b>{sel()!.stats.compactions ?? 0}</b>
-                <em>{sel()!.stats.compactions ? "times" : "never"}</em>
+                {/* no unit line: "times" restated the label, and "never" is already visible from the 0 */}
               </div>
               <Show when={(sel()!.stats.costUsd ?? 0) > 0}>
                 <div
@@ -4945,7 +4970,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 >
                   <span>cost</span>
                   <b>${costFmt(sel()!.stats.costUsd ?? 0)}</b>
-                  <em>this session</em>
+                  {/* the label says cost; "this session" restated the panel's own scope */}
                 </div>
               </Show>
               <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
@@ -4955,7 +4980,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 >
                   <span>cached</span>
                   <b>{Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}%</b>
-                  <em>of input</em>
+                  {/* "of input" is implied by the `cached` label */}
                 </div>
               </Show>
             </div>
@@ -6370,7 +6395,16 @@ function ThemeEditor(props: {
 
   /** write one field of the theme being edited, and persist immediately */
   const patch = (fn: (t: CustomTheme) => CustomTheme) => {
-    const id = editingId();
+    /**
+     * Patch the theme the editor is SHOWING, which is `editing()` — not `editingId()`.
+     *
+     * `editing()` falls back to the first theme when the signal names one that no longer exists
+     * (or nothing at all), so the UI renders a real theme. `patch()` read the raw signal and
+     * bailed when it was empty, so the editor was showing a theme that every edit silently
+     * failed to touch: "choose image… で画像選択したのに何も変わらない". The two must resolve the
+     * same way, or the panel lies about what it is editing.
+     */
+    const id = editing()?.id;
     if (!id) return;
     // apply the palette live so the operator sees the change as they type
     const next = props.themes().map((t) => (t.id === id ? fn(t) : t));

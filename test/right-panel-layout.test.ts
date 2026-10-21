@@ -165,3 +165,27 @@ test("a grouped row sits at the SAME x as its head row (#ui)", async () => {
     }
   }
 });
+
+test("the feed opts OUT of native scroll anchoring, or Firefox moves it behind our back (#ui)", async () => {
+  /**
+   * Reported as a FIREFOX-ONLY bug: "入力枠拡大時に入力すると非拡大時の高さに合わせてスクロールが
+   * 戻る", while Chrome was fine.
+   *
+   * Browser scroll anchoring adjusts `scrollTop` to keep an anchor element in place when content
+   * above changes size. Firefox applies it when the COMPOSER resizes, so typing into a
+   * multi-line box moved `scrollTop` by the composer's own growth — with no reader input. That
+   * arrives as an ordinary scroll event, so the feed's policy read it as the reader pulling the
+   * timeline up and dropped follow. Chrome's anchoring is conservative enough there that the
+   * same code looked correct, which is why it reproduced in one browser only.
+   *
+   * teapot does its own anchoring (anchor restore when reading, re-pin when following), so the
+   * native one is pure interference.
+   */
+  const css = await readSource("frontend/app.css");
+  const feed = cssRuleBody(css, ".feed");
+  assert.match(
+    feed,
+    /overflow-anchor:\s*none/,
+    "the feed must disable native scroll anchoring — our policy owns the scroll position",
+  );
+});
