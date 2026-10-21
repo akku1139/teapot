@@ -25,6 +25,13 @@ docs/           design notes and surveys
    Commit as the configured identity only. (See issue #145 — agents doing this
    introduced bogus contributors.)
 2. **Never `git push --force` and never rewrite published history.**
+
+   That includes a **release tag**. Once `Publish to npm` has succeeded for `vX.Y.Z`, that
+   version is on npm **permanently** — `git tag -d` + re-tag only makes the next publish fail
+   with `E409` (version already exists) while npm keeps the OLD tarball. Measured: v0.34.0 was
+   tagged, its Test workflow failed on `typecheck:scripts`, and re-tagging after the fix left
+   npm serving a tree without that fix. The only correct move is a NEW version (`0.34.1`) —
+   a published version is never rewritten.
 3. **Do not commit secrets.** `teapot.config.json` holds API keys and is
    gitignored — keep it that way. `public/` is a build output and is gitignored.
 4. **Do not rewrite a file you did not read.** Prefer small, precise edits.
