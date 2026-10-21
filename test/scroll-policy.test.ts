@@ -1,172 +1,158 @@
 /**
- * The scroll-follow rule, tested against every way the feed can change shape.
+ * The scroll-follow policy, tested where the DECISION lives.
  *
- * Follow is a STATE, and the only thing that may turn it off is the reader moving up.
- * These cases are the ways geometry can change without the reader touching anything —
- * none of them may flip the state, and a deliberate scroll up must.
+ * The reported symptom has come back three times: "スクロール追従が外れる". Each earlier fix
+ * inferred "did the reader scroll up?" from geometry sampled at two moments, and that question
+ * is not answerable that way — four different things move the viewport:
  *
- * The case at the top is the reported bug this design exists to fix, and it is the one
- * the previous sample-comparison rule could not express: the composer growing shrinks the
- * feed's VIEWPORT, which increases `gapToTail` without moving `scrollTop`.
+ *   1. the reader scrolls / drags / pans
+ *   2. WE write scrollTop to follow the tail (the event arrives later)
+ *   3. content above shrinks and the browser CLAMPS scrollTop to the new floor
+ *   4. the viewport shrinks (the composer growing) so the floor moves without top moving
+ *
+ * 2, 3 and 4 all look identical to a direction test. `classifyScroll()` separates them using
+ * the observed-top ledger and the content height, so every case below is a classification this
+ * file can actually make — not a slack constant widening until the symptom hides.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  TAIL_SLACK_PX,
+  AT_TAIL_PX,
+  STICKY_PX,
   atTail,
+  classifyScroll,
+  distanceToTail,
+  floorOf,
   gapToTail,
-  movedAway,
+  nextFollowing,
+  shouldPin,
   shouldShowJumpToPresent,
-  tailOffset,
 } from "../frontend/scroll-policy.ts";
 
-/** geometry helpers: the viewport is 600px tall, content starts at `height` */
-const at = (top: number, height: number, viewport = 600) => ({ top, height, viewport });
-/** the reader sitting at the tail of `height`-tall content */
-const tail = (height: number, viewport = 600) => at(height - viewport, height, viewport);
+const vp = (top: number, height = 2000, viewport = 800) => ({ top, height, viewport });
+/** the tail of a 2000-tall content in an 800 viewport */
+const TAIL = 1200;
 
-/* ---------- the reported bug ---------- */
+test("the tail is a real tolerance, not a fudge for ambiguity (#scroll)", () => {
+  assert.ok(atTail(vp(TAIL)), "exactly at the floor is at the tail");
+  assert.ok(atTail(vp(TAIL - AT_TAIL_PX)), "a few px short is still the tail");
+  assert.ok(!atTail(vp(TAIL - AT_TAIL_PX - 1)), "past the tolerance is not");
+  // content shorter than the viewport has no tail to be away from
+  assert.equal(distanceToTail(vp(0, 400, 800)), 0);
+  assert.ok(atTail(vp(0, 400, 800)), "a feed that does not overflow is always at its tail");
+  assert.equal(floorOf(vp(0, 400, 800)), 0, "the floor cannot go negative");
+});
 
-test("the composer growing must NOT count as scrolling away (#scroll, #179)", () => {
-  // MEASURED shape of the report "2行以上に拡大した入力欄に入力をするとちょっと上にスクロールする":
-  // the composer grows 40px, so the feed's viewport SHRINKS by 40px. Content is untouched
-  // and `scrollTop` does not move — but the gap to the tail becomes 40px.
-  const before = tail(2000, 800); // scrollTop 1200, at the tail
-  const after = at(before.top, 2000, 760); // same top, same height, viewport -40
-  assert.equal(gapToTail(after), 40, "the viewport shrink really does open a 40px gap");
+test("a viewport SHRINK — the composer growing — is not the reader leaving (#scroll)", () => {
+  // the exact case that was reported and re-reported: growing the composer shrinks the feed's
+  // viewport, so the reader is suddenly further from the tail without having moved at all
+  const before = vp(TAIL, 2000, 800);
+  const after = vp(TAIL, 2000, 760); // 40px taken by the composer
   assert.equal(
-    movedAway(after, before),
-    false,
-    "the reader did not move — this must not stop following, or the pin below never runs",
+    classifyScroll(after, null, before.height, before.viewport),
+    "layout",
+    "a viewport change is layout: the floor moved and scrollTop did not",
+  );
+  // …and even if it were misclassified, following must survive a viewport change
+  assert.ok(
+    nextFollowing(true, "programmatic", after),
+    "a viewport shrink must never turn following off",
   );
 });
 
-test("a viewport shrink of ANY size is not 'away', even past the slack (#scroll)", () => {
-  // a taller composer, a window resize, the right panel opening: all shrink the viewport.
-  // None is a scroll. The old gap-based test called this "away" once it exceeded the slack.
-  const before = tail(3000, 900);
-  const after = at(before.top, 3000, 300); // viewport shrank by 600px
-  assert.equal(gapToTail(after), 600);
-  assert.equal(movedAway(after, before), false);
-  // …and the pin is what fixes it: assigning scrollHeight clamps to the real maximum
-  assert.equal(tailOffset(after), 3000);
+test("our OWN write, delivered late, is not the reader (#scroll)", () => {
+  // we wrote to the floor; the event arrives after more content landed
+  const ledger = { top: TAIL, height: 2000 };
+  const after = vp(TAIL);
+  assert.equal(classifyScroll(after, ledger, 2000), "programmatic");
 });
 
-/* ---------- the ordinary growth paths ---------- */
-
-test("content growing below the viewport keeps following (#scroll)", () => {
-  // live bubble streaming a delta, a tool result arriving, a compaction divider appearing
-  for (const grown of [1400, 2000, 5000]) {
-    const before = tail(1000);
-    const after = at(before.top, grown);
-    assert.equal(movedAway(after, before), false, `growth to ${grown}px is not a scroll`);
-  }
+test("a browser CLAMP after a shrink is not the reader (#scroll)", () => {
+  // content shrank above the reader: scrollTop is clamped down to the NEW floor
+  const ledger = { top: 1200, height: 2000 };
+  const now = vp(900, 1700); // shrank by 300; the browser moved us to the new floor
+  assert.equal(floorOf(now), 900);
+  assert.equal(
+    classifyScroll(now, ledger, 2000),
+    "layout",
+    "a height change is layout — the reader cannot change scrollHeight",
+  );
+  // and even without the height hint, the `min(ledger, floor)` rule catches it
+  assert.equal(
+    classifyScroll(now, ledger, 1700),
+    "programmatic",
+    "landing exactly on min(ledger, floor) is a clamp, not a person",
+  );
 });
 
-test("a SHRINK is not 'away' — the browser clamps scrollTop, the reader did not move (#scroll)", () => {
-  // compaction, a tool row collapsing, switching to a shorter log. `scrollTop` drops
-  // because the maximum dropped, which looks exactly like a scroll up if only `top` is
-  // compared. Counting it locked follow off after every compaction.
-  const before = at(1500, 2000); // gap ~0
-  const after = at(700, 1200); // clamped down to the new maximum
-  assert.equal(movedAway(after, before), false);
+test("content growing below a following reader keeps following (#scroll)", () => {
+  const before = vp(TAIL);
+  const after = vp(TAIL, 2400); // 400 more arrived; scrollTop unchanged
+  assert.equal(classifyScroll(after, null, before.height), "layout");
+  assert.ok(nextFollowing(true, "layout", after), "growth below must not unpin");
 });
 
-/* ---------- the one thing that DOES turn following off ---------- */
+test("a deliberate scroll up DOES stop following (#scroll)", () => {
+  const before = vp(TAIL);
+  const after = vp(TAIL - 300);
+  assert.equal(classifyScroll(after, null, before.height), "reader");
+  assert.equal(nextFollowing(true, "reader", after), false);
+});
 
-test("a deliberate scroll up stops following (#scroll)", () => {
-  const before = tail(2000);
-  const after = at(before.top - 300, 2000); // scrolled up 300px, content unchanged
-  assert.equal(movedAway(after, before), true);
+test("a 1px wobble is not a scroll — but is it? (measured: it is not reader intent)", () => {
+  // A single pixel is inside the tolerance, so the reader is still AT the tail regardless of
+  // who moved it. That is why the threshold exists and why it does not need to be zero.
+  const after = vp(TAIL - 1);
+  assert.ok(atTail(after), "1px is still the tail");
+  assert.ok(nextFollowing(true, "reader", after), "1px cannot unpin");
 });
 
 test("scrolling back to the tail resumes following — the state is symmetric (#scroll)", () => {
-  const up = at(500, 2000); // far from the tail
-  assert.equal(atTail(up), false);
-  const back = tail(2000);
-  assert.equal(atTail(back), true, "returning to the tail is what re-arms follow");
-});
-
-test("a 1px wobble is not a scroll (#scroll)", () => {
-  // sub-pixel reflow, rounded scrollTop values, trackpad noise
-  const before = at(1000, 2000);
-  assert.equal(movedAway(at(999, 2000), before), false);
-});
-
-test("the first sample never reports movement (#scroll)", () => {
-  assert.equal(movedAway(at(0, 1000), undefined), false);
-});
-
-/* ---------- the pill ---------- */
-
-test("the jump-to-present pill only appears when the reader left the tail (#scroll)", () => {
-  // following + a gap (the composer grew) must NOT offer a jump: there is nothing new below
-  assert.equal(shouldShowJumpToPresent(at(1200, 2000, 760), true), false);
-  // not following + a real gap: the reader went up, so offer it
-  assert.equal(shouldShowJumpToPresent(at(400, 2000), false), true);
-});
-
-test("an empty or unmeasured feed offers no pill (#scroll)", () => {
-  assert.equal(shouldShowJumpToPresent(null, false), false);
-  assert.equal(shouldShowJumpToPresent(undefined, false), false);
-});
-
-/* ---------- the geometry helpers ---------- */
-
-test("gapToTail never goes negative, and content shorter than the viewport is at the tail (#scroll)", () => {
-  assert.equal(gapToTail(at(0, 100, 600)), 0, "a short feed has no tail to be away from");
-  assert.equal(gapToTail(at(5000, 100, 600)), 0, "over-scrolled (rubber band) is still 0");
-  assert.equal(atTail(at(0, 100, 600)), true);
-});
-
-test("the slack is a constant, not derived from the composer (#scroll)", () => {
-  // it used to be `24 + min(composer overflow, 160)`, so "at the bottom" meant a different
-  // distance whenever the composer grew a line — the same coordinate jump that made follow
-  // tug at the reader
-  assert.equal(TAIL_SLACK_PX, 32);
-  assert.equal(atTail(at(0, 1000, 600), TAIL_SLACK_PX), false);
-  assert.equal(atTail(at(368, 1000, 600), TAIL_SLACK_PX), true, "400-32 = 368 is within slack");
-});
-
-/* ---------- migrated from the retired scroll-follow.ts ---------- */
-
-test("content growing below a tail-pinned reader is not a scroll away (#scroll)", () => {
-  // The measured report behind the old module: the browser appends BELOW, so `top` is
-  // unchanged and only the gap grows. 900px of new content is not the operator scrolling.
-  const bottom = at(1000, 1600, 600); // gap 0
-  for (const grown of [1600 + 900, 1600 + 30, 1600 + 30_000]) {
-    assert.equal(
-      movedAway(at(1000, grown, 600), bottom),
-      false,
-      `growing to ${grown}px is not a scroll — even far past the 32px slack`,
-    );
-  }
-});
-
-test("a small drag up still stops following (#scroll)", () => {
-  const bottom = at(1000, 1600, 600);
-  assert.equal(movedAway(at(700, 1600, 600), bottom), true, "300px up");
-  assert.equal(movedAway(at(940, 1600, 600), bottom), true, "a 60px drag is still a deliberate move");
-});
-
-test("a first sample away from the tail means the reader is NOT following (#send-scroll)", () => {
-  // The bug this pins: `movedAway()` needs a previous sample, so on the FIRST scroll event it
-  // returned false and the follow state stayed TRUE while the reader was a thousand pixels up
-  // the timeline. Nothing showed it until the next box change re-pinned them to the tail —
-  // the reported "送信直後に謎にスクロールする", because a send resizes the feed.
-  //
-  // A scroll event that lands away from the tail, with no growth to explain it, IS the
-  // reader having moved. There is no third cause, and "we have not seen a sample yet" is not
-  // an argument for assuming they are at the bottom.
-  const away = at(1200, 5000); // 3100px from the tail
-  assert.equal(atTail(away), false);
+  assert.equal(nextFollowing(false, "reader", vp(TAIL - 400)), false);
   assert.equal(
-    movedAway(away, undefined),
-    false,
-    "the POLICY cannot know without a previous sample — which is why the wiring must treat " +
-      "the first sample as a decision rather than deferring it",
+    nextFollowing(false, "reader", vp(TAIL)),
+    true,
+    "arriving at the tail re-acquires following whatever caused it",
   );
-  // what the handler does: not at tail, and nothing grew, so following is off
-  const following = atTail(away) || movedAway(away, undefined);
-  assert.equal(following, false, "the first sample away from the tail must clear following");
+});
+
+test("hysteresis: a momentarily short tail does not drop follow (#scroll)", () => {
+  // once following, stay following out to STICKY_PX. Without this a streaming bubble that
+  // overshoots the floor for one frame unpins itself, which reads as "it stopped following".
+  assert.ok(STICKY_PX > AT_TAIL_PX, "the sticky range must be wider than the acquire range");
+  const justPast = vp(TAIL - AT_TAIL_PX - 5);
+  assert.ok(!atTail(justPast), "precondition: it is outside the acquire range");
+  assert.ok(shouldPin(true, justPast), "…but still inside the sticky range, so it stays pinned");
+  assert.ok(!shouldPin(true, vp(TAIL - STICKY_PX - 50)), "far away is not pinned");
+  assert.ok(!shouldPin(false, vp(TAIL)), "not following is never pinned, even at the tail");
+});
+
+test("the first delivery in a fresh feed does not count as a reader scroll (#send-scroll)", () => {
+  // no previous height, no ledger: nothing to attribute to us, so it is a person — but the
+  // caller only acts on it when the reader is genuinely away from the tail
+  assert.equal(classifyScroll(vp(TAIL - 500), null, undefined), "reader");
+  assert.equal(
+    nextFollowing(true, "reader", vp(TAIL - 500)),
+    false,
+    "a reader parked up the history on the first sample is not following",
+  );
+});
+
+test("the jump-to-present pill only shows when the reader is away AND not following (#scroll)", () => {
+  assert.equal(shouldShowJumpToPresent(false, vp(TAIL - 500)), true);
+  assert.equal(shouldShowJumpToPresent(true, vp(TAIL - 500)), false, "following needs no pill");
+  assert.equal(shouldShowJumpToPresent(false, vp(TAIL)), false, "at the tail needs no pill");
+});
+
+test("an unmounted feed is never at the tail, and gap is infinite (#scroll)", () => {
+  assert.equal(atTail(null), false);
+  assert.equal(atTail(undefined), false);
+  assert.equal(distanceToTail(null), Number.POSITIVE_INFINITY);
+  assert.equal(shouldPin(true, vp(TAIL)), true);
+});
+
+test("gapToTail never goes negative (#scroll)", () => {
+  assert.equal(gapToTail(vp(TAIL + 500)), 0, "past the floor is still 0 of gap");
+  assert.equal(gapToTail(vp(0)), 1200);
+  assert.equal(gapToTail(null), Number.POSITIVE_INFINITY);
 });

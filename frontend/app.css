@@ -701,7 +701,12 @@ input[type="checkbox"] { accent-color: var(--acc); }
   align-self: flex-start;
 }
 /* a continuation: GAP_PX above it, nothing else */
-.msg.grouped { padding: 0 18px; }
+/* The horizontal padding must MATCH `.msg`, which uses `var(--space-6)` = 16px. This rule
+   hardcoded 18px, so every continuation row sat 2px right of its own head row — visible as the
+   second and later rows of a grouped tool run being nudged right. Reported as "グループ化された
+   tool の2つ目以降が微妙に右にズレてる". Reference the token rather than the literal, so the two
+   can never drift again. */
+.msg.grouped { padding: 0 var(--space-6); }
 .embed.grouped { margin-top: var(--grouped-gap); }
 /* the FIRST continuation follows the head, so it gets the same gap; the head itself must
    not also carry bottom padding, or the run's first gap is double.

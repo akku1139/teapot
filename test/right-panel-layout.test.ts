@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readSource } from "./helpers/source.ts";
-import { cssRuleBody } from "./helpers/css.ts";
+import { cssRuleBodies, cssRuleBody } from "./helpers/css.ts";
 
 test("the runtime stat grid cannot overflow its card (#ui)", async () => {
   const css = await readSource("frontend/app.css");
@@ -110,5 +110,58 @@ test("each runtime cell holds ONE number, because a composite overflows (#ui)", 
   // and the paired facts must still be reachable, just as separate cells
   for (const label of ["tokens in", "tokens out"]) {
     assert.ok(grid.includes(label), `the ${label} cell is missing`);
+  }
+});
+
+test("a grouped row sits at the SAME x as its head row (#ui)", async () => {
+  /**
+   * Reported: "グループ化されたtoolの2つ目以降が微妙に右にズレてる".
+   *
+   * `.msg` carries `padding: var(--space-6)` horizontally (16px), but `.msg.grouped` overrode
+   * it with a LITERAL `18px` — so every continuation row sat 2px right of the row it continues.
+   * Two declarations that must agree, written as one token and one magic number, is exactly how
+   * that drifts.
+   *
+   * The contract: a grouped row must not introduce a horizontal padding of its own. Any value
+   * is allowed as long as it is the SAME expression `.msg` uses.
+   */
+  const css = await readSource("frontend/app.css");
+  // `.msg` appears in SEVERAL rules (a base one, then `--grouped-gap`, then hover states), and
+  // `cssRuleBody` returns the last match — which is not the one that declares the padding. Take
+  // the rule that actually sets a full `padding`, which is the one the rows inherit.
+  // match `padding:` but NOT `padding-top:` — a plain `\b` would let the latter through
+  const fullPad = (body: string) => body.match(/(?:^|[;\s])padding:\s*([^;]+);/)?.[1]?.trim();
+  const basePad =
+    cssRuleBodies(css, ".msg")
+      .map(fullPad)
+      .find((v) => v && v.split(/\s+/).length >= 2) ?? "";
+  assert.ok(basePad, "precondition: .msg declares a horizontal padding");
+
+  for (const sel of [".msg.grouped"]) {
+    for (const body of cssRuleBodies(css, sel)) {
+      const pad = fullPad(body);
+      if (!pad) continue; // only padding-top etc — no horizontal claim
+      /**
+       * Compare the HORIZONTAL component only.
+       *
+       * A grouped row legitimately drops the top padding (`0 <h>`) — that is what makes a run
+       * read as one block. What must not differ is the horizontal value, which is what decides
+       * x. The shorthand's 2nd/4th value is the horizontal one.
+       */
+      // CSS shorthand: 1 value = all sides, 2 = vertical/horizontal, 3 = top/horiz/bottom,
+      // 4 = top/right/bottom/left. The horizontal side is the 2nd when there is one, else 1st.
+      const horiz = (v: string) => {
+        const p = v.split(/\s+/);
+        return p.length >= 2 ? p[1]! : p[0]!;
+      };
+      const horizontal = horiz(pad);
+      const baseHorizontal = horiz(basePad);
+      assert.equal(
+        horizontal,
+        baseHorizontal,
+        `${sel} sets its own horizontal padding (${horizontal}) while .msg uses ` +
+          `(${baseHorizontal}); a continuation row must line up with its head row`,
+      );
+    }
   }
 });

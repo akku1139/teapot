@@ -3,84 +3,75 @@
  *
  * ## Cause
  *
- * The compaction banner renders INSIDE the feed, so a pass changes the feed's height
- * twice:
+ * The compaction banner renders INSIDE the feed, so a pass changes the feed's height twice:
  *
  *   phase start  -> banner APPEARS  -> feed taller by one row
  *   phase done   -> banner REMOVED  -> feed shorter by one row
  *
- * On `phase: done` two things happen at once: the banner goes away AND the `[compact] …`
- * live text is cleared. So the OLD live-follow effect bailed on its own guard
- * (`if (!txt && !rsn) return;`) on the one frame that mattered, and nothing re-pinned —
- * the feed had just got SHORTER, leaving the reader above the bottom with follow mode
- * still true. Nothing looked wrong: the caret still pointed down, the pill was still
- * there, no error was logged.
+ * On `phase: done` the banner goes away AND the `[compact] …` live text is cleared, so the
+ * feed is suddenly SHORTER while follow mode is still true. A design that decides follow from
+ * a direction comparison sees the browser clamp `scrollTop` down and calls it "the reader
+ * scrolled up", so follow is silently lost on every compaction.
  *
- * ## What this file asserts now
+ * ## What this file asserts
  *
- * The fix is not "one more effect keyed on `compacting()` that also checks `atBottom()`",
- * and it is no longer a before/after sample comparison either (that design could not tell
- * a viewport change from a scroll — see `scroll-policy.ts`). Follow is a STATE, and a
- * compaction banner is just another growth (or shrink) path that cannot touch it.
- *
- * These are behaviour tests of the rule. They used to read `App.tsx` as TEXT and assert
- * the shape of the old effect — the banned pattern, since it pins the SPELLING of code
- * that has to work at runtime.
+ * The banner appearing and disappearing are both LAYOUT — they change `scrollHeight` and
+ * nothing else — so `classifyScroll()` must never attribute them to the reader, and follow
+ * must survive. Tested through the real policy rather than a private helper, because the
+ * helper is what kept getting the attribution wrong.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { atTail, movedAway } from "../frontend/scroll-policy.ts";
+import { atTail, classifyScroll, distanceToTail, nextFollowing } from "../frontend/scroll-policy.ts";
 
-const at = (top: number, height: number, viewport = 600) => ({ top, height, viewport });
-/** the reader sitting at the tail of `height`-tall content */
-const tail = (height: number, viewport = 600) => at(height - viewport, height, viewport);
+const VIEWPORT = 800;
+const at = (top: number, height: number) => ({ top, height, viewport: VIEWPORT });
 
-test("a compaction banner APPEARING keeps the feed pinned (#108)", () => {
-  // the banner is a row inside the feed, so the content gets taller with no scroll
-  const before = tail(1000);
-  const after = at(before.top, 1000 + 44); // one banner row
-  assert.equal(movedAway(after, before), false, "growth is not a scroll, so follow survives");
-  // and the pin then shows the new tail
-  assert.equal(atTail(after), false, "the reader IS momentarily 44px above the tail…");
-  // …which is exactly why following must not be re-derived from that gap
-});
-
-test("a compaction banner DISAPPEARING keeps the feed pinned (#108)", () => {
-  // THE REPORTED CASE: `phase: done` removes the banner AND clears the live text. The feed
-  // shrinks, so the browser CLAMPS scrollTop down to the new maximum. That clamp looks
-  // exactly like a scroll up if only `top` is compared — which is what detached follow.
-  const before = tail(1044);
-  const after = at(400, 1000); // clamped to the new maximum
-  assert.equal(atTail(after), true, "the clamp leaves the reader at the new tail");
+test("the compaction banner appearing does not take follow away (#108)", () => {
+  // a following reader at the tail of a 1000-tall feed
+  const before = at(200, 1000);
+  assert.ok(atTail(before), "precondition: the reader starts at the tail");
+  // the banner row appears: content 44px taller, scrollTop untouched
+  const after = at(200, 1044);
   assert.equal(
-    movedAway(after, before),
-    false,
-    "a shrink is a clamp, not a scroll — follow must survive the banner going away",
+    classifyScroll(after, null, before.height, VIEWPORT),
+    "layout",
+    "a height change is layout — the reader cannot change scrollHeight",
   );
+  assert.equal(nextFollowing(true, "layout", after), true, "follow must survive the banner");
 });
 
-test("the re-pin respects a reader who had scrolled away (#108)", () => {
-  // the other half: fixing #108 must not drag a reader who deliberately moved up
-  const away = at(200, 1000); // 200px from the top, well above the tail
-  assert.equal(atTail(away), false, "so the pill shows and the pin does not run");
-  assert.equal(movedAway(at(200, 1044), away), false, "banner appearing is still not a scroll");
-  assert.equal(movedAway(at(200, 1000), away), false, "banner disappearing is not one either");
+test("the banner DISAPPEARING — the browser clamping — does not either (#108)", () => {
+  const before = at(244, 1044); // at the tail of the taller feed
+  assert.ok(atTail(before), "precondition: at the tail with the banner up");
+  // the banner is removed: 44px shorter, and the browser clamps scrollTop down to the floor
+  const after = at(200, 1000);
+  assert.equal(
+    classifyScroll(after, { top: 244, height: 1044 }, before.height, VIEWPORT),
+    "layout",
+    "a shrink is layout; the clamp is the browser, not the reader",
+  );
+  assert.equal(nextFollowing(true, "layout", after), true, "follow must survive the removal");
+  // and the reader is genuinely back at the tail, so nothing needs correcting anyway
+  assert.equal(distanceToTail(after), 0);
 });
 
-test("a compaction pass followed by more streaming is one continuous follow (#108)", () => {
-  // The real sequence, in geometry: banner appears, banner goes, then the reply streams.
-  // None of the three may clear the follow state.
-  const s = tail(1000);
-  assert.equal(movedAway(at(s.top, 1044), s), false, "banner appears");
-  const afterClamp = at(400, 1000);
-  assert.equal(movedAway(afterClamp, tail(1044)), false, "banner goes (a clamp)");
-  assert.equal(movedAway(at(400, 1600), afterClamp), false, "and the reply keeps following");
+test("a compaction that leaves the reader short of the tail still keeps follow (#108)", () => {
+  // the trickiest real shape: the feed shrinks AND the floor no longer coincides with where
+  // the browser clamped (fractional heights, content-visibility estimates)
+  const before = at(244, 1044);
+  const after = at(201, 1001); // 1px short of the floor after the clamp
+  assert.equal(classifyScroll(after, { top: 244, height: 1044 }, before.height, VIEWPORT), "layout");
+  assert.equal(nextFollowing(true, "layout", after), true);
+  // the caller re-pins while following, which is what makes the 1px irrelevant
+  assert.ok(atTail(after), "a pixel short is still the tail");
 });
 
-test("the rule treats a banner row exactly like any other growth (#108)", () => {
-  // A banner is a row in the flow, so "one row taller" and "one wrapper shorter" are the
-  // only two things it can do to the geometry — both are non-scrolls.
-  const before = tail(1000);
-  assert.equal(movedAway(at(before.top, 1044), before), false, "taller");
-  assert.equal(movedAway(at(400, 956), before), false, "shorter (clamped)");
+test("compaction does not mask a REAL scroll-up (#108)", () => {
+  // the guard must not be so permissive that a person is invisible: no height change, no
+  // ledger match ⇒ reader
+  const before = at(200, 1000);
+  const after = at(60, 1000); // scrolled up 140px, same content height
+  assert.equal(classifyScroll(after, null, before.height, VIEWPORT), "reader");
+  assert.equal(nextFollowing(true, "reader", after), false, "a person still unpins");
 });

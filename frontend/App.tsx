@@ -37,7 +37,17 @@ import {
 } from "./sidebar-tree";
 import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
-import { atTail, gapToTail, movedAway, shouldShowJumpToPresent, type TailSample } from "./scroll-policy";
+import {
+  atTail,
+  classifyScroll,
+  distanceToTail,
+  gapToTail,
+  nextFollowing,
+  shouldPin,
+  shouldShowJumpToPresent,
+  type ScrollCause,
+  type TailSample,
+} from "./scroll-policy";
 import {
   applyCustomTheme,
   loadCustomThemes,
@@ -409,6 +419,12 @@ export default function App() {
       // following: re-pin to the NEW maximum. Assigning scrollHeight lets the browser clamp,
       // so this is correct without knowing the new viewport height.
       pinToTail();
+      // The pin is a layout response, so any scroll event it produces must not be attributed
+      // to the reader — but it must not authorise the reader's NEXT move either. Record the
+      // new geometry so `classifyScroll` sees a matching sample, and let the delivery (if any)
+      // consume the ledger.
+      lastSampleHeight = f.scrollHeight;
+      lastSampleViewport = f.clientHeight;
       return;
     }
     const anchorRow = firstVisibleRow(f);
@@ -1951,6 +1967,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const f = feedEl();
     if (!f) return;
     f.scrollTop = f.scrollHeight;
+    // record where the write landed, so the scroll event it produces is attributable to US
+    // rather than to the reader (see `classifyScroll`)
+    ledger = { top: f.scrollTop, height: f.scrollHeight };
     setMissed(0);
   }
   function scrollBottom(force = false) {
@@ -3130,6 +3149,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   };
   /** the previous scroll sample, for telling a deliberate scroll from a reflow/clamp */
   let lastSample: TailSample | undefined;
+  /**
+   * The observed-top LEDGER: where our last programmatic write put `scrollTop`, and the content
+   * height at that moment. `classifyScroll()` uses it to recognise its own writes and browser
+   * clamps, which is the difference between "the reader scrolled up" and "the layout moved".
+   * Cleared after one delivery — a programmatic write yields exactly one scroll event.
+   */
+  let ledger: { top: number; height: number } | null = null;
+  /** content height at the previous delivery, so a height change can be attributed to layout */
+  let lastSampleHeight: number | undefined;
+  /** the viewport height at the previous delivery, so a composer resize is attributable */
+  let lastSampleViewport: number | undefined;
   createEffect(() => {
     const v = draft(); // re-run on typing AND after send() clears the draft
     // #the RESIZE must happen AFTER the DOM text is synced, not before. This
@@ -3906,44 +3936,44 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             const el = e.currentTarget;
             const now: TailSample = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
             /**
-             * THE FOLLOW STATE, decided from ONE question: did the reader move up?
+             * WHO moved the viewport — the only question that may change the follow state.
              *
-             * That is the only input, because it is the only thing layout cannot fake.
-             * `movedAway()` (frontend/scroll-policy.ts) compares `scrollTop`, and ignores a
-             * decrease that came from the browser clamping after a SHRINK — which used to
-             * lock follow off after every compaction and every collapsing tool row.
+             * Asked by `classifyScroll()` (frontend/scroll-policy.ts), which answers it from two
+             * facts that layout cannot fake:
              *
-             * Everything else that changes geometry (content arriving below, the live
-             * bubble streaming, a tool row expanding, THIS composer growing and shrinking
-             * the viewport) leaves `scrollTop` alone and therefore cannot touch the state.
-             * That is the whole fix for "typing into a 2-line composer nudges the feed up":
-             * the old code re-derived follow from a before/after gap, so a 40px viewport
-             * shrink read as "the reader is now away".
+             *   - the content HEIGHT changed since the last delivery ⇒ layout. The reader cannot
+             *     change `scrollHeight`, so this delivery carries no evidence about intent.
+             *   - the position equals `min(ledger, floor)` ⇒ our own write delivered late, or the
+             *     browser clamping after a shrink. Both look exactly like "scrolled up" to a
+             *     direction test, which is why the old `movedAway()` kept needing a slack
+             *     constant.
+             *
+             * `ledger` is cleared after ONE delivery: a programmatic write produces exactly one
+             * scroll event, and keeping it longer would swallow the reader's next real move.
              */
-            const away = movedAway(now, lastSample);
-            const firstSample = lastSample === undefined;
+            const cause = classifyScroll(now, ledger, lastSampleHeight, lastSampleViewport);
+            /**
+             * The ledger is consumed AFTER use, but a write whose delivery never arrived would
+             * otherwise authorise the reader's NEXT move too. Any intervening layout (`layout`
+             * cause) invalidates it, because the position it recorded no longer means anything.
+             */
+            ledger = null;
+            lastSampleHeight = now.height;
+            lastSampleViewport = now.viewport;
             lastSample = now;
             // the pill reads this instead of measuring the DOM itself
             publishGap(now);
-            // reaching the tail re-arms following; leaving it is the only thing that clears
-            if (atTail(now)) {
-              setAtBottom(true);
+            const wasFollowing = atBottom();
+            const follow = nextFollowing(wasFollowing, cause, now);
+            if (follow !== wasFollowing) setAtBottom(follow);
+            if (follow) {
               if (missed()) setMissed(0);
               // #160: reaching the tail marks this session read — the scroll itself, not a
               // new event arriving while we happen to be here
               markReadIfFollowing();
-            } else if (away || firstSample) {
-              // FIRST SAMPLE COUNTS (#send-scroll). `movedAway()` needs a previous sample, so
-              // with none it said "not away" — and the follow state therefore stayed TRUE
-              // while the reader was a thousand pixels up the timeline. Nothing showed it
-              // until the next box change re-pinned them to the tail, which is the reported
-              // "送信直後に謎にスクロールする": the send resized the feed, the observer saw
-              // `atBottom() === true`, and pinned.
-              //
-              // A scroll event arriving away from the tail, with the content no taller than
-              // when we last looked, IS the reader having moved — there is no third cause.
-              // The growth case is still excluded by `away` being false there.
-              setAtBottom(false);
+              // a delivery we caused can land a few pixels short of the floor (fractional
+              // heights, content still being laid out). While following, keep it exact.
+              if (shouldPin(follow, now) && distanceToTail(now) > 0) pinToTail();
             }
             // reached the top → pull the next older page (infinite scroll up). Runs BEFORE
             // any follow logic: a reader at the very top is by definition not at the bottom,
