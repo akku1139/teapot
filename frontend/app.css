@@ -599,7 +599,12 @@ html[data-feedcv="on"] .feed > .msg {
 .pill { margin-left: auto; border-radius: var(--radius-pill); padding: 1px 8px; font-size: var(--text-xs); background: var(--bg-mid); white-space: nowrap; }
 .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.crit { color: var(--err); background: #ed42451a; }
 .bartrack { height: 6px; border-radius: var(--radius-sm); background: var(--bg-light); overflow: hidden; margin-top: 2px; }
-.rtgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: var(--space-2); }
+/* A fixed 3-column grid, not auto-fit.
+   auto-fit made the column count depend on the panel's width, so the same six numbers laid
+   out as 3x2 on a wide panel and 1x6 on a narrow one — the card changed shape while the
+   operator dragged the divider. Three columns always: the cells are equal width, every value
+   is short (one number, see App.tsx), and the arrangement stays put. */
+.rtgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
 /* `min-width: 0` on the cell and `overflow: hidden` on the value are what stop a long
    number from escaping the card: "7440/7682" (four digits a side) is wider than the 74px
    column the grid used to promise, and a `white-space: nowrap` child does not shrink to fit
@@ -607,7 +612,7 @@ html[data-feedcv="on"] .feed > .msg {
    still does not fit is elided rather than painted outside its own box. */
 .rtcell { background: var(--bg-dark); border-radius: var(--radius-md); padding: 5px 7px; display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow: hidden; }
 .rtcell > span { color: var(--dim); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rtcell > b { font-size: var(--text-md); font-weight: 600; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rtcell > b { font-size: var(--text-md); font-weight: 600; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .rtcell > em { font-style: normal; color: var(--dim); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the separator inside a combined cell ("12k/3.4k") must not read as part of either number */
 .rtsep { color: var(--dim); font-weight: 400; padding: 0 2px; }

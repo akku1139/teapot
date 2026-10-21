@@ -4872,15 +4872,33 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </Show>
             {/* the reference numbers: always visible, as a grid rather than as rows */}
             <div class="rtgrid">
-              <div class="rtcell" title="tokens billed this session: prompt (in) and completion (out)">
-                <span>tokens</span>
-                <b>{fmtK(sel()!.stats.inputTokens)}<span class="rtsep">/</span>{fmtK(sel()!.stats.outputTokens)}</b>
-                <em>in / out</em>
+              {/**
+               * ONE NUMBER PER CELL.
+               *
+               * These were composites — `202.8m/230k`, `7440/7682` — and a composite is
+               * whatever its two halves add up to. A long session pushed both past the column
+               * width and the value escaped the card (reported twice, for tokens AND turns).
+               * No amount of ellipsis fixes that honestly: eliding "202.8m/230k" hides which
+               * half was clipped.
+               *
+               * Split, each cell holds one short value that fits at any scale, and the label
+               * says which half it is. The grid then needs no elision at all for real numbers.
+               */}
+              <div class="rtcell" title="prompt tokens billed this session">
+                <span>tokens in</span>
+                <b>{fmtK(sel()!.stats.inputTokens)}</b>
               </div>
-              <div class="rtcell" title="assistant turns and tool calls made this session">
+              <div class="rtcell" title="completion tokens billed this session">
+                <span>tokens out</span>
+                <b>{fmtK(sel()!.stats.outputTokens)}</b>
+              </div>
+              <div class="rtcell" title="assistant turns this session">
                 <span>turns</span>
-                <b>{sel()!.stats.turns}<span class="rtsep">/</span>{sel()!.stats.toolCalls}</b>
-                <em>turns / tools</em>
+                <b>{sel()!.stats.turns}</b>
+              </div>
+              <div class="rtcell" title="tool calls this session">
+                <span>tools</span>
+                <b>{sel()!.stats.toolCalls}</b>
               </div>
               <div
                 class="rtcell"
