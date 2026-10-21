@@ -3,6 +3,7 @@
  * Agents are in-process async loops (I/O bound only); all CPU-heavy work is
  * delegated to subprocesses managed by the bash tool with hard timeouts.
  */
+import { closeAllTerminals, closeTerminalsFor } from "./server/terminals.ts";
 import {
   readFileSync,
   existsSync,
@@ -2217,6 +2218,9 @@ if (active().length === 0) wake();
         this.agents.delete(one);
         await live.dispose();
       }
+      // an archived agent's shells are unreachable from the UI (its tabs go with it), so
+      // leaving the ptys running would strand them until the idle reaper noticed
+      closeTerminalsFor(one);
       const ac = this.config.agents.find((a) => a.id === one);
       if (!ac) continue;
       ac.archived = true;
@@ -2535,6 +2539,16 @@ if (active().length === 0) wake();
       console.log("[teapot] all agents stopped");
     } finally {
       if (timer) clearTimeout(timer);
+      /**
+       * Close the human terminals too.
+       *
+       * Their ptys are spawned `detached` so one close can signal the whole process group (see
+       * terminals.ts). The cost of that is that they do NOT die with this process — a restart
+       * would leave every open shell orphaned and unreachable, still holding the operator's
+       * workspace. Closing here is what makes `detached` safe.
+       */
+      const n = closeAllTerminals();
+      if (n) console.log(`[teapot] ⌨ closed ${n} terminal(s)`);
     }
   }
 
