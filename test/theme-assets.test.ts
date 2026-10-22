@@ -416,3 +416,32 @@ test("a skill body renders MARKDOWN and cannot scroll sideways (#ui)", async () 
   assert.match(css, /\.skillbody pre\s*\{[^}]*background/, "fenced code needs a surface of its own");
   assert.match(css, /\.skillbody code\s*\{[^}]*background/, "inline code needs one too");
 });
+
+test("the skills ROW can actually shrink: nowrap and min-width are overridden (#ui)", async () => {
+  /**
+   * The horizontal scrollbar persisted through two attempts at this fix, and both times the reason
+   * was a rule one level UP from where I was looking. MEASURED in headless Firefox, a long skill
+   * name inside a 358px panel:
+   *
+   *   - the name was 321px wide but the ROW stayed 694px → a flex item's automatic minimum size is
+   *     its content, so the row itself needs `min-width: 0`, not just the text;
+   *   - even then the header stayed 694px, because the GLOBAL `button { white-space: nowrap }`
+   *     stopped the label wrapping at all. That global is right for a short fixed label and wrong
+   *     for a header that carries a name and a description.
+   *
+   * After both: 360/360, no h-scroll. So the contract is three declarations, and losing any one of
+   * them brings the scrollbar back.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  for (const sel of [".skilllist", ".skillrow"]) {
+    assert.match(
+      cssRuleBody(css, sel),
+      /min-width:\s*0/,
+      `${sel} is a flex item — without min-width:0 it cannot shrink below its content`,
+    );
+  }
+  const head = cssRuleBody(css, ".skillhead");
+  assert.match(head, /white-space:\s*normal/, "the global button nowrap must be undone here");
+  assert.match(head, /display:\s*grid/, "and the global inline-flex must be undone too");
+  assert.match(head, /grid-template-columns:\s*12px minmax\(0,\s*1fr\)/);
+});

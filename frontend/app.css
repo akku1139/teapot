@@ -1405,11 +1405,24 @@ details.reasoning .thinkscroll {
 .featrow { display: grid; grid-template-columns: minmax(150px, auto) 1fr; gap: var(--space-4); align-items: baseline; padding: 4px 0; font-size: var(--text-sm); border-bottom: 1px solid var(--bg-light); }
 .featrow:last-child { border-bottom: none; }
 .featrow > b { color: var(--fg); font-weight: 600; white-space: nowrap; }
-.skilllist { display: flex; flex-direction: column; gap: var(--space-2); }
+/**
+ * `min-width: 0` on BOTH the list and each row.
+ *
+ * A flex item's automatic minimum size is its content, so a row holding a long skill name refuses
+ * to shrink and the list grows to 694px inside a 358px panel — the reported horizontal scrollbar.
+ * Fixing it on the innermost text (`min-width: 0` on the name) is not enough: the ROW is the flex
+ * item of the list, and it re-inflates the moment the list is measured. MEASURED: the name was
+ * 321px wide while the row stayed 694px.
+ *
+ * `minmax(0, 1fr)` on the header's grid track has the same requirement one level down, which is why
+ * that is spelled out separately.
+ */
+.skilllist { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .skillrow {
   display: flex; flex-direction: column; gap: 2px;
   border: 1px solid var(--line); border-radius: var(--radius-md);
   background: var(--bg-darkest);
+  min-width: 0;
 }
 /* the header is a BUTTON: expanding is the only interaction, and a div would not be reachable
    by keyboard. Grid so the caret/name/description stay aligned whether open or closed. */
@@ -1424,11 +1437,43 @@ details.reasoning .thinkscroll {
   display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 2px 7px; align-items: baseline;
   width: 100%; padding: 7px 9px; background: none; border: none; cursor: pointer;
   text-align: left; font: inherit; color: inherit; border-radius: var(--radius-md);
+  /**
+   * `white-space: normal` overrides the GLOBAL `button { white-space: nowrap }`.
+   *
+   * That global exists so a button's box does not change when its label does, which is right for a
+   * control with a short fixed label. This "button" is a row header holding a skill NAME and a
+   * DESCRIPTION, so nowrap did the opposite of what is wanted: the text could not wrap, the header
+   * kept its single-line width (694px), and the panel got a horizontal scrollbar.
+   * MEASURED: with nowrap the row is 694px in a 358px panel; with normal it fits.
+   *
+   * `display: grid` also has to be re-asserted, because the global rule sets `inline-flex`.
+   */
+  display: grid;
+  white-space: normal;
 }
 .skillhead:hover { background: var(--bg-dark); }
-.skillhead > b { color: var(--acc); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.skillhead > b {
+  color: var(--acc);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  /**
+   * `min-width: 0` is REQUIRED, not a tidy-up.
+   *
+   * A grid item's automatic minimum size is its CONTENT, so `minmax(0, 1fr)` on the track was not
+   * enough: a long skill name still pushed the row to 694px inside a 358px panel and produced the
+   * horizontal scrollbar the operator reported. `overflow-wrap` alone cannot help because the item
+   * never gets narrow enough to wrap in the first place. MEASURED at 694px before, 358px after.
+   */
+  min-width: 0;
+}
 .skillhead > .skillcaret { color: var(--dim); font-size: var(--text-xs); }
-.skillhead > .muted { grid-column: 2; font-size: var(--text-xs); line-height: 1.45; overflow-wrap: anywhere; }
+.skillhead > .muted {
+  grid-column: 2;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  min-width: 0; /* same reason as the name above */
+}
 /**
  * The skill BODY is rendered markdown, not a `<pre>` of raw source.
  *
