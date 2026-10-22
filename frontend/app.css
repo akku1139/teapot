@@ -612,20 +612,26 @@ html[data-feedcv="on"] .feed > .msg {
 }
 /* symmetric vertical padding: 14/8 was asymmetric for no reason and left the
    last row hugging the composer while the first had room */
-/* `overflow-anchor: none` is REQUIRED, and only Firefox shows what happens without it.
-   Browser scroll anchoring adjusts `scrollTop` to keep a "anchor" element in place when content
-   above changes size. Firefox applies it aggressively when the COMPOSER resizes, so typing into
-   a multi-line composer moved `scrollTop` by the exact height the composer gained — with no
-   reader input at all. That adjustment arrives as a normal scroll event, so from the feed's
-   point of view the reader pulled the timeline up, and follow was dropped. Chrome's anchoring
-   is conservative enough here that the same code looked correct, which is why this reproduced
-   in one browser only.
+/* NATIVE scroll anchoring is ON — do not disable it here.
+   This briefly carried `overflow-anchor: none` to stop Firefox moving `scrollTop` when the
+   composer resized. That traded away something much more valuable: Blink's anchoring is what
+   absorbs a `content-visibility: auto` unskip (see the long note above `[data-feedcv]`), so
+   switching it off made CHROME start drifting through a loaded timeline — reported as
+   "以前はFirefoxだけだったスクロールのブレがChromeでも起きるようになった".
 
-   teapot does its own anchoring where it needs it (`firstVisibleRow()` / `scrollTop += delta`
-   when NOT following), and re-pins when following, so the native mechanism is pure
-   interference: it moves the viewport behind the policy's back. Off, deliberately — the same
-   choice fluxer, opencode and deepseek-harness all make on their scrollport. */
-.feed { flex: 1; overflow-y: auto; padding: var(--space-5) 0; min-height: 0; overscroll-behavior: contain; overflow-anchor: none; }
+   A script cannot replace it. `resyncAfterUnskip()` runs after layout has already been painted,
+   so its correction is a visible jump; the engine applies the adjustment BEFORE paint, which is
+   the whole reason it looks stable. Compensating in script is therefore not an equivalent
+   substitute, it is a strictly worse one.
+
+   What made native anchoring safe to re-enable is the classifier, not this property:
+   `classifyScroll()` attributes a VIEWPORT size change to layout (so the composer growing can
+   no longer read as the reader scrolling), and `restoreAfterBoxChange()` pins or re-anchors on
+   every box change. Those landed after the original Firefox report, which was diagnosed when
+   the policy still inferred intent from a slack constant. The script compensation stays as a
+   fallback for engines that do not do it at all — it is just no longer the only line of
+   defence. */
+.feed { flex: 1; overflow-y: auto; padding: var(--space-5) 0; min-height: 0; overscroll-behavior: contain; }
 .msg {
   display: flex; gap: var(--space-6); padding: var(--space-2) var(--space-6);
   /* a hover tint that FADES reads as a considered surface; one that snaps on

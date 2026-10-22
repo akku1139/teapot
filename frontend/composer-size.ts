@@ -1,39 +1,32 @@
 /**
- * Should the composer re-measure itself by collapsing to `height: auto`?
+ * The height to give a textarea so it exactly fits its content.
  *
- * A textarea with a fixed height reports `max(its own height, its content)` as `scrollHeight`,
- * so while the box is taller than its content the CONTENT height is unrecoverable — the only way
- * to read it is to collapse the box first. That round-trip is a real layout at one line, and it
- * is visible: `.feed` is a flex sibling, so the collapse grows the feed by the difference, and
- * the scroll policy cannot tell that box change from the reader moving.
+ * ## Why this cannot be computed from a fixed-height box
  *
- * It is therefore taken only when it is the ONLY way to get the number — i.e. when the content
- * got SHORTER. In every other case `scrollHeight` already reports what we need:
+ * A textarea with an explicit height reports `max(its height, its content)` as `scrollHeight`.
+ * MEASURED: a 60px box holding one line of text reports 60 — there is NO expression on that
+ * element that yields 20. So the content height is unrecoverable while the box is taller than
+ * its content, and the only way to read it is to let the box collapse first.
  *
- *   - content GREW (a new wrapped line): the box has not caught up yet, so `scrollHeight` is
- *     the content height. Nothing to measure.
- *   - content unchanged (typing inside an existing line): ditto.
+ * Three attempts tried to avoid the collapse by comparing numbers on the fixed-height box, and
+ * each failed for this same reason:
  *
- * Reported as "2行以上の入力欄に入力するとタイムラインのスクロールが1行目の高さに合わせて戻る".
- * It reproduced in Firefox first and later in Chrome; the engine never mattered, because the
- * drift came from this round-trip, not from scroll anchoring.
+ *   v0.34.7  `contentHeight <= offsetHeight` — always true at 1, 2 and 3 lines.
+ *   v0.34.8  compared against a remembered content height, but read it from a box that was
+ *            still tall, so the remembered value was the BOX height.
+ *   v0.35.10 compared `scrollHeight` against the content height last applied. On shrink the two
+ *            are equal (both are the box), so a shrink was never detected and the box never
+ *            came back down — reported as "広がった入力枠が Ctrl+A Backspace もしくは中身を全部
+ *            けさないともとに戻らない".
  *
- * MEASURED why the earlier attempt at this guard was wrong: it compared `scrollHeight` to the
- * box's `offsetHeight`, which is true at one, two and three lines alike — the collapse stayed
- * unconditional. The comparison that works is against the content height we LAST APPLIED.
+ * So the collapse is REQUIRED. What has to be right is everything around it: the feed must not
+ * treat the transient one-line layout as a real box change (it re-pins on every box change, so
+ * the collapsed floor is pinned and then corrected — see `restoreAfterBoxChange`).
  *
- * @param scrollHeight      `scrollHeight` as read, before any collapse
- * @param lastAppliedContentH the content height written on the previous call (0 when empty)
- * @param maximized         the box is expanded to a fixed tall size, so it never auto-sizes
+ * @param scrollHeight the content height measured with the box at `height: auto`
+ * @param maxHeight    the cap; past this the box scrolls instead of growing
  */
-export function needsRemeasure(
-  scrollHeight: number,
-  lastAppliedContentH: number,
-  maximized: boolean,
-): boolean {
-  // maximising sets an explicit height unrelated to content; always re-measure there
-  if (maximized) return true;
-  // a sub-pixel difference is rounding, not a shrink — treating it as one causes a needless
-  // collapse on nearly every keystroke, which is the whole bug this function exists to avoid
-  return scrollHeight < lastAppliedContentH - 0.5;
+export function composerHeight(scrollHeight: number, maxHeight: number): number {
+  // a textarea always paints at least one line, even with no content
+  return Math.max(1, Math.min(scrollHeight, maxHeight));
 }

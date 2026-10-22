@@ -166,27 +166,29 @@ test("a grouped row sits at the SAME x as its head row (#ui)", async () => {
   }
 });
 
-test("the feed opts OUT of native scroll anchoring, or Firefox moves it behind our back (#ui)", async () => {
+test("the feed KEEPS native scroll anchoring (#ui)", async () => {
   /**
-   * Reported as a FIREFOX-ONLY bug: "入力枠拡大時に入力すると非拡大時の高さに合わせてスクロールが
-   * 戻る", while Chrome was fine.
+   * This asserted `overflow-anchor: none` and was wrong, so the direction is now pinned.
    *
-   * Browser scroll anchoring adjusts `scrollTop` to keep an anchor element in place when content
-   * above changes size. Firefox applies it when the COMPOSER resizes, so typing into a
-   * multi-line box moved `scrollTop` by the composer's own growth — with no reader input. That
-   * arrives as an ordinary scroll event, so the feed's policy read it as the reader pulling the
-   * timeline up and dropped follow. Chrome's anchoring is conservative enough there that the
-   * same code looked correct, which is why it reproduced in one browser only.
+   * Disabling native anchoring was done to stop Firefox moving `scrollTop` when the composer
+   * resized. The cost was invisible at the time: Blink's anchoring is also what absorbs a
+   * `content-visibility: auto` unskip, so switching it off made CHROME start drifting through a
+   * loaded timeline — "以前はFirefoxだけだったスクロールのブレがChromeでも起きるようになった".
    *
-   * teapot does its own anchoring (anchor restore when reading, re-pin when following), so the
-   * native one is pure interference.
+   * Script cannot replace it: `resyncAfterUnskip()` runs after paint, so its correction is a
+   * visible jump, while the engine adjusts before paint. The composer-resize hazard that
+   * motivated the removal is now handled in the classifier (`classifyScroll()` treats a viewport
+   * size change as `layout`), which is where it belonged.
+   *
+   * A CSS-contract assertion, not a source-text one: this is a stylesheet property whose
+   * presence IS the behaviour, with no runtime equivalent to test.
    */
   const css = await readSource("frontend/app.css");
   const feed = cssRuleBody(css, ".feed");
-  assert.match(
+  assert.doesNotMatch(
     feed,
     /overflow-anchor:\s*none/,
-    "the feed must disable native scroll anchoring — our policy owns the scroll position",
+    "the feed must NOT disable native scroll anchoring — it is what absorbs content-visibility unskips",
   );
 });
 

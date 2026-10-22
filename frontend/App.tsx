@@ -48,7 +48,7 @@ import {
   type ScrollCause,
   type TailSample,
 } from "./scroll-policy";
-import { needsRemeasure } from "./composer-size";
+import { composerHeight } from "./composer-size";
 import {
   applyCustomTheme,
   loadCustomThemes,
@@ -3282,34 +3282,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (!composerEl) return;
     const maximized = composerMaximized();
     /**
-     * Re-measure with `height: auto` ONLY when the content shrank.
-     *
-     * MEASURED from the operator's log: typing into a 3-line composer moved the feed's
-     * scrollTop back to the value it had when the box was ONE line. The round-trip is the
-     * cause — `height = "auto"` collapses the textarea to `rows={1}`, reading `scrollHeight`
-     * then FORCES LAYOUT at that collapsed height, `.feed` grows by the difference and its
-     * ResizeObserver is queued, and the real height is written back afterwards. The observer
-     * fires in the middle, on a layout the operator should never have been shown, and the
-     * follow logic acts on it.
-     *
-     * Growing needs no round-trip: with a fixed height `scrollHeight` already reports the
-     * content height. SHRINKING does, because a box taller than its content reports its own
-     * height — and that is exactly the case `lastAppliedContentH` identifies.
-     */
-    /**
-     * The content height read WITHOUT collapsing — valid exactly when the content did not
-     * shrink, which is the fast path below (`scrollHeight` of a fixed-height box reports
-     * `max(height, content)`, so while content grew it IS the content; once content shrank it is
-     * the stale box height and says nothing).
-     */
-    const rawContentH = composerEl.scrollHeight;
-    /**
      * An EMPTY box is always exactly one line — never `scrollHeight`.
      *
      * Reported: shrink the window (the placeholder now wraps), type something, delete it, and
      * the placeholder is left WRAPPED because the box grew to fit it. `scrollHeight` of an empty
-     * textarea includes the wrapped placeholder in Chromium, so the measurement that the box
-     * height comes from depends on how the PLACEHOLDER happens to wrap — which changes with the
+     * textarea includes the wrapped placeholder in Chromium, so the measurement the box height
+     * comes from would depend on how the PLACEHOLDER happens to wrap — which changes with the
      * window width and has nothing to do with the message being written.
      *
      * A textarea's own `height: auto` is `rows` × line-height, independent of both content and
@@ -3322,54 +3300,36 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       return;
     }
     /**
-     * The `auto` round-trip is UNAVOIDABLE, and the real fix is elsewhere.
+     * The `auto` round-trip is REQUIRED, every time, and nothing on the element can replace it.
      *
-     * A box with an explicit height reports `max(its height, its content)` as `scrollHeight`, so
-     * while it is tall the CONTENT height is unrecoverable (MEASURED: a 60px box holding one line
-     * of text reports 60; there is no expression that yields 20). Any conditional version of
-     * this collapse therefore either never shrinks the box or is always true — both were tried
-     * and both shipped a bug.
+     * A textarea with an explicit height reports `max(its height, its content)` as `scrollHeight`
+     * (MEASURED: a 60px box holding one line reports 60; no expression yields 20). So the content
+     * height cannot be recovered while the box is tall, and three attempts to skip the collapse
+     * by comparing numbers on the fixed-height box each shipped a bug — the last one is why a
+     * grown box stopped coming back down ("広がった入力枠が Ctrl+A Backspace もしくは中身を全部
+     * けさないともとに戻らない").
      *
-    * So the round-trip is now taken ONLY when the content actually got SHORTER.
-     *
-     * That is the whole fix for "2行以上の入力欄に入力するとタイムラインのスクロールが1行目の高さ
-     * に合わせて戻る", and it works for both shapes of the report:
-     *
-     *   - typing that WRAPS a new line grows the content, so `scrollHeight` already reports it
-     *     and no measurement is needed;
-     *   - typing that does NOT wrap leaves the content height unchanged, so there is nothing to
-     *     measure either.
-     *
-     * Both used to take the round-trip anyway: `height: "auto"` collapsed the box to one line,
-     * the browser LAID THAT OUT, `.feed` grew by the difference, and the follow logic — which
-     * cannot tell that box change from a reader action — re-pinned to the floor as it was at ONE
-     * LINE. That is precisely the reported drift. Deleting text keeps the round-trip, because
-     * only a shrink genuinely cannot be measured without it.
+     * The transient one-line layout IS handled, and not by suppressing the feed's observer: that
+     * was tried in v0.34.9 and removed the only pin (when the composer grows, `scrollTop` does
+     * not change, so no scroll event fires). `restoreAfterBoxChange` instead pins on EVERY box
+     * change while following — pinning during the collapsed layout lands on the collapsed floor,
+     * and the next box change corrects it. Pinning twice is idempotent; skipping it is not.
      */
-    // content did not shrink ⇒ `scrollHeight` is the content height; no round-trip needed
-    if (!needsRemeasure(rawContentH, lastAppliedContentH, maximized)) {
-      composerEl.style.height = `${Math.min(rawContentH, MAX_COMPOSER_H)}px`;
-      lastAppliedContentH = Math.min(rawContentH, MAX_COMPOSER_H);
-      return;
-    }
     composerEl.style.height = "auto";
-    const wanted = maximized ? -1 : Math.min(composerEl.scrollHeight, MAX_COMPOSER_H);
+    const wanted = maximized ? -1 : composerHeight(composerEl.scrollHeight, MAX_COMPOSER_H);
     // apply it unconditionally: an early return must NOT leave the box at `auto`, which
     // collapses a textarea to its `rows` default and looks like the composer ate the text.
     composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
     lastAppliedContentH = composerEl.scrollHeight;
-    // NOTE (#scroll): this function does NOT touch the feed's scroll position any more.
+    // NOTE (#scroll): this function does NOT touch the feed's scroll position.
     //
-    // The feed is a flex sibling, so growing this box shrinks the feed's viewport. That is
-    // a change to `.feed`'s own BORDER BOX, and the ResizeObserver on the feed (see the
-    // #103 effect) sees it — before paint, with the final layout, and for every other cause
-    // too (the terminal drawer, the right panel, a window resize).
-    //
-    // Pinning from HERE was the bug. This runs inside the input handler, i.e. in the same
-    // task as the `height` write, and `pinToTail()` resolved `scrollHeight` against a layout
-    // that did not yet include the new composer height — so the reader was pinned to the
-    // tail as it was when the box still had its OLD height, which is exactly the reported
-    // "ちょうど1行の高さまで戻る" (one line of drift, every line added).
+    // The feed is a flex sibling, so growing this box shrinks the feed's viewport. That is a
+    // change to `.feed`'s own BORDER BOX, and the ResizeObserver on the feed sees it — before
+    // paint, with the final layout, and for every other cause too (the terminal drawer, the
+    // right panel, a window resize). Pinning from HERE was the bug: this runs in the same task
+    // as the `height` write, so `pinToTail()` resolved `scrollHeight` against a layout that did
+    // not yet include the new composer height, and the reader was pinned to the tail as it was
+    // when the box still had its OLD height.
   };
   /** the previous scroll sample, for telling a deliberate scroll from a reflow/clamp */
   let lastSample: TailSample | undefined;
@@ -3400,8 +3360,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * other and the feed never settles. It refills on any delivery the READER caused, which is the
    * only signal that they are driving again.
    */
-  let resyncBudget = 0;
+  /**
+   * Starts NON-ZERO: a pinned tail has no reader gesture to refill it.
+   *
+   * It used to start at 0 and refill only on a `reader` delivery. That is the right loop for a
+   * parked reader, but while FOLLOWING there is no gesture by definition — so the content-
+   * visibility correction could never run there, which is exactly the "スクロールのブレが直って
+   * ない" that survived v0.35.10. The budget is a loop-breaker, not a permission slip: it only
+   * has to stop runaway chased corrections, and 4 is enough for a burst either way.
+   */
   const RESYNC_BUDGET_PER_GESTURE = 4;
+  let resyncBudget = RESYNC_BUDGET_PER_GESTURE;
   /** the viewport height at the previous delivery, so a composer resize is attributable */
   let lastSampleViewport: number | undefined;
   createEffect(() => {
@@ -6856,6 +6825,20 @@ function ThemeEditor(props: {
         return;
       }
       patch((t) => ({ ...t, backgroundImage: r.body!.url! }));
+      /**
+       * ADOPT the theme being edited — the image is otherwise invisible.
+       *
+       * `patch()` only repaints the theme that is ACTIVE (`applyCustomTheme` paints exactly
+       * one), so uploading into a theme the operator has not selected set the URL, saved it, and
+       * showed nothing: reported as "背景画像アップロードして保存したのに適用されない". It looked
+       * like the upload had failed, because the one thing they asked for — seeing the picture —
+       * did not change.
+       *
+       * Selecting the theme you just decorated is also what the action implies, and it is what
+       * `duplicatePreset()` already does for the same reason.
+       */
+      const id = editing()?.id;
+      if (id) props.onPick(id);
       flashHint("background image set");
     } catch (ex) {
       flashHint(`upload failed: ${(ex as Error).message}`);
@@ -8310,8 +8293,23 @@ function ConfigModal(props: {
       if (needsAction) {
         // remember it, so the NEXT save closes instead of interrupting again
         for (const m of newlyNeeding) props.announcedOAuth.add(String(m.name ?? ""));
-        setSection("mcp");
-        flashHint("a saved MCP server needs authorization — see 🔑 authorize");
+        /**
+         * NEVER navigate away from the section the operator was editing.
+         *
+         * Reported twice: "設定パネルの appearance を保存するとMCP serversに移動する". The
+         * redirect was meant as a courtesy — a saved server needs authorization, so take them
+         * there. But it fired on saves that had nothing to do with MCP, so saving a theme
+         * silently moved the panel to a different section, which reads as the save having done
+         * something it did not.
+         *
+         * They are already LOOKING at the MCP section in the one case where moving is a no-op,
+         * so the panel stays put and the hint names the server. The hint is where the
+         * information goes: it is visible on any section, and it does not move anything.
+         */
+        const names = newlyNeeding.map((m) => String(m.name ?? "").trim()).filter(Boolean);
+        flashHint(
+          `${names.join(", ") || "a saved MCP server"} needs authorization — 🔑 authorize in MCP servers`,
+        );
       } else {
         props.onClose();
       }
