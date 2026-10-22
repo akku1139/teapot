@@ -263,14 +263,17 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
     if (want) root.style.setProperty(cssVar, want);
     else root.style.removeProperty(cssVar);
   }
-  // `url("…")` quoted: a data: URI can contain characters that end an unquoted url(), and a
-  // truncated background is worse than none
-  const wantImage = theme?.backgroundImage ? `url("${theme.backgroundImage}")` : "";
+  /**
+   * `--bg-image` is GONE: the wallpaper is an `<img srcset>` layer now (see `.bgphoto` in
+   * app.css), because a CSS `background-image` cannot carry `srcset` — which is the whole point,
+   * letting the browser download the width its display area needs instead of a 6000px photo.
+   *
+   * Only the DIM value is still a custom property, because the image element reads it.
+   */
   const wantDim = theme?.backgroundImage ? String(theme.backgroundDim ?? 0.55) : "";
   // only meaningful over an image; cleared otherwise so a plain theme is untouched
   const wantAlpha = theme?.backgroundImage ? String(theme.surfaceAlpha ?? 0.82) : "";
   for (const [prop, want] of [
-    ["--bg-image", wantImage],
     ["--bg-image-dim", wantDim],
     ["--surface-alpha", wantAlpha],
   ] as const) {
@@ -297,19 +300,30 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
   if (theme?.backgroundImage) {
     if (root.dataset) root.dataset.bgImage = "on";
     /**
-     * A guaranteed-opaque version of the deepest surface.
+     * Alpha-stripped versions of ALL FOUR surface levels.
      *
-     * The CSS cannot strip alpha from a colour it is handed, so it is stripped here: `#rrggbbaa`
-     * becomes `#rrggbb`. Code and tool output then sit on a solid fill regardless of the palette
-     * (see the `[data-bg-image]` block in app.css).
+     * The stylesheet remaps `--bg-darkest`/`--bg-dark`/`--bg-mid`/`--bg-light` to translucent
+     * `color-mix()` values when an image is set, and mixes against these `-solid` ones. CSS cannot
+     * strip alpha from a colour it is handed, so `#rrggbbaa` → `#rrggbb` happens here.
+     *
+     * Four, not one: naming only the deepest was the same mistake as naming only some SELECTORS —
+     * the levels that were not stripped either lost their translucency or, worse, mixed against a
+     * half-transparent base and came out invisible.
      */
-    const solid = opaque(theme.palette.bgDarkest);
-    if (root.style.getPropertyValue("--bg-darkest-solid") !== solid) {
-      root.style.setProperty("--bg-darkest-solid", solid);
+    for (const [name, value] of [
+      ["--bg-darkest-solid", theme.palette.bgDarkest],
+      ["--bg-dark-solid", theme.palette.bgDark],
+      ["--bg-mid-solid", theme.palette.bgMid],
+      ["--bg-light-solid", theme.palette.bgLight],
+    ] as const) {
+      const solid = opaque(value);
+      if (root.style.getPropertyValue(name) !== solid) root.style.setProperty(name, solid);
     }
   } else {
     if (root.dataset) delete root.dataset.bgImage;
-    root.style.removeProperty("--bg-darkest-solid");
+    for (const name of ["--bg-darkest-solid", "--bg-dark-solid", "--bg-mid-solid", "--bg-light-solid"]) {
+      root.style.removeProperty(name);
+    }
   }
 }
 

@@ -39,10 +39,17 @@ test("an unchecked checkbox gets a theme background (#102)", () => {
     "the EMPTY box is UA-painted unless told otherwise — accent-color does not cover it (#102)",
   );
   // #112: `--line` is the hairline colour and measured 1.02-1.09:1 against
-  // --bg-darkest in every theme — i.e. no visible boundary at all. The test now
-  // checks the CONTRAST rather than a token name, so it cannot drift with the
-  // palette.
-  assert.match(rule, /border:\s*1px solid var\(--dim\)/, "the box border must be a visible weight (#112)");
+  // --bg-darkest in every theme — i.e. no visible boundary at all.
+  //
+  // The border now uses `--line-strong`, a token dedicated to control BOUNDARIES: `--dim` fixed
+  // the dark themes but washed out on the light ones (2.6:1 on strawberry), which is what
+  // "ramuneは未チェックのチェックボックスの背景色が黒系で微妙" was about. The values are pinned as
+  // measured NUMBERS in theme-contrast.test.ts; here we only check the token that carries them.
+  assert.match(
+    rule,
+    /border:\s*1px solid var\(--line-strong\)/,
+    "the box border must use the control-boundary token, not the hairline (#112)",
+  );
 });
 
 /* ---------- contrast, measured rather than token-matched (#112) ---------- */

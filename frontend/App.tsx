@@ -341,7 +341,40 @@ export default function App() {
   };
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
+  /**
+   * The width ladder for the wallpaper's `srcset`.
+   *
+   * Mirrors the server's ALLOWED_WIDTHS. Hardcoded rather than fetched so the very first paint
+   * already has candidates (a fetch would mean one full-size download before any choice exists);
+   * the server rejects anything outside its own list, and a rejected width just falls back to the
+   * original, so a drift here degrades rather than breaks.
+   */
+  const BG_WIDTHS = [640, 1280, 1920, 2560, 3840] as const;
+
+  /**
+   * The active custom theme's background image, if any.
+   *
+   * Resolved with the SAME precedence as the painter (`themeAuto` → per-mode id, else the fixed
+   * id), because a srcset pointing at one theme's image while another is painted is exactly the
+   * kind of drift that makes a setting look broken.
+   */
+  const activeBgImage = () => {
+    const want = themeAuto()
+      ? sysPrefersLight()
+        ? sysLightTheme()
+        : sysDarkTheme()
+      : fixedTheme();
+    return customThemes().find((t) => t.id === want)?.backgroundImage ?? "";
+  };
+
   const [showCfg, setShowCfg] = createSignal(false);
+  // probed when the settings panel first opens, not at boot: it runs binaries server-side
+  createEffect(() => {
+    if (!showCfg() || features()) return;
+    api("/api/features")
+      .then((f) => setFeatures(f as never))
+      .catch(() => setFeatures(null));
+  });
   /**
    * MCP servers whose missing grant has already pulled the operator to that section.
    *
@@ -1822,6 +1855,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   // upward pagination: prepend the page before the oldest loaded id
   const [loadingOlder, setLoadingOlder] = createSignal(false);
+  /**
+   * The FIRST page for the current session is in flight.
+   *
+   * Without it the feed showed its "no events yet — say something or press ▶ start" fallback while
+   * the fetch was still running, which reads as a session that lost its history rather than one
+   * that is loading — reported as "タイムラインロード中にアイテムが無いって表示されてるの微妙".
+   */
+  const [loadingFeed, setLoadingFeed] = createSignal(false);
   const [olderDone, setOlderDone] = createSignal(false);
   // Generation token guarding every async timeline fetch. Switching sessions
   // bumps it; responses that come back after a switch belong to a dead view
@@ -1871,6 +1912,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   async function backfillUntilScrollable(): Promise<void> {
     const id = selected();
     if (!id || olderDone() || loadingOlder()) return;
+    /**
+     * A session following the tail has nothing to backfill FOR.
+     *
+     * Backfilling exists so the reader can scroll up when the first page does not fill the
+     * screen. While pinned to the tail of a session that is still producing rows, the feed grows
+     * at the bottom, so "not scrollable yet" stays true for a moment and this loop pulls up to 20
+     * OLDER pages — reported as "稼働中のエージェントのセッションに移動するときに、とても重くて…
+     * その後スクロールが数十分前レベルのアイテムまで遡ることがある".
+     *
+     * Both symptoms come from that: 20 sequential round trips on every switch to a running
+     * session (the "とても重い"), and the extra prepended history leaving the viewport parked far
+     * above where the reader expected to be (the "遡る").
+     *
+     * Reading upward is what creates the need for more history, and `loadOlder()` already runs on
+     * scroll. So the eager fill is skipped while following.
+     */
+    if (atBottom()) return;
     // EVERYTHING is already loaded → no older history exists at all. Exit
     // before touching the server (a fresh session with a short log lands
     // here immediately — no probing, no loop).
@@ -1959,8 +2017,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // /branches only changes on fork — fetch it on session switch, not on
       // every tail refresh (each call re-reads the log server-side otherwise)
       const needsBranches = genAtStart !== lastBranchesGen || !branches().length;
+      // only when there is nothing to show yet: a tail refresh must not flash a spinner over a
+      // perfectly good timeline
+      if (!events().length) setLoadingFeed(true);
       const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
-      const [ev, br, sk] = await Promise.all([
+      /**
+       * SKILLS are fetched SEPARATELY, not awaited with the timeline.
+       *
+       * They were the third leg of this `Promise.all`, which made every session switch wait for
+       * a filesystem walk over three skill roots before a single row could paint. Skills are only
+       * read by the `/` palette and the settings list, so nothing on screen needs them — part of
+       * "稼働中のエージェントのセッションに移動するときに、とても重い".
+       *
+       * Failure is ignored on purpose: an agent whose skill roots are unreadable should still
+       * show its timeline.
+       */
+      void api(`/api/agents/${id}/skills`)
+        .then((sk) => {
+          if (genAtStart === feedGeneration && selected() === id) setAgentSkills(sk.skills ?? []);
+        })
+        .catch(() => {});
+      const [ev, br] = await Promise.all([
         // #38: `lineage=true` so a filtered fork shows the history it inherited,
         // matching the context the agent actually reasons over. Filtering by
         // strict branch id showed less than the model sees, which read as data
@@ -1969,7 +2046,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         needsBranches
           ? api(`/api/agents/${id}/branches`)
           : Promise.resolve({ branches: branches() }),
-        api(`/api/agents/${id}/skills`).catch(() => ({ skills: [] })),
       ]);
       if (needsBranches) lastBranchesGen = genAtStart;
       // stale iff a DIFFERENT session is now selected or a switch happened
@@ -1985,8 +2061,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       });
       setEventsTotal(ev.total ?? ev.events.length);
       setBranches(br.branches);
-      setAgentSkills(sk.skills ?? []);
     } catch { /* agent may be gone */ }
+    finally { setLoadingFeed(false); }
   }
 
   function feedEl() { return document.querySelector<HTMLElement>(".feed"); }
@@ -3209,6 +3285,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   type Suggest = { insert: string; title: string };
   const NO_ARG_COMMANDS = new Set(["start", "stop", "fork", "compact"]);
   const [agentSkills, setAgentSkills] = createSignal<{ name: string; description: string }[]>([]);
+  /**
+   * Optional native tools this host has (image resize, pty).
+   *
+   * Fetched on demand rather than at boot: it is only read in the settings panel, and it runs
+   * binaries on the server to answer.
+   */
+  const [features, setFeatures] = createSignal<{
+    imageResize: { available: boolean; tool: string | null; maxEdge: number; found: { name: string; present: boolean }[] };
+    pty: { available: boolean; provider: string | null };
+  } | null>(null);
   const [cmdIdx, setCmdIdx] = createSignal(-1);
   const suggestions = (): Suggest[] => {
     const d = draft();
@@ -3743,6 +3829,34 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     </Show>
     <Show when={!cfg()?.needsSetup}>
     <div class={"layout" + (showRight() ? "" : " right-hidden")}>
+      {/**
+        * The wallpaper as a real <img> with `srcset`, not a CSS `background-image`.
+        *
+        * `background-image` cannot carry `srcset`, so the CSS version had to download whatever
+        * single file the theme stored — a 6000px phone photo decoded in full and kept decoded, for
+        * an area of at most a few megapixels. Reported as "背景画像が大きいとブラウザがリサイズで
+        * かなり重くなっちゃう".
+        *
+        * With `<img srcset>` the browser knows the display area and the device pixel ratio, picks
+        * the smallest candidate that covers it, and the server derives that width on demand
+        * (`/api/assets/<id>?w=…`). `sizes="100vw"` because the layer is fixed to the viewport.
+        *
+        * The element is inert: `aria-hidden`, no pointer events, and below everything
+        * (`--bg-layer-z`), so it cannot be clicked, selected or focused.
+        */}
+      <Show when={activeBgImage()}>
+        {(src) => (
+          <img
+            class="bgphoto"
+            src={src()}
+            srcset={BG_WIDTHS.map((w) => `${src()}?w=${w} ${w}w`).join(", ")}
+            sizes="100vw"
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+        )}
+      </Show>
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
         <div class="agent-list">
@@ -4304,7 +4418,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <div class="divider-msg">loading older events…</div>
             </Show>
             <Show when={chatEvents().length > 0} fallback={
-              <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
+              /**
+               * While the FIRST page is in flight, say so.
+               *
+               * This fallback used to appear immediately, so switching into a slow or still-running
+               * session showed "no events yet" for the length of the fetch — indistinguishable from
+               * a session that had lost its history. Reported as "タイムラインロード中にアイテムが
+               * 無いって表示されてるの微妙なので、loadingの状態がちゃんと分かるように".
+               */
+              loadingFeed()
+                ? <div style="display:grid;place-items:center;height:100%" class="muted">
+                    <span><span class="spinner" aria-hidden="true" /> loading timeline…</span>
+                  </div>
+                : <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
             }>
               {/* `<For>` iterates the ROWS THEMSELVES, not a wrapper object.
                   The wrapper existed to avoid `chatEvents()[i() - 1]` (which made every
@@ -5443,6 +5569,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         announcedOAuth={announcedOAuth}
         skills={agentSkills()}
         hasSelection={!!selected()}
+        agentId={selected()}
+        features={features()}
         onSaved={() => {
           loadCfg();
           loadTasks();
@@ -7875,6 +8003,13 @@ function ConfigModal(props: {
   skills: { name: string; description: string }[];
   /** whether a session is selected at all, so the lists can say "select a session" honestly */
   hasSelection: boolean;
+  /** the selected agent's id, so a skill body can be fetched by name */
+  agentId: string | null;
+  /** optional native tools this host has; null while unknown */
+  features: {
+    imageResize: { available: boolean; tool: string | null; maxEdge: number; found: { name: string; present: boolean }[] };
+    pty: { available: boolean; provider: string | null };
+  } | null;
   /** theme state, owned by App because it paints `<html>` */
   theme: {
     themes: () => CustomTheme[];
@@ -9219,6 +9354,37 @@ function ConfigModal(props: {
             * from a panel would mean a second writer racing `save_skill`, and the file is the
             * source of truth everywhere else (load_skill reads it, not this list).
             */}
+          {/**
+            * Which OPTIONAL native tools this host actually has.
+            *
+            * A feature that silently does nothing when a binary is missing looks identical to a
+            * broken feature. Reported/asked for as "設定ウィンドウにオプション機能がどれくらい見つ
+            * かったかとかは入れると良い方". Fetched here (not at boot) because it is only read when
+            * someone opens this section.
+            */}
+          <div class="featgrid">
+            <div class="featrow">
+              <b>image downscaling</b>
+              <span class="muted">
+                {props.features
+                  ? props.features.imageResize.available
+                    ? `on — ${props.features.imageResize.tool}, long edge ≤ ${props.features.imageResize.maxEdge}px`
+                    : "off — no ffmpeg / ImageMagick found; uploads are served as-is"
+                  : "checking…"}
+              </span>
+            </div>
+            <div class="featrow">
+              <b>terminal pty</b>
+              <span class="muted">
+                {props.features
+                  ? props.features.pty.available
+                    ? `on — ${props.features.pty.provider}`
+                    : "off — no pty provider; terminals run on plain pipes (no resize)"
+                  : "checking…"}
+              </span>
+            </div>
+          </div>
+
           <Show
             when={props.skills.length > 0}
             fallback={
@@ -9231,12 +9397,49 @@ function ConfigModal(props: {
           >
             <div class="skilllist">
               <For each={props.skills}>
-                {(s) => (
-                  <div class="skillrow">
-                    <b class="mono">{s.name}</b>
-                    <span class="muted">{s.description}</span>
-                  </div>
-                )}
+                {(s) => {
+                  /**
+                   * A skill row EXPANDS to show the playbook.
+                   *
+                   * The list alone answered "what is there" but not "what does it say", and the
+                   * body is the whole point of a skill — "スキルの内容を読みたい". Fetched on
+                   * demand rather than included in the list response, because a body runs to tens
+                   * of KB and the / palette uses the same list.
+                   */
+                  const [open, setOpen] = createSignal(false);
+                  const [body, setBody] = createSignal<string | null>(null);
+                  const [err, setErr] = createSignal("");
+                  const toggle = async () => {
+                    if (open()) return setOpen(false);
+                    setOpen(true);
+                    if (body() !== null || !props.agentId) return;
+                    try {
+                      const r = await api(
+                        `/api/agents/${props.agentId}/skills/${encodeURIComponent(s.name)}`,
+                      );
+                      setBody(String(r.text ?? ""));
+                    } catch (ex) {
+                      setErr((ex as Error).message);
+                    }
+                  };
+                  return (
+                    <div classList={{ skillrow: true, open: open() }}>
+                      <button type="button" class="skillhead" onclick={toggle} title="show the playbook">
+                        <span class="skillcaret">{open() ? "▾" : "▸"}</span>
+                        <b class="mono">{s.name}</b>
+                        <span class="muted">{s.description}</span>
+                      </button>
+                      <Show when={open()}>
+                        <Show
+                          when={body() !== null}
+                          fallback={<div class="muted skillbody">{err() || "loading…"}</div>}
+                        >
+                          <pre class="skillbody mono">{body()}</pre>
+                        </Show>
+                      </Show>
+                    </div>
+                  );
+                }}
               </For>
             </div>
           </Show>
@@ -9250,7 +9453,7 @@ function ConfigModal(props: {
           <div class="helpsec">
             <h4 class="cfgsub">keyboard</h4>
             <div class="helprow"><kbd>enter</kbd><span>send (shift+enter for a newline)</span></div>
-            <div class="helprow"><kbd>↑</kbd><kbd>↓</kbd><span>move between sessions</span></div>
+            <div class="helprow"><span class="kbdgroup"><kbd>↑</kbd><kbd>↓</kbd></span><span>move between sessions</span></div>
             <div class="helprow"><kbd>/</kbd><span>command palette — commands and focus</span></div>
             <div class="helprow"><kbd>t</kbd><span>open the terminal panel</span></div>
             <div class="helprow"><kbd>d</kbd><span>toggle the details panel</span></div>

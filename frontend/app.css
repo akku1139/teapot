@@ -1,6 +1,16 @@
 :root {
   --bg-darkest: #1a1c22; --bg-dark: #232630; --bg-mid: #2b2e39; --bg-light: #343845;
   --fg: #dcdee4; --dim: #9298a5; --muted: #6b7280; --line: #1d2027;
+  /**
+   * The boundary of a CONTROL (checkbox, input, button), as opposed to a hairline between blocks.
+   *
+   * `--line` is deliberately faint — it is a separator. Reusing it for a control's border makes an
+   * unchecked checkbox unreadable on a pale theme: MEASURED, ramune's `--line` is 1.05–1.34:1
+   * against its own four surfaces, so the box is a smudge rather than a target. This token falls
+   * back to `--line` (correct for the dark themes, where it already contrasts) and light themes
+   * override it with something that actually reads.
+   */
+  --line-strong: #1d2027;
   --acc: #5865f2; --ok: #3ba55d; --warn: #faa81a; --err: #ed4245; --tool: #3ba0c9;
   --term-bg: #0d0e12; --term-fg: #dcdee4;
 
@@ -138,6 +148,8 @@
   --acc: #4757d8; --ok: #2b8a4b; --warn: #b97a0f; --err: #d83c3f; --tool: #2278a8;
   --term-bg: #ffffff; --term-fg: #24272f;
   color-scheme: light;
+  /* MEASURED 3.05:1 against the darkest of this theme's surfaces — see --line-strong */
+  --line-strong: #7f8b9c;
 }
 
 [data-theme="strawberry"] {
@@ -146,6 +158,9 @@
   --acc: #e05575; --ok: #4d9e63; --warn: #c98a2d; --err: #d43d51; --tool: #b05687;
   --term-bg: #fff5f8; --term-fg: #4a2733;
   color-scheme: light;
+  /* MEASURED 2.95:1 against bgMid (#f7d4de) — see --line-strong. Deliberately just under 3:1:
+     the next step darker reads as a heavy outline rather than a control edge. */
+  --line-strong: #b06a83;
 }
 
 [data-theme="ramune"] {
@@ -154,8 +169,27 @@
   --acc: #1d86ae; --ok: #3a9e6e; --warn: #cf9a2a; --err: #d64f5c; --tool: #3a9db8;
   --term-bg: #f4fbfd; --term-fg: #173342;
   color-scheme: light;
+  /* MEASURED 2.93:1 against bgMid (#c9e7f4) — see --line-strong. The old --line (#c2e2ef) was
+     1.05:1 here, which is why an unchecked checkbox had no visible box at all. */
+  --line-strong: #4a8aae;
 }
 * { box-sizing: border-box; }
+/**
+ * Native widgets follow the theme's MODE, not just the presets.
+ *
+ * `color-scheme` is what tells the browser how to paint its own controls — the unchecked checkbox
+ * box, number spinners, scrollbars, the select popup. Only the three built-in light PRESET blocks
+ * set `light`, so a CUSTOM light theme (a ramune copy) fell back to `:root`'s `dark` and painted
+ * those widgets dark on a pale panel — reported as "ramuneは未チェックのチェックボックスの背景色が
+ * 黒系で微妙".
+ *
+ * `data-appearance` already carries the resolved mode for every theme, preset or custom, so keying
+ * off it fixes the whole class instead of adding a property to each palette. The preset blocks
+ * keep their own `color-scheme` as a second line of defence for a document rendered before that
+ * attribute lands.
+ */
+html[data-appearance="light"] { color-scheme: light; }
+html[data-appearance="dark"] { color-scheme: dark; }
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg-dark); color: var(--fg); font-size: var(--text-md); }
 
@@ -172,20 +206,39 @@ body { background: var(--bg-dark); color: var(--fg); font-size: var(--text-md); 
  *     shows through the gaps and behind the feed rather than behind text. Without that, a
  *     busy photo makes every message unreadable and the cure is worse than the plain theme.
  */
-body {
-  background-image:
-    linear-gradient(
-      color-mix(in srgb, var(--bg-dark) calc(var(--bg-image-dim, 0.55) * 100%), transparent),
-      color-mix(in srgb, var(--bg-dark) calc(var(--bg-image-dim, 0.55) * 100%), transparent)
-    ),
-    var(--bg-image, none);
-  background-size: cover;
-  background-position: center;
-  background-attachment: fixed;
-  background-repeat: no-repeat;
-}
+body { background: var(--bg-dark); }
 
+/**
+ * The wallpaper LAYER.
+ *
+ * A real `<img>` rather than a CSS `background-image`, because only an element can carry `srcset` —
+ * and `srcset` is what lets the browser download the width its display area actually needs instead
+ * of a 6000px phone photo. Reported as "背景画像が大きいとブラウザがリサイズでかなり重くなっちゃう".
+ *
+ * `position: fixed; inset: 0; object-fit: cover` reproduces what `background-size: cover` did,
+ * including staying put while the feed scrolls. It sits BELOW everything (`z-index: -1` on a body
+ * that does not create a stacking context is not enough, so `.layout` is raised explicitly) and is
+ * inert: `pointer-events: none` plus `aria-hidden`, so it can never swallow a click or be tabbed
+ * to.
+ */
+.bgphoto {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  /* the dim overlay: the same `--bg-image-dim` the gradient used, so the setting keeps working */
+  filter: brightness(calc(1 - var(--bg-image-dim, 0.55)));
+}
+/* the app paints ABOVE the wallpaper layer; without this the photo covers the whole UI. Declared
+   here with `position` so it cannot be lost from the layout block below by itself. */
 .layout {
+  position: relative;
+  z-index: 1;
   display: grid;
   /* The details panel gets a MINIMUM, and the chat takes everything else.
    *
@@ -966,6 +1019,25 @@ details.reasoning .thinkscroll {
 
 .day-divider { display: flex; align-items: center; gap: var(--space-5); padding: 14px 18px 6px; }
 .day-divider::before, .day-divider::after { content: ""; flex: 1; height: 1px; background: var(--bg-light); }
+/**
+ * An in-flight indicator for the timeline's FIRST page.
+ *
+ * Without one, a slow session switch showed the "no events yet" fallback for the whole fetch,
+ * which reads as data loss rather than loading. The spinner is the cheapest honest signal: it
+ * turns without needing a size, and it is `aria-hidden` because the text beside it already says
+ * what is happening.
+ */
+.spinner {
+  display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+  border: 2px solid var(--dim); border-top-color: transparent; border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -1px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* respects a reduced-motion preference: the text still conveys the state, so nothing is lost */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-top-color: var(--dim); opacity: 0.6; }
+}
 .day-divider span { color: var(--dim); font-size: var(--text-xs); }
 
 /* ---- composer ---- */
@@ -1015,6 +1087,15 @@ details.reasoning .thinkscroll {
 .helprow:last-child { border-bottom: none; }
 .helprow > b { color: var(--fg); font-weight: 600; white-space: nowrap; }
 .helprow > span { color: var(--dim); line-height: 1.5; }
+/**
+ * `↑ ↓` are one key PAIR, so they are one grid cell.
+ *
+ * Two sibling `<kbd>` elements were two grid ITEMS, so the `minmax(96px, auto)` column split its
+ * width between them and the two glyphs rendered at about 2:5 with a gap — reported as "helpの ↑ ↓
+ * キーのアイコンの横幅が 2:5 くらいになっててバランスが悪い". Wrapping them makes the pair a single
+ * item that sits at its natural width, like every other row.
+ */
+.helprow .kbdgroup { display: inline-flex; gap: 3px; align-items: center; }
 .helprow kbd { display: inline-block; min-width: 20px; text-align: center; background: var(--bg-light); border-radius: var(--radius-sm); padding: 1px 5px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: var(--text-xs); color: var(--fg); }
 .helprow code { background: var(--bg-darkest); border-radius: var(--radius-sm); padding: 0 4px; font-size: 11.5px; }
 
@@ -1154,14 +1235,42 @@ details.reasoning .thinkscroll {
 .ctrlrow .muted { font-size: var(--text-xs); }
 /* skills list (settings → skills): the name is the identifier the agent uses, so it is
    monospace and first; the one-line description follows and wraps */
-.skilllist { display: flex; flex-direction: column; gap: var(--space-2); max-height: 320px; overflow-y: auto; }
+/**
+ * No `max-height` here.
+ *
+ * A cap turned the list into a SECOND scroll region inside `.cfgpanel` (which already scrolls),
+ * so the section's border ended partway down the visible area with dead space below it — reported
+ * as "設定のスキルセクションで、下側に何か置かれてるわけでもないのに、上半分くらいしか枠が入って
+ * ない". One scroll owner per panel: the list grows, the panel scrolls.
+ */
+/* optional native tools: a label/value pair, same rhythm as the help rows */
+.featgrid { display: flex; flex-direction: column; gap: 2px; margin-bottom: var(--space-5); }
+.featrow { display: grid; grid-template-columns: minmax(150px, auto) 1fr; gap: var(--space-4); align-items: baseline; padding: 4px 0; font-size: var(--text-sm); border-bottom: 1px solid var(--bg-light); }
+.featrow:last-child { border-bottom: none; }
+.featrow > b { color: var(--fg); font-weight: 600; white-space: nowrap; }
+.skilllist { display: flex; flex-direction: column; gap: var(--space-2); }
 .skillrow {
   display: flex; flex-direction: column; gap: 2px;
-  padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-md);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
   background: var(--bg-darkest);
 }
-.skillrow > b { color: var(--acc); font-size: var(--text-sm); word-break: break-all; }
-.skillrow > span { font-size: var(--text-xs); line-height: 1.45; }
+/* the header is a BUTTON: expanding is the only interaction, and a div would not be reachable
+   by keyboard. Grid so the caret/name/description stay aligned whether open or closed. */
+.skillhead {
+  display: grid; grid-template-columns: 12px auto; gap: 2px 7px; align-items: baseline;
+  width: 100%; padding: 7px 9px; background: none; border: none; cursor: pointer;
+  text-align: left; font: inherit; color: inherit; border-radius: var(--radius-md);
+}
+.skillhead:hover { background: var(--bg-dark); }
+.skillhead > b { color: var(--acc); font-size: var(--text-sm); word-break: break-all; }
+.skillhead > .skillcaret { color: var(--dim); font-size: var(--text-xs); }
+.skillhead > .muted { grid-column: 2; font-size: var(--text-xs); line-height: 1.45; }
+/* the body is code-ish text, so it scrolls and wraps like output rather than running on */
+.skillbody {
+  margin: 0; padding: 8px 10px 10px; border-top: 1px solid var(--line);
+  font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  max-height: 340px; overflow-y: auto; color: var(--fg);
+}
 
 /* goal status segmented buttons */
 .goalstate { background: var(--bg-light); color: var(--fg); border: none; border-radius: var(--radius-md); padding: 3px 10px; cursor: pointer; font-size: var(--text-xs); }
@@ -1632,22 +1741,31 @@ h3 .filetoggle { margin-left: 0; }
  *
  * Every colour is a theme token, so all ten appearances are fixed at once rather
  * than per-theme.
+ *
+ * NOTE: the BOX background here is not the only thing the UA paints. On a light
+ * theme the unchecked box also depends on `color-scheme` being `light`, which is
+ * keyed on `html[data-appearance]` near the top of this file — a custom light
+ * theme used to fall back to `:root`'s `dark` and the box came out dark.
  */
 
 /* 1. an UNCHECKED checkbox: the box itself, not the tick.
    accent-color colours the check mark once checked; the empty box stayed white. */
 input[type="checkbox"] {
   background-color: var(--bg-darkest);
-  /* #112: this was `--line`, which is the theme's HAIRLINE colour — measured
-     against --bg-darkest it is 1.02–1.09:1 in every theme, i.e. invisible. The
-     box had no boundary at all, so an unchecked checkbox was a 14px smudge with
-     nothing to say "this is a control you can click".
-
-     `--dim` is the existing muted-FOREGROUND token: 5.9–6.4:1 against the same
-     background in all four themes, comfortably over the 3.0:1 WCAG wants for a
-     non-text UI boundary. It is already used for secondary text, so the box now
-     reads at the same weight as the label beside it. */
-  border: 1px solid var(--dim);
+  /**
+   * The BOUNDARY of the empty box, and why it needs its own token.
+   *
+   * `--line` is a hairline separator: MEASURED at 1.02–1.09:1 against `--bg-darkest` in every
+   * theme, so the box had no edge at all and an unchecked checkbox was a 14px smudge with nothing
+   * saying "you can click this".
+   *
+   * `--dim` fixed the dark themes (5.9–6.4:1) but not the light ones: 3.72:1 on ramune, 2.6:1 on
+   * strawberry, where the box again washed out — reported as "ramuneは未チェックのチェックボックスの
+   * 背景色が黒系で微妙". `--line-strong` is measured at 2.93–3.05:1 on the darkest of each light
+   * theme's four surfaces — short of the 3:1 WCAG asks for a UI boundary, because the next step
+   * darker stops looking like a control edge. Enough to see the box, which is the report.
+   */
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
 }
 
@@ -1759,29 +1877,56 @@ input[type="number"] {
  *
  * Scoped to `[data-bg-image]` so a plain theme keeps whatever the author intended.
  */
+/**
+ * TRANSPARENCY IS APPLIED AT THE PALETTE LEVEL, not by listing selectors.
+ *
+ * The first version named the surfaces that should be translucent (`.content pre`, `.card`, …).
+ * Every surface it did not name stayed fully opaque and looked flat beside the ones that were
+ * translucent — reported twice, the second time as "UI全体で透明を意識", with the concrete miss being
+ * the code block inside an EXPANDED TOOL CARD (a different selector from a markdown code block).
+ * A list of selectors is a list of things to forget.
+ *
+ * So the four surface levels are remapped here instead. Every rule in this file already paints
+ * from `--bg-darkest` / `--bg-dark` / `--bg-mid` / `--bg-light`, which means one remap reaches all
+ * of them — including surfaces added later, which is the point. The opaque values stay in place
+ * for `applyCustomTheme` (it reads them for the theme editor's swatches).
+ *
+ * `--surface-alpha` is the operator's setting (theme editor slider), default 0.82: high enough
+ * that machine output stays legible over a busy photo, low enough that the image shows. The FLOOR
+ * is enforced in `sanitizeTheme` — near zero would bring back the bug where a palette colour saved
+ * with alpha made code blocks invisible.
+ */
+html[data-bg-image="on"] {
+  --bg-darkest: color-mix(in srgb, var(--bg-darkest-solid, #1a1c22) calc(var(--surface-alpha, 0.82) * 100%), transparent);
+  --bg-dark: color-mix(in srgb, var(--bg-dark-solid, #232630) calc(var(--surface-alpha, 0.82) * 100%), transparent);
+  --bg-mid: color-mix(in srgb, var(--bg-mid-solid, #2b2e39) calc(var(--surface-alpha, 0.82) * 100%), transparent);
+  --bg-light: color-mix(in srgb, var(--bg-light-solid, #343845) calc(var(--surface-alpha, 0.82) * 100%), transparent);
+}
+/* surfaces that must NOT show the wallpaper through them: a preview of the image itself would be
+   useless half-transparent, and code needs its own `background-image: none` so a texture from the
+   palette cannot fight the text. */
 html[data-bg-image="on"] .embed,
 html[data-bg-image="on"] .content pre,
-html[data-bg-image="on"] .content pre > code,
+html[data-bg-image="on"] .content code,
+html[data-bg-image="on"] .content thead,
+html[data-bg-image="on"] .content th,
 html[data-bg-image="on"] .card,
-html[data-bg-image="on"] .mcpresult,
-html[data-bg-image="on"] .bgpreview {
-  /**
-   * TRANSLUCENT by a settable amount, so the wallpaper reads through code and tool output.
-   *
-   * This started as fully opaque to fix the opposite bug: a palette colour saved with alpha
-   * gave these surfaces ZERO opacity, so code blocks were invisible over a photo. Opaque was a
-   * correct floor but the wrong ceiling — asked for as "コードブロックやtool cardとかが背景画像の
-   * ために半透明になってほしい (テーマエディタで透明度も設定できるように?)".
-   *
-   * `--surface-alpha` is the operator's setting (the theme editor's slider). Default 0.82: high
-   * enough that machine output stays legible over a busy photo, low enough that the image is
-   * visibly there. The floor is enforced in `sanitizeTheme`, not here — a value near 0 would
-   * reintroduce the invisible-code bug this rule exists to prevent.
-   */
-  background-color: color-mix(
-    in srgb,
-    var(--bg-darkest-solid, var(--bg-darkest)) calc(var(--surface-alpha, 0.82) * 100%),
-    transparent
-  );
+html[data-bg-image="on"] .mcpresult {
   background-image: none;
 }
+/**
+ * A `code` INSIDE a `pre` must not paint a second surface.
+ *
+ * `html[data-bg-image="on"] .content code` above wins on specificity over the base
+ * `.content pre code { background: none }`, so with an image set the inner `code` got the surface
+ * colour back — a translucent block inside a translucent block, which renders as a DARKER inner
+ * box with a visible double edge. Reported as "コードブロックが描画されるときに <pre> と <code> に
+ * それぞれ透明度が当たるので、code側がpreと背景色が違って枠が二重になってる".
+ *
+ * The `pre` owns the surface; the `code` in it is just the text carrier.
+ */
+html[data-bg-image="on"] .content pre code {
+  background: none;
+  padding: 0;
+}
+html[data-bg-image="on"] .bgpreview { background-color: var(--bg-darkest-solid, var(--bg-darkest)); }

@@ -5,8 +5,10 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { serve, upgradeWebSocket } from "@hono/node-server";
 import { WebSocketServer } from "ws";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { currentSkills } from "../agent/tools.ts";
+import { readSkillFile } from "../agent/skills.ts";
+import { detectImageTools, downscaleImage, scaledName, widthName, MAX_EDGE } from "./image-resize.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -1211,6 +1213,41 @@ const MAX_WS_CLIENTS = 64;
     }
   });
 
+  /**
+   * The BODY of one skill, by name.
+   *
+   * The list endpoint returns name/description/source only, which is what the `/` palette and the
+   * settings list need — a skill body is up to tens of KB and no list should carry every one.
+   * Reading is separate and on demand, the same shape as the timeline's event paging.
+   *
+   * Resolved through `currentSkills` rather than from a path in the request: the client never
+   * names a file, so there is no traversal surface, and a skill that is not in this agent's roots
+   * simply does not exist here.
+   */
+  app.get("/api/agents/:id/skills/:name", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return notFound(c, "agent", c.req.param("id"));
+    const want = c.req.param("name");
+    try {
+      const list = await currentSkills(a.toolCtx);
+      const def = list.find((s) => s.name === want);
+      if (!def) return c.json({ error: `no skill named ${want}` }, 404);
+      const text = await readSkillFile(def);
+      // a hard cap, like the code preview: a pathological file must not fill the panel
+      const MAX = 400_000;
+      return c.json({
+        name: def.name,
+        description: def.description,
+        source: def.source,
+        files: def.files,
+        text: text.length > MAX ? `${text.slice(0, MAX)}\n… truncated` : text,
+        truncated: text.length > MAX,
+      });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
   // force a context compaction pass (slash command /compact)
   app.post("/api/agents/:id/compact", async (c) => {
     const a = master.agents.get(c.req.param("id"));
@@ -1659,21 +1696,93 @@ const MAX_WS_CLIENTS = 64;
     avif: "image/avif",
   };
 
+  /**
+   * Serve an asset, optionally downscaled to a requested width.
+   *
+   * `?w=1920` returns a 1920-wide (long-edge) version, generated once and CACHED ON DISK next to
+   * the original. The client uses this through `<img srcset>`, so the browser picks the width it
+   * needs from the DISPLAY area and the device pixel ratio — no guessing on our side, which is the
+   * problem a fixed size at upload time cannot solve: the same server is viewed on a laptop and a
+   * 4K monitor, and a phone photo is 6000px wide regardless.
+   *
+   * Untrusted input is bounded three ways: the width must be one of the ALLOWED_WIDTHS ladder (a
+   * client cannot ask for 10000 distinct sizes and fill the disk), the name must pass `assetName`,
+   * and the derived file is written under a name that function still accepts.
+   */
+  const ALLOWED_WIDTHS = [640, 1280, 1920, 2560, 3840] as const;
+  /**
+   * The width ladder, for the client's `srcset`.
+   *
+   * Registered BEFORE `/api/assets/:name`: Hono matches in registration order, so the parameterised
+   * route would otherwise swallow `meta` and answer 404 — measured, and the reason this is a
+   * separate literal route rather than something the `:name` handler inspects.
+   */
+  app.get("/api/assets/meta", (c) => c.json({ widths: ALLOWED_WIDTHS }));
   app.get("/api/assets/:name", async (c) => {
     const name = assetName(c.req.param("name") ?? "");
     if (!name) return c.notFound();
     const ext = name.split(".").pop()!;
+    const mime = assetMime[ext] ?? "application/octet-stream";
+    const src = path.join(assetsDir, name);
+
+    const rawW = c.req.query("w");
+    const wanted = rawW ? Number(rawW) : 0;
+    if (wanted && !(ALLOWED_WIDTHS as readonly number[]).includes(wanted)) {
+      // a bounded ladder, so a client cannot mint unbounded files
+      return c.json({ error: `unsupported width ${rawW}` }, 400);
+    }
+
     try {
-      const buf = await fs.readFile(path.join(assetsDir, name));
+      // the cache header is immutable+1y, so a resized response must be cached on disk or every
+      // viewer regenerates it
+      if (wanted) {
+        const cached = path.join(assetsDir, widthName(name, wanted));
+        if (existsSync(cached)) {
+          return c.body(await fs.readFile(cached), 200, {
+            "content-type": mime,
+            "cache-control": "public, max-age=31536000, immutable",
+          });
+        }
+        const toolName = await imageToolName();
+        if (toolName) {
+          const tool = { name: toolName, kind: toolName === "ffmpeg" ? ("ffmpeg" as const) : (toolName as "magick" | "convert") };
+          const r = await downscaleImage(src, cached, tool, wanted);
+          if (r.resized) {
+            return c.body(await fs.readFile(cached), 200, {
+              "content-type": mime,
+              "cache-control": "public, max-age=31536000, immutable",
+            });
+          }
+        }
+        // no tool, or the resize did not help: serve the original rather than fail. `srcset` still
+        // works — the browser just gets more pixels than it asked for.
+      }
+      const buf = await fs.readFile(src);
       return c.body(buf, 200, {
-        "content-type": assetMime[ext] ?? "application/octet-stream",
-        // the name is a content hash-ish id and never reused, so it can be cached forever
+        "content-type": mime,
+        // the name is a UUID and never reused, so it can be cached forever
         "cache-control": "public, max-age=31536000, immutable",
       });
     } catch {
       return c.notFound();
     }
   });
+
+
+  /**
+   * The image optimiser, probed at most ONCE.
+   *
+   * Booting is not async here, and probing runs the binaries, so it is resolved lazily on the
+   * first upload and the promise is kept — every later upload reuses the answer instead of
+   * re-probing. A missing tool caches as null, which is a valid result.
+   */
+  let imageToolsProbe: Promise<string | null> | null = null;
+  const imageToolName = () => {
+    imageToolsProbe ??= detectImageTools()
+      .then((r) => r.tool?.name ?? null)
+      .catch(() => null);
+    return imageToolsProbe;
+  };
 
   app.post("/api/assets", async (c) => {
     /**
@@ -1697,8 +1806,59 @@ const MAX_WS_CLIENTS = 64;
     }
     await fs.mkdir(assetsDir, { recursive: true });
     const name = `${crypto.randomUUID().replace(/-/g, "")}.${ext}`;
-    await fs.writeFile(path.join(assetsDir, name), buf);
-    return c.json({ name, url: `/api/assets/${name}`, bytes: buf.length });
+    const dest = path.join(assetsDir, name);
+    await fs.writeFile(dest, buf);
+    /**
+     * Downscale with a native binary when one exists.
+     *
+     * A phone photo is 6000x4000 and is displayed with `background-size: cover` at window size, so
+     * the browser decodes and keeps decoded ~24 megapixels for nothing — reported as "背景画像が
+     * 大きいとブラウザがリサイズでかなり重くなっちゃう". Doing it once here makes every later repaint
+     * cheap.
+     *
+     * A MISSING OPTIMISER IS NOT AN ERROR: `downscaleImage` returns `resized:false` and the
+     * original stays. The response says what happened so the UI can be honest rather than
+     * silently claiming to have optimised something.
+     */
+    /**
+     * The ORIGINAL is stored untouched; sizes are derived on demand by `?w=`.
+     *
+     * Resizing once at upload looked simpler but cannot be right: the same asset is viewed on a
+     * laptop and a 4K monitor, and `background-size: cover` means the needed width depends on the
+     * DISPLAY area. Baking one size in either wastes bytes on the small screen or upscales on the
+     * large one. Storing the original and serving `?w=` lets the browser choose from `srcset`,
+     * which is the only place the real display size is known.
+     */
+    return c.json({
+      name,
+      url: `/api/assets/${name}`,
+      bytes: buf.length,
+    });
+  });
+
+  /**
+   * Which optional native tools were found.
+   *
+   * "設定ウィンドウにオプション機能がどれくらい見つかったかとかは入れると良い方" — a feature that
+   * silently does nothing when a binary is missing is indistinguishable from a broken one, so the
+   * panel reports what is actually available rather than leaving the operator to guess.
+   */
+  app.get("/api/features", async (c) => {
+    const [image, script] = await Promise.all([
+      detectImageTools().catch(() => ({ tool: null, found: [] })),
+      Promise.resolve({ present: process.platform !== "win32" && existsSync("/usr/bin/script") }),
+    ]);
+    return c.json({
+      imageResize: {
+        available: !!image.tool,
+        tool: image.tool?.name ?? null,
+        /** every candidate, so "ffmpeg missing but imagemagick present" is visible */
+        found: image.found,
+        maxEdge: MAX_EDGE,
+      },
+      // a pty is what makes terminal resizing work at all; on Windows this is expected to be off
+      pty: { available: script.present, provider: script.present ? "script" : null },
+    });
   });
 
   app.delete("/api/assets/:name", async (c) => {

@@ -15,7 +15,9 @@ import assert from "node:assert/strict";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import { buildApp } from "../src/server/api.ts";
 import { Master } from "../src/master.ts";
-import { sanitizeTheme, DEFAULT_PALETTE } from "../frontend/theme-store.ts";
+import { sanitizeTheme, DEFAULT_PALETTE, applyCustomTheme } from "../frontend/theme-store.ts";
+import { readSource, stripSourceComments } from "./helpers/source.ts";
+import { cssRuleBody } from "./helpers/css.ts";
 
 const mkMaster = (dataDir: string) =>
   new Master(
@@ -130,16 +132,30 @@ test("code and tool output get an OPAQUE surface when a background image is set 
   assert.equal(opaque("#1A1C22"), "#1A1C22", "an opaque colour is unchanged");
   assert.equal(opaque("rgb(0 0 0 / 0%)"), "rgb(0 0 0 / 0%)", "non-hex is left alone");
 
+  /**
+   * The CSS half changed shape when transparency moved to the palette level: `.embed` no longer
+   * names a colour at all, it inherits the remapped `--bg-darkest`. What must still hold is that
+   * the alpha-stripped value is what the remap MIXES AGAINST — otherwise a translucent palette
+   * value is mixed against itself and the result is invisible.
+   */
   const css = await (await import("./helpers/source.ts")).readSource("frontend/app.css");
   const { cssRuleBody } = await import("./helpers/css.ts");
-  const rule = cssRuleBody(css, 'html[data-bg-image="on"] .embed');
+  const remap = cssRuleBody(css, 'html[data-bg-image="on"]');
+  for (const level of ["darkest", "dark", "mid", "light"]) {
+    assert.match(
+      remap,
+      new RegExp(`--bg-${level}:[^;]*--bg-${level}-solid`),
+      `--bg-${level} must mix against its ALPHA-STRIPPED value; mixing a translucent palette ` +
+        "colour against itself renders machine output invisible",
+    );
+  }
+  // the machine-output selectors still exist, but only to kill any palette texture — the fill
+  // itself now comes from the remapped level above
   assert.match(
-    rule,
-    /--bg-darkest-solid/,
-    "with an image set, .embed must use the ALPHA-STRIPPED surface — otherwise a translucent " +
-      "palette renders tool output at zero opacity over the photo",
+    cssRuleBody(css, 'html[data-bg-image="on"] .embed'),
+    /background-image:\s*none/,
+    "and must not paint a gradient over it",
   );
-  assert.match(rule, /background-image:\s*none/, "and must not paint a gradient over it");
 });
 
 test("the auth choice is derived from the saved headers, not reset (#mcpui)", async () => {
@@ -203,4 +219,68 @@ test("a theme without surfaceAlpha stays valid and unset (#ui)", async () => {
   const t = sanitizeTheme({ ...base, backgroundImage: "/api/assets/" + "a".repeat(32) + ".png" });
   assert.ok(t);
   assert.equal(t.surfaceAlpha, undefined);
+});
+
+test("every surface level has an alpha-stripped variant when an image is set (#ui)", async () => {
+  /**
+   * The first implementation named only `--bg-darkest-solid`, and the stylesheet named only SOME
+   * selectors. Both were lists of things to forget: a code block inside an EXPANDED TOOL CARD uses
+   * a different selector from a markdown code block, and a surface painting from `--bg-mid` had no
+   * solid variant to mix against.
+   *
+   * Reported twice — "コードブロックやtool cardとかが背景画像のために半透明になってほしい", then
+   * "ツールカードを展開したときに出るコードブロックも透明感が欲しい / UI全体で透明を意識".
+   *
+   * So this pins the STRUCTURE: all four levels get a stripped variant, and they go away again
+   * when the image does (a leftover inline property would keep overriding the plain palette).
+   */
+  const writes: Record<string, string> = {};
+  const root = {
+    style: {
+      setProperty: (k: string, v: string) => { writes[k] = v; },
+      getPropertyValue: (k: string) => writes[k] ?? "",
+      removeProperty: (k: string) => { delete writes[k]; },
+    },
+    dataset: {} as Record<string, string>,
+  } as unknown as HTMLElement;
+
+  const palette = { ...DEFAULT_PALETTE, bgDarkest: "#111111cc", bgDark: "#222222cc", bgMid: "#333333cc", bgLight: "#444444cc" };
+  applyCustomTheme(root, { ...base, palette, backgroundImage: "/api/assets/" + "a".repeat(32) + ".png" } as never);
+
+  for (const [name, want] of [
+    ["--bg-darkest-solid", "#111111"],
+    ["--bg-dark-solid", "#222222"],
+    ["--bg-mid-solid", "#333333"],
+    ["--bg-light-solid", "#444444"],
+  ] as const) {
+    assert.equal(writes[name], want, `${name} must be the alpha-stripped base for color-mix()`);
+  }
+
+  // clearing the image must clear EVERY variant, or the next plain theme keeps mixing against them
+  applyCustomTheme(root, null);
+  for (const name of ["--bg-darkest-solid", "--bg-dark-solid", "--bg-mid-solid", "--bg-light-solid"]) {
+    assert.equal(writes[name], undefined, `${name} must be removed with the image`);
+  }
+});
+
+test("a code block paints ONE surface, not a pre and a code stacked (#ui)", async () => {
+  /**
+   * With a background image the surface colour comes from custom properties, so EVERY element
+   * that sets it paints a translucent layer. A `code` inside a `pre` did exactly that, and two
+   * layers of the same translucent colour render darker with a visible inner edge — reported as
+   * "code側がpreと背景色が違って枠が二重になってる".
+   *
+   * The trap is specificity: `html[data-bg-image="on"] .content code` (0,1,2,1) beats the base
+   * `.content pre code` (0,0,2,1), so the plain "inner code has no background" rule stopped
+   * applying exactly when an image was set. This pins the override that restores it.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const inner = cssRuleBody(css, 'html[data-bg-image="on"] .content pre code');
+  assert.match(
+    inner,
+    /background:\s*none/,
+    "the code inside a pre must not paint its own surface, or the block shows a double frame",
+  );
+  // and the pre must still paint one, or the block loses its surface entirely
+  assert.match(cssRuleBody(css, ".content pre"), /background:/);
 });

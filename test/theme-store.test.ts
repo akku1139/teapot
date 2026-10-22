@@ -234,15 +234,27 @@ test("clearing a theme removes every variable it could have set (#theme)", () =>
   assert.equal(root.style.getPropertyValue("--bg-image"), "");
 });
 
-test("the background image is written quoted, and only when there is one (#theme)", () => {
+test("only the DIM value is a custom property — the image is an <img> now (#theme)", () => {
+  /**
+   * The wallpaper moved from `background-image` to a real `<img srcset>` layer, because a CSS
+   * background cannot carry `srcset` and therefore cannot let the browser choose a width —
+   * which is what fixed "背景画像が大きいとブラウザがリサイズでかなり重くなっちゃう".
+   *
+   * So `--bg-image` must NOT be written any more: it would be a property nothing reads. The one
+   * thing still needed as a property is the dim amount, because the `<img>` reads it for its
+   * brightness filter.
+   */
   const root = fakeRoot();
   applyCustomTheme(root, theme());
-  assert.equal(root.style.getPropertyValue("--bg-image"), "", "no image means no property");
+  assert.equal(root.style.getPropertyValue("--bg-image-dim"), "", "no image means no dim");
 
   const withImg = fakeRoot();
   applyCustomTheme(withImg, theme({ backgroundImage: "data:image/png;base64,AA", backgroundDim: 0.3 }));
-  // quoted: a data: URI can contain characters that end an unquoted url()
-  assert.equal(withImg.style.getPropertyValue("--bg-image"), 'url("data:image/png;base64,AA")');
+  assert.equal(
+    withImg.style.getPropertyValue("--bg-image"),
+    "",
+    "--bg-image is stale: the image is an element, not a CSS background",
+  );
   assert.equal(withImg.style.getPropertyValue("--bg-image-dim"), "0.3");
 });
 
@@ -385,29 +397,62 @@ test("the retry strips ONLY the background, never the palette (#theme)", () => {
   assert.equal(stripped.mode, t.mode);
 });
 
-test("the background-image rule keeps the image behind the app, and has a usable default (#theme)", () => {
-  // The image is painted on `body` as a layer, dimmed by a gradient whose alpha is
-  // `--bg-image-dim`. Two properties make it safe, and both are easy to lose in a refactor:
-  //
-  //   - the dim value has a FALLBACK in `var(--bg-image-dim, …)`. Without one, `color-mix(… calc(
-  //     var(--bg-image-dim) * 100%) …)` is invalid at computed-value time and the WHOLE
-  //     `background-image` declaration is dropped — the theme silently loses its wallpaper;
-  //   - `--bg-image` defaults to `none`, so a theme without an image paints only the dim layer
-  //     rather than inheriting `none` as an invalid url.
-  //
-  // This is a CSS contract, which is the one case where reading the stylesheet is legitimate:
-  // happy-dom does no layout and cannot compute `color-mix`.
+test("the wallpaper layer is an <img> that cannot intercept anything (#theme)", () => {
+  /**
+   * The image moved from a `body` CSS background to a dedicated `<img srcset>` layer, because only
+   * an element can carry `srcset` — and `srcset` is what lets the browser fetch the width its
+   * display area actually needs instead of a 6000px photo. Reported as
+   * "背景画像が大きいとブラウザがリサイズでかなり重くなっちゃう".
+   *
+   * Three properties keep that layer safe, and all three are easy to lose in a refactor:
+   *   - it covers the viewport like `background-size: cover` did, and stays put while the feed
+   *     scrolls (`position: fixed`);
+   *   - `pointer-events: none` — a full-screen element above the app would otherwise swallow every
+   *     click;
+   *   - the DIM value keeps a fallback, or `filter: brightness(calc(1 - var(--bg-image-dim)))` is
+   *     invalid at computed-value time and the whole declaration is dropped, silently losing the
+   *     dimming.
+   *
+   * A CSS contract, which is the one case where reading the stylesheet is legitimate: happy-dom
+   * does no layout and cannot compute `calc`/`color-mix`.
+   */
   const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-  const body = cssRuleBody(css, "body");
-  assert.ok(body, "app.css must still define the background-image layer on body");
+  const photo = cssRuleBody(css, ".bgphoto");
+  assert.ok(photo, "app.css must define the .bgphoto layer");
+  assert.match(photo, /position:\s*fixed/, "fixed, so the photo does not scroll with the feed");
+  assert.match(photo, /object-fit:\s*cover/, "cover, to match what background-size did");
+  assert.match(photo, /pointer-events:\s*none/, "it must never swallow a click");
   assert.match(
-    body,
+    photo,
     /var\(--bg-image-dim,\s*0?\.\d+\)/,
-    "the dim value needs a fallback, or the declaration is invalid when the custom property is unset",
+    "the dim value needs a fallback or the filter declaration is dropped",
   );
-  assert.match(body, /var\(--bg-image,\s*none\)/, "--bg-image must default to none");
-  // `fixed` keeps the photo still while the timeline scrolls over it; without it the image
-  // slides with the content and reads as a moving background
-  assert.match(body, /background-attachment:\s*fixed/);
-  assert.match(body, /background-size:\s*cover/);
+  // the app must paint ABOVE it, or the wallpaper covers the UI
+  assert.match(cssRuleBody(css, ".layout"), /z-index:\s*[1-9]/);
+});
+
+test("a LIGHT theme gets light native widgets, custom themes included (#theme)", () => {
+  /**
+   * Reported: "ramuneは未チェックのチェックボックスの背景色が黒系で微妙".
+   *
+   * `color-scheme` is what tells the browser to paint its OWN controls — the unchecked checkbox
+   * box, number spinners, scrollbars, the select popup. Only the three built-in LIGHT preset
+   * blocks set `light`, so any custom light theme (a ramune copy) fell back to `:root`'s `dark`
+   * and those widgets were painted dark on a pale panel.
+   *
+   * Keyed on `data-appearance`, which carries the resolved mode for presets AND custom themes, so
+   * this fixes the class rather than one palette at a time.
+   */
+  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+  assert.match(
+    cssRuleBody(css, 'html[data-appearance="light"]'),
+    /color-scheme:\s*light/,
+    "a light appearance must ask the UA for light widgets",
+  );
+  assert.match(cssRuleBody(css, 'html[data-appearance="dark"]'), /color-scheme:\s*dark/);
+
+  // and the unchecked box must not be painted with the deepest surface in a light theme: that is
+  // the specific smudge the report was about
+  const box = cssRuleBody(css, 'input[type="checkbox"]');
+  assert.match(box, /background-color:\s*var\(--bg-darkest\)/, "the box takes the theme's own surface");
 });

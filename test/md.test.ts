@@ -234,3 +234,30 @@ test("md: an ordered list keeps its start number", () => {
   assert.match(renderMarkdown("1. a\n2. b"), /<ol>/);
   assert.doesNotMatch(renderMarkdown("1. a\n2. b"), /start=/);
 });
+
+test("md: a `=====` fence after a list does not join the last item", () => {
+  /**
+   * The harness wraps the goal in `=====` fences (`autoContinueNudge`), so a goal ending in a
+   * bullet produced "- last item" immediately followed by "=====".
+   *
+   * MEASURED before the fix: `<li>last item =====</li>` — the fence is not a thematic break and
+   * not a heading marker this renderer knows, so it was folded into the item as continuation
+   * text. Reported as "実際に描画されるのは `・ last item =====`".
+   *
+   * The fence must be its own block. It deliberately does NOT become a setext <h1>: the `=====`
+   * are decoration around a value, and a heading is a worse reading of the same input.
+   */
+  const html = renderMarkdown("Current goal:\n=====\n- first\n- last item\n=====");
+  assert.doesNotMatch(html, /last item =====/, "the fence must not be glued onto the bullet");
+  assert.match(html, /<li>last item<\/li>/, "the item renders on its own");
+  assert.match(html, /<p>=====<\/p>/, "and the fence is its own block");
+  // a fence alone still renders as text, not as a heading or a rule
+  assert.doesNotMatch(html, /<h1/, "no setext heading is invented");
+});
+
+test("md: an indented `=====` also ends the item", () => {
+  // the harness indents nothing, but a goal pasted with leading spaces must behave the same way
+  const html = renderMarkdown("- a\n   =====\n");
+  assert.doesNotMatch(html, /<li>a =====<\/li>/);
+});
+

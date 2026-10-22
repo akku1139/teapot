@@ -209,6 +209,20 @@ function renderEscaped(lines) {
         !/^\s*&gt;/.test(lines[i]) &&
         // a thematic break (the same predicate the block loop uses, so they agree)
         !/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
+        /**
+         * A `=====` fence line ends the item too.
+         *
+         * The harness wraps the goal in `=====` fences (`autoContinueNudge`), so a goal whose last
+         * line is a bullet produced "- last item" followed by "=====". That `=` line is not a
+         * thematic break and not a heading marker this renderer knows, so it was folded into the
+         * item as text and rendered as "・ last item =====" — reported as "goalとかが箇条書きだった
+         * ときに…実際に描画されるのは `・ last item =====`".
+         *
+         * Matched here as a block boundary rather than teaching the renderer setext headings: the
+         * fences are decoration around a value, and turning a trailing `=====` into an <h1> would
+         * be a worse rendering of the same input.
+         */
+        !/^ {0,3}={3,}\s*$/.test(lines[i]) &&
         // a table START: this line has a pipe and the NEXT is a separator row
         !(lines[i].includes("|") && i + 1 < lines.length && isSeparatorRow(lines[i + 1]))
       ) {
