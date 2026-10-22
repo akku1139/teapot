@@ -1510,11 +1510,40 @@ details.reasoning .thinkscroll {
 .skillbody h1, .skillbody h2, .skillbody h3, .skillbody h4 { margin: 8px 0 3px; font-size: var(--text-sm); color: var(--acc); }
 .skillbody h1:first-child, .skillbody h2:first-child, .skillbody h3:first-child { margin-top: 0; }
 .skillbody code { background: var(--bg-darkest-solid, var(--bg-darkest)); padding: 1px 4px; border-radius: var(--radius-sm); font-size: 11px; }
-.skillbody pre { background: var(--bg-darkest-solid, var(--bg-darkest)); padding: 6px 8px; border-radius: var(--radius-sm); overflow-x: auto; margin: 5px 0; }
-.skillbody pre code { background: none; padding: 0; }
+.skillbody pre {
+  background: var(--bg-darkest-solid, var(--bg-darkest));
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  margin: 5px 0;
+  /**
+   * WRAP, do not scroll — the goal card's contract.
+   *
+   * `overflow-x: auto` gave every fenced block its own horizontal scrollbar inside the expanded
+   * body, which is what "skillsの本文を展開すると横スクロールが出る" describes: the bar is INSIDE the
+   * code block, not on the panel. The goal card has no such bar because it wraps, and the operator
+   * asked for the same behaviour ("タイムラインのgoalカードのように").
+   *
+   * Wrapping is also the right call for content that is mostly shell commands: a command broken
+   * across lines is still readable, while a scrollbar hides the end of it.
+   */
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+.skillbody pre code { background: none; padding: 0; white-space: inherit; }
 .skillbody ul, .skillbody ol { margin: 4px 0; padding-left: 18px; }
 .skillbody li { margin: 1px 0; }
-.skillbody table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+.skillbody table {
+  border-collapse: collapse;
+  /* a table cannot wrap its columns, so it keeps its own scroller — but capped to the container so
+     it can never push the PANEL sideways, which is what `max-width: 100%` is for */
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  width: max-content;
+}
 .skillbody th, .skillbody td { border: 1px solid var(--line); padding: 2px 6px; }
 
 /* goal status segmented buttons */

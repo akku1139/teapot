@@ -445,3 +445,27 @@ test("the skills ROW can actually shrink: nowrap and min-width are overridden (#
   assert.match(head, /display:\s*grid/, "and the global inline-flex must be undone too");
   assert.match(head, /grid-template-columns:\s*12px minmax\(0,\s*1fr\)/);
 });
+
+test("a fenced block in a skill body WRAPS instead of growing its own scrollbar (#ui)", async () => {
+  /**
+   * Reported: "skillsの本文を展開すると横スクロールが出る".
+   *
+   * The bar is INSIDE the code block, not on the panel: `.skillbody pre` carried `overflow-x: auto`,
+   * so every fenced block scrolled sideways on its own. MEASURED with a long command, the `pre`
+   * reported 486px of content inside a 263px box.
+   *
+   * The goal card has no such bar because it wraps, and that is what was asked for ("タイムラインの
+   * goalカードのように"). Wrapping is also right for this content: a shell command broken across lines
+   * is still readable, while a scrollbar hides the end of it.
+   *
+   * A TABLE keeps its scroller — columns cannot wrap — but must stay capped so it cannot push the
+   * panel sideways.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const pre = cssRuleBody(css, ".skillbody pre");
+  assert.match(pre, /overflow-x:\s*hidden/, "the fenced block must not scroll sideways");
+  assert.match(pre, /white-space:\s*pre-wrap/, "it wraps, like the goal card");
+
+  const table = cssRuleBody(css, ".skillbody table");
+  assert.match(table, /max-width:\s*100%/, "a wide table must not push the panel");
+});
