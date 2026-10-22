@@ -54,3 +54,44 @@ test("with no verifier it still refuses loudly, rather than exchanging blind (#m
   const auth = mkAuth(async () => {});
   assert.throws(() => auth.codeVerifier(), /no PKCE verifier/);
 });
+
+test("a registration made with a DIFFERENT redirect URI is not reused (#mcp)", async () => {
+  /**
+   * The authorization completes in the browser, `codeVerifier` is persisted, and no access token is
+   * ever written — reported as "NotionのOAuthが完走してるのに Unauthorized".
+   *
+   * MEASURED from this machine's real store: `clientInformation.redirect_uris` was
+   * `["http://127.0.0.1/callback"]` — NO PORT — because it was registered from the placeholder
+   * provider in `authFor()`. Every real flow runs on `http://127.0.0.1:<port>/callback`, so the
+   * authorize request names a URI the server never registered against that client.
+   *
+   * The provider must therefore REFUSE a stale registration and let the SDK register afresh against
+   * the current URI — keeping the same client id/secret, since those are what the server bound.
+   */
+  const auth = mkAuth(async () => {});
+  await auth.hydrate({
+    clientId: "cid",
+    clientSecret: "csec",
+    clientInformation: {
+      client_id: "cid",
+      client_secret: "csec",
+      redirect_uris: ["http://127.0.0.1/callback"], // portless: cannot match this run
+    },
+  } as never);
+  assert.equal(
+    auth.clientInformation(),
+    undefined,
+    "a registration for another redirect URI must not be reused, or the exchange is rejected",
+  );
+
+  // one that DOES match this instance's redirect is reused, so a repeat flow needs no re-register
+  const same = mkAuth(async () => {});
+  await same.hydrate({
+    clientId: "cid",
+    clientInformation: {
+      client_id: "cid",
+      redirect_uris: ["http://127.0.0.1:1234/callback"], // matches mkAuth's redirectUrl
+    },
+  } as never);
+  assert.ok(same.clientInformation(), "a matching registration is kept");
+});

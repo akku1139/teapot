@@ -8636,20 +8636,25 @@ function ConfigModal(props: {
         flashHint(
           `${names.join(", ") || "a saved MCP server"} needs authorization — 🔑 authorize in MCP servers`,
         );
-        setSaveState("saved");
-        setTimeout(() => setSaveState("idle"), 1200);
-      } else {
-        /**
-         * The panel closes on success, so the button state is set FIRST and the close deferred:
-         * a state change on a component that is already unmounting would never be painted, and the
-         * operator would see the dialog vanish with no confirmation — which is the complaint.
-         */
-        setSaveState("saved");
-        setTimeout(() => {
-          setSaveState("idle");
-          props.onClose();
-        }, 400);
       }
+      /**
+       * The panel CLOSES on a successful save, in every case.
+       *
+       * The OAuth branch above used to return without closing, so saving anything — appearance
+       * included — left the dialog on screen whenever a saved MCP server merely *needed* a grant.
+       * Reported as "appearanceを編集してsave settingsをしても設定ウィンドウが閉じないのに、他のとこ
+       * では設定ウィンドウが閉じる". The hint is the whole message; keeping the dialog open only made
+       * the behaviour differ by section.
+       *
+       * The button state is set FIRST and the close deferred: a state change on a component that is
+       * already unmounting would never be painted, and the operator would see the dialog vanish
+       * with no confirmation.
+       */
+      setSaveState("saved");
+      setTimeout(() => {
+        setSaveState("idle");
+        props.onClose();
+      }, 400);
     } catch (ex) {
       setErr((ex as Error).message);
       setSaveState("error");

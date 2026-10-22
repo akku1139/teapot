@@ -138,7 +138,42 @@ export class ServerAuth implements OAuthClientProvider {
 
   clientInformation(): StoredOAuthClientInformation | undefined {
     if (!this.store.clientId) return undefined;
-    if (this.store.clientInformation) return this.store.clientInformation as StoredOAuthClientInformation;
+    /**
+     * A registration made with a DIFFERENT redirect URI cannot be reused.
+     *
+     * The callback listens on an ephemeral port (`server.listen(0)`), so `redirectUrl` carries a
+     * new port on every attempt. A registration is bound to the `redirect_uris` it was created
+     * with, and the authorize request must match — so a stored registration from another port would
+     * have to be re-made.
+     *
+     * MEASURED from this machine's real store: `clientInformation.redirect_uris` was
+     * `["http://127.0.0.1/callback"]` — NO PORT, because it was registered from the placeholder
+     * provider in `authFor()` — while every flow runs on `http://127.0.0.1:<port>/callback`. The
+     * browser completed the authorization, `codeVerifier` was persisted, and no `access_token` was
+     * ever written: the exchange never got past the URI check.
+     *
+     * Returning `undefined` makes the SDK register afresh against the CURRENT redirect URI, which
+     * is the only value that can match. The client id/secret are kept, so anything the server bound
+     * to them survives; only the redirect list is re-established.
+     */
+    const stored = this.store.clientInformation as StoredOAuthClientInformation | undefined;
+    if (stored) {
+      const uris = Array.isArray((stored as { redirect_uris?: unknown }).redirect_uris)
+        ? ((stored as { redirect_uris: unknown[] }).redirect_uris as string[])
+        : [];
+      /**
+       * Only a RECORDED mismatch forces a re-registration.
+       *
+       * An empty list means the server never told us which URI it bound — some registration
+       * responses omit `redirect_uris` entirely, and a record written by an older teapot has none.
+       * Treating "unknown" as "wrong" would re-register on every single flow and lose whatever the
+       * server bound to the client id, so absence keeps the registration.
+       */
+      if (uris.length === 0) return stored;
+      if (uris.includes(this.redirectUrl)) return stored;
+      // a recorded URI that cannot match this run: re-register rather than send one it never saw
+      return undefined;
+    }
     return {
       client_id: this.store.clientId,
       ...(this.store.clientSecret ? { client_secret: this.store.clientSecret } : {}),

@@ -120,9 +120,16 @@ export class McpRegistry {
   /**
    * The provider for one server, created on demand.
    *
-   * The redirect URL is a placeholder until a flow starts — the SDK reads it when it
-   * builds the authorization request, and by then `startOAuth` has set the real loopback
-   * port. Keeping one long-lived placeholder would pin a port that is not listening.
+   * The redirect URL here is used for CLIENT REGISTRATION, not just for the authorization request:
+   * `clientMetadata.redirect_uris` is what gets registered on the first connect. A portless
+   * placeholder therefore registers a redirect URI the real flow can never match — MEASURED, that
+   * is exactly what happened (stored `redirect_uris: ["http://127.0.0.1/callback"]`), and it is why
+   * a completed Notion authorization left no access token.
+   *
+   * `ServerAuth.clientInformation()` now refuses a registration whose URI differs from the current
+   * one, so a stale record is re-made instead of reused. This value still cannot carry the real
+   * port — none is known until `startOAuth` opens one — but it is now harmless, and keeping a
+   * long-lived provider bound to a port that is not listening would be worse.
    */
   private async authFor(name: string): Promise<ServerAuth | undefined> {
     if (!this.store) return undefined;
