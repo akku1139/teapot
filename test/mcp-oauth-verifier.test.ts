@@ -95,3 +95,44 @@ test("a registration made with a DIFFERENT redirect URI is not reused (#mcp)", a
   } as never);
   assert.ok(same.clientInformation(), "a matching registration is kept");
 });
+
+test("the DISCOVERY state survives the instance being rebuilt too (#mcp)", async () => {
+  /**
+   * The third defect, and the one that outlived the other two.
+   *
+   * The flow spans two transport instances: the one that hits the 401 and redirects the browser,
+   * and the one built after the callback arrives. The SDK records the authorization server URL and
+   * its metadata during discovery and validates the authorization response's `iss` against that
+   * record when the code is redeemed (RFC 9207). Its contract says this "MUST persist with the same
+   * durability as `codeVerifier` (survives the redirect round-trip)".
+   *
+   * MEASURED against this machine's real store after a BROWSER-COMPLETED Notion authorization:
+   * `codeVerifier` was present, `clientInformation.redirect_uris` was a real ephemeral port, and
+   * `accessToken` was absent — so both earlier fixes were doing their job and the exchange still
+   * never produced tokens.
+   */
+  const discovered = {
+    authorizationServerUrl: "https://mcp.notion.com",
+    authorizationServerMetadata: { issuer: "https://mcp.notion.com" },
+  };
+  let persisted: { discoveryState?: unknown } | undefined;
+  const first = mkAuth(async (_s, data) => { persisted = data as { discoveryState?: unknown }; });
+  await first.saveDiscoveryState(discovered as never);
+  assert.ok(persisted, "saveDiscoveryState must persist, exactly like saveCodeVerifier");
+
+  const rebuilt = mkAuth(async () => {});
+  await rebuilt.hydrate(persisted as never);
+  assert.deepEqual(
+    rebuilt.discoveryState(),
+    discovered,
+    "a rebuilt provider must hand back the SAME discovery record, or the redeeming instance " +
+      "re-discovers a different issuer and the code is never redeemed (#mcp)",
+  );
+});
+
+test("a provider with no discovery yet says so instead of inventing one (#mcp)", async () => {
+  // `undefined` makes the SDK DISCOVER rather than trust a half-record; an empty object would be
+  // treated as a cache hit and skip the discovery it actually needs
+  const auth = mkAuth(async () => {});
+  assert.equal(auth.discoveryState(), undefined);
+});

@@ -33,6 +33,7 @@ import { randomBytes } from "node:crypto";
 import type {
   OAuthClientMetadata,
   OAuthClientProvider,
+  OAuthDiscoveryState,
   StoredOAuthClientInformation,
   StoredOAuthTokens,
 } from "@modelcontextprotocol/client";
@@ -49,6 +50,21 @@ interface StoredAuth {
   codeVerifier?: string;
   /** the scopes the grant was issued for, re-requested on refresh */
   scope?: string;
+  /**
+   * The SDK's RFC 9728 / RFC 8414 discovery result, kept verbatim.
+   *
+   * `OAuthClientProvider.discoveryState()` is documented as something that "MUST persist with the
+   * same durability as `codeVerifier` (survives the redirect round-trip)", and teapot did not
+   * implement it at all. Without it, the post-callback exchange has to re-run discovery, and the
+   * `issuer` it derives is then validated (RFC 9207) against the authorization response's `iss` —
+   * a value recorded at REDIRECT time by the other transport instance. MEASURED against
+   * `mcp.notion.com`: the browser completed, `codeVerifier` and a real-port `redirect_uris` were
+   * both stored, and `tokens` was never written, because the code was never redeemed.
+   *
+   * Opaque to teapot on purpose: it is the SDK's own structure, and a field added by a future SDK
+   * version must survive a save/load rather than be dropped.
+   */
+  discoveryState?: OAuthDiscoveryState;
 }
 
 export type OAuthPhase =
@@ -248,6 +264,33 @@ export class ServerAuth implements OAuthClientProvider {
     const v = this.verifier ?? this.store.codeVerifier;
     if (!v) throw new Error("no PKCE verifier — the authorization flow did not start here");
     return v;
+  }
+
+  /**
+   * The SDK's discovery cache — the reason Notion's exchange never completed.
+   *
+   * The OAuth flow is split across TWO transport instances: the one that hits the 401 and
+   * redirects the browser, and the one built after the callback arrives. The SDK's own contract
+   * says this state "MUST persist with the same durability as `codeVerifier` (survives the
+   * redirect round-trip)", because the issuer recorded at redirect time is what the authorization
+   * response's `iss` is validated against (RFC 9207) when the code is redeemed.
+   *
+   * MEASURED on this machine's real store after a BROWSER-COMPLETED Notion authorization:
+   * `codeVerifier` present, `clientInformation.redirect_uris` a real ephemeral port
+   * (`http://127.0.0.1:37209/callback`), and no `accessToken` — the redeeming instance had
+   * re-discovered a different issuer binding, so the exchange never produced tokens. Both earlier
+   * fixes (persist the verifier, re-register on a redirect mismatch) were necessary and neither was
+   * sufficient.
+   */
+  discoveryState(): OAuthDiscoveryState | undefined {
+    return this.store.discoveryState;
+  }
+
+  async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
+    if (!state || typeof state !== "object") return;
+    this.store.discoveryState = state;
+    // same durability as the verifier: the instance that redeems the code is not this one
+    await this.persist(this.server, this.store);
   }
 
   // ---- teapot-facing ----
