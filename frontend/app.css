@@ -10,7 +10,18 @@
    * back to `--line` (correct for the dark themes, where it already contrasts) and light themes
    * override it with something that actually reads.
    */
-  --line-strong: #1d2027;
+  /**
+   * MEASURED: `#1d2027` — the same value as `--line` — is 1.04–1.40:1 against this palette's four
+   * surfaces, so it is not a boundary at all. That went unnoticed while the token was only used for
+   * an unchecked checkbox on LIGHT themes (which override it); the outline-button treatment made it
+   * load-bearing on dark ones too, and an outline button whose outline is invisible is a label with
+   * no affordance.
+   *
+   * `#7f8b9c` measures 3.38–4.93:1 here (the same value the `nord` preset already used), so the
+   * border reads as a control in every dark theme — including a CUSTOM dark theme, which is the
+   * case the presets' own overrides could never cover.
+   */
+  --line-strong: #7f8b9c;
   --acc: #5865f2; --ok: #3ba55d; --warn: #faa81a; --err: #ed4245; --tool: #3ba0c9;
   --term-bg: #0d0e12; --term-fg: #dcdee4;
 

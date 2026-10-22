@@ -8609,6 +8609,21 @@ function ConfigModal(props: {
   // panel readable without implying a second copy of the state.
   const customThemes = () => props.theme.themes();
   const fixedTheme = () => props.theme.activeId();
+  /**
+   * The appearance actually in force, for gating the theme groups.
+   *
+   * A custom theme carries its own `mode`; a preset's lives in `THEMES`. Both are needed because a
+   * custom light theme must count as light. Defaulting to "dark" matches `<html>`'s own default, so
+   * the grouping can never offer a group the document is not painting.
+   */
+  const currentMode = (): "dark" | "light" => {
+    const id = props.theme.activeId();
+    return (
+      props.theme.themes().find((t) => t.id === id)?.mode ??
+      THEMES.find((t) => t.key === id)?.mode ??
+      "dark"
+    );
+  };
   const setFixedTheme = (v: string) => props.theme.setActive(v);
   const themeAuto = () => props.theme.auto();
   const setThemeAuto = (v: boolean) => props.theme.setAuto(v);
@@ -9027,7 +9042,18 @@ function ConfigModal(props: {
               just made, so they belong where the eye lands. */}
           <For each={[{ mode: "dark" as const, title: "dark themes" }, { mode: "light" as const, title: "light themes" }]}>
             {(group) => (
-              <Show when={[...customThemes(), ...THEMES].some((t) => t.mode === group.mode)}>
+              // With "follow the system" OFF, only the group matching the current appearance is
+              // offered. Reported as "darkの時に設定できないライト系テーマを選択できるのが微妙":
+              // following the system, both groups are real choices (they populate the dark and
+              // light slots). NOT following it there is exactly one slot, so a light card under a
+              // fixed dark theme is a theme you cannot meaningfully "have" — clicking it moved the
+              // picture to a light theme while the appearance control still said dark.
+              <Show
+                when={
+                  [...customThemes(), ...THEMES].some((t) => t.mode === group.mode) &&
+                  (themeAuto() || currentMode() === group.mode)
+                }
+              >
                 <div class="cfgsub" style="margin-bottom:var(--space-1)">{group.title}</div>
                 <div class="themepick">
                   <For each={customThemes().filter((t) => t.mode === group.mode)}>
