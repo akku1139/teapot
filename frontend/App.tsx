@@ -13,6 +13,7 @@ import {
 } from "./live-buffer";
 import { buildTimeline, type TimelineEvent, type PendingEchoLike } from "./timeline";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
+import { slotForSelection, paintedIdFor } from "./theme-slots";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
@@ -8531,26 +8532,27 @@ function ConfigModal(props: {
    * mode says is not current.
    */
   const pickThemeCard = (id: string, mode: "dark" | "light") => {
-    if (props.theme.auto()) {
-      if (mode === "dark") props.theme.setDark(id);
-      else props.theme.setLight(id);
-      return;
-    }
-    props.theme.setActive(id);
+    const { slot } = slotForSelection(props.theme.auto(), mode);
+    if (slot === "dark") props.theme.setDark(id);
+    else if (slot === "light") props.theme.setLight(id);
+    else props.theme.setActive(id);
   };
   /**
    * Which card reads as selected: while following the system, the slot for the mode the OS is IN —
    * that is the painted theme, i.e. the one on screen. Keying it off the fixed slot marked a card
    * that was not visible and left the real one unmarked.
    */
-  const themeCardChosen = (id: string) => {
-    const auto = props.theme.auto();
-    const prefLight =
-      typeof window !== "undefined" && typeof window.matchMedia === "function"
-        ? window.matchMedia("(prefers-color-scheme: light)").matches
-        : false;
-    return auto ? (prefLight ? props.theme.light() : props.theme.dark()) === id : props.theme.activeId() === id;
-  };
+  const themeCardChosen = (id: string) =>
+    paintedIdFor({
+      auto: props.theme.auto(),
+      fixed: props.theme.activeId(),
+      dark: props.theme.dark(),
+      light: props.theme.light(),
+      prefersLight:
+        typeof window !== "undefined" && typeof window.matchMedia === "function"
+          ? window.matchMedia("(prefers-color-scheme: light)").matches
+          : false,
+    }) === id;
   // the archive list is SERVER state (which entries are archived), fetched on open
   // and after every action — not derived from props.cfg, which carries the config as
   // loaded and would go stale the moment an agent is archived from the controls panel
@@ -9162,8 +9164,29 @@ function ConfigModal(props: {
               }
             }}
             onPick={(id) => {
-              setFixedTheme(id);
-              localStorage.setItem("teapot.theme", id);
+              /**
+               * ADOPT the theme into whichever slot is PAINTED.
+               *
+               * `duplicatePreset()` and the editor's select both call this, and both say "this is
+               * the theme I am now working on". Writing `teapot.theme` while "follow the system"
+               * is on put it in a slot nothing reads, so the new copy was never painted — the
+               * operator kept waiting for a visible result and then reported the whole flow as
+               * "follow the system を入れてるときにテーマ複製したりするとやっぱりちょっと変な挙動に
+               * なる".
+               *
+               * Following the system, the copy goes into the slot for ITS OWN appearance — the one
+               * the OS is showing if they match, and the copy's own slot otherwise, so the operator
+               * can still reach it by flipping the system appearance.
+               */
+              const mode =
+                customThemes().find((t) => t.id === id)?.mode ??
+                THEMES.find((t) => t.key === id)?.mode ??
+                "dark";
+              const target = slotForSelection(themeAuto(), mode);
+              if (target.slot === "dark") setSysDarkTheme(id);
+              else if (target.slot === "light") setSysLightTheme(id);
+              else setFixedTheme(id);
+              localStorage.setItem(target.key, id);
             }}
           />
         </fieldset>
