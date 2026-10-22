@@ -2066,7 +2066,20 @@ export class Agent {
       branch: this.currentBranch,
       goal: {
         status: this.goal.status,
-        text: this.goal.text.slice(0, 400),
+        /**
+         * The goal is sent WHOLE.
+         *
+         * This used to be `slice(0, 400)`, which reads as a sane payload cap and behaves as a
+         * silent data loss: the right panel's goal card is the only place the operator sees the
+         * text they wrote, so a long goal stopped mid-sentence. Reported as "goalに設定されている
+         * 文字列が長いとフロントエンドのgoal欄で後半が切られる? 全部表示されてほしい".
+         *
+         * MEASURED: a 1500-character goal reached the browser as exactly 400 characters. The
+         * payload argument does not survive the numbers either — this rides one `/api/agents`
+         * response that is already carrying every agent's stats, and a goal is a few KB at worst.
+         * `verify` keeps its own cap below, where the auditor writes it.
+         */
+        text: this.goal.text,
         ...(this.goal.verify ? { verify: this.goal.verify.slice(0, 1000) } : {}),
         ...(this.goal.audit ? { audit: this.goal.audit } : {}),
       },
