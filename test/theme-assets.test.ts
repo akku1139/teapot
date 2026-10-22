@@ -284,3 +284,55 @@ test("a code block paints ONE surface, not a pre and a code stacked (#ui)", asyn
   // and the pre must still paint one, or the block loses its surface entirely
   assert.match(cssRuleBody(css, ".content pre"), /background:/);
 });
+
+test("with a wallpaper, the surface variables are left to the STYLESHEET (#ui)", async () => {
+  /**
+   * Reported: "インラインコードブロック、tool、goal、プロンプト欄など (surfaces)の透明設定が効いて
+   * ない" — every translucent surface at once, which pointed at the four shared tokens.
+   *
+   * Cause: `applyCustomTheme` wrote `--bg-darkest`/`--bg-dark`/`--bg-mid`/`--bg-light` INLINE on
+   * `<html>`. Inline styles beat the stylesheet's `html[data-bg-image="on"]` remap, so the
+   * `color-mix()` values never applied. MEASURED in headless Firefox: a surface with the inline
+   * value computed to opaque `rgb(26,28,34)`, the same variable without it to
+   * `color(srgb 0.101 0.109 0.133 / 0.5)`.
+   *
+   * So with an image the four names must be ABSENT inline (the stylesheet owns the translucency)
+   * while the `-solid` bases and the alpha are written. Without an image the palette must still be
+   * written inline, or a custom theme could not override a preset at all.
+   */
+  const make = () => {
+    const writes: Record<string, string> = {};
+    const root = {
+      style: {
+        setProperty: (k: string, v: string) => { writes[k] = v; },
+        getPropertyValue: (k: string) => writes[k] ?? "",
+        removeProperty: (k: string) => { delete writes[k]; },
+      },
+      dataset: {} as Record<string, string>,
+    } as unknown as HTMLElement;
+    return { writes, root };
+  };
+
+  const withImg = make();
+  applyCustomTheme(withImg.root, {
+    ...base,
+    palette: { ...DEFAULT_PALETTE, bgDarkest: "#1a1c22", bgDark: "#232630", bgMid: "#2b2e39", bgLight: "#343845" },
+    backgroundImage: `/api/assets/${"a".repeat(32)}.png`,
+    surfaceAlpha: 0.5,
+  } as never);
+
+  for (const v of ["--bg-darkest", "--bg-dark", "--bg-mid", "--bg-light"]) {
+    assert.equal(
+      withImg.writes[v],
+      undefined,
+      `${v} must NOT be inline — it would outrank the stylesheet's translucent remap`,
+    );
+    assert.ok(withImg.writes[`${v}-solid`], `${v}-solid must be written: the remap mixes against it`);
+  }
+  assert.equal(withImg.writes["--surface-alpha"], "0.5");
+
+  // no wallpaper → the palette IS written inline (that is how a custom theme wins over a preset)
+  const noImg = make();
+  applyCustomTheme(noImg.root, { ...base, palette: { ...DEFAULT_PALETTE, bgDarkest: "#1a1c22" } } as never);
+  assert.equal(noImg.writes["--bg-darkest"], "#1a1c22");
+});

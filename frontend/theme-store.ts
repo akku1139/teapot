@@ -257,8 +257,32 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
    * Comparing against what is already on `<html>` makes an unchanged palette a no-op, which is
    * what keeps a live preview affordable.
    */
+  /**
+   * The four SURFACE levels are NOT written inline when a wallpaper is set.
+   *
+   * The stylesheet remaps `--bg-darkest`/`--bg-dark`/`--bg-mid`/`--bg-light` to translucent
+   * `color-mix()` values under `html[data-bg-image="on"]`, mixing against `--bg-*-solid`. An inline
+   * custom property on `<html>` BEATS that rule — inline styles win the cascade — so writing them
+   * here silently disabled the whole transparency feature. MEASURED: a surface with an inline
+   * `--bg-darkest` computed to opaque `rgb(26,28,34)` while the same variable without the inline
+   * value computed to `color(srgb … / 0.5)`.
+   *
+   * Reported as "インラインコードブロック、tool、goal、プロンプト欄など (surfaces)の透明設定が効いて
+   * ない" — every surface, because every surface reads one of these four.
+   *
+   * So with an image the four names are left to the stylesheet and only the `-solid` bases are
+   * written (below). Without one they are written inline as before, which is how a custom palette
+   * overrides a preset.
+   */
+  const SURFACE_VARS = new Set(["--bg-darkest", "--bg-dark", "--bg-mid", "--bg-light"]);
+  const hasImage = !!theme?.backgroundImage;
   for (const { key, cssVar } of PALETTE_KEYS) {
     const want = theme ? theme.palette[key] : "";
+    if (hasImage && SURFACE_VARS.has(cssVar)) {
+      // hand the surface names back to the stylesheet, which owns the translucency
+      if (root.style.getPropertyValue(cssVar)) root.style.removeProperty(cssVar);
+      continue;
+    }
     if (root.style.getPropertyValue(cssVar) === want) continue;
     if (want) root.style.setProperty(cssVar, want);
     else root.style.removeProperty(cssVar);

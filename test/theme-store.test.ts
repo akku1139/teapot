@@ -426,8 +426,18 @@ test("the wallpaper layer is an <img> that cannot intercept anything (#theme)", 
   const inner = cssRuleBody(css, ".bgphoto > img");
   assert.ok(inner, "the image itself must be a child of the dim wrapper");
   assert.match(inner, /object-fit:\s*cover/, "cover, to match what background-size did");
+  /**
+   * The dim lives on its own element ABOVE the image, not on the wrapper.
+   *
+   * A `background` on the wrapper paints BEHIND the image (invisible — that shipped, and the dim
+   * did nothing), and the image cannot dim itself: `filter: brightness()` below 1 darkens but above
+   * 1 does not brighten (MEASURED: black stays 0 at 1.55), so it cannot produce a pale veil on a
+   * light theme.
+   */
+  const veil = cssRuleBody(css, ".bgphoto-veil");
+  assert.ok(veil, "the dim veil must be its own element");
   assert.match(
-    photo,
+    veil,
     /var\(--bg-image-dim,\s*0?\.\d+\)/,
     "the dim value needs a fallback or the color-mix is invalid at computed-value time",
   );

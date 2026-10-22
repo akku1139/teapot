@@ -3843,8 +3843,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      */}
     <Show when={activeBgImage()}>
       {(src) => (
-        /* a WRAPPER carries the dim veil: an `<img>` is a replaced element, so a `::after` on it
-           would not render, and a `background` on it paints behind its own pixels */
+        /**
+         * TWO elements, because the dim must be painted ABOVE the image.
+         *
+         * The image cannot dim itself: `filter: brightness()` with a factor below 1 darkens, and
+         * above 1 it does NOT brighten — MEASURED, a white pixel at 0.45 renders 115/255 and a
+         * black pixel at 1.55 stays 0. So one filter cannot do "dark veil on dark themes, pale
+         * veil on light ones", which is what the operator asked for.
+         *
+         * A `background` on the `<img>` cannot either — a background paints BEHIND an image's own
+         * pixels, and an `::after` never renders because an `<img>` is a replaced element. Hence a
+         * sibling veil element stacked on top, both inside the fixed wrapper.
+         */
         <div class="bgphoto" aria-hidden="true">
           <img
             src={src()}
@@ -3853,6 +3863,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             alt=""
             decoding="async"
           />
+          <span class="bgphoto-veil" />
         </div>
       )}
     </Show>

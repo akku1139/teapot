@@ -277,16 +277,6 @@ html[data-bg-image="on"] body { background: transparent; }
   z-index: -1;
   pointer-events: none;
   user-select: none;
-  /**
-   * The veil is the theme's own SURFACE colour, which is what the old
-   * `linear-gradient(color-mix(--bg-dark, …))` did.
-   *
-   * `filter: brightness(1 - dim)` can only DARKEN, so a light theme dimmed its wallpaper toward
-   * black — muddy against a pale UI. Reported as "背景画像dimがライトテーマなら白で載せられてたのに、
-   * 今は黒系のdimがあたってて良くない". Using the surface COLOUR instead makes one rule work in both
-   * directions: dark themes veil the photo dark, light themes veil it pale.
-   */
-  background: color-mix(in srgb, var(--bg-dark) calc(var(--bg-image-dim, 0.55) * 100%), transparent);
 }
 .bgphoto > img {
   position: absolute;
@@ -295,8 +285,26 @@ html[data-bg-image="on"] body { background: transparent; }
   height: 100%;
   object-fit: cover;
   object-position: center;
-  /* the wrapper already carries the dim; a second one here would double it */
-  filter: none;
+}
+/**
+ * The dim veil, painted ON TOP of the image.
+ *
+ * Not a `background` on the wrapper (that paints behind the image and is invisible), not a
+ * `::after` on the image (a replaced element renders no pseudo-elements), and not
+ * `filter: brightness()` on the image: MEASURED, a factor below 1 darkens (white 255 → 115) but a
+ * factor above 1 does NOT brighten (black stays 0), so one filter cannot produce a pale veil on a
+ * light theme and a dark one on a dark theme.
+ *
+ * The veil is the theme's own SURFACE colour at the configured alpha, which is what the old
+ * `linear-gradient(color-mix(--bg-dark, …))` did — so the direction comes from the palette instead
+ * of from a branch. Reported twice: the dim did nothing at all, then it dimmed light themes toward
+ * black.
+ */
+.bgphoto-veil {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg-dark) calc(var(--bg-image-dim, 0.55) * 100%), transparent);
+  pointer-events: none;
 }
 .layout {
   position: relative;

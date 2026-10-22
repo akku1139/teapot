@@ -140,7 +140,7 @@ test("the wallpaper dim follows the theme's DIRECTION, not just its strength (#t
    *   dark  (`--bg-dark: #232630`) → color(srgb 0.137 0.149 0.188 / 0.55)   dark
    */
   const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-  const veil = cssRuleBody(css, ".bgphoto");
+  const veil = cssRuleBody(css, ".bgphoto-veil");
   assert.match(
     veil,
     /color-mix\([\s\S]*var\(--bg-dark\)/,
@@ -151,6 +151,14 @@ test("the wallpaper dim follows the theme's DIRECTION, not just its strength (#t
     /filter:\s*brightness\(/,
     "a brightness filter can only darken — that is the bug, not the fix",
   );
+  /**
+   * …and it must be a SEPARATE element ABOVE the image.
+   *
+   * `background` on the `<img>` paints behind its own pixels (invisible), `::after` never renders
+   * because an img is a replaced element, and `filter` alone cannot lighten (MEASURED: a black
+   * pixel at brightness 1.55 stays 0). So the veil needs its own element.
+   */
+  assert.match(veil, /position:\s*absolute/, "the veil must overlay the image, not sit behind it");
 
   // and the direction really does fall out of the palette: light surfaces stay light, dark stay dark
   const light = luminance("#ecf7fb");
