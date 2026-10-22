@@ -224,6 +224,33 @@ button:hover:not(:disabled) { filter: brightness(1.12); }
 button:active:not(:disabled) { filter: brightness(0.95); }
 button:disabled { filter: none; }
 /**
+ * WITH A WALLPAPER, buttons become OUTLINES rather than filled chips.
+ *
+ * Asked for as "背景透過入れてるときにUI上の各種ボタンをタイムラインの copy ボタンみたく細いボーダー
+ * だけ出して中身を透過にしとくと見た目いいかも / その時はボタン内のテキストカラーとかも工夫しないと
+ * いけない".
+ *
+ * The fill is what made a dense toolbar read as a row of solid tiles over the photo, and `.copybtn`
+ * already proved the thin-border form works at this density. `--line-strong` is the border rather
+ * than `--line`: `--line` measures 1.05:1 against the surface, i.e. invisible, and on an outline
+ * button the outline IS the affordance.
+ *
+ * The accent-filled primary action and the question options keep their fill — they are the buttons
+ * that must outrank the rest.
+ */
+html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn) {
+  background-color: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--fg);
+}
+html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):hover:not(:disabled) {
+  border-color: var(--acc);
+  color: var(--acc);
+  /* the shared hover rule brightens a FILL; with no fill it would change nothing visible */
+  filter: none;
+  background-color: color-mix(in srgb, var(--acc) 12%, transparent);
+}
+/**
  * Native widgets follow the theme's MODE, not just the presets.
  *
  * `color-scheme` is what tells the browser how to paint its own controls — the unchecked checkbox
@@ -853,6 +880,25 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .tbl th { background: var(--bg-darkest); font-weight: 600; }
 
 .embed { border-left: 3px solid var(--tool); background: var(--bg-darkest); border-radius: var(--radius-sm); padding: 6px 10px; margin-top: 3px; font-size: var(--text-sm); }
+/**
+ * A tool card's OUTER surface is the one holding the status line — it must be the most see-through
+ * of the large surfaces, not the least.
+ *
+ * MEASURED (headless Firefox, the operator's theme with an image, `surfaceAlpha 0.82`):
+ * panels 0.77, tool outer 0.70, tool inner 0.49, composer 0.39. The outer card was DENSER than the
+ * panels it sits between, which reads as "ツール外側(ステータス行とかがある)の透明感が下がりすぎて
+ * しまっている" — the card looked like a slab rather than a layer.
+ *
+ * `0.62` keeps it one clear step below the panels while staying above the inner code surface
+ * (0.49), so the nesting still reads as depth.
+ */
+html[data-bg-image="on"] .embed {
+  background-color: color-mix(
+    in srgb,
+    var(--bg-darkest-solid, #1a1c22) calc(var(--surface-alpha-tool, 0.62) * 100%),
+    transparent
+  );
+}
 /* A run of rows from the SAME actor (#75).
  *
  * THE PHANTOM HEIGHT. A continuation renders `<div class="avatar avghost ghosted">` — an
@@ -1013,8 +1059,22 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .embed.question.answered { opacity: .75; }
 /* free-text answer row under an ask_user question */
 .qfree { display: flex; gap: var(--space-3); margin-top: 8px; }
+/**
+ * The ask_user reply box matches the COMPOSER, not a settings field.
+ *
+ * MEASURED (headless Firefox, image theme, `surfaceAlpha 0.82`): the main prompt box computed
+ * `0.39` while this input was `0.88` — more than twice as dense, so a question read as a dialog
+ * bolted onto the timeline instead of part of it ("ask_userのプロンプト欄が背景透過されてないのが
+ * 微妙"). It is a prompt box; it uses the prompt box's surface.
+ */
 .qfree input {
-  flex: 1; background: var(--bg-mid); border: 1px solid var(--bg-light);
+  flex: 1;
+  background: color-mix(
+    in srgb,
+    var(--bg-light-solid, #343845) calc(var(--surface-alpha-composer, 0.44) * 100%),
+    transparent
+  );
+  border: 1px solid var(--bg-light);
   border-radius: var(--radius-md); padding: 4px 10px; color: var(--fg); font-size: var(--text-sm); outline: none;
 }
 .qfree input:focus { border-color: var(--acc); }
@@ -1267,7 +1327,7 @@ html[data-bg-image="on"] .composer form {
      * leaves so little contrast behind the box that a near-opaque fill is indistinguishable from an
      * opaque one.
      */
-    var(--bg-light-solid, #343845) calc(max(0.35, calc(var(--surface-alpha, 0.82) - 0.43)) * 100%),
+    var(--bg-light-solid, #343845) calc(var(--surface-alpha-composer) * 100%),
     transparent
   );
 }
@@ -2290,6 +2350,17 @@ html[data-bg-image="on"] {
   --surface-alpha-dark: var(--surface-alpha, 0.82);
   --surface-alpha-mid: min(1, calc(var(--surface-alpha, 0.82) + 0.06));
   --surface-alpha-light: min(1, calc(var(--surface-alpha, 0.82) + 0.12));
+  /**
+   * Two surfaces sit OFF the four-level scale because their depth is a deliberate choice, not a
+   * step: a tool card is a layer over the timeline, and a prompt box is the one control the
+   * operator types into (so the photo must show clearly behind it). Both are derived from the same
+   * setting, so the editor's slider still moves them.
+   *
+   * MEASURED with `surfaceAlpha 0.82`: panels 0.77, tool outer 0.62, tool inner 0.49, composer
+   * 0.39 — a monotonic scale, which is what "UI全体で透明を意識" asked for.
+   */
+  --surface-alpha-tool: max(0.35, calc(var(--surface-alpha, 0.82) - 0.20));
+  --surface-alpha-composer: max(0.35, calc(var(--surface-alpha, 0.82) - 0.43));
 
   --bg-darkest: color-mix(in srgb, var(--bg-darkest-solid, #1a1c22) calc(var(--surface-alpha-darkest) * 100%), transparent);
   --bg-dark: color-mix(in srgb, var(--bg-dark-solid, #232630) calc(var(--surface-alpha-dark) * 100%), transparent);
