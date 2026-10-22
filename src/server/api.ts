@@ -174,9 +174,73 @@ const MAX_WS_CLIENTS = 64;
   const tokenInQueryOk = (path: string): boolean =>
     path === "/api/ws" || /^\/api\/agents\/[^/]+\/term$/.test(path);
 
+  /**
+   * Requests that a PAGE ON ANOTHER ORIGIN must not be able to make.
+   *
+   * This is the defence that does not depend on the operator configuring a token, and it closes
+   * the browser half of the OpenCode advisory (CVE-2026-22812 / GHSA-vxw4-wv6m-9hhh): their server
+   * was unauthenticated AND sent permissive CORS, so any website could drive it. teapot sends no
+   * CORS headers — a cross-origin READ is already blocked by the browser — but a cross-origin
+   * WRITE is still DELIVERED, and these routes have side effects a website must not trigger:
+   *
+   *     POST /api/agents/:id/prompt      → the agent runs the model with tool access
+   *     POST /api/agents/:id/restart     → restart onto a different build
+   *     PUT  /api/config                 → rewrite the config, including API keys
+   *     POST /api/update/restart         → restart the process
+   *     POST /api/setup                  → set the password on a first-run server
+   *
+   * The check is deliberately structural rather than a header-name list: a browser always sends
+   * `Origin` on a cross-origin request (and on every `fetch` it sends `Sec-Fetch-Site`), while a
+   * local process — which the OS already isolates from other users — sends neither. So "an Origin
+   * that is not this server" is rejected, and a request with no Origin at all (curl, the CLI, the
+   * desktop shell) is unaffected.
+   *
+   * MEASURED threat model, and its limit: this stops a web page. It does NOT stop a local process
+   * on the same machine, and it is not meant to — that is what the token and the loopback bind are
+   * for. See `docs/security-advisories.md`.
+   */
+  const sameOrigin = (c: Context): boolean => {
+    const origin = c.req.header("origin");
+    // no Origin at all: a non-browser client. A browser ALWAYS sets it cross-origin.
+    if (origin === undefined) return true;
+    const host = c.req.header("host") ?? "";
+    try {
+      const u = new URL(origin);
+      if (u.host === host) return true;
+    } catch {
+      /* "null" (a sandboxed iframe or a redirect) is never acceptable */
+      return false;
+    }
+    return false;
+  };
+
   app.use("/api/*", async (c, next) => {
+    /**
+     * A cross-origin WRITE is refused BEFORE the token check.
+     *
+     * Order matters: a token-less server (`!want` below) would otherwise hand every cross-origin
+     * request straight through, which is exactly the state a first-run install is in.
+     */
+    const method = c.req.method.toUpperCase();
+    if (method !== "GET" && method !== "HEAD" && !sameOrigin(c)) {
+      return c.json(
+        { error: "cross-origin request refused — set an API token in settings, or call the API from a local client" },
+        403,
+      );
+    }
     const want = apiToken();
-    if (!want) return next(); // nothing configured yet — the API stays open
+    /**
+     * With no token configured the API is still open to LOCAL clients, but it now says so loudly.
+     *
+     * Opening it is a real decision: the first-run wizard sets the password through
+     * `/api/setup`, so the server cannot demand a token before one exists. Leaving that silent is
+     * how the OpenCode advisory happened — their server was unauthenticated by default and nobody
+     * noticed. The header makes the state visible to every client, and the startup banner warns.
+     */
+    if (!want) {
+      c.header("x-teapot-auth", "none");
+      return next();
+    }
     const h = c.req.header("authorization");
     const provided = h?.startsWith("Bearer ") ? h.slice(7) : undefined;
     if (provided && provided === want) return next();

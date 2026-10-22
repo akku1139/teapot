@@ -203,6 +203,30 @@ async function main(): Promise<void> {
 
   const app = buildApp(master);
   const server = serveApp(app, config.port, config.host);
+  /**
+   * Say out loud when the API has no auth, and when it is reachable beyond loopback.
+   *
+   * The OpenCode advisory (CVE-2026-22812) was not just "a server was open" — it was open and
+   * nobody knew. `apiToken()` is empty on a fresh install because the setup wizard sets the
+   * password THROUGH the API, so a token cannot be demanded before one exists; the honest response
+   * is to make the state visible on every start rather than to pretend it is protected.
+   *
+   * See docs/security-advisories.md.
+   */
+  const noAuth = !(process.env.TEAPOT_API_TOKEN || master.config.password);
+  const beyondLoopback = !!config.host && config.host !== "127.0.0.1" && config.host !== "localhost";
+  if (noAuth) {
+    console.error(
+      "[teapot] no API token set — /api is open to LOCAL clients. Cross-origin writes are refused, " +
+        "but set TEAPOT_API_TOKEN or config.password before exposing this port.",
+    );
+    if (beyondLoopback) {
+      console.error(
+        `[teapot] WARNING: bound to ${config.host} with NO auth — anyone who can reach this port can ` +
+          "drive the agents. Set TEAPOT_API_TOKEN or config.password now.",
+      );
+    }
+  }
 
   // agent crash isolation: an agent error never escapes its own loop; here we
   // also make sure the process survives unexpected rejections.
