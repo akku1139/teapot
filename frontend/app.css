@@ -528,96 +528,41 @@ body {
 .badge.queued { color: var(--warn); background: #faa81a1a; border: 1px solid #faa81a44; white-space: nowrap; }
 
 /**
- * #143: keep only the rows near the viewport laid out and painted.
+ * Why `content-visibility: auto` is GONE (#143 reversed).
  *
- * A session with 17 690 events loads 2000 per page and ~1210 of those draw a row
- * (MEASURED), at ~11 DOM nodes each — 13 300 nodes, every one of them styled, laid out
- * and painted, holding already-parsed markdown.
+ * It was here to skip layout/paint for rows outside the viewport, keeping them in the DOM so
+ * find-in-page, the accessibility tree, tab order and text selection kept working (unlike
+ * virtual scrolling). The cost turned out to be the wrong trade:
  *
- * `content-visibility: auto` skips layout/paint for rows outside the viewport while
- * keeping them in the DOM. That last part is why this and not virtual scrolling: MDN is
- * explicit that `auto` (unlike `hidden`) keeps the contents available to find-in-page,
- * the accessibility tree, tab order and text selection. This feed depends on real DOM
- * anyway — scroll anchoring measures `getBoundingClientRect()` on the first visible row
- * and rows are looked up by `data-eid`.
+ *   - The memory saving was smaller than expected — the operator's verdict was "思ったより軽量化
+ *     効果が少なかった".
+ *   - It CAUSES the scroll drift it was never able to avoid. A skipped row is replaced by
+ *     `contain-intrinsic-size`'s guess (`140px`); when the row is laid out for real, everything
+ *     below it moves. MEASURED in headless Firefox: 300 rows estimated 47100px against a real
+ *     35100px, and every unskip shifts the rows beneath it.
  *
- * Gated on a data attribute so an A/B can run on a live server without a rebuild
- * (`teapot.feedCv=0` in localStorage disables it). See the effect in App.tsx.
+ * Scrolling through the timeline therefore dragged the viewport in small increments that no
+ * script could cancel: a correction runs AFTER paint, so it is itself a visible jump, while the
+ * engine's own anchoring only helps when it can hold the scroll position across the swap — which
+ * it cannot do when the size it swaps to was never known.
  *
- * ## `contain-intrinsic-size` is NOT optional
+ * The lesson worth keeping: an estimate that is later corrected is not equivalent to not having
+ * the optimisation. Any future attempt must reserve the row's REAL height, which needs a script
+ * that measures every row — and that was tried in #179 and made the UI unusable (an inline style
+ * on ~1,100 rows invalidates style and layout for the whole feed on every scroll and append).
  *
- * Without a placeholder size a skipped row measures 0px, `scrollHeight` collapses, and
- * every scroll-anchoring path in App.tsx — which diffs the container's height before and
- * after a reflow — computes a wrong delta, so the view jumps on each append.
- *
- * The value is `auto 140px`, and BOTH parts matter:
- *   - `auto` makes the browser REMEMBER a row's real size once rendered. Row heights
- *     here vary by three orders of magnitude (MEASURED: message median 105 chars / max
- *     1186; tool_result median 279 / max 8000), so a fixed guess alone makes the
- *     scrollbar jump around as rows come into view.
- *   - `140px` is only the initial guess for rows never yet rendered.
- *
- * Note what this does NOT solve: Chromium deliberately does not COUNT an unskip as a layout
- * shift in CLS (`crbug 1151526`, fixed M88 — it stopped charging pages for a UA-chosen
- * optimisation; the shift itself still happens), so a regression in our own scroll anchoring
- * would be invisible to CLS metrics. That is why the anchoring behaviour has its own tests
- * rather than relying on a metric to catch it. The scroll compensation is separate code again:
- * `anchor_is_cv_auto_without_layout_` in Blink's `scroll_anchor.h`. See
- * `docs/firefox-scroll-defects.md`.
- *
- * ## Firefox shifts the viewport when a row unskips, and we compensate in script
- *
- * `content-visibility: auto` replaces a row with `contain-intrinsic-size` until it is near
- * the viewport, then lays it out for real. MDN is explicit that a mismatch between the
- * placeholder and the real size "might force a new layout" — and when that row is ABOVE the
- * reader, the whole feed shifts under them.
- *
- * In Chromium that shift is absorbed natively: Blink tracks "the last anchor we have selected is
- * a 'content-visibility: auto' element that did not yet have a layout after becoming visible" in
- * `anchor_is_cv_auto_without_layout_` and special-cases the scroll adjustment for it. Gecko has
- * no equivalent — its `ScrollAnchorContainer.cpp` mentions content-visibility nowhere — and its
- * own WPT metadata marks the off-screen case `expected: FAIL`. Both the flag and the test
- * expectations are quoted in `docs/firefox-scroll-defects.md`.
- *
- * IMPORTANT: that Chromium absorption goes away with `overflow-anchor: none` (below), which was
- * added for the composer bug. So Chrome now needs the same script compensation Firefox does —
- * reported as "前はFirefoxで content-visibility: auto のときにスクロールがブレるって言ったんだけど、
- * Chromeでも起きるようになった". Do not assume the engine protects this scrollport: it does not,
- * because we turned the mechanism off ourselves. `resyncAfterUnskip()` must therefore stay
- * active while FOLLOWING as well, not only while the reader is parked.
- *
- * MEASURED in this app: scrolling up through a loaded session makes the timeline creep a few
- * pixels per unskipped row, in the direction of travel.
- *
- * The compensation is in `resyncAfterUnskip()` (App.tsx): before a row can unskip, the row the
- * reader is looking at is recorded, and after the frame it is put back where it was. That is
- * the same anchor mechanism already used for box resizes — the unskip simply does not fire a
- * ResizeObserver, so it needs its own trigger.
- *
- * ## No script belongs here (#179)
- *
- * There was once an effect that wrote each row's measured box as an inline
- * `contain-intrinsic-size` (with an IntersectionObserver and ResizeObserver per row). It
- * made the UI unusable on a real session: an inline style on every row invalidates style
- * and layout for the whole feed on every scroll and append, and it also REPLACES the
- * `auto` keyword below — so the engine could no longer remember row sizes itself, which is
- * the entire purpose of `auto`.
- *
- * `auto 140px` is the complete solution: `auto` remembers a laid-out row's real size, so a
- * revisit changes nothing and the scroll holds. Do not reintroduce a script for it.
+ * Rows are plain, fully laid-out elements now. If this feed ever needs to hold a truly enormous
+ * session, the answer is paging (which it already does) rather than containment.
  */
-html[data-feedcv="on"] .feed > .msg {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 140px;
-}
+
 /* symmetric vertical padding: 14/8 was asymmetric for no reason and left the
    last row hugging the composer while the first had room */
 /* NATIVE scroll anchoring is ON — do not disable it here.
    This briefly carried `overflow-anchor: none` to stop Firefox moving `scrollTop` when the
-   composer resized. That traded away something much more valuable: Blink's anchoring is what
-   absorbs a `content-visibility: auto` unskip (see the long note above `[data-feedcv]`), so
-   switching it off made CHROME start drifting through a loaded timeline — reported as
-   "以前はFirefoxだけだったスクロールのブレがChromeでも起きるようになった".
+   composer resized. That traded away something much more valuable: the engine's own anchoring
+   is what keeps the scroll position stable when rows above change size, so switching it off made
+   CHROME start drifting through a loaded timeline — reported as "以前はFirefoxだけだったスクロール
+   のブレがChromeでも起きるようになった".
 
    A script cannot replace it. `resyncAfterUnskip()` runs after layout has already been painted,
    so its correction is a visible jump; the engine applies the adjustment BEFORE paint, which is
@@ -1207,6 +1152,17 @@ details.reasoning .thinkscroll {
 .ctrlrow { display: flex; align-items: center; gap: var(--space-4); margin-top: 6px; font-size: var(--text-sm); }
 .ctrlrow label { display: flex; align-items: center; gap: var(--space-3); cursor: pointer; color: var(--fg); white-space: nowrap; }
 .ctrlrow .muted { font-size: var(--text-xs); }
+/* skills list (settings → skills): the name is the identifier the agent uses, so it is
+   monospace and first; the one-line description follows and wraps */
+.skilllist { display: flex; flex-direction: column; gap: var(--space-2); max-height: 320px; overflow-y: auto; }
+.skillrow {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: var(--bg-darkest);
+}
+.skillrow > b { color: var(--acc); font-size: var(--text-sm); word-break: break-all; }
+.skillrow > span { font-size: var(--text-xs); line-height: 1.45; }
+
 /* goal status segmented buttons */
 .goalstate { background: var(--bg-light); color: var(--fg); border: none; border-radius: var(--radius-md); padding: 3px 10px; cursor: pointer; font-size: var(--text-xs); }
 .goalstate.on.active { background: var(--ok); color: #fff; font-weight: 600; }
@@ -1809,8 +1765,23 @@ html[data-bg-image="on"] .content pre > code,
 html[data-bg-image="on"] .card,
 html[data-bg-image="on"] .mcpresult,
 html[data-bg-image="on"] .bgpreview {
-  /* `--bg-darkest-solid` is written by applyCustomTheme with any alpha stripped, so this is
-     opaque even when the palette's own `--bg-darkest` is not */
-  background-color: var(--bg-darkest-solid, var(--bg-darkest));
+  /**
+   * TRANSLUCENT by a settable amount, so the wallpaper reads through code and tool output.
+   *
+   * This started as fully opaque to fix the opposite bug: a palette colour saved with alpha
+   * gave these surfaces ZERO opacity, so code blocks were invisible over a photo. Opaque was a
+   * correct floor but the wrong ceiling — asked for as "コードブロックやtool cardとかが背景画像の
+   * ために半透明になってほしい (テーマエディタで透明度も設定できるように?)".
+   *
+   * `--surface-alpha` is the operator's setting (the theme editor's slider). Default 0.82: high
+   * enough that machine output stays legible over a busy photo, low enough that the image is
+   * visibly there. The floor is enforced in `sanitizeTheme`, not here — a value near 0 would
+   * reintroduce the invisible-code bug this rule exists to prevent.
+   */
+  background-color: color-mix(
+    in srgb,
+    var(--bg-darkest-solid, var(--bg-darkest)) calc(var(--surface-alpha, 0.82) * 100%),
+    transparent
+  );
   background-image: none;
 }

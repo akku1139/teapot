@@ -23,6 +23,9 @@ const mkMaster = (dataDir: string) =>
     "/dev/null",
   );
 
+/** a minimal valid theme, for the sanitizer tests */
+const base = { id: "custom-1", label: "t", mode: "dark" as const, palette: { ...DEFAULT_PALETTE } };
+
 /** a 1x1 PNG */
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -168,4 +171,36 @@ test("the auth choice is derived from the saved headers, not reset (#mcpui)", as
   const value = (h: Record<string, string>) =>
     Object.keys(h).length === 1 ? (h.Authorization ?? "").replace(/^Bearer /i, "") : "";
   assert.equal(value({ Authorization: "Bearer sk-123" }), "sk-123");
+});
+
+test("surfaceAlpha is CLAMPED to a readable floor (#ui)", async () => {
+  /**
+   * Code blocks and tool cards previously forced a fully opaque fill. Fully opaque fixed a real
+   * bug (a palette colour saved with alpha made machine output invisible over a photo) but it is
+   * the wrong ceiling — asked for as "コードブロックやtool cardとかが背景画像のために半透明になって
+   * ほしい (テーマエディタで透明度も設定できるように?)".
+   *
+   * The floor matters: at 0 the invisible-output bug comes straight back, so a stored value is
+   * clamped rather than trusted. That is the whole point of sanitising on the way in.
+   */
+  for (const [input, want] of [
+    [0, 0.35],
+    [-4, 0.35],
+    [0.2, 0.35],
+    [0.6, 0.6],
+    [1, 1],
+    [9, 1],
+  ] as const) {
+    const t = sanitizeTheme({ ...base, surfaceAlpha: input });
+    assert.ok(t, `surfaceAlpha=${input} must not make the theme invalid`);
+    assert.equal(t.surfaceAlpha, want, `surfaceAlpha=${input} should clamp to ${want}`);
+  }
+});
+
+test("a theme without surfaceAlpha stays valid and unset (#ui)", async () => {
+  // themes saved before this setting existed must keep working, and must NOT be given a value
+  // the editor would then show as if the operator had chosen it
+  const t = sanitizeTheme({ ...base, backgroundImage: "/api/assets/" + "a".repeat(32) + ".png" });
+  assert.ok(t);
+  assert.equal(t.surfaceAlpha, undefined);
 });

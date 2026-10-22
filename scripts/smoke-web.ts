@@ -121,7 +121,18 @@ function apiResponse(url) {
   if (u === `/api/agents/${AGENT.id}/load`) return { ok: true };
   if (u === `/api/agents/${AGENT.id}/events`) return { events: EVENTS, total: EVENTS.length };
   if (u === `/api/agents/${AGENT.id}/branches`) return { branches: [{ branch: "br0", events: EVENTS.length }] };
-  if (u === `/api/agents/${AGENT.id}/skills`) return { skills: [] };
+  // one real skill, so the settings list has something to show: an empty stub cannot tell
+  // "the list works" from "the list is empty by design"
+  if (u === `/api/agents/${AGENT.id}/skills`)
+    return {
+      skills: [
+        {
+          name: "headless-firefox-debug",
+          description: "Debug layout and scroll bugs in a real engine over Marionette",
+          source: "global",
+        },
+      ],
+    };
   if (u === `/api/agents/${AGENT.id}/tree`)
     return {
       path: "",
@@ -2035,6 +2046,34 @@ console.log("deep render ok: feed rows present");
         bgFail(`choosing a file submitted the settings form (${submitted}x) — that is a full PUT /api/config`);
       }
       console.log("deep render ok: the image control reports its own state and cannot submit the form (#bgimage)");
+
+      /**
+       * The SKILLS section lists what the agent can load.
+       *
+       * The API returned skills and the client kept them for the `/` palette, but nothing ever
+       * DISPLAYED them — "どんなスキルが保存されてるかを設定とかで見れると良いね". The precondition
+       * is asserted: the stub serves one named skill, so an empty list here means the list is
+       * broken rather than empty.
+       */
+      {
+        const skFail = (msg: string) => {
+          console.error(`#skills REGRESSION: ${msg}`);
+          process.exit(1);
+        };
+        const rail = [...modal!.querySelectorAll("button")].find((b) =>
+          (b.textContent ?? "").includes("skills"),
+        );
+        if (!rail) skFail("no skills entry in the settings rail");
+        rail!.click();
+        const rows = [...w.document.querySelectorAll(".skillrow")];
+        if (rows.length === 0) skFail("the skills list rendered nothing (the stub serves one skill)");
+        const text = rows.map((r) => r.textContent ?? "").join(" | ");
+        if (!text.includes("headless-firefox-debug"))
+          skFail(`the skill's NAME is not shown; got: ${text}`);
+        if (!text.toLowerCase().includes("marionette"))
+          skFail(`the skill's description is not shown; got: ${text}`);
+        console.log("deep render ok: settings lists the available skills with their descriptions (#skills)");
+      }
 
       /**
        * …AND THE THEME MUST ACTUALLY BE APPLIED.

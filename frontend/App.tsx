@@ -676,24 +676,16 @@ export default function App() {
       custom?.mode ?? THEMES.find((t) => t.key === active)?.mode ?? "dark";
   });
   /**
-   * #143 A/B: paint/layout containment for timeline rows, toggleable at runtime.
+   * #143 REVERSED: no `content-visibility` on timeline rows.
    *
-   * The client held 418 MB for one session (600 MB after a reload) because a page of
-   * 2000 events is ~22 000 DOM nodes of already-parsed markdown, all of it LAID OUT.
-   * `content-visibility: auto` lets the browser skip layout/paint for rows outside the
-   * viewport while keeping them in the DOM, so scroll anchoring, `data-eid` lookups,
-   * cmd-F and text selection all keep working — unlike virtual scrolling, which would
-   * buy the memory by unmounting rows.
+   * The containment that used to be toggled here is gone. It bought less memory than expected
+   * ("思ったより軽量化効果が少なかった") and it CAUSED the scroll drift: a skipped row is replaced by
+   * a `contain-intrinsic-size` guess, and laying it out for real moves everything below it.
+   * MEASURED in headless Firefox: 300 rows estimated 47100px against a real 35100px.
    *
-   * It is a data attribute rather than a plain CSS rule so the change can be A/B'd on
-   * a live server: `teapot.feedCv=0` in localStorage turns it off without a rebuild,
-   * which is what makes a memory comparison between two releases meaningful.
+   * Removed rather than tuned, because the drift cannot be corrected from script — a correction
+   * runs after paint, so it is itself a visible jump. See the note in app.css.
    */
-  createEffect(() => {
-    const off = localStorage.getItem("teapot.feedCv") === "0";
-    if (off) delete document.documentElement.dataset.feedcv;
-    else document.documentElement.dataset.feedcv = "on";
-  });
   // NOTE (#179): there used to be a second effect here that walked every row and wrote an
   // inline `contain-intrinsic-size` from a measured box, with an IntersectionObserver and a
   // ResizeObserver per row, to stop a `content-visibility` unskip from shifting the scroll.
@@ -5449,6 +5441,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         cfg={cfg()}
         onClose={() => setShowCfg(false)}
         announcedOAuth={announcedOAuth}
+        skills={agentSkills()}
+        hasSelection={!!selected()}
         onSaved={() => {
           loadCfg();
           loadTasks();
@@ -6773,7 +6767,11 @@ function ThemeEditor(props: {
       palette,
       // carry the background too, or duplicating a themed setup loses the image
       ...(activeCustom?.backgroundImage
-        ? { backgroundImage: activeCustom.backgroundImage, backgroundDim: activeCustom.backgroundDim }
+        ? {
+            backgroundImage: activeCustom.backgroundImage,
+            backgroundDim: activeCustom.backgroundDim,
+            surfaceAlpha: activeCustom.surfaceAlpha,
+          }
         : {}),
     };
     props.onChange([...props.themes(), theme]);
@@ -6818,13 +6816,13 @@ function ThemeEditor(props: {
         body: file,
       }).then(async (res) => ({ ok: res.ok, body: await res.json().catch(() => null) }))) as {
         ok: boolean;
-        body: { url?: string; error?: string } | null;
+        body: { url?: string; bytes?: number; error?: string } | null;
       };
       if (!r.ok || !r.body?.url) {
         flashHint(r.body?.error ?? "upload failed");
         return;
       }
-      patch((t) => ({ ...t, backgroundImage: r.body!.url! }));
+      patch((t) => ({ ...t, backgroundImage: r.body!.url!, backgroundImageBytes: r.body!.bytes }));
       /**
        * ADOPT the theme being edited — the image is otherwise invisible.
        *
@@ -6877,10 +6875,28 @@ function ThemeEditor(props: {
       </div>
 
       <Show
-        when={editing()}
+        /**
+         * The editing controls appear only when a CUSTOM theme is ACTIVE.
+         *
+         * They used to show whenever any custom theme existed, defaulting to the first one — so
+         * the panel offered a colour picker for a theme that was not on screen and edits went
+         * somewhere the operator had not chosen. Reported as "テーマエディタは、ユーザー作成テーマが
+         * アクティブなときだけ出現してほしい".
+         *
+         * The "＋ duplicate current" row above stays ALWAYS visible: hiding the whole editor also
+         * removed the only way to CREATE a custom theme, which the smoke test caught
+         * ("no way to create a custom theme — the editor cannot be reached"). Create is how you
+         * get into the state this gate tests for, so it cannot live behind the gate.
+         *
+         * `props.themes()` contains the active id — the same resolution the painter uses — so "is
+         * it active" here and "is it painted" there cannot disagree.
+         */
+        when={editing() && props.themes().some((t) => t.id === props.activeId) ? editing() : null}
         fallback={
           <div class="muted" style="margin:6px 0">
-            no custom themes yet — press <b>＋ duplicate current</b> to start from the palette you are using.
+            {props.themes().length === 0
+              ? <>no custom themes yet — press <b>＋ duplicate current</b> to start from the palette you are using.</>
+              : <>the editor shows when one of your themes is ACTIVE — pick one under "your themes" above (or press <b>＋ duplicate current</b>).</>}
           </div>
         }
       >
@@ -7003,10 +7019,21 @@ function ThemeEditor(props: {
                 }}
               />
               <Show when={editing()!.backgroundImage}>
-                <div class="bgpreview">
+<div class="bgpreview">
                   <img src={editing()!.backgroundImage} alt="theme background preview" />
-                  <span class="muted" title="this image is stored inside the theme">
-                    ✓ image set — {Math.round(((editing()!.backgroundImage?.length ?? 0) * 3) / 4 / 1024)} KB
+                  {/**
+                   * Show the UPLOADED size, not a guess from the URL length.
+                   *
+                   * The bytes now live on the server and the theme stores only
+                   * `/api/assets/<32hex>.<ext>`, so estimating size from the string's length
+                   * reported "0 KB" for every image — reported as "✓ image set — 0 KB". A size is
+                   * only known at upload time, so the editor does not invent one.
+                   */}
+                  <span class="muted" title="this image is served from the server; the theme stores only its URL">
+                    ✓ image set{(() => {
+                      const b = editing()?.backgroundImageBytes;
+                      return b ? ` — ${Math.max(1, Math.round(b / 1024))} KB` : "";
+                    })()}
                   </span>
                   <div class="btnrow">
                     <label class="trow" title="how much the image is dimmed so text stays readable">
@@ -7020,6 +7047,27 @@ function ThemeEditor(props: {
                         oninput={(e) => patch((cur) => ({ ...cur, backgroundDim: Number(e.currentTarget.value) }))}
                       />
                       <span class="muted mono">{Math.round((editing()!.backgroundDim ?? 0.55) * 100)}%</span>
+                    </label>
+                    {/**
+                     * How see-through the code / tool cards are. Floored at 35% in
+                     * `sanitizeTheme`: lower than that and monospace output over a busy photo
+                     * becomes unreadable, which is the bug the opaque rule was added to fix.
+                     */}
+                    <label title="how much of the background shows through code blocks and tool cards — lower is more transparent">
+                      surfaces
+                      <input
+                        type="range"
+                        min="0.35"
+                        max="1"
+                        step="0.01"
+                        value={editing()!.surfaceAlpha ?? 0.82}
+                        oninput={(e) =>
+                          patch((cur) => ({ ...cur, surfaceAlpha: Number(e.currentTarget.value) }))
+                        }
+                      />
+                      <span class="muted mono">
+                        {Math.round((editing()!.surfaceAlpha ?? 0.82) * 100)}%
+                      </span>
                     </label>
                     <button type="button" onclick={() => patch((cur) => ({ ...cur, backgroundImage: undefined }))}>
                       ✕ remove
@@ -7818,6 +7866,15 @@ function ConfigModal(props: {
    * time the dialog was closed and re-open the same interruption on the next save.
    */
   announcedOAuth: Set<string>;
+  /**
+   * Skills available to the SELECTED session, for the skills section.
+   *
+   * Read-only and passed in rather than fetched here: App already holds them for the `/` command
+   * palette, and a second fetch would be a second copy to keep in step.
+   */
+  skills: { name: string; description: string }[];
+  /** whether a session is selected at all, so the lists can say "select a session" honestly */
+  hasSelection: boolean;
   /** theme state, owned by App because it paints `<html>` */
   theme: {
     themes: () => CustomTheme[];
@@ -8084,7 +8141,7 @@ function ConfigModal(props: {
    * The SAVE button stays outside the menu: it applies the whole form, so it must not
    * look like it belongs to whichever section happens to be visible.
    */
-  type Section = "providers" | "runtime" | "appearance" | "mcp" | "tasks" | "archive" | "agents" | "update" | "help";
+  type Section = "providers" | "runtime" | "appearance" | "mcp" | "tasks" | "archive" | "agents" | "update" | "skills" | "help";
   const [section, setSection] = createSignal<Section>("providers");
   // the archive list is SERVER state (which entries are archived), fetched on open
   // and after every action — not derived from props.cfg, which carries the config as
@@ -8132,6 +8189,8 @@ function ConfigModal(props: {
     { key: "archive", label: "🗄 archive", hint: "agents you put away — restore or delete for good" },
     { key: "agents", label: "👥 agents", hint: "what exists (read-only)" },
     { key: "update", label: "⬆️ live update", hint: "restart onto a newer build" },
+    // what the agent can load: skills it wrote itself, workspace ones, and bundled ones
+    { key: "skills", label: "🧠 skills", hint: "reusable playbooks available to the selected session" },
     // where the explanations that used to sit permanently under the UI now live
     { key: "help", label: "❔ help", hint: "keyboard shortcuts and what each toggle does" },
   ];
@@ -8583,7 +8642,15 @@ function ConfigModal(props: {
               let adopted = requested;
               if (!saved.ok) {
                 const stripped = requested.map((t) =>
-                  t.backgroundImage ? { ...t, backgroundImage: undefined, backgroundDim: undefined } : t,
+                  t.backgroundImage
+                    ? {
+                        ...t,
+                        backgroundImage: undefined,
+                        backgroundDim: undefined,
+                        surfaceAlpha: undefined,
+                        backgroundImageBytes: undefined,
+                      }
+                    : t,
                 );
                 const retry = saveCustomThemes(stripped);
                 if (retry.ok) {
@@ -9137,6 +9204,42 @@ function ConfigModal(props: {
             </button>
             <span class="muted" style="margin-left:8px;font-size:12px">gracefully stops all agents, spawns new process, then reloads this page</span>
           </div>
+        </fieldset>
+
+        <fieldset classList={{ hide: section() !== "skills" }}>
+          <legend>skills</legend>
+          {/**
+            * Skills are how the agent keeps a proven procedure. They live in three roots — the
+            * session's own, the workspace's, and the bundled set shipped with the package — and
+            * until now there was no way to see them short of reading the filesystem: the API
+            * returned them (`/api/agents/:id/skills`) and the client stored them for the `/`
+            * palette, but nothing listed them.
+            *
+            * READ-ONLY on purpose. A skill is a file the agent writes while working; editing one
+            * from a panel would mean a second writer racing `save_skill`, and the file is the
+            * source of truth everywhere else (load_skill reads it, not this list).
+            */}
+          <Show
+            when={props.skills.length > 0}
+            fallback={
+              <div class="muted">
+                {props.hasSelection
+                  ? "this session has no skills yet — the agent saves them with save_skill once a procedure proves itself"
+                  : "select a session to see the skills available to it"}
+              </div>
+            }
+          >
+            <div class="skilllist">
+              <For each={props.skills}>
+                {(s) => (
+                  <div class="skillrow">
+                    <b class="mono">{s.name}</b>
+                    <span class="muted">{s.description}</span>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
         </fieldset>
 
         <fieldset classList={{ hide: section() !== "help" }}>

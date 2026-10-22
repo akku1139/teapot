@@ -53,6 +53,20 @@ export interface CustomTheme {
   backgroundImage?: string;
   /** how much to dim the image so text stays readable over it; 0 = untouched */
   backgroundDim?: number;
+  /**
+   * How opaque code blocks, tool cards and embeds are over a background image.
+   *
+   * Those surfaces force a solid fill otherwise, which is what fixed a palette colour saved with
+   * alpha from rendering machine output invisible. Fully opaque is the safe floor but a dull
+   * ceiling: with a wallpaper behind the app you want to SEE it through the panels. Exposed as a
+   * slider so the readability call belongs to the operator.
+   *
+   * Floored at 0.35 in `sanitizeTheme` — below that, monospace output over a busy photo stops
+   * being readable, which is the bug the opaque rule existed to prevent.
+   */
+  surfaceAlpha?: number;
+  /** the uploaded image's real byte size, shown in the editor; not persisted meaningfully */
+  backgroundImageBytes?: number;
 }
 
 /** the palette variable names `app.css` reads, in the order a form should show them */
@@ -169,6 +183,14 @@ export function sanitizeTheme(raw: unknown): CustomTheme | null {
   if (typeof t.backgroundDim === "number" && Number.isFinite(t.backgroundDim)) {
     out.backgroundDim = Math.min(0.9, Math.max(0, t.backgroundDim));
   }
+  if (typeof t.backgroundImageBytes === "number" && Number.isFinite(t.backgroundImageBytes)) {
+    out.backgroundImageBytes = Math.max(0, Math.round(t.backgroundImageBytes));
+  }
+  if (typeof t.surfaceAlpha === "number" && Number.isFinite(t.surfaceAlpha)) {
+    // floored, not merely clamped to (0,1): see `surfaceAlpha` — near-zero makes machine output
+    // unreadable over the image, which is the bug the opaque rule was introduced to fix
+    out.surfaceAlpha = Math.min(1, Math.max(0.35, t.surfaceAlpha));
+  }
   return out;
 }
 
@@ -245,9 +267,12 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
   // truncated background is worse than none
   const wantImage = theme?.backgroundImage ? `url("${theme.backgroundImage}")` : "";
   const wantDim = theme?.backgroundImage ? String(theme.backgroundDim ?? 0.55) : "";
+  // only meaningful over an image; cleared otherwise so a plain theme is untouched
+  const wantAlpha = theme?.backgroundImage ? String(theme.surfaceAlpha ?? 0.82) : "";
   for (const [prop, want] of [
     ["--bg-image", wantImage],
     ["--bg-image-dim", wantDim],
+    ["--surface-alpha", wantAlpha],
   ] as const) {
     if (root.style.getPropertyValue(prop) === want) continue;
     if (want) root.style.setProperty(prop, want);
