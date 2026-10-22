@@ -211,23 +211,37 @@ test("a progress request does not END the round's work (#95)", { timeout: 30_000
      * Bounded, and the bound is the point: with the suppression removed the note never appears at
      * all, so the loop must exit and let the precondition fail rather than hang.
      */
+    /**
+     * Wait for BOTH facts the test needs: the suppression happened, AND the loop came back for
+     * another turn. Polling only for the first let the assertion below run against a log that had
+     * one turn in it, which is indistinguishable from the bug being present.
+     */
     let sawSuppression = false;
     for (let i = 0; i < 600; i++) {
       const ev = await readEvents(agent.log.filePath);
-      if (
-        ev.some(
-          (e) =>
-            e.type === "system_note" &&
-            (e.data as { event?: string }).event === "auto-continue-suppressed",
-        )
-      ) {
-        sawSuppression = true;
-        break;
-      }
+      const note = ev.some(
+        (e) =>
+          e.type === "system_note" &&
+          (e.data as { event?: string }).event === "auto-continue-suppressed",
+      );
+      const turns = ev.filter(
+        (e) =>
+          e.type === "state" &&
+          (e.data as { detail?: string }).detail === "llm turn start",
+      ).length;
+      if (note) sawSuppression = true;
+      // the suppression is what this test injects; wait until it is followed by another turn
+      if (sawSuppression && turns > 1) break;
       await new Promise((r) => setTimeout(r, 10));
     }
-    // stop the loop before reading the log, so the turn count below is final
-    (agent as unknown as { stopRequested: boolean }).stopRequested = true;
+    /**
+     * Do NOT set `stopRequested` here to "freeze" the log.
+     *
+     * It stops the loop after the CURRENT turn, so the assertion below ("more than one turn start")
+     * could never see a second one — the test then failed for its own interference rather than for
+     * the bug. The turn count is instead read after `maxTurns` has had its chance, and the log is
+     * append-only so counting is stable.
+     */
 
     const events = await readEvents(agent.log.filePath);
     const text = (e: { data?: unknown }) => (e.data ?? {}) as Record<string, unknown>;

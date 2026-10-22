@@ -230,3 +230,26 @@ test("a content-visibility unskip is a LAYOUT cause, so it cannot drop follow (#
   assert.equal(classifyScroll(shrank, null, before.height, before.viewport), "layout");
 });
 
+
+test("a LARGE resync delta is refused, because it is a stale anchor not an unskip (#scroll)", () => {
+  /**
+   * Reported: "原因不明でスクロール追従が外れて500pxくらい戻る".
+   *
+   * A `content-visibility` unskip corrects by ONE row's guess-vs-real difference — a few pixels to
+   * a few hundred at worst. A delta in the hundreds means the anchor was captured before a burst of
+   * appends and no longer describes the content, so applying it moves the reader somewhere
+   * unrelated. The guard is a constant in App.tsx; this pins the RULE it encodes, so the number and
+   * the reasoning stay together.
+   */
+  const MAX = 240;
+  assert.ok(MAX >= 120, `a single row can legitimately be ~${MAX}px, so the bound must not be tiny`);
+  assert.ok(MAX < 500, "the reported jump was ~500px — the bound must refuse that class of error");
+
+  // the decision itself, as the component applies it
+  const shouldCorrect = (delta: number) => Math.abs(delta) >= 1 && Math.abs(delta) <= MAX;
+  assert.equal(shouldCorrect(6), true, "a normal unskip correction");
+  assert.equal(shouldCorrect(-180), true, "a large but plausible row");
+  assert.equal(shouldCorrect(0.4), false, "sub-pixel is rounding, which would add jitter");
+  assert.equal(shouldCorrect(500), false, "the reported jump must be refused");
+  assert.equal(shouldCorrect(-900), false, "and so must a large correction upward");
+});

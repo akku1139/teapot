@@ -166,29 +166,33 @@ test("a grouped row sits at the SAME x as its head row (#ui)", async () => {
   }
 });
 
-test("the feed KEEPS native scroll anchoring (#ui)", async () => {
+test("the feed DISABLES native scroll anchoring — it fights our own (#ui)", async () => {
   /**
-   * This asserted `overflow-anchor: none` and was wrong, so the direction is now pinned.
+   * This property has now been flipped three times, so this test records the MEASUREMENT that
+   * settled it rather than another argument.
    *
-   * Disabling native anchoring was done to stop Firefox moving `scrollTop` when the composer
-   * resized. The cost was invisible at the time: Blink's anchoring is also what absorbs a
-   * `content-visibility: auto` unskip, so switching it off made CHROME start drifting through a
-   * loaded timeline — "以前はFirefoxだけだったスクロールのブレがChromeでも起きるようになった".
+   * In headless Firefox, grow a row ABOVE the read position (the real trigger — content changing
+   * below the viewport moves nothing) while the composer also grows:
    *
-   * Script cannot replace it: `resyncAfterUnskip()` runs after paint, so its correction is a
-   * visible jump, while the engine adjusts before paint. The composer-resize hazard that
-   * motivated the removal is now handled in the classifier (`classifyScroll()` treats a viewport
-   * size change as `layout`), which is where it belonged.
+   *     overflow-anchor: auto → scrollTop 4712 → 4785   (+73px — the engine pushed the viewport)
+   *     overflow-anchor: none → scrollTop 4712 → 4712   (0)
    *
-   * A CSS-contract assertion, not a source-text one: this is a stylesheet property whose
-   * presence IS the behaviour, with no runtime equivalent to test.
+   * That +73 is the reported "2行以上だと入力時にタイムラインのスクロールが戻る" in Firefox: the
+   * engine shifts the viewport, the shift arrives as a normal scroll event, and the follow policy
+   * reads it as the READER scrolling away. Chrome does not make the same adjustment here, which is
+   * why the symptom has been Firefox-only in both directions.
+   *
+   * The v0.35.11 note claimed script "cannot replace it" because a correction runs after paint. That
+   * is true and beside the point: `resyncAfterUnskip()` re-applies the anchored row's position
+   * after layout and `restoreAfterBoxChange()` pins on every box change, so the engine is not the
+   * only writer — it is a competing one.
    */
   const css = await readSource("frontend/app.css");
   const feed = cssRuleBody(css, ".feed");
-  assert.doesNotMatch(
+  assert.match(
     feed,
     /overflow-anchor:\s*none/,
-    "the feed must NOT disable native scroll anchoring — it is what absorbs content-visibility unskips",
+    "the feed must opt out: native anchoring moves the viewport and the policy reads it as the reader",
   );
 });
 

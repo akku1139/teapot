@@ -755,26 +755,41 @@ html[data-bg-image="on"] body { background: transparent; }
 
 /* symmetric vertical padding: 14/8 was asymmetric for no reason and left the
    last row hugging the composer while the first had room */
-/* NATIVE scroll anchoring is ON — do not disable it here.
-   This briefly carried `overflow-anchor: none` to stop Firefox moving `scrollTop` when the
-   composer resized. That traded away something much more valuable: the engine's own anchoring
-   is what keeps the scroll position stable when rows above change size, so switching it off made
-   CHROME start drifting through a loaded timeline — reported as "以前はFirefoxだけだったスクロール
-   のブレがChromeでも起きるようになった".
-
-   A script cannot replace it. `resyncAfterUnskip()` runs after layout has already been painted,
-   so its correction is a visible jump; the engine applies the adjustment BEFORE paint, which is
-   the whole reason it looks stable. Compensating in script is therefore not an equivalent
-   substitute, it is a strictly worse one.
-
-   What made native anchoring safe to re-enable is the classifier, not this property:
-   `classifyScroll()` attributes a VIEWPORT size change to layout (so the composer growing can
-   no longer read as the reader scrolling), and `restoreAfterBoxChange()` pins or re-anchors on
-   every box change. Those landed after the original Firefox report, which was diagnosed when
-   the policy still inferred intent from a slack constant. The script compensation stays as a
-   fallback for engines that do not do it at all — it is just no longer the only line of
-   defence. */
-.feed { flex: 1; overflow-y: auto; padding: var(--space-5) 0; min-height: 0; overscroll-behavior: contain; }
+/**
+ * NATIVE scroll anchoring is OFF on the feed — it fights our own anchoring.
+ *
+ * This flipped twice, so the reasoning and the measurements are both recorded.
+ *
+ * OFF first (v0.33): Firefox moved `scrollTop` when the composer resized.
+ * ON later (v0.35.11): disabling it seemed to make CHROME drift through a loaded timeline.
+ * OFF again (v0.36): MEASURED, and the Chrome attribution was wrong.
+ *
+ * The measurement, in headless Firefox: grow a row that is ABOVE the read position (the real
+ * trigger — changing content below the viewport moves nothing) while the composer also grows:
+ *
+ *     overflow-anchor: auto  →  scrollTop 4712 → 4785   (+73px, the viewport is pushed)
+ *     overflow-anchor: none  →  scrollTop 4712 → 4712   (0)
+ *
+ * That +73 is exactly the reported "2行以上だと入力時にタイムラインのスクロールが戻る" in Firefox:
+ * the engine shifts the viewport, the shift arrives as a normal scroll event, and the follow policy
+ * reads it as the READER scrolling away. Chrome does not do the same adjustment here, which is why
+ * the symptom was Firefox-only in both directions.
+ *
+ * The job the engine was doing is already done in script: `resyncAfterUnskip()` re-applies the
+ * anchored row's position after layout, and `restoreAfterBoxChange()` pins or re-anchors on every
+ * box change. So native anchoring is not a second line of defence — it is a second writer moving
+ * the viewport behind the policy's back.
+ */
+.feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-5) 0;
+  min-height: 0;
+  overscroll-behavior: contain;
+  /* see the long note above: the engine's anchoring moves the viewport and our policy reads that
+     as the reader scrolling, so this feed does its own */
+  overflow-anchor: none;
+}
 .msg {
   display: flex; gap: var(--space-6); padding: var(--space-2) var(--space-6);
   /* a hover tint that FADES reads as a considered surface; one that snaps on

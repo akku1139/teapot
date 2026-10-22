@@ -533,6 +533,20 @@ export default function App() {
     const delta = el.getBoundingClientRect().top - anchor.top;
     // a sub-pixel diff is rounding, not an unskip: correcting it would ADD jitter
     if (Math.abs(delta) < 1) return;
+    /**
+     * A LARGE delta is not an unskip — it is a stale anchor, and correcting it is the jump.
+     *
+     * The anchor is refreshed on scroll deliveries, throttled to 100ms, so during a burst of
+     * appends (a streaming reply, or a page of history arriving) it can name a row whose position
+     * has since been invalidated. One unskip moves a row by a few pixels — its intrinsic-size guess
+     * against its real height — so a delta in the HUNDREDS of pixels cannot be that: it means the
+     * anchor no longer describes the content, and scrolling by it would move the reader to an
+     * unrelated place. Reported as "原因不明でスクロール追従が外れて500pxくらい戻る".
+     *
+     * Dropping the anchor is the honest response: the next reader gesture records a fresh one, and
+     * a stale correction is strictly worse than none.
+     */
+    if (Math.abs(delta) > RESYNC_MAX_DELTA_PX) return;
     f.scrollTop += delta;
     ledger = { top: f.scrollTop, height: f.scrollHeight };
   }
@@ -3448,6 +3462,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * has to stop runaway chased corrections, and 4 is enough for a burst either way.
    */
   const RESYNC_BUDGET_PER_GESTURE = 4;
+  /**
+   * The largest shift a `content-visibility` unskip can plausibly need correcting for, in pixels.
+   *
+   * An unskip swaps one row's intrinsic-size GUESS for its real height, so the correction is on the
+   * scale of a single row — a few hundred pixels at the very worst for a large tool result. A larger
+   * delta means the anchor no longer describes the content (it was captured before a burst of
+   * appends, and the throttle let it go stale), and applying it would fling the reader somewhere
+   * unrelated: "原因不明でスクロール追従が外れて500pxくらい戻る".
+   *
+   * 240 is deliberately generous — it is above any single row in a normal session, so a real
+   * unskip is never skipped, while the reported 500px class of error is refused.
+   */
+  const RESYNC_MAX_DELTA_PX = 240;
   let resyncBudget = RESYNC_BUDGET_PER_GESTURE;
   /** the viewport height at the previous delivery, so a composer resize is attributable */
   let lastSampleViewport: number | undefined;
