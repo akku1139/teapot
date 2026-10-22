@@ -366,8 +366,49 @@ export default function App() {
       : fixedTheme();
     return customThemes().find((t) => t.id === want)?.backgroundImage ?? "";
   };
+  /**
+   * The theme id ACTUALLY PAINTED — the same resolution the painting effect uses.
+   *
+   * With "follow the system" the document is painted with the per-mode choice, not with
+   * `fixedTheme()`. Anything that reads LIVE colours from the document (theme duplication does)
+   * must also take its NAME from here, or the two describe different themes.
+   */
+  const paintedThemeId = () => {
+    const want = themeAuto()
+      ? sysPrefersLight()
+        ? sysLightTheme()
+        : sysDarkTheme()
+      : fixedTheme();
+    return customThemes().some((t) => t.id === want) || THEMES.some((t) => t.key === want)
+      ? want
+      : "dark";
+  };
 
   const [showCfg, setShowCfg] = createSignal(false);
+  /**
+   * FIRST RUN: open settings on `providers`, once, and let it be closed.
+   *
+   * The setup wizard is gone. It replaced the whole layout and blocked everything until a provider
+   * was configured, which is a heavier gate than the situation needs — the operator may well want
+   * to look at an existing session, or the config may be fine except for one missing key.
+   *
+   * `needsSetup` now means "no provider registered" (see `/api/config`), and this is a nudge rather
+   * than a wall: the panel opens, closed by the ordinary ✕/esc, and nothing re-opens it. The
+   * `nudged` flag is what makes it once-only — without it, every `loadCfg()` refresh would reopen
+   * the dialog the operator just dismissed.
+   *
+   * Deferred a frame so it opens AFTER the first paint: opening during mount made the dialog appear
+   * before the sidebar behind it, which read as the app failing to load.
+   */
+  let setupNudged = false;
+  createEffect(() => {
+    if (setupNudged || !cfg()?.needsSetup) return;
+    setupNudged = true;
+    requestAnimationFrame(() => {
+      loadCfg();
+      setShowCfg(true);
+    });
+  });
   // probed when the settings panel first opens, not at boot: it runs binaries server-side
   createEffect(() => {
     if (!showCfg() || features()) return;
@@ -3926,9 +3967,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   return (
     <>
-    <Show when={cfg()?.needsSetup} fallback={null}>
-      <SetupWizard onDone={() => location.reload()} />
-    </Show>
     <Show when={authLocked()}>
       <div class="overlay">
         <div class="modal" style="max-width:360px">
@@ -3989,7 +4027,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         </div>
       )}
     </Show>
-    <Show when={!cfg()?.needsSetup}>
     <div class={"layout" + (showRight() ? "" : " right-hidden")}>
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
@@ -5645,7 +5682,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         </Show>
       </aside>
     </div>
-    </Show>
     <Show when={showNotifs()}>
       {/* notification center — pops from the sidebar footer, bottom-left */}
       {/* click-outside closer: an invisible full-screen layer under the panel */}
@@ -5729,6 +5765,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         theme={{
           themes: customThemes,
           activeId: fixedTheme,
+          paintedId: paintedThemeId,
           auto: themeAuto,
           setAuto: setThemeAuto,
           dark: sysDarkTheme,
@@ -5839,6 +5876,49 @@ function ThinkingTimer(props: { startedAt: number }) {
 
 /* ---------- per-tool timeline rendering ---------- */
 
+/**
+ * A `<pre>` that highlights itself with shiki when a grammar is available.
+ *
+ * Renders PLAIN first and swaps in the highlighted markup when it arrives, so a tool card never
+ * waits on a grammar download to show its text — the same progressive approach the file preview
+ * uses. Highlighting goes through `highlightLangChunks` (language by name) because tool content has
+ * no file path: a JSON argument object and a bash command are the two cases worth colouring.
+ *
+ * Lazily imported so the shiki core stays out of the initial bundle, and the run counter guards
+ * against a swapped-in result for content that has since changed.
+ */
+function HighlightedCode(props: { text: string; lang?: string }) {
+  const [html, setHtml] = createSignal("");
+  let run = 0;
+  createEffect(() => {
+    const text = props.text;
+    const lang = props.lang;
+    const mine = ++run;
+    setHtml("");
+    if (!lang || !text.trim()) return;
+    void (async () => {
+      try {
+        const { highlightLangChunks } = await import("./shiki");
+        let acc = "";
+        for await (const chunk of highlightLangChunks(lang, text)) {
+          if (run !== mine) return;
+          acc += chunk;
+          setHtml(acc);
+        }
+      } catch {
+        if (run === mine) setHtml(""); // give up → the plain fallback stays
+      }
+    })();
+  });
+  onCleanup(() => { run++; });
+  return (
+    <Show when={html()} fallback={<pre class="mono toolbody">{props.text}</pre>}>
+      {/* shiki emits its own <pre class="shiki"><code>…</code></pre>; the markup is shiki-generated */}
+      <div class="toolbody shiki-host" innerHTML={html()} />
+    </Show>
+  );
+}
+
 function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   // GROUPING (#75 pattern, again). `groupedWith()` is the shared rule and it
@@ -5892,8 +5972,24 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
     if (name === "wait_children") return Number(argStr("timeout_ms")) || 300_000;
     return Number(argStr("timeout_ms")) || undefined;
   };
-  const codeBlock = (text: string, max = 1500) => (
-    <pre class="mono toolbody">{truncate(text, max)}</pre>
+  /**
+   * A tool card's code surface: the SAME depth for arguments and output.
+   *
+   * Reported as "ツールカードでツール引数はカードの背景色なのに、ツール出力は一段深い色になってる / bash
+   * ではどっちも一段深い". The cause was two different renderers: the output went through
+   * `codeBlock` (`.toolbody`, `--bg-darkest`) while the arguments were a bare `<div class="mono">`
+   * with no surface at all — so a generic tool showed the card colour for its input and the deeper
+   * surface for its result, and `bash` happened to use the deeper one for both.
+   *
+   * Every code surface in a tool card now uses `.toolbody`, so input and output read as one block
+   * with a consistent depth regardless of which tool the row is.
+   */
+  const codeBlock = (text: string, max = 1500, lang?: string) => (
+    <HighlightedCode text={truncate(text, max)} lang={lang} />
+  );
+  /** the ARGUMENT block: same surface as the output, and JSON-highlighted when it is an object */
+  const argsBlock = (max = 2000) => (
+    <HighlightedCode text={truncate(JSON.stringify(d.args ?? {}, null, 1), max)} lang="json" />
   );
   const resultBlock = (max = 4000) =>
     (() => {
@@ -5952,7 +6048,7 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
   // the inconsistency this removes.
   let label = name;
   let hint: string | null = "";
-  let body: any = <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>;
+  let body: any = argsBlock(2000);
   try {
     switch (name) {
       case "bash": {
@@ -5982,7 +6078,9 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
                 {bgJob ? <> · kill with <b>action="kill"</b></> : null}
               </div>
             ) : null}
-            {cmd !== label.slice(isBg ? 2 : 2) ? codeBlock(cmd, 800) : null}
+            {/* the command gets SHELL highlighting: it is the one tool input where the syntax
+                carries meaning (quoting, pipes, flags), not just data */}
+            {cmd !== label.slice(isBg ? 2 : 2) ? codeBlock(cmd, 800, "shellscript") : null}
             {resultBlock(6000)}
           </>
         );
@@ -6136,7 +6234,7 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
         hint = res() ? fmtDur(res()!.data?.durationMs) : null;
         body = (
           <>
-            <div class="mono">{truncate(JSON.stringify(d.args ?? {}, null, 1), 2000)}</div>
+            {argsBlock(2000)}
             {resultBlock(4000)}
           </>
         );
@@ -6961,6 +7059,21 @@ function ThemeEditor(props: {
    */
   themes: () => CustomTheme[];
   activeId: string;
+  /**
+   * The id of the theme ACTUALLY PAINTED right now — which is not `activeId` under "follow the
+   * system".
+   *
+   * `activeId` is the FIXED choice (what the picker shows); with auto mode the document is painted
+   * with `sysDarkTheme()`/`sysLightTheme()` instead. Duplicating from `activeId` therefore copied
+   * the LIVE COLOURS (read from the document) while labelling the copy after the SELECTED theme —
+   * so with "follow the system" the copy had the painted palette and the wrong name. Reported as
+   * "「follow the system」のときに選択中のテーマじゃなくて、実際に当たっているテーマの色が複製されて、
+   * でも名前は選択中のテーマが使用される".
+   *
+   * A separate prop rather than redefining `activeId`: that one also answers "which theme does the
+   * editor edit" and "which `<option>` is selected", and those must keep meaning the fixed choice.
+   */
+  paintedId: string;
   onChange: (next: CustomTheme[]) => void;
   onPick: (id: string) => void;
 }) {
@@ -7019,12 +7132,21 @@ function ThemeEditor(props: {
 
   /** copy the CURRENT preset into a new custom theme, so presets never drift */
   const duplicatePreset = () => {
-    // Copy whatever is ACTIVE — preset or custom. Looking the id up in THEMES alone meant that
-    // duplicating a CUSTOM theme silently produced "Dark copy" with `mode: "dark"`, because the
-    // lookup missed and fell back to THEMES[0]. MEASURED: active=custom-x (mode light) produced
-    // a dark copy labelled after the wrong theme.
-    const activeCustom = props.themes().find((t) => t.id === props.activeId);
-    const activePreset = THEMES.find((t) => t.key === props.activeId);
+    /**
+     * Copy whatever is PAINTED — preset or custom — and take the NAME from the same theme.
+     *
+     * Both halves must come from `paintedId`, because the palette below is read from the LIVE
+     * document. Using `activeId` for the name while the colours came from the document split the
+     * two under "follow the system": the copy got the painted palette and the selected theme's
+     * label. Using `paintedId` for both keeps name and colours describing one theme.
+     *
+     * (An earlier bug had the same shape: looking the id up in THEMES alone meant duplicating a
+     * CUSTOM theme produced "Dark copy" with `mode: "dark"`, because the lookup missed and fell
+     * back to THEMES[0]. MEASURED: active=custom-x (mode light) produced a dark copy labelled after
+     * the wrong theme.)
+     */
+    const activeCustom = props.themes().find((t) => t.id === props.paintedId);
+    const activePreset = THEMES.find((t) => t.key === props.paintedId);
     const base = activeCustom ?? activePreset ?? THEMES[0]!;
     // Colours come from the LIVE document, which is what the operator is looking at: for a
     // preset that is the stylesheet's value, and for a custom theme the inline value it
@@ -7922,212 +8044,33 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
   },
 ];
 
-/** the wizard shows this extra option for arbitrary OpenAI-compatible endpoints */
-const CUSTOM_PRESET: ProviderPreset = {
-  key: "custom",
-  label: "Custom",
-  url: "",
-  model: "",
-  hint: "any OpenAI-compatible /v1 endpoint — vLLM, LM Studio, llama.cpp, a company gateway… fill the fields below",
-};
-
-function SetupWizard(props: { onDone: () => void }) {
-  const [preset, setPreset] = createSignal<ProviderPreset>(PROVIDER_PRESETS[0]);
-  const [baseUrl, setBaseUrl] = createSignal(PROVIDER_PRESETS[0].url);
-  const [apiKey, setApiKey] = createSignal("");
-  const [model, setModel] = createSignal(PROVIDER_PRESETS[0].model);
-  const [models, setModels] = createSignal<
-    { id: string; contextLength?: number; pricing?: { prompt: number; completion: number }; modalities?: { input: string[]; output: string[] } }[]
-  >([]);
-  const [workspace, setWorkspace] = createSignal("~/teapot-workspace");
-  const [password, setPassword] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
-  const [err, setErr] = createSignal("");
-
-  const pick = (p: ProviderPreset) => {
-    setPreset(p);
-    // "custom" only marks the manual path — never clobbers typed values
-    if (p.key === "custom") return;
-    if (p.url) {
-      setBaseUrl(p.url);
-      if (p.model) setModel(p.model);
-    }
-  };
-
-  /** live model discovery from whatever endpoint the operator is typing —
-   *  same data the main UI's model switcher shows, just pre-config */
-  createEffect(() => {
-    const url = baseUrl().trim();
-    const key = apiKey();
-    if (!/^https?:\/\//.test(url)) {
-      setModels([]);
-      return;
-    }
-    const t = setTimeout(async () => {
-      try {
-        const r = await api(
-          `/api/setup/models?baseUrl=${encodeURIComponent(url)}${key ? `&apiKey=${encodeURIComponent(key)}` : ""}`,
-        );
-        setModels(r.models ?? []);
-      } catch {
-        setModels([]); // endpoint unreachable / no auth yet — keep typing
-      }
-    }, 600);
-    onCleanup(() => clearTimeout(t));
-  });
-
-  /** "ctx 1m · $3/M in · $15/M out" for a model id from the fetched list */
-  const specOf = (id: string) => {
-    const m = models().find((x) => x.id === id.trim());
-    if (!m) return "";
-    const parts: string[] = [];
-    if (m.contextLength) parts.push(`ctx ${fmtK(m.contextLength)} tok`);
-    const price = (p?: number) =>
-      p === undefined ? "" : `$${p * 1e6 >= 10 ? Math.round(p * 1e6) : +(p * 1e6).toFixed(1)}/M`;
-    if (m.pricing) {
-      const pin = price(m.pricing.prompt);
-      const pout = price(m.pricing.completion);
-      if (pin && pout) parts.push(`${pin} in · ${pout} out`);
-      else if (pin || pout) parts.push(price(m.pricing.prompt ?? m.pricing.completion));
-    }
-    return parts.join(" · ");
-  };
-  const modelSpec = () => specOf(model());
-  /** the fetched catalogue narrowed by what is typed (empty query = all) */
-  const filteredModels = () => {
-    const q = model().trim().toLowerCase();
-    if (!q) return models();
-    return models().filter((m) => m.id.toLowerCase().includes(q));
-  };
-
-  const submit = async (e: Event) => {
-    e.preventDefault(); setErr("");
-    // #144: the model is the operator's choice, so it must be made explicitly
-    // rather than pre-filled by a preset. Say so here instead of letting the
-    // server's generic "baseUrl and model are required" come back after a round
-    // trip.
-    if (!model().trim()) {
-      setErr(
-        models().length
-          ? "pick a model — choose one from the list, or type its id"
-          : "pick a model — type its id (the endpoint has not listed any yet)",
-      );
-      return;
-    }
-    setBusy(true);
-    try {
-      await api("/api/setup", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          baseUrl: baseUrl(),
-          apiKey: apiKey() || undefined,
-          model: model(),
-          workspace: workspace(),
-          ...(password() ? { password: password() } : {}),
-        }),
-      });
-      props.onDone();
-    } catch (ex) {
-      setErr((ex as Error).message); setBusy(false);
-    }
-  };
-
+/**
+ * A labelled number field that survives typing.
+ *
+ * This was a plain function called IN the JSX (`{numInput("…", sig(), …)}`), which is a reactive
+ * expression: every keystroke updated the signal, the expression re-ran, and Solid replaced the
+ * element — so the field lost focus after one character. Reported as "設定のruntimeメニューのテキスト
+ * ボックスに1文字入力するたびにフォーカスが外れる".
+ *
+ * A component is mounted ONCE and its props update in place, so the `<input>` is the same DOM node
+ * across renders and the caret stays put.
+ */
+function NumberField(props: {
+  label: string;
+  value: number;
+  onValue: (v: number) => void;
+  hint?: string;
+}) {
   return (
-    <div class="overlay" style={{ background: "var(--bg-darkest)" }}>
-      <div class="modal" style="max-width:560px">
-        <div class="modal-head"><b>🫖 welcome to teapot</b></div>
-        <p class="muted" style="margin:0 0 10px;font-size:13px">
-          first run — pick an OpenAI-compatible provider and you're done.
-          everything below can be changed later in ⚙ settings.
-        </p>
-        <form onsubmit={submit} style="display:flex;flex-direction:column;gap:12px">
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            {[...PROVIDER_PRESETS, CUSTOM_PRESET].map((p) => (
-              <button
-                type="button"
-                class={"presetbtn" + (preset().key === p.key ? " active" : "")}
-                title={p.hint || p.url}
-                onclick={() => pick(p)}
-              >{p.label}</button>
-            ))}
-          </div>
-          <Show when={preset().hint}>
-            <div class="muted" style="font-size:11.5px;margin-top:-6px">{preset().hint}</div>
-          </Show>
-          <label>base url
-            <input
-              type="text"
-              class="w100 mono"
-              list="wiz-preset-urls"
-              value={baseUrl()}
-              oninput={(e) => setBaseUrl(e.currentTarget.value)}
-            />
-            <datalist id="wiz-preset-urls">
-              {PROVIDER_PRESETS.map((p) => <option value={p.url} />)}
-            </datalist>
-          </label>
-          <label>api key <input type="password" class="w100" value={apiKey()} oninput={(e) => setApiKey(e.currentTarget.value)} placeholder="(local providers may not need one)" /></label>
-          <label>model
-            <input
-              type="text"
-              class="w100 mono"
-              list="wiz-model-list"
-              value={model()}
-              oninput={(e) => setModel(e.currentTarget.value)}
-              placeholder={preset().key === "llamacpp" ? "(any name — serves whichever gguf is loaded)" : "(pick from the list below, or type an id)"}
-            />
-            <datalist id="wiz-model-list">
-              {models().map((m) => <option value={m.id} />)}
-            </datalist>
-          </label>
-          {/* #144: with no pre-filled default the list has to be an obvious
-              CHOICE, not just autocomplete fodder. Narrowed by what is typed, and
-              capped so a 400-model endpoint cannot push the rest of the form off
-              screen. */}
-          <Show
-            when={filteredModels().length > 0}
-            fallback={
-              <div class="muted" style="font-size:11.5px;margin-top:-8px">
-                {models().length
-                  ? "no model matches that — clear the field to see them all"
-                  : "models appear here automatically once the endpoint answers GET /models"}
-              </div>
-            }
-          >
-            <div class="wizmodels">
-              {filteredModels().slice(0, 40).map((m) => (
-                <button
-                  type="button"
-                  class={"wizmodel" + (model() === m.id ? " active" : "")}
-                  title={specOf(m.id) || m.id}
-                  onclick={() => setModel(m.id)}
-                >
-                  <span class="mono">{m.id}</span>
-                  <Show when={specOf(m.id)}><span class="muted">{specOf(m.id)}</span></Show>
-                </button>
-              ))}
-            </div>
-            <div class="muted" style="font-size:11.5px;margin-top:-6px">
-              {filteredModels().length} model{filteredModels().length > 1 ? "s" : ""}
-              <Show when={filteredModels().length > 40}> (showing the first 40 — keep typing to narrow)</Show>
-              <Show when={modelSpec()}> · selected: <span style="color:var(--fg)">{modelSpec()}</span></Show>
-            </div>
-          </Show>
-          <fieldset>
-            <legend>first agent</legend>
-            <label>workspace directory
-              <input type="text" class="w100 mono" value={workspace()} oninput={(e) => setWorkspace(e.currentTarget.value)} />
-            </label>
-            <label style="margin-top:4px" title="asks for this password when opening the UI or API from another machine — plain-HTTP LAN traffic is NOT encrypted">protect the API with a password? <input type="password" class="w100" value={password()} oninput={(e) => setPassword(e.currentTarget.value)} placeholder="(optional — LAN traffic is still plain HTTP)" /></label>
-          </fieldset>
-          <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
-          <button type="submit" disabled={busy()} style="background:var(--acc);border:none;border-radius:8px;color:#fff;padding:9px 14px;font-weight:600;cursor:pointer">
-            {busy() ? "saving…" : "finish setup"}
-          </button>
-        </form>
-      </div>
-    </div>
+    <label title={props.hint}>
+      {props.label}
+      <input
+        type="number"
+        min="0"
+        value={props.value}
+        oninput={(e) => props.onValue(Number(e.currentTarget.value))}
+      />
+    </label>
   );
 }
 
@@ -8163,6 +8106,8 @@ function ConfigModal(props: {
   theme: {
     themes: () => CustomTheme[];
     activeId: () => string;
+    /** the id ACTUALLY PAINTED (differs from activeId under "follow the system") */
+    paintedId: () => string;
     auto: () => boolean;
     setAuto: (v: boolean) => void;
     dark: () => string;
@@ -8316,6 +8261,19 @@ function ConfigModal(props: {
   const [mcpOAuth, setMcpOAuth] = createSignal<
     Record<string, { required?: boolean; authorized?: boolean; hasRefreshToken?: boolean; flow?: { phase: string; url?: string } }>
   >({});
+  /**
+   * The OAuth state for a server NAME, or null when the server is not OAuth at all.
+   *
+   * Keyed by name because that is the server's identity everywhere else (`mcpOAuth` was once keyed
+   * by ROW INDEX and drifted between the save loop and the render loop). Returned as an accessor so
+   * the dropdown re-renders when authorization completes.
+   */
+  const oauthState = (name: string) => {
+    const key = String(name ?? "").trim();
+    if (!key) return null;
+    const st = mcpOAuth()[key];
+    return st && (st.required || st.authorized) ? st : null;
+  };
   const refreshMcpStates = async () => {
     const r = (await api("/api/mcp").catch(() => null)) as { states?: any[] } | null;
     setMcpStates(Object.fromEntries((r?.states ?? []).map((s: any) => [s.name, s])));
@@ -8323,6 +8281,7 @@ function ConfigModal(props: {
   const refreshMcpOAuth = async (name: string) => {
     const key = String(name ?? "").trim();
     if (!key) return;
+
     // "needs OAuth" is discovered by the server itself now: an unauthorized connect
     // leaves the state flagged, so there is no separate probe to trigger here.
     const r = (await api(`/api/mcp/oauth/status?name=${encodeURIComponent(key)}`).catch(
@@ -8698,11 +8657,6 @@ function ConfigModal(props: {
     }
   };
 
-  const numInput = (label: string, value: number, oninput: (v: number) => void, hint?: string) => (
-    <label title={hint}>{label}
-      <input type="number" min="0" value={value} oninput={(e) => oninput(Number(e.currentTarget.value))} />
-    </label>
-  );
 
   return (
     <Modal title="settings" onClose={props.onClose}>
@@ -8950,6 +8904,7 @@ function ConfigModal(props: {
           <ThemeEditor
             themes={customThemes}
             activeId={fixedTheme()}
+            paintedId={props.theme.paintedId()}
             onChange={(requested) => {
               /**
                * Persist FIRST, then adopt what was actually stored.
@@ -9026,8 +8981,8 @@ function ConfigModal(props: {
         <fieldset classList={{ hide: section() !== "runtime" }}>
           <legend>agent runtime</legend>
           <div class="cfggrid">
-            {numInput("progress interval (min)", intervalMin(), (v) => setIntervalMin(v), "how often the harness asks for a progress report")}
-            {numInput("progress min chars", minChars(), (v) => setMinChars(v), "progress prompts wait for this much real output")}
+            <NumberField label="progress interval (min)" value={intervalMin()} onValue={(v) => setIntervalMin(v)} hint="how often the harness asks for a progress report" />
+            <NumberField label="progress min chars" value={minChars()} onValue={(v) => setMinChars(v)} hint="progress prompts wait for this much real output" />
             <label title="auto-compact threshold in k tokens. Leave EMPTY to derive per model (75% of its context window) — recommended, since models differ wildly in window size. Set only to force an absolute cap across all models.">
               compact budget (k tok)
               <input
@@ -9038,8 +8993,8 @@ function ConfigModal(props: {
                 oninput={(e) => setCtxBudgetK(e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}
               />
             </label>
-            {numInput("context window (k tok)", ctxWinK(), (v) => setCtxWinK(v), "model's real window — 0/blank hides the % gauge")}
-            {numInput("max spawn depth", maxDepth(), (v) => setMaxDepth(v), "sub-agent nesting limit (0 = no spawning)")}
+            <NumberField label="context window (k tok)" value={ctxWinK()} onValue={(v) => setCtxWinK(v)} hint="model's real window — 0/blank hides the % gauge" />
+            <NumberField label="max spawn depth" value={maxDepth()} onValue={(v) => setMaxDepth(v)} hint="sub-agent nesting limit (0 = no spawning)" />
           </div>
           {/* #161: opt-in because it DISCARDS information early by design. On a large
               window that is pure loss; on a 32k–262k model waiting for overflow means
@@ -9142,7 +9097,13 @@ function ConfigModal(props: {
                         same shape open-webui uses (a select whose sibling region swaps). */}
                     <div class="cfgrow">
                       <select
-                        value={mcpAuthKind()[i] ?? "none"}
+                        /**
+                         * OAuth WINS over the header-derived kind: an authorized server has a
+                         * token in the server-side store, so `headers` is empty and the
+                         * derivation would say "none". Showing "no auth" while the 🔑 row says
+                         * authorization is required is the reported contradiction.
+                         */
+                        value={oauthState(String(srv().name ?? "")) ? "oauth" : (mcpAuthKind()[i] ?? "none")}
                         onchange={(e) => {
                           const kind = e.currentTarget.value as "none" | "bearer" | "header" | "json";
                           setMcpAuthKind((m) => ({ ...m, [i]: kind }));
@@ -9160,6 +9121,25 @@ function ConfigModal(props: {
                         }}
                         title="how this server authenticates"
                       >
+                        {/**
+                          * An OAuth server is NOT "no auth", and showing it that way hid the one
+                          * fact that mattered: the dropdown said "no auth" while the panel's own
+                          * 🔑 row said authorization was required. Reported as "MCPサーバーで
+                          * OAuthが検出されたのに No auth がメニューから選択されてるのはどうなの?".
+                          *
+                          * The kind is derived from `headers`, and an OAuth grant lives in the
+                          * server-side token store instead — so headers were empty and the
+                          * derivation fell through to "none". The state is shown from `mcpOAuth`
+                          * (keyed by NAME, which is the server's identity) and is not selectable by
+                          * hand: it is a fact about the server, not a setting the operator picks.
+                          */}
+                        <Show when={oauthState(String(srv().name ?? ""))}>
+                          {(st) => (
+                            <option value="oauth" selected>
+                              {st().authorized ? "OAuth — authorized" : "OAuth — authorization needed"}
+                            </option>
+                          )}
+                        </Show>
                         <option value="none">no auth</option>
                         <option value="bearer">bearer token</option>
                         <option value="header">custom header</option>

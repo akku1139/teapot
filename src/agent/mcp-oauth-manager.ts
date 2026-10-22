@@ -105,7 +105,17 @@ export class ServerAuth implements OAuthClientProvider {
 
   /** load persisted state (called once, before the server is connected) */
   async hydrate(data: StoredAuth | undefined): Promise<void> {
-    if (data) this.store = { ...data };
+    if (!data) return;
+    this.store = { ...data };
+    /**
+     * Restore the PKCE verifier alongside the rest.
+     *
+     * `codeVerifier()` reads the in-memory field and throws when it is empty, so a rebuilt instance
+     * would refuse the exchange even though the verifier is on disk. MEASURED cause of Notion's
+     * `invalid_grant`: `saveCodeVerifier` never persisted, and even once it does, nothing read the
+     * value back into the field that the exchange actually uses.
+     */
+    if (data.codeVerifier) this.verifier = data.codeVerifier;
   }
 
   /** the persisted payload, for the store */
@@ -175,11 +185,34 @@ export class ServerAuth implements OAuthClientProvider {
   async saveCodeVerifier(verifier: string): Promise<void> {
     this.verifier = verifier;
     this.store.codeVerifier = verifier;
+    /**
+     * PERSIST it, or the exchange cannot complete after the instance is rebuilt.
+     *
+     * The verifier is the secret half of PKCE: the authorization request carries its SHA-256
+     * challenge and the token request must present the verifier itself. Keeping it only in memory
+     * means any path that constructs a fresh `ServerAuth` — a restart while the browser tab is open,
+     * a reconnect, a second `authFor()` — exchanges with no verifier and the authorization server
+     * answers `invalid_grant`.
+     *
+     * MEASURED against the real store: `clientId`/`clientSecret`/`clientInformation` were written
+     * but `codeVerifier` was ABSENT, because this method was the one mutation that never persisted.
+     * Notion's `/token` returns `invalid_grant` for exactly this shape.
+     */
+    await this.persist(this.server, this.store);
   }
 
   codeVerifier(): string {
-    if (!this.verifier) throw new Error("no PKCE verifier — the authorization flow did not start here");
-    return this.verifier;
+    /**
+     * Fall back to the STORE, not just the in-memory field.
+     *
+     * The field is populated by `saveCodeVerifier` (same instance) or by `hydrate` (a rebuilt one).
+     * Reading the store as a last resort means an instance that was hydrated before this field was
+     * restored still completes the exchange instead of throwing — the failure mode is a silent
+     * `invalid_grant` from the server, so being generous here costs nothing.
+     */
+    const v = this.verifier ?? this.store.codeVerifier;
+    if (!v) throw new Error("no PKCE verifier — the authorization flow did not start here");
+    return v;
   }
 
   // ---- teapot-facing ----

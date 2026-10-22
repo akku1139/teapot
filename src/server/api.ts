@@ -945,7 +945,19 @@ const MAX_WS_CLIENTS = 64;
       );
     return c.json({
       configPath: master.configPath,
-      needsSetup: !master.configFileExists,
+      /**
+       * "First run" now means NO AI PROVIDER IS REGISTERED, not "no config file".
+       *
+       * The wizard that used to gate on the config file is gone. A config file can exist with no
+       * usable provider (the operator edited it by hand, or every provider was removed), and in
+       * that state the wizard did not appear and the app simply could not do anything. The
+       * question the UI actually needs answered is "can this thing talk to a model yet?".
+       *
+       * A provider counts as registered when it has an entry at all — a key may legitimately be
+       * absent for a local endpoint (ollama, a proxy that authenticates by network), so requiring
+       * one would nag about a working setup.
+       */
+      needsSetup: Object.keys(master.config.providers ?? {}).length === 0,
       providers: mask(master.config.providers),
       defaultProvider: master.config.defaultProvider,
       progressIntervalMs: master.config.progressIntervalMs,

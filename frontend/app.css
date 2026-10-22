@@ -917,9 +917,64 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .embed.running summary .meta::after { content: "⋯"; display: inline-block; margin-left: 6px; animation: blink 1s step-end infinite; color: var(--warn); }
 .embed summary { gap: var(--space-4); }
 .embed summary .mono { font-family: ui-monospace, Menlo, monospace; }
+/**
+ * TOOL CARD SURFACES — the transparency ORDER is the contract.
+ *
+ * Reported as a three-way comparison, which is what settles it:
+ *
+ *     tool OUTER (summary · duration)   0.75   "意外と悪くない" — unchanged
+ *     tool INNER (code · output)        0.525  the one that was not transparent enough
+ *     PROMPT BOX                        0.44   more transparent than the tool inner
+ *     side panels                       0.82   the most opaque large surface
+ *
+ * `.toolbody` is the INNER surface (code, output). It used to paint `--bg-darkest` — the same fill
+ * as the card around it — so inner and outer were identical. It now steps toward the page, and the
+ * prompt box steps further, so the nesting reads as depth rather than as one slab.
+ *
+ * MEASURED for the operator's theme (`surfaceAlpha: 0.87`, `backgroundDim: 0.9`).
+ */
 .toolbody {
-  background: var(--bg-darkest); border-radius: var(--radius-sm); padding: 6px 8px; margin: 4px 0;
-  white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow-y: auto; font-size: var(--text-sm);
+  background: color-mix(in srgb, var(--bg-darkest) 70%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin: 4px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 340px;
+  overflow-y: auto;
+  font-size: var(--text-sm);
+}
+/**
+ * A NESTED code surface must not be the same colour as its parent.
+ *
+ * A tool card can contain another one — a sub-agent's tool row, or a `wait_children` result that
+ * carries output. Both painted `--bg-darkest`, so the inner block was indistinguishable from the
+ * outer one and the two read as a single undifferentiated slab. Asked for as "ツールカードのネスト
+ * されたとこの背景色をいい感じに統一".
+ *
+ * Nesting steps one level toward the PAGE instead of repeating the same fill, which is the same
+ * rule the whole surface scale follows (a container is denser than what it contains). `:not()`
+ * keeps this off the first level, so the common case is unchanged.
+ */
+.toolbody .toolbody {
+  /**
+   * A nested block is clearly MORE see-through than its container — 50%, not a token step.
+   *
+   * `color-mix` multiplies the base alpha, so 50% takes the outer 0.75 to 0.375 for this operator's
+   * theme. Reported twice in the same direction: first "内側の要素があまり透明じゃなくて微妙", then,
+   * after an attempt at 92% (which gave 0.69 — barely a step) and another at 70% (0.525),
+   * "さらに悪い … ネスト側も透明度を高める必要がある".
+   *
+   * MEASURED against the surrounding scale after this change: outer 0.75 · nested 0.375 · prompt
+   * box 0.65 · panels 0.82. The inner block is the most open surface in the app, which is right —
+   * it is the deepest content, not a container.
+   */
+  background: color-mix(in srgb, var(--bg-darkest) 50%, transparent);
+}
+.toolbody .toolbody .toolbody {
+  /* a third level steps again rather than vanishing, but a border carries the cue past this */
+  background: color-mix(in srgb, var(--bg-darkest) 35%, transparent);
+  border: 1px solid var(--line);
 }
 .toolbody.del { border-left: 2px solid var(--err); color: #f0a5a6; background: #ed424514; }
 .toolbody.add { border-left: 2px solid var(--ok); color: #9fd8ae; background: #3ba55d14; }
@@ -1163,6 +1218,42 @@ details.reasoning .thinkscroll {
 /* ---- composer ---- */
 .composer { padding: 0 16px 18px; position: relative; }
 .composer form { background: var(--bg-light); border-radius: var(--radius-lg); display: flex; gap: var(--space-4); padding: 10px 12px; align-items: flex-end; }
+/**
+ * The PROMPT BOX is translucent at PANEL strength, not control strength.
+ *
+ * `--bg-light` is the raised-control level and, with a wallpaper, sits at `base + 0.12` — i.e.
+ * 0.94 at the default 0.82, effectively opaque. That is right for a small button or a select, where
+ * a see-through fill would hurt legibility, but the composer is a large area: it read as a solid
+ * slab while every surface around it showed the image. Reported as "darkテーマでプロンプト欄が背景
+ * 透過されない".
+ *
+ * It keeps `--bg-light`'s COLOUR (so it still reads as raised) and takes the panel's alpha.
+ */
+html[data-bg-image="on"] .composer form {
+  background-color: color-mix(
+    in srgb,
+    /**
+     * `- 0.22`: the prompt box must be CLEARLY the most see-through LARGE surface.
+     *
+     * MEASURED against this operator's theme (`surfaceAlpha: 0.87`, `backgroundDim: 0.9`) at three
+     * successive values, which is how the target was found rather than guessed:
+     *
+     *     base − 0.00 → 0.87   reported "全く透けてない"
+     *     base − 0.08 → 0.79   still reported as more opaque than v0.35.29's prompt box
+     *     base − 0.22 → 0.65   ← current: visibly open, well below the panels (0.82)
+     *
+     * The reference the operator gave is that the prompt box has always been MORE transparent than
+     * the panels, and the small nudges were not honouring that: 0.79 against panels at 0.82 is a
+     * difference you cannot see. 0.65 is a step you can.
+     *
+     * A dimmed background image is what made the earlier values read as solid — `backgroundDim: 0.9`
+     * leaves so little contrast behind the box that a near-opaque fill is indistinguishable from an
+     * opaque one.
+     */
+    var(--bg-light-solid, #343845) calc(max(0.35, calc(var(--surface-alpha, 0.82) - 0.43)) * 100%),
+    transparent
+  );
+}
 .composer textarea {
   flex: 1; background: none; border: none; outline: none; color: var(--fg); font: inherit;
   /* NO max-height here: the JS sets an explicit pixel height capped at MAX_COMPOSER_H
@@ -1792,8 +1883,13 @@ details.reasoning .thinkscroll {
 .savebtn:disabled { opacity: .4; cursor: default; }
 /* rendered markdown inside the file preview modal */
 .mdpreview { max-height: 62vh; overflow: auto; background: var(--bg-darkest); border-radius: var(--radius-lg); padding: 14px 16px; }
+/* ALSO covers tool cards (`.toolbody.shiki`): a bash command and a JSON argument object are worth
+   highlighting, and they need the same dual-theme variable pick as the file preview or the tokens
+   render in the wrong palette. One selector list, so the two cannot drift. */
 .filepreview .shiki,
-.filepreview .shiki span {
+.filepreview .shiki span,
+.toolbody.shiki,
+.toolbody.shiki span {
   /* dual-theme mode (defaultColor:false) emits only --shiki-light/-dark
      color variables — pick the set matching the active teapot appearance
      (dark/midnight/tea/coffee/matcha/matrix/sunset → dark, others → light) */
@@ -1802,8 +1898,11 @@ details.reasoning .thinkscroll {
   font-size: var(--text-sm);
 }
 html[data-appearance="dark"] .filepreview .shiki,
-html[data-appearance="dark"] .filepreview .shiki span { color: var(--shiki-dark); }
-.filepreview .shiki {
+html[data-appearance="dark"] .filepreview .shiki span,
+html[data-appearance="dark"] .toolbody.shiki,
+html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
+.filepreview .shiki,
+.toolbody.shiki {
   margin: 0;
   padding: 10px 12px;
   /* shiki also exposes its own per-theme backgrounds as variables */

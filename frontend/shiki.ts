@@ -189,6 +189,25 @@ export async function* highlightChunks(
   const lang = langForPath(path);
   if (!lang || !code.trim()) return;
   if (!LANG_IMPORTS[lang]) return;
+  yield* highlightLangChunks(lang, code);
+}
+
+/**
+ * Highlight by LANGUAGE NAME, for content that has no file path.
+ *
+ * Tool cards hold a JSON argument object and, for `bash`, a shell command — neither is a file, so
+ * `langForPath` has nothing to work from. The grammar set is the same, so this reuses one
+ * implementation rather than growing a second highlighter that could drift in themes or chunking.
+ *
+ * Yields nothing when the grammar is not bundled, or when the caller's language is unknown; the
+ * caller keeps its plain rendering in that case.
+ */
+export async function* highlightLangChunks(
+  lang: string,
+  code: string,
+): AsyncGenerator<string> {
+  if (!lang || !code.trim()) return;
+  if (!LANG_IMPORTS[lang]) return;
 
   const hl = await core();
   await ensureLang(hl, lang);

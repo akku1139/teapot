@@ -98,6 +98,8 @@ function apiResponse(url) {
   if (u === "/api/config")
     return {
       configPath: "/tmp/config.json",
+      // the stub has a provider, so this is NOT a first run; the first-run flow gets its own
+      // check below by overriding this endpoint
       needsSetup: false,
       providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1" } },
       defaultProvider: "openrouter",
@@ -1926,6 +1928,41 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: settings is a menu — one section shown, edits survive switching");
+    /**
+     * TYPING INTO A RUNTIME FIELD MUST NOT DROP FOCUS.
+     *
+     * Reported: "設定のruntimeメニューのテキストボックスに1文字入力するたびにフォーカスが外れる".
+     * The helper was a plain function CALLED in the JSX, so every keystroke re-ran that expression
+     * and Solid replaced the `<input>` — a new node cannot hold focus. It is a real component now,
+     * mounted once.
+     *
+     * Asserted on the NODE IDENTITY as well as `activeElement`: a replacement that happens to
+     * restore focus would still drop the caret position and any keystroke in flight.
+     */
+    {
+      const field = intervalInput();
+      if (!field) {
+        console.error("#settings check: no field to type into — vacuous");
+        process.exit(1);
+      }
+      field.focus();
+      if (w.document.activeElement !== field) {
+        console.error("#settings check: could not focus the field — vacuous");
+        process.exit(1);
+      }
+      field.value = "7";
+      field.dispatchEvent(new w.Event("input", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      const stillThere = intervalInput();
+      if (stillThere !== field || w.document.activeElement !== field) {
+        console.error(
+          "#settings REGRESSION: typing into a runtime field replaced it — focus and caret are lost\n" +
+            `  sameNode=${stillThere === field} focus=${JSON.stringify(w.document.activeElement?.tagName ?? null)}`,
+        );
+        process.exit(1);
+      }
+      console.log("deep render ok: typing a runtime field keeps the node, the focus and the caret (#focus)");
+    }
 
     /**
      * The help section, and the promise that made it: the explanations that used to sit in the

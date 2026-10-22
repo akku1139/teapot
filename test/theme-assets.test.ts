@@ -469,3 +469,96 @@ test("a fenced block in a skill body WRAPS instead of growing its own scrollbar 
   const table = cssRuleBody(css, ".skillbody table");
   assert.match(table, /max-width:\s*100%/, "a wide table must not push the panel");
 });
+
+test("a tool card's ARGUMENTS and OUTPUT sit at the same depth (#ui)", async () => {
+  /**
+   * Reported: "ツールカードでツール引数はカードの背景色なのに、ツール出力は一段深い色になってる /
+   * bash ではどっちも一段深い".
+   *
+   * Two different renderers: the output went through `codeBlock` (`.toolbody`) while the arguments
+   * were a bare `<div class="mono">` with no surface at all. A generic tool therefore showed the
+   * card colour for its input and the deeper surface for its result, while `bash` — whose command
+   * already used `codeBlock` — happened to match.
+   *
+   * Both now render through the same component, so the depth cannot differ per tool.
+   */
+  const app = await readSource("frontend/App.tsx");
+  // the argument block goes through the shared code surface, not a bare div
+  assert.match(
+    app,
+    /const argsBlock = [^\n]*\n\s*<HighlightedCode/,
+    "arguments must use the shared code surface (one line of declaration, then the component)",
+  );
+  // and no tool still renders its args as a bare mono div
+  assert.doesNotMatch(
+    app,
+    /<div class="mono">\{truncate\(JSON\.stringify\(d\.args/,
+    "a bare div has the card's own colour — that is the inconsistency",
+  );
+  // the shared surface is the one the output uses
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  // the shared surface still derives from the SAME token — it is now mixed toward transparent so
+  // the inner block reads as a layer inside the card (see the nesting rule below)
+  assert.match(cssRuleBody(css, ".toolbody"), /background:[^;]*var\(--bg-darkest\)/);
+});
+
+test("a bash command and a JSON argument object are HIGHLIGHTED (#ui)", async () => {
+  /**
+   * Asked for as "bashコードや、ツール入力JSONとかをShikiハイライトできるといいかも". Highlighting
+   * by LANGUAGE rather than by path, because tool content is not a file — `langForPath` has nothing
+   * to work from.
+   */
+  const shiki = await readSource("frontend/shiki.ts");
+  assert.match(shiki, /export async function\* highlightLangChunks\(/, "a language-based entry point must exist");
+  const app = await readSource("frontend/App.tsx");
+  assert.match(app, /lang="json"/, "the argument object is highlighted as JSON");
+  assert.match(app, /"shellscript"/, "and a bash command as shell");
+});
+
+test("the PROMPT BOX is visibly translucent, not only nominally (#ui)", async () => {
+  /**
+   * Reported: "darkテーマでプロンプト欄が背景透過されない", then "たぶん、ほぼ透けてないじゃなくて全く
+   * 透けてないだと思う".
+   *
+   * MEASURED in Firefox with the operator's actual theme (surfaceAlpha 0.87, backgroundDim 0.9):
+   * the composer computed to `alpha 0.87`. So the property was translucent and the RESULT looked
+   * solid — 0.87 over an already-dimmed image is imperceptible. The report was a correct reading of
+   * the pixels even though the computed value was never 1.
+   *
+   * The composer therefore sits BELOW the base: above the chip level (base − 0.12, which is light
+   * enough for small code blocks) and near the panel level, so it reads as a surface you can still
+   * see through. MEASURED after: 0.79 against chips at 0.75 and panels at 0.82.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const rule = cssRuleBody(css, 'html[data-bg-image="on"] .composer form');
+  assert.ok(rule, "the composer needs a wallpaper-specific rule at all");
+  assert.match(
+    rule,
+    /calc\(var\(--surface-alpha[^)]*\)\s*-\s*0?\.\d+\)|max\([^)]*-\s*0?\.\d+\)/,
+    "it must sit BELOW the base alpha, or it computes near-opaque and looks solid",
+  );
+  // and it must keep --bg-light's colour, so it still reads as a raised surface
+  assert.match(rule, /var\(--bg-light-solid/, "the colour stays the control surface's");
+});
+
+test("a NESTED tool body steps back instead of repeating its parent's fill (#ui)", async () => {
+  /**
+   * Reported: "ツールカードのネストされたとこの背景色をいい感じに統一".
+   *
+   * A tool card can contain another — a sub-agent's tool row, or a `wait_children` result carrying
+   * output. Both painted `--bg-darkest`, so the inner block was the SAME colour as the outer and the
+   * two read as one undifferentiated slab.
+   *
+   * Nesting now steps clearly toward the page — a container is denser than what it holds, and the
+   * deepest content is the most open surface in the app. MEASURED: 0.70 → 0.49 → 0.385, against a
+   * prompt box at 0.74 and panels at 0.77. An intermediate attempt used 92% and gave 0.64, which was
+   * reported as "内側の要素があまり透明じゃなくて微妙" — too close to the parent to read as a layer.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const nested = cssRuleBody(css, ".toolbody .toolbody");
+  assert.ok(nested, "a nested body needs its own rule, or it repeats the parent's colour");
+  assert.match(nested, /color-mix\(/, "it must step toward transparent, not pick another solid");
+  const deep = cssRuleBody(css, ".toolbody .toolbody .toolbody");
+  assert.match(deep, /color-mix\(/, "a third level keeps stepping rather than vanishing");
+  assert.match(deep, /border:/, "with a border carrying the cue");
+});
