@@ -425,6 +425,19 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   Start it in the background and keep working; the notification arrives when the
   version is installed.
 
+- **Wait for a workflow with `gh run watch`, never a fixed `sleep`.**
+
+  ```sh
+  gh run watch <run-id> --exit-status --interval 15   # exits when the run finishes
+  gh run list --workflow=publish.yml --limit 1 --json databaseId -q '.[0].databaseId'
+  ```
+
+  `--exit-status` makes the exit code the run's result, so a failing job is visible without
+  parsing logs. It returns immediately when the run has already completed, which is why it is
+  safe to call even when unsure — a `sleep 340` cannot tell the difference between "still
+  running" and "finished 5 minutes ago", and MEASURED, it wasted most of a turn on every release
+  in one session. Wrap it in `timeout` so a wedged run cannot block the loop forever.
+
 ## Fixing a bug that has been "fixed" before
 
 Some issues here (#40, #54) have been reported fixed and returned. Before
