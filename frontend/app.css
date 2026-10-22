@@ -75,16 +75,6 @@
   --dur-fast: 120ms;
   --dur-base: 200ms;
   --dur-slow: 240ms;
-  /**
-   * The two colours every raised control's depth is built from.
-   *
-   * `--shadow-ink` is the cast shadow and `--shadow-glint` the top highlight. They are TOKENS so a
-   * light theme can flip the ink to a pale blue-grey and keep the glint white, instead of shipping
-   * a black drop shadow onto a near-white surface where it reads as dirt. Default values are the
-   * dark theme's, since `:root` is dark.
-   */
-  --shadow-ink: #00000055;
-  --shadow-glint: #ffffff1f;
 
   /* elevation: two steps. A control that floats gets `--shadow-lg`. */
   --shadow-sm: 0 1px 2px #0006;
@@ -211,61 +201,28 @@ button {
   white-space: nowrap;
   font: inherit;
   /**
-   * Buttons read as OBJECTS resting on a surface, not as rectangles painted on it.
+   * FLAT, with a brightness change on hover — deliberately nothing more.
    *
-   * Asked for as "ボタン類がもうちょっとみずみずしくなってくれると嬉しい … 背景透過を入れてほしい
-   * ってことじゃなくて、水に浮かぶようなオブジェクトとして流麗になってほしい". The reference for this
-   * is neumorphism, whose whole mechanism is that a light source at the top-left casts a highlight on
-   * the near edges and a shadow on the far ones — so an element appears to float or sink depending
-   * on which side the shadows are on.
+   * An earlier version added neumorphic depth (layered light/dark shadows, a 1px lift on hover, an
+   * inset press). It was reverted on sight: "影とhoverアニメーション消して、hover時に明るくするだけの
+   * 方がよかった". The lesson is worth keeping — depth effects read as decoration in a dense tool UI,
+   * and a control that moves under the cursor competes with the content it belongs to.
    *
-   * Two deliberate departures from textbook neumorphism:
-   *
-   *   - the element does NOT match the page colour, because an accent-colored button is how teapot
-   *     signals the primary action; the illusion is carried by the SHADOWS, not by camouflage;
-   *   - the shadows are theme-derived (`--shadow-*` below) rather than fixed white/grey, so the
-   *     effect works on dark, light and the photo-backed themes without a second palette.
-   *
-   * The lift is 1px, not the 6px of a showcase demo: this is a dense tool UI where a control that
-   * jumps reads as a bug, and the shadows already do the depth work.
+   * So: no shadow, no transform, no will-change. Colour is the only affordance, which is also what
+   * keeps every button visually equal regardless of the surface it sits on.
    */
-  box-shadow:
-    0 1px 1px var(--shadow-ink, #0004),
-    0 2px 5px var(--shadow-ink, #0004),
-    inset 0 1px 0 var(--shadow-glint, #ffffff1f);
-  transition:
-    transform var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out),
-    background-color var(--dur-fast) ease;
-  /* promotes to its own layer so the hover transform cannot smear neighbouring text */
-  will-change: transform;
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 /**
- * A LIFT on hover, a PRESS on click — the two states that make "floating" legible.
+ * Hover BRIGHTENS; the press settles slightly darker.
  *
- * The hover shadow spreads and the element rises 1px; on press the shadows move INSIDE (inset) and
- * the element settles back, which is the neumorphic way of saying "the surface gave way". Without
- * the inward direction the press would just be another colour change and the object would stop
- * feeling like an object.
+ * `filter` rather than a colour value so it works on top of whatever background a given button
+ * already has — the accent-filled primary action, a `--bg-light` secondary and a transparent icon
+ * button all respond without this rule needing to know which it is.
  */
-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow:
-    0 2px 3px var(--shadow-ink, #0004),
-    0 5px 12px var(--shadow-ink, #0004),
-    inset 0 1px 0 var(--shadow-glint, #ffffff26);
-}
-button:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow:
-    inset 0 2px 4px var(--shadow-ink, #0005),
-    inset 0 -1px 0 var(--shadow-glint, #ffffff14);
-  transition-duration: 60ms; /* the press must land instantly; the release can ease back */
-}
-button:disabled {
-  box-shadow: none;
-  transform: none;
-}
+button:hover:not(:disabled) { filter: brightness(1.12); }
+button:active:not(:disabled) { filter: brightness(0.95); }
+button:disabled { filter: none; }
 /**
  * Native widgets follow the theme's MODE, not just the presets.
  *
@@ -282,15 +239,6 @@ button:disabled {
  */
 html[data-appearance="light"] {
   color-scheme: light;
-  /**
-   * A light theme casts a PALE shadow, not a black one.
-   *
-   * A black drop shadow on a near-white surface reads as dirt rather than depth, which is why
-   * neumorphism derives its shadow from the background: darker than the base, not black. Keyed on
-   * `data-appearance` so a CUSTOM light theme gets it too, without editing three preset blocks.
-   */
-  --shadow-ink: #5b7d9033;
-  --shadow-glint: #ffffffcc;
 }
 html[data-appearance="dark"] { color-scheme: dark; }
 html, body, #root { height: 100%; margin: 0; }

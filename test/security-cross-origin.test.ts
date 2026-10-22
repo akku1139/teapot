@@ -104,3 +104,68 @@ test("an unconfigured server ADVERTISES that it has no auth (#security)", async 
   const res = await app.request("/api/agents");
   assert.equal(res.headers.get("x-teapot-auth"), "none");
 });
+
+test("a request THROUGH a reverse proxy is allowed (#security)", async () => {
+  /**
+   * MEASURED regression: the operator proxies :7788 → :7789 with `http-proxy` and
+   * `changeOrigin: true`, so a prompt from the browser arrives with
+   * `Origin: http://host:7788` and `Host: localhost:7789`. Comparing those two refused every
+   * prompt sent through the proxy — reported as "リバースプロキシした先からプロンプトを送信できない".
+   *
+   * Real proxies rewrite `Host` (that is what `changeOrigin` means), so `Host` is the wrong thing
+   * to compare. `Sec-Fetch-Site` is computed by the browser from the INITIATOR and survives any
+   * number of proxies.
+   */
+  const app = appWith(mkdtempInRootSync("sec6-"));
+  const res = await app.request("/api/agents/nope/prompt", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "http://myhost:7788", // the browser's view
+      host: "localhost:7789", // rewritten by changeOrigin
+      "sec-fetch-site": "same-origin", // the browser knows it is the operator's own page
+    },
+    body: JSON.stringify({ text: "hi" }),
+  });
+  assert.notEqual(res.status, 403, "the operator's own page through a proxy must work");
+});
+
+test("an ATTACKER page is still refused, proxy or no proxy (#security)", async () => {
+  // the same shape, but the browser says the request came from another site — this is the check
+  // that cannot be spoofed by a proxy, so it must hold regardless of Host
+  const app = appWith(mkdtempInRootSync("sec7-"));
+  const res = await app.request("/api/setup", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://evil.example",
+      host: "localhost:7789",
+      "sec-fetch-site": "cross-site",
+    },
+    body: JSON.stringify({ password: "pwned" }),
+  });
+  assert.equal(res.status, 403);
+});
+
+test("X-Forwarded-Host is honoured for old browsers that send no Sec-Fetch-Site (#security)", async () => {
+  /**
+   * `xfwd: true` makes the proxy add `X-Forwarded-Host`. An older browser sends no
+   * `Sec-Fetch-Site`, so the host comparison runs — and it must use the ORIGINAL host, not the
+   * rewritten one, or the proxy case fails again for those browsers.
+   *
+   * This is not a bypass: `X-Forwarded-Host` is not a CORS-safelisted header, so a cross-origin
+   * page cannot set it without a preflight this server never approves.
+   */
+  const app = appWith(mkdtempInRootSync("sec8-"));
+  const res = await app.request("/api/agents/nope/prompt", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "http://myhost:7788",
+      host: "localhost:7789",
+      "x-forwarded-host": "myhost:7788",
+    },
+    body: JSON.stringify({ text: "hi" }),
+  });
+  assert.notEqual(res.status, 403, "the original host from the proxy must be accepted");
+});

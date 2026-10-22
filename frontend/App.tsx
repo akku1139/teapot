@@ -3558,6 +3558,33 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (composerValueChanged(composerEl.value, v)) composerEl.value = v;
     autosizeComposer();
   });
+  /**
+   * A WINDOW resize re-wraps the text, so the composer must re-measure.
+   *
+   * The effect above only re-runs when the DRAFT changes, so widening the window left the box at
+   * the height the NARROW layout needed: the text re-wrapped to fewer lines but nothing measured
+   * again, and the extra rows stayed as empty space. Reported as "ウィンドウをせまくしてから元に戻した
+   * 時に、横幅がせまくなったことで行数が増えたプロンプト欄が戻らない".
+   *
+   * The draft is untouched here, so this is the only thing that can notice. Coalesced into one
+   * frame because a drag fires `resize` continuously and each pass reads `getComputedStyle` plus
+   * forces a layout on the mirror.
+   */
+  onMount(() => {
+    let pending = 0;
+    const onResize = () => {
+      if (pending) return;
+      pending = requestAnimationFrame(() => {
+        pending = 0;
+        autosizeComposer();
+      });
+    };
+    window.addEventListener("resize", onResize);
+    onCleanup(() => {
+      window.removeEventListener("resize", onResize);
+      if (pending) cancelAnimationFrame(pending);
+    });
+  });
 
   /** post a raw prompt (used by composer AND question-option taps) */
   // image attachments staged for the next prompt (data URLs; capped count)

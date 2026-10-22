@@ -203,7 +203,32 @@ const MAX_WS_CLIENTS = 64;
     const origin = c.req.header("origin");
     // no Origin at all: a non-browser client. A browser ALWAYS sets it cross-origin.
     if (origin === undefined) return true;
-    const host = c.req.header("host") ?? "";
+    /**
+     * `Sec-Fetch-Site` FIRST — the browser computes it and NOTHING in the request path can rewrite
+     * it, unlike `Host`.
+     *
+     * MEASURED failure this fixes: the operator runs a reverse proxy
+     * (`http-proxy`, `changeOrigin: true`) from :7788 to :7789, so the browser's `Origin` says
+     * `:7788` while the `Host` reaching teapot says `:7789` — and comparing those two refused every
+     * prompt sent through the proxy ("リバースプロキシした先からプロンプトを送信できない").
+     *
+     * `Sec-Fetch-Site` is `same-origin` on the operator's own page and `cross-site` on an attacker's,
+     * regardless of how many proxies sit in between, because it describes the INITIATOR, not the
+     * URL. Modern browsers always send it on a state-changing request.
+     */
+    const site = c.req.header("sec-fetch-site");
+    if (site === "cross-site") return false;
+    if (site === "same-origin" || site === "none") return true;
+    /**
+     * Older browsers do not send `Sec-Fetch-Site`, so fall back to comparing hosts — using
+     * `X-Forwarded-Host` when a proxy supplied one.
+     *
+     * That is not a bypass: `X-Forwarded-Host` is not a CORS-safelisted header, so a cross-origin
+     * page cannot set it without a preflight, and this server approves no preflight. A LOCAL process
+     * could forge it — and a local process can already read the config, so it is not the threat this
+     * guards.
+     */
+    const host = c.req.header("x-forwarded-host") ?? c.req.header("host") ?? "";
     try {
       const u = new URL(origin);
       if (u.host === host) return true;

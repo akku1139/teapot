@@ -344,3 +344,36 @@ test("the GOAL card is not height-clipped (#ui)", async () => {
   assert.match(goal, /max-height:\s*none/, "the goal card must size to its content");
   assert.match(goal, /overflow-y:\s*visible/, "and must not scroll internally");
 });
+
+test("a WINDOW resize re-measures the composer (#ui)", async () => {
+  /**
+   * Reported: "ウィンドウをせまくしてから元に戻した時に、横幅がせまくなったことで行数が増えたプロンプト欄が
+   * 戻らない".
+   *
+   * The composer effect only re-runs when the DRAFT changes, so a resize left the box at the height
+   * the NARROW layout needed: the text re-wrapped to fewer lines and nothing measured again. A
+   * window resize does not touch the draft, so only an explicit listener can notice.
+   *
+   * MEASURED in headless Firefox with wrapping text: wide 70px → narrow 171px → wide 70px, which is
+   * the behaviour the fix has to produce.
+   */
+  const app = await readSource("frontend/App.tsx");
+  const hook = app.slice(app.indexOf("A WINDOW resize re-wraps the text"));
+  // the whole onMount block: slicing to the first `});` stops inside the rAF callback
+  const body = hook.slice(0, hook.indexOf("  /** post a raw prompt"));
+  /**
+   * Assert the REGISTRATION as a statement, not as a substring.
+   *
+   * `removeEventListener("resize", onResize)` in the cleanup contains almost the same text, so a
+   * loose `/resize/` match passed with the listener commented out — verified, which is why the
+   * assertions name the call form explicitly.
+   */
+  assert.match(
+    body,
+    /^\s*window\.addEventListener\("resize", onResize\);$/m,
+    "a resize listener is the only thing that can notice a re-wrap",
+  );
+  assert.match(body, /^\s*autosizeComposer\(\);$/m, "and it must re-measure");
+  // removed on cleanup, or every session switch stacks another listener on window
+  assert.match(body, /^\s*window\.removeEventListener\("resize", onResize\);$/m);
+});
