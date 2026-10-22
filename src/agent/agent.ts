@@ -17,6 +17,7 @@ import { mcp } from "./mcp-registry.ts";
 import { flattenToolName } from "./mcp-registry.ts";
 import { metaToolSpecs, META_TOOL_NAMES, type MetaToolName } from "./meta-tools.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
+import { extractRules, enforceRules, type Rule, RULES_HEADING } from "./compact-rules.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
 /**
@@ -368,10 +369,24 @@ const COMPACT_INSTRUCTION = [
   "## Current work",
   "## Next step",
   "## Durable lessons",
+  /**
+   * Hard constraints, as their own section with a fixed shape.
+   *
+   * "must/must-not" rules are the one thing a summary cannot recover from losing: everything else
+   * can be re-derived by reading the code again, but a constraint the operator stated once and
+   * never repeated is simply gone. Reported as "compact時にルール(must/must notが中心だけど、should
+   * レベルのものも)が確実に引き継げる機構があると良いねって思った".
+   *
+   * So they get a dedicated heading with a MACHINE-CHECKABLE shape (one `MUST`/`MUST NOT`/`SHOULD`
+   * keyword per line, see `RULES_SECTION` + `extractRules`): the summarizer cannot merge them into
+   * prose, and `enforceRules` re-inserts any that went missing instead of trusting it did not.
+   */
+  "## Hard constraints",
   "",
   "Rules: be terse bullet points, no prose flourishes. Quote file paths and key numbers exactly.",
   "All user messages are listed nearly verbatim — they carry intent that must survive every future compaction.",
   "Durable lessons lists reusable insights worth keeping forever (gotchas, preferences, what worked); omit the section if empty.",
+  "Hard constraints lists EVERY rule the operator stated, one per line, each beginning with exactly `MUST`, `MUST NOT` or `SHOULD` — include rules that were already obeyed and rules from earlier in the conversation. Never drop one because it seems satisfied: a constraint that is not repeated is lost forever, and this section is the only place it survives.",
   "Output only the checkpoint text: do not call any tool, and do not mention this request or that the context was compacted.",
   "The <analysis> block is discarded before your notes are stored, so think freely there.",
 ].join("\n");
@@ -787,6 +802,19 @@ export class Agent {
    * Recovered from the log so the continuity survives a restart.
    */
   private lastCompactSummary?: string;
+  /**
+   * The accumulated hard rules, kept INDEPENDENTLY of the summary.
+   *
+   * Codex's `retained_instructions.rs` states the property that matters: retained instructions are
+   * selected "independently of compaction", with the host owning storage and lifecycle, so
+   * "restrictions are never truncated into partial permissions".
+   *
+   * The first version of this re-derived the rules from `lastCompactSummary` on each pass, which
+   * fails in exactly the case the mechanism exists for: a pass that drops every rule leaves
+   * nothing to re-insert. Keeping the set here (and re-seeding it from the log on restart) makes
+   * it survive any single pass, and lets a pass add to it without ever removing from it.
+   */
+  private compactRules: Rule[] = [];
   /**
    * A short human title for this session (#155), derived from the operator's first
    * prompt. Undefined until the log is read (or when there is no usable prompt).
@@ -1549,8 +1577,22 @@ export class Agent {
         // of a rebuilt number counted every usage event twice (a restart plus
         // the first interaction showed ~2x). The recompute is authoritative.
       } else if (e.type === "system_note") {
-        const d = e.data as { event?: string };
+        const d = e.data as { event?: string; rules?: unknown };
         if (d.event === "context-compacted") this.stats.compactions++;
+        /**
+         * Re-seed the durable rule set so it survives a restart.
+         *
+         * The newest `compaction-rules` note is the accumulated set; without this a reload starts
+         * empty and the first compaction after it has nothing to enforce — the failure the whole
+         * mechanism exists to prevent. Seeded through `extractRules` rather than trusting the
+         * stored shape, so the note is the same one a human can read in the log.
+         */
+        if (d.event === "compaction-rules" && Array.isArray(d.rules)) {
+          const seeded = d.rules
+            .map((line) => extractRules(`${RULES_HEADING}\n- ${String(line)}`)[0])
+            .filter((r): r is Rule => !!r);
+          if (seeded.length) this.compactRules = seeded;
+        }
       } else if (e.type === "compaction") {
         // keep the NEWEST notes: they are what the next compaction updates, and
         // without this a restart would silently fall back to re-summarizing
@@ -2544,21 +2586,31 @@ export class Agent {
         }
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
-        // #95: do NOT pair this with a progress request. Both fire at the turn
-        // boundary and both inject a user message, so the model received two
-        // harness instructions back to back — "Continue working toward the
-        // current goal" immediately followed by "Please give a brief progress
-        // report now", which reads as the harness talking to itself.
+        // #95: do NOT pair this with a progress request.
         //
-        // The progress request already re-enters the loop, so it IS the
-        // continuation: suppressing the nudge when one is pending costs nothing
-        // and leaves exactly one instruction per boundary.
+        // Both fire at the turn boundary and both inject a user message, so the model received two
+        // harness instructions back to back — "Continue working toward the current goal"
+        // immediately followed by "Please give a brief progress report now", which reads as the
+        // harness talking to itself.
+        //
+        // MEASURED why `break` was wrong here (session tyb2-8-0161a4af, seq 18778-18780):
+        // `maybeRequestProgress` runs its OWN `llmCall` at the top of the turn, so the assistant
+        // message it produces is a progress REPORT, not a continuation. The round then ended,
+        // this branch saw the flag, logged `auto-continue-suppressed`, and BROKE — leaving the
+        // agent idle with the work unfinished. The operator asked "何故 auto-continue が効いてない?"
+        // and the log shows exactly one such note, at the very end.
+        //
+        // The suppression is still right (one instruction per boundary); breaking is not. What is
+        // already in flight IS the continuation, so there is nothing left to add — but the loop
+        // must keep going, or a progress request silently ends the session's work.
         if (this.progressRequestedThisRound) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "auto-continue-suppressed",
-            detail: "a progress report was already requested this round (#95)",
+            detail: "a progress report was already requested this round (#95) — the round that carried it already continues the work, so no nudge is added and the loop goes on",
           });
-          break;
+          // consume the flag: it authorised skipping THIS boundary's nudge, not every later one
+          this.progressRequestedThisRound = false;
+          continue;
         }
         const isSub = !!this.opts.parent;
         // #136: the ROOT nudge now restates the goal too, exactly as the sub-agent
@@ -4382,6 +4434,47 @@ export class Agent {
                 },
                 previousSummary,
               );
+              /**
+               * Rules a pass dropped are put BACK.
+               *
+               * The summarizer is asked for one keyword per line, but it is still generated text:
+               * a pass can merge three constraints into a sentence, or simply not mention one.
+               * Facts survive that (the code can be re-read); a rule cannot — "never install this
+               * into Wine" was stated once and is nowhere else. Reported as "compact時にルール
+               * (must/must notが中心だけど、shouldレベルのものも)が確実に引き継げる機構があると良いね".
+               *
+               * So the rules known BEFORE this pass are compared against the ones it produced, and
+               * any missing are appended. A pass may add and reword freely; it cannot lose one.
+               */
+              {
+                /**
+                 * Seed from the previous summary ONCE, for a session that compacted before this
+                 * mechanism existed — after that the stored set is the authority.
+                 *
+                 * The set lives in `this.compactRules`, not in the previous summary: a pass that
+                 * dropped every rule would otherwise leave nothing to restore from, which is the
+                 * exact failure this exists to prevent.
+                 */
+                if (!this.compactRules.length && previousSummary) {
+                  this.compactRules = extractRules(previousSummary);
+                }
+                const enforced = enforceRules(summary, this.compactRules);
+                summary = enforced.summary;
+                // a pass may ADD rules (the operator said something new); it may never remove one
+                this.compactRules = extractRules(summary);
+                if (enforced.restored.length) {
+                  await this.log.append("system_note", this.currentSession, this.currentBranch, {
+                    event: "compaction-rules-restored",
+                    count: enforced.restored.length,
+                    rules: enforced.restored.map((r) => `${r.level} ${r.text}`),
+                  });
+                }
+                await this.log.append("system_note", this.currentSession, this.currentBranch, {
+                  event: "compaction-rules",
+                  count: this.compactRules.length,
+                  rules: this.compactRules.map((r) => `${r.level} ${r.text}`),
+                });
+              }
               break;
             } catch (e) {
               const shrinkable = isContextOverflow(e) && attempt < SUMMARIZE_OVERFLOW_RETRIES;

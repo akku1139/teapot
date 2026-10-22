@@ -20,6 +20,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
+import { readEvents } from "../src/log/events.ts";
 import { Agent } from "../src/agent/agent.ts";
 
 /** build an agent whose progress gates always fire, so both prompts want to run */
@@ -160,6 +161,84 @@ test("the suppression is recorded in the log (#95)", { timeout: 30_000 }, async 
       String((notes[0]!.data as { detail?: string }).detail ?? ""),
       /progress report/i,
       "and must say why (#95)",
+    );
+    await agent.dispose();
+  });
+});
+
+
+test("a progress request does not END the round's work (#95)", { timeout: 30_000 }, async () => {
+  /**
+   * MEASURED in session tyb2-8-0161a4af (seq 18778-18780): `maybeRequestProgress` runs its own
+   * `llmCall` at the top of the turn, so the assistant message it produces is a progress REPORT.
+   * The round then ended, the suppression branch saw the flag and BROKE — leaving the agent idle
+   * with the work unfinished and no nudge ever sent again.
+   *
+   * "何故 auto-continue が効いてない?" was the operator's question; the log held exactly one
+   * `auto-continue-suppressed` note, at the very end. That is the signature: suppressing the
+   * paired nudge is right (one instruction per boundary), breaking the loop is not.
+   */
+  await useTempDirs(["h95g-", "h95h-"], async ([ws, sd]) => {
+    const agent = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async () => ({
+        message: { role: "assistant" as const, content: "working " + "y".repeat(3000) },
+      }),
+      autoContinue: true,
+      autoCompact: false,
+      // fire a progress request on the FIRST boundary, which is what the report hit
+      progressIntervalMs: 0,
+      progressMinChars: 0,
+      progressMaxQuietTurns: 0,
+      continueDelayMs: 1,
+      maxTurns: 6,
+    } as never) as Agent;
+    await agent.init();
+    await agent.setGoal("keep going");
+    agent.enqueuePrompt("go", "user");
+    agent.start("t");
+
+    const msgs = () => (agent as unknown as { messages: unknown[] }).messages;
+    let last = -1;
+    let stable = 0;
+    for (let i = 0; i < 600; i++) {
+      const n = msgs().length;
+      if (n > 0 && n === last) {
+        if (++stable >= 5) break;
+      } else {
+        stable = 0;
+      }
+      last = n;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    const events = await readEvents(agent.log.filePath);
+    const text = (e: { data?: unknown }) => (e.data ?? {}) as Record<string, unknown>;
+
+    // PRECONDITIONS — without both, the assertion below would pass for the wrong reason
+    assert.ok(
+      events.some((e) => e.type === "prompt" && String(text(e).text ?? "").includes("progress report")),
+      "precondition: a progress request must have been issued",
+    );
+    assert.ok(
+      events.some((e) => e.type === "system_note" && text(e).event === "auto-continue-suppressed"),
+      "precondition: the suppression branch must have been reached",
+    );
+
+    /**
+     * …and the work must CONTINUE. Counting turns rather than asserting a status, because
+     * `status` is mutable and the dispose below changes it: more than one turn start means the
+     * loop came back after the progress round instead of parking.
+     */
+    const turns = events.filter(
+      (e) => e.type === "state" && text(e).detail === "llm turn start",
+    ).length;
+    assert.ok(
+      turns > 1,
+      `the agent must continue past a progress report; saw ${turns} turn(s) — 1 means the suppression broke the loop`,
     );
     await agent.dispose();
   });
