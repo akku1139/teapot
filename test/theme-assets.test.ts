@@ -532,10 +532,24 @@ test("the PROMPT BOX is visibly translucent, not only nominally (#ui)", async ()
   const css = stripSourceComments(await readSource("frontend/app.css"));
   const rule = cssRuleBody(css, 'html[data-bg-image="on"] .composer form');
   assert.ok(rule, "the composer needs a wallpaper-specific rule at all");
+  /**
+   * The rule reads `--surface-alpha-composer`, which is where the subtraction lives now (a token,
+   * so the ask_user reply box can be the same surface without repeating the formula). Assert on
+   * the TOKEN's definition: a rule that names it does not by itself prove it sits below the base,
+   * and "below the base" is the whole point — at the base it computes near-opaque and looks solid.
+   */
   assert.match(
     rule,
-    /calc\(var\(--surface-alpha[^)]*\)\s*-\s*0?\.\d+\)|max\([^)]*-\s*0?\.\d+\)/,
-    "it must sit BELOW the base alpha, or it computes near-opaque and looks solid",
+    /var\(--surface-alpha-composer/,
+    "the composer must paint from the composer alpha token, so it cannot drift from the token",
+  );
+  // search the whole sheet: the token lives in the `html[data-bg-image="on"]` block, and
+  // cssRuleBody throws for a selector that does not exist rather than returning ""
+  assert.match(
+    css,
+    /--surface-alpha-composer:\s*max\([^;]*var\(--surface-alpha[^;]*-\s*0?\.\d+\s*\)/, 
+    "the composer alpha must be DERIVED from --surface-alpha minus a visible step, or it " +
+      "computes near-opaque and looks solid (#ui)",
   );
   // and it must keep --bg-light's colour, so it still reads as a raised surface
   assert.match(rule, /var\(--bg-light-solid/, "the colour stays the control surface's");

@@ -948,7 +948,23 @@ export default function App() {
   // the live bubble is carrying a compaction summarizer stream (prefixed by
   // the harness) rather than a normal assistant reply — render it differently
   const liveIsCompact = () => liveText().startsWith("[compact] ");
-  const liveBody = () => (liveIsCompact() ? liveText().slice("[compact] ".length) : liveText());
+  /**
+   * The summarizer's stream is shown as a PREVIEW, not as a growing document.
+   *
+   * It is a full compaction summary being written — many hundreds of lines — and rendering all of
+   * it in a live bubble made the timeline jump to a wall of text at the exact moment the log was
+   * also gaining the `🗜 context compacted` row. The operator described it as "compact完了直後に
+   * 一瞬タイムラインにcompact結果が展開された状態で出る" and "compact直後のタイムラインの挙動が
+   * ちょっと変".
+   *
+   * The tail is what shows progress (the head is the part already written); the finished summary is
+   * one click away in the compaction card, which is where reading it belongs.
+   */
+  const liveBody = () => {
+    const body = liveIsCompact() ? liveText().slice("[compact] ".length) : liveText();
+    const CAP = 1200;
+    return body.length > CAP ? "…" + body.slice(-CAP) : body;
+  };
   // a summarizer's streamed output is shown in the live bubble; clear it when
   // the pass ends so a stale "[compact] …" bubble can't outlive it
   createEffect(() => {
