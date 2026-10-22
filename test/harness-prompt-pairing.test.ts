@@ -201,19 +201,33 @@ test("a progress request does not END the round's work (#95)", { timeout: 30_000
     agent.enqueuePrompt("go", "user");
     agent.start("t");
 
-    const msgs = () => (agent as unknown as { messages: unknown[] }).messages;
-    let last = -1;
-    let stable = 0;
+    /**
+     * Poll for the EVENT this test is about, not for the message list to settle.
+     *
+     * The suppression note is written only when a progress request and a round end land in the same
+     * round. On the Windows runner that ordering is slower, so the list appeared to settle before
+     * it happened and the precondition failed — a timing assumption, not a product problem.
+     *
+     * Bounded, and the bound is the point: with the suppression removed the note never appears at
+     * all, so the loop must exit and let the precondition fail rather than hang.
+     */
+    let sawSuppression = false;
     for (let i = 0; i < 600; i++) {
-      const n = msgs().length;
-      if (n > 0 && n === last) {
-        if (++stable >= 5) break;
-      } else {
-        stable = 0;
+      const ev = await readEvents(agent.log.filePath);
+      if (
+        ev.some(
+          (e) =>
+            e.type === "system_note" &&
+            (e.data as { event?: string }).event === "auto-continue-suppressed",
+        )
+      ) {
+        sawSuppression = true;
+        break;
       }
-      last = n;
       await new Promise((r) => setTimeout(r, 10));
     }
+    // stop the loop before reading the log, so the turn count below is final
+    (agent as unknown as { stopRequested: boolean }).stopRequested = true;
 
     const events = await readEvents(agent.log.filePath);
     const text = (e: { data?: unknown }) => (e.data ?? {}) as Record<string, unknown>;
@@ -224,8 +238,8 @@ test("a progress request does not END the round's work (#95)", { timeout: 30_000
       "precondition: a progress request must have been issued",
     );
     assert.ok(
-      events.some((e) => e.type === "system_note" && text(e).event === "auto-continue-suppressed"),
-      "precondition: the suppression branch must have been reached",
+      sawSuppression,
+      "precondition: the suppression branch must have been reached (a progress request and a round end in the same round)",
     );
 
     /**
