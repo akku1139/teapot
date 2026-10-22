@@ -28,9 +28,21 @@ const frontend = path.join(root, "frontend");
 /** every JSX text node that would print a `//` line on screen */
 function renderedLineComments(source: string): { line: number; text: string }[] {
   const out: { line: number; text: string }[] = [];
+  /**
+   * ANY comment-shaped text in JSX children, not only `//`.
+   *
+   * `//` was the first form that shipped (#146). The second was a bare `/** … *\/` block placed
+   * between elements, which rendered as a wall of source code at the top of the app — the same
+   * mistake in a shape the `//`-only check could not see. Both are JSXText, so both are caught
+   * here; the only question is whether the text LOOKS like a comment.
+   */
+  const looksLikeComment = (v: string): boolean => {
+    const t = v.trim();
+    return t.includes("//") || t.startsWith("/*") || t.includes("\n *");
+  };
   const walk = (node: any): void => {
     if (!node || typeof node !== "object") return;
-    if (node.type !== "Program" && node.type === "JSXText" && String(node.value).includes("//")) {
+    if (node.type !== "Program" && node.type === "JSXText" && looksLikeComment(String(node.value))) {
       // a JSXText node starts where the PREVIOUS sibling ended, so its own
       // leading whitespace is inside it — the reported line must be the line
       // the comment actually opens on, not the one above it
@@ -91,4 +103,33 @@ export const B = () => (
   </div>
 );`;
   assert.deepEqual(renderedLineComments(ok), []);
+});
+
+test("the guard also catches a bare `/** … */` block in JSX text position (#146)", () => {
+  /**
+   * The `//`-only version of this guard let the SAME mistake ship in a different shape: a bare
+   * `/** … *\/` block placed between `</Show>` and `<Show>` rendered as a wall of source code at the
+   * top of the app, including its Japanese text. Reported with the rendered text quoted back.
+   *
+   * Only the wrapper differs (`{/* … *\/}` makes it an expression), so the detector must not be
+   * limited to `//`.
+   */
+  const sample = `export const A = () => (
+  <div>
+    <Show when={true}>a</Show>
+    /**
+     * a block comment in children position
+     */
+    <Show when={true}>ok</Show>
+  </div>
+);`;
+  const hits = renderedLineComments(sample);
+  assert.ok(
+    hits.length > 0,
+    "a bare block comment between elements renders as text and must be reported",
+  );
+
+  // …and the wrapped form is NOT reported, or every legitimate comment would fail
+  const good = sample.replace("    /**", "    {/**").replace("     */", "     */}");
+  assert.equal(renderedLineComments(good).length, 0, "`{/* … */}` is a real comment");
 });

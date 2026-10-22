@@ -15,7 +15,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { PRESET_PALETTES } from "../frontend/theme-store.ts";
+import { cssRuleBody } from "./helpers/css.ts";
 
 const luminance = (hex: string): number => {
   const ch = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
@@ -120,4 +122,39 @@ test("the message HOVER tint is visible on light themes too (#theme)", () => {
       `${name}: hover changes contrast by only ${delta.toFixed(3)}:1 — a hover that cannot be seen is not a hover`,
     );
   }
+});
+
+test("the wallpaper dim follows the theme's DIRECTION, not just its strength (#theme)", () => {
+  /**
+   * Reported: "背景画像dimがライトテーマなら白で載せられてたのに、今は黒系のdimがあたってて良くない".
+   *
+   * `filter: brightness(1 - dim)` can only DARKEN, so a light theme veiled its wallpaper toward
+   * black — muddy against a pale UI. The old implementation was a `color-mix(--bg-dark, …)` overlay,
+   * which took the theme's own surface colour and therefore veiled a light theme PALE.
+   *
+   * So the dim must be a colour-mix of the surface, not a brightness filter. The direction then
+   * falls out of the palette for free, which is what makes one rule correct for both.
+   *
+   * MEASURED in headless Firefox with the built stylesheet at dim 0.55:
+   *   light (`--bg-dark: #ecf7fb`) → color(srgb 0.925 0.969 0.984 / 0.55)   pale
+   *   dark  (`--bg-dark: #232630`) → color(srgb 0.137 0.149 0.188 / 0.55)   dark
+   */
+  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+  const veil = cssRuleBody(css, ".bgphoto");
+  assert.match(
+    veil,
+    /color-mix\([\s\S]*var\(--bg-dark\)/,
+    "the veil must be the theme's surface colour, or a light theme dims toward black",
+  );
+  assert.doesNotMatch(
+    veil,
+    /filter:\s*brightness\(/,
+    "a brightness filter can only darken — that is the bug, not the fix",
+  );
+
+  // and the direction really does fall out of the palette: light surfaces stay light, dark stay dark
+  const light = luminance("#ecf7fb");
+  const dark = luminance("#232630");
+  assert.ok(light > 0.8, "a light theme's surface must be near-white, or this test proves nothing");
+  assert.ok(dark < 0.1, "a dark theme's surface must be near-black");
 });

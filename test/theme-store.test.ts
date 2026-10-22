@@ -420,12 +420,16 @@ test("the wallpaper layer is an <img> that cannot intercept anything (#theme)", 
   const photo = cssRuleBody(css, ".bgphoto");
   assert.ok(photo, "app.css must define the .bgphoto layer");
   assert.match(photo, /position:\s*fixed/, "fixed, so the photo does not scroll with the feed");
-  assert.match(photo, /object-fit:\s*cover/, "cover, to match what background-size did");
   assert.match(photo, /pointer-events:\s*none/, "it must never swallow a click");
+  // the IMAGE is a child now: a replaced element cannot host a `::after`, and the dim veil has to
+  // be a separate layer ABOVE the pixels (a `background` on an img paints behind them)
+  const inner = cssRuleBody(css, ".bgphoto > img");
+  assert.ok(inner, "the image itself must be a child of the dim wrapper");
+  assert.match(inner, /object-fit:\s*cover/, "cover, to match what background-size did");
   assert.match(
     photo,
     /var\(--bg-image-dim,\s*0?\.\d+\)/,
-    "the dim value needs a fallback or the filter declaration is dropped",
+    "the dim value needs a fallback or the color-mix is invalid at computed-value time",
   );
   /**
    * The wallpaper must be BEHIND the app.

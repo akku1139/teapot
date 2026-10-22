@@ -259,26 +259,44 @@ html[data-bg-image="on"] body { background: transparent; }
  * inert: `pointer-events: none` plus `aria-hidden`, so it can never swallow a click or be tabbed
  * to.
  */
+/**
+ * The wallpaper LAYER: a wrapper that carries the dim veil, with the image inside it.
+ *
+ * Two separate elements because an `<img>` cannot host a `::after` — it is a REPLACED element, so
+ * pseudo-element content does not render. And the veil cannot be a `background` on the image
+ * either: a background paints BEHIND an image's own pixels, so it would be invisible.
+ *
+ * It must also stay a SIBLING of `.layout`. `.layout` is its own stacking context
+ * (`position: relative; z-index: 1`), so an image placed INSIDE it with `z-index: 0` painted on top
+ * of every static child — sidebar, feed, panels — which read as "the UI is transparent" when it
+ * was actually covered.
+ */
 .bgphoto {
   position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  user-select: none;
+  /**
+   * The veil is the theme's own SURFACE colour, which is what the old
+   * `linear-gradient(color-mix(--bg-dark, …))` did.
+   *
+   * `filter: brightness(1 - dim)` can only DARKEN, so a light theme dimmed its wallpaper toward
+   * black — muddy against a pale UI. Reported as "背景画像dimがライトテーマなら白で載せられてたのに、
+   * 今は黒系のdimがあたってて良くない". Using the surface COLOUR instead makes one rule work in both
+   * directions: dark themes veil the photo dark, light themes veil it pale.
+   */
+  background: color-mix(in srgb, var(--bg-dark) calc(var(--bg-image-dim, 0.55) * 100%), transparent);
+}
+.bgphoto > img {
+  position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   object-position: center;
-  /**
-   * BEHIND the app, and it must stay a SIBLING of `.layout` to work.
-   *
-   * `-1` rather than `0`: `.layout` is its own stacking context (`position: relative; z-index: 1`),
-   * so an image placed INSIDE it with `z-index: 0` painted on top of every static child — sidebar,
-   * feed, panels — which read as "the UI is transparent" when it was actually covered. As a sibling
-   * behind it, nothing inside the app can interact with this layer at all.
-   */
-  z-index: -1;
-  pointer-events: none;
-  user-select: none;
-  /* the dim overlay: the same `--bg-image-dim` the gradient used, so the setting keeps working */
-  filter: brightness(calc(1 - var(--bg-image-dim, 0.55)));
+  /* the wrapper already carries the dim; a second one here would double it */
+  filter: none;
 }
 .layout {
   position: relative;

@@ -3827,7 +3827,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         </div>
       </div>
     </Show>
-    /**
+    {/**
      * The wallpaper layer lives OUTSIDE `.layout`, as its own sibling.
      *
      * This is the whole fix for "背景色があるときにUIのほぼすべてが透明になってほぼ何も見えない":
@@ -3840,18 +3840,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * A backdrop cannot be a child of the thing it sits behind. As a sibling with `z-index: -1` it
      * is behind `.layout`'s own stacking context, and no z-index inside the app can accidentally
      * interact with it.
-     */
+     */}
     <Show when={activeBgImage()}>
       {(src) => (
-        <img
-          class="bgphoto"
-          src={src()}
-          srcset={BG_WIDTHS.map((w) => `${src()}?w=${w} ${w}w`).join(", ")}
-          sizes="100vw"
-          alt=""
-          aria-hidden="true"
-          decoding="async"
-        />
+        /* a WRAPPER carries the dim veil: an `<img>` is a replaced element, so a `::after` on it
+           would not render, and a `background` on it paints behind its own pixels */
+        <div class="bgphoto" aria-hidden="true">
+          <img
+            src={src()}
+            srcset={BG_WIDTHS.map((w) => `${src()}?w=${w} ${w}w`).join(", ")}
+            sizes="100vw"
+            alt=""
+            decoding="async"
+          />
+        </div>
       )}
     </Show>
     <Show when={!cfg()?.needsSetup}>
