@@ -14,6 +14,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { goalLine, auditPhase, isAuditLifecycle } from "../frontend/goal-timeline.ts";
+import { Agent } from "../src/agent/agent.ts";
+import { useTempDirs } from "./helpers/tmp.ts";
+import { readEvents } from "../src/log/events.ts";
 
 /* ---------- the reported sequence, end to end ---------- */
 
@@ -26,7 +29,9 @@ test("the finish→audit→continue sequence is legible (#41)", () => {
     verdict: "changes-required",
     feedback: "tests are missing for the parser",
   });
-  const reopened = goalLine({ event: "status", status: "active" });
+  // the audit rejection is what reopens a goal, so it carries `by: "auditor"` — a bare "active"
+  // with no cause is the operator case (see the resume test below)
+  const reopened = goalLine({ event: "status", status: "active", by: "auditor" });
 
   // the claim must NOT read as completion
   assert.match(claimed.label, /pending audit/i, "'done' must read as PENDING audit (#41)");
@@ -96,7 +101,10 @@ test("a failed audit is an error and says the finish was accepted (#41)", () => 
 /* ---------- tone drives the visual distinction ---------- */
 
 test("the reopen is visually distinct from a normal status (#41)", () => {
-  assert.equal(goalLine({ event: "status", status: "active" }).tone, "warn");
+  // a WARNING belongs to the audit rejection only: it is the case where the agent's finish was
+  // refused. An operator resuming a paused goal is a plain action and must not look like a problem.
+  assert.equal(goalLine({ event: "status", status: "active", by: "auditor" }).tone, "warn");
+  assert.equal(goalLine({ event: "status", status: "active", by: "operator" }).tone, "");
   assert.equal(goalLine({ event: "status", status: "done" }).tone, "", "a pending claim is not a warning");
 });
 
@@ -200,4 +208,71 @@ test("operator/agent prose in a goal card is rendered as MARKDOWN (#goal-md)", (
   const fixed = goalLine({ event: "status", status: "done" } as never);
   assert.equal(fixed.markdown, false, "a canned sentence is not markdown");
   assert.ok(fixed.detail.length > 0, "precondition: it still carries a body");
+});
+
+test("`active` from the OPERATOR is a resume, not an audit rejection (#41)", () => {
+  /**
+   * Reported: pausing a goal and pressing ▶ working produced
+   * "▶ goal reopened / the audit rejected the finish — work continues on the same goal".
+   *
+   * Both causes set status to "active", and the renderer hardcoded the audit wording, so a
+   * deliberate operator action was announced as a rejected delivery. The event now carries `by`.
+   */
+  const resumed = goalLine({ event: "status", status: "active", by: "operator" });
+  assert.match(resumed.label, /resumed/);
+  assert.doesNotMatch(resumed.detail, /audit/i, "a resume must not claim the audit was involved");
+  assert.doesNotMatch(resumed.label, /reopened/);
+
+  // and the audit case keeps its warning, because there it IS the truth
+  const rejected = goalLine({ event: "status", status: "active", by: "auditor" });
+  assert.match(rejected.label, /reopened/);
+  assert.match(rejected.detail, /audit rejected/);
+  assert.equal(rejected.tone, "warn");
+
+  /**
+   * A log written before `by` existed cannot say which happened, so it gets the NEUTRAL wording:
+   * guessing "the audit rejected it" is how the original bug looked.
+   */
+  const legacy = goalLine({ event: "status", status: "active" });
+  assert.doesNotMatch(legacy.detail, /audit/i, "an unknown cause must not be reported as an audit rejection");
+  assert.match(legacy.label, /resumed/);
+});
+
+
+test("the API records WHY a status changed, so the two `active` causes stay distinct (#41)", async () => {
+  /**
+   * The renderer can only tell a resume from an audit rejection if the log says which it was, and
+   * the log is written by the agent. This pins the PRODUCER side: the operator path records
+   * `by: "operator"`. Without it the renderer fix is cosmetic — correct wording over an event that
+   * never says who changed anything.
+   */
+  await useTempDirs(["gby-a-", "gby-b-"], async ([ws, sd]) => {
+    const agent = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async () => ({ message: { role: "assistant" as const, content: "ok" } }),
+    } as never) as Agent;
+    await agent.init();
+    await agent.setGoal("do the thing");
+    // paused → active: the reported sequence
+    await agent.setGoalStatus("paused", "operator");
+    await agent.setGoalStatus("active", "operator");
+
+    const events = await readEvents(agent.log.filePath);
+    const active = events.filter(
+      (e) =>
+        e.type === "goal" &&
+        (e.data as { event?: string }).event === "status" &&
+        (e.data as { status?: string }).status === "active",
+    );
+    assert.ok(active.length > 0, "precondition: a status=active goal event must be logged");
+    assert.equal(
+      (active[active.length - 1]!.data as { by?: string }).by,
+      "operator",
+      "the operator path must say so, or the renderer cannot avoid blaming the audit",
+    );
+    await agent.dispose();
+  });
 });

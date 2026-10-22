@@ -608,10 +608,24 @@ const MAX_WS_CLIENTS = 64;
    * and returns the subset of names that are gitignored. Never throws — a
    * non-git workspace simply yields an empty set.
    */
-  async function checkIgnoredBatch(workspace: string, dirAbs: string, dirents: import("node:fs").Dirent[]): Promise<Set<string>> {
+  async function checkIgnoredBatch(dirAbs: string, dirents: import("node:fs").Dirent[]): Promise<Set<string>> {
     const out = new Set<string>();
     try {
-      const relPaths = dirents.filter((d) => !d.name.startsWith(".")).map((d) => path.relative(workspace, path.join(dirAbs, d.name)));
+      /**
+       * Run git FROM THE DIRECTORY BEING LISTED, and pass bare names.
+       *
+       * `git -C <workspace> check-ignore` with workspace-relative paths fails when the workspace
+       * itself is not a repository — and a workspace is very often just a PARENT FOLDER holding
+       * several checkouts. MEASURED: with `~/work/tyb2` as the workspace, listing
+       * `mt6589-emulator/` (its own repo, whose `.gitignore` line 1 is `renode/`) returned nothing
+       * ignored, because `git -C ~/work/tyb2` exits with "not a git repository" and the empty
+       * result was read as "nothing is ignored".
+       *
+       * `git -C <dirAbs>` finds the enclosing repo by walking UP, which is exactly the behaviour a
+       * file tree wants: each directory reports against whichever repository actually contains it,
+       * including a nested `.gitignore`. Bare names keep the parse below simple.
+       */
+      const relPaths = dirents.filter((d) => !d.name.startsWith(".")).map((d) => d.name);
       if (relPaths.length === 0) return out;
       const { execFile } = await import("node:child_process");
       const res = await new Promise<string>((resolve) => {
@@ -623,7 +637,9 @@ const MAX_WS_CLIENTS = 64;
         const p = execFile(
           "git",
           // NOTE: no --quiet — it suppresses the stdout we parse
-          ["-C", workspace, "check-ignore", "--stdin", "-z", "--verbose"],
+          // `-C dirAbs`, not the workspace: git then finds the enclosing repo by walking up, so a
+          // workspace that is merely a PARENT of several checkouts still reports each one correctly
+          ["-C", dirAbs, "check-ignore", "--stdin", "-z", "--verbose"],
           { encoding: "utf8", maxBuffer: 1 << 20 },
           (err, stdout) => finished(err || !stdout ? "" : stdout),
         );
@@ -682,7 +698,7 @@ const MAX_WS_CLIENTS = 64;
     const entries: { name: string; dir: boolean; size?: number; ignored?: boolean }[] = [];
     // one batched `git check-ignore` for the whole directory (respects
     // nested .gitignore files); absent repo / no git → nothing is "ignored"
-    const ignoredNames = await checkIgnoredBatch(a.workspace, abs, dirents);
+    const ignoredNames = await checkIgnoredBatch(abs, dirents);
     for (const d of dirents) {
       if (d.name.startsWith(".") && !(showHidden && d.name !== "." && d.name !== ".."))
         continue; // hidden files stay out unless the caller opted in

@@ -21,6 +21,12 @@ export type AuditPhase = "status" | "audit-started" | "audit" | "audit-failed" |
 export interface GoalEventData {
   event?: string;
   status?: string;
+  /**
+   * WHO changed the status: "operator" (resumed, or set a new goal), "auditor" (rejected a finish)
+   * or "agent". Absent in logs written before this existed, which is why the renderer treats a
+   * missing value as neither.
+   */
+  by?: string;
   verify?: string;
   verdict?: string;
   feedback?: string;
@@ -157,14 +163,37 @@ export function goalLine(d: GoalEventData): GoalLine {
           markdown: false,
           hasCard: true,
         };
-      if (s === "active")
+      /**
+       * "active" has TWO causes, and they are not the same news.
+       *
+       * `by: "auditor"` means the verification contract rejected a finish — worth a warning.
+       * Anything else is the operator resuming a paused goal (or setting a fresh one), which is a
+       * deliberate action that needs no caveat. The wording used to be hardcoded to the audit case,
+       * so pressing ▶ working on a paused goal claimed "the audit rejected the finish" — reported
+       * as "pausedからの移動はrejectじゃないのでは?".
+       *
+       * An older log has no `by` field; those events predate the distinction, so the neutral
+       * wording is used rather than guessing at an audit rejection.
+       */
+      if (s === "active") {
+        const by = String(d.by ?? "").trim();
+        if (by === "auditor") {
+          return {
+            label: "▶ goal reopened",
+            detail: "the audit rejected the finish — work continues on the same goal",
+            tone: "warn",
+            markdown: false,
+            hasCard: true,
+          };
+        }
         return {
-          label: "▶ goal reopened",
-          detail: "the audit rejected the finish — work continues on the same goal",
-          tone: "warn",
+          label: "▶ goal resumed",
+          detail: "marked active again — auto-continue picks the goal up from the next turn",
+          tone: "",
           markdown: false,
           hasCard: true,
         };
+      }
       return {
         label: `🎯 goal ${s || "updated"}`,
         // #101: a status event carries the STATUS but no text, so this produced

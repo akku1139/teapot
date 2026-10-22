@@ -1962,10 +1962,25 @@ export class Agent {
     return parts.join(". ");
   }
 
-  async setGoalStatus(status: GoalState["status"]): Promise<void> {
+  /**
+   * `by` records WHY the status changed, because "active" alone is ambiguous.
+   *
+   * Two very different things produce it: the operator resuming a paused goal, and the auditor
+   * rejecting a `finish(goalComplete=true)`. The timeline rendered the second wording for both, so
+   * pressing ▶ working on a paused goal said "the audit rejected the finish" — reported as
+   * "pausedからの移動はrejectじゃないのでは?".
+   */
+  async setGoalStatus(
+    status: GoalState["status"],
+    by: "operator" | "auditor" | "agent" = "operator",
+  ): Promise<void> {
     this.goal = { ...this.goal, status, updatedAt: new Date().toISOString() };
     await this.writeGoalFile();
-    await this.log.append("goal", this.currentSession, this.currentBranch, { event: "status", status });
+    await this.log.append("goal", this.currentSession, this.currentBranch, {
+      event: "status",
+      status,
+      by,
+    });
   }
 
   /** Set the goal's verification contract (completion requirements). */
@@ -1986,7 +2001,23 @@ export class Agent {
       audit: { verdict, feedback: feedback.slice(0, 4000), at: new Date().toISOString() },
     };
     if (verdict === "approved") this.goal.status = "done";
-    else if (this.goal.status === "done") this.goal.status = "active"; // reopened
+    /**
+     * A rejection REOPENS the goal, and that is logged as its own status event.
+     *
+     * It used to flip `status` to "active" with no event at all, so the timeline only ever saw a
+     * bare "active" and could not tell this apart from an operator resuming a paused goal — which
+     * is why the `by` field exists. Logged here rather than through `setGoalStatus` because the
+     * audit entry below must be written in the same order the state changed.
+     */
+    const reopened = verdict !== "approved" && this.goal.status === "done";
+    if (reopened) {
+      this.goal.status = "active";
+      await this.log.append("goal", this.currentSession, this.currentBranch, {
+        event: "status",
+        status: "active",
+        by: "auditor",
+      });
+    }
     await this.writeGoalFile();
     await this.log.append("goal", this.currentSession, this.currentBranch, {
       event: "audit",
