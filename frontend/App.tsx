@@ -4989,7 +4989,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             when={sel()!.goal.text}
             fallback={<div class="card muted">no goal yet — write one below and press ✓ save. Then ▶ start (or any message) sets it in motion.</div>}
           >
-            <div class="card">
+            <div class="card goalcard">
               <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.text))} />
             </div>
             <Show when={sel()!.goal.verify}>

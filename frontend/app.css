@@ -1104,6 +1104,16 @@ details.reasoning .thinkscroll {
    gained a stray 14px gap under the ✕ bar on a narrow screen. */
 .rightbar h3:first-of-type { margin-top: 0; }
 .card { background: var(--bg-darkest); border-radius: var(--radius-lg); padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
+/**
+ * The GOAL card is not a log excerpt — it is the thing the agent is working toward.
+ *
+ * `max-height: 200px` with `overflow-y: auto` is right for tool output and long results, but on
+ * a multi-paragraph goal it silently CLIPPED the text and left an inner scrollbar, which reads as
+ * the goal having been truncated on save. Reported with a four-paragraph goal that stopped
+ * mid-URL. A goal is authored deliberately and is bounded by what the operator typed, so it sizes
+ * to its content instead; the sidebar itself already scrolls.
+ */
+.card.goalcard { max-height: none; overflow-y: visible; }
 /* the 📊 runtime card must NOT scroll internally: no max-height here — it
    grows with its content and the PANEL (.rightbar, overflow-y:auto) scrolls
    around it instead */

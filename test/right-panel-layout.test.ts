@@ -299,3 +299,22 @@ test("an EMPTY composer is one line, whatever its placeholder wraps to (#ui)", a
     "the empty branch must CLEAR the height (falling back to `rows`) instead of setting a px value",
   );
 });
+
+test("the GOAL card is not height-clipped (#ui)", async () => {
+  /**
+   * Reported: a four-paragraph goal displayed only up to "…gist.github.com/akk", i.e. cut
+   * mid-URL. `.card` carries `max-height: 200px; overflow-y: auto`, which is right for tool
+   * output but silently CLIPS a long goal and leaves an inner scrollbar — it reads as the goal
+   * having been truncated when it was saved.
+   *
+   * A CSS contract: `max-height` on a rendered element is not observable through happy-dom (no
+   * layout), so the rule itself is what is pinned. Asserted as "no cap" on the class the goal
+   * uses, with the base `.card` cap left alone so tool output keeps its bound.
+   */
+  const css = await readSource("frontend/app.css");
+  const base = cssRuleBody(css, ".card");
+  assert.match(base, /max-height:\s*200px/, "the base card keeps its bound for tool output");
+  const goal = cssRuleBody(css, ".card.goalcard");
+  assert.match(goal, /max-height:\s*none/, "the goal card must size to its content");
+  assert.match(goal, /overflow-y:\s*visible/, "and must not scroll internally");
+});

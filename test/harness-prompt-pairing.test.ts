@@ -98,10 +98,27 @@ test("the harness never sends two prompts back to back (#95)", { timeout: 30_000
      * agent must have run" for exactly that reason. The observable signal is the list growing and
      * then stopping: `maxTurns: 2` guarantees it stops.
      */
+    /**
+     * Poll until the run has BOTH produced messages AND stopped producing them.
+     *
+     * "Unchanged across two polls" alone was not enough: on a loaded Windows runner the loop
+     * entered before the agent had done anything, saw 0 then 0, and concluded the run was over —
+     * so the assertion ran against an empty list and failed with `0 !== 1` while the product was
+     * fine. MEASURED locally: 61 messages by 50ms, 204 by 150ms. The settle check therefore needs
+     * a minimum progress first, and a run that never starts must surface as the precondition
+     * failing rather than as a wrong answer about pairing.
+     */
     let last = -1;
+    let stable = 0;
     for (let i = 0; i < 600; i++) {
       const n = msgs().length;
-      if (n > 0 && n === last) break; // unchanged across two polls → the run is over
+      if (n > 0 && n === last) {
+        // require several consecutive identical readings, not just one, so a pause between
+        // rounds on a slow machine is not mistaken for the end of the run
+        if (++stable >= 5) break;
+      } else {
+        stable = 0;
+      }
       last = n;
       await new Promise((r) => setTimeout(r, 10));
     }
