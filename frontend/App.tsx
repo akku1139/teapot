@@ -3827,36 +3827,35 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         </div>
       </div>
     </Show>
+    /**
+     * The wallpaper layer lives OUTSIDE `.layout`, as its own sibling.
+     *
+     * This is the whole fix for "背景色があるときにUIのほぼすべてが透明になってほぼ何も見えない":
+     * the image was INSIDE `.layout`, which is `position: relative; z-index: 1` and therefore a
+     * stacking context. Within that context `.bgphoto` had `z-index: 0`, while the sidebar, the
+     * feed and the panels are ordinary STATIC elements — so the positioned image painted ON TOP of
+     * all of them. What looked like transparency was the photo covering the UI with the text
+     * faintly showing through.
+     *
+     * A backdrop cannot be a child of the thing it sits behind. As a sibling with `z-index: -1` it
+     * is behind `.layout`'s own stacking context, and no z-index inside the app can accidentally
+     * interact with it.
+     */
+    <Show when={activeBgImage()}>
+      {(src) => (
+        <img
+          class="bgphoto"
+          src={src()}
+          srcset={BG_WIDTHS.map((w) => `${src()}?w=${w} ${w}w`).join(", ")}
+          sizes="100vw"
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+        />
+      )}
+    </Show>
     <Show when={!cfg()?.needsSetup}>
     <div class={"layout" + (showRight() ? "" : " right-hidden")}>
-      {/**
-        * The wallpaper as a real <img> with `srcset`, not a CSS `background-image`.
-        *
-        * `background-image` cannot carry `srcset`, so the CSS version had to download whatever
-        * single file the theme stored — a 6000px phone photo decoded in full and kept decoded, for
-        * an area of at most a few megapixels. Reported as "背景画像が大きいとブラウザがリサイズで
-        * かなり重くなっちゃう".
-        *
-        * With `<img srcset>` the browser knows the display area and the device pixel ratio, picks
-        * the smallest candidate that covers it, and the server derives that width on demand
-        * (`/api/assets/<id>?w=…`). `sizes="100vw"` because the layer is fixed to the viewport.
-        *
-        * The element is inert: `aria-hidden`, no pointer events, and below everything
-        * (`--bg-layer-z`), so it cannot be clicked, selected or focused.
-        */}
-      <Show when={activeBgImage()}>
-        {(src) => (
-          <img
-            class="bgphoto"
-            src={src()}
-            srcset={BG_WIDTHS.map((w) => `${src()}?w=${w} ${w}w`).join(", ")}
-            sizes="100vw"
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-          />
-        )}
-      </Show>
       {/* ---------- sidebar ---------- */}
       <nav class="sidebar">
         <div class="agent-list">
@@ -8384,16 +8383,39 @@ function ConfigModal(props: {
     return out;
   };
 
+  /**
+   * What the save button should say — the same shape as the model panel's apply.
+   *
+   * Reported: "設定のsaveが適用されたのかわかりにくいのでmodelパネルのapplyと同じ感じにしてほしい".
+   * The model panel disables the button, does the work, shows `✓ applied` and restores the label;
+   * this footer just said "save settings" the whole time, so a save that succeeded and one that
+   * did nothing looked identical.
+   */
+  const [saveState, setSaveState] = createSignal<"idle" | "saving" | "saved" | "error">("idle");
+
+  /**
+   * A validation failure clears "saving" in ONE place.
+   *
+   * `save` has six early `return`s (a task with no agent, an MCP row with no name, …). Resetting the
+   * state at each of them is a list of things to forget — and forgetting one parks the button
+   * disabled on "saving…" for good, so the only control that could retry is dead.
+   */
+  const failSave = (message: string) => {
+    setErr(message);
+    setSaveState((s) => (s === "saving" ? "idle" : s));
+  };
+
   const save = async (e: Event) => {
     e.preventDefault(); setErr("");
+    setSaveState("saving");
     const providers = saveProviders();
-    if (!providers) return;
+    if (!providers) return setSaveState("idle");
     const cleanTasks = tasks()
       .filter((t) => t.id?.trim() || t.prompt?.trim())
       .map((t, i) => ({ id: t.id?.trim() || `task-${i + 1}`, agent: t.agent, schedule: t.schedule, prompt: t.prompt, ...(t.forked ? { forked: true } : {}) }));
     for (const t of cleanTasks) {
-      if (!t.agent) { setErr(`task "${t.id}": agent is required`); return; }
-      if (!t.schedule?.trim()) { setErr(`task "${t.id}": schedule is required`); return; }
+      if (!t.agent) return failSave(`task "${t.id}": agent is required`);
+      if (!t.schedule?.trim()) return failSave(`task "${t.id}": schedule is required`);
     }
     // MCP servers: validate HERE so a bad entry fails in the dialog that made it.
     // A nameless server would otherwise connect as "" and its tools would flatten to
@@ -8406,12 +8428,13 @@ function ConfigModal(props: {
       const transport = m.transport ?? "http";
       const command = String(m.command ?? "").trim();
       if (!name && !url && !command) continue; // a blank row is not an error
-      if (!name) { setErr("MCP: a server needs a name"); return; }
-      if (seenMcp.has(name)) { setErr(`MCP: two servers are named "${name}"`); return; }
+      if (!name) return failSave("MCP: a server needs a name");
+      if (seenMcp.has(name)) return failSave(`MCP: two servers are named "${name}"`);
       seenMcp.add(name);
       if (transport === "stdio" ? !command : !url) {
-        setErr(`MCP "${name}": ${transport === "stdio" ? "a command is" : "a url is"} required`);
-        return;
+        return failSave(
+          `MCP "${name}": ${transport === "stdio" ? "a command is" : "a url is"} required`,
+        );
       }
       cleanMcp.push({
         name,
@@ -8504,10 +8527,25 @@ function ConfigModal(props: {
         flashHint(
           `${names.join(", ") || "a saved MCP server"} needs authorization — 🔑 authorize in MCP servers`,
         );
+        setSaveState("saved");
+        setTimeout(() => setSaveState("idle"), 1200);
       } else {
-        props.onClose();
+        /**
+         * The panel closes on success, so the button state is set FIRST and the close deferred:
+         * a state change on a component that is already unmounting would never be painted, and the
+         * operator would see the dialog vanish with no confirmation — which is the complaint.
+         */
+        setSaveState("saved");
+        setTimeout(() => {
+          setSaveState("idle");
+          props.onClose();
+        }, 400);
       }
-    } catch (ex) { setErr((ex as Error).message); }
+    } catch (ex) {
+      setErr((ex as Error).message);
+      setSaveState("error");
+      setTimeout(() => setSaveState("idle"), 1600);
+    }
   };
 
   const numInput = (label: string, value: number, oninput: (v: number) => void, hint?: string) => (
@@ -9505,7 +9543,30 @@ function ConfigModal(props: {
             the bottom to commit anything. */}
         <div class="cfgfoot">
           <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
-          <button type="submit" class="cfgsave">save settings</button>
+          {/**
+            * The button reports its own outcome, like the model panel's apply.
+            *
+            * Reported: "設定のsaveが適用されたのかわかりにくいのでmodelパネルのapplyと同じ感じに".
+            * The label is fixed-width and cannot wrap (see `.cfgsave`), so changing it cannot
+            * resize the footer — "✓ applied" once grew this button vertically.
+            */}
+          <button
+            type="submit"
+            classList={{
+              cfgsave: true,
+              saved: saveState() === "saved",
+              error: saveState() === "error",
+            }}
+            disabled={saveState() === "saving"}
+          >
+            {saveState() === "saving"
+              ? "saving…"
+              : saveState() === "saved"
+                ? "✓ saved"
+                : saveState() === "error"
+                  ? "✕ failed"
+                  : "save settings"}
+          </button>
         </div>
       </form>
     </Modal>

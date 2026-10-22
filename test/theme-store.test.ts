@@ -427,8 +427,27 @@ test("the wallpaper layer is an <img> that cannot intercept anything (#theme)", 
     /var\(--bg-image-dim,\s*0?\.\d+\)/,
     "the dim value needs a fallback or the filter declaration is dropped",
   );
-  // the app must paint ABOVE it, or the wallpaper covers the UI
-  assert.match(cssRuleBody(css, ".layout"), /z-index:\s*[1-9]/);
+  /**
+   * The wallpaper must be BEHIND the app.
+   *
+   * Reported: "背景色があるときにUIのほぼすべてが透明になってほぼ何も見えない". Nothing was
+   * transparent — the photo was ON TOP. `.layout` is a stacking context, so an image placed inside
+   * it at `z-index: 0` painted over every static child, and the faint text showing through read as
+   * transparency.
+   *
+   * The invariant is negative z-index on the layer — it must sit behind `.layout`'s context, not
+   * merely "below the content" within it. `z-index: 0` here is the bug, not a neutral default.
+   */
+  assert.match(
+    cssRuleBody(css, ".bgphoto"),
+    /z-index:\s*-1/,
+    "the wallpaper must sit behind the app's stacking context, or it covers the UI",
+  );
+  assert.doesNotMatch(
+    cssRuleBody(css, ".bgphoto"),
+    /z-index:\s*0\s*;/,
+    "zero is painted above static siblings — that is how the image covered the sidebar",
+  );
 });
 
 test("a LIGHT theme gets light native widgets, custom themes included (#theme)", () => {
@@ -455,4 +474,27 @@ test("a LIGHT theme gets light native widgets, custom themes included (#theme)",
   // the specific smudge the report was about
   const box = cssRuleBody(css, 'input[type="checkbox"]');
   assert.match(box, /background-color:\s*var\(--bg-darkest\)/, "the box takes the theme's own surface");
+});
+
+test("with a wallpaper, `body` must NOT paint its own background (#ui)", () => {
+  /**
+   * Reported: "インラインコードブロックに透明度が効いてなさそう".
+   *
+   * The code WAS rendered at the configured alpha — MEASURED in headless Firefox,
+   * `color(srgb 0.101 0.109 0.133 / 0.5)` — so the alpha was never the problem. The problem was
+   * what lay BEHIND it: the image is at `z-index: -1`, which is behind `body`'s own background, and
+   * a body fill (even a translucent one) hides it. Every translucent surface was therefore
+   * revealing the body's fill rather than the photo, which reads as "transparency does nothing".
+   *
+   * So the invariant is negative: with an image set, `body` must not paint a background at all.
+   */
+  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+  const rule = cssRuleBody(css, 'html[data-bg-image="on"] body');
+  assert.match(
+    rule,
+    /background:\s*transparent/,
+    "the photo is the page background; a body fill sits in front of it and hides it",
+  );
+  // and the plain case must still paint, or a theme with no image would show the UA default
+  assert.match(cssRuleBody(css, "body"), /background:\s*var\(--bg-dark\)/);
 });

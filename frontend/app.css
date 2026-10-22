@@ -175,6 +175,33 @@
 }
 * { box-sizing: border-box; }
 /**
+ * A button's box must not move when its LABEL changes.
+ *
+ * MEASURED, headless Firefox, same font: swapping a button's label from `save settings` to
+ * `✓ saved` changes its WIDTH 138px → 100px and leaves its HEIGHT at 33px, with `line-height`
+ * either `normal` or `1`. So the glyph does NOT grow the line box here — an earlier note claiming
+ * that was a guess, and correcting it matters because it pointed at the wrong property.
+ *
+ * The damage is from WIDTH: a shrinking button re-measures its flex line, the siblings re-flow, and
+ * the row can wrap — which is what "the button grew vertically" looked like. Two consequences:
+ *
+ *   - `white-space: nowrap` so a longer label never wraps inside the button;
+ *   - a STABLE width is the caller's job (`min-width` on buttons whose label changes), because a
+ *     global fixed width would break every button that should size to its text.
+ *
+ * `line-height: 1` and flex centering are kept anyway: they make the vertical box independent of
+ * the glyph, which is cheap insurance for emoji and CJK labels even though it was not the cause
+ * here. This applies to EVERY button, so the fix does not have to be remembered per call site.
+ */
+button {
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  font: inherit;
+}
+/**
  * Native widgets follow the theme's MODE, not just the presets.
  *
  * `color-scheme` is what tells the browser how to paint its own controls — the unchecked checkbox
@@ -207,6 +234,17 @@ body { background: var(--bg-dark); color: var(--fg); font-size: var(--text-md); 
  *     busy photo makes every message unreadable and the cure is worse than the plain theme.
  */
 body { background: var(--bg-dark); }
+/**
+ * With a wallpaper the photo IS the page background, so `body` must not paint its own.
+ *
+ * The image sits at `z-index: -1`, which is BEHIND the body's own background — so a body fill,
+ * even a translucent one, hides it and the app reads as a flat dim panel. MEASURED: this is why
+ * "インラインコードブロックに透明度が効いてなさそう" — the code was correctly rendered at alpha 0.82,
+ * but what showed through it was the body's fill, not the photo, so transparency was invisible.
+ *
+ * Removing the fill is what makes every translucent surface in the app actually reveal the image.
+ */
+html[data-bg-image="on"] body { background: transparent; }
 
 /**
  * The wallpaper LAYER.
@@ -228,17 +266,22 @@ body { background: var(--bg-dark); }
   height: 100%;
   object-fit: cover;
   object-position: center;
-  z-index: 0;
+  /**
+   * BEHIND the app, and it must stay a SIBLING of `.layout` to work.
+   *
+   * `-1` rather than `0`: `.layout` is its own stacking context (`position: relative; z-index: 1`),
+   * so an image placed INSIDE it with `z-index: 0` painted on top of every static child — sidebar,
+   * feed, panels — which read as "the UI is transparent" when it was actually covered. As a sibling
+   * behind it, nothing inside the app can interact with this layer at all.
+   */
+  z-index: -1;
   pointer-events: none;
   user-select: none;
   /* the dim overlay: the same `--bg-image-dim` the gradient used, so the setting keeps working */
   filter: brightness(calc(1 - var(--bg-image-dim, 0.55)));
 }
-/* the app paints ABOVE the wallpaper layer; without this the photo covers the whole UI. Declared
-   here with `position` so it cannot be lost from the layout block below by itself. */
 .layout {
   position: relative;
-  z-index: 1;
   display: grid;
   /* The details panel gets a MINIMUM, and the chat takes everything else.
    *
@@ -636,7 +679,19 @@ body { background: var(--bg-dark); }
      reads as a table row. 120ms is below the threshold where it feels laggy. */
   transition: background-color var(--dur-fast) ease;
 }
-.msg:hover { background: #ffffff08; }
+/**
+ * A hover tint relative to the text colour, not a fixed white.
+ *
+ * `#ffffff08` only reads on a DARK surface: on a light theme the row is already near-white, so
+ * lightening it by 3% is invisible — reported as "テーマがDarkだとメッセージをhoverしたときに背景が
+ * ちょっと白くなるけど、ライト系のテーマだとそれが起きない".
+ *
+ * `color-mix()` toward `--fg` follows the theme: on dark, `--fg` is pale so the row lightens (the
+ * behaviour that already looked right); on light, `--fg` is near-black so it DARKENS instead. Either
+ * way the contrast change is the same 6%, which is what a hover needs — a consistent magnitude in
+ * both directions, rather than one theme getting a visible response and the other none.
+ */
+.msg:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
 /* queued prompt echo: half-transparent + pulsing dot until the LLM call that
    contains it fires; delivered-but-unconsumed turns calm green */
 .msg.pending { opacity: .75; }
@@ -1386,8 +1441,17 @@ details.reasoning .thinkscroll {
 }
 .cfgsave {
   background: var(--acc); border: none; border-radius: var(--radius-md); color: #fff;
-  padding: 7px 16px; cursor: pointer; font: inherit; font-weight: 600;
+  padding: 0 16px; cursor: pointer; font-weight: 600;
+  /* its label changes to "saving…"/"✓ saved", so the width is reserved; the HEIGHT no longer needs
+     anything here because the global `button` rule pins `line-height` for every button */
+  height: 32px;
+  min-width: 9.5rem;
+  text-align: center;
+  transition: background-color var(--dur-fast) ease;
 }
+.cfgsave:disabled { cursor: default; filter: none; }
+.cfgsave.saved { background: var(--ok); }
+.cfgsave.error { background: var(--err); }
 .cfgsave:hover { filter: brightness(1.12); }
 /* a labelled checkbox row in the settings form — the grid lays fields out in columns,
    so a toggle must span and sit on its own line */

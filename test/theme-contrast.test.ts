@@ -92,3 +92,32 @@ test("a light theme's checkbox border is VISIBLE, not a smudge (#theme)", () => 
     "`--line` is a hairline separator (ramune: ~1.05:1) and must not be used for a control edge",
   );
 });
+
+test("the message HOVER tint is visible on light themes too (#theme)", () => {
+  /**
+   * Reported: "テーマがDarkだとメッセージをhoverしたときに背景がちょっと白くなるけど、ライト系の
+   * テーマだとそれが起きない".
+   *
+   * Cause: the tint was the literal `#ffffff08` — lighten by 3%. On a dark surface that reads; on a
+   * near-white one there is nothing to lighten toward, so the row did not change at all. A
+   * hardcoded colour cannot follow the theme.
+   *
+   * The fix mixes 6% of `--fg` into the row, which is pale on dark themes (lightens, as before) and
+   * near-black on light ones (darkens). The point of this test is that BOTH directions land in a
+   * similar, visible range — not that a particular colour is used.
+   */
+  const mix = (fg: string, bg: string, p: number): string => {
+    const toRgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    const a = toRgb(fg);
+    const b = toRgb(bg);
+    return `#${a.map((v, i) => Math.round(v * p + b[i]! * (1 - p)).toString(16).padStart(2, "0")).join("")}`;
+  };
+  for (const [name, p] of Object.entries(PRESET_PALETTES)) {
+    const hovered = mix(p.fg, p.bgDark, 0.06);
+    const delta = contrast(hovered, p.bgDark);
+    assert.ok(
+      delta >= 1.08,
+      `${name}: hover changes contrast by only ${delta.toFixed(3)}:1 — a hover that cannot be seen is not a hover`,
+    );
+  }
+});
