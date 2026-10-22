@@ -405,6 +405,33 @@ html[data-bg-image="on"] body { background: transparent; }
     box-shadow: none;
   }
   .rightbar.open { transform: none; box-shadow: -8px 0 24px #0007; }
+  /**
+   * The SIDEBAR becomes a drawer at the same breakpoint, with the right panel's gestures.
+   *
+   * Asked for as "スマホで見たときに左パネルも邪魔になるので…右パネルと同じく閉じるだけでいいのか、
+   * モバイル版DiscordみたいなUXにするのかはお任せ". Slide-over + backdrop + ✕ is the Discord shape
+   * and reuses what the right panel already does, so there is one drawer behaviour to learn.
+   *
+   * Everything here is inside the media query: the base `.layout` grid is untouched, so PC layout
+   * cannot regress — the constraint the operator named.
+   */
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: min(300px, 86vw); z-index: 6;
+    transform: translateX(-100%); transition: transform .18s ease, box-shadow .18s ease;
+    box-shadow: none;
+  }
+  .sidebar.open { transform: none; box-shadow: 8px 0 24px #0007; }
+  .leftbarbackdrop {
+    position: fixed; inset: 0; z-index: 4; background: #0006;
+  }
+  /* the drawer's own header: the only place the ✕ exists */
+  .sidehead {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 0 var(--space-2); margin-bottom: var(--space-2);
+    border-bottom: 1px solid var(--line);
+  }
+  /* the drawer covers the column, so the grid needs one */
+  .layout, .layout.right-hidden { grid-template-columns: 1fr; }
 }
 
 /* ---- sidebar ---- */

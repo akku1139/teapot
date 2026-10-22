@@ -691,6 +691,23 @@ export default function App() {
     // is exactly the state we are trying to make escapable.
     if (showRight()) setRight(false);
   };
+  /**
+   * The LEFT panel is a drawer on a phone, and only there.
+   *
+   * Asked for as "スマホで見たときに左パネルも邪魔になるので、これはいい感じにしたい / 右パネルと
+   * 同じく閉じるだけでいいのか、モバイル版DiscordみたいなUXにするのかはお任せ".
+   *
+   * Same shape as the right panel, deliberately: a slide-over with a backdrop and a ✕, opened
+   * from a hamburger in the header. On desktop nothing changes — the drawer is off, the sidebar is
+   * a grid column, and the hamburger is not rendered. Regression safety on PC is the constraint the
+   * operator named, so the narrow-only behaviour lives behind `isNarrow()` and the base grid is
+   * untouched.
+   *
+   * NOT persisted, unlike the right panel: a phone that remembered "sidebar open" would greet the
+   * operator with a drawer over the conversation every launch.
+   */
+  const [showLeft, setShowLeft] = createSignal(false);
+  const closeLeft = () => setShowLeft(false);
 
   /* ---------- theme picker (per-browser, localStorage-backed) ---------- */
   // fixed theme…
@@ -4027,9 +4044,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         </div>
       )}
     </Show>
-    <div class={"layout" + (showRight() ? "" : " right-hidden")}>
+    <div class={"layout" + (showRight() ? "" : " right-hidden") + (showLeft() ? " left-open" : "")}>
+      {/* A narrow screen gets a drawer for the SIDEBAR too, with the same gestures as the right
+          panel: a hamburger to open, a backdrop or ✕ to close. Wide screens never see any of it —
+          `narrow()` gates every piece, so the desktop grid is exactly what it was. */}
+      <Show when={narrow() && showLeft()}>
+        <div class="leftbarbackdrop" onclick={closeLeft} />
+      </Show>
       {/* ---------- sidebar ---------- */}
-      <nav class="sidebar">
+      <nav class={"sidebar" + (showLeft() ? " open" : "")}>
+        {/* the ✕ only exists in the drawer form; on desktop the sidebar is always visible */}
+        <Show when={narrow()}>
+          <div class="sidehead">
+            <b>agents</b>
+            <button class="iconbtn" title="close the agent list" onclick={closeLeft}>✕</button>
+          </div>
+        </Show>
         <div class="agent-list">
           <For each={sidebarRows()}>
             {(row) => (
@@ -4362,6 +4392,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             control in it) on every poll (#30). */}
         <Show when={sel()?.id} keyed fallback={<div style="display:grid;place-items:center;height:100%" class="muted">select an agent</div>}>
           <header class="chan-head">
+            {/* the only way to reach the agent list on a phone; absent on a wide screen, where
+                the sidebar is a permanent column and a hamburger would be a dead control */}
+            <Show when={narrow()}>
+              <button
+                class="iconbtn ham"
+                title="agent list"
+                aria-expanded={showLeft()}
+                onclick={() => setShowLeft(!showLeft())}
+              >☰</button>
+            </Show>
             <span class="hash">#</span>
             <span class="title">{sel()!.id}</span>
             {/**
@@ -4446,13 +4486,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <IconBtn icon="⏹" title="stop every sub-agent this agent spawned (descendants included)" onClick={stopChildren} />
               </Show>
               <span class="head-sep" aria-hidden="true" />
+              {/**
+                * ORDER: archive · fork · terminal · panel.
+                *
+                * The panel toggle used to sit next to fork, and the operator kept hitting ARCHIVE
+                * on the way to it: "右パネル開閉しようとしてアーカイブしかけたことが何回かある".
+                * Archive is the destructive one, so it goes FURTHEST from the toggle rather than
+                * beside it — the toggle is the most-used control, and its neighbour should not be
+                * the only irreversible action in the row (it is reversible, but not obviously so).
+                */}
+              <IconBtn icon="🗄" title="archive this agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)" onClick={archiveSelected} />
               <IconBtn icon="⑂" title="fork: branch off the conversation here — try things without disturbing the main line" onClick={forkSelected} />
               <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
               {/* the panel toggle advertises its STATE, not just its action: `active` fills
                   it when the panel is open, so the button answers "is it showing?" without a
                   click. `aria-expanded` says the same thing to a screen reader. */}
               <IconBtn icon="▤" title="toggle details panel (d)" active={showRight()} onClick={toggleRight} />
-              <IconBtn icon="🗄" title="archive this agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)" onClick={archiveSelected} />
             </span>
           </header>
 
