@@ -7038,10 +7038,25 @@ const fileUiFor = (agentId: string): FileUiState => {
  * Pure presentational: it takes a palette and paints it, so a preset and a custom theme render
  * through exactly the same path and cannot drift apart.
  */
-function ThemePreview(props: { palette: ThemePalette }) {
+function ThemePreview(props: {
+  palette: ThemePalette;
+  /**
+   * A custom theme may carry a background image, and a preview that omits it shows a flat palette
+   * the operator never sees in the app — two themes that differ only by wallpaper previewed
+   * identically. Asked for as "テーマプレビューで背景画像も出るといい".
+   *
+   * Drawn as its OWN layer under the palette layers rather than as the root's `background`, so the
+   * simulated nav/head/panel keep their colours: the point is to preview the composition, not to
+   * preview the photo alone.
+   */
+  backgroundImage?: string;
+}) {
   const p = () => props.palette;
   return (
     <span class="tprev" style={{ background: p().bgDark }}>
+      <Show when={props.backgroundImage}>
+        <span class="tprev-bg" style={{ "background-image": props.backgroundImage }} />
+      </Show>
       <span class="tprev-nav" style={{ background: p().bgDarkest }} />
       <span class="tprev-head" style={{ background: p().bgDarkest }} />
       <span class="tprev-panel" style={{ background: p().bgMid }} />
@@ -7105,7 +7120,24 @@ function ThemeEditor(props: {
    */
   const editing = () => {
     const list = props.themes();
-    return list.find((t) => t.id === editingId()) ?? list[0];
+    /**
+     * The theme being edited defaults to the ACTIVE one, not `list[0]`.
+     *
+     * `editingId` is only set by a click in this dialog, so on open it is empty and the editor
+     * showed the FIRST custom theme — which may be neither the active one nor one with a
+     * background image. Combined with the gate below (which requires a custom theme to be active),
+     * the whole editor and its "background image" section appeared or vanished depending on an
+     * arbitrary list order. Reported as "背景画像があるカスタムテーマと無いテーマがあるときに背景画像
+     * 設定欄がどっちからも消失してそう".
+     *
+     * Falling back to `activeId` means: when a custom theme is on screen, the editor is about THAT
+     * theme, so its image field is reachable whenever there is an image to edit.
+     */
+    return (
+      list.find((t) => t.id === editingId()) ??
+      list.find((t) => t.id === props.activeId) ??
+      list[0]
+    );
   };
   /**
    * What the hex field SHOWS while it is being typed in, keyed by palette key.
@@ -7315,13 +7347,15 @@ function ThemeEditor(props: {
         {(t) => (
           <>
             <div class="cfggrid" style="margin-top:8px">
-              <label class="trow">name
-                <input
-                  class="w100"
-                  value={editing()!.label}
-                  oninput={(e) => patch((cur) => ({ ...cur, label: e.currentTarget.value.slice(0, 40) }))}
-                />
-              </label>
+              {/**
+                * NO name field here.
+                *
+                * "your themes のテーマ名欄と themes のテーマプレビュー選択が実質役割が重複している"
+                * — the field and the card grid were two ways to point at the same theme, and the
+                * label is what the card shows anyway. The theme keeps the name it was created
+                * with (`<preset> copy`); an operator who wants a different one duplicates again,
+                * which is the same effort as typing over it.
+                */}
               <label class="trow">appearance
                 <select
                   value={editing()!.mode}
@@ -8399,6 +8433,39 @@ function ConfigModal(props: {
    */
   type Section = "providers" | "runtime" | "appearance" | "mcp" | "tasks" | "archive" | "agents" | "update" | "skills" | "help";
   const [section, setSection] = createSignal<Section>("providers");
+  /**
+   * Pick a theme from a CARD, routing to whichever slot the painter actually reads.
+   *
+   * Under "follow the system" the painted theme comes from the dark/light slots, so the cards'
+   * old `setActive(...)` (which writes the FIXED slot) changed a value nothing read: the card
+   * highlighted and the screen did not move. That invisible-edit shape is what showed up as
+   * "follow the system を入れてるときにテーマ複製したりするとやっぱりちょっと変な挙動になる".
+   *
+   * A card writes the slot for ITS OWN mode, exactly as the labelled pickers above do — so picking
+   * a light card while the OS is dark updates the light slot instead of applying something the OS
+   * mode says is not current.
+   */
+  const pickThemeCard = (id: string, mode: "dark" | "light") => {
+    if (props.theme.auto()) {
+      if (mode === "dark") props.theme.setDark(id);
+      else props.theme.setLight(id);
+      return;
+    }
+    props.theme.setActive(id);
+  };
+  /**
+   * Which card reads as selected: while following the system, the slot for the mode the OS is IN —
+   * that is the painted theme, i.e. the one on screen. Keying it off the fixed slot marked a card
+   * that was not visible and left the real one unmarked.
+   */
+  const themeCardChosen = (id: string) => {
+    const auto = props.theme.auto();
+    const prefLight =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-color-scheme: light)").matches
+        : false;
+    return auto ? (prefLight ? props.theme.light() : props.theme.dark()) === id : props.theme.activeId() === id;
+  };
   // the archive list is SERVER state (which entries are archived), fetched on open
   // and after every action — not derived from props.cfg, which carries the config as
   // loaded and would go stale the moment an agent is archived from the controls panel
@@ -8882,15 +8949,12 @@ function ConfigModal(props: {
                     {(t) => (
                       <button
                         type="button"
-                        class={"themecard" + (fixedTheme() === t.id ? " on" : "")}
+                        class={"themecard" + (themeCardChosen(t.id) ? " on" : "")}
                         title={`${t.label} (custom)${t.backgroundImage ? " · with a background image" : ""}`}
-                        aria-pressed={fixedTheme() === t.id}
-                        onclick={() => {
-                          setFixedTheme(t.id);
-                          localStorage.setItem("teapot.theme", t.id);
-                        }}
+                        aria-pressed={themeCardChosen(t.id)}
+                        onclick={() => pickThemeCard(t.id, t.mode)}
                       >
-                        <span class="themecard-preview"><ThemePreview palette={t.palette} /></span>
+                        <span class="themecard-preview"><ThemePreview palette={t.palette} backgroundImage={t.backgroundImage} /></span>
                         <span class="themecard-label">{t.label} ★</span>
                       </button>
                     )}
@@ -8899,13 +8963,10 @@ function ConfigModal(props: {
                     {(t) => (
                       <button
                         type="button"
-                        class={"themecard" + (fixedTheme() === t.key ? " on" : "")}
+                        class={"themecard" + (themeCardChosen(t.key) ? " on" : "")}
                         title={`${t.label} (${t.mode})`}
-                        aria-pressed={fixedTheme() === t.key}
-                        onclick={() => {
-                          setFixedTheme(t.key);
-                          localStorage.setItem("teapot.theme", t.key);
-                        }}
+                        aria-pressed={themeCardChosen(t.key)}
+                        onclick={() => pickThemeCard(t.key, t.mode)}
                       >
                         <span class="themecard-preview">
                           <ThemePreview palette={presetPalette(t.key)} />
