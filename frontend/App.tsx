@@ -5911,10 +5911,23 @@ function HighlightedCode(props: { text: string; lang?: string }) {
     })();
   });
   onCleanup(() => { run++; });
+  /**
+   * `when={!!html()}`: a boolean, so Solid re-evaluates the CONDITION reactively.
+   *
+   * `when={html()}` also tracks, but the CHILD below is an accessor-free element — it is created
+   * once when the condition first holds. MEASURED: the effect logged `{chunks: 1, accLen: 604}`
+   * while the DOM still held the plain `<pre>` fallback, which is why "ツールカードのshiki効いてない"
+   * looked like the highlighter was failing when it had actually succeeded.
+   */
   return (
-    <Show when={html()} fallback={<pre class="mono toolbody">{props.text}</pre>}>
-      {/* shiki emits its own <pre class="shiki"><code>…</code></pre>; the markup is shiki-generated */}
-      <div class="toolbody shiki-host" innerHTML={html()} />
+    <Show when={!!html()} fallback={<pre class="mono toolbody">{props.text}</pre>}>
+      {/**
+        * The wrapper carries BOTH classes the stylesheet keys on: `toolbody` for the shared surface
+        * and `shiki` for the dual-theme colour variables. Shiki emits its own
+        * `<pre class="shiki"><code>…</code></pre>` — markup we generate from a grammar, never from
+        * user input — so the inner `<pre>` must not paint a second surface of its own.
+        */}
+      <div class="toolbody shiki" innerHTML={html()} />
     </Show>
   );
 }

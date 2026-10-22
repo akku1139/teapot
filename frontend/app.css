@@ -1905,12 +1905,32 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 .toolbody.shiki {
   margin: 0;
   padding: 10px 12px;
-  /* shiki also exposes its own per-theme backgrounds as variables */
-  background-color: var(--shiki-dark-bg);
   font-size: var(--text-sm);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
+  /**
+   * NO shiki background here — the tool body owns the surface.
+   *
+   * Shiki reports its own per-theme background as `--shiki-*-bg`, and painting it made the code
+   * block an OPAQUE panel: every tool card showed a solid rectangle where the translucent surface
+   * belonged, which is also why the highlighting looked like it had no effect (the tokens were
+   * there, on a background that had swallowed the theme).
+   */
+}
+/**
+ * Shiki's own `<pre>` inside the wrapper must not paint again.
+ *
+ * `innerHTML` brings `<pre class="shiki">`, which the file-preview rule styles with its own padding
+ * and background. Inside a tool card the WRAPPER is the surface, so the inner element is layout
+ * only — otherwise the block is inset twice and reads as a nested pane.
+ */
+.toolbody.shiki pre.shiki,
+.toolbody.shiki pre.shiki code {
+  background: none;
+  padding: 0;
+  margin: 0;
+  font-size: inherit;
 }
 html[data-appearance="light"] .filepreview .shiki { background-color: var(--shiki-light-bg); }
 

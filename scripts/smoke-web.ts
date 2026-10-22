@@ -70,7 +70,10 @@ const EVENTS = [
   { id: "e2", seq: 2, ts: "2026-01-01T10:00:05Z", session: "alpha-s1", branch: "br0", parent: "e1",
     type: "message", data: { content: "hi there\n\n- one\n- two", final: true } },
   { id: "e3", seq: 3, ts: "2026-01-01T10:00:09Z", session: "alpha-s1", branch: "br0", parent: "e2",
-    type: "tool_call", data: { callId: "c1", name: "bash", args: { command: "ls" } } },
+    // a LONG command: `bash` only renders the command block when it differs from the one-line
+    // summary label, so a short "ls" exercises neither shiki nor the parameter styling
+    type: "tool_call", data: { callId: "c1", name: "bash", args: { // longer than the 96-char summary label, or `cmd === label.slice(2)` and the block is skipped
+      command: "echo SHIKI_MARKER --flag=value --another-flag=value2 --third-flag=value3 --fourth-flag=value4 --fifth-flag=value5 --sixth" } } },
   { id: "e4", seq: 4, ts: "2026-01-01T10:00:10Z", session: "alpha-s1", branch: "br0", parent: "e3",
     type: "tool_result", data: { callId: "c1", name: "bash", result: "file.txt", ok: true, durationMs: 12 } },
   // #63: a CURRENT log contains no child rows — the master no longer mirrors a
@@ -449,10 +452,10 @@ console.log("deep render ok: file tree present");
 
 // feed rows rendered through the markdown/tool-embed pipeline
 const feedText = await waitFor("feed rows", () =>
-  ["hello", "hi there", "$ ls"].every((m) => bodyText().includes(m)),
+  ["hello", "hi there", "SHIKI_MARKER"].every((m) => bodyText().includes(m)),
 );
 if (!feedText) {
-  const missing = ["hello", "hi there", "$ ls"].filter((m) => !bodyText().includes(m));
+  const missing = ["hello", "hi there", "SHIKI_MARKER"].filter((m) => !bodyText().includes(m));
   console.error(
     `DEEP RENDER MISSING FEED ROW: ${missing.join(", ")}` +
       `\nbody snippet: ${JSON.stringify(bodyText().slice(0, 600))}`,
@@ -460,6 +463,60 @@ if (!feedText) {
   process.exit(1);
 }
 console.log("deep render ok: feed rows present");
+
+/**
+ * A TOOL CARD'S INPUT AND OUTPUT ARE SHIKI-HIGHLIGHTED.
+ *
+ * Reported: "ツールカードのshiki効いてない". The highlighting did not apply because the wrapper
+ * carried `shiki-host` while every stylesheet rule keyed on `.toolbody.shiki` — the classes
+ * disagreed, so the dual-theme colour variables were never picked up and the block rendered as
+ * plain text on shiki's own OPAQUE background (which also swallowed the translucent surface).
+ *
+ * Asserted on the MARKUP: shiki emits `<pre class="shiki">` with per-token `<span style="--shiki-…">`.
+ * A plain fallback has neither. Both preconditions are checked, because a fixture without a tool
+ * row would otherwise pass vacuously.
+ */
+{
+  /**
+   * POLL: highlighting is lazy (the shiki core is a dynamic import, grammars load per language), so
+   * the markup appears a tick after the row does. Checking synchronously would fail on a working
+   * build — the same fixed-wait mistake the suites were told to stop making.
+   */
+  let marked: Element[] = [];
+  let tokens: NodeListOf<Element> = w.document.querySelectorAll("none");
+  for (let i = 0; i < 120; i++) {
+    marked = [...w.document.querySelectorAll(".feed .toolbody.shiki")];
+    tokens = w.document.querySelectorAll(".feed .toolbody.shiki span[style*='--shiki']");
+    if (marked.length && tokens.length) break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  if (!marked.length) {
+    const all = [...w.document.querySelectorAll(".feed .toolbody")].map((e) => e.className);
+    const rows = [...w.document.querySelectorAll(".feed .embed")].length;
+    console.error("#shiki: tool embeds=" + rows + " argerr=" + w.document.querySelectorAll(".feed .toolbody").length);
+    console.error(
+      "#shiki: no `.toolbody.shiki`. toolbody classes present: " + JSON.stringify(all.slice(0, 5)),
+    );
+    console.error(
+      "#shiki REGRESSION: no tool body carries the `shiki` class — the stylesheet keys on " +
+        "`.toolbody.shiki`, so highlighting cannot show",
+    );
+    process.exit(1);
+  }
+  if (!tokens.length) {
+    console.error(
+      "#shiki REGRESSION: no token spans — the block rendered as PLAIN text despite a grammar",
+    );
+    process.exit(1);
+  }
+  // and the inner pre must not paint its own surface (double inset / opaque panel)
+  const inner = w.document.querySelector(".feed .toolbody.shiki pre.shiki") as HTMLElement | null;
+  if (inner && (inner.style.backgroundColor || inner.getAttribute("style")?.includes("background-color"))) {
+    console.error("#shiki REGRESSION: shiki's own background is on the inner pre — it must be layout only");
+    process.exit(1);
+  }
+  console.log(`deep render ok: tool cards are shiki-highlighted (${tokens.length} token spans) (#shiki)`);
+}
 
 /* ---------- #51: the audit rows must not render as one long line ----------
  * Reported: "`🔍 completion audit started` and the audit body to its right are
