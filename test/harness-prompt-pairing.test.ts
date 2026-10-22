@@ -100,37 +100,84 @@ test("the harness never sends two prompts back to back (#95)", { timeout: 30_000
      * then stopping: `maxTurns: 2` guarantees it stops.
      */
     /**
-     * Poll until the run has BOTH produced messages AND stopped producing them.
+     * Wait for the run to END — `status` leaves "running" — not for the message count to look
+     * settled.
      *
-     * "Unchanged across two polls" alone was not enough: on a loaded Windows runner the loop
-     * entered before the agent had done anything, saw 0 then 0, and concluded the run was over —
-     * so the assertion ran against an empty list and failed with `0 !== 1` while the product was
-     * fine. MEASURED locally: 61 messages by 50ms, 204 by 150ms. The settle check therefore needs
-     * a minimum progress first, and a run that never starts must surface as the precondition
-     * failing rather than as a wrong answer about pairing.
+     * A count-based settle is wrong in principle here: `worstRun` reads ADJACENCY, and mid-run
+     * there is a legitimate instant where a harness prompt has been pushed and the assistant reply
+     * that separates it has not. MEASURED on the Windows runner: the polls looked stable for five
+     * consecutive reads at ~406ms into a run that was still going, and the test failed with
+     * "two consecutive harness prompts" while the product was fine.
+     *
+     * `maxTurns: 2` bounds the run, so waiting for it to finish is bounded too. The lower bound on
+     * progress is kept: a run that never starts must fail the PRECONDITION, not the pairing
+     * assertion.
      */
-    let last = -1;
-    let stable = 0;
-    for (let i = 0; i < 600; i++) {
-      const n = msgs().length;
-      if (n > 0 && n === last) {
-        // require several consecutive identical readings, not just one, so a pause between
-        // rounds on a slow machine is not mistaken for the end of the run
-        if (++stable >= 5) break;
-      } else {
-        stable = 0;
-      }
-      last = n;
+    for (let i = 0; i < 900 && msgs().length === 0; i++) {
       await new Promise((r) => setTimeout(r, 10));
     }
+    /**
+     * `status` cannot be polled for "running" — `start()` returns BEFORE the loop flips it (it is
+     * still `stopped` on the next line), so that loop exits immediately. The LOG is the observable:
+     * `maxTurns: 2` guarantees the run ends, and the agent writes a state row when it returns to
+     * idle. Waiting for that is waiting for the run to actually finish.
+     */
+    /**
+     * Assert on the LOG, not on the in-memory message list.
+     *
+     * The log is append-only and records every harness prompt with `source: "harness"`, so
+     * "two harness prompts with no assistant turn between them" is directly observable there. The
+     * in-memory list needed a "has the run finished?" poll, and every version of that poll I tried
+     * was satisfiable before the pairing had happened — MEASURED: with the suppression disabled the
+     * test still passed (it had become vacuous), because a bare "idle row exists" check matched the
+     * startup transition and the loop broke in 21ms.
+     *
+     * Bounded wait on harness prompts: with the suppression working there are few, and with it
+     * broken the pairing appears immediately, so this terminates either way.
+     */
+    let harnessPrompts: { name: string; seq: number }[] = [];
+    for (let i = 0; i < 900; i++) {
+      const ev = await readEvents(agent.log.filePath);
+      harnessPrompts = ev
+        .filter((e) => e.type === "prompt" && (e.data as { source?: string }).source === "harness")
+        .map((e) => ({ name: String((e.data as { text?: string }).text ?? "").slice(0, 40), seq: e.seq }));
+      if (harnessPrompts.length >= 2) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // PRECONDITION: the run must have produced at least one harness prompt to reason about
     assert.ok(
-      msgs().length > 0,
-      "precondition: the agent must have run (#95)",
+      harnessPrompts.length >= 1,
+      "precondition: the harness must have sent at least one prompt (#95)",
     );
-    assert.equal(
-      worstRun((agent as unknown as { messages: unknown[] }).messages),
-      1,
-      "two consecutive harness prompts read as the harness contradicting itself (#95)",
+    /**
+     * The signal is ADJACENCY, not a count.
+     *
+     * Counting harness prompts cannot work: with the gates open the agent legitimately requests
+     * progress several times (MEASURED: 5 in one short run, all progress reports). The bug is two
+     * harness prompts with NO assistant message between them, which is what reads to the model as
+     * the harness contradicting itself.
+     *
+     * Read from the log, so the ordering is the file's own and there is no window to miss.
+     */
+    const log = await readEvents(agent.log.filePath);
+    let prevWasHarness = false;
+    const pairs: string[] = [];
+    for (const e of log) {
+      if (e.type === "message") {
+        prevWasHarness = false; // an assistant turn separates instructions
+        continue;
+      }
+      if (e.type !== "prompt") continue;
+      const isHarness = (e.data as { source?: string }).source === "harness";
+      if (isHarness && prevWasHarness) {
+        pairs.push(String((e.data as { text?: string }).text ?? "").slice(0, 60));
+      }
+      prevWasHarness = isHarness;
+    }
+    assert.deepEqual(
+      pairs,
+      [],
+      "back-to-back harness prompts read as the harness contradicting itself (#95):\n" + pairs.join("\n"),
     );
     await agent.dispose();
   });
