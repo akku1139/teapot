@@ -3340,6 +3340,81 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   };
   // oxlint-disable-next-line no-unassigned-vars
   let composerEl: HTMLTextAreaElement | undefined;
+  /** the off-layout mirror `measureComposerContent` reuses, and its inert host */
+  let composerMirror: HTMLDivElement | undefined;
+  let composerMirrorHost: HTMLDivElement | undefined;
+  /** the one `<style>` that makes the mirror render its attribute text */
+  let composerMirrorStyleAdded = false;
+  /**
+   * The height this textarea's CONTENT needs, without touching the textarea.
+   *
+   * A fixed-height textarea reports `max(height, content)`, so its content height cannot be read in
+   * place; the usual workaround (set `height: auto`, read, restore) lays the box out at ONE LINE for
+   * an instant. The composer is a flex sibling of the feed, so that instant changes the feed's
+   * viewport and the follow policy re-pins against the one-line floor — the reported scroll-back,
+   * which fired on every keystroke whose height did not change.
+   *
+   * A mirror div is laid out with the same font, padding and width, so its `scrollHeight` is what
+   * the content would take while the real box keeps its height. MEASURED against the textarea's own
+   * `scrollHeight` at 1/2/3 lines and with a long single line: 37/54/70/54 — identical.
+   *
+   * It lives in its OWN `aria-hidden` container on `<body>`: a detached element reports 0, but
+   * putting it beside the composer made the typed text visible to queries over the chat tree.
+   */
+  function measureComposerContent(el: HTMLTextAreaElement): number {
+    if (!composerMirror) {
+      composerMirror = document.createElement("div");
+      composerMirror.setAttribute("aria-hidden", "true");
+      const s = composerMirror.style;
+      s.position = "absolute";
+      s.visibility = "hidden";
+      s.pointerEvents = "none";
+      s.top = "0";
+      s.left = "-9999px";
+      s.whiteSpace = "pre-wrap";
+      s.overflowWrap = "anywhere";
+      s.wordBreak = "break-word";
+      composerMirror.dataset.mirror = "";
+    }
+    const cs = getComputedStyle(el);
+    for (const prop of [
+      "font-family", "font-size", "font-weight", "line-height", "letter-spacing",
+      "padding-top", "padding-bottom", "padding-left", "padding-right",
+      "border-top-width", "border-bottom-width", "box-sizing",
+    ]) {
+      composerMirror.style.setProperty(prop, cs.getPropertyValue(prop));
+    }
+    composerMirror.style.width = `${el.clientWidth}px`;
+    /**
+     * The text goes in an ATTRIBUTE, rendered by `::after { content: attr(…) }`.
+     *
+     * Two constraints meet here. The mirror must be in the document (MEASURED: detached reports
+     * `scrollHeight: 0`), and it must carry the typed text so the wrap height is right — but a text
+     * NODE anywhere in `<body>` is part of `body.textContent`, so a harness (and any "how many times
+     * does this string appear" check) saw the operator's draft twice. MEASURED: putting the text in
+     * `textContent` dropped the smoke suite from 55 passing checks to 10 with "PENDING ECHO
+     * DUPLICATED".
+     *
+     * `attr()` rendering keeps the glyphs in the layout while leaving them out of `textContent` —
+     * verified: same 70px height for a 3-line value, with `textContent` not containing it.
+     */
+    composerMirror.setAttribute("data-mirror-text", el.value.endsWith("\n") ? `${el.value} ` : el.value);
+    if (!composerMirrorHost) {
+      composerMirrorHost = document.createElement("div");
+      composerMirrorHost.setAttribute("aria-hidden", "true");
+      composerMirrorHost.style.cssText =
+        "position:absolute;left:-9999px;top:0;pointer-events:none";
+      document.body.appendChild(composerMirrorHost);
+    }
+    if (composerMirror.parentElement !== composerMirrorHost) composerMirrorHost.appendChild(composerMirror);
+    if (!composerMirrorStyleAdded) {
+      const style = document.createElement("style");
+      style.textContent = '[data-mirror]::after{content:attr(data-mirror-text);white-space:pre-wrap;display:block}';
+      document.head.appendChild(style);
+      composerMirrorStyleAdded = true;
+    }
+    return composerMirror.scrollHeight;
+  }
   /**
    * Size the composer to its content, and keep the reader pinned to the tail when THAT
    * resize is what moved the bottom of the feed.
@@ -3392,27 +3467,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       return;
     }
     /**
-     * The `auto` round-trip is REQUIRED, every time, and nothing on the element can replace it.
+     * Measure through the MIRROR, so the real box is never collapsed.
      *
-     * A textarea with an explicit height reports `max(its height, its content)` as `scrollHeight`
-     * (MEASURED: a 60px box holding one line reports 60; no expression yields 20). So the content
-     * height cannot be recovered while the box is tall, and three attempts to skip the collapse
-     * by comparing numbers on the fixed-height box each shipped a bug — the last one is why a
-     * grown box stopped coming back down ("広がった入力枠が Ctrl+A Backspace もしくは中身を全部
-     * けさないともとに戻らない").
-     *
-     * The transient one-line layout IS handled, and not by suppressing the feed's observer: that
-     * was tried in v0.34.9 and removed the only pin (when the composer grows, `scrollTop` does
-     * not change, so no scroll event fires). `restoreAfterBoxChange` instead pins on EVERY box
-     * change while following — pinning during the collapsed layout lands on the collapsed floor,
-     * and the next box change corrects it. Pinning twice is idempotent; skipping it is not.
+     * The old code wrote `height: auto` here to learn the content height, which laid the composer
+     * out at ONE LINE for an instant. The composer is a flex sibling of the feed, so the feed's
+     * viewport changed with it and the follow policy re-pinned against the one-line floor: the
+     * reported "入力欄が1行のときの上端まで戻る". It fired on every keystroke whose height did not
+     * change, which is why a newline — a case where the final height really does change, so the pin
+     * lands correctly — was the one that looked fine.
      */
-    composerEl.style.height = "auto";
-    const wanted = maximized ? -1 : composerHeight(composerEl.scrollHeight, MAX_COMPOSER_H);
-    // apply it unconditionally: an early return must NOT leave the box at `auto`, which
-    // collapses a textarea to its `rows` default and looks like the composer ate the text.
+    const contentH = measureComposerContent(composerEl);
+    const wanted = maximized ? -1 : composerHeight(contentH, MAX_COMPOSER_H);
+    // apply it unconditionally: an early return must NOT leave the box at a stale height.
     composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
-    lastAppliedContentH = composerEl.scrollHeight;
+    lastAppliedContentH = contentH;
     // NOTE (#scroll): this function does NOT touch the feed's scroll position.
     //
     // The feed is a flex sibling, so growing this box shrinks the feed's viewport. That is a
@@ -4368,6 +4436,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             if (
               cause === "layout" &&
+              /**
+               * NEVER while following — a pinned tail has no anchor worth restoring.
+               *
+               * This ran on any layout delivery, including while pinned, and the anchor it aimed
+               * at was captured BEFORE new content was inserted above (a reasoning block appearing
+               * at the start of an assistant turn is the usual case). Restoring to that row scrolls
+               * the viewport back by the height of the new content — reported as "プロンプトを送って
+               * からreasoningが出たくらいのタイミングでスクロールが何百pxか古い方に飛んだ".
+               *
+               * It also ran BEFORE the pin further down, so by the time `shouldPin` looked at the
+               * distance to the tail the resync had created one, and the pin was skipped. While
+               * following the only correct position is the tail, and `restoreAfterBoxChange`
+               * already re-pins on the box change.
+               */
+              !atBottom() &&
               resyncBudget > 0 &&
               Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1
             ) {

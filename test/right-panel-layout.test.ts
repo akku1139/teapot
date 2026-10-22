@@ -268,9 +268,31 @@ test("every feed box change re-pins a follower — measurement included (#scroll
     /suppressFeedResize/i,
     "no suppression flag: skipping the pin is exactly what made the bug survive v0.34.9",
   );
-  // and the measuring round-trip itself must still exist — it is required, not optional
+  /**
+   * …and the measuring round-trip must be GONE.
+   *
+   * This test used to assert `style.height = "auto"` was present, on the reasoning that a
+   * fixed-height textarea cannot report its content height. That reasoning is right and the
+   * conclusion was wrong: the collapse lays the composer out at ONE LINE for an instant, the feed
+   * is a flex sibling so its viewport changes with it, and the follow policy re-pins against the
+   * one-line floor — the reported "入力欄が1行のときの上端まで戻る", on every keystroke whose height did
+   * not change (which is why a newline looked fine).
+   *
+   * A mirror element measures the same value without touching the real box. Asserting the ABSENCE
+   * is what keeps the round-trip from coming back.
+   */
   const fn = app.slice(app.indexOf("const autosizeComposer = () => {"));
-  assert.match(fn.slice(0, fn.indexOf("\n  };")), /style\.height\s*=\s*"auto"/);
+  const fnBody = fn.slice(0, fn.indexOf("\n  };"));
+  assert.doesNotMatch(
+    fnBody,
+    /composerEl\.style\.height\s*=\s*"auto"/,
+    "the composer must be measured by a mirror, not by collapsing the live box",
+  );
+  assert.match(
+    fnBody,
+    /measureComposerContent\(composerEl\)/,
+    "and the height must come from that mirror",
+  );
 });
 
 test("an EMPTY composer is one line, whatever its placeholder wraps to (#ui)", async () => {
