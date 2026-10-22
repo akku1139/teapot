@@ -52,6 +52,7 @@ import { composerHeight } from "./composer-size";
 import {
   applyCustomTheme,
   loadCustomThemes,
+  loadCustomThemesFromServer,
   newThemeId,
   normalizeColour,
   saveCustomThemes,
@@ -726,6 +727,25 @@ export default function App() {
    * `customThemes` is the palette behind that id.
    */
   const [customThemes, setCustomThemes] = createSignal<CustomTheme[]>(loadCustomThemes());
+  /**
+   * Adopt the server's themes once the app is up.
+   *
+   * The first paint uses `loadCustomThemes()` (localStorage) so the palette is right before any
+   * network call, then this reconciles: a server with themes wins, because they are the durable
+   * copy and may include themes made on another device. A server with NONE is every existing
+   * install, so the local themes are pushed up instead of being wiped by an empty answer.
+   */
+  onMount(() => {
+    void loadCustomThemesFromServer().then((remote) => {
+      if (remote === null) return; // unreachable: keep what this browser has
+      if (remote.length > 0) {
+        setCustomThemes(remote);
+        saveCustomThemes(remote);
+      } else if (customThemes().length > 0) {
+        saveCustomThemes(customThemes()); // first run against an empty server: migrate up
+      }
+    });
+  });
   const [sysDarkTheme, setSysDarkTheme] = createSignal(
     localStorage.getItem("teapot.theme.dark") ?? "dark",
   );

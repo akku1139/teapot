@@ -217,6 +217,24 @@ export function loadCustomThemes(): CustomTheme[] {
 export function saveCustomThemes(themes: CustomTheme[]): { ok: boolean; error?: string } {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(themes));
+    /**
+     * …and push to the SERVER, which is the durable copy.
+     *
+     * `localStorage` remains the cache the first paint reads (the palette must be right before any
+     * network round trip, or the app flashes the default theme), but it is per-browser and per
+     * origin — a theme made on the desktop did not exist on a phone, in another browser, or after
+     * clearing site data. Asked for as "カスタムテーマをlocalStorageじゃなくてサーバーで管理するように
+     * したい".
+     *
+     * Deliberately fire-and-forget: a failed push must not fail the save. The theme IS usable in
+     * this browser, and reporting an error here would claim the opposite. The next successful save
+     * catches the server up.
+     */
+    void fetch("/api/themes", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ themes }),
+    }).catch(() => {});
     return { ok: true };
   } catch (err) {
     const e = err as { name?: string };
@@ -227,6 +245,26 @@ export function saveCustomThemes(themes: CustomTheme[]): { ok: boolean; error?: 
           ? "storage is full — that background image is too large. Try a smaller one, or remove another theme."
           : `could not save: ${(err as Error).message}`,
     };
+  }
+}
+
+/**
+ * Read the themes the SERVER holds, or `null` when it has none to offer.
+ *
+ * `null` (not `[]`) matters: an empty array is a real answer meaning "you have no themes", and the
+ * caller must not overwrite the local cache with it before it has ever saved anything. A server
+ * that has no `customThemes` yet — every existing install — returns `[]`, and the local themes are
+ * then pushed up rather than replaced by nothing.
+ */
+export async function loadCustomThemesFromServer(): Promise<CustomTheme[] | null> {
+  try {
+    const r = await fetch("/api/themes");
+    if (!r.ok) return null;
+    const body = (await r.json()) as { themes?: unknown };
+    if (!Array.isArray(body.themes)) return null;
+    return body.themes.map(sanitizeTheme).filter((t): t is CustomTheme => t !== null);
+  } catch {
+    return null;
   }
 }
 

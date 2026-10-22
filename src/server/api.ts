@@ -1435,6 +1435,40 @@ const MAX_WS_CLIENTS = 64;
     }),
   );
 
+  /**
+   * Custom themes, SERVER-side, so they follow the config instead of one browser.
+   *
+   * They lived in `localStorage`: a theme made on the desktop did not exist on a phone or in a
+   * second browser, and clearing site data lost it. Asked for as "カスタムテーマをlocalStorageじゃ
+   * なくてサーバーで管理するようにしたい".
+   *
+   * Validation is deliberately shallow — `customThemes` is opaque to the server and the frontend
+   * already sanitises on read (`sanitizeTheme`), which is where the palette's required shape is
+   * known. What the server DOES enforce is that it is an array of objects and that the write lands
+   * in the config FILE: a theme that exists only in memory is the #67 failure.
+   */
+  app.get("/api/themes", (c) =>
+    c.json({
+      themes: Array.isArray(master.config.customThemes) ? master.config.customThemes : [],
+      prefs: master.config.themePrefs ?? {},
+    }),
+  );
+  app.put("/api/themes", async (c) => {
+    const body = await c.req
+      .json<{ themes?: unknown; prefs?: unknown }>()
+      .catch(() => null);
+    if (!body || !Array.isArray(body.themes)) return c.json({ error: "themes[] required" }, 400);
+    for (const t of body.themes) {
+      if (!t || typeof t !== "object" || Array.isArray(t))
+        return c.json({ error: "every theme must be an object" }, 400);
+    }
+    master.config.customThemes = body.themes;
+    if (body.prefs && typeof body.prefs === "object" && !Array.isArray(body.prefs))
+      master.config.themePrefs = body.prefs as typeof master.config.themePrefs;
+    master.saveConfig();
+    return c.json({ ok: true, themes: master.config.customThemes });
+  });
+
   // spawn a sub-agent from the UI (@mention flow / manual)
   app.post("/api/agents/:id/spawn", async (c) => {
     const a = master.agents.get(c.req.param("id"));

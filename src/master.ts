@@ -331,6 +331,23 @@ export interface TeapotConfig {
   retryDelayMs?: number;
   /** optional shared secret protecting /api/* (env TEAPOT_API_TOKEN wins) */
   password?: string;
+  /**
+   * Custom themes, stored SERVER-side so they follow the config rather than one browser.
+   *
+   * They lived in `localStorage`, which means a theme made on the desktop did not exist on a
+   * phone, in a second browser, or after clearing site data — and the operator runs this over a
+   * reverse proxy from another device. Asked for as "カスタムテーマをlocalStorageじゃなくてサーバーで
+   * 管理するようにしたい".
+   *
+   * The shape is the frontend's `CustomTheme` as-is (palette, optional image URL, dim, alpha), and
+   * the background image is already a server URL (`/api/assets/<hex>.<ext>`), so a theme transfers
+   * between browsers with no rewriting. Typed loosely here: `master.ts` is the config layer and
+   * must not import frontend types, and an unknown field must survive a load/save round trip
+   * rather than be silently dropped (that is how a theme would lose its image).
+   */
+  customThemes?: unknown[];
+  /** which custom theme id each appearance slot names, when following the system */
+  themePrefs?: { fixed?: string; auto?: boolean; dark?: string; light?: string };
 }
 
 const CONFIG_DIR =
@@ -695,6 +712,15 @@ export class Master {
     // contents in test/mcp-config-roundtrip.test.ts, which was impossible while that test
     // wrote to /dev/null.
     this.raw.mcpServers = this.config.mcpServers;
+    /**
+     * Custom themes live in the config so they follow the machine, not one browser.
+     *
+     * This line is the whole persistence: `raw` is the hand-maintained mirror that actually gets
+     * written, and a field missing from it exists in memory and in `GET /api/config` while never
+     * reaching the file — exactly the #67 failure above, which is why it is called out there.
+     */
+    if (this.config.customThemes !== undefined) this.raw.customThemes = this.config.customThemes;
+    if (this.config.themePrefs !== undefined) this.raw.themePrefs = this.config.themePrefs;
     if (this.config.shortContext !== undefined) this.raw.shortContext = this.config.shortContext;
     if (this.config.pluginsDir !== undefined) this.raw.pluginsDir = this.config.pluginsDir;
     if (this.raw.progressIntervalMs === undefined && this.config.progressIntervalMs !== undefined)
