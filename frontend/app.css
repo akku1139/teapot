@@ -75,6 +75,16 @@
   --dur-fast: 120ms;
   --dur-base: 200ms;
   --dur-slow: 240ms;
+  /**
+   * The two colours every raised control's depth is built from.
+   *
+   * `--shadow-ink` is the cast shadow and `--shadow-glint` the top highlight. They are TOKENS so a
+   * light theme can flip the ink to a pale blue-grey and keep the glint white, instead of shipping
+   * a black drop shadow onto a near-white surface where it reads as dirt. Default values are the
+   * dark theme's, since `:root` is dark.
+   */
+  --shadow-ink: #00000055;
+  --shadow-glint: #ffffff1f;
 
   /* elevation: two steps. A control that floats gets `--shadow-lg`. */
   --shadow-sm: 0 1px 2px #0006;
@@ -200,6 +210,61 @@ button {
   justify-content: center;
   white-space: nowrap;
   font: inherit;
+  /**
+   * Buttons read as OBJECTS resting on a surface, not as rectangles painted on it.
+   *
+   * Asked for as "ボタン類がもうちょっとみずみずしくなってくれると嬉しい … 背景透過を入れてほしい
+   * ってことじゃなくて、水に浮かぶようなオブジェクトとして流麗になってほしい". The reference for this
+   * is neumorphism, whose whole mechanism is that a light source at the top-left casts a highlight on
+   * the near edges and a shadow on the far ones — so an element appears to float or sink depending
+   * on which side the shadows are on.
+   *
+   * Two deliberate departures from textbook neumorphism:
+   *
+   *   - the element does NOT match the page colour, because an accent-colored button is how teapot
+   *     signals the primary action; the illusion is carried by the SHADOWS, not by camouflage;
+   *   - the shadows are theme-derived (`--shadow-*` below) rather than fixed white/grey, so the
+   *     effect works on dark, light and the photo-backed themes without a second palette.
+   *
+   * The lift is 1px, not the 6px of a showcase demo: this is a dense tool UI where a control that
+   * jumps reads as a bug, and the shadows already do the depth work.
+   */
+  box-shadow:
+    0 1px 1px var(--shadow-ink, #0004),
+    0 2px 5px var(--shadow-ink, #0004),
+    inset 0 1px 0 var(--shadow-glint, #ffffff1f);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) ease;
+  /* promotes to its own layer so the hover transform cannot smear neighbouring text */
+  will-change: transform;
+}
+/**
+ * A LIFT on hover, a PRESS on click — the two states that make "floating" legible.
+ *
+ * The hover shadow spreads and the element rises 1px; on press the shadows move INSIDE (inset) and
+ * the element settles back, which is the neumorphic way of saying "the surface gave way". Without
+ * the inward direction the press would just be another colour change and the object would stop
+ * feeling like an object.
+ */
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 2px 3px var(--shadow-ink, #0004),
+    0 5px 12px var(--shadow-ink, #0004),
+    inset 0 1px 0 var(--shadow-glint, #ffffff26);
+}
+button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow:
+    inset 0 2px 4px var(--shadow-ink, #0005),
+    inset 0 -1px 0 var(--shadow-glint, #ffffff14);
+  transition-duration: 60ms; /* the press must land instantly; the release can ease back */
+}
+button:disabled {
+  box-shadow: none;
+  transform: none;
 }
 /**
  * Native widgets follow the theme's MODE, not just the presets.
@@ -215,7 +280,18 @@ button {
  * keep their own `color-scheme` as a second line of defence for a document rendered before that
  * attribute lands.
  */
-html[data-appearance="light"] { color-scheme: light; }
+html[data-appearance="light"] {
+  color-scheme: light;
+  /**
+   * A light theme casts a PALE shadow, not a black one.
+   *
+   * A black drop shadow on a near-white surface reads as dirt rather than depth, which is why
+   * neumorphism derives its shadow from the background: darker than the base, not black. Keyed on
+   * `data-appearance` so a CUSTOM light theme gets it too, without editing three preset blocks.
+   */
+  --shadow-ink: #5b7d9033;
+  --shadow-glint: #ffffffcc;
+}
 html[data-appearance="dark"] { color-scheme: dark; }
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg-dark); color: var(--fg); font-size: var(--text-md); }
@@ -1338,20 +1414,48 @@ details.reasoning .thinkscroll {
 /* the header is a BUTTON: expanding is the only interaction, and a div would not be reachable
    by keyboard. Grid so the caret/name/description stay aligned whether open or closed. */
 .skillhead {
-  display: grid; grid-template-columns: 12px auto; gap: 2px 7px; align-items: baseline;
+  /**
+   * `minmax(0, 1fr)` for the text column, not `auto`.
+   *
+   * With `auto` the column sizes to its WIDEST content, so a long skill name or description pushed
+   * the row past the panel and produced a horizontal scrollbar. `minmax(0, 1fr)` lets it shrink and
+   * wrap instead — the same fix the goal card needed.
+   */
+  display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 2px 7px; align-items: baseline;
   width: 100%; padding: 7px 9px; background: none; border: none; cursor: pointer;
   text-align: left; font: inherit; color: inherit; border-radius: var(--radius-md);
 }
 .skillhead:hover { background: var(--bg-dark); }
-.skillhead > b { color: var(--acc); font-size: var(--text-sm); word-break: break-all; }
+.skillhead > b { color: var(--acc); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .skillhead > .skillcaret { color: var(--dim); font-size: var(--text-xs); }
-.skillhead > .muted { grid-column: 2; font-size: var(--text-xs); line-height: 1.45; }
-/* the body is code-ish text, so it scrolls and wraps like output rather than running on */
+.skillhead > .muted { grid-column: 2; font-size: var(--text-xs); line-height: 1.45; overflow-wrap: anywhere; }
+/**
+ * The skill BODY is rendered markdown, not a `<pre>` of raw source.
+ *
+ * It was `white-space: pre-wrap` on a `<pre>`, so a SKILL.md full of headings and fenced code showed
+ * its own `##` and backtick markers, and long lines could still push the row wide. Asked for as
+ * "適切な折り返し(タイムラインのgoalカードのように)と本文のシンタックスハイライトも実装して".
+ *
+ * The wrapping contract is the goal card's: wrap anywhere rather than overflow horizontally, since
+ * a skill names file paths and shell commands that have no spaces to break on.
+ */
 .skillbody {
   margin: 0; padding: 8px 10px 10px; border-top: 1px solid var(--line);
-  font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; word-break: break-word;
-  max-height: 340px; overflow-y: auto; color: var(--fg);
+  font-size: var(--text-xs); line-height: 1.55;
+  overflow-wrap: anywhere; word-break: break-word;
+  max-height: 340px; overflow-y: auto; overflow-x: hidden;
+  color: var(--fg);
 }
+/* markdown inside the body: headings in the accent, code on the deepest surface, tables scrollable */
+.skillbody h1, .skillbody h2, .skillbody h3, .skillbody h4 { margin: 8px 0 3px; font-size: var(--text-sm); color: var(--acc); }
+.skillbody h1:first-child, .skillbody h2:first-child, .skillbody h3:first-child { margin-top: 0; }
+.skillbody code { background: var(--bg-darkest-solid, var(--bg-darkest)); padding: 1px 4px; border-radius: var(--radius-sm); font-size: 11px; }
+.skillbody pre { background: var(--bg-darkest-solid, var(--bg-darkest)); padding: 6px 8px; border-radius: var(--radius-sm); overflow-x: auto; margin: 5px 0; }
+.skillbody pre code { background: none; padding: 0; }
+.skillbody ul, .skillbody ol { margin: 4px 0; padding-left: 18px; }
+.skillbody li { margin: 1px 0; }
+.skillbody table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+.skillbody th, .skillbody td { border: 1px solid var(--line); padding: 2px 6px; }
 
 /* goal status segmented buttons */
 .goalstate { background: var(--bg-light); color: var(--fg); border: none; border-radius: var(--radius-md); padding: 3px 10px; cursor: pointer; font-size: var(--text-xs); }
@@ -1986,11 +2090,69 @@ input[type="number"] {
  * is enforced in `sanitizeTheme` — near zero would bring back the bug where a palette colour saved
  * with alpha made code blocks invisible.
  */
+/**
+ * A LAYERED transparency scale, not one alpha for everything.
+ *
+ * One value for all four levels made structurally different things equally see-through: the side
+ * panels (which hold navigation and are read at a glance), the settings dialog (read for minutes,
+ * with form fields), and inline code (a small raised chip inside body text) all got the same veil.
+ * Reported as three separate complaints — the settings panel was TOO transparent, inline code and
+ * tool cards were NOT transparent ENOUGH relative to the panels, and the panels themselves wanted
+ * ~5% more.
+ *
+ * So the alpha is now derived per surface LEVEL, from the operator's base setting:
+ *
+ *   --bg-darkest  (deepest: code chips, cards, tool output)   base - 0.12   ← most see-through
+ *   --bg-dark     (panels: sidebar, details, channel)         base
+ *   --bg-mid      (raised: inputs, hover rows, menus)         base + 0.06
+ *   --bg-light    (controls: buttons, selects, keycaps)       base + 0.12   ← most opaque
+ *
+ * The ordering is what carries the meaning: a RAISED surface is denser than the panel it sits on,
+ * and a chip inside body text is lighter than both, so the UI reads as stacked material instead of
+ * a single sheet with holes in it. `max()`/`min()` keep every level inside a legible range no
+ * matter what the operator picks.
+ */
 html[data-bg-image="on"] {
-  --bg-darkest: color-mix(in srgb, var(--bg-darkest-solid, #1a1c22) calc(var(--surface-alpha, 0.82) * 100%), transparent);
-  --bg-dark: color-mix(in srgb, var(--bg-dark-solid, #232630) calc(var(--surface-alpha, 0.82) * 100%), transparent);
-  --bg-mid: color-mix(in srgb, var(--bg-mid-solid, #2b2e39) calc(var(--surface-alpha, 0.82) * 100%), transparent);
-  --bg-light: color-mix(in srgb, var(--bg-light-solid, #343845) calc(var(--surface-alpha, 0.82) * 100%), transparent);
+  --surface-alpha-darkest: max(0.35, calc(var(--surface-alpha, 0.82) - 0.12));
+  --surface-alpha-dark: var(--surface-alpha, 0.82);
+  --surface-alpha-mid: min(1, calc(var(--surface-alpha, 0.82) + 0.06));
+  --surface-alpha-light: min(1, calc(var(--surface-alpha, 0.82) + 0.12));
+
+  --bg-darkest: color-mix(in srgb, var(--bg-darkest-solid, #1a1c22) calc(var(--surface-alpha-darkest) * 100%), transparent);
+  --bg-dark: color-mix(in srgb, var(--bg-dark-solid, #232630) calc(var(--surface-alpha-dark) * 100%), transparent);
+  --bg-mid: color-mix(in srgb, var(--bg-mid-solid, #2b2e39) calc(var(--surface-alpha-mid) * 100%), transparent);
+  --bg-light: color-mix(in srgb, var(--bg-light-solid, #343845) calc(var(--surface-alpha-light) * 100%), transparent);
+}
+/**
+ * The PANELS sit at `--bg-dark`, which is the operator's base — but a panel is a large flat area
+ * read at a glance, so it gets slightly MORE opacity than the base to stay a surface rather than a
+ * window: "左右パネル(上含む)はあと5%くらい透明になってほしい" asked for a small nudge, and the
+ * settings dialog for a larger one ("背景透過が強すぎた … 左右パネルとおなじくらいかちょっと不透明").
+ *
+ * They are separate rules because these are large areas where legibility wins, unlike the small
+ * chips which are supposed to let the photo through.
+ */
+html[data-bg-image="on"] .sidebar,
+html[data-bg-image="on"] .rightbar,
+html[data-bg-image="on"] .chan-head {
+  background-color: color-mix(
+    in srgb,
+    var(--bg-dark-solid, #232630) calc(min(1, var(--surface-alpha, 0.82) - 0.05) * 100%),
+    transparent
+  );
+}
+html[data-bg-image="on"] .modal {
+  /* the settings dialog holds form fields and long lists: denser than a panel, so text stays put
+     while the photo is still faintly there */
+  background-color: color-mix(
+    in srgb,
+    var(--bg-mid-solid, #2b2e39) calc(min(1, var(--surface-alpha, 0.82) + 0.05) * 100%),
+    transparent
+  );
+}
+.modal {
+  /* a real backdrop, so the dialog does not float on an unbroken photo */
+  backdrop-filter: blur(2px);
 }
 /* surfaces that must NOT show the wallpaper through them: a preview of the image itself would be
    useless half-transparent, and code needs its own `background-image: none` so a texture from the
@@ -2019,4 +2181,16 @@ html[data-bg-image="on"] .content pre code {
   background: none;
   padding: 0;
 }
-html[data-bg-image="on"] .bgpreview { background-color: var(--bg-darkest-solid, var(--bg-darkest)); }
+/**
+ * The appearance section's image block follows the same scale as everything else.
+ *
+ * This forced `--bg-darkest-solid` — FULLY opaque — which was right when the block contained only
+ * the wallpaper preview (a half-transparent preview of the photo is useless). But the block also
+ * holds the upload button, the dim slider and the surfaces slider, so the whole row sat as a solid
+ * slab in an otherwise translucent dialog. Reported as "appearanceのbackground imageのとこが背景
+ * 透過されてない".
+ *
+ * Only the PREVIEW IMAGE itself needs to stay solid; the row is a normal raised surface.
+ */
+html[data-bg-image="on"] .bgpreview { background-color: var(--bg-mid); }
+html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-solid, var(--bg-darkest)); }

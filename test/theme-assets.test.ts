@@ -336,3 +336,83 @@ test("with a wallpaper, the surface variables are left to the STYLESHEET (#ui)",
   applyCustomTheme(noImg.root, { ...base, palette: { ...DEFAULT_PALETTE, bgDarkest: "#1a1c22" } } as never);
   assert.equal(noImg.writes["--bg-darkest"], "#1a1c22");
 });
+
+test("the transparency scale is LAYERED, not one alpha for every surface (#ui)", async () => {
+  /**
+   * Reported as three separate complaints that all had one cause: a single `--surface-alpha` for
+   * all four surface levels meant the settings dialog, the side panels and an inline code chip were
+   * equally see-through.
+   *
+   *   "設定パネル等の背景透過が強すぎた"            → the dialog needs to be denser
+   *   "インラインコードブロックやツール等は左右パネルより透明にしてほしい" → chips need to be lighter
+   *   "左右パネル(上含む)はあと5%くらい透明になってほしい"        → panels nudge down
+   *
+   * The ordering is the contract: dark < dark-est? No — the rule is that a RAISED surface is
+   * denser than the panel it sits on, and a chip inside body text is lighter than both.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const scale = cssRuleBody(css, 'html[data-bg-image="on"]');
+  // four DISTINCT alphas derived from the base, not four uses of one variable
+  for (const level of ["darkest", "dark", "mid", "light"]) {
+    assert.match(
+      scale,
+      new RegExp(`--surface-alpha-${level}:`),
+      `--surface-alpha-${level} must exist, or every level gets the same transparency`,
+    );
+  }
+  assert.match(scale, /--surface-alpha-dark:\s*var\(--surface-alpha/, "the panel level IS the base");
+  assert.match(scale, /calc\(var\(--surface-alpha[^)]*\)\s*-\s*0?\.\d+\)/, "chips must be LIGHTER than the base");
+  assert.match(scale, /calc\(var\(--surface-alpha[^)]*\)\s*\+\s*0?\.\d+\)/, "raised surfaces must be DENSER");
+  // the base alpha still has a fallback, or the whole remap is invalid at computed-value time
+  assert.match(scale, /var\(--surface-alpha,\s*0?\.\d+\)/);
+});
+
+test("the appearance section's image block is NOT forced fully opaque (#ui)", async () => {
+  /**
+   * "appearanceのbackground imageのとこが背景透過されてない". The block forced
+   * `--bg-darkest-solid` — fully opaque — because it once held only the wallpaper preview. It now
+   * also holds the upload button and two sliders, so it sat as a solid slab inside a translucent
+   * dialog.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const block = cssRuleBody(css, 'html[data-bg-image="on"] .bgpreview');
+  assert.doesNotMatch(
+    block,
+    /background-color:\s*var\(--bg-darkest-solid/,
+    "the whole row must not be opaque — only the preview image needs to be",
+  );
+  assert.match(block, /var\(--bg-mid\)/, "it should use a normal raised surface");
+});
+
+test("a skill body renders MARKDOWN and cannot scroll sideways (#ui)", async () => {
+  /**
+   * Reported: "設定のskillsが何故か左揃えになってないし、しかも横スクロールも発生してる / 適切な折り返し
+   * (タイムラインのgoalカードのように)と本文のシンタックスハイライトも実装して".
+   *
+   * Two causes in the CSS: the name column was `auto`, which sizes to the WIDEST content so a long
+   * skill name pushed the row past the panel; and the body was `white-space: pre-wrap` on a `<pre>`,
+   * so a SKILL.md's own `##` and fence markers showed AND long unbroken paths still overflowed.
+   *
+   * The wrapping contract must match the goal card's: break anywhere, never scroll horizontally.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+
+  const head = cssRuleBody(css, ".skillhead");
+  assert.match(
+    head,
+    /grid-template-columns:\s*12px minmax\(0,\s*1fr\)/,
+    "an `auto` text column sizes to its longest content and forces a horizontal scrollbar",
+  );
+
+  const body = cssRuleBody(css, ".skillbody");
+  assert.match(body, /overflow-wrap:\s*anywhere/, "long paths and commands must wrap, as the goal card does");
+  assert.match(body, /overflow-x:\s*hidden/, "and the body must not scroll sideways");
+  assert.doesNotMatch(
+    body,
+    /white-space:\s*pre-wrap/,
+    "the body is rendered markdown now, so pre-wrap would double-space every line",
+  );
+  // syntax surface for code inside the body: the same treatment a message gets
+  assert.match(css, /\.skillbody pre\s*\{[^}]*background/, "fenced code needs a surface of its own");
+  assert.match(css, /\.skillbody code\s*\{[^}]*background/, "inline code needs one too");
+});

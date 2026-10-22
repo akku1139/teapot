@@ -9485,7 +9485,14 @@ function ConfigModal(props: {
                           when={body() !== null}
                           fallback={<div class="muted skillbody">{err() || "loading…"}</div>}
                         >
-                          <pre class="skillbody mono">{body()}</pre>
+                          {/* RENDERED markdown, not a <pre> of the raw file: a SKILL.md is
+                              prose + headings + fenced code, and showing its own `##` markers was
+                              half of "適切な折り返しと本文のシンタックスハイライトも実装して".
+                              `renderMarkdown` is the same renderer the timeline uses, so a skill
+                              reads exactly like a message. */}
+                          {/* cached: a skill body is up to hundreds of KB and re-rendering it on
+                              every parent update would be wasteful, exactly as for timeline rows */}
+                          <div class="skillbody" innerHTML={renderMarkdownCached(String(body() ?? ""))} />
                         </Show>
                       </Show>
                     </div>
