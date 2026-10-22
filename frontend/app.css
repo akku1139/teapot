@@ -936,10 +936,27 @@ input[type="checkbox"] { accent-color: var(--acc); }
 .toolbody {
   background: color-mix(in srgb, var(--bg-darkest) 70%, transparent);
   border-radius: var(--radius-sm);
-  padding: 6px 8px;
+  /**
+   * Right padding is deliberately LARGER than the left: `overflow-y: auto` puts a scrollbar inside
+   * the box, which ate the right gutter and made wrapped text touch the edge ("右側にパディングが
+   * 無くてデザインが悪い"). `scrollbar-gutter: stable` reserves it up front instead of shifting the
+   * text when the bar appears.
+   */
+  padding: 6px 14px 6px 8px;
+  scrollbar-gutter: stable;
   margin: 4px 0;
   white-space: pre-wrap;
   word-break: break-word;
+  /**
+   * A JSON argument block or a long bash command WRAPS instead of scrolling sideways.
+   *
+   * With `overflow-x` left at `auto` and no `overflow-wrap`, an unbreakable run of characters (a
+   * JSON key, a long `--flag=value`, a minified blob) produced a horizontal scrollbar on the tool
+   * card. Asked for as "bash (他のツールカードも?)のパラメーター欄が横スクロールする (改行したほうが
+   * いいと思った)". `anywhere` also lets the element shrink, so `min-width: 0` is not needed here.
+   */
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
   max-height: 340px;
   overflow-y: auto;
   font-size: var(--text-sm);
