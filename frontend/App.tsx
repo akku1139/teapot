@@ -425,6 +425,7 @@ export default function App() {
    *   2. not following → keep the topmost VISIBLE row where it is. A pixel offset is not
    *      stable across a re-wrap (the rows above it changed height), but the row is.
    */
+  let lastContentHeight = 0;
   let feedRo: ResizeObserver | undefined;
   let feedRoEl: HTMLElement | undefined;
   let feedRoRaf = 0;
@@ -924,24 +925,29 @@ export default function App() {
   createEffect(() => {
     if (!compacting()) setLive((l) => (l?.text.startsWith("[compact] ") ? null : l));
   });
-  // re-pin the feed when the compaction banner appears or disappears.
-  //
-  // The banner lives INSIDE the feed, so a pass changes its height twice — and
-  // on `phase: done` the live-text effect above clears the bubble in the same
-  // frame, tripping its own `if (!txt && !rsn) return;` guard. The feed got
-  // shorter with follow still `true` and the reader was left above the bottom.
-  // Nothing else fires on that transition: per-row `onResize` only runs when the
-  // OPERATOR opens a `<details>`.
+  /**
+   * Re-pin after ANY in-feed content change while the reader is following.
+   *
+   * The feed is `flex: 1` inside a fixed-height column, so its BOX does not change when content
+   * grows — the `ResizeObserver` above only sees viewport and composer changes. Everything that
+   * appears inside the feed therefore had to re-pin itself, and only two things did: a `<details>`
+   * opened by the operator, and the compaction banner. Reported as "goal関連のカードがタイムラインに
+   * 流れたときにスクロール追従が動かない" — a goal card renders inside the feed and nothing re-pinned.
+   *
+   * Keying on the event list plus `scrollHeight` covers every such case without each row having to
+   * know about scrolling. Pinning is idempotent, so a spurious firing costs one assignment.
+   */
   createEffect(() => {
-    // key on the banner's presence, in BOTH directions
+    void events().length;
+    void eventsTotal();
     void compacting();
-    // No before/after comparison: while following, the pin is simply applied once the DOM
-    // has settled. Whether the banner ADDED or REMOVED height is irrelevant — a pinned feed
-    // should show its tail either way, and a reader who scrolled up is not followed at all
-    // (`atBottom()` inside `scrollBottom`).
-    //
-    // The two frames are still needed: one for the banner to enter/leave the flow, one to
-    // paint. Deferring does not need a decision, because pinning is idempotent.
+    const f = feedEl();
+    if (!f) return;
+    const height = f.scrollHeight;
+    // a reader who scrolled up is not followed at all — `scrollBottom` re-checks this
+    if (height === lastContentHeight) return;
+    lastContentHeight = height;
+    // two frames: one for the new row to enter the flow, one to paint
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         if (atBottom()) pinToTail();

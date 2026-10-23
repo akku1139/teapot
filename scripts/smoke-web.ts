@@ -4232,6 +4232,14 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
 }
 console.log("deep render ok: the compaction banner lives inside the feed (#108)");
 
+/* ---------- scroll follow is asserted as a CSS/behaviour CONTRACT ----------
+ * happy-dom does no layout: `scrollHeight` is always 0, so a check that appends rows and asserts
+ * the reader stayed at the tail is VACUOUS there (it cannot distinguish a re-pin from a no-op).
+ * That is why this lives in `test/scroll-follow-content.test.ts`, which asserts the rule the
+ * effect obeys. Real geometry belongs in the browser harness, not here.
+ */
+
+
 // give deferred Solid effects a final tick before declaring victory
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
