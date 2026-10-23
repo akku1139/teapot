@@ -6,6 +6,7 @@ import type { Context } from "hono";
 import { serve, upgradeWebSocket } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { currentSkills } from "../agent/tools.ts";
 import { readSkillFile } from "../agent/skills.ts";
 import { detectImageTools, downscaleImage, scaledName, widthName, MAX_EDGE } from "./image-resize.ts";
@@ -1782,6 +1783,29 @@ const MAX_WS_CLIENTS = 64;
   // works both from dist/server/api.js and src/server/api.ts: ../../public
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../public");
 
+  /**
+   * CACHE POLICY FOR THE APP SHELL — the two halves must be OPPOSITE.
+   *
+   * MEASURED against a running server: neither `index.html` nor `/assets/*` sent a `cache-control`
+   * header at all. With no header a browser falls back to HEURISTIC freshness (typically
+   * `10% × (now − Last-Modified)`), and the shell is the one file that must never be stale: it is
+   * what names the hashed bundle. A cached `index.html` keeps pointing at the PREVIOUS
+   * `index-<hash>.js`, so an update is installed, the server serves the new build, and the browser
+   * silently keeps running the old frontend — reported as "もしかしてブラウザのキャッシュが効いてて
+   * アップデートされたフロントエンドが完全に適用されてない?" after two rounds of UI fixes that did
+   * not appear.
+   *
+   * `no-cache` does NOT mean "do not cache": it means "revalidate before use", so the shell costs
+   * one conditional request (answered 304 from ETag/Last-Modified, which `c.body`/`c.html` supply)
+   * and can never be the stale one.
+   *
+   * The hashed assets are the opposite case: their NAME changes with their content, so a year of
+   * `immutable` is correct and free. This mirrors what the theme-image route already does above,
+   * for the same reason.
+   */
+  const SHELL_CACHE = "no-cache";
+  const ASSET_CACHE = "public, max-age=31536000, immutable";
+
   const mime: Record<string, string> = {
     ".html": "text/html",
     ".js": "text/javascript",
@@ -1796,14 +1820,46 @@ const MAX_WS_CLIENTS = 64;
       return null;
     }
   };
-  app.get("/", (c) => {
+  /**
+   * The shell's ETag, derived from its own bytes.
+   *
+   * `cache-control: no-cache` says "revalidate", and revalidation is only cheap if there is
+   * something to revalidate AGAINST. MEASURED without one: the response carried neither `ETag` nor
+   * `Last-Modified`, so every load re-downloaded the whole shell instead of getting a 304 — correct
+   * but wasteful, and the shell is served on every page load and every deep link.
+   *
+   * Hashing the content (rather than a mtime) means a rebuilt-but-identical shell keeps its ETag,
+   * so the 304 survives restarts, and any real change flips it. Computed once per process: the
+   * build cannot change while a server is running, and a restart is what picks up a new build.
+   */
+  let shellEtag: string | null | undefined;
+  const shellTag = (html: string): string => {
+    if (shellEtag === undefined || shellEtag === null)
+      shellEtag = `"${createHash("sha256").update(html).digest("base64url").slice(0, 27)}"`;
+    return shellEtag;
+  };
+  /** answer a shell request, honouring `If-None-Match` */
+  const serveShell = (c: {
+    req: { header: (n: string) => string | undefined };
+    body: (b: string, s: number, h: Record<string, string>) => Response;
+    text: (b: string, s: number) => Response;
+  }) => {
     const html = indexHtml();
-    return html ? c.html(html) : c.text("web UI not built — run: pnpm build-web", 404);
+    if (!html) return c.text("web UI not built — run: pnpm build-web", 404);
+    const etag = shellTag(html);
+    if (c.req.header("if-none-match") === etag) return new Response(null, { status: 304, headers: { etag } });
+    return c.body(html, 200, {
+      "content-type": "text/html; charset=UTF-8",
+      "cache-control": SHELL_CACHE,
+      etag,
+    });
+  };
+  app.get("/", (c) => {
+    return serveShell(c as never);
   });
   // SPA deep links: /session/<agentId> serves the app; the client routes it
   app.get("/session/*", (c) => {
-    const html = indexHtml();
-    return html ? c.html(html) : c.text("web UI not built — run: pnpm build-web", 404);
+    return serveShell(c as never);
   });
   app.get("/assets/*", (c) => {
     const rel = c.req.path.replace("/assets/", "");
@@ -1811,6 +1867,7 @@ const MAX_WS_CLIENTS = 64;
     try {
       return c.body(readFileSync(file), 200, {
         "content-type": mime[path.extname(file)] ?? "application/octet-stream",
+        "cache-control": ASSET_CACHE,
       });
     } catch {
       return c.notFound();
