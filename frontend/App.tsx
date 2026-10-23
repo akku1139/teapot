@@ -88,6 +88,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { clampPaneIndex, indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./lib/term-tabs";
 import { pickAfterArchive } from "./lib/archive-target";
+import { shouldSendOnKey, shouldRestoreAfterSend } from "./lib/composer-keys";
+import { IconBtn, CopyBtn, Modal } from "./components/chrome";
 
 declare const __APP_VERSION__: string;
 
@@ -3738,7 +3740,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // hidden — and since #134 stopped Enter sending, this is the only way out.
       // Autosize on the next frame: the tall height comes from `.maximized`, so
       // dropping the class alone would leave the textarea expanded.
-      if (composerMaximized()) setComposerMaximized(false);
+      if (shouldRestoreAfterSend(composerMaximized())) setComposerMaximized(false);
       // NO explicit scroll here (#scroll).
       //
       // This used to be `requestAnimationFrame(() => requestAnimationFrame(() =>
@@ -5071,7 +5073,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   //
                   // Sending is still one keystroke away (the send button), so nothing
                   // becomes unreachable.
-                  if (e.key === "Enter" && !e.shiftKey && !imeInProgress && !composerMaximized()) {
+                  if (
+                    shouldSendOnKey({
+                      key: e.key,
+                      shiftKey: e.shiftKey,
+                      composing: imeInProgress,
+                      maximized: composerMaximized(),
+                    })
+                  ) {
                     e.preventDefault();
                     void send(e);
                   }
@@ -6933,26 +6942,6 @@ function oneLine(s: string, n: number): string {
 /** Centered icon button — the shared home for emoji-glyph buttons. Emoji
  *  baselines sit off-center in plain text buttons, so every icon button
  *  should render through this (inline-flex centers the glyph properly). */
-function IconBtn(props: {
-  icon: string;
-  title: string;
-  onClick?: (e: MouseEvent) => void;
-  active?: boolean;
-  class?: string;
-  style?: string;
-}) {
-  return (
-    <button
-      type="button"
-      class={"iconbtn" + (props.active ? " active" : "") + (props.class ? " " + props.class : "")}
-      title={props.title}
-      onclick={props.onClick}
-      style={props.style}
-    >
-      <span class="iconbtn-glyph">{props.icon}</span>
-    </button>
-  );
-}
 
 /** Copy `text` using the best path this environment actually supports.
  *
@@ -6968,45 +6957,8 @@ function IconBtn(props: {
  *  Each of those must reach the legacy path, and a genuine failure must say so.
  */
 
-function CopyBtn(props: { text: string; label?: string; title?: string }) {
-  const [done, setDone] = createSignal(false);
-  const [failed, setFailed] = createSignal(false);
-  const copy = (e: MouseEvent) => {
-    e.preventDefault(); // <summary> buttons must not toggle the details row
-    e.stopPropagation();
-    void copyText(props.text ?? "").then((result) => {
-      if (result === "unsupported" || result === "failed") {
-        setFailed(true); // nothing copied — say so instead of a silent no-op
-        setTimeout(() => setFailed(false), 1200);
-        return;
-      }
-      setDone(true);
-      setTimeout(() => setDone(false), 900);
-    });
-  };
-  return (
-    <button
-      class="copybtn"
-      title={props.title ?? "copy to clipboard"}
-      onclick={copy}
-    >{done() ? "✓" : failed() ? "✗" : props.label ?? "⧉"}</button>
-  );
-}
 
 /* ---------- modal shell ---------- */
-function Modal(props: { title: string; onClose: () => void; children: any }) {
-  return (
-    <div class="overlay" onclick={(e: Event) => e.target === e.currentTarget && props.onClose()}>
-      <div class="modal">
-        <div class="modal-head">
-          <b>{props.title}</b>
-          <button class="iconbtn" onclick={props.onClose}>✕</button>
-        </div>
-        {props.children}
-      </div>
-    </div>
-  );
-}
 
 /* ---------- new agent ---------- */
 function NewAgentModal(props: { providers: string[]; onClose: () => void; onCreated: (id: string) => void }) {
