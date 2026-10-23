@@ -26,6 +26,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readSource } from "./helpers/source.ts";
+import { cacheHighlighted, highlightedHtml, highlightCacheSize } from "../frontend/lib/highlight-cache.ts";
 
 /** the source from `anchor` up to the next top-level `function` declaration */
 function fnBlock(app: string, anchor: string): string {
@@ -52,29 +53,29 @@ test("ToolRow narrows its result dependency instead of reading the pair map raw 
   );
 });
 
-test("HighlightedCode caches by CONTENT, so a remount cannot lose the markup (#render)", async () => {
-  const app = readSource("frontend/App.tsx");
-  assert.match(
-    app,
-    /const HIGHLIGHT_CACHE = new Map/,
-    "the highlight result must outlive the component instance — an instance-local signal is " +
-      "discarded whenever the row's subtree is rebuilt (#render)",
+test("a highlight survives the component instance, and the cache is bounded (#render)", () => {
+  /**
+   * Asserted by CALLING the cache, not by grepping for its declaration.
+   *
+   * The old version matched `const HIGHLIGHT_CACHE = new Map` in App.tsx, so it broke the moment the
+   * cache moved into a module — the behaviour was intact and the test was measuring the file layout.
+   * A source-text assertion cannot see whether a remount actually reads the cache back.
+   */
+  const key = `shellscript::${Date.now()}::echo hi`;
+  assert.equal(highlightedHtml(key), undefined, "nothing cached yet");
+  cacheHighlighted(key, "<pre class='shiki'>hi</pre>");
+  assert.equal(
+    highlightedHtml(key),
+    "<pre class='shiki'>hi</pre>",
+    "a second reader — a REMOUNTED component — must get the markup without re-highlighting",
   );
-  assert.match(
-    app,
-    /const HIGHLIGHT_MAX = \d+/,
-    "the cache must be bounded — a long session shows thousands of distinct commands (#render)",
-  );
-  const block = fnBlock(app, "function HighlightedCode(");
-  assert.match(
-    block,
-    /createSignal\(cached\(\)\s*\?\?\s*""\)/,
-    "the signal must be SEEDED from the cache, or the first render is always the plain fallback " +
-      "and the block has to race the grammar load again (#render)",
-  );
+
+  // bounded: past the limit the oldest entry is dropped, so a long session cannot leak
+  for (let i = 0; i < 500; i++) cacheHighlighted(`k${i}`, "x");
   assert.ok(
-    !/if \(run !== mine\) return;/.test(block),
-    "an 'abandon my run' guard discards the only result that will arrive — the content cache " +
-      "makes it unnecessary and it is what lost the highlighting before (#render)",
+    highlightCacheSize() <= 400,
+    `the cache must stay bounded, got ${highlightCacheSize()} entries`,
   );
+  assert.equal(highlightedHtml(key), undefined, "the oldest entries are the ones evicted");
 });
+

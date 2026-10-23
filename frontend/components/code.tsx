@@ -1,18 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { ansiRuns, hasAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
+import { cacheHighlighted, highlightedHtml } from "../lib/highlight-cache";
 
-const HIGHLIGHT_CACHE = new Map<string, string>();
-const HIGHLIGHT_MAX = 400;
-
-function highlightCachePut(key: string, html: string): void {
-  if (HIGHLIGHT_CACHE.size >= HIGHLIGHT_MAX) {
-    // Map preserves insertion order, so this drops the oldest entry
-    const oldest = HIGHLIGHT_CACHE.keys().next();
-    if (!oldest.done) HIGHLIGHT_CACHE.delete(oldest.value);
-  }
-  HIGHLIGHT_CACHE.set(key, html);
-}
 
 export function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number }) {
   const start = new Date(props.startedAt).getTime();
@@ -74,14 +64,14 @@ export function AnsiText(props: { text: string }) {
 export function HighlightedCode(props: { text: string; lang?: string }) {
   // a separator that cannot appear in a language id or in the code itself
   const key = () => (props.lang ? `${props.lang}::${props.text.length}::${props.text}` : "");
-  const cached = () => (props.lang ? HIGHLIGHT_CACHE.get(key()) : undefined);
+  const cached = () => (props.lang ? highlightedHtml(key()) : undefined);
   const [html, setHtml] = createSignal(cached() ?? "");
   createEffect(() => {
     const k = key();
     const text = props.text;
     const lang = props.lang;
     if (!lang || !text.trim()) { setHtml(""); return; }
-    const hit = HIGHLIGHT_CACHE.get(k);
+    const hit = highlightedHtml(k);
     if (hit !== undefined) { setHtml(hit); return; }
     /**
      * No "is my run still current" guard.
@@ -96,7 +86,7 @@ export function HighlightedCode(props: { text: string; lang?: string }) {
         let acc = "";
         for await (const chunk of highlightLangChunks(lang, text)) acc += chunk;
         if (!acc) return;
-        highlightCachePut(k, acc);
+        cacheHighlighted(k, acc);
         // paint only if this instance is still asking for the same content
         if (key() === k) setHtml(acc);
       } catch {
