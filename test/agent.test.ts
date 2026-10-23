@@ -1510,3 +1510,59 @@ test("set_todo keeps its old {item, done} shape working (#todo-add)", async () =
     await agent.dispose();
   });
 });
+
+test("a progress REQUEST answered with a different tool does not answer 'progress recorded' (#progress)", async () => {
+  /**
+   * Reported from a real session: a `bash` call whose result was the literal string
+   * "progress recorded" with `durationMs: 0`, so the command never ran — its output only appeared a
+   * turn later, which read as a stray duplicate. The next `progress` row then said
+   * "(no report produced)".
+   *
+   * MEASURED (seq 62247/62248 in that log): the assistant turn carried exactly ONE tool call,
+   * `bash`, and the harness answered it with the report acknowledgement. The loop that answers a
+   * progress request wrote `"progress recorded"` for EVERY call instead of only for
+   * `report_progress`, so a model that chose to keep working was told its bash had reported.
+   */
+  let sawAsk = false;
+  const seen: { name: string; result: string }[] = [];
+  await withAgent(
+    {
+      chatFn: async (_cfg, messages) => {
+        const lastUser = [...messages].reverse().find((m) => m.role === "user");
+        const asked = /Please give a brief progress report/.test(String(lastUser?.content ?? ""));
+        if (asked && !sawAsk) {
+          sawAsk = true;
+          // chooses to keep working instead of reporting — the reported case
+          return reply("", [tc("b1", "bash", { command: "echo still-working" })]);
+        }
+        if (sawAsk) return reply("done", [tc("f", "finish", { goalComplete: true })]);
+        return { message: { role: "assistant", content: "x".repeat(5000) } };
+      },
+      progressIntervalMs: 50,
+      progressMinChars: 4000,
+      progressMaxQuietTurns: 60,
+      continueDelayMs: 5,
+    },
+    async (agent) => {
+      const orig = agent.snapshot.bind(agent);
+      void orig;
+      await agent.setGoal("grind away");
+      agent.enqueuePrompt("go");
+      agent.start("t");
+      await agent.settled();
+      const evts = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+      for (const e of evts) {
+        const d = dataOf(e) as { name?: string; result?: string };
+        if (e.type === "tool_result" && d.name) seen.push({ name: d.name, result: String(d.result ?? "") });
+      }
+    },
+  );
+  const bash = seen.find((r) => r.name === "bash");
+  assert.ok(bash, "the bash call must have a result, or the exchange is invalid and the next request 400s");
+  assert.notEqual(
+    bash!.result,
+    "progress recorded",
+    "answering a bash call with the report text lies to the model (that result is its only view " +
+      "of what happened) and drops the command's output (#progress)",
+  );
+});

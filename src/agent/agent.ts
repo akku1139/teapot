@@ -4102,12 +4102,32 @@ export class Agent {
       ...(calls.length ? { toolCalls: calls.map((c) => ({ id: c.id, name: c.function.name })) } : {}),
       progressEcho: true,
     });
-    let reported = calls.some((c) => c.function.name === "report_progress");
-    for (const call of calls) {
+     let reported = calls.some((c) => c.function.name === "report_progress");
+     for (const call of calls) {
       if (call.function.name === "report_progress") {
         await this.recordProgress(call.function.arguments);
       }
-      this.messages.push({ role: "tool", tool_call_id: call.id, content: "progress recorded" });
+      /**
+       * EVERY tool call needs a `tool` message, but only `report_progress` was a report.
+       *
+       * This loop used to answer `"progress recorded"` to whatever the model called, so a `bash`
+       * invocation came back with the text "progress recorded" and `durationMs: 0` — it never ran.
+       * MEASURED in this session (seq 62247/62248): the assistant turn carried exactly one tool
+       * call, `bash <npm view polling loop>`, and its result was `"progress recorded"`, while the
+       * very next `progress` row read "(no report produced)". The command's real output appeared
+       * only on the NEXT turn, which is what made it look like a stray duplicate.
+       *
+       * The model did nothing wrong: it was asked for a progress report and chose to run its work
+       * instead. Answering that call with the report text both lies to the model (the tool result
+       * is its only view of what happened) and drops the command's output.
+       *
+       * A non-report call is answered with a plain acknowledgement — it is NOT executed here,
+       * because this path has no tool context and must not run side effects a second time. The
+       * round then continues and the model sees that it still owes a report.
+       */
+      const isReport = call.function.name === "report_progress";
+      const answer = isReport ? "progress recorded" : "not run — this turn was a progress request";
+      this.messages.push({ role: "tool", tool_call_id: call.id, content: answer });
       // log both sides so restores replay the exact exchange (meta-style)
       await this.log.append("tool_call", this.currentSession, this.currentBranch, {
         callId: call.id,
@@ -4118,11 +4138,12 @@ export class Agent {
       await this.log.append("tool_result", this.currentSession, this.currentBranch, {
         callId: call.id,
         name: call.function.name,
+        // a not-run answer is not a FAILURE, so `ok` stays true — the row must not read as an error
         ok: true,
         durationMs: 0,
-        result: "progress recorded",
+        result: answer,
       });
-    }
+     }
     if (!reported && !(res.message.content ?? "").trim()) {
       // degenerate: neither a tool call nor prose — record a stub so the
       // operator sees SOMETHING at the requested moment
