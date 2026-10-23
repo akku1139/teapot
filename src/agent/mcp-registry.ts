@@ -290,7 +290,27 @@ export class McpRegistry {
         try {
           const { code, iss } = await loop.wait(FLOW_TIMEOUT_MS);
           const conn = await connectMcp(st.config, { provider: auth });
-          await conn.finishAuth(code, iss);
+          /**
+           * Supply `iss` from OUR discovery record when the callback omitted it.
+           *
+           * RFC 9207 §2 says a server that advertises
+           * `authorization_response_iss_parameter_supported: true` MUST include `iss` in the
+           * response, and §2.4 says clients MUST reject a response without it. Notion advertises
+           * `true` and then sends only `code` and `state`, so a strictly-conforming client discards
+           * every completed authorization — which is "Notionがコールバック踏んだのに Unauthorized".
+           *
+           * §2.4 also allows the opposite: "clients ... MAY accept authorization responses that do
+           * not contain the iss parameter ... Local policy or configuration can determine whether to
+           * accept such responses". We accept them, using the issuer we recorded BEFORE sending the
+           * browser out, because that is the value the mix-up check needs.
+           *
+           * MEASURED against the real SDK with this machine's stored grant:
+           *   no iss      -> IssuerMismatchError "received undefined"   (the reported failure)
+           *   correct iss -> the token endpoint is reached (invalid_grant for a dummy code)
+           *   wrong iss   -> IssuerMismatchError "received https://evil.example"
+           * so the check is not disabled — a genuinely mismatched issuer is still rejected.
+           */
+          await conn.finishAuth(code, iss ?? auth.expectedIssuer());
           st.connection = conn;
           st.tools = await conn.tools();
           st.status = "connected";

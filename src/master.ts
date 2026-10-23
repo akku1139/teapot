@@ -730,6 +730,16 @@ export class Master {
      * reaching the file — exactly the #67 failure above, which is why it is called out there.
      */
     if (this.config.customThemes !== undefined) this.raw.customThemes = this.config.customThemes;
+    /**
+     * The API password — same mirror, same trap.
+     *
+     * It was never in `raw` because it was only ever written by the first-run setup path, which
+     * wrote the file wholesale. Now that the settings panel can change it, a missing mirror would
+     * make "set a password" appear to work and vanish on the next restart, leaving the server open
+     * while the operator believes it is closed — the worst possible direction for this field.
+     */
+    if (this.config.password !== undefined) this.raw.password = this.config.password;
+    else delete this.raw.password;
     if (this.config.themePrefs !== undefined) this.raw.themePrefs = this.config.themePrefs;
     /**
      * The live-update resume set — and the reason it needs this line is the whole point of it.
@@ -912,8 +922,23 @@ export class Master {
    * has something to attach them to.
    */
   pluginsDir?: string | false;
+  /**
+   * The `/api/*` shared secret. `""` clears it (loopback-only trust).
+   *
+   * Read DYNAMICALLY by `apiToken()`, so a change takes effect on the next request with no restart —
+   * which is the point: the operator sets it here, the panel starts sending `Authorization`, and an
+   * open server closes without dropping the session.
+   */
+  password?: string;
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
+    /**
+     * `!== undefined`, so `""` is honoured as "clear it".
+     *
+     * A truthiness check would silently keep the old password when the operator emptied the field,
+     * which is the one case where they are explicitly asking to remove the protection.
+     */
+    if (patch.password !== undefined) this.config.password = patch.password || undefined;
     if (patch.defaultProvider !== undefined) this.config.defaultProvider = patch.defaultProvider;
     if (patch.progressIntervalMs !== undefined) {
       this.config.progressIntervalMs = patch.progressIntervalMs;

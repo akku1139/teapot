@@ -151,10 +151,11 @@ async function main(): Promise<void> {
      * On LOOPBACK this is the normal, safe default — so say so plainly instead of printing an
      * alarming "no API token set" on every start.
      *
-     * Asked as "no API token setはなんだろう": nothing is wrong. A fresh install has no password
-     * because the setup wizard has to reach the API to set one, and binding 127.0.0.1 means only
-     * processes on this machine can connect. The message now states that, and is written to stdout
-     * at info level — `console.error` made a healthy start look like a fault.
+     * Asked as "no API token setはなんだろう": nothing is wrong. On loopback only this machine can
+     * connect, so an unset password is the safe default rather than a fault — and it is settable in
+     * settings → live update (it uses to be reachable only through the first-run wizard, which was
+     * removed). The message now says that, on stdout at info level; `console.error` made a healthy
+     * start look like a fault.
      *
      * The WARNING branch is unchanged and still goes to stderr: that one IS a problem.
      */

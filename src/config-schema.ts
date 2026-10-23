@@ -56,6 +56,18 @@ export const ConfigPatchSchema = z.object({
   // null clears a saved window pin → back to per-model inference (same contract as contextTokenBudget)
   contextWindowTokens: z.number().int().min(1_000).nullable().optional(),
   maxSpawnDepth: z.number().int().min(0).max(8).optional(),
+  /**
+   * The shared secret protecting `/api/*` — settable from the settings panel.
+   *
+   * It used to be reachable only through `POST /api/setup`, which refuses once a config file exists.
+   * That was fine while the first-run wizard existed; the wizard is gone, so there was NO way to set
+   * a password at all. Asked as "初回起動ウィザードは前に廃止したはずだからパスワード設定できないの
+   * では?" — correct.
+   *
+   * An EMPTY STRING is meaningful and clears it (back to loopback-only trust), which is why this
+   * accepts `""` rather than requiring a minimum length. `TEAPOT_API_TOKEN` still wins over it.
+   */
+  password: z.string().max(200).optional(),
   /** #161: prune old tool output early (opt-in, for small-window models) */
   shortContext: z.boolean().optional(),
   // soft cap on LLM turns in one round; reaching it nudges the model to wrap

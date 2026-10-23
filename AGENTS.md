@@ -438,6 +438,37 @@ non-obvious choice was made, what was measured, what breaks otherwise.
   running" and "finished 5 minutes ago", and MEASURED, it wasted most of a turn on every release
   in one session. Wrap it in `timeout` so a wedged run cannot block the loop forever.
 
+## Live update: `process.execve`, not a supervised child
+
+The update button replaces the process **in place** (`process.execve`, Node 22+). Do not reintroduce
+a spawn-and-supervise design — that is what leaked: the old process stayed resident polling
+`pidAlive(replacement)` for the ENTIRE lifetime of the new server, keeping every agent object, log
+handle, `bus` listener and the 15s tick alive, and `supervise()` added three MORE signal handlers on
+top of the ones `shutdown()` already had. One extra full server image per update.
+
+`execve` also removes the daemonization problem #35 fixed by hand: the pid, the process group and the
+controlling terminal are unchanged, so the operator's foreground job never ends.
+
+Four things it gets wrong silently, each MEASURED the hard way:
+
+1. **`args[0]` must be the executable**, not the script. `[script, "--config", …]` makes node read
+   `--config` as its own option: `script: bad option: --config`, and the new image never starts.
+2. **Do not forward all of `process.execArgv`.** Under `node --test` it carries the runner's flags
+   (`--test-isolation=process`, dozens of tuning knobs) and the new image re-enters test mode. Filter
+   to the ones that make a TS entry runnable (`--experimental-strip-types`, `--import`, …).
+3. **Answer the HTTP request BEFORE exec.** `execve` does not return, so awaiting it in the handler
+   means the response never flushes: the browser sees `SocketError: other side closed` and cannot
+   tell a successful update from a crash. `setImmediate` the handover, return the response first.
+4. **The exec releases the port** (verified), so the old `TEAPOT_RESTART_FROM` / `waitForPortFree`
+   handover is dead code. Do not bring it back.
+
+Stopping for an update is NOT `dispose()`: that aborts the in-flight LLM call and kills the running
+tool, leaving a half-written file and a call whose result never arrives. `Agent.windDownForUpdate()`
+lets the current round finish and waits on `settled()`, bounded, reporting agents that missed the
+deadline. What to resume is written to `config.resumeAfterUpdate` at shutdown (the log cannot tell
+"interrupted" from "finished" afterwards) and consumed once — and it must be in the `raw` mirror or
+the clear never persists, so the NEXT update resumes the same sessions again (#67, again).
+
 ## Fixing a bug that has been "fixed" before
 
 Some issues here (#40, #54) have been reported fixed and returned. Before

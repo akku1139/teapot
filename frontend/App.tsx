@@ -8400,6 +8400,20 @@ function ConfigModal(props: {
   const [ctxWinK, setCtxWinK] = createSignal(props.cfg.contextWindowTokens ? Math.round(props.cfg.contextWindowTokens / 1000) : 0);
   const [maxDepth, setMaxDepth] = createSignal(props.cfg.maxSpawnDepth ?? 3);
   const [shortContext, setShortContext] = createSignal(Boolean(props.cfg.shortContext));
+  /**
+   * The `/api/*` password — empty means "no auth", which is correct and safe on loopback.
+   *
+   * This field exists because there was NO way to set one: `POST /api/setup` accepts a password but
+   * refuses once a config file exists, and that path was only ever driven by the first-run wizard,
+   * which was removed. Asked as "初回起動ウィザードは前に廃止したはずだからパスワード設定できないのでは?"
+   * — correct, and the answer is this field rather than resurrecting the wizard.
+   *
+   * Seeded EMPTY rather than showing the stored value: it is a secret, and the panel has no way to
+   * display "unchanged" for it the way masked provider keys do. An untouched empty field therefore
+   * means "leave it alone", which is why the save only sends it when it was actually edited.
+   */
+  const [apiPassword, setApiPassword] = createSignal("");
+  const [apiPasswordDirty, setApiPasswordDirty] = createSignal(false);
   const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
   // MCP servers (#67). The header text is kept separately as STRINGS: the config holds
   // an object, and round-tripping it through JSON on every keystroke would rewrite what
@@ -8840,6 +8854,7 @@ function ConfigModal(props: {
           ...(ctxWinK() > 0 ? { contextWindowTokens: ctxWinK() * 1000 } : {}),
           maxSpawnDepth: Math.max(0, maxDepth()),
           shortContext: shortContext(),
+          ...(apiPasswordDirty() ? { password: apiPassword() } : {}),
           tasks: cleanTasks,
           mcpServers: cleanMcp,
         }),
@@ -9769,6 +9784,36 @@ function ConfigModal(props: {
 
         <fieldset classList={{ hide: section() !== "update" }}>
           <legend>live update</legend>
+          {/**
+            * The API password — the only way to set one now that the first-run wizard is gone.
+            *
+            * Left blank means "no auth", which is the safe default on loopback: a fresh install has
+            * no password because nothing needs one until the port is exposed. Set it before binding
+            * anything other than 127.0.0.1.
+            *
+            * `type="password"` and no `value` echo, so the stored secret is never rendered back into
+            * the DOM. The hint says what an empty field MEANS, because "empty" and "unchanged" look
+            * identical here and only one of them is true.
+            */}
+          <div class="cfgrow">
+            <label style="flex:1">
+              API password
+              <input
+                type="password"
+                class="w100"
+                placeholder={props.cfg.hasPassword ? "(unchanged — type to replace)" : "(none — loopback only)"}
+                value={apiPassword()}
+                oninput={(e) => {
+                  setApiPassword(e.currentTarget.value);
+                  setApiPasswordDirty(true);
+                }}
+              />
+            </label>
+            <span class="muted" style="font-size:11.5px;max-width:34ch">
+              protects /api with a bearer token. Only needed if this port is reachable from other
+              machines; leave empty for loopback. Saving an empty field removes it.
+            </span>
+          </div>
           <div class="cfgrow">
             <span class="muted">current version: {props.cfg.version ?? "unknown"}</span>
             <button

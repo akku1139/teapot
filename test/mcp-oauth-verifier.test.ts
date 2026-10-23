@@ -136,3 +136,42 @@ test("a provider with no discovery yet says so instead of inventing one (#mcp)",
   const auth = mkAuth(async () => {});
   assert.equal(auth.discoveryState(), undefined);
 });
+
+test("the issuer is supplied from OUR discovery record when the callback omits it (#mcp)", async () => {
+  /**
+   * Notion declares `authorization_response_iss_parameter_supported: true` and then does NOT send
+   * `iss`. RFC 9207 §2 makes that parameter a MUST for a server advertising support, and §2.4 makes
+   * client-side rejection a MUST — so a strict client throws away every browser-completed
+   * authorization. That is "Notionがコールバック踏んだのに Unauthorized".
+   *
+   * MEASURED against the real SDK with this machine's stored grant:
+   *   no iss      -> IssuerMismatchError: expected "https://mcp.notion.com", received undefined
+   *   correct iss -> the token endpoint is reached (invalid_grant for a deliberately dummy code)
+   *   wrong iss   -> IssuerMismatchError: received "https://evil.example"
+   *
+   * §2.4 permits the tolerant reading: clients "MAY accept authorization responses that do not
+   * contain the iss parameter ... Local policy or configuration can determine whether to accept".
+   * So the issuer comes from the discovery document we fetched BEFORE sending the browser out, and
+   * the SDK still rejects a genuinely mismatched value.
+   */
+  const auth = mkAuth(async () => {});
+  assert.equal(auth.expectedIssuer(), undefined, "no discovery yet means nothing to supply");
+
+  await auth.saveDiscoveryState({
+    authorizationServerUrl: "https://mcp.notion.com",
+    authorizationServerMetadata: { issuer: "https://mcp.notion.com" },
+  } as never);
+  assert.equal(
+    auth.expectedIssuer(),
+    "https://mcp.notion.com",
+    "the recorded issuer is what a missing `iss` must be filled with (#mcp)",
+  );
+});
+
+test("a discovery record without metadata still yields the authorization server URL (#mcp)", async () => {
+  // some records carry only the URL; falling back to it is better than sending no issuer and having
+  // the SDK reject an otherwise-valid authorization
+  const auth = mkAuth(async () => {});
+  await auth.saveDiscoveryState({ authorizationServerUrl: "https://example.test" } as never);
+  assert.equal(auth.expectedIssuer(), "https://example.test");
+});

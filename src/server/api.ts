@@ -153,9 +153,10 @@ const MAX_WS_CLIENTS = 64;
   // the config's `password` field. Static files stay public; only /api/* is
   // gated.
   //
-  // Read DYNAMICALLY: the first-run wizard sets `config.password` through
-  // /api/setup AFTER buildApp ran — a const captured here once meant a
-  // freshly-set-up server stayed wide open until the next process restart.
+  // Read DYNAMICALLY: `config.password` changes while this app is running — the
+  // settings panel writes it through `PUT /api/config`. A const captured here once
+  // meant a password set after boot did not take effect until a process restart,
+  // leaving the server open while the operator believed it was closed.
   const apiToken = () => process.env.TEAPOT_API_TOKEN || master.config.password || "";
 
   /**
@@ -258,10 +259,12 @@ const MAX_WS_CLIENTS = 64;
     /**
      * With no token configured the API is still open to LOCAL clients, but it now says so loudly.
      *
-     * Opening it is a real decision: the first-run wizard sets the password through
-     * `/api/setup`, so the server cannot demand a token before one exists. Leaving that silent is
-     * how the OpenCode advisory happened — their server was unauthenticated by default and nobody
-     * noticed. The header makes the state visible to every client, and the startup banner warns.
+     * Opening it is a real decision: a fresh install has no password, and on loopback that is the
+     * safe default — only this machine can reach it. (It IS settable now, in settings → live update;
+     * before that the only path was `POST /api/setup`, which refuses once a config file exists, so
+     * the wizard's removal had left no way at all.) Leaving the state silent is how the OpenCode
+     * advisory happened — their server was unauthenticated by default and nobody noticed. The header
+     * makes it visible to every client, and the startup banner says it once in plain words.
      */
     if (!want) {
       c.header("x-teapot-auth", "none");
@@ -959,6 +962,13 @@ const MAX_WS_CLIENTS = 64;
        * one would nag about a working setup.
        */
       needsSetup: Object.keys(master.config.providers ?? {}).length === 0,
+      /**
+       * Whether an API password is set — the FACT only, never the value.
+       *
+       * The panel needs it to label the field honestly ("unchanged" vs "none"); sending the secret
+       * back would put it in the DOM and in any devtools capture of the response.
+       */
+      hasPassword: Boolean(master.config.password),
       providers: mask(master.config.providers),
       defaultProvider: master.config.defaultProvider,
       progressIntervalMs: master.config.progressIntervalMs,
@@ -1014,6 +1024,7 @@ const MAX_WS_CLIENTS = 64;
         shortContext: patch.shortContext,
         tasks: patch.tasks,
         mcpServers: patch.mcpServers,
+        ...(patch.password !== undefined ? { password: patch.password } : {}),
       });
       // #67: apply the new server list to the live registry and connect in the
       // background — an added server's tools must appear on the next turn without a

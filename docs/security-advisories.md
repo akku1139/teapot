@@ -33,9 +33,16 @@ sends `x-teapot-auth: none` on every response, making the open state visible ins
 
 **Residual risk, stated plainly:** this stops a web page, not a local process. A local process
 running as the same user can already read the config and run commands directly, so a token would
-not add security there — that is why the default stays open for first run (the setup wizard sets
-the password *through* the API, which cannot require one). Operators who expose the port must set
-`TEAPOT_API_TOKEN` or `config.password`; the startup banner says so.
+not add security there — that is why the default stays open on loopback. Operators who expose the
+port must set `TEAPOT_API_TOKEN` or `config.password`; the startup banner says so.
+
+**Corrected:** this paragraph used to justify the open default by saying "the setup wizard sets the
+password *through* the API, which cannot require one". The wizard was REMOVED, and with it went the
+only path that accepted a password — `POST /api/setup` returns 409 once a config file exists — so
+for a while there was no way to set one at all. The password is now settable in
+settings → live update (`PUT /api/config`), read dynamically, so it takes effect on the next request
+with no restart, and it is persisted through the `raw` mirror (#67). A boot with no password is a
+loopback-only default rather than a wizard artefact.
 
 ## CVE-2026-22813 / GHSA-c83v-7274-4vgp — HTML injection in the markdown renderer
 

@@ -285,6 +285,35 @@ export class ServerAuth implements OAuthClientProvider {
   discoveryState(): OAuthDiscoveryState | undefined {
     return this.store.discoveryState;
   }
+  /**
+   * The issuer this client believes it is talking to, from our OWN discovery record.
+   *
+   * Needed because the SDK treats a missing `iss` on the callback as an ATTACK when the server's
+   * metadata declares `authorization_response_iss_parameter_supported` (RFC 9207), and throws
+   * `IssuerMismatchError` before the code is ever redeemed.
+   *
+   * Notion declares that support and then does not send `iss`. MEASURED against
+   * `mcp.notion.com/.well-known/oauth-authorization-server`:
+   * `authorization_response_iss_parameter_supported: true`, while its real redirect carries only
+   * `code` and `state`. Reproduced directly against the SDK with this machine's stored grant:
+   * `IssuerMismatchError: expected "https://mcp.notion.com", received undefined` — i.e. every
+   * browser-completed authorization was discarded at the last step, which is the "コールバック踏んだ
+   * のに Unauthorized" report.
+   *
+   * Supplying the issuer ourselves is sound here: the code arrived on OUR loopback listener, and
+   * this value comes from the discovery document we fetched before sending the browser out. RFC 9207
+   * exists to stop a MIX-UP attack, and there is no mix-up to detect when the client already knows
+   * which authorization server it directed the user to. The SDK's own check
+   * (`iss !== expectedIssuer`) still runs, so a genuinely wrong issuer is still rejected.
+   */
+  expectedIssuer(): string | undefined {
+    const meta = this.store.discoveryState?.authorizationServerMetadata as
+      | { issuer?: unknown }
+      | undefined;
+    if (typeof meta?.issuer === "string" && meta.issuer) return meta.issuer;
+    const url = this.store.discoveryState?.authorizationServerUrl;
+    return typeof url === "string" && url ? url : undefined;
+  }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
     if (!state || typeof state !== "object") return;

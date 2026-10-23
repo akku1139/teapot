@@ -82,6 +82,63 @@ OAuth 2.1ベース。**stdioでは使わない**。
 - **Token audience validation必須**: 他サービス発行のトークンを受け入れてはならない
 - OpenCodeの実装が参考になる: 401検出→DCR→ブラウザ認証→トークン保存
 
+### 3.1 `iss`（RFC 9207）— サーバーが宣言だけして送らない場合がある
+
+**これは実害が出た。** Notion MCP（`https://mcp.notion.com`）はブラウザの認可を完了させたあと、
+コードを交換する直前に破棄されていた。
+
+```
+IssuerMismatchError: Issuer mismatch in authorization response (RFC 9207):
+  expected "https://mcp.notion.com", received undefined
+```
+
+#### 仕様の該当箇所（一次ソースで確認済み）
+
+- **RFC 9207 §2**: "an authorization server supporting this specification **MUST** indicate its
+  identity by including the `iss` parameter in the response."
+- **RFC 9207 §3**: `authorization_response_iss_parameter_supported` は「§2 の通り `iss` を応答に
+  提供するか」を示す boolean（省略時 false）。
+- **RFC 9207 §2.4**: クライアントは `iss` が**あれば**照合しMUST一致。
+  ただし「clients ... **MAY accept** authorization responses that do not contain the `iss`
+  parameter ... **Local policy or configuration can determine** whether to accept such responses」。
+
+#### 何が起きていたか
+
+`mcp.notion.com/.well-known/oauth-authorization-server` は
+`"authorization_response_iss_parameter_supported": true` を公開しているのに、実際のリダイレクトは
+`code` と `state` だけ。**宣言と実装が食い違っている**（サーバー側の違反）。
+
+厳格なクライアントは §2.4 の MUST（support宣言しているサーバーの `iss` 無し応答は拒否）に従うため、
+**完了済みの認可を毎回捨てる**。これが「コールバック踏んだのに Unauthorized」の正体。
+
+#### teapot の採る方針
+
+§2.4 の後段（MAY accept / local policy）を採り、**ブラウザを送り出す前に取得した discovery 文書の
+`issuer` で欠落を補う**。照合そのものは SDK が行うので、**値が違えば従来どおり拒否**される。
+
+SDKの実挙動（実ストアの付与情報で測定）:
+
+| 入力 | 結果 |
+|---|---|
+| `iss` なし | `IssuerMismatchError`（＝報告された失敗） |
+| 正しい `iss` | token endpoint に到達（ダミーコードなので `invalid_grant`） |
+| 誤った `iss` | `IssuerMismatchError: received "https://evil.example"` |
+
+#### 他の実装はどうしているか（ソースを確認）
+
+「みんな動いている」の実態は**方針が割れている**。
+
+| 実装 | 方針 |
+|---|---|
+| **hermes-agent** | Figma で同じ問題に遭遇し、**同じ解法**。discovered issuer で欠落を補い警告ログ。present-but-different は拒否 |
+| **opencode** | `iss` を読むだけ（`?? undefined`）で metadata と照合しない → 問題が起きない |
+| **open-webui** | MCP SDK のフローを使わず、`iss` 検証をしない |
+| **pi** | 厳格派。`iss` 一致、または「欠落かつ metadata が support 非宣言」のときだけ交換 → **Notionでは失敗する** |
+| **codex** | issuer binding 非対応サーバーを互換ケースとして fallback |
+
+このため「他が動くから自分も動くはず」という推論は成立しない。**サーバーごとに挙動が違う**ので、
+失敗したらまず SDK の例外名（`IssuerMismatchError` か `invalid_grant` か）を見る。
+
 ---
 
 ## 4. サーバー機能: Tools / Resources / Prompts
