@@ -115,7 +115,7 @@ test("an outline button still RESPONDS to hover (#ui)", async () => {
    * brightness()` cannot substitute: it brightens a FILL, and an outline button has none.
    */
   const css = stripSourceComments(readSource("frontend/app.css"));
-  const hover = rulesMatching(css, ["data-bg-image", ":hover", "button:not\\(.copybtn\\)"]);
+  const hover = rulesMatching(css, ["data-bg-image", ":hover", "button\\.iconbtn"]);
   assert.ok(
     hover.length > 0,
     "a transparent button needs a wallpaper hover rule, or it gives no feedback at all (#ui)",
@@ -150,14 +150,28 @@ test("buttons that are PRIMARY actions keep their fill by class, not inline styl
     assert.ok(body, `${cls} must exist, or its buttons fall back to the outline treatment`);
     assert.match(body!, /background:\s*var\(--(acc|ok)\)/, `${cls} must be filled`);
   }
-  // and the outline rule must exclude them, or it strips the fill it just declared
-  const outline = rulesMatching(css, ["data-bg-image", "button:not\\(.copybtn\\)"])[0];
-  assert.ok(outline, "the outline rule must exist");
-  for (const cls of ["primarybtn", "okbtn", "themecard"]) {
-    assert.match(
-      outline!.selector,
-      new RegExp(`:not\\(\\.${cls}\\)`),
-      `the outline rule must exclude .${cls}, or it overrides that component's own styling (#ui)`,
+  /**
+   * The wallpaper outline must be an ALLOWLIST.
+   *
+   * It used to be `button:not(.copybtn):not(.qopt):not(.savebtn)…` — "every button, except these".
+   * A class nobody remembered to add inherited the outline, so `.editbtn` ("✕ cancel") grew a hard
+   * 1px rectangle: "角丸でも何でも無い枠線が出てる (テーマカードもcancelも枠線いらないと思った)".
+   * The same shape hit `.themecard`, and would hit every button added later.
+   *
+   * Asserting the ABSENCE of the blocklist (rather than the presence of particular `:not()`s) is
+   * what stops the next component from being the one that gets forgotten.
+   */
+  const outlineRules = rulesMatching(css, ["data-bg-image", "button"]);
+  assert.ok(outlineRules.length > 0, "there must be wallpaper button rules at all");
+  for (const r of outlineRules) {
+    assert.ok(
+      !/:not\(\.(copybtn|qopt|savebtn|primarybtn|okbtn|themecard)\)/.test(r.selector),
+      `"${r.selector.trim()}" uses a BLOCKLIST of exceptions — a button class added later would ` +
+        `silently inherit the outline. Use an allowlist (button.iconbtn) instead (#ui)`,
     );
   }
+  assert.ok(
+    outlineRules.some((r) => /button\.iconbtn/.test(r.selector)),
+    "the chrome buttons must still be outlined by an explicit allowlist (#ui)",
+  );
 });

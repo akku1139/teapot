@@ -5989,30 +5989,64 @@ function ThinkingTimer(props: { startedAt: number }) {
  * Lazily imported so the shiki core stays out of the initial bundle, and the run counter guards
  * against a swapped-in result for content that has since changed.
  */
+/**
+ * Highlighted code for a tool card, cached by CONTENT rather than by component instance.
+ *
+ * An instance-local signal is discarded whenever the row's subtree is rebuilt, and the rebuilt
+ * instance starts empty and has to race the grammar download again. MEASURED before the row's
+ * dependency was narrowed: 20 tool rows produced 118 constructions, and whether a given card ended
+ * up highlighted depended on how many times its parent re-ran — "bashでshikiが当たってるカードと
+ * 当たってないカードがある".
+ *
+ * Keying on `lang` plus the text means a remount renders highlighted on its FIRST pass (the signal
+ * is seeded from the cache) and an identical block in another row costs nothing. The map is
+ * bounded because a long session shows thousands of distinct commands.
+ */
+const HIGHLIGHT_CACHE = new Map<string, string>();
+const HIGHLIGHT_MAX = 400;
+
+function highlightCachePut(key: string, html: string): void {
+  if (HIGHLIGHT_CACHE.size >= HIGHLIGHT_MAX) {
+    // Map preserves insertion order, so this drops the oldest entry
+    const oldest = HIGHLIGHT_CACHE.keys().next();
+    if (!oldest.done) HIGHLIGHT_CACHE.delete(oldest.value);
+  }
+  HIGHLIGHT_CACHE.set(key, html);
+}
+
 function HighlightedCode(props: { text: string; lang?: string }) {
-  const [html, setHtml] = createSignal("");
-  let run = 0;
+  // a separator that cannot appear in a language id or in the code itself
+  const key = () => (props.lang ? `${props.lang}::${props.text.length}::${props.text}` : "");
+  const cached = () => (props.lang ? HIGHLIGHT_CACHE.get(key()) : undefined);
+  const [html, setHtml] = createSignal(cached() ?? "");
   createEffect(() => {
+    const k = key();
     const text = props.text;
     const lang = props.lang;
-    const mine = ++run;
-    setHtml("");
-    if (!lang || !text.trim()) return;
+    if (!lang || !text.trim()) { setHtml(""); return; }
+    const hit = HIGHLIGHT_CACHE.get(k);
+    if (hit !== undefined) { setHtml(hit); return; }
+    /**
+     * No "is my run still current" guard.
+     *
+     * The result is cached by CONTENT, so it does not matter which instance produced it or whether
+     * that instance still exists — the next mount reads it back. A guard could only throw work
+     * away, and that is how an earlier version lost the highlighting entirely.
+     */
     void (async () => {
       try {
         const { highlightLangChunks } = await import("./shiki");
         let acc = "";
-        for await (const chunk of highlightLangChunks(lang, text)) {
-          if (run !== mine) return;
-          acc += chunk;
-          setHtml(acc);
-        }
+        for await (const chunk of highlightLangChunks(lang, text)) acc += chunk;
+        if (!acc) return;
+        highlightCachePut(k, acc);
+        // paint only if this instance is still asking for the same content
+        if (key() === k) setHtml(acc);
       } catch {
-        if (run === mine) setHtml(""); // give up → the plain fallback stays
+        // give up → the plain fallback stays
       }
     })();
   });
-  onCleanup(() => { run++; });
   /**
    * `when={!!html()}`: a boolean, so Solid re-evaluates the CONDITION reactively.
    *
@@ -6058,7 +6092,26 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
   // scroll offset lives on the element. MEASURED: a scrolled bash-output block lost its
   // offset whenever an unrelated message arrived, with the row ELEMENT itself reused. An
   // accessor makes the row's tree a one-time build that reads a fresh value on demand.
-  const res = () => props.res?.();
+  // narrow dependency: see the memo below
+  /**
+   * NARROW the dependency to THIS row's result.
+   *
+   * `props.res` reads `pairInfo()`, which returns a fresh `{resFor, consumed, orphanCalls}` object
+   * on every append — so a row's `res()` "changed" whenever ANY event arrived, and every row's
+   * `derived` memo re-ran. MEASURED on a 20-row timeline: 40 memo runs and 118 `HighlightedCode`
+   * constructions for 20 rows, i.e. roughly twice the work per row plus a full rebuild of every
+   * JSX subtree in the memo body (Solid runs the memo function BEFORE `equals` is consulted).
+   *
+   * This memo compares the RESULT's identity (`Ev.id`), so a row whose result did not change sees
+   * no update at all — which is what `equals` was supposed to buy, applied one level earlier where
+   * it also skips building the JSX.
+   */
+  const resEv = createMemo(() => props.res?.(), undefined, {
+    equals: (a, b) => a?.id === b?.id,
+  });
+  /** every read below goes through the NARROW memo, never the raw prop */
+  const res = () => resEv();
+
   // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
   // cannot still be in flight (its result event was missed — e.g. logged while
   // the tab was hidden). Rendering it forever as "running…" was exactly that:

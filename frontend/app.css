@@ -235,24 +235,36 @@ button:hover:not(:disabled) { filter: brightness(1.12); }
 button:active:not(:disabled) { filter: brightness(0.95); }
 button:disabled { filter: none; }
 /**
- * WITH A WALLPAPER, buttons become OUTLINES rather than filled chips.
+ * WITH A WALLPAPER, buttons that opt IN become outlines rather than filled chips.
  *
  * Asked for as "背景透過入れてるときにUI上の各種ボタンをタイムラインの copy ボタンみたく細いボーダー
- * だけ出して中身を透過にしとくと見た目いいかも / その時はボタン内のテキストカラーとかも工夫しないと
- * いけない".
+ * だけ出して中身を透過にしとくと見た目いいかも".
  *
- * The fill is what made a dense toolbar read as a row of solid tiles over the photo, and `.copybtn`
- * already proved the thin-border form works at this density. `--line-strong` is the border rather
- * than `--line`: `--line` measures 1.05:1 against the surface, i.e. invisible, and on an outline
- * button the outline IS the affordance.
+ * AN ALLOWLIST, NOT A BLOCKLIST — this is the important part.
  *
- * The accent-filled primary action and the question options keep their fill — they are the buttons
- * that must outrank the rest.
+ * The first version was `button:not(.copybtn):not(.qopt):not(.savebtn)…`, i.e. "every button,
+ * except these". That is a list of things to remember, and it fails silently in the worst way: a
+ * button class nobody added to it inherits the outline, so `.editbtn` ("✕ cancel") grew a hard-edged
+ * 1px rectangle it never asked for — "角丸でも何でも無い枠線が出てる (テーマカードもcancelも枠線いらない
+ * と思った)". The same shape hit `.themecard`, and would hit every button added later.
+ *
+ * Worse, the exclusions could not even be trusted: `.goalstate` and `.runbtn` are only ever built by
+ * `class={"goalstate" + …}` expressions, so a `:not(.goalstate)` in a stylesheet is not visible
+ * evidence of anything.
+ *
+ * So the direction is reversed: a button is an outline ONLY when it names itself as a chrome
+ * control. Everything else keeps whatever its own component declared, which is the default that
+ * every existing rule already assumes.
+ *
+ * `.iconbtn` is the toolbar/tab/panel chrome this was asked for; `.copybtn` already had the form.
  */
-html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):not(.primarybtn):not(.okbtn):not(.themecard) {
+html[data-bg-image="on"] button.iconbtn {
   background-color: transparent;
   border: 1px solid var(--line-strong);
   color: var(--fg);
+  /* the border must follow the control's own corner, or an outline button is a sharp rectangle
+     sitting inside a rounded UI — the same complaint the theme cards produced */
+  border-radius: var(--radius-md);
 }
 /**
  * HOVER fills faintly and tints the border — the other half of the two-channel scheme.
@@ -266,7 +278,7 @@ html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):not(.prim
  * states the tint explicitly. The same exclusion chain as the base rule is required, or hover would
  * paint the theme cards and the primary actions too.
  */
-html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):not(.primarybtn):not(.okbtn):not(.themecard):hover:not(:disabled) {
+html[data-bg-image="on"] button.iconbtn:hover:not(:disabled) {
   border-color: var(--acc);
   color: var(--acc);
   /* the shared rule brightens a fill; with no fill there is nothing to brighten */
@@ -306,7 +318,7 @@ html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):not(.prim
  * loses and the engaged button kept the base `--fg` colour. MEASURED that way round: the ring
  * appeared while the text stayed `rgb(230,232,238)` instead of the accent.
  */
-html[data-bg-image="on"] button.iconbtn.active:not(.copybtn):not(.qopt):not(.savebtn) {
+html[data-bg-image="on"] button.iconbtn.active {
   background-color: transparent;
   border-color: var(--acc);
   box-shadow: inset 0 0 0 1px var(--acc);
@@ -314,19 +326,19 @@ html[data-bg-image="on"] button.iconbtn.active:not(.copybtn):not(.qopt):not(.sav
 }
 /* the goal controls keep their per-state hue, so "working / done / paused" stays distinguishable.
    Same specificity chain as the iconbtn rule above, for the same reason. */
-html[data-bg-image="on"] button.goalstate.on.active:not(.copybtn):not(.qopt):not(.savebtn) {
+html[data-bg-image="on"] button.goalstate.on.active {
   background-color: transparent;
   border-color: var(--ok);
   box-shadow: inset 0 0 0 1px var(--ok);
   color: var(--ok);
 }
-html[data-bg-image="on"] button.goalstate.on.done:not(.copybtn):not(.qopt):not(.savebtn) {
+html[data-bg-image="on"] button.goalstate.on.done {
   background-color: transparent;
   border-color: var(--acc);
   box-shadow: inset 0 0 0 1px var(--acc);
   color: var(--acc);
 }
-html[data-bg-image="on"] button.goalstate.on.paused:not(.copybtn):not(.qopt):not(.savebtn) {
+html[data-bg-image="on"] button.goalstate.on.paused {
   background-color: transparent;
   border-color: var(--warn);
   box-shadow: inset 0 0 0 1px var(--warn);
@@ -340,8 +352,8 @@ html[data-bg-image="on"] button.goalstate.on.paused:not(.copybtn):not(.qopt):not
  * which is the exact complaint that ruled out a fill for "active" in the first place. Hovering an
  * engaged control changes nothing: the ring already said everything.
  */
-html[data-bg-image="on"] button.iconbtn.active:hover:not(:disabled):not(.copybtn):not(.qopt):not(.savebtn),
-html[data-bg-image="on"] button.goalstate.on:hover:not(:disabled):not(.copybtn):not(.qopt):not(.savebtn) {
+html[data-bg-image="on"] button.iconbtn.active:hover:not(:disabled),
+html[data-bg-image="on"] button.goalstate.on:hover:not(:disabled) {
   background-color: transparent;
 }
 /**
@@ -2190,6 +2202,28 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
   padding: 0;
   margin: 0;
   font-size: inherit;
+  /**
+   * WRAP, like the plain fallback does.
+   *
+   * `.toolbody` sets `white-space: pre-wrap`, but shiki ships `<pre class="shiki">` with
+   * `white-space: pre` of its own, and the `code` inside it does the same — so the wrapping stopped
+   * at the wrapper. MEASURED on a real tool card: the wrapper was 635px while the inner `code`
+   * measured 1943px, i.e. a horizontal scroll inside a block that was supposed to wrap. Reported
+   * as "ツールカードの引数欄が <pre> は適切な横幅になってるのに、内側の <code> がもっと長い横幅になってて
+   * ちゃんと折り返されてないこともある".
+   *
+   * `min-width: 0` is required as well: a flex/grid child defaults to `min-width: auto`, which
+   * refuses to shrink below its content even with wrapping enabled.
+   */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+  max-width: 100%;
+}
+/* shiki wraps each line in a span; it must be allowed to shrink too */
+.toolbody.shiki pre.shiki code .line {
+  display: inline;
 }
 html[data-appearance="light"] .filepreview .shiki { background-color: var(--shiki-light-bg); }
 

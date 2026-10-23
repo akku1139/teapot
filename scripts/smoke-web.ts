@@ -518,6 +518,44 @@ console.log("deep render ok: feed rows present");
   console.log(`deep render ok: tool cards are shiki-highlighted (${tokens.length} token spans) (#shiki)`);
 }
 
+/**
+ * A HIGHLIGHTED TOOL BLOCK MUST STILL WRAP.
+ *
+ * Reported: "ツールカードの引数欄が <pre> は適切な横幅になってるのに、内側の <code> がもっと長い横幅に
+ * なっててちゃんと折り返されてないこともある".
+ *
+ * MEASURED in headless Firefox before the fix: the wrapper was 635px and the inner `code` 1943px,
+ * because shiki ships `white-space: pre` on its own `<pre>`/`<code>` and that overrode the
+ * wrapper's `pre-wrap`. happy-dom does no layout, so this asserts the CSS CONTRACT on the real
+ * built stylesheet rather than a width.
+ */
+{
+  const css = w.document.querySelector("style, link[rel=stylesheet]");
+  void css;
+  const sheet = [...(w.document.styleSheets ?? [])]
+    .flatMap((s) => {
+      try {
+        return [...(s.cssRules as unknown as Iterable<CSSRule>)];
+      } catch {
+        return [];
+      }
+    })
+    .map((r) => (r as CSSStyleRule).cssText ?? "")
+    .join("\n");
+  for (const sel of [".toolbody.shiki pre.shiki", ".toolbody.shiki pre.shiki code"]) {
+    const re = new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^{]*\\{[^}]*white-space:\\s*pre-wrap`);
+    if (!re.test(sheet)) {
+      console.error(
+        `#shiki REGRESSION: ${sel} must set white-space: pre-wrap — shiki's own pre/code default ` +
+          `to 'pre', so the wrapper's wrapping stops at the div and a long command scrolls ` +
+          `sideways inside a block meant to wrap`,
+      );
+      process.exit(1);
+    }
+  }
+  console.log("deep render ok: highlighted tool blocks wrap like the plain fallback (#shiki)");
+}
+
 /* ---------- #51: the audit rows must not render as one long line ----------
  * Reported: "`🔍 completion audit started` and the audit body to its right are
  * on ONE line, and the card's left edge is out of line with the others", plus
