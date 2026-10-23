@@ -30,3 +30,13 @@ export function fmtDur(ms: number | undefined | null): string {
 export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + " …" : s;
 }
+
+export function relTime(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  const abs = Math.abs(ms);
+  const unit =
+    abs < 90_000 ? `${Math.round(abs / 1000)}s`
+    : abs < 5_400_000 ? `${Math.round(abs / 60_000)}m`
+    : `${(abs / 3_600_000).toFixed(1)}h`;
+  return ms >= 0 ? `in ${unit}` : `${unit} ago`;
+}

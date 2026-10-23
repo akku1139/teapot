@@ -23,15 +23,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readSourceUrl } from "./helpers/source.ts";
 
-const app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
+// the preset TABLE is its own module now; the panel only consumes it
+const presetsFile = readSourceUrl(new URL("../frontend/lib/provider-presets.ts", import.meta.url));
 
 /** the provider preset table */
 function presets(): string {
-  const at = app.indexOf("const PROVIDER_PRESETS: ProviderPreset[] = [");
+  const at = presetsFile.indexOf("export const PROVIDER_PRESETS: ProviderPreset[] = [");
   assert.notEqual(at, -1, "the preset table must exist");
-  const end = app.indexOf("\n];", at);
+  const end = presetsFile.indexOf("\n];", at);
   assert.notEqual(end, -1, "the preset table must terminate");
-  return app.slice(at, end);
+  return presetsFile.slice(at, end);
 }
 
 test("no preset pre-fills a model (#144)", () => {

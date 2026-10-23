@@ -131,7 +131,9 @@ test("regression: POST /api/agents/:id/model switches provider/model and API is 
 });
 
 test("regression: ConfigModal no longer loses focus — uses Index not For for editable rows", async () => {
-  const src = await readFile("frontend/App.tsx", "utf8");
+  // the component lives in components/ConfigModal.tsx; the assertion is about WHICH primitive it
+  // uses, so it has to read the file that actually renders the rows
+  const src = await readFile("frontend/components/ConfigModal.tsx", "utf8");
   // providers and tasks editable rows must be rendered with Index (keyed by position)
   assert.match(src, /Index each=\{providers\(\)\}/, "providers rows should use Index");
   assert.match(src, /Index each=\{tasks\(\)\}/, "tasks rows should use Index");
@@ -142,7 +144,13 @@ test("regression: ConfigModal no longer loses focus — uses Index not For for e
   assert.ok(src.includes("value={t().id}"), "tasks input should use accessor t().id via Index");
   // also check that we import Index and untrack
   assert.ok(src.includes("Index") && src.includes("from \"solid-js\""), "Index must be imported");
-  assert.ok(src.includes("untrack"), "untrack must be imported for model switcher fix");
+  /**
+   * `untrack` belongs to the RIGHT PANEL's model switcher, which still lives in App.tsx — asserting
+   * it here mixed two files into one test once the modal was extracted. Each file is checked for the
+   * thing it actually owns.
+   */
+  const app = await readFile("frontend/App.tsx", "utf8");
+  assert.ok(app.includes("untrack"), "untrack must be imported for the model switcher fix");
 });
 
 test("regression: right panel model switcher no longer clears draft on keystroke", async () => {
@@ -458,11 +466,15 @@ test("regression: default provider is honored and not silently dropped (#21)", a
 });
 
 test("regression: the default-provider select renders an orphaned configured default (#21)", async () => {
-  const src = await readFile("frontend/App.tsx", "utf8");
-  // the orphan must be added to the option list, and surfaced in the UI
-  assert.match(src, /providerNames/);
-  assert.match(src, /staleDefaultProvider/);
-  assert.match(src, /has no provider row here/);
+  /**
+   * The panel lives in components/ConfigModal.tsx now. What matters is that the ORPHAN PATH exists:
+   * a configured default with no provider row must still appear as an option and be labelled, or the
+   * <select> silently falls back to its first entry and the operator sees the wrong provider.
+   */
+  const src = await readFile("frontend/components/ConfigModal.tsx", "utf8");
+  assert.match(src, /providerNames/, "the option list must be built from the configured names");
+  assert.match(src, /staleDefaultProvider/, "an orphaned default must be detected, not dropped");
+  assert.match(src, /has no provider row here/, "and labelled, so it does not read as a provider");
 });
 
 /* ---------- #10: terminal tabs must not collide or steal focus ---------- */

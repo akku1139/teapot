@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { readSource } from "./helpers/source.ts";
 
 test("the OAuth notice does not keep the settings dialog open (#ui)", async () => {
-  const app = await readSource("frontend/App.tsx");
+  const app = await readSource("frontend/components/ConfigModal.tsx");
   const save = app.slice(app.indexOf("const newlyNeeding = needing.filter"), app.indexOf("    } catch (ex) {\n      setErr((ex as Error).message);\n      setSaveState(\"error\")"));
   assert.ok(save.length > 0, "precondition: the save tail must be locatable");
 

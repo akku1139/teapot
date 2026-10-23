@@ -210,7 +210,7 @@ test("creating a theme ADOPTS it, and the CARD is the only way to select one (#u
    * editor has already had. So this asserts the ABSENCE of the picker, which is a real property:
    * a new `<select>` in the editor would silently reintroduce the ambiguity.
    */
-  const app = await readSource("frontend/App.tsx");
+  const app = await readSource("frontend/components/ConfigModal.tsx");
   const dup = app.slice(app.indexOf("const duplicatePreset ="));
   const dupBody = dup.slice(0, dup.indexOf("\n  };"));
   assert.match(

@@ -7,11 +7,6 @@ export type ProviderPreset = {
   hint?: string;
 };
 
-/**
- * Known OpenAI-compatible providers, shared by the setup wizard and the
- * settings modal's quick-add. "custom" is a wizard-only pseudo preset that
- * marks the manual path without touching any field.
- */
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     key: "openrouter",
