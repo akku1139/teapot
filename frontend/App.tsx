@@ -5266,7 +5266,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             )}
           </Show>
 
-          <h3 title="switch provider/model live — applies from the agent's next turn; the list shows context window & pricing from the provider">🧦 model</h3>
+          <h3 title="switch provider/model live — applies from the agent's next turn">
+            🧦 model
+            <Show when={models().length}>
+              <span class="muted" style="text-transform:none;letter-spacing:0">· {models().length} models</span>
+            </Show>
+          </h3>
           <div class="modelbox">
             <select
               value={modelProvider()}
@@ -5368,9 +5373,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 }}
               >apply</button>
             </div>
-            <div class="meta">
-              current: {sel()!.model}<Show when={models().length}> · {models().length} models loaded</Show>
-            </div>
+            <div class="meta">current: {sel()!.model}</div>
             <Show when={modelSpec()}>
               <div class="meta" style="color:var(--fg)">{modelSpec()}</div>
             </Show>
@@ -5519,7 +5522,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 {todoStats().done}/{todoStats().total} done
               </span>
             </Show>
-            <span class="muted" style="text-transform:none;letter-spacing:0">· shared checklist (you + agent)</span>
           </h3>
           <Show when={todoStats().total > 0}>
             <div class="bartrack" style="margin-bottom:6px">
@@ -5559,7 +5561,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <h3 title="latest report_progress snapshot. The harness asks for one after real activity (time AND output gates); errors show under ⚠ problems">📈 progress</h3>
           <Show
             when={sel()!.latestProgress}
-            fallback={<div class="muted">none yet — the harness asks for a report after real activity, and the agent can report_progress anytime</div>}
+            fallback={<div class="muted">none yet</div>}
           >
             {(p) => (
               <div class="card prog">

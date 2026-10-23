@@ -1544,7 +1544,26 @@ export function ConfigModal(props: {
         </fieldset>
 
         <fieldset classList={{ hide: section() !== "runtime" }}>
-          <legend>agent runtime</legend>
+          <legend>
+          <div class="cfgrow">
+            <label style="flex:1">
+              API password
+              <input
+                type="password"
+                class="w100"
+                placeholder={props.cfg.hasPassword ? "(unchanged — type to replace)" : "(none — loopback only)"}
+                value={apiPassword()}
+                oninput={(e) => {
+                  setApiPassword(e.currentTarget.value);
+                  setApiPasswordDirty(true);
+                }}
+              />
+            </label>
+            <span class="muted" style="font-size:11.5px;max-width:34ch">
+              bearer token for /api. empty = loopback only.
+            </span>
+          </div>
+agent runtime</legend>
           <div class="cfggrid">
             <NumberField label="progress interval (min)" value={intervalMin()} onValue={(v) => setIntervalMin(v)} hint="how often the harness asks for a progress report" />
             <NumberField label="progress min chars" value={minChars()} onValue={(v) => setMinChars(v)} hint="progress prompts wait for this much real output" />
@@ -2051,36 +2070,6 @@ export function ConfigModal(props: {
 
         <fieldset classList={{ hide: section() !== "update" }}>
           <legend>live update</legend>
-          {/**
-            * The API password — the only way to set one now that the first-run wizard is gone.
-            *
-            * Left blank means "no auth", which is the safe default on loopback: a fresh install has
-            * no password because nothing needs one until the port is exposed. Set it before binding
-            * anything other than 127.0.0.1.
-            *
-            * `type="password"` and no `value` echo, so the stored secret is never rendered back into
-            * the DOM. The hint says what an empty field MEANS, because "empty" and "unchanged" look
-            * identical here and only one of them is true.
-            */}
-          <div class="cfgrow">
-            <label style="flex:1">
-              API password
-              <input
-                type="password"
-                class="w100"
-                placeholder={props.cfg.hasPassword ? "(unchanged — type to replace)" : "(none — loopback only)"}
-                value={apiPassword()}
-                oninput={(e) => {
-                  setApiPassword(e.currentTarget.value);
-                  setApiPasswordDirty(true);
-                }}
-              />
-            </label>
-            <span class="muted" style="font-size:11.5px;max-width:34ch">
-              protects /api with a bearer token. Only needed if this port is reachable from other
-              machines; leave empty for loopback. Saving an empty field removes it.
-            </span>
-          </div>
           <div class="cfgrow">
             <span class="muted">current version: {props.cfg.version ?? "unknown"}</span>
             <button
