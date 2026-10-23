@@ -321,3 +321,28 @@ test("a state button keeps ITS OWN colour on hover (#ui)", async () => {
     );
   }
 });
+
+test("every settings section keeps a LEGEND with text (#ui)", async () => {
+  /**
+   * The API password was moved from "live update" to "runtime" by editing around it, and the
+   * replacement swallowed the runtime `<legend>agent runtime</legend>` — leaving a bare `<legend>`
+   * that closed the element early. TypeScript accepted it (the JSX still balanced once the label
+   * landed elsewhere), so nothing caught it until the section rendered with a missing heading.
+   *
+   * A section with no heading is not a cosmetic problem: the panel is a list of collapsed
+   * fieldsets, and the legend is the only thing that says which one you are in.
+   */
+  const src = (await import("./helpers/source.ts")).readSource("frontend/components/ConfigModal.tsx");
+  const fieldsets = src.split("<fieldset").slice(1);
+  assert.ok(fieldsets.length >= 5, `expected several sections, found ${fieldsets.length}`);
+  for (const f of fieldsets) {
+    const hidden = /section\(\) !== "([a-z]+)"/.exec(f);
+    const legend = /<legend>([\s\S]*?)<\/legend>/.exec(f);
+    assert.ok(legend, `the "${hidden?.[1] ?? "?"}" section has no legend — its heading is gone`);
+    const text = legend![1]!.replace(/\{[^}]*\}/g, "").replace(/<[^>]*>/g, "").trim();
+    assert.ok(
+      text.length > 0,
+      `the "${hidden?.[1] ?? "?"}" section's legend is EMPTY — the label was lost in an edit`,
+    );
+  }
+});

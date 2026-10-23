@@ -1543,7 +1543,7 @@ export function ConfigModal(props: {
         </fieldset>
 
         <fieldset classList={{ hide: section() !== "runtime" }}>
-          <legend>
+          <legend>agent runtime</legend>
           <div class="cfgrow">
             <label style="flex:1">
               API password
@@ -1562,7 +1562,6 @@ export function ConfigModal(props: {
               bearer token for /api. empty = loopback only.
             </span>
           </div>
-agent runtime</legend>
           <div class="cfggrid">
             <NumberField label="progress interval (min)" value={intervalMin()} onValue={(v) => setIntervalMin(v)} hint="how often the harness asks for a progress report" />
             <NumberField label="progress min chars" value={minChars()} onValue={(v) => setMinChars(v)} hint="progress prompts wait for this much real output" />
@@ -1588,7 +1587,7 @@ agent runtime</legend>
               checked={shortContext()}
               onchange={(e) => setShortContext(e.currentTarget.checked)}
             />
-            short-context mode (#161)
+            short-context mode
             {/* no inline repeat of the tooltip: the label already carries the whole
                 explanation, including the window range that makes it worth using */}
           </label>
