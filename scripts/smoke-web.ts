@@ -221,7 +221,17 @@ class MockWS {
   }
 }
 
-const w = new Window({ url: "http://localhost:7788/session/test" });
+/**
+ * Boot at a REAL past session, not a placeholder.
+ *
+ * The fixture gives alpha three sessions (alpha-s9 newest, alpha-s2 bound, alpha-s1 oldest), so
+ * booting at `alpha-s1` exercises the deep link through the FIRST `select()` — the path a browser
+ * reload takes. A placeholder like `/session/test` never did: it is not in the index, so the code
+ * fell back to `localStorage`/first-agent and the boot deep link was silently untested. Reported as
+ * "`/session/teapot-10-16854917` を開いても `/session/teapot-10` に移動する".
+ */
+const BOOT_SESSION = "alpha-s1";
+const w = new Window({ url: `http://localhost:7788/session/${BOOT_SESSION}` });
 // widen the viewport so the details panel is open by default (the crash site).
 // configurable + writable so a scenario can RESIZE mid-run (#50: the reported
 // flow is narrowing the window with the panel open, not loading narrow).
@@ -848,12 +858,31 @@ console.log("deep render ok: feed rows present");
   console.log("deep render ok: whitespace reasoning draws nothing, real reasoning draws (#reasoning)");
 }
 
+/**
+ * Booting AT a deep link must keep it.
+ *
+ * The #58 check below drives a deep link through `popstate` after boot; a browser RELOAD is a
+ * different path — the first `select()` carries the id. Reported as "`/session/teapot-10-16854917`
+ * を開いても `/session/teapot-10` に移動する": the deep link was rewritten to the AGENT id, which
+ * every tab then resolves to that agent's LATEST session, so two tabs collapsed onto one.
+ */
+{
+  if (!w.location.pathname.includes(BOOT_SESSION)) {
+    console.error(
+      `#boot-deeplink REGRESSION: booted at /session/${BOOT_SESSION} but the URL is ` +
+        `${w.location.pathname} — an agent id here makes every tab open the SAME session`,
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: a browser reload keeps the deep-linked session (#boot-deeplink)");
+}
+
 /* ---------- #58: a deep link must open the session it NAMES ----------------
  * `select()` resolved an agent id to its newest/bound session and ignored the
  * session in the URL, so `/session/alpha-s1` opened alpha-s2 and then REWROTE
  * the URL to match. The bookmark quietly pointed at a different conversation.
  *
- * The bundle boots at http://localhost:7788/session/test; this drives a real
+ * The bundle boots at a real deep link (see BOOT_SESSION); this drives another one
  * deep link through history and asserts both the fetch and the final URL. */
 {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
