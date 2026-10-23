@@ -4847,27 +4847,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         : undefined
                     }
                     onEdit={
-                      // settled user prompts only: a pending message has not
-                      // reached the model, so there is nothing to fork from —
-                      // cancel (✕) returns its text to the composer instead.
-                      // A withdrawn message likewise never reached the model.
+                      // settled user prompts only: a pending message has not reached the model
                       row.type === "prompt" &&
                       row.data?.source === "user" &&
                       !(row.data?.pending && row.data?.sent !== true) &&
-                      !row.data?.cancelled &&
-                      // #129: do NOT offer the editor while the agent is live.
-                      //
-                      // `editPromptAt` refuses a running agent ("agent is running —
-                      // stop it before editing history"), so the button opened a modal
-                      // whose only possible submission was a 409. The modal then sat
-                      // over the controls: Escape closed the MODAL rather than stopping
-                      // the agent (that ordering is deliberate, #107), so the operator
-                      // pressing stop appeared to do nothing until a reload.
-                      //
-                      // The server-side guard is correct and stays; this just stops
-                      // offering an action that cannot succeed.
-                      !isSelLive()
-                        ? () => setEditing({ eventId: row.id, text: String(row.data?.text ?? "") })
+                      !row.data?.cancelled
+                        ? async () => {
+                            // The server refuses to edit history under a running loop, because an
+                            // unconsumed prompt is what the loop resumes into. Hiding the button
+                            // instead made it disappear for anyone whose agent is usually running,
+                            // so the click performs the two steps the operator already understands.
+                            if (isSelLive()) {
+                              await api(`/api/agents/${selected()}/stop`, { method: "POST" }).catch(() => {});
+                              await refreshAgents();
+                            }
+                            setEditing({ eventId: row.id, text: String(row.data?.text ?? "") });
+                          }
                         : undefined
                     }
                   />
