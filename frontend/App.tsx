@@ -2053,16 +2053,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        * (see `/api/agents/:id/events`). So sending it is safe, and it is the only way the feed can
        * agree with the URL.
        */
-      const sessQ =
-        tid && masterSessionIndex().has(tid) ? `&session=${encodeURIComponent(tid)}` : "";
-      const res = await api(
-        // `lineage=true` here too. The tail fetch asks for it, so a filtered
-        // fork's first page shows the INHERITED history; omitting it on the
-        // older-pages fetch made scrolling up switch to strict filtering, and the
-        // parent's pre-fork rows vanished from the top — reading as data loss,
-        // which is exactly what #38 was about.
-        `/api/agents/${id}/events?limit=${FEED_PAGE}&before=${encodeURIComponent(oldest.id)}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""}`,
-      );
+      const res = await api(eventsUrl(id, { before: oldest.id }, tid, bf));
       const page: Ev[] = res.events ?? [];
       if (page.length === 0) { setOlderDone(true); return; }
       // still the same session AND still anchored on the same oldest row?
@@ -2079,6 +2070,63 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       });
     } catch { /* transient — user can scroll up again */ }
     finally { setLoadingOlder(false); }
+  }
+
+  /**
+   * `&session=<internalId>` for the events endpoints — the ONE place that decides it.
+   *
+   * The frontend has four events call sites (older page, first page, catch-up, and the
+   * loadOlder prepend). Three of them used to build this expression independently as
+   * `tid !== id`, i.e. "send ?session= only when the handle is not the agent id" — and each time
+   * one was fixed the others silently kept the bug, which is why the symptom returned in the
+   * OPPOSITE direction: the feed showed the previous session's timeline under the new URL.
+   *
+   * `tid !== id` cannot express the question. `tid` falls back to the agent id while the session
+   * index loads, and in that state omitting the query makes the server answer with the agent's
+   * BOUND session. So: send it whenever the index KNOWS the id. The server re-validates ownership
+   * (`?session=` is ignored for a session the agent does not own), so this is safe.
+   */
+  function sessionQuery(agentId: string, tid: string): string {
+    if (!tid) return "";
+    /**
+     * `tid === agentId` does NOT mean "the bound session, nothing to say".
+     *
+     * The timeline handle falls back to the agent id while the index is loading, and in that state
+     * the URL may already name a DIFFERENT session. Omitting the query then lets the server answer
+     * with the agent's BOUND session, so the feed shows one conversation under another's address —
+     * the reported symptom, in both directions.
+     *
+     * If the index knows the id, it is a real session and must be asked for. If it does not, there
+     * is nothing to ask for: the bound log is the only answer available.
+     */
+    return masterSessionIndex().has(tid) ? `&session=${encodeURIComponent(tid)}` : "";
+  }
+
+  /**
+   * The events URL for one page of a session's timeline.
+   *
+   * Both fragments that every call site needs were built inline at three places each:
+   * `&session=` (the bug that kept coming back, because fixing one copy left the others) and
+   * `&branch=…&lineage=true`. Duplicated URL assembly is how a field gets dropped from ONE path and
+   * not the others, so it lives here.
+   *
+   * `lineage=true` is not optional: the tail fetch asks for it, so a filtered fork's first page
+   * shows the INHERITED history. Omitting it on the older-pages fetch switched to strict filtering
+   * and the parent's pre-fork rows vanished from the top, reading as data loss.
+   */
+  function eventsUrl(
+    id: string,
+    page: { before?: string; after?: string },
+    tid: string,
+    bf: string | null,
+  ): string {
+    const parts = [`/api/agents/${encodeURIComponent(id)}/events?limit=${FEED_PAGE}`];
+    if (page.before) parts.push(`&before=${encodeURIComponent(page.before)}`);
+    if (page.after) parts.push(`&after=${encodeURIComponent(page.after)}`);
+    const sessQ = sessionQuery(id, tid);
+    if (sessQ) parts.push(sessQ);
+    if (bf) parts.push(`&branch=${encodeURIComponent(bf)}&lineage=true`);
+    return parts.join("");
   }
 
   async function loadEvents(id: string, sessionId?: string) {
@@ -2099,7 +2147,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // only when there is nothing to show yet: a tail refresh must not flash a spinner over a
       // perfectly good timeline
       if (!events().length) setLoadingFeed(true);
-      const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
       /**
        * SKILLS are fetched SEPARATELY, not awaited with the timeline.
        *
@@ -2121,7 +2168,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // matching the context the agent actually reasons over. Filtering by
         // strict branch id showed less than the model sees, which read as data
         // loss even though nothing was missing from the log.
-        api(`/api/agents/${id}/events?limit=${FEED_PAGE}${sessQ}${bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""}`),
+        api(eventsUrl(id, {}, tid, bf)),
         needsBranches
           ? api(`/api/agents/${id}/branches`)
           : Promise.resolve({ branches: branches() }),
@@ -2397,11 +2444,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       return;
     }
     try {
-      const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
       const bf = branchFilter();
-      const q = `/api/agents/${id}/events?after=${encodeURIComponent(cursor)}${sessQ}${
-        bf ? `&branch=${encodeURIComponent(bf)}&lineage=true` : ""
-      }`;
+      const q = eventsUrl(id, { after: cursor }, tid, bf);
       const r = (await api(q)) as { events?: Ev[]; gap?: boolean };
       const got = r.events ?? [];
       if (r.gap) {
