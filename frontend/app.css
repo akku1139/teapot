@@ -774,6 +774,57 @@ html[data-bg-image="on"] body { background: transparent; }
 /* the chosen image: shown small, because it is a REFERENCE for the dim slider — the real
    preview is the app behind the dialog */
 .bgpreview { margin-top: var(--space-3); }
+/**
+ * The background-image slot IS the control.
+ *
+ * "replace imageボタンをやめて、背景画像が設定されているときは背景画像をhoverでreplaceのガイド、クリック
+ * でファイルピッカーにしたほうが良い気がする、よくあるUIパターン" — the image you want to change is
+ * the thing you click, so there is no separate button and no question about which image it targets.
+ *
+ * It is a `<button>` with no chrome of its own, sized to the preview; the hover hint is a sibling
+ * `<span>` that fades in on top, because a button's `::after` over an `<img>` is unreliable across
+ * engines (the same reason `.bgphoto` uses a sibling veil).
+ */
+.bgpick {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 260px;
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--bg-darkest);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  color: var(--dim);
+  font-size: var(--text-xs);
+}
+.bgpick.has { border-style: solid; border-color: var(--line); }
+.bgpick img { display: block; width: 100%; height: 84px; object-fit: cover; }
+.bgpick-empty { display: block; padding: 18px 10px; }
+/**
+ * The hover/focus hint sits ON the image.
+ *
+ * `opacity` rather than `display` so the transition can run, and `:focus-visible` alongside `:hover`
+ * because a keyboard user gets the same affordance — a control that only reveals itself to a mouse
+ * is unreachable for them.
+ */
+.bgpick-hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg-darkest) 62%, transparent);
+  color: var(--fg);
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity var(--dur-fast) ease;
+}
+.bgpick:hover .bgpick-hint,
+.bgpick:focus-visible .bgpick-hint { opacity: 1; }
+/* over a wallpaper the global outline rule would draw a rectangle around the image itself */
+html[data-bg-image="on"] button.bgpick { border-style: dashed; }
+html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 .bgpreview img {
   max-width: 100%; max-height: 120px; object-fit: cover;
   border-radius: var(--radius-md); border: 1px solid var(--line); display: block;

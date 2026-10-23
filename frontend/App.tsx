@@ -17,6 +17,7 @@ import { slotForSelection, paintedIdFor } from "./theme-slots";
 import { outputLang } from "./tool-output-lang";
 import { mergeThemes } from "./theme-merge";
 import { previewLayers, veilColour, backgroundImageValue } from "./theme-preview";
+import { BG_WIDTHS, bgSrc, bgSrcSet } from "./bg-srcset";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
@@ -346,15 +347,7 @@ export default function App() {
   };
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
-  /**
-   * The width ladder for the wallpaper's `srcset`.
-   *
-   * Mirrors the server's ALLOWED_WIDTHS. Hardcoded rather than fetched so the very first paint
-   * already has candidates (a fetch would mean one full-size download before any choice exists);
-   * the server rejects anything outside its own list, and a rejected width just falls back to the
-   * original, so a drift here degrades rather than breaks.
-   */
-  const BG_WIDTHS = [640, 1280, 1920, 2560, 3840] as const;
+  /** the ladder lives in `bg-srcset.ts`, shared with the appearance preview */
 
   /**
    * The active custom theme's background image, if any.
@@ -4088,8 +4081,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
          */
         <div class="bgphoto" aria-hidden="true">
           <img
-            src={src()}
-            srcset={BG_WIDTHS.map((w) => `${src()}?w=${w} ${w}w`).join(", ")}
+            src={bgSrc(src(), BG_WIDTHS[BG_WIDTHS.length - 1])}
+            srcset={bgSrcSet(src())}
             sizes="100vw"
             alt=""
             decoding="async"
@@ -7477,28 +7470,15 @@ function ThemeEditor(props: {
         <button type="button" onclick={duplicatePreset} title="copy the theme you are using into a new editable one — presets themselves are never modified">
           ＋ duplicate current
         </button>
-        <Show when={props.themes().length > 0}>
-          <select
-            value={editingId()}
-            onchange={(e) => {
-              setEditingId(e.currentTarget.value);
-              /**
-               * Selecting a theme to edit also MAKES IT ACTIVE.
-               *
-               * `applyCustomTheme()` paints only the active theme, so editing an inactive one
-               * showed the operator an editor whose every change went nowhere — the same
-               * invisible-edit bug "duplicate" had. You cannot meaningfully tune a theme you
-               * cannot see, so picking one for editing means looking at it.
-               */
-              props.onPick(e.currentTarget.value);
-            }}
-            title="which custom theme to edit — selecting one also applies it"
-          >
-            <For each={props.themes()}>
-              {(t) => <option value={t.id}>{t.label}</option>}
-            </For>
-          </select>
-        </Show>
+        {/**
+          * NO theme picker here.
+          *
+          * The card grid above is the selection surface, and picking a card already makes that
+          * theme the edited AND painted one. A second dropdown listing the same themes was the same
+          * decision offered twice — "duplicate 右のプルダウンが不要、上で選択中のテーマの編集画面が出る
+          * べきで、編集の選択経路は2つなくて良い". Two paths also meant two ways to disagree about
+          * which theme is being edited, which is the class of bug this editor has already had.
+          */}
       </div>
 
       <Show
@@ -7618,18 +7598,56 @@ function ThemeEditor(props: {
 
             <h4 class="cfgsub">background image</h4>
             <div class="cfggrid">
-              {/* A BUTTON that opens the file picker, not a bare <input type="file">.
-                  The native control always shows "no file chosen" once its value is cleared —
-                  and it MUST be cleared so the same file can be picked twice — so the one piece
-                  of state it displays was permanently wrong, immediately after a successful
-                  upload. Reported twice. The button reports what actually happened instead. */}
+              {/**
+                * THE PREVIEW IS THE CONTROL.
+                *
+                * Asked for as "replace imageボタンをやめて、背景画像が設定されているときは背景画像を
+                * hoverでreplaceのガイド、クリックでファイルピッカーにしたほうが良い気がする、よくある
+                * UIパターン". It is: the thing you want to change is the thing you click, and a
+                * separate button makes the operator map "which image does this replace?" themselves.
+                *
+                * With NO image the same slot is an empty drop-target-style button, so there is still
+                * exactly one place to go.
+                *
+                * The hidden `<input type="file">` is still the mechanism (a native file control
+                * cannot be styled and always shows "no file chosen" once cleared), and it is still
+                * cleared after each pick so the SAME file can be chosen twice.
+                */}
               <button
                 type="button"
-                class="trow"
+                class={"bgpick" + (editing()!.backgroundImage ? " has" : "")}
                 onclick={() => filePick?.click()}
-                title="PNG/JPG/WebP. Stored in this browser, applied behind the panels."
+                title={
+                  editing()!.backgroundImage
+                    ? "click to replace this background image (PNG/JPG/WebP)"
+                    : "choose a background image (PNG/JPG/WebP)"
+                }
               >
-                {editing()!.backgroundImage ? "🖼 replace image…" : "🖼 choose image…"}
+                <Show
+                  when={editing()!.backgroundImage}
+                  fallback={<span class="bgpick-empty">🖼 choose a background image…</span>}
+                >
+                  {/**
+                    * `srcset` HERE TOO — this is why the appearance panel felt laggy.
+                    *
+                    * The app's own wallpaper (`<BgPhoto>`) loads through `srcset` + `sizes`, so the
+                    * browser picks a width that suits the viewport. This preview asked for the
+                    * ORIGINAL file, which is a multi-megabyte photo, and it does so every time the
+                    * section opens. Asked as "appearanceがラグくて… こっちはUI本体と違って背景画像が
+                    * srcset無しでロードされてる" — exactly right.
+                    *
+                    * The preview is small, so it asks for the smallest rung and never the original.
+                    */}
+                  <img
+                    src={bgSrc(editing()!.backgroundImage)}
+                    srcset={bgSrcSet(editing()!.backgroundImage)}
+                    sizes="260px"
+                    alt="current background"
+                    decoding="async"
+                    loading="lazy"
+                  />
+                  <span class="bgpick-hint">🖼 replace…</span>
+                </Show>
               </button>
               <input
                 ref={filePick}
@@ -7642,21 +7660,18 @@ function ThemeEditor(props: {
                   // PUT /api/config (saving every setting and running connectAll) on an upload
                   e.stopPropagation();
                   importFile(e.currentTarget.files?.[0]);
-                  // clear so the SAME file can be picked again; the button above, not this
-                  // input, is what tells the operator what is applied
+                  // clear so the SAME file can be picked again
                   e.currentTarget.value = "";
                 }}
               />
               <Show when={editing()!.backgroundImage}>
-<div class="bgpreview">
-                  <img src={editing()!.backgroundImage} alt="theme background preview" />
+                <div class="bgpreview">
                   {/**
                    * Show the UPLOADED size, not a guess from the URL length.
                    *
-                   * The bytes now live on the server and the theme stores only
-                   * `/api/assets/<32hex>.<ext>`, so estimating size from the string's length
-                   * reported "0 KB" for every image — reported as "✓ image set — 0 KB". A size is
-                   * only known at upload time, so the editor does not invent one.
+                   * The bytes live on the server and the theme stores only
+                   * `/api/assets/<32hex>.<ext>`, so estimating from the string's length reported
+                   * "0 KB" for every image. A size is only known at upload time.
                    */}
                   <span class="muted" title="this image is served from the server; the theme stores only its URL">
                     ✓ image set{(() => {

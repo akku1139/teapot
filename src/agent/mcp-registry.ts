@@ -318,9 +318,25 @@ export class McpRegistry {
           st.lastError = undefined;
           await this.finishFlow(name, pending);
         } catch (e) {
-          auth.markError((e as Error).message);
+          /**
+           * Report the CAUSE, not just the message.
+           *
+           * `UnauthorizedError` defaults its message to the bare string "Unauthorized" when the SDK
+           * constructs it without one (measured in the SDK source: `super(message ?? "Unauthorized")`).
+           * That is what the panel was showing, and it says nothing about which step failed — the
+           * exchange, the reconnect after it, or the original 401. The class name and any `cause`
+           * are the difference between "try again" and a diagnosis.
+           */
+          const err = e as Error & { cause?: unknown };
+          const name = err.constructor?.name ?? "Error";
+          const cause = err.cause instanceof Error ? err.cause.message : String(err.cause ?? "");
+          const detail = [err.message, cause && cause !== err.message ? `(${cause})` : ""]
+            .filter(Boolean)
+            .join(" ");
+          const message = `${name}: ${detail}`;
+          auth.markError(message);
           if (st.status === "authorizing") st.status = "error";
-          st.lastError = (e as Error).message;
+          st.lastError = message;
           await this.finishFlow(name, pending);
         }
       })();

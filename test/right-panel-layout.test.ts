@@ -196,17 +196,19 @@ test("the feed DISABLES native scroll anchoring — it fights our own (#ui)", as
   );
 });
 
-test("creating or selecting a theme ADOPTS it, or every edit is invisible (#ui)", async () => {
+test("creating a theme ADOPTS it, and the CARD is the only way to select one (#ui)", async () => {
   /**
-   * Reported: "choose image… で画像選択したのに何も変わらない".
+   * Two reports, one root cause and one simplification.
    *
-   * `applyCustomTheme()` paints only the ACTIVE theme. `duplicatePreset()` created an editable
-   * copy and `setEditingId()`'d it but never called `onPick`, so the copy was editable and
-   * inert: changing a colour or picking a background image reached the store and never the
-   * screen. The theme SELECTOR had the same flaw.
+   * "choose image… で画像選択したのに何も変わらない": `applyCustomTheme()` paints only the ACTIVE
+   * theme, and `duplicatePreset()` created an editable copy without adopting it — so every edit
+   * reached the store and never the screen. Asserted on the WIRING, because the failure is silent.
    *
-   * Asserted on the wiring, because the failure is silent — there is no error and no visible
-   * symptom other than "nothing happens", which is exactly why it shipped twice.
+   * "duplicate 右のプルダウンが不要、上で選択中のテーマの編集画面が出るべきで、編集の選択経路は2つなくて
+   * 良い": that second selector is gone. It listed the same themes as the card grid and selected the
+   * same thing, and two paths could disagree about which theme was being edited — a bug shape this
+   * editor has already had. So this asserts the ABSENCE of the picker, which is a real property:
+   * a new `<select>` in the editor would silently reintroduce the ambiguity.
    */
   const app = await readSource("frontend/App.tsx");
   const dup = app.slice(app.indexOf("const duplicatePreset ="));
@@ -216,18 +218,17 @@ test("creating or selecting a theme ADOPTS it, or every edit is invisible (#ui)"
     /props\.onPick\(id\)/,
     "duplicating a theme must ADOPT it — an editable copy that is not active shows no changes",
   );
-
-  // the picker's onchange lives INSIDE the <select> that carries that title, and the title is
-  // the LAST attribute — so slice the element from its opening tag to its close, not forward
-  // from the title (which would miss the handler)
-  const titleAt = app.indexOf('title="which custom theme to edit');
-  assert.ok(titleAt > 0, "precondition: the theme picker exists");
-  const selectOpen = app.lastIndexOf("<select", titleAt);
-  const picker = app.slice(selectOpen, app.indexOf("</select>", titleAt));
+  assert.ok(
+    !app.includes('title="which custom theme to edit'),
+    "the editor must not carry its own theme picker: the card grid is the selection surface, and " +
+      "two paths can disagree about which theme is being edited (#ui)",
+  );
+  // and the editor is driven by the ACTIVE theme, so selecting a card shows that card's editor
   assert.match(
-    picker,
-    /props\.onPick\(/,
-    "selecting a theme to edit must apply it, for the same reason",
+    app,
+    /list\.find\(\(t\) => t\.id === props\.activeId\)/,
+    "`editing()` must fall back to the ACTIVE theme, or selecting a custom card shows a different " +
+      "theme's editor (#ui)",
   );
 });
 

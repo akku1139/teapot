@@ -2153,11 +2153,47 @@ console.log("deep render ok: feed rows present");
         bgFail('a native file input is still visible — its label always says "no file chosen"');
       }
 
-      // 2. a BUTTON opens the picker instead, and says what is applied
-      const btn = [...w.document.querySelectorAll(".themeeditor button")].find((b) =>
-        /choose image|replace image/i.test(b.textContent ?? ""),
-      );
-      if (!btn) bgFail("no button opens the file picker, so the hidden input is unreachable");
+      /**
+       * 2. A CONTROL opens the picker, and it is the image slot itself.
+       *
+       * Asserted as BEHAVIOUR, not as label text: the previous check looked for "choose image" /
+       * "replace image" wording, which pinned the spelling and would pass for a button that did
+       * nothing. Real behaviour is that clicking it reaches the hidden file input.
+       */
+      const pick = w.document.querySelector(".themeeditor button.bgpick") as HTMLButtonElement | null;
+      if (!pick) bgFail("no `.bgpick` control — the theme's image slot must be the thing you click");
+      /**
+       * SCOPED to the editor. There are TWO image file inputs in the app — the composer's
+       * attachment picker and this one — so an unscoped query grabbed whichever came first in the
+       * document and measured the wrong control.
+       */
+      const fileInput = w.document.querySelector(
+        '.themeeditor input[type="file"][accept="image/*"]',
+      ) as HTMLInputElement | null;
+      if (!fileInput) bgFail("no image file input at all");
+      /**
+       * Spy on the input's own `click()` rather than listening for an event: happy-dom does not
+       * synthesise a bubbling click from `HTMLInputElement.click()` the way a browser does, so an
+       * event listener measures the harness rather than the product.
+       */
+      // does the BUTTON receive a click at all? (isolates "handler never runs" from "input not opened")
+      let btnClicks = 0;
+      pick!.addEventListener("click", () => { btnClicks++; });
+      let picked = 0;
+      const realClick = fileInput!.click.bind(fileInput!);
+      fileInput!.click = () => {
+        picked += 1;
+      };
+      pick!.click();
+      fileInput!.click = realClick;
+      if (picked === 0) {
+        // is the hidden input even IN the editor? a ref that never attached is the likely cause
+        const inEditor = !!w.document.querySelector(".themeeditor input[type=file]");
+        bgFail(
+          `clicking the image slot did not open the file picker (pick=${pick!.tagName}.${pick!.className}` +
+            ` inputInEditor=${inEditor} inputConnected=${fileInput!.isConnected} btnClicks=${btnClicks})`,
+        );
+      }
 
       // 3. picking a file must not submit the settings form
       let submitted = 0;
@@ -2167,7 +2203,7 @@ console.log("deep render ok: feed rows present");
         e.preventDefault();
       };
       form?.addEventListener("submit", onSubmit);
-      const fileIn = w.document.querySelector('input[type="file"][accept="image/*"]') as
+      const fileIn = w.document.querySelector('.themeeditor input[type="file"][accept="image/*"]') as
         | HTMLInputElement
         | null;
       if (!fileIn) bgFail("no image file input at all");
