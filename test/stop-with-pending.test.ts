@@ -95,8 +95,21 @@ test("the queue is delivered on a later start (#9)", async () => {
     a.stop("test");
     await new Promise((r) => setTimeout(r, 120));
     a.start("resumed");
-    await new Promise((r) => setTimeout(r, 400));
-    const events = await readEvents(`${sd}/chat.jsonl`);
+    /**
+     * POLL for the delivery, do not sleep a fixed 400ms.
+     *
+     * A loaded runner (measured on windows-latest) had not delivered the queued prompt when the
+     * timer expired, and the failure read as a product bug rather than as a test that ran out of
+     * clock.
+     */
+    const deadline = Date.now() + 5_000;
+    let events = await readEvents(`${sd}/chat.jsonl`);
+    const isDelivered = (evs: typeof events) =>
+      evs.some((e) => e.type === "system_note" && (e.data as { event?: string })?.event === "prompt-delivered");
+    while (!isDelivered(events) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      events = await readEvents(`${sd}/chat.jsonl`);
+    }
     const delivered = events.filter((e) => e.type === "system_note" && (e.data as { event?: string })?.event === "prompt-delivered");
     await a.dispose();
     assert.ok(llmCalls > 0, "a resumed agent must actually run (#9)");

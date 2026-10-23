@@ -137,6 +137,8 @@ test("stop() also lands mid-call, while the provider is still thinking (#152)", 
   const ws = mkdtempInRootSync("inflight-");
   const sd = mkdtempInRootSync("inflights-");
   let aborted = false;
+  /** set the moment the provider call is entered, so the test can POLL instead of sleeping */
+  let entered = false;
   const a = new Agent({
     id: "t",
     workspace: ws,
@@ -144,6 +146,7 @@ test("stop() also lands mid-call, while the provider is still thinking (#152)", 
     llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
     chatFn: (_c: unknown, _m: unknown, _t: unknown, signal?: AbortSignal) =>
       new Promise<LlmResult>((_res, rej) => {
+        entered = true;
         signal?.addEventListener("abort", () => {
           aborted = true;
           rej(Object.assign(new Error("aborted"), { name: "AbortError" }));
@@ -156,7 +159,16 @@ test("stop() also lands mid-call, while the provider is still thinking (#152)", 
   await a.init();
   a.enqueuePrompt("go");
   a.start("t");
-  await new Promise((r) => setTimeout(r, 300));
+  /**
+   * POLL for the in-flight call, do not sleep a fixed 300ms.
+   *
+   * A loaded CI runner (measured on windows-latest) had not reached the LLM call when the timer
+   * expired, so `stop()` arrived before there was anything to abort and the assertion failed with
+   * no hint that the test had merely run out of clock.
+   */
+  const started = Date.now();
+  while (!entered && Date.now() - started < 5_000) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(entered, "precondition: the LLM call must be in flight before stop() is called");
   const t0 = Date.now();
   a.stop("test stop");
   await a.settled().catch(() => {});
