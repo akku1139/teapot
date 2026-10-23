@@ -2140,47 +2140,9 @@ export function ConfigModal(props: {
         <fieldset classList={{ hide: section() !== "skills" }}>
           <legend>skills</legend>
           {/**
-            * Skills are how the agent keeps a proven procedure. They live in three roots — the
-            * session's own, the workspace's, and the bundled set shipped with the package — and
-            * until now there was no way to see them short of reading the filesystem: the API
-            * returned them (`/api/agents/:id/skills`) and the client stored them for the `/`
-            * palette, but nothing listed them.
-            *
-            * READ-ONLY on purpose. A skill is a file the agent writes while working; editing one
-            * from a panel would mean a second writer racing `save_skill`, and the file is the
-            * source of truth everywhere else (load_skill reads it, not this list).
+            * READ-ONLY: a skill is a file the agent writes while working, and editing it here would
+            * be a second writer racing `save_skill`. The file stays the source of truth.
             */}
-          {/**
-            * Which OPTIONAL native tools this host actually has.
-            *
-            * A feature that silently does nothing when a binary is missing looks identical to a
-            * broken feature. Reported/asked for as "設定ウィンドウにオプション機能がどれくらい見つ
-            * かったかとかは入れると良い方". Fetched here (not at boot) because it is only read when
-            * someone opens this section.
-            */}
-          <div class="featgrid">
-            <div class="featrow">
-              <b>image downscaling</b>
-              <span class="muted">
-                {props.features
-                  ? props.features.imageResize.available
-                    ? `on — ${props.features.imageResize.tool}, long edge ≤ ${props.features.imageResize.maxEdge}px`
-                    : "off — no ffmpeg / ImageMagick found; uploads are served as-is"
-                  : "checking…"}
-              </span>
-            </div>
-            <div class="featrow">
-              <b>terminal pty</b>
-              <span class="muted">
-                {props.features
-                  ? props.features.pty.available
-                    ? `on — ${props.features.pty.provider}`
-                    : "off — no pty provider; terminals run on plain pipes (no resize)"
-                  : "checking…"}
-              </span>
-            </div>
-          </div>
-
           <Show
             when={props.skills.length > 0}
             fallback={
@@ -2250,9 +2212,36 @@ export function ConfigModal(props: {
 
         <fieldset classList={{ hide: section() !== "help" }}>
           <legend>help</legend>
-          {/* Everything here used to sit permanently in the UI — a keyboard cheat-sheet under
-              the composer and a sentence beside each toggle. Read once, then in the way
-              forever. Gathered here it is found when someone actually asks. */}
+          {/* The cheat-sheet and the toggle explanations live here rather than in the main UI:
+              they are read once, then only get in the way. */}
+          <div class="helpsec">
+            <h4 class="cfgsub">this host</h4>
+            {/* Which of the OPTIONAL native tools this machine actually has. A feature that
+                silently does nothing when a binary is missing is indistinguishable from a broken
+                one, and this is the only place the answer is visible. */}
+            <div class="featgrid">
+              <div class="featrow">
+                <b>image downscaling</b>
+                <span class="muted">
+                  {props.features
+                    ? props.features.imageResize.available
+                      ? `on — ${props.features.imageResize.tool}, long edge ≤ ${props.features.imageResize.maxEdge}px`
+                      : "off — no ffmpeg / ImageMagick found; uploads are served as-is"
+                    : "checking…"}
+                </span>
+              </div>
+              <div class="featrow">
+                <b>terminal pty</b>
+                <span class="muted">
+                  {props.features
+                    ? props.features.pty.available
+                      ? `on — ${props.features.pty.provider}`
+                      : "off — no pty provider; terminals run on plain pipes (no resize)"
+                    : "checking…"}
+                </span>
+              </div>
+            </div>
+          </div>
           <div class="helpsec">
             <h4 class="cfgsub">keyboard</h4>
             <div class="helprow"><kbd>enter</kbd><span>send (shift+enter for a newline)</span></div>

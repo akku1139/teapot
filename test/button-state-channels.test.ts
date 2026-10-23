@@ -346,3 +346,30 @@ test("every settings section keeps a LEGEND with text (#ui)", async () => {
     );
   }
 });
+
+test("host capability readouts belong in help, not skills (#ui)", async () => {
+  /**
+   * Reported: "設定ウィンドウで 'image downscaling' と 'terminal pty' が skills に入ってるのおかしい
+   * と思う。置くなら help では?" — right. They describe the MACHINE (does it have ffmpeg, is there a
+   * pty provider), not the procedures the agent can load. Sitting under "skills" made them read as
+   * two more skills.
+   */
+  const src = (await import("./helpers/source.ts")).readSource("frontend/components/ConfigModal.tsx");
+  const section = (name: string): string => {
+    const at = src.indexOf(`section() !== "${name}"`);
+    assert.ok(at > 0, `the ${name} section must exist`);
+    return src.slice(at, src.indexOf("<fieldset", at + 10));
+  };
+  const help = section("help");
+  for (const label of ["image downscaling", "terminal pty"]) {
+    assert.ok(
+      help.includes(label),
+      `"${label}" describes this HOST, so it belongs in help — under skills it reads as a procedure ` +
+        `the agent can load (#ui)`,
+    );
+    assert.ok(
+      !section("skills").includes(label),
+      `"${label}" must NOT be in the skills section (#ui)`,
+    );
+  }
+});
