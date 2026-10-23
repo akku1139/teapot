@@ -1428,9 +1428,6 @@ const isTimelineLive = (): boolean => {
   };
   /** a session switch must not carry one session's answers into another */
   const clearLocallyAnswered = () => setLocallyAnswered(new Set<string>());
-  // extracted to ./question-answered so the rule can be tested against the code
-  // that runs — it used to live inline here, and the tests re-implemented it,
-  // which is why deleting either half left them all green
   const answeredQuestionIds = createMemo(() =>
     answeredQuestionIdsOf(events() as unknown as QuestionEvent[], locallyAnswered()),
   );
@@ -2196,19 +2193,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const TIMELINE_CACHE_MAX = 6;
 
   /**
-   * The session an agent should open: the one the server says it is BOUND to,
-   * falling back to the newest on disk.
-   *
-   * Taking the newest by mtime is what resurrected a deleted/old session:
-   * the list is a directory scan, so a stale dir with a newer chat.jsonl won
-   * and the operator's view and the agent's actual timeline disagreed.
+   * The session an agent should open: the one the server says it is BOUND to, falling back to the
+   * newest on disk. Preferring mtime alone would resurrect an old session whose directory is stale
+   * but whose log is newer, putting the view and the agent's actual timeline out of step.
    */
-  // extracted to a pure, exported function so it can be TESTED.
-  //
-  // `test/session-switcher.test.ts` used to re-implement this logic in the test
-  // file and assert against that copy — three tests, ZERO coverage of shipped
-  // code. The logic is pure in (owned sessions, bound session, requested), so
-  // there was no reason for it to be a closure.
   const latestSessionOf = (agentId: string, requested?: string | null): string | null =>
     resolveTimelineSession(
       sessionsByAgent().get(agentId),

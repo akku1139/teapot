@@ -2582,32 +2582,14 @@ export class Agent {
           !this.goal.text.trim()
         )
           break;
-        // auto-continue: wait quietly, then nudge with a fresh round.
-        // Sub-agents get a SCOPE-ANCHORED nudge instead of a generic one:
-        // "Continue working toward the current goal" made a forked sub-agent
-        // re-read its inherited context and drift into one of the parent's
-        // older tasks — it would keep going forever without ever finish()ing.
-        // bound CONSECUTIVE auto-continued rounds.
+        // auto-continue: wait quietly, then nudge with a fresh round. Sub-agents get a
+        // SCOPE-ANCHORED nudge — a generic "continue toward the goal" made a forked sub-agent drift
+        // into one of the parent's older tasks.
         //
-        // maxTurnsPerRound cannot bound this loop, and the reason is structural:
-        // a ROOT agent that answers with a bare message ends its round after ONE
-        // turn (`return finished` in runTurnsUntilIdle), so no single round ever
-        // reaches the per-round cap. `finished` stays false, the goal stays
-        // active, and auto-continue starts the next round — forever.
-        //
-        // `round-turn-cap` notes, because the cap is only ever evaluated once a
-        // round ENDS, and these rounds end at turn 1. A tool-calling model does
-        // trip it (8 turns, 1 note) — the gap is specific to the talk-only shape.
-        //
-        // So the bound belongs here, where the real loop is: consecutive rounds
-        // that produced neither a finish() nor a tool call. Any tool call resets
-        // it — that is real work, not stalling — and so does a stop, a fresh
-        // user prompt, or an operator reply.
-        //
-        // This is a SAFETY VALVE, not a policy. It is deliberately generous
-        // (default 50) because a long autonomous stretch that keeps calling tools
-        // resets the counter on every turn and is never affected; only a model
-        // that never acts and never finishes trips it.
+        // Bound CONSECUTIVE rounds that produced neither a finish() nor a tool call. Any tool call
+        // resets it (that is real work, not stalling), as does a stop or a fresh prompt. This is a
+        // safety valve, not a policy: a talk-only root agent ends every round after one turn, so no
+        // per-round cap can ever see it, and `finished` stays false forever.
         if (++this.consecutiveIdleRounds > this.opts.maxConsecutiveIdleRounds) {
           this.consecutiveIdleRounds = 0;
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -4223,28 +4205,14 @@ export class Agent {
   }
 
   /**
-   * Stage 1 of context management (OpenCode-style): before paying for a full
-   * summarize, clip OLD oversized tool outputs — they are the usual bulk and
-   * their details rarely matter once executed. The most recent window is
-   * protected so current work never loses its footing.
+   * Stage 1 of context management: clip OLD oversized tool outputs before paying for a full
+   * summarise. They are the usual bulk and their details rarely matter once executed; the recent
+   * window is protected so current work keeps its footing.
    *
-   * WHEN it may run is the subtle part. It used to fire at `budget * 0.6`, and
-   * because the budget is itself 75% of the model's window that meant clipping
-   * history at **45% of the real window** — well before the auto-compact trigger at
-   * 75%, i.e. while a quarter of the window was still free. The operator's report:
-   * "compactで最初に過去履歴を落としてるけど…25%余ってるから多分あまりそれする必要ない".
-   *
-   * Pruning is destructive in a way compaction is not: a clipped tool result is GONE
-   * from the model's context (the log keeps it, but the model cannot see it without
-   * re-issuing the call), so doing it early trades real information for room that is
-   * not needed yet. It is now a PRE-STEP OF COMPACTION — called from `maybeCompact()`
-   * only once that pass has decided it is actually over budget — plus a margin so a
-   * mid-size context is still tidy. `PRUNE_AT_SHARE` is a share of the BUDGET, and a
-   * share just under 1 means "only when the next request would not fit".
-   *
-   * The separate restore-time call keeps its own rule: a restored history is
-   * re-pruned so a reload does not hand the provider a strictly larger prompt than
-   * the one that had just succeeded.
+   * It runs as a PRE-STEP of `maybeCompact()`, only once that pass has decided the context is
+   * actually over budget. Clipping is more destructive than summarising — the model cannot see a
+   * clipped result again without re-issuing the call — so doing it while room is still free trades
+   * real information for nothing.
    */
   private async maybePrune(force = false): Promise<number> {
     const est = this.contextSizeForBudgeting(); // floored — see #73
