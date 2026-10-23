@@ -206,6 +206,34 @@ non-obvious choice was made, what was measured, what breaks otherwise.
 
 ## UI / frontend conventions
 
+### Where frontend code lives
+
+`App.tsx` was 10,101 lines. It is now ~6,100, and the split is a rule rather than something to
+re-litigate:
+
+```
+frontend/App.tsx          the app shell: state, effects, layout
+frontend/components/      JSX components  (chrome, code, rows, settings-parts, ConfigModal, FilesPanel)
+frontend/lib/             pure helpers, no JSX  (ansi, api, format, theme-*, timeline-*, ...)
+```
+
+A module goes in `lib/` when it has no JSX; a component goes in `components/` when it renders. The
+unit tests import `lib/` directly, which is why those files must stay DOM-free where they can.
+
+**Extract with a verified 1:1 copy, never by retyping.** The procedure that worked:
+
+1. locate the block by its declaration line and find the end by **brace balance**, not by counting
+   lines (a line-number span silently dropped closing braces and ate neighbouring code);
+2. write the destination from the copied text;
+3. assert the WHOLE block is present in the destination — verify more than the first line, because
+   a first-line check passes on a truncated copy;
+4. only then delete the original;
+5. run the gates and COMMIT. Several of these steps were done twice from scratch after a bad edit,
+   and the commits are what made that cheap.
+
+Extracting a leaf component first is what makes the big one safe: `ConfigModal` (1780 lines) came
+out with only five unresolved names because everything it called had already moved.
+
 - **A `//` comment inside JSX children is not a comment — it is JSX text and it
   renders on screen.** Use `{/* … */}`. (`test/jsx-line-comment.test.ts` parses
   every `.tsx` and fails on this.)
