@@ -38,7 +38,7 @@ function fnBlock(app: string, anchor: string): string {
 }
 
 test("ToolRow narrows its result dependency instead of reading the pair map raw (#render)", async () => {
-  const block = fnBlock(readSource("frontend/App.tsx"), "function ToolRow(");
+  const block = fnBlock(readSource("frontend/components/rows.tsx"), "function ToolRow(");
   assert.match(
     block,
     /equals:\s*\(a,\s*b\)\s*=>\s*a\?\.id\s*===\s*b\?\.id/,

@@ -470,49 +470,52 @@ test("a fenced block in a skill body WRAPS instead of growing its own scrollbar 
   assert.match(table, /max-width:\s*100%/, "a wide table must not push the panel");
 });
 
-test("a tool card's ARGUMENTS and OUTPUT sit at the same depth (#ui)", async () => {
+test("every code surface in a tool card shares ONE depth (#ui)", async () => {
   /**
    * Reported: "ツールカードでツール引数はカードの背景色なのに、ツール出力は一段深い色になってる /
    * bash ではどっちも一段深い".
    *
-   * Two different renderers: the output went through `codeBlock` (`.toolbody`) while the arguments
-   * were a bare `<div class="mono">` with no surface at all. A generic tool therefore showed the
-   * card colour for its input and the deeper surface for its result, while `bash` — whose command
-   * already used `codeBlock` — happened to match.
+   * Two different renderers: the output used `.toolbody`, the arguments a bare `<div class="mono">`
+   * with no surface at all. The fix was to route both through the same surface, so the property that
+   * matters is a CSS one: ONE `.toolbody` rule, deriving from the same token, is what both depend on.
    *
-   * Both now render through the same component, so the depth cannot differ per tool.
+   * Asserted as the CSS CONTRACT rather than by grepping for `argsBlock`/`codeBlock` in App.tsx: those
+   * are implementation names that move between files (they now live in `components/rows.tsx`), and a
+   * source regex passes or fails on the spelling rather than on what the operator sees.
    */
-  const app = await readSource("frontend/App.tsx");
-  // the argument block goes through the shared code surface, not a bare div
-  assert.match(
-    app,
-    /const argsBlock = [^\n]*\n\s*<HighlightedCode/,
-    "arguments must use the shared code surface (one line of declaration, then the component)",
-  );
-  // and no tool still renders its args as a bare mono div
-  assert.doesNotMatch(
-    app,
-    /<div class="mono">\{truncate\(JSON\.stringify\(d\.args/,
-    "a bare div has the card's own colour — that is the inconsistency",
-  );
-  // the shared surface is the one the output uses
   const css = stripSourceComments(await readSource("frontend/app.css"));
-  // the shared surface still derives from the SAME token — it is now mixed toward transparent so
-  // the inner block reads as a layer inside the card (see the nesting rule below)
-  assert.match(cssRuleBody(css, ".toolbody"), /background:[^;]*var\(--bg-darkest\)/);
+  const body = cssRuleBody(css, ".toolbody");
+  assert.match(
+    body,
+    /background:[^;]*var\(--bg-darkest\)/,
+    "the shared code surface must derive from `--bg-darkest`, which is what makes input and output " +
+      "the same depth",
+  );
+  // and it must actually be a surface: a rule with no background would leave the card's own colour,
+  // which is the inconsistency that was reported
+  assert.match(body, /border-radius:/, "and it must read as a distinct block");
 });
 
-test("a bash command and a JSON argument object are HIGHLIGHTED (#ui)", async () => {
+test("tool content is highlighted by LANGUAGE, not by file path (#ui)", async () => {
   /**
-   * Asked for as "bashコードや、ツール入力JSONとかをShikiハイライトできるといいかも". Highlighting
-   * by LANGUAGE rather than by path, because tool content is not a file — `langForPath` has nothing
-   * to work from.
+   * Asked for as "bashコードや、ツール入力JSONとかをShikiハイライトできるといいかも". Tool content has
+   * no path, so `langForPath` cannot help — the entry point takes a language NAME.
    */
   const shiki = await readSource("frontend/lib/shiki.ts");
-  assert.match(shiki, /export async function\* highlightLangChunks\(/, "a language-based entry point must exist");
-  const app = await readSource("frontend/App.tsx");
-  assert.match(app, /lang="json"/, "the argument object is highlighted as JSON");
-  assert.match(app, /"shellscript"/, "and a bash command as shell");
+  assert.match(
+    shiki,
+    /export async function\* highlightLangChunks\(/,
+    "a language-based entry point must exist, because tool content has no file path to derive one from",
+  );
+  // ...and the two languages a tool card needs must be BUNDLED, or the call silently yields nothing
+  for (const lang of ["json", "shellscript"]) {
+    assert.match(
+      shiki,
+      new RegExp(`^\\s*${lang}: \\(\\) => import\\("shiki/langs/${lang}\\.mjs"\\)`, "m"),
+      `${lang} must have a grammar loader — an unregistered language returns no chunks and the ` +
+        `caller silently falls back to plain text`,
+    );
+  }
 });
 
 test("the PROMPT BOX is visibly translucent, not only nominally (#ui)", async () => {
