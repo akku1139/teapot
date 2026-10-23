@@ -552,7 +552,7 @@ export function ConfigModal(props: {
   };
 }) {
   /**
-   * #170: a provider row holds a LIST of keys, rotated round-robin by the server.
+   * a provider row holds a LIST of keys, rotated round-robin by the server.
    *
    * `apiKeys` is read when present and `apiKey` seeds it otherwise, matching the
    * migration on the server side — an existing config must open in this dialog
@@ -572,7 +572,7 @@ export function ConfigModal(props: {
   );
   const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? "");
   // the default as it exists on disk, so we can tell "configured but missing"
-  // from "you just changed it" (#21)
+  // from "you just changed it"
   const cfgDefaultProvider = () => props.cfg.defaultProvider ?? "";
   // A <select> whose value matches no <option> silently falls back to the
   // first option — which is exactly the "(none — first provider wins)" row.
@@ -618,7 +618,7 @@ export function ConfigModal(props: {
   const [apiPassword, setApiPassword] = createSignal("");
   const [apiPasswordDirty, setApiPasswordDirty] = createSignal(false);
   const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
-  // MCP servers (#67). The header text is kept separately as STRINGS: the config holds
+  // MCP servers. The header text is kept separately as STRINGS: the config holds
   // an object, and round-tripping it through JSON on every keystroke would rewrite what
   // the operator is typing (a half-typed quote would be erased mid-word).
   const [mcpServers, setMcpServers] = createSignal<any[]>(
@@ -1172,7 +1172,6 @@ export function ConfigModal(props: {
        *
        * The OAuth branch above used to return without closing, so saving anything — appearance
        * included — left the dialog on screen whenever a saved MCP server merely *needed* a grant.
-       * Reported as "appearanceを編集してsave settingsをしても設定ウィンドウが閉じないのに、他のとこ
        * では設定ウィンドウが閉じる". The hint is the whole message; keeping the dialog open only made
        * the behaviour differ by section.
        *
@@ -1197,7 +1196,7 @@ export function ConfigModal(props: {
     <Modal title="settings" onClose={props.onClose}>
       <form onsubmit={save} style="display:flex;flex-direction:column;gap:12px;min-height:0">
         {/* A MENU, not one long column. With several providers — each holding
-            several keys (#170) — the stacked form was a wall of inputs whose extent
+            several keys — the stacked form was a wall of inputs whose extent
             the operator could not see; reaching the task list meant scrolling past
             every credential. One section at a time, named on the left.
 
@@ -2096,7 +2095,6 @@ agent runtime</legend>
                    *    timeout even though the server was healthy. Before the request the uptime
                    *    was large; after it, it must be small — that is the true "it restarted".
                    *
-                   * MEASURED note: `uptime` is seconds since the SERVER started, so the comparison
                    * is against the value read just before the POST.
                    */
                   btn.textContent = "restarting…";

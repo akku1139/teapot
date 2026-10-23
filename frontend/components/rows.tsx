@@ -50,11 +50,10 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   //     embed class="embed done" summary="⚙ $ echo ALPHA3ms…"
   //     embed class="embed done" summary="⚙ $ echo BETA3ms…"     <- reported
   //
-  // Measured by dumping the real bundle in happy-dom, not by reading code: the
   // helper was right and the CALL was missing. A run of commands therefore read as
   // a stack of unrelated blocks, which is the "timeline is cluttered" complaint.
   const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
-  // #54: read the result prop REACTIVELY. `<For each={chatEvents()}>` builds the
+  // read the result prop REACTIVELY. `<For each={chatEvents()}>` builds the
   // row while its result is still undefined, and a destructured `const res =
   // props.res` is bound once — so the row kept rendering "running…" forever when
   // the result arrived.
@@ -90,7 +89,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   // the tab was hidden). Rendering it forever as "running…" was exactly that:
   // switching sessions and back "fixed" it because that reloaded the log.
   //
-  // #54: this must be a FUNCTION, not a value. Computed once in the component
+  // this must be a FUNCTION, not a value. Computed once in the component
   // body it captured `props.agentActive` as it was when the row was BUILT — i.e.
   // `true`, because a row only exists because the agent was working — so the
   // guard could never fire. It was written to close exactly this bug and could
@@ -116,7 +115,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   /**
    * A tool card's code surface: the SAME depth for arguments and output.
    *
-   * Reported as "ツールカードでツール引数はカードの背景色なのに、ツール出力は一段深い色になってる / bash
    * ではどっちも一段深い". The cause was two different renderers: the output went through
    * `codeBlock` (`.toolbody`, `--bg-darkest`) while the arguments were a bare `<div class="mono">`
    * with no surface at all — so a generic tool showed the card colour for its input and the deeper
@@ -155,7 +153,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
     );
     })();
 
-  // #54: this whole derivation depends on the result, so it must be a MEMO. It used to
+  // this whole derivation depends on the result, so it must be a MEMO. It used to
   // run once in the component body, which is why a row created before its result
   // arrived kept the pre-result label and body for good: only the class (re-read
   // from the prop) changed. See the note on `res` above.
@@ -201,7 +199,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         const bgJob = isBg ? (String(out()).match(/job (bg\d+)/)?.[1] ?? "") : "";
         label = (isBg ? "⏳ " : "$ ") + oneLine(cmd, 96);
         const timeoutMs = argStr("timeout_ms") ? Number(argStr("timeout_ms")) : undefined;
-        // #46: a command the harness KILLED used to render as
+        // a command the harness KILLED used to render as
         // `300ms · timeout 1s` — indistinguishable from a fast success, so the
         // row never read as finished. Name the outcome on the summary line.
         const r = res();
@@ -411,7 +409,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       <summary>
         {/* A GROUPED row keeps its command (you still need to know what ran) but drops
             the repeated marker, so a run of commands reads as one block instead of N
-            unrelated ones (#75). The label already carries its own marker ("$ ", "⏳ "). */}
+            unrelated ones. The label already carries its own marker ("$ ", "⏳ "). */}
         <b>{derived().label}</b>
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
@@ -449,7 +447,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
   const e = props.e;
   const a = authorOf(e);
   // Grouping is `groupedWith()` from ./row-grouping — extracted so the rule can
-  // be tested against the code that runs (#75). It used to live inline here,
+  // be tested against the code that runs. It used to live inline here,
   // and the tests re-implemented it, which is why deleting the real #49 fix left
   // them all green.
   const grouped = () => groupedWith(props.prev?.() as RowLike | undefined, e as RowLike);
@@ -459,7 +457,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
    * The spacing around a run needs three facts: is this a continuation (`grouped`), does a
    * continuation follow, and does one follow THIS row. `:has(+ .msg.grouped)` could answer
    * the last two, but it makes the style engine run a sibling-matching pass for EVERY row on
-   * every style recalc — and this feed renders ~1,100 rows on open (#178). The component
+   * every style recalc — and this feed renders ~1,100 rows on open. The component
    * already knows the next event, so the answer is free here and the selector disappears.
    */
   const nextGrouped = () => {
@@ -477,12 +475,12 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
     );
   }
   if (e.type === "goal") {
-    // #41: the finish→audit→continue lifecycle used to render as bare labels
+    // the finish→audit→continue lifecycle used to render as bare labels
     // with an EMPTY body ("🎯 goal audit:"), hiding the verification contract
     // and the verdict. Every branch now carries a real detail, and "done" is
     // labelled as PENDING audit because it is logged before the audit runs.
     //
-    // #51: the label and this card were children of `.divider-msg`, which is
+    // the label and this card were children of `.divider-msg`, which is
     // `display:flex` with ::before/::after filling the slack — so the card was
     // a FLEX SIBLING of the label and everything shared one row, with the
     // card's left edge wherever the flex layout put it. `.goalline` stacks them
@@ -493,7 +491,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
       <div class={"goalline " + (line.tone === "err" ? "err" : line.tone === "warn" ? "warn" : "")}>
         <div class="goalline-label">{line.label}</div>
         {/* an empty detail means "nothing real to show" — the label stands
-            alone rather than getting a placeholder card (#51). `hasCard` is
+            alone rather than getting a placeholder card. `hasCard` is
             the explicit flag, so this is never a guess from an empty string. */}
         <Show when={line.hasCard}>
           <div
@@ -558,7 +556,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
         </div>
       );
     }
-    // #56: the START of the pass, logged before the (slow) summarizer runs so
+    // the START of the pass, logged before the (slow) summarizer runs so
     // the timeline shows the conversation being rewritten rather than going
     // quiet for the whole summarize. The completion divider above carries the
     // after-figures; this one only claims what was already known.
@@ -579,7 +577,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
         "msg" +
         (grouped() ? " grouped" : "") +
         // the row BELOW continues this run — replaces a `:has(+ .msg.grouped)` selector,
-        // which made every row pay for a sibling match on every recalc (#178)
+        // which made every row pay for a sibling match on every recalc
         (nextGrouped() ? " next-grouped" : "") +
         (e.data?.pending ? " pending" : "") +
         (e.data?.cancelled ? " withdrawn" : "")
@@ -686,7 +684,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
       // bash row render its own icon + label.
       return <ToolRow e={e} prev={props.prev} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} />;
     case "tool_result": {
-      // #54: a result whose call is no longer in the events window. It used to
+      // a result whose call is no longer in the events window. It used to
       // render as a bare output blob with no tool name and no command, which
       // read as "the run never finished". Render the SAME completed tool row a
       // paired result gets, from the result's own metadata, so it is
@@ -743,7 +741,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
       // closes the call). Answered questions keep their options visible but
       // disabled — tapping them twice used to send duplicate prompts.
       const callId = e.data?.callId ? String(e.data.callId) : "";
-      // called inside the row, so it tracks the signal reactively (#55)
+      // called inside the row, so it tracks the signal reactively
       const answered = () => props.answeredIds?.().has(callId) ?? false;
       return (
         <div class={"embed question" + (answered() ? " answered" : "")}>
@@ -761,7 +759,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
                     class="qopt"
                     disabled={answered()}
                     onclick={() => {
-                      // #55: mark it answered NOW, before the POST. The derived
+                      // mark it answered NOW, before the POST. The derived
                       // set only catches up when the prompt event is logged, and
                       // until then the buttons stayed live — so a second click
                       // sent a duplicate prompt.

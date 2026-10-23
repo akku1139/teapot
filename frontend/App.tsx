@@ -18,19 +18,19 @@ import { outputLang } from "./lib/tool-output-lang";
 import { mergeThemes } from "./lib/theme-merge";
 import { previewLayers, veilColour, backgroundImageValue } from "./lib/theme-preview";
 import { BG_WIDTHS, bgSrc, bgSrcSet } from "./lib/bg-srcset";
-// #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
+// descendant-aware counting, so the 🧩 badge matches the real subtree.
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./lib/sidebar-tree";
-// #75: extracted so the tests drive the code that runs — they used to carry their
+// extracted so the tests drive the code that runs — they used to carry their
 // own copy, and deleting the real execCommand fallback left them green.
 import { copyText } from "./lib/clipboard";
 import { groupedWith, type RowLike } from "./lib/row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./lib/question-answered";
 import { reconcilePending, type PendingEcho } from "./lib/pending-echo";
-// #141: pure + exported, so the session switcher is testable rather than re-implemented
+// pure + exported, so the session switcher is testable rather than re-implemented
 import { linkableSessionId, resolveTimelineSession } from "./lib/session-index";
 import { rememberTextareaHeight, storedTextareaHeight, trackTextareaHeight } from "./lib/textarea-size";
-// #146: the scope predicates are PRODUCTION, so the tests can assert the same code
-// the handler runs — a test-local copy proves nothing (#75)
+// the scope predicates are PRODUCTION, so the tests can assert the same code
+// the handler runs — a test-local copy proves nothing
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { shellOutcome, shellHint, outcomeMarker } from "./lib/shell-outcome";
@@ -128,7 +128,7 @@ const NARROW_PX = 1100;
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
   /** is work in flight that `stop` would stop? `status` alone cannot say — a
-   *  parked tool and queued prompts are both live while status reads "idle" (#59) */
+   *  parked tool and queued prompts are both live while status reads "idle" */
   live?: boolean;
   session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
   /** #155: a short label derived from the session's first user prompt. Absent
@@ -181,7 +181,7 @@ const FEED_TYPES = new Set([
   "state", "error", "fork", "goal", "todo", "question", "decision", "compaction",
   "system_note",
   // NOTE: "sub" is deliberately NOT here. A child's activity is no longer
-  // mirrored into the parent's log (#63) — those rows flooded the parent's
+  // mirrored into the parent's log — those rows flooded the parent's
   // timeline, and they were display-only anyway: `rebuildMessagesFrom` never
   // read them, so the model never saw them either. A chat's timeline is its own.
   // The expansion below still handles a `sub` row so an OLD log that already
@@ -195,7 +195,7 @@ const NOTE_FEED_TYPES = new Set(["system_note"]);
 
 /**
  * The types that actually DRAW a row — `FEED_TYPES` minus the ones that pass the
- * filter but render nothing (#75).
+ * filter but render nothing.
  *
  * `state` is the offender that was measured: it is in `FEED_TYPES`, neither
  * MessageRow nor SwitchContent has a branch for it, and yet it became the
@@ -256,7 +256,7 @@ export default function App() {
   const [masterSessionIndex, setMasterSessionIndex] = createSignal<Map<string, string>>(new Map());
   const [sessionsByAgent, setSessionsByAgent] = createSignal<Map<string, string[]>>(new Map());
   /**
-   * #155: session id → human title, from `/api/sessions`.
+   * session id → human title, from `/api/sessions`.
    *
    * The per-agent snapshot also carries a title, but only for a session whose agent
    * has been RESTORED. Boot leaves agents stopped, so the sidebar would show raw ids
@@ -403,7 +403,7 @@ export default function App() {
     onResize(); // a late load can land on the other side of the breakpoint
   });
 
-  /* #103: a resize must not move the operator's place in the timeline.
+  /* a resize must not move the operator's place in the timeline.
    *
    * `scrollTop` is a PIXEL offset into content whose height just changed. Narrow
    * -> wide re-wraps every line, so the same text needs fewer rows and
@@ -594,7 +594,7 @@ export default function App() {
   });
 
   /** A selector that identifies the topmost visible timeline row, plus its
-   *  viewport-relative top. Used as the anchor a resize must preserve (#103). */
+   *  viewport-relative top. Used as the anchor a resize must preserve. */
   function firstVisibleRow(
     f: HTMLElement,
   ): { sel: string; top: number } | null {
@@ -605,9 +605,8 @@ export default function App() {
     const feedTop = f.getBoundingClientRect().top;
     const at = (i: number) => rows[i]!.getBoundingClientRect();
     /**
-     * BINARY SEARCH, not a linear scan (#179).
+     * BINARY SEARCH, not a linear scan.
      *
-     * MEASURED cost of the old loop: `getBoundingClientRect()` on every row until one was
      * visible — and with `content-visibility: auto` on `.feed > .msg`, reading a row's box
      * FORCES IT TO BE LAID OUT. So the scan did not merely read ~1,100 boxes, it laid out
      * every skipped row it passed, which is the "`content-visibility` との相性" the operator
@@ -777,12 +776,11 @@ export default function App() {
    * The containment that used to be toggled here is gone. It bought less memory than expected
    * ("思ったより軽量化効果が少なかった") and it CAUSED the scroll drift: a skipped row is replaced by
    * a `contain-intrinsic-size` guess, and laying it out for real moves everything below it.
-   * MEASURED in headless Firefox: 300 rows estimated 47100px against a real 35100px.
    *
    * Removed rather than tuned, because the drift cannot be corrected from script — a correction
    * runs after paint, so it is itself a visible jump. See the note in app.css.
    */
-  // NOTE (#179): there used to be a second effect here that walked every row and wrote an
+  // NOTE: there used to be a second effect here that walked every row and wrote an
   // inline `contain-intrinsic-size` from a measured box, with an IntersectionObserver and a
   // ResizeObserver per row, to stop a `content-visibility` unskip from shifting the scroll.
   //
@@ -801,7 +799,7 @@ export default function App() {
   // model switcher state
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
-  // #47: reasoning effort draft ("" = provider default). Seeded from the
+  // reasoning effort draft ("" = provider default). Seeded from the
   // agent snapshot and re-seeded whenever the selected agent changes, mirroring
   // modelDraft's pattern.
   const [effortDraft, setEffortDraft] = createSignal("");
@@ -860,7 +858,7 @@ export default function App() {
   // doesn't work" bug). Clear draft / sync provider only when the selected
   // agent actually changes.
   let _prevModelAgent: string | null = null;
-  // #3: set when the operator works the provider dropdown themselves. The
+  // set when the operator works the provider dropdown themselves. The
   // re-sync in the branch below exists for an EXTERNAL change (another tab, a
   // restart) and must not undo a deliberate pick: choosing a provider that has
   // no configured default model leaves the draft empty, and without this the
@@ -887,7 +885,7 @@ export default function App() {
       // same agent — keep user's draft/provider edits intact; only
       // re-sync if the server's provider changed externally and the user
       // isn't actively editing (draft empty means not mid-type) or has not
-      // touched the dropdown (#3)
+      // touched the dropdown
       const curProv = untrack(() => modelProvider());
       const curDraft = untrack(() => modelDraft());
       if (!curDraft && curProv !== prov && mayResyncProvider(providerTouched)) {
@@ -941,7 +939,7 @@ export default function App() {
   createEffect(() => {
     if (!compacting()) setLive((l) => (l?.text.startsWith("[compact] ") ? null : l));
   });
-  // #108: re-pin the feed when the compaction banner appears or disappears.
+  // re-pin the feed when the compaction banner appears or disappears.
   //
   // The banner lives INSIDE the feed, so a pass changes its height twice — and
   // on `phase: done` the live-text effect above clears the bubble in the same
@@ -1024,7 +1022,7 @@ export default function App() {
   // leaves running/waiting, any leftover live buffer is dead and must go.
   // (Reload "fixes" it today only because the buffer is memory-only.)
   createEffect(() => {
-    // #40: sweep EVERY agent's buffer against its OWN status, not the selected
+    // sweep EVERY agent's buffer against its OWN status, not the selected
     // one — nothing replays missed events on reconnect, so a background agent's
     // buffer could depend on a turn-boundary event that never arrived and leave
     // stale text under a writing cursor until a reload.
@@ -1089,7 +1087,7 @@ export default function App() {
   // instead of waiting for every prompt-delivered note to arrive over WS (the
   // badge and the echo visibly disagreed during that gap).
   //
-  // Reconcile by IDENTITY, not by count (#9). This used to be slice(0, queued)
+  // Reconcile by IDENTITY, not by count. This used to be slice(0, queued)
   // — "the newest entries were consumed" — which only holds when the model
   // drains the queue front-to-back. Cancelling a message in the MIDDLE also
   // lowers the count, and that heuristic then dropped a still-queued echo
@@ -1105,7 +1103,7 @@ export default function App() {
     // effect also re-runs on a session switch, and at that moment the signal
     // still holds the OUTGOING session's echoes while `key` is already the
     // incoming one — so it reconciled the old list against the new queue and
-    // wrote the result under the new key, dropping the echo (#87). The smoke
+    // wrote the result under the new key, dropping the echo. The smoke
     // test caught it: "undelivered log row leaked through as settled".
     const mine = pendingFor(key);
     const next = reconcilePending(mine, queued, liveIds);
@@ -1113,7 +1111,7 @@ export default function App() {
   });
 
   /**
-   * Rebuild echoes the UI does not have for a queue it does (#87).
+   * Rebuild echoes the UI does not have for a queue it does.
    *
    * Echo rows are memory-only, so after a reload — or opening a session in a
    * new tab — the server still has a queued prompt while the UI has nothing to
@@ -1139,7 +1137,7 @@ export default function App() {
         at: Number(q.at) || Date.now(),
         promptId: q.id,
         images: q.images?.map((i) => i.url),
-        // #122: the snapshot already carries `source`; dropping it made every
+        // the snapshot already carries `source`; dropping it made every
         // harness prompt render as a user one
         ...(q.source ? { source: q.source } : {}),
       })),
@@ -1157,7 +1155,7 @@ export default function App() {
           setAtBottom(true);
           setMissed(0);
           scrollBottom(true);
-          // #160: returning to the tab and finding the tail is the same act of
+          // returning to the tab and finding the tail is the same act of
           // reading as scrolling to it — it must settle the badge too
           markReadIfFollowing();
         }
@@ -1168,7 +1166,7 @@ export default function App() {
   });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
   /**
-   * Is the selected agent doing work that `stop` would stop? (#59)
+   * Is the selected agent doing work that `stop` would stop?
    *
    * The server is the authority (`Agent.live`), because the client genuinely
    * cannot derive it: a parked tool and queued prompts both leave `status` at
@@ -1183,7 +1181,7 @@ export default function App() {
   /**
    * Is the TIMELINE BEING DISPLAYED the one that is live?
    *
-   * #146: `isSelLive()` answers "is this AGENT working", but the timeline is
+   * `isSelLive()` answers "is this AGENT working", but the timeline is
    * per SESSION. With the agent working on session S2 while the user reads S1,
    * `isSelLive()` is true, so every S1 tool row that has lost its `tool_result`
    * reads "running…" — because `ToolRow` closes a stranded call via
@@ -1200,7 +1198,7 @@ export default function App() {
 const isTimelineLive = (): boolean => {
     // the FALLBACK view (timelineId === the agent id) is handled by the shared
     // rule — it used to be spelled out here, in the event gate and in the delta
-    // gate separately, and the three drifted (#54).
+    // gate separately, and the three drifted.
     return timelineIsLive(sel() as { id: string; session?: string } | undefined, timelineId(), isSelLive());
   };
   // prompt being edited → edit-prompt fork dialog. SETTLED user prompts only:
@@ -1218,7 +1216,7 @@ const isTimelineLive = (): boolean => {
   });
   // optimistic echoes of prompts we just sent but haven't seen in the log yet
   /**
-   * Optimistic echoes, PER SESSION (#87).
+   * Optimistic echoes, PER SESSION.
    *
    * This was one global list cleared on every switch, while the other per-session
    * stores here (liveByAgent, timelineCache, drafts) all survive one. So leaving
@@ -1235,7 +1233,7 @@ const isTimelineLive = (): boolean => {
   const pendingKey = (): string => timelineId() || selected() || "?";
   const pendingFor = (key: string): PendingEcho[] => pendingBySession.get(key) ?? [];
   const writePending = (key: string, next: PendingEcho[]): void => {
-    // #100: at most ONE echo per promptId, enforced at the single point every
+    // at most ONE echo per promptId, enforced at the single point every
     // writer passes through. Two writers race for the same message (the #87
     // rebuild from the server's queue, and the send path when the POST resolves),
     // and `reconcilePending` cannot catch a duplicate because it trims to the
@@ -1295,7 +1293,7 @@ const isTimelineLive = (): boolean => {
     });
   };
   /**
-   * Mark the DISPLAYED session read when the reader is at its tail (#160).
+   * Mark the DISPLAYED session read when the reader is at its tail.
    *
    * "タイムラインを下までスクロールしても通知が既読にならない" — because the only
    * caller of `markSessionRead` was the feed-refresh path, and that path runs it
@@ -1405,7 +1403,7 @@ const isTimelineLive = (): boolean => {
           resFor.set(call.id, e);
           consumed.add(e.id);
         } else {
-          // #54: the call scrolled out of the events window while the command
+          // the call scrolled out of the events window while the command
           // was still running. Without this the result rendered as a bare,
           // anonymous row — and when the window ALSO trimmed the call, the bash
           // row simply vanished, reading as "it never finished". Synthesise the
@@ -1421,7 +1419,7 @@ const isTimelineLive = (): boolean => {
   // (it parks the loop), so its mere existence never means "answered".
   /**
    * Questions answered in THIS tab whose prompt event has not reached the log
-   * yet (#55).
+   * yet.
    *
    * The derived set alone is only correct once the reply is LOGGED. Clicking an
    * option POSTs and shows a toast, so between the click and the bus event
@@ -1447,7 +1445,7 @@ const isTimelineLive = (): boolean => {
   const clearLocallyAnswered = () => setLocallyAnswered(new Set<string>());
   // extracted to ./question-answered so the rule can be tested against the code
   // that runs — it used to live inline here, and the tests re-implemented it,
-  // which is why deleting either half left them all green (#75)
+  // which is why deleting either half left them all green
   const answeredQuestionIds = createMemo(() =>
     answeredQuestionIdsOf(events() as unknown as QuestionEvent[], locallyAnswered()),
   );
@@ -1469,7 +1467,7 @@ const isTimelineLive = (): boolean => {
   /**
    * Each row paired with the row ABOVE it, computed once per rebuild.
    *
-   * WHY THIS EXISTS (#178): the template used to pass `prev={chatEvents()[i() - 1]}`
+   * WHY THIS EXISTS: the template used to pass `prev={chatEvents()[i() - 1]}`
    * directly. Inside `<For>`, `i` is a SIGNAL (`mapArray` does `indexes[j] = createSignal(i)`
    * and re-runs `indexes[j](j)` when slots shift), so every one of the ~16,600 rendered rows
    * became a SUBSCRIBER of the whole `chatEvents()` memo through that read. Any change to
@@ -1545,7 +1543,7 @@ const isTimelineLive = (): boolean => {
       parent: null,
       type: "prompt",
       data: {
-        // #122: was hardcoded "user", so a harness prompt looked like an operator
+        // was hardcoded "user", so a harness prompt looked like an operator
         // one — no queued marker of its own, and a ✕/✎ that cannot work on it
         source: p.source ?? "user",
         text: p.text,
@@ -1596,7 +1594,7 @@ const isTimelineLive = (): boolean => {
         body: JSON.stringify({ text: todoDraft(), notify }),
       });
       setTodoDirty(false);
-      // #88: saving now shows the RESULT. The button previously left the editor
+      // saving now shows the RESULT. The button previously left the editor
       // open with no visible confirmation, so "save" looked like it had done
       // nothing — and the obvious next click was to keep typing. Flipping to the
       // rendered checklist shows what was actually stored, which is also the
@@ -1625,7 +1623,7 @@ const isTimelineLive = (): boolean => {
 /**
  * Merge a fresh snapshot list, keeping object identity for unchanged agents.
  *
- * #40: the server re-serialises every agent on every poll and WS frame, and a new
+ * the server re-serialises every agent on every poll and WS frame, and a new
  * object identity re-ran EVERY expression bound to `sel()*.x` — the "right panel
  * flashes" effect. Three call sites needed this and each had its own copy, so the
  * rule lives here once.
@@ -1680,7 +1678,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const [collapsedSubs, setCollapsedSubs] = createSignal<Set<string>>((() => {
     try {
       const keys: string[] = JSON.parse(localStorage.getItem("teapot.collapsed") ?? "[]");
-      // #81: a TOP-LEVEL chat id in this set is a leftover, not a choice.
+      // a TOP-LEVEL chat id in this set is a leftover, not a choice.
       //
       // A chat's caret writes `chat:<id>` into `teapot.wsCollapsed`; nothing in
       // the current UI writes a bare top-level id here. An entry like that can
@@ -1722,7 +1720,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   // the pure functions the live signal values.
 
   /**
-   * Sidebar rows, annotated with where the WORKSPACE changes (#18).
+   * Sidebar rows, annotated with where the WORKSPACE changes.
    *
    * The tree groups by parent/child agent only, so chats belonging to entirely
    * unrelated projects end up interleaved in one undifferentiated list — the
@@ -1735,14 +1733,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    *  so a sub-agent shares its parent's group rather than becoming its own */
   const chatGroupKey = (a: Agent): string => chatGroupKeyOf(agents(), a);
 
-  /** collapsed workspace groups in the sidebar (#18) — persisted, like the
+  /** collapsed workspace groups in the sidebar — persisted, like the
    *  sub-agent collapse state above, so a reload keeps the operator's grouping */
   const [wsCollapsed, setWsCollapsed] = createSignal<Set<string>>((() => {
     try {
       const raw = JSON.parse(localStorage.getItem("teapot.wsCollapsed") ?? "[]");
       const keys = Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
 
-      // #81: migrate keys left by the deleted #18 chat-header row, which wrote
+      // migrate keys left by the deleted #18 chat-header row, which wrote
       // `chat:<id>` here when clicked. That row is gone, so the keys are
       // UNREACHABLE — nothing can clear them, and each one collapses a chat the
       // operator never collapsed, hiding sub-agents the sidebar still badges.
@@ -1849,7 +1847,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    */
   const wsChatCounts = createMemo(() => wsChatCountsOf(agents()));
   /**
-   * Sidebar rows with TWO header levels (#18).
+   * Sidebar rows with TWO header levels.
    *
    * Level 1 — WORKSPACE: a header wherever the working directory changes, the
    * grouping #18 introduced so unrelated projects stop interleaving.
@@ -1873,7 +1871,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   /**
    * Events requested per page.
    *
-   * #54: the timeline pairs a tool_call with its tool_result by walking the
+   * the timeline pairs a tool_call with its tool_result by walking the
    * events it holds, so a window that can contain a result WITHOUT its call
    * strands the bash row at "running…" forever. The server default was raised
    * to 2000 for exactly this, but the UI passed an explicit `limit=300` and
@@ -1884,7 +1882,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * size the pairing actually needs rather than a round number that undoes the
    * fix.
    */
-  // #54: measured, not guessed. The `/events` window must exceed the largest
+  // measured, not guessed. The `/events` window must exceed the largest
   // gap between a `tool_call` and its `tool_result`, or the call is evicted while
   // the command runs and the row can only be rescued by the orphan path.
   //
@@ -2054,9 +2052,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const prevTop = f?.scrollTop ?? 0;
       const bf = branchFilter();
       const tid = timelineId();
-      const sessQ = tid && tid !== id ? `&session=${encodeURIComponent(tid)}` : "";
+      /**
+       * Ask for the SESSION whenever we know one — even when it equals the agent id.
+       *
+       * This used to be `tid !== id`, i.e. "only send ?session= when it is not the agent id". But
+       * `tid` can be an agent id while the URL names a different session (the index had not loaded
+       * when the first select ran), and omitting the query then made the server answer with the
+       * agent's BOUND session. Reported as "パスは `/session/teapot-10-16854917` なのに
+       * `tyb2-8-0161a4af` のセッションのタイムラインになってた" — the address bar and the feed
+       * disagreeing about which conversation is on screen.
+       *
+       * The server already validates ownership: `?session=` is ignored unless the agent owns the id
+       * (see `/api/agents/:id/events`). So sending it is safe, and it is the only way the feed can
+       * agree with the URL.
+       */
+      const sessQ =
+        tid && masterSessionIndex().has(tid) ? `&session=${encodeURIComponent(tid)}` : "";
       const res = await api(
-        // #77: `lineage=true` here too. The tail fetch asks for it, so a filtered
+        // `lineage=true` here too. The tail fetch asks for it, so a filtered
         // fork's first page shows the INHERITED history; omitting it on the
         // older-pages fetch made scrolling up switch to strict filtering, and the
         // parent's pre-fork rows vanished from the top — reading as data loss,
@@ -2117,7 +2130,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         })
         .catch(() => {});
       const [ev, br] = await Promise.all([
-        // #38: `lineage=true` so a filtered fork shows the history it inherited,
+        // `lineage=true` so a filtered fork shows the history it inherited,
         // matching the context the agent actually reasons over. Filtering by
         // strict branch id showed less than the model sees, which read as data
         // loss even though nothing was missing from the log.
@@ -2201,11 +2214,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * The session an agent should open: the one the server says it is BOUND to,
    * falling back to the newest on disk.
    *
-   * Taking the newest by mtime is what resurrected a deleted/old session (#39):
+   * Taking the newest by mtime is what resurrected a deleted/old session:
    * the list is a directory scan, so a stale dir with a newer chat.jsonl won
    * and the operator's view and the agent's actual timeline disagreed.
    */
-  // #141: extracted to a pure, exported function so it can be TESTED.
+  // extracted to a pure, exported function so it can be TESTED.
   //
   // `test/session-switcher.test.ts` used to re-implement this logic in the test
   // file and assert against that copy — three tests, ZERO coverage of shipped
@@ -2280,7 +2293,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // which read as "the old conversation showing up in the new session"
       setEvents([]);
       evCache.clear(); // event ids are per-log (e1, e2…) — never share across sessions
-      // #55: the optimistic answer set is per-SESSION. Carrying it across would
+      // the optimistic answer set is per-SESSION. Carrying it across would
       // disable a question that merely reuses a callId, or one the operator
       // has not actually answered in this session.
       clearLocallyAnswered();
@@ -2302,7 +2315,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setBranchFilter(null);
     setOlderDone(false);
     setLoadingOlder(false);
-    // #87: this used to CLEAR the list, so echoes were lost on every switch and
+    // this used to CLEAR the list, so echoes were lost on every switch and
     // a still-queued message came back looking settled. Save the outgoing
     // session's echoes and restore the incoming session's, like the draft and
     // the timeline cache above.
@@ -2327,7 +2340,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id, tid);
     if (selected() !== id) return; // another switch won while we were loading
-    // #40: RECONCILE this agent's live buffer against the timeline just loaded.
+    // RECONCILE this agent's live buffer against the timeline just loaded.
     //
     // The pruning effect depends on `agents()` alone, so it cannot fire for a
     // session switch — and if the agent was already idle at the switch, the
@@ -2371,10 +2384,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let onTabVisible: (() => void) | null = null;
   document.addEventListener("visibilitychange", () => onTabVisible?.());
   onCleanup(() => { onTabVisible = null; });
-  // the FIRST onopen must not double-load; every later one is a reconnect (#54)
+  // the FIRST onopen must not double-load; every later one is a reconnect
   let firstConnect = true;
   /**
-   * After a socket reconnect, fetch only the events we missed (#54).
+   * After a socket reconnect, fetch only the events we missed.
    *
    * Asks `/events?after=<last id we hold>` and merges the result. Three outcomes,
    * and the distinction matters:
@@ -2431,7 +2444,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   }
 
   function connectWs() {
-    // #54: `firstConnect` belongs to a SOCKET, not to the page. Reset it per
+    // `firstConnect` belongs to a SOCKET, not to the page. Reset it per
     // connection, or a reconnect that itself dropped would be mistaken for the
     // first connect and the resync skipped again — reintroducing the original
     // bug after a single bounce.
@@ -2439,7 +2452,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const sock = new WebSocket(`${proto}${location.host}/api/ws${wsTokenQuery()}`);
     ws = sock;
-    // #54: a reconnect RESYNCS. The server delivers events only to live
+    // a reconnect RESYNCS. The server delivers events only to live
     // sockets and replays nothing, so anything logged while the socket was down
     // — a bash tool_result above all — simply never arrived. The feed refresh
     // is otherwise 100% dependent on an unbroken stream, which is why the
@@ -2448,7 +2461,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // The first connect is skipped: select() already loads events, and doing it
     // twice would double every fetch on startup.
     //
-    // #54: this flag was NEVER SET TO FALSE, so `!firstConnect` was always false
+    // this flag was NEVER SET TO FALSE, so `!firstConnect` was always false
     // and the early return never ran — the code refreshed on the FIRST open,
     // which is precisely what the comment above says it must not do. The test
     // that "covered" it asserted the source text, so it passed on broken code
@@ -2460,7 +2473,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         firstConnect = false;
         return;
       }
-      // #54: a RECONNECT asks only for what it missed.
+      // a RECONNECT asks only for what it missed.
       //
       // It used to set `pendingRefresh` and re-read the whole tail — 2,000 events
       // by default — to learn about the handful that arrived while the socket was
@@ -2482,7 +2495,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // (live buffers are keyed per agent in liveByAgent — see the App body)
     sock.onmessage = (m) => {
       const msg = JSON.parse(m.data);
-      // #79: the server's ping doubles as a liveness probe — a client that has
+      // the server's ping doubles as a liveness probe — a client that has
       // stopped answering is reaped, because its send buffer grows without
       // bound while it is not reading. So the reply is now MANDATORY, not
       // optional politeness: silently dropping the ping would get every real
@@ -2496,7 +2509,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return;
       }
       if (msg.kind === "pong") return;
-      // #40: the server sends an AUTHORITATIVE snapshot the moment the socket
+      // the server sends an AUTHORITATIVE snapshot the moment the socket
       // opens (`kind:"hello"` in the WS route), and the frontend discarded it — so a reconnect
       // agent state only from the REST poll that followed, and the WS and REST
       // paths could disagree in the meantime. That is the dual-state problem the
@@ -2515,7 +2528,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return;
       }
       if (msg.kind === "event" && isTurnBoundary(msg.event)) {
-        // TURN BOUNDARY (#40). The agent's `status` does not change between
+        // TURN BOUNDARY. The agent's `status` does not change between
         // tool calls inside one round, so a completed reply's live buffer was
         // never cleared: the feed refresh below only drops it once a persisted
         // assistant message matches its text, and its `status !== "running"`
@@ -2532,7 +2545,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return; // the feed refresh below handles the actual row
       }
       if (msg.kind === "llm-delta") {
-        // #146: the bubble lives INSIDE a session-scoped timeline, so the delta must
+        // the bubble lives INSIDE a session-scoped timeline, so the delta must
         // belong to the DISPLAYED session, not merely to the same agent — one
         // agent has many sessions and the reader may be on a past one.
         //
@@ -2548,12 +2561,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           const r = String(msg.reasoning ?? "");
           const t = String(msg.text ?? "");
           if (r && !t) {
-            // #131: arm on the first reasoning chunk. Guarded so a mid-stream
+            // arm on the first reasoning chunk. Guarded so a mid-stream
             // delta that arrives with NEITHER text nor reasoning cannot re-arm it,
             // which would restart the elapsed time mid-thought.
             if (!thinkStartedAt()) setThinkStartedAt(Date.now());
           } else if (t) {
-            // #131: reset only when real TEXT arrives. The old second clause was
+            // reset only when real TEXT arrives. The old second clause was
             // `t || (!r && thinkStartedAt())`, and a delta carrying neither text
             // nor reasoning — which the provider sends between chunks — zeroed the
             // clock, so the readout flickered back to nothing mid-thought.
@@ -2620,7 +2633,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (!eventBelongsOnTimeline(msg.event as { agent?: string; session?: string }, selected(), timelineId()))
           return;
 
-        // #54: the socket payload IS the data — it is the same object the log
+        // the socket payload IS the data — it is the same object the log
         // wrote, and `mergeEvents` dedupes by id and sorts by seq, so a REST page
         // and a socket event can arrive in either order.
         //
@@ -2629,7 +2642,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // `agentActive` comes from refreshAgents. So merge for immediacy AND
         // refresh for coherence — see the #145 note that follows.
         mergeEvents([msg.event as Ev]);
-        // #40: a LOGGED assistant reply covers the live bubble the INSTANT it is
+        // a LOGGED assistant reply covers the live bubble the INSTANT it is
         // merged — `mergeEvents` is synchronous and `isCoveredByLog` compares the
         // whole text. But the buffer used to be revalidated only inside the
         // debounced `runFeedRefresh` below (60 ms, plus the fetch), so for that
@@ -2682,7 +2695,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           // jumped away right when a round kicked off.
           const _fetchStartedAt = Date.now();
           await loadEvents(selected()!);
-          // #40: reconcile the bubble on EVERY pass, NOT inside the
+          // reconcile the bubble on EVERY pass, NOT inside the
           // "did the newest id change" test below — the socket MERGES the event
           // before scheduling this refresh, so that test reads false here and the
           // cleanup would never run. A persisted reply then stayed on screen a
@@ -2724,7 +2737,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     runFeedRefreshRef = runFeedRefresh;
     onTabVisible = () => {
       if (document.visibilityState !== "visible") return;
-      // #139: returning to a VISIBLE tab must verify, not assume.
+      // returning to a VISIBLE tab must verify, not assume.
       //
       // This only refetched when `pendingRefresh` was already set, and that flag
       // is set by the hidden-tab branch of the WS handler. A machine waking from
@@ -2797,7 +2810,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // resolve the internal id to its owning agent and open THAT agent's tab;
     // the timeline itself is fetched by ?session=<internalId> in loadEvents
     const owner = masterSessionIndex().get(sid);
-    // #58: this used to require `owner !== selected()`, which made Back and
+    // this used to require `owner !== selected()`, which made Back and
     // Forward between two sessions of the SAME agent a no-op — the very case
     // the history entry exists for. Compare the SESSION, not the agent, and let
     // select() ignore a repeat of what is already showing.
@@ -2814,7 +2827,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     document.title = unreadCount() > 0 ? `(${unreadCount()}) ${base}` : base;
   });
   /**
-   * Is any overlay open? Single source of truth for the keydown handler (#107).
+   * Is any overlay open? Single source of truth for the keydown handler.
    *
    * The Escape branch and the shortcut guard used to name overlays separately,
    * and they drifted: Escape handled four plus the narrow drawer, while the
@@ -2832,18 +2845,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       return;
     }
     if (e.key === "Escape") {
-      // #107: Escape closes overlays; the shortcut guard below reuses the same
+      // Escape closes overlays; the shortcut guard below reuses the same
       // predicate so the two cannot disagree about what counts as an overlay.
       if (showNew()) { setShowNew(false); return; }
       if (showCfg()) { setShowCfg(false); return; }
       if (editing()) { setEditing(null); return; }
-      // BEFORE the running-agent interrupt (#50): narrow, the drawer is a modal
+      // BEFORE the running-agent interrupt: narrow, the drawer is a modal
       // sheet over the content and Escape must close THAT first. It used to
       // fall through to the /stop branch, so with an agent working, Escape
       // stopped the agent and left the panel stuck open.
       if (isNarrow() && showRight()) { closeRight(); return; }
       const s = sel();
-      // #59: `live`, not `status` — an agent parked in wait_children reads
+      // `live`, not `status` — an agent parked in wait_children reads
       // "idle", and Escape then did nothing at all on a working agent.
       if (s && isSelLive()) {
         // Claude-Code-style: Esc interrupts the running agent
@@ -2852,7 +2865,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       }
       return;
     }
-    // #107: a single-key shortcut must not fire while ANY overlay is up.
+    // a single-key shortcut must not fire while ANY overlay is up.
     //
     // This guard named only `showNew() || showCfg()`, but the Escape branch just
     // above handles four overlays plus the narrow drawer — so the two lists could
@@ -2973,7 +2986,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return;
       }
       // the index comes from the list BEFORE the append: a Solid setter applies synchronously,
-      // so `termTabs().length` read afterwards is one past the end (#172)
+      // so `termTabs().length` read afterwards is one past the end
       const at = indexAfterAppend(termTabs());
       setTermTabs((list) => [...list, { key: t.id, agentId: t.agentId, title: t.title }]);
       if (focusedPane() === 0) setPaneL(at);
@@ -3010,7 +3023,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   // (retintTerminal lives in ./terminal-theme — #137: it now compares the
   // cursor fields too, so a light-theme caret cannot stay dark-theme-stale)
 
-  // #137: re-theme terminals ALREADY OPEN when the theme changes. The reuse path
+  // re-theme terminals ALREADY OPEN when the theme changes. The reuse path
   // only helps once a terminal is remounted, and an open one never is — so without
   // this the user changes theme and sees nothing happen at all.
   createEffect(() => {
@@ -3036,7 +3049,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   /** create (and mount) a session lazily; moving panes just re-appends its el */
   function ensureSession(tab: TermTab, host: HTMLElement): TermSession {
     let s = liveTerms.get(tab.key);
-    // #137: a terminal created under a DARK theme kept its palette after the
+    // a terminal created under a DARK theme kept its palette after the
     // operator switched to a light one, so `--term-fg` became near-black while the
     // shell prompt stayed the dark theme's light grey — invisible on white.
     //
@@ -3107,9 +3120,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         }
       };
       /**
-       * A resize that could not be sent must be retried, not forgotten (#172).
+       * A resize that could not be sent must be retried, not forgotten.
        *
-       * Reported as "1回だけ中途半端にリサイズが効くことがある". A reconnect (or any moment the
        * socket is not OPEN) made `pushResize` return early — correct, since `w.send` would throw
        * — but the only things that call it again are the ResizeObserver and `open`. If the box
        * does not change again, the size the operator dragged to is simply lost, and the pty keeps
@@ -3218,7 +3230,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   // This tracks the SELECTED AGENT only. It used to read termTabs() as well,
   // so every tab change re-ran the body and focusTab() yanked the pane off
   // whatever the operator was looking at — opening a shell for agent A while
-  // watching agent B swapped B's terminal away (#10).
+  // watching agent B swapped B's terminal away.
   let _termFollowAgent: string | null = null;
   createEffect(() => {
     if (!termOpen()) return;
@@ -3227,7 +3239,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (id === _termFollowAgent) return;
     _termFollowAgent = id;
     /**
-     * Do NOT spawn a shell on an agent switch (#172).
+     * Do NOT spawn a shell on an agent switch.
      *
      * This used to call `addTab(id)` whenever the newly selected agent had no tab, which meant
      * every click through the sidebar started a shell on the server: "勝手に新しいタブを作る".
@@ -3250,11 +3262,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   });
 
   /**
-   * Keep both pane indices pointing at a real tab (#172).
+   * Keep both pane indices pointing at a real tab.
    *
    * The panes render "no shell here" when their index is out of range, so ANY change that
    * shortens the list behind their back leaves a visible tab with an empty pane beneath it —
-   * reported as "タブが生えたのに no shell here のことがある". Three ways that happens:
    *
    *   - another client closes a terminal (the list is server-owned now, so a remote ✕ removes a
    *     row here with no local `closeTab`)
@@ -3337,7 +3348,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         agents().find((a) => a.id === want && !masterSessionIndex().has(want)) ??
         agents().find((a) => a.id === localStorage.getItem("teapot.session")) ??
         agents()[0];
-      // #58: pass the deep-linked session through. `select(initial.id)` alone
+      // pass the deep-linked session through. `select(initial.id)` alone
       // discarded it, so /session/<old-id> opened the bound session and then
       // rewrote the URL to match — the bookmark quietly pointed somewhere else.
       if (initial) select(initial.id, false, want || null);
@@ -3536,7 +3547,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * Size the composer to its content, and keep the reader pinned to the tail when THAT
    * resize is what moved the bottom of the feed.
    *
-   * ## Why this is not allowed to touch layout on every keystroke (#179)
+   * ## Why this is not allowed to touch layout on every keystroke
    *
    * Reported: the tab used a full CPU core and 2 GB. `tailSample()` reads
    * `feed.scrollHeight`, and with ~1,100 rows (many carrying `content-visibility: auto`)
@@ -3667,7 +3678,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const v = draft(); // re-run on typing AND after send() clears the draft
     // #the RESIZE must happen AFTER the DOM text is synced, not before. This
     // effect used to run first and call autosizeComposer() straight away, which
-    // measured `scrollHeight` of the OLD content: sending a long message left the
     // box at its full multi-line height with nothing in it. `send()` clears the
     // signal, so the order is: write the value, then measure.
     if (!composerEl) return;
@@ -3745,7 +3755,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         },
       ]);
       setPendingImages([]);
-      // #138: a send exits the maximized composer. It is `position:absolute;
+      // a send exits the maximized composer. It is `position:absolute;
       // inset:0` over the whole column, so leaving it maximized leaves the timeline
       // hidden — and since #134 stopped Enter sending, this is the only way out.
       // Autosize on the next frame: the tall height comes from `.maximized`, so
@@ -3769,7 +3779,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       /**
        * Shrink the composer BEFORE the frame, not in one.
        *
-       * MEASURED: this used to be `requestAnimationFrame(() => autosizeComposer())`. The
        * draft effect had already written the empty value, so the box sat one frame at its
        * OLD multi-line height while the feed's ResizeObserver ran. The observer re-pinned
        * the tail against THAT layout, and only then did the composer collapse — which grew
@@ -3784,7 +3793,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       /**
        * …and PIN, right here, if the reader was following.
        *
-       * MEASURED why the observer alone is not enough: the send adds the optimistic echo as a
        * NEW ROW, which grows content AFTER this turn. That does not resize `.feed` — the feed's
        * border box is unchanged when content inside it grows — so the ResizeObserver never
        * fires, and follow was one interaction behind: the view caught up only when something
@@ -3869,7 +3877,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
     saveDraft("");
     await sendText(text);
-    // #134: this USED to restore the normal view on send. The rationale was that
+    // this USED to restore the normal view on send. The rationale was that
     // "staying maximized hid the timeline for no reason" — but that reason only
     // applies if you cannot see the reply. With Enter no longer sending (above),
     // a maximized composer is a deliberate writing mode you use for a whole
@@ -3964,7 +3972,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     await api(`/api/agents/${id}/archive`, { method: "POST" }).catch(() => {});
     setAgents(agents().filter((a) => !doomed.has(a.id)));
     // the agent is gone, so its session is too — drop the cached index or the UI keeps
-    // routing to a session that no longer exists (#39)
+    // routing to a session that no longer exists
     void refreshSessionIndex(true);
     // Switch to a USABLE neighbour. `rest[0]` was picked blindly, and the first remaining row
     // can be a 👻 ghost (workspace gone) — landing the operator on a dead session right after
@@ -4003,7 +4011,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   /**
    * The goal box is draggable and remembered — same treatment as the todo editor.
    *
-   * Reported as "goalの枠をtodoみたいに伸縮できるようにしないと長いgoalがあるときに画面占有率が強制的
    * に高い": it was a fixed `rows={3}`, so a long goal permanently owned three lines of a narrow
    * panel. `resize: vertical` was already on it, but the drag did not survive a reload.
    */
@@ -4163,7 +4170,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <For each={sidebarRows()}>
             {(row) => (
               <>
-              {/* workspace header: which project this chat belongs to (#18) */}
+              {/* workspace header: which project this chat belongs to */}
               <Show when={row.wsHeader !== undefined && row.wsHeader !== ""}>
                 <div
                   class="wsheader"
@@ -4177,7 +4184,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   onclick={() => toggleWsGroup(`ws:${row.wsHeader}`, basenameOf(row.wsHeader!), row.wsCollapsedGroup === true, row.collapsedVia)}
                 ><span class="wscaret">{row.wsCollapsedGroup ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
                   {/* several separate chats often share one directory — say so,
-                      so the group reads as N chats rather than one (#18).
+                      so the group reads as N chats rather than one.
                       A COLLAPSED group must always show the count: that is
                       the only thing telling the operator how much is hidden. */}
                   <Show when={(wsChatCounts().get(row.wsHeader!) ?? 0) > 1 || row.wsCollapsedGroup}>
@@ -4185,7 +4192,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   </Show>
                 </div>
               </Show>
-              {/* A collapsed group shows its header and nothing else (#18); a header row
+              {/* A collapsed group shows its header and nothing else; a header row
                   never renders its own agent, which would double the chat.
                   The `chat:<id>` header is GONE (#18 follow-up): a directory
                   holding six chats rendered thirteen rows, each chat repeated
@@ -4201,13 +4208,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <div
                 class={"agent-item" + (row.a.id === selected() ? " sel" : "") + (row.depth > 0 ? " sub-row" : "") + (row.chatCollapsedGroup ? " collapsed" : "")}
                 style={row.depth > 0 ? `padding-left:${10 + row.depth * 14}px` : ""}
-                // #66: a COLLAPSED chat must be selectable. What made it read as
+                // a COLLAPSED chat must be selectable. What made it read as
                 // unselectable was its APPEARANCE — `opacity: .5` plus
                 // `cursor: default`, so a collapsed parent looked greyed out and
                 // disabled. That was a styling bug, and it is fixed in the CSS:
                 // the name is full-contrast and the row keeps `cursor: pointer`.
                 //
-                // #85: an earlier version of this ALSO expanded the chat on
+                // an earlier version of this ALSO expanded the chat on
                 // select. That was my over-correction — the operator's collapse
                 // state is theirs, and forcing it open on every visit made the
                 // sub-agent list impossible to keep out of the way. Clicking the
@@ -4274,7 +4281,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 >
                   {(() => {
                     const isChat = !row.a.parent;
-                    // #81: a top-level chat's subtree is hidden by TWO different
+                    // a top-level chat's subtree is hidden by TWO different
                     // sets, and the caret must agree with both.
                     //
                     //   - `chat:<id>` in wsCollapsed  (what this caret writes)
@@ -4362,7 +4369,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 />
                 <span
                   class={row.a.workspaceMissing ? " ghost" : ""}
-                  /* #155: show the session's own title when it has one, so several
+                  /* show the session's own title when it has one, so several
                      sessions of one agent are distinguishable at a glance. The id
                      stays visible in the tooltip AND remains the fallback text —
                      a session whose first prompt had no usable line must still
@@ -4382,7 +4389,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   </span>
                 </Show>
                 {/* Collapsed tree: surface how many subs are hidden so a busy
-                    parent doesn't look idle with its subtree away (#81).
+                    parent doesn't look idle with its subtree away.
                     #81: the gate was `collapsedSubs().has(id)` alone, but there
                     are TWO ways a subtree gets hidden — collapsing the subs, or
                     collapsing the CHAT — and the second is tracked by
@@ -4402,7 +4409,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   }
                 >
                   {(() => {
-                    // #98: DESCENDANTS, not just direct children. A sub-agent
+                    // DESCENDANTS, not just direct children. A sub-agent
                     // that spawned its own was not counted at all, so the badge
                     // understated the subtree and — because the `· ▶N` active
                     // count had the same shape — a busy nested sub read as idle.
@@ -4488,7 +4495,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       <section class="channel" style={{ "--termh": `${termHeight()}px` } as any}>
         {/* keyed on the agent id: an agent-update snapshot replaces the agent OBJECT, and an
             object-gated Show would rebuild the whole layout (and every focused
-            control in it) on every poll (#30). */}
+            control in it) on every poll. */}
         <Show when={sel()?.id} keyed fallback={<div style="display:grid;place-items:center;height:100%" class="muted">select an agent</div>}>
           <header class="chan-head">
             {/* the only way to reach the agent list on a phone; absent on a wide screen, where
@@ -4719,7 +4726,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             if (follow && cause !== "reader") {
               if (missed()) setMissed(0);
-              // #160: reaching the tail marks this session read — the scroll itself, not a
+              // reaching the tail marks this session read — the scroll itself, not a
               // new event arriving while we happen to be here
               markReadIfFollowing();
               // a delivery we caused can land a few pixels short of the floor (fractional
@@ -4781,18 +4788,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     e={row}
                     prev={() => neighbourOf(row, -1)}
                     next={() => neighbourOf(row, 1)}
-                    // #32: only worth labelling when the session HAS more than one
+                    // only worth labelling when the session HAS more than one
                     // branch (a fork). With a single branch every row repeated the
                     // same constant.
                     showBranch={branches().length > 1}
                     res={() => pairInfo().resFor.get(row.id)}
-                    // #54: an unpaired tool_result is rendered as a COMPLETED
+                    // an unpaired tool_result is rendered as a COMPLETED
                     // tool row of its own — its call fell out of the events
                     // window while the command ran. Without this the result was
                     // a bare anonymous row and the run read as unfinished.
                     orphan={pairInfo().orphanCalls.has(row.id)}
                     onOption={(t) => void sendText(t)}
-                    // #55: pass the ACCESSOR, not the Set. A <For> child is a
+                    // pass the ACCESSOR, not the Set. A <For> child is a
                     // non-reactive closure, so `answeredQuestionIds()` was
                     // evaluated once when the row was built and never re-read.
                     // The old derivation only ever changed when `events()`
@@ -4801,13 +4808,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     // the row kept a snapshot from before the click.
                     answeredIds={answeredQuestionIds}
                     onAnswered={markAnswered}
-                    // #40: a row showing MIRRORED SUB-AGENT activity is the
+                    // a row showing MIRRORED SUB-AGENT activity is the
                     // child's work, not this agent's, so it must not wear the
                     // parent's live chrome ("writing…", the running blink)
                     // just because the parent happens to be running.
                     agentActive={
-                      // #146: the DISPLAYED session must be the live one, not
-                      // merely the same agent (#120, #133)
+                      // the DISPLAYED session must be the live one, not
+                      // merely the same agent
                       isTimelineLive() && isOwnLiveWork(row)
                     }
                     // A row that EXPANDS when its result arrives (a `<details>` opening,
@@ -4822,7 +4829,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       if (atBottom()) pinToTail();
                     }}
                     onCancel={
-                      // #122: only an OPERATOR prompt can be withdrawn. A harness
+                      // only an OPERATOR prompt can be withdrawn. A harness
                       // prompt has no composer draft to return to — cancelling it
                       // would discard a system message the operator never wrote.
                       row.data?.source === "user" &&
@@ -4980,7 +4987,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 class="jump"
                 onclick={() => {
                   scrollBottom(true);
-                  // #160: pressing "jump to present" IS reading the tail — the
+                  // pressing "jump to present" IS reading the tail — the
                   // operator asked to be taken to the newest content, so the
                   // badge must settle exactly as it does for a manual scroll
                   markReadIfFollowing();
@@ -5107,7 +5114,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   // IME composition: Enter confirms the conversion, never sends.
                   // Test our own flag, not e.isComposing — Safari has already
                   // ended composition by the time this keydown arrives.
-                  // #134: a MAXIMIZED composer takes Enter as a newline.
+                  // a MAXIMIZED composer takes Enter as a newline.
                   //
                   // Maximize exists for composing long text — a pasted stack trace,
                   // a multi-paragraph question — and in that mode Enter has to mean
@@ -5201,13 +5208,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       </section>
 
       {/* ---------- right bar ---------- */}
-      {/* Drawer-only close row (#50). In wide mode .rightbar is a grid column
+      {/* Drawer-only close row. In wide mode .rightbar is a grid column
           that sits next to the content, and the ▤ button in the channel header
           is right there — so this row stays `display:none` (see app.css) and
           costs a wide-screen user nothing. Narrow, the panel is a fixed drawer
           covering up to 92vw of the screen; it covers the ▤ button that opened
           it, leaving NO visible way back out. This is that way out. */}
-      {/* Click-outside dismiss for the drawer (#50). Mirrors .notifbackdrop:
+      {/* Click-outside dismiss for the drawer. Mirrors .notifbackdrop:
           an invisible full-screen layer UNDER the panel but OVER everything
           else, so a click anywhere on the content closes the drawer — the same
           gesture users already know from the notification popover.
@@ -5223,7 +5230,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         ref={rightbarEl}
         onscroll={(e) => { rightbarTop = (e.currentTarget as HTMLDivElement).scrollTop; }}
       >
-        {/* Close row (#50) — INSIDE the panel, and sticky so the panel's own
+        {/* Close row — INSIDE the panel, and sticky so the panel's own
             overflow-y can never scroll it out of reach. On a wide screen
             .rightbar is a grid column sitting next to the content and the ▤
             button is right there, so this row stays display:none and a static
@@ -5240,7 +5247,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <span class="muted">details</span>
           <IconBtn icon="✕" title="close details panel (esc)" onClick={closeRight} />
         </div>
-        {/* Gated on the agent ID, not the agent OBJECT (#30). `when={sel()}`
+        {/* Gated on the agent ID, not the agent OBJECT. `when={sel()}`
             re-ran this whole subtree whenever an agent-update snapshot replaced
             the object — its compiled children getter builds a fresh array each
             time, so Solid rebuilt the panel and any focused control inside it
@@ -5276,7 +5283,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <select
               value={modelProvider()}
               onchange={(e) => {
-                // #3: switching provider must SELECT that provider's default
+                // switching provider must SELECT that provider's default
                 // model. The draft used to keep the previous provider's value,
                 // so apply carried a foreign model id to the new endpoint.
                 const next = e.currentTarget.value;
@@ -5322,7 +5329,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 >
                   <option value="">provider default</option>
                   {/* Offer the levels THIS model accepts when the endpoint publishes
-                      them (#150): a model advertising ["max","high","low"] must not be
+                      them: a model advertising ["max","high","low"] must not be
                       shown minimal/medium, which would be refused or silently clamped.
                       Falls back to the four we offer when the endpoint says nothing. */}
                   <For each={sel()!.effortOptions?.length ? sel()!.effortOptions : REASONING_EFFORT_OPTIONS}>
@@ -5759,7 +5766,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 before its fork point, and that history is now included, so the
                 view matches the context the agent actually reasons over. Say
                 so explicitly, because a strict branch filter used to hide the
-                inherited rows and read as data loss (#38). */}
+                inherited rows and read as data loss. */}
             <Show when={branchFilter()}>
               <div class="muted" style="font-size:11px;text-transform:none;letter-spacing:0">
                 showing <b>{branchFilter()}</b> and the history it inherited before forking
@@ -5778,7 +5785,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   if (!selected()) return;
                   // A filter change is a new VIEW, exactly like a session switch:
                   // bump the generation so an in-flight fetch for the previous
-                  // filter is discarded rather than landing in this one (#38).
+                  // filter is discarded rather than landing in this one.
                   if (changing) {
                     feedGeneration++;
                     // and drop the rows that no longer belong — loadEvents
@@ -6149,7 +6156,7 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
 
 
 /**
- * The tasks editor, as its own component with PRIMITIVE props (#30).
+ * The tasks editor, as its own component with PRIMITIVE props.
  *
  * Inline in the right panel it was re-created whenever an `agent-update`
  * snapshot replaced the agent object — verified by staging the real UI: the

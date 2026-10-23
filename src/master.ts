@@ -48,7 +48,7 @@ import {
 /** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 /**
  * Did the effective data dir come from an ENV OVERRIDE that disagrees with the
- * config file's own `dataDir`? (#143)
+ * config file's own `dataDir`?
  *
  * When it does, the config's session pointers are meaningless: they name
  * directories under the OLD root, and this process is looking at a different
@@ -80,7 +80,7 @@ function dataDirOverrideMismatch(configFilePath: string, effective: string): boo
 
 const MAX_SPAWN_DEPTH = 3;
 /**
- * How long boot waits for an endpoint's model catalogue (#143).
+ * How long boot waits for an endpoint's model catalogue.
  *
  * The window and the reasoning-effort gate both come from `/models`, so a boot
  * that waits on it is waiting for metadata, not for anything it needs to start.
@@ -144,14 +144,14 @@ function readAppVersion(): string {
  * entry like `"workspace": "workspaces/alpha"` (the form shipped in
  * teapot.config.example.json) silently pointed at whatever directory the
  * daemon happened to be started from — and the agent's bash tool then ran in
- * the wrong directory (#34). Relative workspaces are now anchored to the
+ * the wrong directory. Relative workspaces are now anchored to the
  * config file's own directory, which is what "the workspace" means inside a
  * config file.
  *
  * `~` is expanded for both forms; absolute paths pass through untouched.
  */
 export function resolveWorkspace(input: string, base: string): string {
-  // #110: `~` must not expand to the LITERAL "~" — that is how a directory named
+  // `~` must not expand to the LITERAL "~" — that is how a directory named
   // `~` got created on Windows, where process.env.HOME is unset. See src/home.ts.
   const expanded = expandTilde(input.trim());
   if (path.isAbsolute(expanded)) return path.normalize(expanded);
@@ -206,7 +206,7 @@ export interface ProviderConfig {
    */
   apiKey?: string;
   /**
-   * Several keys for ONE provider, rotated round-robin (#170). A rate-limited key is
+   * Several keys for ONE provider, rotated round-robin. A rate-limited key is
    * parked for a cooldown instead of failing the request. See
    * src/agent/key-pool.ts for the rules.
    */
@@ -258,7 +258,7 @@ export interface AgentConfig {
    * restart reattaches to the SAME session instead of guessing: sessions were
    * discovered by scanning the sessions dir and sorting by chat.jsonl mtime,
    * so a newer-but-older-in-reality dir (or a deleted one still on disk) could
-   * win and hand the agent a timeline the operator had moved off (#39).
+   * win and hand the agent a timeline the operator had moved off.
    */
   session?: string;
 };
@@ -287,18 +287,18 @@ export interface TeapotConfig {
   agents: AgentConfig[];
   tasks?: TaskConfig[];
   /**
-   * MCP servers (#67). Tools from these are exposed to every agent as
+   * MCP servers. Tools from these are exposed to every agent as
    * `mcp__<server>__<tool>`. Omitted entirely = no MCP, which is the common case.
    */
   mcpServers?: McpServerConfig[];
   /**
-   * Short-context mode (#161): prune old tool output early instead of waiting for the
+   * Short-context mode: prune old tool output early instead of waiting for the
    * window to fill. Opt-in — on a large window it discards information you had room
    * for. Meant for 32k–262k models.
    */
   shortContext?: boolean;
   /**
-   * Directory of Agent Plugins (#162), each a subdirectory with `plugin.json`.
+   * Directory of Agent Plugins, each a subdirectory with `plugin.json`.
    * Defaults to `<config dir>/plugins`. `false` disables plugin discovery.
    *
    * A plugin contributes SKILLS (its `skills/` becomes a skill root) and MCP servers
@@ -316,7 +316,7 @@ export interface TeapotConfig {
   /** how deep agents may nest sub-agent spawning (default 3) */
   maxSpawnDepth?: number;
   /**
-   * Default reasoning effort for spawned sub-agents (#105), applied when the
+   * Default reasoning effort for spawned sub-agents, applied when the
    * spawn call does not name one. Named after OpenAI Codex's
    * `agent_default_subagent_reasoning_effort`, which exists for the same reason:
    * a per-spawn argument is the most specific, but a global backstop stops every
@@ -371,13 +371,12 @@ const DATA_DIR =
 
 const DEFAULT_CONFIG: TeapotConfig = {
   port: Number(process.env.TEAPOT_PORT ?? 7788),
-  // #140: this was `process.env.TEAPOT_HOST`, i.e. UNDEFINED when unset — and an
+  // this was `process.env.TEAPOT_HOST`, i.e. UNDEFINED when unset — and an
   // undefined hostname makes `@hono/node-server` bind every interface. So the
   // default was the opposite of the documented one: `--help` says
   // "127.0.0.1 (default) · 0.0.0.0 exposes the UI to your network", and yet the
   // default WAS "expose to your network".
   //
-  // Measured: with no --host the server answered on the machine's LAN address as
   // well as loopback.
   //
   // Loopback is the right default for something holding API tokens and agent
@@ -417,7 +416,7 @@ export function resolveConfigPath(explicitPath?: string): string {
 let masterRawConfig: Record<string, unknown> = {};
 
 /**
- * Normalise a provider entry's credentials into `apiKeys` (#170).
+ * Normalise a provider entry's credentials into `apiKeys`.
  *
  * Both spellings are read, and the result is written back in the shape the UI and
  * the pool consume. The rules:
@@ -484,7 +483,7 @@ export function loadConfig(configPath: string): TeapotConfig {
     ...user,
     dataDir: user.dataDir ? path.resolve(user.dataDir.replace(/^~/, os.homedir())) : DEFAULT_CONFIG.dataDir,
     llm: { ...DEFAULT_CONFIG.llm, ...user.llm },
-    // #170: fold a legacy single `apiKey` into `apiKeys` on load, so every consumer
+    // fold a legacy single `apiKey` into `apiKeys` on load, so every consumer
     // below sees one shape. Done here rather than at each use site because the pool,
     // the UI and the spawn path all need the same answer.
     providers: Object.fromEntries(
@@ -497,7 +496,7 @@ export function loadConfig(configPath: string): TeapotConfig {
 /**
  * Can this path be replaced by an atomic rename?
  *
- * #144: `/dev/null`, a fifo, or a directory are all legitimate values for
+ * `/dev/null`, a fifo, or a directory are all legitimate values for
  * `configPath`, and `rename` over them either fails outright (EACCES for a temp
  * beside `/dev/null`) or is not what the caller wants. Only a regular file gets
  * the write-temp-then-rename treatment.
@@ -607,7 +606,7 @@ function printAgentEvent(e: TeapotEvent): void {
  * Reduce an agent id to a safe single path segment.
  *
  * Agent ids become directory names, so anything path-like in one is an escape
- * from the sessions root (#72). Kept in step with the per-call-site
+ * from the sessions root. Kept in step with the per-call-site
  * `.replace(/[^\w.-]/g, "-")` calls, and applied in `addAgent` too so the
  * guarantee holds for every caller.
  */
@@ -626,7 +625,7 @@ export class Master {
   plugins: LoadedPlugin[] = [];
 
   /**
-   * ONE key pool per provider name (#170), shared by every agent on it.
+   * ONE key pool per provider name, shared by every agent on it.
    *
    * Shared on purpose: a 429 is a statement about the CREDENTIAL, not about the
    * agent that happened to send the request. Per-agent pools would let agent B walk
@@ -641,7 +640,7 @@ export class Master {
    * pid of the process that replaced us in a live update, or null while we are
    * still the server. `restartServer()` sets it; `index.ts` reads it to keep
    * supervising the replacement instead of exiting and dropping the operator
-   * back at the shell prompt (#35).
+   * back at the shell prompt.
    */
   replacementPid: number | null = null;
   private tasks: {
@@ -671,7 +670,7 @@ export class Master {
   ) {
     this.config = config;
     this.configPath = configPath;
-    // #143: an env data-dir override that disagrees with the config file means
+    // an env data-dir override that disagrees with the config file means
     // this config describes a DIFFERENT data dir — its session pointers cannot be
     // valid here, so rewriting them would destroy the real mapping. See
     // dataDirOverrideMismatch().
@@ -688,7 +687,7 @@ export class Master {
   /**
    * Persist current logical config back to disk (lossless via raw user config).
    *
-   * #144: this was a bare `writeFileSync`, which TRUNCATES the target before it
+   * this was a bare `writeFileSync`, which TRUNCATES the target before it
    * writes. config.json holds every agent, provider and scheduled task, so any
    * interruption during the write — SIGINT, a crash, a full disk — left a ZERO-LENGTH
    * file, and the next boot read `{}` and came up empty.
@@ -704,7 +703,7 @@ export class Master {
    * the real config untouched.
    */
   saveConfig(): void {
-    // #144: during boot, mark dirty instead of writing; flushed once at the end
+    // during boot, mark dirty instead of writing; flushed once at the end
     if (this.deferConfigWrites) {
       this.configDirty = true;
       return;
@@ -713,7 +712,7 @@ export class Master {
     this.raw.providers = this.config.providers;
     this.raw.defaultProvider = this.config.defaultProvider;
     this.raw.tasks = this.config.tasks;
-    // #67: `raw` is what gets WRITTEN, and it is a hand-maintained mirror of `config`.
+    // `raw` is what gets WRITTEN, and it is a hand-maintained mirror of `config`.
     // `mcpServers` was added to the config and to the API but never to this list, so the
     // servers existed in memory and in `GET /api/config` and were STILL lost on restart —
     // a save→reopen appeared to work while the file never carried them.
@@ -778,7 +777,7 @@ export class Master {
   private deferConfigWrites = false;
   private configDirty = false;
   /**
-   * Endpoints whose catalogue boot has already WAITED for (#143).
+   * Endpoints whose catalogue boot has already WAITED for.
    *
    * The wait must be paid once per endpoint, not once per agent. `Promise.race`
    * against a timeout is per-CALL: with a dead endpoint every agent on it paid
@@ -788,7 +787,7 @@ export class Master {
    */
   private metaWaited = new Set<string>();
   /**
-   * #143: `TEAPOT_DATA_DIR` points somewhere other than the config's own dataDir,
+   * `TEAPOT_DATA_DIR` points somewhere other than the config's own dataDir,
    * so session pointers must not be written back (see dataDirOverrideMismatch).
    */
   private sessionsReadOnly = false;
@@ -801,7 +800,7 @@ export class Master {
 
   /** write-and-rename, so config.json is never observed empty or half-written */
   /**
-   * The shared pool for a provider, created on first use (#170).
+   * The shared pool for a provider, created on first use.
    *
    * Cached so the cooldown state survives across agents AND across a provider being
    * re-read: rebuilding the pool on every spawn would forget that a key is cooling
@@ -848,7 +847,7 @@ export class Master {
   }
 
   private writeConfigAtomic(body: string): void {
-    // #144: `/dev/null` is a real, intentional value here — many callers (and
+    // `/dev/null` is a real, intentional value here — many callers (and
     // every test that does not care about persistence) pass it as "no config
     // file". The old `writeFileSync("/dev/null", …)` succeeded and discarded.
     //
@@ -908,13 +907,13 @@ export class Master {
     tasks?: TaskConfig[];
     mcpServers?: McpServerConfig[];
   /**
-   * Short-context mode (#161): prune old tool output early instead of waiting for the
+   * Short-context mode: prune old tool output early instead of waiting for the
    * window to fill. Opt-in — on a large window it discards information you had room
    * for. Meant for 32k–262k models.
    */
   shortContext?: boolean;
   /**
-   * Directory of Agent Plugins (#162), each a subdirectory with `plugin.json`.
+   * Directory of Agent Plugins, each a subdirectory with `plugin.json`.
    * Defaults to `<config dir>/plugins`. `false` disables plugin discovery.
    *
    * A plugin contributes SKILLS (its `skills/` becomes a skill root) and MCP servers
@@ -959,7 +958,7 @@ export class Master {
         (patch.contextTokenBudget ?? 0) > 0 ? patch.contextTokenBudget! : undefined;
     }
     if (patch.maxSpawnDepth !== undefined) this.config.maxSpawnDepth = patch.maxSpawnDepth;
-    // #67: the registry is applied by the caller (it also connects); this only
+    // the registry is applied by the caller (it also connects); this only
     // records the list so a restart comes back with the same servers.
     if (patch.mcpServers !== undefined) this.config.mcpServers = patch.mcpServers;
     if (patch.shortContext !== undefined) {
@@ -1005,7 +1004,7 @@ export class Master {
   }
 
   /**
-   * Load Agent Plugins (#162) and merge their MCP servers with the configured ones.
+   * Load Agent Plugins and merge their MCP servers with the configured ones.
    *
    * Separate from `start()` so it can be exercised without booting a server: this is
    * where plugin servers get QUALIFIED with their plugin name, and a naming collision
@@ -1036,7 +1035,7 @@ export class Master {
 
   async start(): Promise<void> {
     mkdirSync(this.config.dataDir, { recursive: true });
-    // #144: ONE config write for the whole boot instead of one per agent.
+    // ONE config write for the whole boot instead of one per agent.
     //
     // Every agent whose recorded session is gone mints a new one, and minting
     // calls recordSession → saveConfig. With ~30 configured agents the user's log
@@ -1049,7 +1048,7 @@ export class Master {
     // boot, which is its own silent data loss.
     this.deferConfigWrites = true;
     this.configDirty = false;
-    // #143: start every endpoint's model-catalogue lookup NOW, concurrently.
+    // start every endpoint's model-catalogue lookup NOW, concurrently.
     //
     // `addAgent` awaits this per agent, and the endpoints are shared by many
     // agents (493 agents over 6 providers here). Fired up front, the requests
@@ -1057,11 +1056,11 @@ export class Master {
     // resolved — instead of the requests being serialised behind the agent loop,
     // where a slow endpoint's timeout is paid again and again.
     this.prefetchModelLists();
-    // #67: connect configured MCP servers in the background. Deliberately NOT
+    // connect configured MCP servers in the background. Deliberately NOT
     // awaited: a slow or unreachable server must not delay listening, and its tools
     // appear as the connection lands (an agent's next turn picks them up because
     // `allToolSpecs()` reads the registry each call).
-    // #162: Agent Plugins contribute skill roots and MCP servers. Loaded BEFORE the
+    // Agent Plugins contribute skill roots and MCP servers. Loaded BEFORE the
     // MCP connect below so a plugin's servers connect in the same pass as configured
     // ones, and before any agent starts so its skills are discoverable on turn one.
     if (this.config.mcpServers?.length || this.config.pluginsDir !== false) {
@@ -1224,7 +1223,7 @@ export class Master {
     ac: AgentConfig,
     opts: { persist?: boolean; fresh?: boolean } = {},
   ): Promise<Agent> {
-    // #72: an agent id becomes a DIRECTORY name (sessions/<id>-<hash>), so it
+    // an agent id becomes a DIRECTORY name (sessions/<id>-<hash>), so it
     // must be a safe path segment. Every caller sanitised its own id — the HTTP
     // route, spawnChildFor's child name — except the ACP adapter, which passed
     // the raw client string through, so `session/load {"sessionId":"../../x"}`
@@ -1246,7 +1245,7 @@ export class Master {
     if (!prov && !ac.baseUrl && !this.config.llm.baseUrl) {
       throw new Error(`agent ${ac.id}: unknown provider "${provName}" and no fallback`);
     }
-    // #170: an INLINE `ac.apiKey` is this agent's own credential, so it must NOT be
+    // an INLINE `ac.apiKey` is this agent's own credential, so it must NOT be
     // joined to the provider's pool — the pool belongs to the named provider, and
     // folding a one-off override in would rotate an agent onto keys its operator did
     // not choose for it. Only the named provider gets a pool.
@@ -1270,10 +1269,10 @@ export class Master {
     // registered yet when this runs — spawnChildFor persists AFTER creation)
     const myDepth = ac.parent ? this.depthOf(ac.parent) + 1 : 0;
     // Model metadata: the context window (for the compaction budget) and the
-    // catalogue entry that gates reasoning_effort support (#47) come from the
+    // catalogue entry that gates reasoning_effort support come from the
     // SAME `/models` list.
     //
-    // #143: boot must not WAIT for this. It only tunes the compaction budget and
+    // boot must not WAIT for this. It only tunes the compaction budget and
     // the effort controls, so a missing list costs nothing that matters; what it
     // cost was boot time — measured at 4.4s of pure idle on 493 agents pointed at
     // one unreachable endpoint, because the `Promise.race` timeout below is
@@ -1318,7 +1317,7 @@ export class Master {
       // here for the same reason as shortContext: a config knob that does nothing is
       // worse than no knob.
       ...(ac.autoCompact === false ? { autoCompact: false } : {}),
-      // #161: per-agent choice, else the global default. This mode DISCARDS information
+      // per-agent choice, else the global default. This mode DISCARDS information
       // early by design, so it must never switch on by accident.
       ...((ac.shortContext ?? this.config.shortContext) ? { shortContext: true } : {}),
       ...(this.config.contextTokenBudget ? { contextTokenBudget: this.config.contextTokenBudget } : {}),
@@ -1333,7 +1332,7 @@ export class Master {
         : {}),
       globalSkillsDir: path.join(CONFIG_DIR, "skills"),
       bundledSkillsDir: BUNDLED_SKILLS_DIR,
-      // #162: a plugin's own skills/ is a skill root, ranked with the global ones so
+      // a plugin's own skills/ is a skill root, ranked with the global ones so
       // a workspace skill still wins on a name clash
       pluginSkillRoots: this.plugins
         .filter((p) => p.skillsDir)
@@ -1343,13 +1342,13 @@ export class Master {
       ...(ac.readOnly ? { readOnlyTools: true } : {}),
       ...(ac.parent ? { parent: ac.parent } : {}),
       ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
-      // #47: reasoning effort is a per-agent choice; the catalogue decides
+      // reasoning effort is a per-agent choice; the catalogue decides
       // whether it can actually be sent (see effortForRequest)
       ...(ac.reasoningEffort ? { reasoningEffort: ac.reasoningEffort } : {}),
       ...(modelMeta?.supportedParameters
         ? { supportedParameters: modelMeta.supportedParameters }
         : {}),
-      // #150: the model's own reasoning levels, so the picker offers exactly those
+      // the model's own reasoning levels, so the picker offers exactly those
       ...(modelMeta?.supportedEfforts?.length ? { supportedEfforts: modelMeta.supportedEfforts } : {}),
     });
     // pricing metadata (USD/token) for the runtime cost estimate — best
@@ -1365,7 +1364,7 @@ export class Master {
       bus.emit("update", { kind: "event", agentId: e.agent, event: e } satisfies BusEvent);
       this.onChildEvent(ac, e);
     };
-    // #126: the CONTROL PLANE, separate from the event pipeline above.
+    // the CONTROL PLANE, separate from the event pipeline above.
     //
     // `onChildEvent` used to be what woke a parent's `wait_children`, and it runs
     // after the event is persisted. So a failed or slow write left the parent
@@ -1383,13 +1382,13 @@ export class Master {
       // every movement is correct and cheap. ANCESTORS too: a waiter's targets
       // now span the whole subtree, so a grandchild's movement must reach it.
       this.wakeAncestorWaiters(ac.parent);
-      // #130: report only a SETTLED child, never its birth. A freshly spawned
+      // report only a SETTLED child, never its birth. A freshly spawned
       // child is `idle` before `start()` runs, so that first idle->running flip
       // would tell the parent "@kid is now idle" the instant it existed.
       // Requiring a prior `running` is what filters it out; the wake above is
       // unconditional, so `wait_children` is unaffected.
       //
-      // #135: the wording addresses the CHILD's outcome, not the parent's goal.
+      // the wording addresses the CHILD's outcome, not the parent's goal.
       // "Continue your task, or finish()..." invited the parent to finish its own
       // goal over a child's status; the child's report already states what
       // happened, so this points at it instead.
@@ -1455,7 +1454,7 @@ export class Master {
       this.saveConfig();
     }
     // Remember which session this agent is bound to, so a restart reattaches
-    // deterministically instead of re-guessing from directory mtimes (#39).
+    // deterministically instead of re-guessing from directory mtimes.
     // Done for EVERY agent (persisted or spawned): a spawned child is re-created
     // on boot too, and guessing there is the same resurrection bug.
     this.recordSession(ac, path.basename(sessionDir));
@@ -1469,7 +1468,7 @@ export class Master {
     const entry = this.config.agents.find((a) => a.id === ac.id);
     if (!entry) return; // not a configured agent — nothing to persist yet
     entry.session = sessionId;
-    // #143: never write session pointers into a config that is describing another
+    // never write session pointers into a config that is describing another
     // data dir — every one of them would be wrong, and the correct mapping is
     // destroyed. The in-memory session above still works for this process.
     if (this.sessionsReadOnly) return;
@@ -1573,7 +1572,7 @@ export class Master {
       forkTip = parent.log.lastEventId(parent.currentBranch);
       forkBranch = parent.currentBranch;
     }
-    // #105: reasoning effort for the child.
+    // reasoning effort for the child.
     //
     // Precedence mirrors OpenAI Codex (codex-rs/core/src/agent/child_config.rs:
     // `requested.or_else(configured_default).or(parent)`):
@@ -1600,7 +1599,7 @@ export class Master {
         provider: pcfg?.provider,
         model: pcfg?.model,
         contextWindowTokens: pcfg?.contextWindowTokens,
-        // #105: persisted with the child, like every other inherited field, so a
+        // persisted with the child, like every other inherited field, so a
         // restart restores the same effort rather than reverting to the default
         ...(childEffort ? { reasoningEffort: childEffort } : {}),
         parent: parentId,
@@ -1652,7 +1651,7 @@ When this task is done (or truly blocked), call finish() with a summary for @${p
     // `inScope` is true once we are INSIDE a subtree we were asked to stop, and
     // stays true all the way down.
     //
-    // #142: the old walk passed `ids` down unchanged, so after matching an
+    // the old walk passed `ids` down unchanged, so after matching an
     // explicit id every DESCENDANT failed `ids.includes(id)` and was skipped —
     // which is why the explicit branch hand-rolled its own one-level loop, and
     // why that loop could not reach a great-grandchild.
@@ -1666,7 +1665,7 @@ When this task is done (or truly blocked), call finish() with a summary for @${p
         }
         agent.stop("stopped by parent agent");
         stopped.push(id);
-        // #142: RECURSE for both modes.
+        // RECURSE for both modes.
         //
         // The explicit-id branch used to iterate `childrenOf(id)` exactly once, so
         // a great-grandchild was never reached — stopping a child left its
@@ -1795,7 +1794,7 @@ if (active().length === 0) wake();
     const owned = this.sessionById(childId);
     if (owned) targetId = owned.agentId;
 
-    // #132: a sub-agent must be able to message its OWN PARENT.
+    // a sub-agent must be able to message its OWN PARENT.
     //
     // The rule below only ever permitted parent -> child, so a child asking its
     // parent a question was refused with the actively misleading
@@ -1823,7 +1822,7 @@ if (active().length === 0) wake();
       // Scoping is correct — only the DIRECT parent may message a child, so a
       // grandchild is rightly refused. But "not your sub-agent: <id>" reads
       // like a bug when the agent simply guessed the wrong level of the tree.
-      // Name the real owner so the model can re-address the message (#11).
+      // Name the real owner so the model can re-address the message.
       const actual = cfg?.parent;
       const live = actual ? this.agents.get(actual) : undefined;
       const detail = actual
@@ -1872,7 +1871,7 @@ if (active().length === 0) wake();
         `[harness] Sub-agent ${ac.id} finished. Final report:\n${report || "(no summary)"}`,
         "harness",
       );
-      // #123: a parent's report is delivered INTO a live agent — queueing it is
+      // a parent's report is delivered INTO a live agent — queueing it is
       // not enough. If the parent is idle (finished, or parked) the report sat in
       // the queue until something else started the loop, so the operator saw a
       // finished sub-agent and a parent that never reacted.
@@ -1882,13 +1881,13 @@ if (active().length === 0) wake();
         `[harness] Sub-agent ${ac.id} hit an error: ${String((e.data as { message?: string }).message ?? "").slice(0, 500)}`,
         "harness",
       );
-      // #123: same for an error report
+      // same for an error report
       if (parent.status !== "running") parent.start(`sub-agent ${ac.id} error`);
     }
 
-    // #63: a child's activity is NOT mirrored into the parent's log. Mirroring
+    // a child's activity is NOT mirrored into the parent's log. Mirroring
     // bought nothing — `sub` rows are display-only (`rebuildMessagesFrom` never
-    // read them, so the model never saw them) and once they DID render (#40) the
+    // read them, so the model never saw them) and once they DID render the
     // parent's timeline was flooded with a child's transcript. What the parent
     // needs is the child's report, which already arrives as a harness prompt
     // above. A chat's timeline is its own.
@@ -1962,7 +1961,6 @@ if (active().length === 0) wake();
    * session — REWRITING the agent's pointer in config.json. Nothing warned, and
    * the real history was left on disk, orphaned and unreachable.
    *
-   * Measured after an accidental in-place `addAgent()` run had rewritten 813
    * manifests: 493 agents were silently moved to empty sessions, and the
    * mapping back was only recoverable from these `agent` fields.
    */
@@ -1980,7 +1978,7 @@ if (active().length === 0) wake();
   }
 
   /**
-   * A human title for a session dir, from its first user prompt (#155), or null.
+   * A human title for a session dir, from its first user prompt, or null.
    *
    * Reads in bounded chunks and stops at the FIRST prompt event of any source —
    * see the note in allSessions() for why that early exit is what makes this
@@ -2127,7 +2125,7 @@ if (active().length === 0) wake();
     // Prefer the recorded session: the config says exactly which timeline this
     // agent was on. Guessing by mtime let a stale-or-deleted dir whose
     // chat.jsonl happened to be newer win, handing the agent a timeline the
-    // operator had moved off — the "deleted session comes back" report (#39).
+    // operator had moved off — the "deleted session comes back" report.
     const recorded = this.config.agents.find((a) => a.id === agentId)?.session;
     if (!fresh && recorded) {
       const dir = path.join(root, recorded);
@@ -2214,7 +2212,7 @@ if (active().length === 0) wake();
         m = st.mtimeMs;
         size = st.size;
       } catch { /* no log yet — still listable */ }
-      // #155: a title derived from the session's FIRST user prompt, so the
+      // a title derived from the session's FIRST user prompt, so the
       // sidebar does not make the operator read `teapot-10-16854917`.
       //
       // Read here rather than from the live agent because boot leaves agents
@@ -2433,7 +2431,7 @@ if (active().length === 0) wake();
       const ac = this.config.agents.find((a) => a.id === id);
       effectiveProvider = ac?.provider ?? this.config.defaultProvider ?? "";
     }
-    // #47: re-resolve the catalogue for the (possibly new) model so the
+    // re-resolve the catalogue for the (possibly new) model so the
     // effort gate reflects THIS model's advertised capabilities
     const effortList = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => [] as ModelMeta[]);
     const meta = effortList.find((m) => m.id === (model || llm.model));
@@ -2447,7 +2445,7 @@ if (active().length === 0) wake();
       const cfgEntry = this.config.agents.find((a) => a.id === id);
       if (cfgEntry) cfgEntry.reasoningEffort = opts.opts.reasoningEffort || undefined;
     }
-    // keep `undefined` for "published nothing" — see the note on the option (#150)
+    // keep `undefined` for "published nothing" — see the note on the option
     opts.opts.supportedParameters = meta?.supportedParameters;
     opts.opts.supportedEfforts = meta?.supportedEfforts;
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
@@ -2574,7 +2572,7 @@ if (active().length === 0) wake();
    * Read from package.json at runtime rather than via a `"__APP_VERSION__"`
    * literal: `__APP_VERSION__` is substituted by *vite* only, so the tsc-built
    * backend used to ship the raw placeholder and the settings panel rendered
-   * "current version: __APP_VERSION__" (#33). A runtime read is correct in the
+   * "current version: __APP_VERSION__". A runtime read is correct in the
    * built app, in `pnpm dev` and under `node --test`, which never run vite.
    */
   static readonly VERSION = readAppVersion();
@@ -2599,7 +2597,7 @@ if (active().length === 0) wake();
       // remove from map so a re-spawn after restart doesn't carry state
       this.agents.delete(id);
     });
-    // #79: two problems with racing a timeout against the real work.
+    // two problems with racing a timeout against the real work.
     //
     // 1. The timer was never cleared, so it kept the event loop alive for the
     //    FULL timeout after a fast, successful stop — a 30s handle on a stop

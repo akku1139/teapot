@@ -146,7 +146,7 @@ async function finishWrite(
 }
 
 /**
- * Line-ending handling (#84).
+ * Line-ending handling.
  *
  * A file's EOL is a property of the FILE, not of any one edit. Three forms
  * matter: LF (`\n`), CRLF (Windows, `\r\n`) and the old-Mac CR (`\r`).
@@ -206,7 +206,7 @@ export function applyEol(content: string, eol: Eol | null): string {
 }
 
 /**
- * Optimistic-concurrency guard (#5). The model reads a file, thinks, then
+ * Optimistic-concurrency guard. The model reads a file, thinks, then
  * writes — and in between, a sub-agent, a background job or the operator may
  * have changed it. Anchored edits usually fail safe (old_text is gone, so the
  * call errors), but two paths silently clobber work nobody looked at:
@@ -253,7 +253,7 @@ export function safeJoin(cwd: string, p: string): string {
   // symlinks inside the workspace can point anywhere — resolve the real target
   // and confine THAT too (path.resolve alone doesn't follow links)
   //
-  // #74: the old code resolved `abs` and swallowed a throw, treating failure as
+  // the old code resolved `abs` and swallowed a throw, treating failure as
   // "fine". That is exactly backwards, and the failure is the NORMAL case:
   // `realpathSync` throws ENOENT for a file that does not exist yet, which is
   // every write_file creating something new. So `real` stayed as the LEXICAL
@@ -351,7 +351,7 @@ function bgMapFor(cwd: string): Map<string, BgShell> {
  *
  * `PWD` is deliberately removed: the server's own PWD would contradict the
  * `cwd` we spawn with, so a command trusting `$PWD` would act on the wrong
- * directory (#34). `bash` re-creates PWD from its actual cwd.
+ * directory. `bash` re-creates PWD from its actual cwd.
  */
 function shellEnv(): NodeJS.ProcessEnv {
   const { PWD: _pwd, ...rest } = process.env;
@@ -400,7 +400,7 @@ function toolShell(): { file: string; args: (cmd: string) => string[] } {
 
 /**
  * Human-readable elapsed-time suffix appended to a shell result so the MODEL
- * sees how long a command actually took (#26). Only the operator saw it — the
+ * sees how long a command actually took. Only the operator saw it — the
  * model happily re-issued commands that ran for tens of minutes.
  *
  * Kept terse and single-line: it rides along with the tool output, and mirrors
@@ -418,7 +418,7 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   }
   const id = `bg${++bgSeq}`;
   // plain `-c`, not `-lc`: a login shell sources ~/.bash_profile, whose `cd`
-  // would move background jobs out of the workspace (#34)
+  // would move background jobs out of the workspace
   const shellSpec = toolShell();
   const child = spawn(shellSpec.file, shellSpec.args(cmd), {
     cwd: ctx.cwd,
@@ -445,7 +445,7 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   // the exit state off "close" alone left such jobs marked running FOREVER:
   // hasRunningBgShells() said yes, the auto-continue loop kept breaking out on
   // "background job still running", and the agent sat in "running" with the
-  // job long dead and no notification ever delivered (#23).
+  // job long dead and no notification ever delivered.
   //
   // So: "exit" is authoritative for state and for the completion
   // notification; "close" only means "output finally drained" and is used to
@@ -484,7 +484,7 @@ export function isContextOverflow(err: unknown): boolean {
       msg,
     ) ||
     /\b(400|413)\b.*token/.test(msg) ||
-    // #50: some gateways answer an over-long request with HTTP 200 and put the
+    // some gateways answer an over-long request with HTTP 200 and put the
     // real diagnosis in the body, which llm.ts now surfaces after the "no
     // choices" prefix. Without this the compact-and-retry recovery never
     // recognised it and the turn simply failed.
@@ -517,7 +517,6 @@ export function hasRunningBgShells(cwd: string): boolean {
  * `hasRunningBgShells(cwd)` answers for a DIRECTORY, which is the right question for
  * `killBgShells` and the wrong one for "is this agent busy". Sub-agents inherit their parent's
  * workspace, so a shared directory made every sibling of a busy agent report `live: true` —
- * MEASURED: four STOPPED sub-agents showed `· ▶4` because the parent had background jobs, and
  * their stop buttons offered to stop work that was already gone.
  *
  * An empty owner means a job started before owners were recorded; those are treated as
@@ -534,7 +533,7 @@ export function hasRunningBgShellsFor(cwd: string, owner: string): boolean {
 }
 
 /**
- * Kill every background shell for one workspace and forget the jobs (#158).
+ * Kill every background shell for one workspace and forget the jobs.
  *
  * `stop()` left these running. They are spawned `detached: true` for group-killing
  * and are NOT covered by `toolAbort` (that signal only reaches a tool that is
@@ -542,7 +541,6 @@ export function hasRunningBgShellsFor(cwd: string, owner: string): boolean {
  * a background job killed nothing: the loop sat in its deliberate "wait for the
  * job" idle state while the job kept burning CPU, and no control could end it.
  *
- * MEASURED: `sleep 300` outlived both `stop()` and `dispose()`.
  *
  * Returns how many were actually killed, so a caller can report it.
  */
@@ -567,7 +565,7 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
     const t0 = Date.now();
     // `bash -l` sources /etc/profile + ~/.bash_profile, either of which may
     // `cd` somewhere — which silently moved every later relative path out of
-    // the workspace (#34). Plain `-c` starts in ctx.cwd and stays there.
+    // the workspace. Plain `-c` starts in ctx.cwd and stays there.
     const sh = toolShell();
     const child = spawn(sh.file, sh.args(cmd), {
       cwd: ctx.cwd,
@@ -584,7 +582,7 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
 
-    // #110: the kill REPORTS whether it worked. It used to swallow every failure
+    // the kill REPORTS whether it worked. It used to swallow every failure
     // as "already gone", and on Windows a group kill throws ALWAYS — so a timeout
     // would report `TIMEOUT after …ms` for a process that was still running, and
     // shutdown would leave it alive. A timeout that claims success is worse than
@@ -629,7 +627,7 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
           (code === 0 ? "" : `exit=${code}${signal ? ` signal=${signal}` : ""}\n`) +
           clip(out.trim() || "(no output)", ctx.maxOutputBytes) +
           // the model, not just the operator, needs to know a command was slow —
-          // otherwise it happily re-issues something that takes 40 minutes (#26)
+          // otherwise it happily re-issues something that takes 40 minutes
           elapsed(t0),
       });
     });
@@ -681,7 +679,6 @@ function trailingWsMatches(srcLines: string[], patLines: string[]): number[] {
  * once tolerance is applied? If that region is more than twice the anchor's own line count, the
  * anchor is not specific enough and the edit would rewrite something unintended.
  *
- * MEASURED basis (#83): `old_text not found` is 117 of 168 edit failures, and the near-miss
  * cases are exactly the ones where tolerance decides what matched. Being wrong there is silent.
  */
 export function disproportionateSpan(text: string, anchor: string): string | null {
@@ -746,7 +743,7 @@ function clipText(s: string, max: number): string {
 }
 
 /**
- * Patterns that backtrack catastrophically (#93).
+ * Patterns that backtrack catastrophically.
  *
  * A nested quantifier — a quantified group whose body is itself quantified, or
  * alternation that can match the same text more than one way — makes the engine
@@ -1193,7 +1190,7 @@ const HASH_BLANK = "    "; // 4 spaces: reserved, cannot collide with a hex hash
 // A real hash is 4 HEX chars, but the shape also accepts other 4-8 char
 // alphanumerics: a model that mistypes or invents an anchor is common enough
 // that we should still recognise the SHAPE and say "that anchor is malformed"
-// rather than falling through to "no similar text found" (#7).
+// rather than falling through to "no similar text found".
 const ANCHOR_RE = /^\s*(\d+):([0-9a-z]{4,8}| {4})\|/;
 
 /** 4-char content hash (FNV-1a 32-bit → hex), of the STRIPPED line */
@@ -1210,7 +1207,7 @@ export function hashLine(content: string): string {
 
 /** `LINE:HASH| content` for each line, 1-indexed */
 export function renderHashlines(lines: string[], startLine = 1): string {
-  // same trailing-newline rule as renderGutter (#7): a file ending in "\n"
+  // same trailing-newline rule as renderGutter: a file ending in "\n"
   // splits into a final "" that is not a line, and an anchor for it is a lie
   // the model can copy into an edit that then never verifies
   const body = lines.length && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
@@ -1222,7 +1219,7 @@ export function renderHashlines(lines: string[], startLine = 1): string {
 /**
  * Width of the `N| ` gutter for a page, so every line in it lines up.
  *
- * #7: the prefix had no padding, so the gutter silently widened at line 1000
+ * the prefix had no padding, so the gutter silently widened at line 1000
  * and the whole block jumped sideways mid-file — the exact "unfriendly line
  * numbers" complaint. Padding to the widest number IN THE PAGE is enough: a
  * page is a bounded window, and aligning to the file's total length would
@@ -1275,7 +1272,7 @@ export function resolveAnchor(
       error: /^[0-9a-f]{4}$/.test(anchor.hash) || anchor.hash === HASH_BLANK
         ? `no line matches hash ${anchor.hash} — the file changed since you read it (re-read it)`
         : // distinguish "you invented/mistyped this anchor" from "the file moved",
-          // which sends the agent to fix the right thing (#7)
+          // which sends the agent to fix the right thing
           `hash ${JSON.stringify(anchor.hash)} is not a valid anchor (expected 4 hex chars) — re-read the file and copy the anchor verbatim`,
     };
   if (hits.length === 1) return { index: hits[0]!, how: "unique" };
@@ -1377,7 +1374,7 @@ export const TOOLS: ToolDef[] = [
       required: ["path"],
     },
     async run(args, ctx) {
-      // #16: MULTI-FILE and FUZZY reads.
+      // MULTI-FILE and FUZZY reads.
       //
       // Both are opt-in and handled HERE rather than by restructuring this
       // tool: `paths` re-enters executeTool once per file, and `fuzzy` locates
@@ -1411,7 +1408,7 @@ export const TOOLS: ToolDef[] = [
       } catch (err) {
         // name the file, not just the errno: a multi-file read reports each bad
         // path inline, and "ENOENT … /tmp/xyz/nope.ts" leaves the model to work
-        // out which of the paths it asked for (#16)
+        // out which of the paths it asked for
         const code = (err as NodeJS.ErrnoException).code;
         return {
           ok: false,
@@ -1419,7 +1416,7 @@ export const TOOLS: ToolDef[] = [
         };
       }
       ctx.onFileRead?.(str(args.path));
-      // #84: split on ALL THREE line endings. A CR-only (old-Mac) file used to
+      // split on ALL THREE line endings. A CR-only (old-Mac) file used to
       // come back as a single line, so the model could not address lines 2..n at
       // all — and a CRLF file left a trailing "\r" on every line, which then
       // had to be stripped again by every consumer.
@@ -1543,7 +1540,7 @@ export const TOOLS: ToolDef[] = [
       const stale = staleGuard(str(args.path), args.base_content, await currentOrNull(p));
       if (stale) return stale;
       await fs.mkdir(path.dirname(p), { recursive: true });
-      // #84: a file's line endings belong to the FILE. Writing the model's
+      // a file's line endings belong to the FILE. Writing the model's
       // content verbatim silently converted a CRLF (or CR) file to LF whenever
       // the model rewrote it — the model never emits \r — so one logical edit
       // produced a whole-file diff, and any tool that normalises on EOL (git,
@@ -1553,7 +1550,7 @@ export const TOOLS: ToolDef[] = [
       // for a mixed file, which is left untouched on purpose: choosing a winner
       // there would itself be the silent whole-file rewrite this prevents.
       //
-      // #109: when the file CANNOT answer — it is new, or its EOL is mixed — ask
+      // when the file CANNOT answer — it is new, or its EOL is mixed — ask
       // `.editorconfig` before falling back to LF. The order is deliberate: the
       // file's own bytes outrank configuration, which outranks the default. A
       // `end_of_line = crlf` in a repo whose files are all LF must not convert
@@ -1600,7 +1597,7 @@ export const TOOLS: ToolDef[] = [
       if (stale) return stale;
       let oldText = str(args.old_text);
       const newText = str(args.new_text);
-      // #126: the single most common edit_file failure in the real logs (22
+      // the single most common edit_file failure in the real logs (22
       // occurrences) said only "old_text is required", while the tool's own
       // schema already documents the better form. Name it and say what to do —
       // the pattern master.ts uses for "not your sub-agent" (its
@@ -1644,7 +1641,7 @@ export const TOOLS: ToolDef[] = [
        *
        * Below this, an anchor cannot identify anything: "  }" or "\n\n" appear everywhere, and
        * any tolerant matching on them either fails ambiguously or picks a wrong span. MEASURED
-       * across every session (#83): `old_text not found` is 117 of 168 edit failures, and a
+       * across every session: `old_text not found` is 117 of 168 edit failures, and a
        * large share of those are anchors too short to be unique, sent by a model that believed
        * them specific.
        *
@@ -1680,7 +1677,7 @@ export const TOOLS: ToolDef[] = [
         const patLines = oldText.replace(/\r\n/g, "\n").split("\n");
         const hits = trailingWsMatches(srcLines, patLines);
         if (hits.length === 1 && patLines.length > 0) {
-        // #84: same detection as the hashline path — CR-only files are detected
+        // same detection as the hashline path — CR-only files are detected
         // too, and a MIXED file yields null and is left as-is rather than
         // homogenised. The old `includes("\r\n")` test called a CR-only file
         // "\n", so an edit to one silently converted its line endings.
@@ -1713,7 +1710,7 @@ export const TOOLS: ToolDef[] = [
           ok: false,
           // a hashline block that did not resolve gets ITS reason — the generic
           // "not found" would send the model hunting for a whitespace problem
-          // when the real issue is a stale read (#7)
+          // when the real issue is a stale read
           result: hashNote
             ? `old_text is a hashline block but did not resolve: ${hashNote}.`
             : `old_text not found in file. ${hint} Watch indentation/trailing spaces and drop the \`N| \` line-number prefixes.`,
@@ -1740,7 +1737,7 @@ export const TOOLS: ToolDef[] = [
       // A verified hashline block is addressed BY LINE INDEX: the anchors
       // already proved which lines it means, so a block whose content occurs
       // twice must still edit the anchored occurrence rather than fail the
-      // uniqueness check (#4).
+      // uniqueness check.
       // The hashline path splits on "\n" to index by resolved line number, which
       // leaves a trailing "\r" on every line of a CRLF file. Rejoining with
       // "\n" then DROPS all of them, so a single edit silently rewrote a
@@ -1883,7 +1880,7 @@ export const TOOLS: ToolDef[] = [
             `jobs are per-workspace and forgotten on harness restart`,
         };
       if (str(args.action) === "kill") {
-        // #110: same swallowed-kill bug — this reported "killed" and dropped the
+        // same swallowed-kill bug — this reported "killed" and dropped the
         // job from the map while the process kept running, now untrackable.
         const note = sh.exited ? "(already exited)" : describeKill(killTree(sh.child));
         map.delete(sh.id);
@@ -1988,7 +1985,7 @@ export const TOOLS: ToolDef[] = [
         task: { type: "string", description: "self-contained instructions for the sub-agent" },
         context: { type: "string", enum: ["none", "fork"], description: "default none" },
         name: { type: "string", description: "optional short name fragment for the id" },
-        // #105: reasoning effort for THIS sub-agent, overriding both the
+        // reasoning effort for THIS sub-agent, overriding both the
         // configured subagent default and the parent's inherited value.
         //
         // Precedence mirrors OpenAI Codex (codex-rs/core/src/agent/child_config.rs):
@@ -2017,7 +2014,7 @@ export const TOOLS: ToolDef[] = [
       if (!task) return { ok: false, result: "task required" };
       const context = args.context === "fork" ? "fork" : "none";
       try {
-        // #105: validate like the per-agent setter does, so a typo cannot reach
+        // validate like the per-agent setter does, so a typo cannot reach
         // the provider as an unrecognised effort value.
         const effort = str(args.reasoning_effort).trim();
         if (effort && !isReasoningEffort(effort))
@@ -2104,7 +2101,7 @@ export const TOOLS: ToolDef[] = [
       if (!sa) return { ok: false, result: "sub-agents are not available here" };
       const ids = Array.isArray(args.ids) ? args.ids.map(String) : undefined;
       const ms = Math.min(Math.max(num(args.timeout_ms, 300_000), 1_000), 3_600_000);
-      // #140: a prompt ALREADY in the queue must be consumed FIRST. The
+      // a prompt ALREADY in the queue must be consumed FIRST. The
       // enqueue-time wake only fires for prompts arriving DURING the park —
       // one queued before the park is invisible to it, and parking over it
       // strands the operator's message ("idle" display, nothing processed)
@@ -2178,7 +2175,7 @@ export const TOOLS: ToolDef[] = [
     description:
       "Load a skill's full instructions by name. Use when the system prompt's skill list " +
       "matches your current task; follow the loaded playbook. " +
-      // #25: the instruction used to need a SECOND, separately-queued message that
+      // the instruction used to need a SECOND, separately-queued message that
       // only arrived at the next turn boundary. Passing `instructions` delivers it
       // in the SAME turn as the playbook, so "load X and do Y" costs one round-trip.
       "Pass `instructions` with what you want done with it to receive both at once.",
@@ -2222,7 +2219,7 @@ export const TOOLS: ToolDef[] = [
           listed.map((f) => `- ${f}`).join("\n") +
           `\nRun scripts with bash (chmod +x first if needed).`;
       }
-      // #25: deliver the caller's instructions in THIS result, so the model does
+      // deliver the caller's instructions in THIS result, so the model does
       // not have to queue a second message that only lands next turn.
       const instructions = str(args.instructions).trim();
       if (instructions)
@@ -2359,7 +2356,7 @@ export function fuzzyPathMatch(needle: string, hay: string): boolean {
 }
 
 /**
- * Locate a file by a loose name and read it (#16).
+ * Locate a file by a loose name and read it.
  *
  * Walks the workspace (skipping .git, node_modules and build noise) and ranks
  * matches: exact path, exact basename, ends-with, then subsequence. When
@@ -2559,7 +2556,7 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
     const bare = rawArgs?.trim().replace(/^[`*\s]+|[`*\s]+$/g, "");
     const primary = PRIMARY_STRING_ARG[name];
     // a bare number/boolean is never a path or a command — refusing is far
-    // better than inventing one (#17)
+    // better than inventing one
     const isScalarish = bare !== "" && /^(true|false|null|-?\d+(\.\d+)?)$/i.test(bare);
     if (bare && primary && !isScalarish && !bare.startsWith("{") && !bare.startsWith("[")) {
       notes.push(`wrapped a bare string as {"${primary}": …}`);
@@ -2581,7 +2578,7 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
     if (parsed === null || parsed === undefined) return { args: {}, notes, error: "arguments were empty" };
     // An ARRAY is a legitimate value for a path-ish argument, but only for the
     // tools that actually take one — inventing {path:[…]} for apply_patch would
-    // hand the tool a key it has never heard of (#17).
+    // hand the tool a key it has never heard of.
     if (Array.isArray(parsed) && name === "read_file") {
       notes.push("kept the array as a paths list");
       return { args: { paths: parsed }, notes };
@@ -2608,7 +2605,7 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
       notes.push(`renamed "${from}" -> "${to}"`);
     } else {
       // both present: the schema key wins and the stray alias is DROPPED, not
-      // left behind as an unknown argument the tool would ignore (#17)
+      // left behind as an unknown argument the tool would ignore
       notes.push(`dropped "${from}" — "${to}" was also given and wins`);
     }
     delete args[from];
@@ -2695,7 +2692,7 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
   // read-only personas (researcher/reviewer) are enforced, not just asked
   if (ctx.readOnly && MUTATING_TOOLS.has(name))
     return { ok: false, result: `${name} is blocked: this agent runs with read-only tools` };
-  // #17: repair the call before handing it to the tool. A model that sends
+  // repair the call before handing it to the tool. A model that sends
   // {"cmd":"ls"} or {"limit":"100"} should get the work done, not a generic parse
   // failure and a wasted turn. Unrepairable calls say what to send instead.
   const repaired = repairToolInput(name, rawArgs);

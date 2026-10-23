@@ -138,7 +138,7 @@ export function buildApp(master: Master): Hono {
   const app = new Hono();
 
 /**
- * Cap on concurrent `/api/ws` event-stream clients (#79).
+ * Cap on concurrent `/api/ws` event-stream clients.
  *
  * Each one holds a listener on the global bus and receives every agent's
  * events, so this bounds real fan-out. 64 is far above any plausible number of
@@ -160,7 +160,7 @@ const MAX_WS_CLIENTS = 64;
   const apiToken = () => process.env.TEAPOT_API_TOKEN || master.config.password || "";
 
   /**
-   * Routes where `?token=` is accepted (#79).
+   * Routes where `?token=` is accepted.
    *
    * A browser WebSocket handshake cannot send an Authorization header, so the
    * query parameter is the ONLY way for the UI to authenticate those two
@@ -197,7 +197,6 @@ const MAX_WS_CLIENTS = 64;
    * that is not this server" is rejected, and a request with no Origin at all (curl, the CLI, the
    * desktop shell) is unaffected.
    *
-   * MEASURED threat model, and its limit: this stops a web page. It does NOT stop a local process
    * on the same machine, and it is not meant to — that is what the token and the loopback bind are
    * for. See `docs/security-advisories.md`.
    */
@@ -209,7 +208,6 @@ const MAX_WS_CLIENTS = 64;
      * `Sec-Fetch-Site` FIRST — the browser computes it and NOTHING in the request path can rewrite
      * it, unlike `Host`.
      *
-     * MEASURED failure this fixes: the operator runs a reverse proxy
      * (`http-proxy`, `changeOrigin: true`) from :7788 to :7789, so the browser's `Origin` says
      * `:7788` while the `Host` reaching teapot says `:7789` — and comparing those two refused every
      * prompt sent through the proxy ("リバースプロキシした先からプロンプトを送信できない").
@@ -285,7 +283,7 @@ const MAX_WS_CLIENTS = 64;
   // #70, where a refused connection decremented a slot it never took).
 
   /**
-   * Live `/api/ws` event-stream connections (#79).
+   * Live `/api/ws` event-stream connections.
    *
    * Every one of these receives EVERY agent's events, so the count is a direct
    * multiplier on fan-out, and `bus.setMaxListeners(1000)` only silences a
@@ -296,7 +294,7 @@ const MAX_WS_CLIENTS = 64;
   let wsClients = 0;
 
   /**
-   * Agent ids reserved by an in-flight create (#71).
+   * Agent ids reserved by an in-flight create.
    *
    * The uniqueness loop is a check, not a reservation, and `addAgent` only
    * publishes the id after awaiting — so concurrent creates all computed the
@@ -346,7 +344,7 @@ const MAX_WS_CLIENTS = 64;
       let counted = false;
       return {
         onOpen(_evt, ws) {
-          // #79: refuse beyond the cap rather than accepting and buffering.
+          // refuse beyond the cap rather than accepting and buffering.
           // Each connection costs a listener on the global bus and receives
           // every agent's events, so this bounds real memory, not just a count.
           if (wsClients >= MAX_WS_CLIENTS) {
@@ -384,7 +382,7 @@ const MAX_WS_CLIENTS = 64;
           };
           bus.on("update", onUpdate);
           // app-level liveness ping every 30s, and a reaper for a client that
-          // has stopped answering (#79)
+          // has stopped answering
           ka = setInterval(() => {
             if (awaitingPong) {
               // the previous ping went unanswered: the client is not reading,
@@ -567,7 +565,7 @@ const MAX_WS_CLIENTS = 64;
 
   // create + start an agent on an arbitrary directory
   app.post("/api/agents", async (c) => {
-    // #110: `.catch(() => null)` like every other body read in this file. An
+    // `.catch(() => null)` like every other body read in this file. An
     // unparseable body used to throw inside the handler and surface as a bare
     // 500 — a client bug reported to the operator as a server fault, and it made
     // the route's own `400 "workspace required"` unreachable.
@@ -597,7 +595,7 @@ const MAX_WS_CLIENTS = 64;
     // ids must be unique among RUNNING agents AND persisted config entries —
     // a config-only agent (not yet loaded) would otherwise collide on addAgent
     //
-    // #71: the loop below is a CHECK, not a RESERVATION, and addAgent only
+    // the loop below is a CHECK, not a RESERVATION, and addAgent only
     // publishes the id after several awaits (mkdirSync, agent.init()). Every
     // concurrent request therefore passed the check, computed the same "unique"
     // id, and all persisted an entry — measured: 3 concurrent creates → 3 config
@@ -675,7 +673,7 @@ const MAX_WS_CLIENTS = 64;
 
   // ---- filesystem browsing (read-only, for the workspace picker) ----
   app.get("/api/fs", async (c) => {
-    // #110: read the home directory through the shared helper. `process.env.HOME`
+    // read the home directory through the shared helper. `process.env.HOME`
     // is unset on Windows, which made the old fallback yield the literal "~" —
     // and /api/fs would then browse a directory named ~.
     let p = c.req.query("path") || homeDir() || path.parse(process.cwd()).root;
@@ -775,7 +773,7 @@ const MAX_WS_CLIENTS = 64;
     try {
       abs = safeJoin(a.workspace, rel);
     } catch (err) {
-      // #126: safeJoin's message embeds the RESOLVED absolute path
+      // safeJoin's message embeds the RESOLVED absolute path
       // ("path escapes workspace: /home/user/secret/project/…"), so returning it
       // verbatim hands the caller the server's directory layout. The rejection is
       // correct; the disclosure was not. Echo back the path AS GIVEN.
@@ -978,7 +976,7 @@ const MAX_WS_CLIENTS = 64;
       maxSpawnDepth: master.config.maxSpawnDepth,
       shortContext: master.config.shortContext,
       tasks: master.config.tasks,
-      // #67: the SAVED MCP servers. Without this the settings dialog opened with an
+      // the SAVED MCP servers. Without this the settings dialog opened with an
       // empty list, so adding a server, saving, and reopening showed nothing — the save
       // had worked, but nothing ever read it back. Headers are returned as saved: they
       // are ordinary config, and the dialog needs them to round-trip.
@@ -1026,7 +1024,7 @@ const MAX_WS_CLIENTS = 64;
         mcpServers: patch.mcpServers,
         ...(patch.password !== undefined ? { password: patch.password } : {}),
       });
-      // #67: apply the new server list to the live registry and connect in the
+      // apply the new server list to the live registry and connect in the
       // background — an added server's tools must appear on the next turn without a
       // restart, and a removed one's connection must be closed now.
       if (patch.mcpServers) {
@@ -1039,7 +1037,7 @@ const MAX_WS_CLIENTS = 64;
     }
   });
 
-  // ---- MCP servers (#67) ----
+  // ---- MCP servers ----
   //
   // `test` is the endpoint the settings panel uses to answer "does this work?" before
   // saving: it connects, lists tools, and reports the count or the exact failure. Doing
@@ -1058,7 +1056,7 @@ const MAX_WS_CLIENTS = 64;
     }),
   );
 
-  // Agent Plugins (#162): what was loaded, and where from. Read-only on purpose —
+  // Agent Plugins: what was loaded, and where from. Read-only on purpose —
   // installing a plugin is a filesystem act, and a web endpoint that unpacks an
   // archive is a much larger surface than this feature is worth.
   app.get("/api/plugins", (c) =>
@@ -1538,7 +1536,7 @@ const MAX_WS_CLIENTS = 64;
     const body = await c.req.json<{ text?: string; notify?: boolean }>().catch(() => null);
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     await a.setTodo(body.text ?? "");
-    // #123: a notification-bearing save must actually WAKE the idle agent (the
+    // a notification-bearing save must actually WAKE the idle agent (the
     // queued prompt used to sit forever).
     //
     // #123 residual: but the START follows the NOTIFICATION, not the save. The
@@ -1572,7 +1570,7 @@ const MAX_WS_CLIENTS = 64;
         body.text,
         body.tail === "summarize" ? "summarize" : "discard",
       );
-      // #96: the UI button is labelled "fork & RESEND", but nothing resent.
+      // the UI button is labelled "fork & RESEND", but nothing resent.
       // `editPromptAt` rewrites history and returns, leaving the agent idle —
       // so the edited prompt sat in the timeline looking sent while the model
       // had never seen it, and the operator had to notice and press start.
@@ -1617,7 +1615,7 @@ const MAX_WS_CLIENTS = 64;
   app.get("/api/agents/:id/events", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return notFound(c, "agent", c.req.param("id"));
-    // #54: the frontend pairs a tool_call with its tool_result by walking the
+    // the frontend pairs a tool_call with its tool_result by walking the
     // events it holds, so a window that can contain a result WITHOUT its call
     // strands the bash row at "waiting for output…" forever — the call scrolled
     // out while the command was still running. 200 was small enough to hit this
@@ -1636,7 +1634,7 @@ const MAX_WS_CLIENTS = 64;
         return notFound(c, "session (or it belongs to another agent)", sessionId);
       filePath = path.join(rec.dir, "chat.jsonl");
     }
-    // #59: the plain "latest N" request is what the UI polls every ~120 ms for
+    // the plain "latest N" request is what the UI polls every ~120 ms for
     // a RUNNING agent, and it is the one that does NOT need history — it serves
     // it from a tail read that scans ~2% of the file. `?before` (older pages)
     // and `?branch` genuinely need the whole log, so they keep the full parse.
@@ -1644,7 +1642,7 @@ const MAX_WS_CLIENTS = 64;
     // only used for the "load older" affordance, where approximate is fine.
     const branch = c.req.query("branch");
     const before = c.req.query("before");
-    // #54: `?after=<id>` returns only what landed AFTER that event.
+    // `?after=<id>` returns only what landed AFTER that event.
     //
     // This is the cursor the reconnect path was missing. Without it a dropped
     // socket is recovered by re-fetching the whole tail — 2,000 events by default
@@ -1714,7 +1712,7 @@ const MAX_WS_CLIENTS = 64;
       // A fork event is recorded on the branch it was forked FROM (so the
       // parent chain stays linked), but it describes the branch it CREATED.
       // Attribute it to the new branch, or the fork shows up as belonging to
-      // the old one and the fork picker mislabels it (#38).
+      // the old one and the fork picker mislabels it.
       if (e.type === "fork") {
         const created = String((e.data as { newBranch?: string } | undefined)?.newBranch ?? "");
         if (created && created !== e.branch) {
@@ -1738,7 +1736,7 @@ const MAX_WS_CLIENTS = 64;
   /**
    * A 404 that says WHICH thing was missing.
    *
-   * #126: there were 24 hand-copied `c.json({ error: "not found" }, 404)` lines.
+   * there were 24 hand-copied `c.json({ error: "not found" }, 404)` lines.
    * From a client they are indistinguishable — a typo in an agent id, a deleted
    * session, or a bad route all produce the same three words, and none carries
    * the id that was looked up. The id is the first thing anyone debugging this
@@ -1837,7 +1835,6 @@ const MAX_WS_CLIENTS = 64;
   /**
    * CACHE POLICY FOR THE APP SHELL — the two halves must be OPPOSITE.
    *
-   * MEASURED against a running server: neither `index.html` nor `/assets/*` sent a `cache-control`
    * header at all. With no header a browser falls back to HEURISTIC freshness (typically
    * `10% × (now − Last-Modified)`), and the shell is the one file that must never be stale: it is
    * what names the hashed bundle. A cached `index.html` keeps pointing at the PREVIOUS
@@ -2133,7 +2130,6 @@ const MAX_WS_CLIENTS = 64;
 /**
  * Translate a wildcard bind address into the one `node:http` treats as dual-stack.
  *
- * MEASURED (node 26):
  *
  *     listen({host: "0.0.0.0"})  -> bound 0.0.0.0 | family IPv4   ← IPv4 ONLY
  *     listen({host: "::"})       -> bound ::      | family IPv6   ← DUAL STACK
@@ -2160,7 +2156,7 @@ export function dualStackHost(host: string | undefined): string | undefined {
 /**
  * Serve the app, returning a handle that can release the listening socket.
  *
- * #35: the live-update handover needs to give the port up WITHOUT exiting —
+ * the live-update handover needs to give the port up WITHOUT exiting —
  * the outgoing process stays attached to the operator's terminal and supervises
  * its replacement, so it must not still be holding the port the replacement is
  * waiting to bind. Returning the server is what makes "stop serving, keep
