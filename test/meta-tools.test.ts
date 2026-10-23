@@ -157,3 +157,35 @@ test("metaToolSpecs() hands the wire exactly the table, with no duplicates", () 
     );
   }
 });
+
+test("the node-count rejection is NOT treated as a context overflow (#nodecap)", async () => {
+  /**
+   * Command Code's gateway rejects a request body whose JSON node count exceeds its cap with
+   * `400 Invalid request JSON: JSON node count cannot exceed 32768`. That is a STRUCTURAL limit,
+   * not a token one — reported upstream at 22.6% of a 1M-token model with 1,436 messages and 61
+   * image parts — and every usual recovery is wrong for it:
+   *
+   *   - compacting costs a full-price summarisation and is usually refused again (it does shrink
+   *     the counts, so it is not useless — but not reliably enough);
+   *   - resending the same structure cannot succeed at all.
+   *
+   * The test that matters is the FIRST assertion: `isContextOverflow` must DECLINE, because the
+   * overflow path is what triggers the compact-and-retry staircase.
+   */
+  const { isContextOverflow, isRequestNodeLimit } = await import("../src/agent/tools.ts");
+  const err = new Error(
+    'LLM API error 400: {"message":"Invalid request JSON: JSON node count cannot exceed 32768 trace_id: a617"}',
+  );
+  assert.equal(
+    isContextOverflow(err),
+    false,
+    "a structural node cap must NOT trigger compaction — the retry would cost a full summarisation " +
+      "and be refused identically (#nodecap)",
+  );
+  const cap = isRequestNodeLimit(err);
+  assert.equal(cap.hit, true, "it must be recognised so the operator gets actionable advice");
+  assert.equal(cap.limit, 32768, "and the gateway's own number is quoted back");
+  // an ordinary overflow must not be mistaken for it
+  assert.equal(isRequestNodeLimit(new Error("context length exceeded")).hit, false);
+  assert.equal(isContextOverflow(new Error("context length exceeded")), true);
+});

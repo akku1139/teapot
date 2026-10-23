@@ -801,6 +801,31 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
     case "error":
       return <div class="embed fail"><div class="mono">⚠ {String(e.data.message ?? "")}</div></div>;
     case "compaction":
+      /**
+       * Only a `<details>` when there is something to expand.
+       *
+       * A summary-pass FAILURE still logs a compaction event with no `summary`, and the disclosure
+       * triangle then expanded to nothing — reported as "compactionのカードの中身が空なのにクリックで
+       * 展開できるせいでちょっとだけ広がる". The row is a plain embed in that case, so there is no
+       * affordance that promises content it does not have.
+       */
+      if (!e.data.summary)
+        return (
+          <div class="embed compaction">
+            <b>🗜 context compacted</b>
+            <span class="meta">
+              {String(e.data.mode ?? "")} · {fmtK(Number(e.data.tokensBefore ?? 0))} → {fmtK(Number(e.data.tokensAfter ?? 0))} tok
+              {" · "}{e.data.summarized ? `${e.data.summarized} summarized` : `${e.data.dropped} dropped`}
+              {String(e.data.mode ?? "") === "truncate" ? " · older history dropped" : ""}
+            </span>
+            <Show when={String(e.data.mode ?? "") === "truncate"}>
+              <div class="muted" style="font-size:11.5px;margin-top:2px">
+                the summary pass produced nothing, so the oldest messages were dropped instead — the
+                session continues with the recent tail intact
+              </div>
+            </Show>
+          </div>
+        );
       return (
         <details class="embed compaction">
           <summary>

@@ -63,7 +63,7 @@ export function TodoEditor(props: {
           rows={5}
           style={heightStyle()}
           ref={trackHeight}
-          placeholder={"- task one\n- task two"}
+          placeholder={"- [ ] task one\n- [ ] task two"}
           value={props.draft}
           oninput={(e) => props.onDraft(e.currentTarget.value)}
           title="shared with the agent \u2014 it may check items off via set_todo; your unsaved edits win until you save"

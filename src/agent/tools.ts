@@ -100,6 +100,14 @@ export interface ToolDef {
   description: string;
   parameters: Record<string, unknown>;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
+  /**
+   * Meta-tools are answered by the HARNESS, not by `run`.
+   *
+   * `report_progress` is handled inside the progress-request path, which needs to know "did the
+   * model report?" without hardcoding the name — a new meta-tool should declare itself here rather
+   * than requiring every call site to learn its name. `run` is never called for these.
+   */
+  meta?: boolean;
 }
 
 const str = (v: unknown, fallback = "") => (typeof v === "string" ? v : fallback);
@@ -2701,4 +2709,29 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
   } catch (err) {
     return { ok: false, result: `tool error: ${(err as Error).message}` };
   }
+}
+
+/**
+ * The gateway's cap on the REQUEST BODY'S STRUCTURE, not on its token count.
+ *
+ * Command Code's `/alpha` gateway rejects with
+ * `400 Invalid request JSON: JSON node count cannot exceed 32768`, and the distinction matters
+ * because every usual recovery is wrong for it:
+ *
+ *   - COMPACTING does not reliably help. It does reduce message and content-part counts, but a
+ *     session heavy in tool calls and images stays above the cap — measured upstream at 22.6% of a
+ *     1,000,000-token window with 1,436 messages and 61 image parts. Retrying after a compaction
+ *     therefore burns a full-price summarisation to be refused again.
+ *   - RESENDING the same structure cannot succeed at all, so this is not a transient error.
+ *
+ * So it is detected SEPARATELY from `isContextOverflow`, and the remedy is the honest one: a new
+ * session, or fewer messages / tool calls / images in this one.
+ *
+ * Reference: Mars-Sea/dsh-commandcode-provider issue #96 and its `JSON_NODE_LIMIT_REJECTION`.
+ */
+export function isRequestNodeLimit(err: unknown): { hit: boolean; limit?: number } {
+  const msg = String((err as Error)?.message ?? "");
+  const m = /JSON node count cannot exceed\s+(\d+)/i.exec(msg);
+  if (!m) return { hit: false };
+  return { hit: true, ...(m[1] ? { limit: Number(m[1]) } : {}) };
 }

@@ -10,7 +10,7 @@ import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from 
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
-import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
+import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
@@ -3322,6 +3322,36 @@ export class Agent {
             guard--; // the retry does not count against this round's cap
             continue;
           }
+        }
+        /**
+         * A STRUCTURAL cap is not an overflow, and no retry or compaction can clear it.
+         *
+         * Command Code's gateway refuses a body whose JSON node count exceeds its limit while the
+         * session is nowhere near its token window — measured upstream at 22.6% of a 1M-token model
+         * with 1,436 messages and 61 image parts. `isContextOverflow` correctly declines to claim
+         * it, so without this branch the loop would exhaust its retries and surface the raw 400 with
+         * no advice.
+         *
+         * Compacting anyway would be worse than useless: it costs a full-price summarisation pass
+         * and the same structure is refused again. The honest answer is fewer messages, fewer tool
+         * calls, fewer images — or a new session.
+         */
+        const nodeCap = isRequestNodeLimit(err);
+        if (nodeCap.hit && !this.stopRequested) {
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "request-node-limit",
+            limit: nodeCap.limit,
+            messages: this.messages.length,
+            detail: String((err as Error).message).slice(0, 200),
+          });
+          throw new Error(
+            `this request is too LARGE IN STRUCTURE for the provider, not in tokens: the gateway caps ` +
+              `the body at ${nodeCap.limit ?? "a fixed number"} JSON nodes and this session sends ` +
+              `${this.messages.length} messages on top of its tool calls and images. Compacting does ` +
+              `not reliably get under that cap — start a new session, or reduce the message/tool/image ` +
+              `count (a fork at a recent point keeps the context you need). The provider's own words: ` +
+              `${String((err as Error).message).slice(0, 300)}`,
+          );
         }
         throw err;
       }
