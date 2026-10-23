@@ -323,13 +323,6 @@ html[data-bg-image="on"] button.runbtn.danger {
   color: var(--err);
   background: transparent;
 }
-html[data-bg-image="on"] button.primarybtn:hover:not(:disabled),
-html[data-bg-image="on"] button.okbtn:hover:not(:disabled),
-html[data-bg-image="on"] button.savebtn:hover:not(:disabled),
-html[data-bg-image="on"] button.runbtn:hover:not(:disabled) {
-  filter: none;
-  background-color: color-mix(in srgb, currentColor 14%, transparent);
-}
 /**
  * HOVER fills faintly and tints the border — the other half of the two-channel scheme.
  *
@@ -342,12 +335,40 @@ html[data-bg-image="on"] button.runbtn:hover:not(:disabled) {
  * states the tint explicitly. The same exclusion chain as the base rule is required, or hover would
  * paint the theme cards and the primary actions too.
  */
-html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard)):hover:where(:not(:disabled)) {
+/**
+ * The ACTION buttons are excluded here and get their OWN hover below.
+ *
+ * They are declared earlier, so a generic `--acc` hover beat their colour and a green ✓
+ * save could turn blue under the pointer — reported as "背景画像のあるテーマでsave tasks (緑色)を
+ * hoverするとなぜか青色になる". A state colour that only holds when the pointer is elsewhere is not a
+ * state colour.
+ */
+html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard, .primarybtn, .okbtn, .savebtn, .runbtn, .goalstate)):hover:where(:not(:disabled)) {
   border-color: var(--acc);
   color: var(--acc);
   /* the shared rule brightens a fill; with no fill there is nothing to brighten */
   filter: none;
   background-color: color-mix(in srgb, var(--acc) 12%, transparent);
+}
+/**
+ * The goal controls keep their own colour on hover too — same reason as the save buttons: a generic
+ * accent hover repainted READY/✓ done/⏸ paused blue, so the state was only legible when the pointer
+ * was elsewhere.
+ */
+html[data-bg-image="on"] button.goalstate:hover:where(:not(:disabled)) {
+  filter: none;
+  border-color: currentColor;
+  background-color: color-mix(in srgb, currentColor 16%, transparent);
+}
+/* each action button hovers in ITS OWN colour: the tint follows `currentColor` */
+html[data-bg-image="on"] button.primarybtn:hover:not(:disabled),
+html[data-bg-image="on"] button.okbtn:hover:not(:disabled),
+html[data-bg-image="on"] button.savebtn:hover:not(:disabled),
+html[data-bg-image="on"] button.runbtn:hover:not(:disabled),
+html[data-bg-image="on"] button.runbtn.danger:hover:not(:disabled) {
+  filter: none;
+  border-color: currentColor;
+  background-color: color-mix(in srgb, currentColor 16%, transparent);
 }
 /**
  * An ACTIVE/selected outline button still has to look selected.

@@ -10,7 +10,7 @@ export function TodoEditor(props: {
   preview: boolean;
   onDraft: (text: string) => void;
 }) {
-  // #88: these two branches were INVERTED — `<Show when={…}>` rendered the TEXTAREA
+  // these two branches were INVERTED — `<Show when={…}>` rendered the TEXTAREA
   // and the checklist was the `fallback`, so `true` meant "editor". `saveTodo` set
   // `true` to reach the preview and therefore did the opposite.
   //

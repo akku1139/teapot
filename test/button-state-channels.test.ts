@@ -146,9 +146,14 @@ test("buttons that are PRIMARY actions keep their fill by class, not inline styl
   );
   const css = stripSourceComments(readSource("frontend/app.css"));
   for (const cls of [".primarybtn", ".okbtn"]) {
-    const body = cssRuleBodies(css, cls)[0];
-    assert.ok(body, `${cls} must exist, or its buttons fall back to the outline treatment`);
-    assert.match(body!, /background:\s*var\(--(acc|ok)\)/, `${cls} must be filled`);
+    const bodies = cssRuleBodies(css, cls);
+    assert.ok(bodies.length, `${cls} must exist, or its buttons fall back to the outline treatment`);
+    // the FILLED rule is the base one; the wallpaper rule that also matches this selector is the
+    // outline override, so search rather than assuming order
+    assert.ok(
+      bodies.some((b) => /background:\s*var\(--(acc|ok)\)/.test(b)),
+      `${cls} must be filled when there is no wallpaper`,
+    );
   }
   /**
    * The wallpaper outline must be GLOBAL BY TAG, not a list of class names.
@@ -252,7 +257,8 @@ test("a state rule must not LOSE to the base outline rule's :not() chain (#ui)",
    * is the top of the cascade, so its `:not(:disabled)` guard cannot outrank anything that matters.
    * The dangerous case is the BASE rule, which every other rule has to beat.
    */
-  const isStateRule = (sel: string) => /:hover|\.active|\.done|\.paused|\.danger/.test(sel);
+  const isStateRule = (sel: string) =>
+    /:hover|\.active|\.done|\.paused|\.danger|\.(primarybtn|okbtn|savebtn|runbtn|goalstate)\b/.test(sel);
   const withNotChain = base.filter((r) => !isStateRule(r.selector) && withoutWhere(r.selector).includes(":not("));
   assert.deepEqual(
     withNotChain.map((r) => r.selector.trim()),
@@ -270,11 +276,48 @@ test("a state rule must not LOSE to the base outline rule's :not() chain (#ui)",
     danger.some((r) => /var\(--err\)/.test(decl(r.body, "border") ?? "")),
     "stop must be marked by a red BORDER, not a red fill (#ui)",
   );
-  for (const r of danger) {
+  // the RESTING rule must not fill; a hover tint is fine and is checked elsewhere
+  for (const r of danger.filter((x) => !/:hover/.test(x.selector))) {
     assert.match(
       String(decl(r.body, "background")),
       /transparent/,
       `"${r.selector.trim()}" must not paint a fill — a full red rectangle is what was reported (#ui)`,
+    );
+  }
+});
+
+test("a state button keeps ITS OWN colour on hover (#ui)", async () => {
+  /**
+   * Reported: "背景画像のあるテーマでsave tasks (緑色)をhoverするとなぜか青色になる" — and the three
+   * goal controls did it too.
+   *
+   * The generic hover rule set `border-color: var(--acc)` and `color: var(--acc)` on every outlined
+   * button. `.okbtn`/`.savebtn`/`.goalstate` declare their colour EARLIER, so the generic rule won
+   * on order and any state colour vanished under the pointer. A colour that only holds when the
+   * cursor is elsewhere is not a state colour.
+   *
+   * So: the generic hover must EXCLUDE the buttons that carry a state colour, and each of them must
+   * get its own hover whose tint follows `currentColor`.
+   */
+  const css = stripSourceComments(readSource("frontend/app.css"));
+  const hovers = rulesMatching(css, ["data-bg-image", ":hover"]);
+  const generic = hovers.find((r) => /button:where\(/.test(r.selector) && !/currentColor/.test(r.body));
+  assert.ok(generic, "the generic outline hover must exist");
+  for (const cls of ["primarybtn", "okbtn", "savebtn", "runbtn", "goalstate"]) {
+    assert.ok(
+      new RegExp(`\\.${cls}\\b`).test(generic!.selector),
+      `the generic hover must EXCLUDE .${cls} — otherwise it repaints that button accent-blue ` +
+        `under the pointer and its own colour is only visible when the cursor is elsewhere (#ui)`,
+    );
+  }
+  // and each state button has a hover of its own that tints with its own colour
+  for (const cls of ["okbtn", "savebtn", "goalstate"]) {
+    const own = hovers.find(
+      (r) => new RegExp(`button\\.${cls}:hover`).test(r.selector) && /currentColor/.test(r.body),
+    );
+    assert.ok(
+      own,
+      `.${cls} needs its own hover using currentColor, or it has no hover feedback once excluded (#ui)`,
     );
   }
 });

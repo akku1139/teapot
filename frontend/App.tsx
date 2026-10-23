@@ -1864,7 +1864,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * size the pairing actually needs rather than a round number that undoes the
    * fix.
    */
-  // measured, not guessed. The `/events` window must exceed the largest
   // gap between a `tool_call` and its `tool_result`, or the call is evicted while
   // the command runs and the row can only be rescued by the orphan path.
   //

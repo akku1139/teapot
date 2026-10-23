@@ -1,5 +1,5 @@
 /**
- * The MCP server registry (#67): connections, tool discovery, dispatch, and the OAuth
+ * The MCP server registry: connections, tool discovery, dispatch, and the OAuth
  * flow's plumbing.
  *
  * Why a registry instead of connecting per agent: several agents usually want the same
@@ -178,7 +178,6 @@ export class McpRegistry {
       // The SDK reports a missing grant as an HTTP error carrying the STATUS. Reading
       // `status` is reliable; matching the message text is not, because the SDK's message
       // is just "Error POSTing to endpoint: <body>" and a server may send an empty body —
-      // MEASURED with a bare 401, which produced no "401" anywhere in the text.
       const status = (err as { status?: unknown }).status;
       const msg = (err as Error).message ?? "";
       const needsAuth =
@@ -348,7 +347,6 @@ export class McpRegistry {
            * accept such responses". We accept them, using the issuer we recorded BEFORE sending the
            * browser out, because that is the value the mix-up check needs.
            *
-           * MEASURED against the real SDK with this machine's stored grant:
            *   no iss      -> IssuerMismatchError "received undefined"   (the reported failure)
            *   correct iss -> the token endpoint is reached (invalid_grant for a dummy code)
            *   wrong iss   -> IssuerMismatchError "received https://evil.example"

@@ -192,17 +192,24 @@ script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
 
 ## Comments
 
-Write a comment only when it carries information the code cannot: **why** a
-non-obvious choice was made, what was measured, what breaks otherwise.
+A comment says **what the code is**, and — only where the choice is genuinely non-obvious — **why it
+is that way**. Nothing else.
 
-- Reference the issue (`#142`) when the reason is a reported bug.
-- State the mechanism, not the aspiration. "`--termh` never inherited here
-  because a custom property only flows down the tree" is useful; "handle the
-  height properly" is noise.
-- Keep it as short as it can be while still being true.
-- Delete comments that restate the next line, narrate history nobody needs, or
-  describe code that no longer exists. Dead prose is a maintenance cost and it
-  is how wrong explanations get quoted as fact later.
+- **History belongs in git, not in the source.** "used to", "previously", "this was measured at",
+  "reported as "…"", "regression:", a bare `#123` tag: all of it is one `git blame` away, and in the
+  file it is a maintenance cost that gets quoted as fact once it is stale. A BUG NARRATIVE IS NOT
+  DOCUMENTATION.
+- **What survives is the mechanism** a reader cannot derive: an ordering that must hold, a value
+  that must not be zero, a field that only flows one way, an API that fails silently. If a future
+  change would break it, the comment is earning its place.
+- **An issue number may stay when the code defends against a specific, hard-won trap** — the number
+  is then a pointer to the reasoning, not the reasoning itself. A number with no mechanism around it
+  is noise; delete it.
+- **Do not explain a bug that is already fixed.** If the shape looks easy to re-break, the answer is
+  a test, not a paragraph. A comment cannot fail CI.
+- **Do not leave provenance notes for moved code** ("extracted to ./x so it can be tested"). The
+  import says where it lives.
+- Restating the next line, restating a function's name, describing deleted code: delete.
 
 ## UI / frontend conventions
 

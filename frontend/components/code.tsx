@@ -13,7 +13,7 @@ export function BashElapsed(props: { startedAt: string; inline?: boolean; timeou
     onCleanup(() => clearInterval(t));
   });
   // shares fmtDur() with the finished rows so a running call and its result
-  // read identically instead of flipping between two formats (#24)
+  // read identically instead of flipping between two formats
   const txt = () => fmtDur(Math.max(0, now() - start));
   // inline: compact form for the folded summary ("running… 1m 26s")
   if (props.inline) {
@@ -32,7 +32,7 @@ export function ThinkingTimer(props: { startedAt: number }) {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
-  // #131: `startedAt` is 0 until a reasoning delta arms the clock, which is the
+  // `startedAt` is 0 until a reasoning delta arms the clock, which is the
   // state right after a session switch. `now() - 0` is elapsed since the EPOCH, so
   // it flashed "thinking 497531h". 0 is a sentinel, never a timestamp.
   if (!props.startedAt) return null;
