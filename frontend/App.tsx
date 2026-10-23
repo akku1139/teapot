@@ -16,6 +16,7 @@ import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { slotForSelection, paintedIdFor } from "./theme-slots";
 import { outputLang } from "./tool-output-lang";
 import { mergeThemes } from "./theme-merge";
+import { previewLayers, veilColour } from "./theme-preview";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
@@ -7198,23 +7199,50 @@ function ThemePreview(props: {
   /**
    * A custom theme may carry a background image, and a preview that omits it shows a flat palette
    * the operator never sees in the app — two themes that differ only by wallpaper previewed
-   * identically. Asked for as "テーマプレビューで背景画像も出るといい".
+   * identically. Asked for as "テーマカードに背景画像(透過設定付きで)も出すようになると嬉しい".
    *
    * Drawn as its OWN layer under the palette layers rather than as the root's `background`, so the
-   * simulated nav/head/panel keep their colours: the point is to preview the composition, not to
-   * preview the photo alone.
+   * simulated nav/head/panel keep their colours: the point is to preview the composition, not the
+   * photo alone.
    */
   backgroundImage?: string;
+  /** the operator's surface-opacity slider for this theme */
+  surfaceAlpha?: number;
+  /** how much the wallpaper is veiled; the app tints toward the theme's surface, never black */
+  backgroundDim?: number;
 }) {
   const p = () => props.palette;
+  const layers = () => previewLayers(props.surfaceAlpha, props.backgroundDim);
   return (
     <span class="tprev" style={{ background: p().bgDark }}>
       <Show when={props.backgroundImage}>
         <span class="tprev-bg" style={{ "background-image": props.backgroundImage }} />
+        {/**
+          * The VEIL is a separate layer, exactly as `.bgphoto-veil` is in the app.
+          *
+          * It has to sit between the photo and the panels: painting it as the photo's own
+          * background would put it UNDER the image (a background never covers its content), and
+          * mixing the dim INTO the panel colour would dim twice — once for the veil the app
+          * applies and once for the surface opacity, which is the double-counting the operator
+          * warned about ("下側の背景透過と重複しないように").
+          */}
+        <span
+          class="tprev-veil"
+          style={{ background: veilColour(p().bgDark, layers().dim) }}
+        />
       </Show>
-      <span class="tprev-nav" style={{ background: p().bgDarkest }} />
-      <span class="tprev-head" style={{ background: p().bgDarkest }} />
-      <span class="tprev-panel" style={{ background: p().bgMid }} />
+      <span
+        class="tprev-nav"
+        style={{ background: p().bgDarkest, opacity: props.backgroundImage ? String(layers().panel) : "1" }}
+      />
+      <span
+        class="tprev-head"
+        style={{ background: p().bgDarkest, opacity: props.backgroundImage ? String(layers().panel) : "1" }}
+      />
+      <span
+        class="tprev-panel"
+        style={{ background: p().bgMid, opacity: props.backgroundImage ? String(layers().raised) : "1" }}
+      />
       {/* text lines: two "words" then a shorter one, so it reads as prose */}
       <span class="tprev-line" style={{ left: "32%", top: "38%", width: "34%", background: p().fg, opacity: 0.85 }} />
       <span class="tprev-line" style={{ left: "32%", top: "50%", width: "22%", background: p().acc }} />
@@ -9145,7 +9173,7 @@ function ConfigModal(props: {
                         aria-pressed={themeCardChosen(t.id)}
                         onclick={() => pickThemeCard(t.id, t.mode)}
                       >
-                        <span class="themecard-preview"><ThemePreview palette={t.palette} backgroundImage={t.backgroundImage} /></span>
+                        <span class="themecard-preview"><ThemePreview palette={t.palette} backgroundImage={t.backgroundImage} surfaceAlpha={t.surfaceAlpha} backgroundDim={t.backgroundDim} /></span>
                         <span class="themecard-label">{t.label} ★</span>
                       </button>
                     )}

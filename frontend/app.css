@@ -636,6 +636,21 @@ html[data-bg-image="on"] body { background: transparent; }
   background-position: center;
   border-radius: 2px;
 }
+/**
+ * The veil between the wallpaper and the panels — the preview's copy of `.bgphoto-veil`.
+ *
+ * The colour is supplied inline (it is a `color-mix` against the THEME's own surface, so a light
+ * theme gets a light veil). This rule only places it: above the photo, below the panels, and
+ * clipped to the tile's corner so the preview does not show a square edge inside a rounded card.
+ *
+ * Without it the simulated panels were drawn straight over a full-strength photo, which previewed a
+ * composition the app never shows — the app always veils first.
+ */
+.tprev-veil {
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+}
 .tprev-nav { position: absolute; inset: 0 auto 0 0; width: 22%; }
 .tprev-head { position: absolute; top: 0; left: 22%; right: 0; height: 18%; }
 .tprev-panel { position: absolute; top: 18%; left: 22%; right: 0; bottom: 0; margin: 5%; border-radius: 3px; }
