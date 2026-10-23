@@ -4051,7 +4051,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             style="display:flex;flex-direction:column;gap:10px"
           >
             <input id="pw-input" type="password" placeholder="password" autofocus />
-            <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:7px 12px;cursor:pointer">unlock</button>
+            <button type="submit" class="primarybtn">unlock</button>
             <span class="muted" style="font-size:11px">the token is stored locally and sent as Bearer to this server only</span>
           </form>
         </div>
@@ -5453,7 +5453,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               >
                 <input id="goal-notify" type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} /> notify agent
               </label>
-              <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer">✓ save goal</button>
+              <button type="submit" class="primarybtn">✓ save goal</button>
             </div>
           </form>
 
@@ -5497,7 +5497,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </label>
             <button
               onclick={saveTodo}
-              style="background:var(--ok);border:none;border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer"
+              class="okbtn"
             >✓ save tasks</button>
           </div>
 
@@ -5924,7 +5924,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               </Show>
               <div style="display:flex;justify-content:flex-end;gap:8px">
                 <button type="button" onclick={() => setEditing(null)}>cancel</button>
-                <button type="submit" style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 12px;cursor:pointer">
+                <button type="submit" class="primarybtn">
                   ⑂ fork & resend
                 </button>
               </div>
@@ -8635,7 +8635,16 @@ function ConfigModal(props: {
    * the grouping can never offer a group the document is not painting.
    */
   const currentMode = (): "dark" | "light" => {
-    const id = props.theme.activeId();
+    /**
+     * The id that is PAINTED, not the fixed slot.
+     *
+     * `activeId()` is `teapot.theme`, which is only the painted theme when "follow the system" is
+     * OFF. Following the system it is stale — it keeps whatever was last picked in the fixed slot —
+     * so gating the groups on it could offer the group for an appearance that is not on screen.
+     * `paintedId()` resolves through the same precedence the painter uses, so the groups and the
+     * picture cannot disagree.
+     */
+    const id = props.theme.paintedId();
     return (
       props.theme.themes().find((t) => t.id === id)?.mode ??
       THEMES.find((t) => t.key === id)?.mode ??
@@ -9730,7 +9739,7 @@ function ConfigModal(props: {
                   (e.currentTarget as HTMLButtonElement).textContent = "update & restart";
                 }
               }}
-              style="background:var(--acc);border:none;border-radius:6px;color:#fff;padding:6px 14px;cursor:pointer"
+              class="primarybtn"
             >
               update & restart
             </button>

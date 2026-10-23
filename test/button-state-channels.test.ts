@@ -104,3 +104,60 @@ test("the unselected theme card carries no visible border (#ui)", async () => {
     "the selected card must still be marked, or removing the resting border removed the only cue (#ui)",
   );
 });
+
+test("an outline button still RESPONDS to hover (#ui)", async () => {
+  /**
+   * A regression, reported after the ring change: "前バージョンでは透明なボタンをhoverしたら半透明な
+   * 背景色が出てたのに、今は出てない".
+   *
+   * The hover rule was deleted while the block around it was rewritten. Nothing failed — a button
+   * with no hover state is simply unresponsive, which no test noticed. The shared `filter:
+   * brightness()` cannot substitute: it brightens a FILL, and an outline button has none.
+   */
+  const css = stripSourceComments(readSource("frontend/app.css"));
+  const hover = rulesMatching(css, ["data-bg-image", ":hover", "button:not\\(.copybtn\\)"]);
+  assert.ok(
+    hover.length > 0,
+    "a transparent button needs a wallpaper hover rule, or it gives no feedback at all (#ui)",
+  );
+  assert.ok(
+    hover.some((r) => /color-mix|rgba|var\\(--acc\\)/.test(decl(r.body, "background-color") ?? "")),
+    `the hover rule must actually paint a translucent background; the shared brightness() filter ` +
+      `does nothing without a fill (#ui)`,
+  );
+});
+
+test("buttons that are PRIMARY actions keep their fill by class, not inline style (#ui)", async () => {
+  /**
+   * "save goal、save tasks が何故か塗りつぶしボタンになってるのでコンポーネントが適切に切られてない?"
+   *
+   * They WERE meant to be filled — they are the primary action. What was wrong is that the fill
+   * came from an inline `style="background:…"`, which outranks every stylesheet rule, so those
+   * buttons could never be reasoned about (and a reader could not tell a deliberate fill from a
+   * missed exclusion).
+   */
+  const app = readSource("frontend/App.tsx");
+  const inlineAccent =
+    /style="[^"]*background:\s*var\(--(acc|ok)\)[^"]*border:\s*none[^"]*"/.test(app);
+  assert.ok(
+    !inlineAccent,
+    "an accent-filled button must use a class (.primarybtn/.okbtn/.savebtn), not an inline style " +
+      "that no stylesheet rule can override (#ui)",
+  );
+  const css = stripSourceComments(readSource("frontend/app.css"));
+  for (const cls of [".primarybtn", ".okbtn"]) {
+    const body = cssRuleBodies(css, cls)[0];
+    assert.ok(body, `${cls} must exist, or its buttons fall back to the outline treatment`);
+    assert.match(body!, /background:\s*var\(--(acc|ok)\)/, `${cls} must be filled`);
+  }
+  // and the outline rule must exclude them, or it strips the fill it just declared
+  const outline = rulesMatching(css, ["data-bg-image", "button:not\\(.copybtn\\)"])[0];
+  assert.ok(outline, "the outline rule must exist");
+  for (const cls of ["primarybtn", "okbtn", "themecard"]) {
+    assert.match(
+      outline!.selector,
+      new RegExp(`:not\\(\\.${cls}\\)`),
+      `the outline rule must exclude .${cls}, or it overrides that component's own styling (#ui)`,
+    );
+  }
+});

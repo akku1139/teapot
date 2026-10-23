@@ -249,10 +249,29 @@ button:disabled { filter: none; }
  * The accent-filled primary action and the question options keep their fill — they are the buttons
  * that must outrank the rest.
  */
-html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn) {
+html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):not(.primarybtn):not(.okbtn):not(.themecard) {
   background-color: transparent;
   border: 1px solid var(--line-strong);
   color: var(--fg);
+}
+/**
+ * HOVER fills faintly and tints the border — the other half of the two-channel scheme.
+ *
+ * This rule was LOST when the block around it was rewritten (the same rewrite that produced the
+ * ring-only active state), so transparent buttons stopped responding to the pointer at all.
+ * Reported as a regression: "前バージョンでは透明なボタンをhoverしたら半透明な背景色が出てたのに、
+ * 今は出てない".
+ *
+ * `filter: brightness()` — the shared hover — does nothing to a button with no background, so this
+ * states the tint explicitly. The same exclusion chain as the base rule is required, or hover would
+ * paint the theme cards and the primary actions too.
+ */
+html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):not(.primarybtn):not(.okbtn):not(.themecard):hover:not(:disabled) {
+  border-color: var(--acc);
+  color: var(--acc);
+  /* the shared rule brightens a fill; with no fill there is nothing to brighten */
+  filter: none;
+  background-color: color-mix(in srgb, var(--acc) 12%, transparent);
 }
 /**
  * An ACTIVE/selected outline button still has to look selected.
@@ -2099,6 +2118,28 @@ html[data-bg-image="on"] .composer form {
   padding: 5px 14px; cursor: pointer; font-weight: 600; font-size: var(--text-sm);
 }
 .savebtn:disabled { opacity: .4; cursor: default; }
+/**
+ * The ACCENT-filled primary action.
+ *
+ * Several buttons spelled this out as an inline `style="background:var(--acc);border:none;…"`.
+ * Inline styles outrank every stylesheet rule, so those buttons ignored the wallpaper treatment
+ * entirely and stayed solid tiles while everything around them became outlines — reported as
+ * "save goal、save tasks が何故か塗りつぶしボタンになってるのでコンポーネントが適切に切られてない?".
+ *
+ * They are primary actions, so a solid fill is correct for them; what was wrong is that it came
+ * from an inline style rather than from a class the rules can reason about. `.savebtn` already
+ * exists for the same role and is excluded from the outline rule; this is its accent twin.
+ */
+.primarybtn {
+  background: var(--acc); border: none; color: #fff; border-radius: var(--radius-md);
+  padding: 5px 14px; cursor: pointer; font-weight: 600; font-size: var(--text-sm);
+}
+.primarybtn:disabled { opacity: .4; cursor: default; }
+.okbtn {
+  background: var(--ok); border: none; color: #fff; border-radius: var(--radius-md);
+  padding: 5px 14px; cursor: pointer; font-weight: 600; font-size: var(--text-sm);
+}
+.okbtn:disabled { opacity: .4; cursor: default; }
 /* rendered markdown inside the file preview modal */
 .mdpreview { max-height: 62vh; overflow: auto; background: var(--bg-darkest); border-radius: var(--radius-lg); padding: 14px 16px; }
 /* ALSO covers tool cards (`.toolbody.shiki`): a bash command and a JSON argument object are worth
