@@ -14,6 +14,8 @@ import {
 import { buildTimeline, type TimelineEvent, type PendingEchoLike } from "./timeline";
 import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { slotForSelection, paintedIdFor } from "./theme-slots";
+import { outputLang } from "./tool-output-lang";
+import { mergeThemes } from "./theme-merge";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
@@ -729,22 +731,36 @@ export default function App() {
    */
   const [customThemes, setCustomThemes] = createSignal<CustomTheme[]>(loadCustomThemes());
   /**
-   * Adopt the server's themes once the app is up.
+   * UNION the server's themes with this browser's — never replace one set with the other.
    *
    * The first paint uses `loadCustomThemes()` (localStorage) so the palette is right before any
-   * network call, then this reconciles: a server with themes wins, because they are the durable
-   * copy and may include themes made on another device. A server with NONE is every existing
-   * install, so the local themes are pushed up instead of being wiped by an empty answer.
+   * network call, then this reconciles once the app is up.
+   *
+   * It used to be "a server with themes wins" and that is wrong in the direction that loses data:
+   * a server holding ONE unrelated theme silently deleted every theme this browser had. MEASURED
+   * in a sandbox whose config carried a single stale light theme — the seven local themes became
+   * one, and the reported symptom was "follow the system がオフなのにライトテーマ(システムのテーマ)の
+   * 選択肢しかでない", because the survivor happened to be light.
+   *
+   * Neither side is authoritative: a theme can be made on a phone and not yet synced, and the file
+   * can hold themes from before this browser existed. So the resolved list is the union by id —
+   * the server's copy wins for an id both know (it is the durable one), local-only themes are
+   * kept, and the union is pushed back so both sides converge.
+   *
+   * `remote === null` means unreachable: keep what this browser has and push nothing, so a dead
+   * server cannot wipe the local list either.
    */
   onMount(() => {
     void loadCustomThemesFromServer().then((remote) => {
-      if (remote === null) return; // unreachable: keep what this browser has
-      if (remote.length > 0) {
-        setCustomThemes(remote);
-        saveCustomThemes(remote);
-      } else if (customThemes().length > 0) {
-        saveCustomThemes(customThemes()); // first run against an empty server: migrate up
-      }
+      if (remote === null) return;
+      const merged = mergeThemes(customThemes(), remote);
+      setCustomThemes(merged);
+      /**
+       * Push the union up unconditionally: it converges both sides for every case at once —
+       * first run against an empty server, a theme that exists only locally, and a theme that
+       * exists only on the server (already in `merged`, so re-sending it is a no-op).
+       */
+      saveCustomThemes(merged);
     });
   });
   const [sysDarkTheme, setSysDarkTheme] = createSignal(
@@ -6095,7 +6111,7 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
       const r = res();
       return r ? (
       <>
-        {codeBlock(out(), max)}
+        {codeBlock(out(), max, outputLang(out()))}
         <div class="meta">
           {fmtDur(r.data?.durationMs)}
           {/* #46: a killed shell said nothing here beyond a generic · FAILED, so

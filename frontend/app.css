@@ -254,12 +254,76 @@ html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn) {
   border: 1px solid var(--line-strong);
   color: var(--fg);
 }
-html[data-bg-image="on"] button:not(.copybtn):not(.qopt):not(.savebtn):hover:not(:disabled) {
+/**
+ * An ACTIVE/selected outline button still has to look selected.
+ *
+ * Making every button transparent erased the only signal several of them had: `.iconbtn.active`
+ * (the right-panel toggle) and `.goalstate.on.active|done|paused` (the goal controls) were FILLED
+ * states, and the transparent rule above outranks them on specificity. Reported as "ボタンの内側を
+ * 透明化した結果、どのボタンがアクティブなのか(goalとか左パネル下とか)わからない".
+ *
+ * A RING, not a fill — because hover already owns the fill.
+ *
+ * A tinted background was the first attempt and the operator rejected it: "hoverでも背景色がつくから
+ * アクティブに背景色付けるのはちょっと微妙かも?". Hover and active would then be the same visual
+ * channel with two meanings, and a hovered inactive button would read as an engaged one.
+ *
+ * So the two states use different channels: hover fills faintly and borders in the accent, while
+ * ACTIVE doubles the border with an inset ring of the state's own hue and colours the text with it.
+ * A ring is also what the theme cards use for "this is the chosen one", so the vocabulary matches.
+ *
+ * `inset` rather than an outer ring so an engaged control cannot shift its neighbours, and the
+ * border stays a real border rather than `outline` (which does not follow `border-radius`).
+ */
+/**
+ * NO fill — the ring is the whole signal.
+ *
+ * The fill was tried first and rejected: "hoverでも背景色がつくからアクティブに背景色付けるのは
+ * ちょっと微妙かも?" — hover and active would share one channel with two meanings, so a hovered
+ * inactive button would read as engaged. A ring is a channel hover does not use.
+ *
+ * The `:not(...)` chain is repeated from the outline rule on purpose: that rule is
+ * `html[attr] button:not(a):not(b):not(c)` (0,4,1), so a plainer `.iconbtn.active` selector (0,3,1)
+ * loses and the engaged button kept the base `--fg` colour. MEASURED that way round: the ring
+ * appeared while the text stayed `rgb(230,232,238)` instead of the accent.
+ */
+html[data-bg-image="on"] button.iconbtn.active:not(.copybtn):not(.qopt):not(.savebtn) {
+  background-color: transparent;
   border-color: var(--acc);
+  box-shadow: inset 0 0 0 1px var(--acc);
   color: var(--acc);
-  /* the shared hover rule brightens a FILL; with no fill it would change nothing visible */
-  filter: none;
-  background-color: color-mix(in srgb, var(--acc) 12%, transparent);
+}
+/* the goal controls keep their per-state hue, so "working / done / paused" stays distinguishable.
+   Same specificity chain as the iconbtn rule above, for the same reason. */
+html[data-bg-image="on"] button.goalstate.on.active:not(.copybtn):not(.qopt):not(.savebtn) {
+  background-color: transparent;
+  border-color: var(--ok);
+  box-shadow: inset 0 0 0 1px var(--ok);
+  color: var(--ok);
+}
+html[data-bg-image="on"] button.goalstate.on.done:not(.copybtn):not(.qopt):not(.savebtn) {
+  background-color: transparent;
+  border-color: var(--acc);
+  box-shadow: inset 0 0 0 1px var(--acc);
+  color: var(--acc);
+}
+html[data-bg-image="on"] button.goalstate.on.paused:not(.copybtn):not(.qopt):not(.savebtn) {
+  background-color: transparent;
+  border-color: var(--warn);
+  box-shadow: inset 0 0 0 1px var(--warn);
+  color: var(--warn);
+}
+/**
+ * Hover MUST NOT repaint an engaged control.
+ *
+ * Hover fills faintly and active rings, deliberately different channels. Without this, hovering an
+ * engaged button gave it the 12% accent wash as well and the two states became indistinguishable —
+ * which is the exact complaint that ruled out a fill for "active" in the first place. Hovering an
+ * engaged control changes nothing: the ring already said everything.
+ */
+html[data-bg-image="on"] button.iconbtn.active:hover:not(:disabled):not(.copybtn):not(.qopt):not(.savebtn),
+html[data-bg-image="on"] button.goalstate.on:hover:not(:disabled):not(.copybtn):not(.qopt):not(.savebtn) {
+  background-color: transparent;
 }
 /**
  * Native widgets follow the theme's MODE, not just the presets.
@@ -498,7 +562,17 @@ html[data-bg-image="on"] body { background: transparent; }
    selected so the choice is visible without reading the caption */
 .themecard-preview {
   display: block; width: 100%; height: 62px; border-radius: var(--radius-md);
-  overflow: hidden; border: 1px solid var(--line);
+  /**
+   * NO resting border. Every unselected tile carried `1px solid var(--line)`, which put a square
+   * outline around all of them — reported as "themesの各テーマの外側に四角いボーダーがついてる (選択中
+   * のボーダーではない)のでちょっとダサい".
+   *
+   * The preview is already a picture of the theme: its own colours make the tile's edge. Only the
+   * SELECTED one gets a ring, so the border means "this is the one" rather than "this is a box".
+   * `border: 1px solid transparent` keeps the box the same size in every state, so selecting a tile
+   * cannot nudge the grid.
+   */
+  overflow: hidden; border: 1px solid transparent;
   transition: border-color var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
 }
 .themecard:hover .themecard-preview { border-color: var(--dim); transform: translateY(-1px); }
@@ -564,6 +638,21 @@ html[data-bg-image="on"] body { background: transparent; }
   width: 26px; height: 22px; padding: 0; border: 1px solid var(--line);
   border-radius: var(--radius-sm); background: none; cursor: pointer; flex-shrink: 0;
 }
+/**
+ * The swatch fills the control, right up to its border.
+ *
+ * A native `<input type="color">` paints its swatch through two inner pseudo-elements, and both
+ * come with their own padding: the wrapper insets the swatch from the input's box, which leaves a
+ * visible gap INSIDE the border. Reported as "テーマ編集のカラーピッカーに枠線が付いてるけど、その枠線
+ * までいっぱいにピッカーが広がると嬉しい".
+ *
+ * The border stays (it is the control's edge); only the inset inside it goes. Both prefixed and
+ * unprefixed forms are needed — Chromium/WebKit use the `-webkit-` names and Firefox uses the
+ * unprefixed ones, and this app runs in both.
+ */
+.paletterow input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.paletterow input[type="color"]::-moz-color-swatch { border: none; border-radius: 1px; }
+.paletterow input[type="color"]::-webkit-color-swatch { border: none; border-radius: 1px; }
 .paletterow-label { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .paletterow-hex {
   width: 8.5em; flex-shrink: 0;
