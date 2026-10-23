@@ -21,6 +21,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ServerAuth } from "../src/agent/mcp-oauth-manager.ts";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 const mkAuth = (persist: (server: string, data: unknown) => Promise<void>) =>
   new ServerAuth("Notion", "http://127.0.0.1:1234/callback", persist as never);
@@ -174,4 +176,34 @@ test("a discovery record without metadata still yields the authorization server 
   const auth = mkAuth(async () => {});
   await auth.saveDiscoveryState({ authorizationServerUrl: "https://example.test" } as never);
   assert.equal(auth.expectedIssuer(), "https://example.test");
+});
+
+test("a transport is ONE-SHOT, so finishAuth must hand back a fresh connection (#mcp)", async () => {
+  /**
+   * "Notion MCPで認証完走したのに UnauthorizedError: Unauthorized" — for the third time, and this
+   * was the real reason.
+   *
+   * `finishAuth()` used to end with `client.connect(session)` to "complete the handshake". But the
+   * transport that got the 401 is SPENT: MEASURED against `mcp.notion.com`, connecting the same
+   * transport a second time throws `StreamableHTTPClientTransport already started!` whether or not
+   * `close()` ran. So the connection could never serve, and the failure surfaced as the SDK's
+   * `UnauthorizedError`, whose message defaults to the bare word "Unauthorized".
+   *
+   * The exchange itself had succeeded — the tokens were stored — which is why the report read as
+   * "認証完走したのに". The interface now returns a NEW `McpConnection`, and this pins the shape:
+   * a `Promise<void>` would compile while leaving the caller holding a dead handle.
+   */
+  const src = await readFile(path.join(import.meta.dirname, "..", "src", "agent", "mcp.ts"), "utf8");
+  assert.match(
+    src,
+    /finishAuth\(code: string, iss\?: string\): Promise<McpConnection>/,
+    "finishAuth must RETURN the usable connection — the instance that redeemed the code cannot serve " +
+      "requests, and a `Promise<void>` leaves the caller with a spent transport (#mcp)",
+  );
+  assert.match(
+    src,
+    /return await connectMcp\(cfg, auth\)/,
+    "and the way to obtain it is a fresh connectMcp with the SAME provider (which now holds the " +
+      "tokens the exchange just stored)",
+  );
 });

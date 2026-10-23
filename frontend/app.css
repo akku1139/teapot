@@ -791,6 +791,15 @@ html[data-bg-image="on"] body { background: transparent; }
   width: 100%;
   max-width: 260px;
   padding: 0;
+  /**
+   * `align-self: start` — a grid item STRETCHES by default.
+   *
+   * The image slot lives in a `.cfggrid` row beside the dim/surfaces controls, whose labels are
+   * taller than an 84px thumbnail. Without this the button was stretched to the row height
+   * (MEASURED: 108px tall around an 84px image) and the extra space showed as a band above and
+   * below the picture, inside its border.
+   */
+  align-self: start;
   overflow: hidden;
   cursor: pointer;
   background: var(--bg-darkest);

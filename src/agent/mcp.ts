@@ -85,8 +85,16 @@ export interface McpAuth {
 export interface McpConnection {
   tools(): Promise<McpTool[]>;
   call(name: string, args: unknown): Promise<{ text: string; ok: boolean }>;
-  /** complete an OAuth flow with the code from the redirect */
-  finishAuth(code: string, iss?: string): Promise<void>;
+  /**
+   * Complete an OAuth flow with the code from the redirect, returning a USABLE connection.
+   *
+   * It cannot be `Promise<void>` on this instance: a transport is ONE-SHOT. MEASURED — after the
+   * 401 that starts the flow, a second `client.connect(sameTransport)` throws
+   * "StreamableHTTPClientTransport already started!" whether or not `close()` was called. So the
+   * instance that exchanges the code can never serve requests, and the caller has to get a fresh
+   * one back.
+   */
+  finishAuth(code: string, iss?: string): Promise<McpConnection>;
   close(): Promise<void>;
 }
 
@@ -179,9 +187,23 @@ export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<
   try {
     await client.connect(session);
   } catch (err) {
-    // let the caller distinguish "needs a grant" from "broken", which is what the
-    // settings panel shows differently
-    await client.close().catch(() => {});
+    /**
+     * A 401 is NOT a dead connection — it is the first half of the OAuth flow.
+     *
+     * `client.connect()` failing with UnauthorizedError means the server wants a grant. Closing the
+     * client here used to destroy the only transport that could complete it: a transport cannot be
+     * re-started ("StreamableHTTPClientTransport already started!") and `finishAuth()` exchanges the
+     * code through THIS instance's provider, so the second `connect()` after `finishAuth` always
+     * threw — surfacing as a bare `UnauthorizedError: Unauthorized` even though the browser had
+     * completed the authorization and the token WAS saved.
+     *
+     * MEASURED: connect → 401; close; connect again → "already started". And with the exchange
+     * succeeding, the tokens were present and the connection still failed.
+     *
+     * So the client stays open when the caller supplied an auth provider (it may need to finish the
+     * flow on it). Without a provider there is nothing to complete, so it is closed as before.
+     */
+    if (!auth) await client.close().catch(() => {});
     throw err;
   }
 
@@ -208,15 +230,28 @@ export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<
       return resultText(res as { content?: Array<{ type?: string; text?: string }>; isError?: boolean });
     },
     async finishAuth(code, iss) {
-      // the VERIFIER and discovery state live on the transport, so completing the
-      // exchange must go through the same instance that started the flow
       if (!(session instanceof StreamableHTTPClientTransport) && !(session instanceof SSEClientTransport))
         throw new Error("this transport has no OAuth flow");
+      /**
+       * Exchange on THIS transport — the PKCE verifier and the discovery record are read from the
+       * provider, but the request is issued with this instance's fetch/init.
+       */
       await (session as StreamableHTTPClientTransport).finishAuth(
         iss === undefined ? code : (new URLSearchParams({ code, iss }) as never),
       );
-      // the connection failed at connect() time (401); finish the handshake now
-      await client.connect(session);
+      /**
+       * …then build a FRESH connection, because this one cannot be revived.
+       *
+       * A transport is one-shot: after the 401 that started the flow, connecting again throws
+       * "already started" even without `close()`. MEASURED, and it is why the flow appeared to
+       * complete and then report `UnauthorizedError: Unauthorized` — `client.connect` on a spent
+       * transport fails with no message of its own, and the SDK's UnauthorizedError defaults its
+       * text to the word "Unauthorized".
+       *
+       * The provider is shared, so the new instance reads the tokens the exchange just stored.
+       */
+      await client.close().catch(() => {});
+      return await connectMcp(cfg, auth);
     },
     async close() {
       await client.close().catch(() => {});

@@ -103,3 +103,30 @@ test("a stored image URL becomes a VALID background-image value (#theme-preview)
     `an embedded quote must be escaped, got ${String(backgroundImageValue('a"b'))}`,
   );
 });
+
+test("the image slot does not STRETCH to its grid row's height (#theme-preview)", async () => {
+  /**
+   * Reported with markup: "replace imageがちょっと気になる … 上下に帯がでてる".
+   *
+   * MEASURED in headless Firefox: the button was 108px tall around an 84px image, with the picture
+   * offset 12px from the top, so a band of the button's own background showed above and below it
+   * inside the border. Removing the `<img>` left the button at 108px — the height was not the
+   * image's.
+   *
+   * Cause: the slot lives in a `.cfggrid` row beside the dim/surfaces controls, whose labels are
+   * taller than a thumbnail. A grid item STRETCHES by default, so the button took the row height.
+   * `align-self: start` is the fix, and it is a CSS contract rather than a measurement because no
+   * browser is available in the suite.
+   */
+  const css = (await import("./helpers/source.ts")).stripSourceComments(
+    (await import("./helpers/source.ts")).readSource("frontend/app.css"),
+  );
+  const rule = /\.bgpick\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, "the image slot must have its own rule");
+  assert.match(
+    rule![1]!,
+    /align-self:\s*start/,
+    "the slot must opt OUT of the grid's default stretch, or it grows to the row height and shows " +
+      "a band around the picture (#theme-preview)",
+  );
+});

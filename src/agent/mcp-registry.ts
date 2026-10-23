@@ -310,9 +310,14 @@ export class McpRegistry {
            *   wrong iss   -> IssuerMismatchError "received https://evil.example"
            * so the check is not disabled — a genuinely mismatched issuer is still rejected.
            */
-          await conn.finishAuth(code, iss ?? auth.expectedIssuer());
-          st.connection = conn;
-          st.tools = await conn.tools();
+          /**
+           * `finishAuth` returns a NEW connection: the instance that redeemed the code cannot serve
+           * requests (a transport is one-shot), so storing `conn` here would leave a dead handle.
+           */
+          const live = await conn.finishAuth(code, iss ?? auth.expectedIssuer());
+          await conn.close().catch(() => {});
+          st.connection = live;
+          st.tools = await live.tools();
           st.status = "connected";
           st.oauthRequired = false;
           st.lastError = undefined;
