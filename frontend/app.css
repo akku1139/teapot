@@ -252,34 +252,45 @@ button:disabled { filter: none; }
  * `class={"goalstate" + …}` expressions, so a `:not(.goalstate)` in a stylesheet is not visible
  * evidence of anything.
  *
- * So the direction is reversed: a button is an outline ONLY when it names itself as a chrome
- * control. Everything else keeps whatever its own component declared, which is the default that
- * every existing rule already assumes.
+ * So the rule is GLOBAL BY TAG, with the FEW exceptions named.
  *
- * `.iconbtn` is the toolbar/tab/panel chrome this was asked for; `.copybtn` already had the form.
+ * Enumerating the classes that should be outlines is the same "list of things to remember" one
+ * level down, and it failed the same way: `send` and `apply` are bare `<button type="submit">`
+ * with NO class at all, so an allowlist covering `.iconbtn`/`.primarybtn`/… reached neither and
+ * they kept their solid fill. Reported as "apply, sendボタンも背景色がある (というかボタンのコンポーネ
+ * ント作ってない、もしくはグローバルにタグに当てるCSSは無いの?)" — the answer is that there should be,
+ * and now there is.
+ *
+ * What is EXCLUDED is the small set of elements that are not text controls:
+ *   - `.copybtn`   already had the thin-border form this is modelled on
+ *   - `.qopt`      the `ask_user` option cards, which are the row's primary affordance
+ *   - `.themecard` a preview tile, not a button shape
+ *   - `.tprev*`    the preview's own simulated panels
+ * Everything else — including every bare `<button>` — becomes an outline.
  */
-html[data-bg-image="on"] button.iconbtn {
+/**
+ * `:where()` keeps the exceptions from INFLATING THIS RULE'S SPECIFICITY.
+ *
+ * The same shape as `button:not(.copybtn):not(.qopt)…` scores (0,4,1) — `:not()` contributes its
+ * argument — which meant every later state rule lost to it. MEASURED: a `runbtn danger` element
+ * computed `border-color: rgb(127,139,156)` and `color: rgb(230,232,238)`, i.e. this base rule won
+ * over a rule written specifically for `.danger`, and the stop button stayed a grey outline with
+ * `background: var(--err)` still painted by the header's own rule.
+ *
+ * `:where()` always contributes ZERO, so the base is just `html[attr] button` = (0,1,2) and any
+ * class-based state rule beats it on merit rather than on accident.
+ */
+html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard)) {
   background-color: transparent;
   border: 1px solid var(--line-strong);
   color: var(--fg);
-  /* the border must follow the control's own corner, or an outline button is a sharp rectangle
-    sitting inside a rounded UI — the same complaint the theme cards produced */
   border-radius: var(--radius-md);
 }
 /**
- * The ACTION buttons are outlines too — filled only when they are the engaged state.
+ * The ACTION buttons keep the accent in their BORDER, not their fill.
  *
- * Reported as a regression: "透明なテーマのときにstart/stop, (model) apply, save goal/task, send
- * (prompt)あたりのボタンが前はボーダーだけ色を付けるようにしてたはずなのに、今は塗りつぶされてる".
- *
- * They were excluded from the outline rule on the reasoning that a primary action "must outrank the
- * rest" — true in isolation, wrong over a wallpaper: a filled chip is exactly the solid tile the
- * outline treatment exists to avoid, and these are the buttons an operator looks at most. The
- * hierarchy is carried by the ACCENT BORDER and text instead, which reads at least as clearly over
- * a photo.
- *
- * `.danger` (the ■ stop state) keeps a red border rather than a red fill: a filled red button was
- * the loudest thing on the screen, and stopping is a routine action.
+ * A filled chip is exactly the solid tile the outline treatment exists to avoid, and these are the
+ * buttons an operator looks at most. The hierarchy survives as colour on the border and the label.
  */
 html[data-bg-image="on"] button.primarybtn,
 html[data-bg-image="on"] button.okbtn,
@@ -294,9 +305,23 @@ html[data-bg-image="on"] button.okbtn {
   border-color: var(--ok);
   color: var(--ok);
 }
+/**
+ * The STOP state: a red BORDER, not a red rectangle.
+ *
+ * Two things made this lose before, and both are the reason it is written the long way:
+ *
+ *   1. the base rule's `:not()` chain scored (0,4,1), so a plainer selector here lost outright;
+ *   2. `.chan-head .runbtn.danger { background: var(--err) }` is declared LATER in this file, and
+ *      its `background` SHORTHAND resets every background longhand.
+ *
+ * MEASURED before: a `danger` header button computed `rgba(0,0,0,0)` background, a grey border and
+ * `--fg` text — "startボタンはいい感じになったのに、stopボタンが全面赤で塗りつぶされてる".
+ */
+html[data-bg-image="on"] .chan-head .runbtn.danger,
 html[data-bg-image="on"] button.runbtn.danger {
-  border-color: var(--err);
+  border: 1px solid var(--err);
   color: var(--err);
+  background: transparent;
 }
 html[data-bg-image="on"] button.primarybtn:hover:not(:disabled),
 html[data-bg-image="on"] button.okbtn:hover:not(:disabled),
@@ -317,7 +342,7 @@ html[data-bg-image="on"] button.runbtn:hover:not(:disabled) {
  * states the tint explicitly. The same exclusion chain as the base rule is required, or hover would
  * paint the theme cards and the primary actions too.
  */
-html[data-bg-image="on"] button.iconbtn:hover:not(:disabled) {
+html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard)):hover:where(:not(:disabled)) {
   border-color: var(--acc);
   color: var(--acc);
   /* the shared rule brightens a fill; with no fill there is nothing to brighten */

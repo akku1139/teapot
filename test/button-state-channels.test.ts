@@ -115,7 +115,7 @@ test("an outline button still RESPONDS to hover (#ui)", async () => {
    * brightness()` cannot substitute: it brightens a FILL, and an outline button has none.
    */
   const css = stripSourceComments(readSource("frontend/app.css"));
-  const hover = rulesMatching(css, ["data-bg-image", ":hover", "button\\.iconbtn"]);
+  const hover = rulesMatching(css, ["data-bg-image", ":hover", "button"]);
   assert.ok(
     hover.length > 0,
     "a transparent button needs a wallpaper hover rule, or it gives no feedback at all (#ui)",
@@ -151,28 +151,25 @@ test("buttons that are PRIMARY actions keep their fill by class, not inline styl
     assert.match(body!, /background:\s*var\(--(acc|ok)\)/, `${cls} must be filled`);
   }
   /**
-   * The wallpaper outline must be an ALLOWLIST.
+   * The wallpaper outline must be GLOBAL BY TAG, not a list of class names.
    *
-   * It used to be `button:not(.copybtn):not(.qopt):not(.savebtn)…` — "every button, except these".
-   * A class nobody remembered to add inherited the outline, so `.editbtn` ("✕ cancel") grew a hard
-   * 1px rectangle: "角丸でも何でも無い枠線が出てる (テーマカードもcancelも枠線いらないと思った)".
-   * The same shape hit `.themecard`, and would hit every button added later.
+   * Two designs were tried and both failed for the same reason — they were lists of names:
    *
-   * Asserting the ABSENCE of the blocklist (rather than the presence of particular `:not()`s) is
-   * what stops the next component from being the one that gets forgotten.
+   *   1. `button:not(.copybtn):not(.qopt)…` ("every button except these") gave `.editbtn` a hard
+   *      1px rectangle it never asked for: "角丸でも何でも無い枠線が出てる".
+   *   2. An allowlist of `.iconbtn`/`.primarybtn`/… reached neither, because `send` and `apply` are
+   *      BARE `<button type="submit">` with no class at all — "apply, sendボタンも背景色がある (という
+   *      かボタンのコンポーネント作ってない、もしくはグローバルにタグに当てるCSSは無いの?)".
+   *
+   * The answer to that question is yes: the rule keys on the TAG, and the exceptions are listed.
+   * So what is asserted is that a rule matching a plain `button` with no class exists.
    */
   const outlineRules = rulesMatching(css, ["data-bg-image", "button"]);
   assert.ok(outlineRules.length > 0, "there must be wallpaper button rules at all");
-  for (const r of outlineRules) {
-    assert.ok(
-      !/:not\(\.(copybtn|qopt|savebtn|primarybtn|okbtn|themecard)\)/.test(r.selector),
-      `"${r.selector.trim()}" uses a BLOCKLIST of exceptions — a button class added later would ` +
-        `silently inherit the outline. Use an allowlist (button.iconbtn) instead (#ui)`,
-    );
-  }
   assert.ok(
-    outlineRules.some((r) => /button\.iconbtn/.test(r.selector)),
-    "the chrome buttons must still be outlined by an explicit allowlist (#ui)",
+    outlineRules.some((r) => /button(:where\(|:not\(|\s*\{|,\s*$|\s+)/.test(r.selector) && !/button\./.test(r.selector)),
+    "a bare `<button>` (no class) must get the outline treatment — keying on class names leaves " +
+      "every class-less submit button filled (#ui)",
   );
 });
 
@@ -204,6 +201,80 @@ test("the ACTION buttons are outlines over a wallpaper too (#ui)", async () => {
     assert.ok(
       /1px solid/.test(decl(rule!.body, "border") ?? ""),
       `.${cls} must be marked by a border once it has no fill (#ui)`,
+    );
+  }
+});
+
+test("a state rule must not LOSE to the base outline rule's :not() chain (#ui)", async () => {
+  /**
+   * The failure this pins, measured on the running app: a `runbtn danger` element computed
+   * `border-color: rgb(127,139,156)` and `color: rgb(230,232,238)` — i.e. the generic outline rule
+   * beat the rule written specifically for `.danger`, so the stop button stayed a grey outline
+   * while `.chan-head .runbtn.danger { background: var(--err) }` still painted it solid red.
+   *
+   * Why: `:not()` contributes its ARGUMENT's specificity. A base rule of
+   * `button:not(.a):not(.b):not(.c)` scores (0,4,2), which outranks any plausible state selector.
+   * `:where()` contributes ZERO, so the base stays weak and state rules win on merit.
+   */
+  const css = stripSourceComments(readSource("frontend/app.css"));
+  const base = rulesMatching(css, ["data-bg-image", "button"]);
+  /**
+   * A `:not()` is only harmful OUTSIDE `:where()`, and a selector can legitimately contain both
+   * (the exceptions wrapped, the `:disabled` guard also wrapped). So strip every `:where(…)` group
+   * first — balanced-paren walk, because `:where(:not(a, b))` nests — and only then look for a
+   * remaining `:not(`.
+   */
+  const withoutWhere = (sel: string): string => {
+    let out = "";
+    let i = 0;
+    while (i < sel.length) {
+      const at = sel.indexOf(":where(", i);
+      if (at === -1) {
+        out += sel.slice(i);
+        break;
+      }
+      out += sel.slice(i, at);
+      let depth = 0;
+      let j = at + ":where".length;
+      for (; j < sel.length; j++) {
+        if (sel[j] === "(") depth++;
+        else if (sel[j] === ")") {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      i = j + 1;
+    }
+    return out;
+  };
+  /**
+   * Only rules that are not themselves STATE rules can be "lost to": a `:hover`/`.active` selector
+   * is the top of the cascade, so its `:not(:disabled)` guard cannot outrank anything that matters.
+   * The dangerous case is the BASE rule, which every other rule has to beat.
+   */
+  const isStateRule = (sel: string) => /:hover|\.active|\.done|\.paused|\.danger/.test(sel);
+  const withNotChain = base.filter((r) => !isStateRule(r.selector) && withoutWhere(r.selector).includes(":not("));
+  assert.deepEqual(
+    withNotChain.map((r) => r.selector.trim()),
+    [],
+    "a wallpaper button rule must not use a bare :not() chain — it scores higher than the state " +
+      "rules it is supposed to lose to. Wrap the exceptions in :where() instead (#ui)",
+  );
+  assert.ok(
+    base.some((r) => /button:where\(/.test(r.selector)),
+    "the base outline rule must use :where() so state rules can override it (#ui)",
+  );
+  const danger = rulesMatching(css, ["data-bg-image", "runbtn\\.danger"]);
+  assert.ok(danger.length > 0, "the stop state needs its own rule (#ui)");
+  assert.ok(
+    danger.some((r) => /var\(--err\)/.test(decl(r.body, "border") ?? "")),
+    "stop must be marked by a red BORDER, not a red fill (#ui)",
+  );
+  for (const r of danger) {
+    assert.match(
+      String(decl(r.body, "background")),
+      /transparent/,
+      `"${r.selector.trim()}" must not paint a fill — a full red rectangle is what was reported (#ui)`,
     );
   }
 });

@@ -147,10 +147,23 @@ async function main(): Promise<void> {
   const noAuth = !(process.env.TEAPOT_API_TOKEN || master.config.password);
   const beyondLoopback = !!config.host && config.host !== "127.0.0.1" && config.host !== "localhost";
   if (noAuth) {
-    console.error(
-      "[teapot] no API token set — /api is open to LOCAL clients. Cross-origin writes are refused, " +
-        "but set TEAPOT_API_TOKEN or config.password before exposing this port.",
-    );
+    /**
+     * On LOOPBACK this is the normal, safe default — so say so plainly instead of printing an
+     * alarming "no API token set" on every start.
+     *
+     * Asked as "no API token setはなんだろう": nothing is wrong. A fresh install has no password
+     * because the setup wizard has to reach the API to set one, and binding 127.0.0.1 means only
+     * processes on this machine can connect. The message now states that, and is written to stdout
+     * at info level — `console.error` made a healthy start look like a fault.
+     *
+     * The WARNING branch is unchanged and still goes to stderr: that one IS a problem.
+     */
+    if (!beyondLoopback) {
+      console.log(
+        "[teapot] auth: none needed — bound to loopback only, so only this machine can reach /api. " +
+          "Set TEAPOT_API_TOKEN or config.password before exposing this port.",
+      );
+    }
     if (beyondLoopback) {
       console.error(
         `[teapot] WARNING: bound to ${config.host} with NO auth — anyone who can reach this port can ` +
