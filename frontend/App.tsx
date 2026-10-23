@@ -4008,6 +4008,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * panel. `resize: vertical` was already on it, but the drag did not survive a reload.
    */
   const [goalHeight, setGoalHeight] = createSignal(storedTextareaHeight("goal"));
+  // the PREVIEW is a separate box with its own remembered height
+  const [goalPreviewHeight, setGoalPreviewHeight] = createSignal(storedTextareaHeight("goalPreview"));
+  const goalPreviewStyle = (): Record<string, string> => {
+    const base: Record<string, string> = {
+      "max-height": "none",
+      "overflow-y": "auto",
+      resize: "vertical",
+    };
+    if (goalPreviewHeight() > 0) base.height = `${goalPreviewHeight()}px`;
+    return base;
+  };
+  const trackGoalPreviewHeight = (el: HTMLElement) => {
+    const stop = trackTextareaHeight(el, (h) => {
+      setGoalPreviewHeight((cur) => {
+        if (Math.abs(cur - h) < 1) return cur;
+        rememberTextareaHeight("goalPreview", h);
+        return h;
+      });
+    });
+    onCleanup(stop);
+  };
   const goalHeightStyle = () => (goalHeight() > 0 ? { height: `${goalHeight()}px` } : undefined);
   const trackGoalHeight = (el: HTMLTextAreaElement) => {
     const stop = trackTextareaHeight(el, (h) => {
@@ -5427,7 +5448,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             when={sel()!.goal.text}
             fallback={<div class="card muted">no goal yet — write one below and press ✓ save. Then ▶ start (or any message) sets it in motion.</div>}
           >
-            <div class="card goalcard">
+            <div class="card goalcard" ref={trackGoalPreviewHeight} style={goalPreviewStyle()}>
               <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.text))} />
             </div>
             <Show when={sel()!.goal.verify}>
