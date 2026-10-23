@@ -90,6 +90,8 @@ import { clampPaneIndex, indexAfterAppend, paneIndexAfterClose, rightPaneSeed } 
 import { pickAfterArchive } from "./lib/archive-target";
 import { shouldSendOnKey, shouldRestoreAfterSend } from "./lib/composer-keys";
 import { IconBtn, CopyBtn, Modal } from "./components/chrome";
+import { AnsiText, BashElapsed, HighlightedCode, ThinkingTimer } from "./components/code";
+import { hasAnsi, stripAnsi } from "./lib/ansi";
 
 declare const __APP_VERSION__: string;
 
@@ -5943,41 +5945,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
 /* ---------- one chat message row ---------- */
 /* ---------- live elapsed-time ticker for a still-running bash call ---------- */
-function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number }) {
-  const start = new Date(props.startedAt).getTime();
-  const [now, setNow] = createSignal(Date.now());
-  onMount(() => {
-    // 500ms tick is plenty for a seconds readout and stops with the row
-    const t = setInterval(() => setNow(Date.now()), 500);
-    onCleanup(() => clearInterval(t));
-  });
-  // shares fmtDur() with the finished rows so a running call and its result
-  // read identically instead of flipping between two formats (#24)
-  const txt = () => fmtDur(Math.max(0, now() - start));
-  // inline: compact form for the folded summary ("running… 1m 26s")
-  if (props.inline) {
-    return (
-      <span class="bashelapsed">
-        running… {txt()}
-        {props.timeoutMs ? ` · timeout ${Math.round(props.timeoutMs / 1000)}s` : ""}
-      </span>
-    );
-  }  return <span class="bashelapsed">{txt()} elapsed</span>;
-}
 
 /** Live elapsed-seconds readout for the current thinking stretch. */
-function ThinkingTimer(props: { startedAt: number }) {
-  const [now, setNow] = createSignal(Date.now());
-  onMount(() => {
-    const t = setInterval(() => setNow(Date.now()), 500);
-    onCleanup(() => clearInterval(t));
-  });
-  // #131: `startedAt` is 0 until a reasoning delta arms the clock, which is the
-  // state right after a session switch. `now() - 0` is elapsed since the EPOCH, so
-  // it flashed "thinking 497531h". 0 is a sentinel, never a timestamp.
-  if (!props.startedAt) return null;
-  return <span class="thinktimer">{fmtDur(Math.max(0, now() - props.startedAt))}</span>;
-}
 
 /* ---------- per-tool timeline rendering ---------- */
 
@@ -6005,71 +5974,7 @@ function ThinkingTimer(props: { startedAt: number }) {
  * is seeded from the cache) and an identical block in another row costs nothing. The map is
  * bounded because a long session shows thousands of distinct commands.
  */
-const HIGHLIGHT_CACHE = new Map<string, string>();
-const HIGHLIGHT_MAX = 400;
 
-function highlightCachePut(key: string, html: string): void {
-  if (HIGHLIGHT_CACHE.size >= HIGHLIGHT_MAX) {
-    // Map preserves insertion order, so this drops the oldest entry
-    const oldest = HIGHLIGHT_CACHE.keys().next();
-    if (!oldest.done) HIGHLIGHT_CACHE.delete(oldest.value);
-  }
-  HIGHLIGHT_CACHE.set(key, html);
-}
-
-function HighlightedCode(props: { text: string; lang?: string }) {
-  // a separator that cannot appear in a language id or in the code itself
-  const key = () => (props.lang ? `${props.lang}::${props.text.length}::${props.text}` : "");
-  const cached = () => (props.lang ? HIGHLIGHT_CACHE.get(key()) : undefined);
-  const [html, setHtml] = createSignal(cached() ?? "");
-  createEffect(() => {
-    const k = key();
-    const text = props.text;
-    const lang = props.lang;
-    if (!lang || !text.trim()) { setHtml(""); return; }
-    const hit = HIGHLIGHT_CACHE.get(k);
-    if (hit !== undefined) { setHtml(hit); return; }
-    /**
-     * No "is my run still current" guard.
-     *
-     * The result is cached by CONTENT, so it does not matter which instance produced it or whether
-     * that instance still exists — the next mount reads it back. A guard could only throw work
-     * away, and that is how an earlier version lost the highlighting entirely.
-     */
-    void (async () => {
-      try {
-        const { highlightLangChunks } = await import("./lib/shiki");
-        let acc = "";
-        for await (const chunk of highlightLangChunks(lang, text)) acc += chunk;
-        if (!acc) return;
-        highlightCachePut(k, acc);
-        // paint only if this instance is still asking for the same content
-        if (key() === k) setHtml(acc);
-      } catch {
-        // give up → the plain fallback stays
-      }
-    })();
-  });
-  /**
-   * `when={!!html()}`: a boolean, so Solid re-evaluates the CONDITION reactively.
-   *
-   * `when={html()}` also tracks, but the CHILD below is an accessor-free element — it is created
-   * once when the condition first holds. MEASURED: the effect logged `{chunks: 1, accLen: 604}`
-   * while the DOM still held the plain `<pre>` fallback, which is why "ツールカードのshiki効いてない"
-   * looked like the highlighter was failing when it had actually succeeded.
-   */
-  return (
-    <Show when={!!html()} fallback={<pre class="mono toolbody">{props.text}</pre>}>
-      {/**
-        * The wrapper carries BOTH classes the stylesheet keys on: `toolbody` for the shared surface
-        * and `shiki` for the dual-theme colour variables. Shiki emits its own
-        * `<pre class="shiki"><code>…</code></pre>` — markup we generate from a grammar, never from
-        * user input — so the inner `<pre>` must not paint a second surface of its own.
-        */}
-      <div class="toolbody shiki" innerHTML={html()} />
-    </Show>
-  );
-}
 
 function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
@@ -6167,7 +6072,7 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
       const r = res();
       return r ? (
       <>
-        {codeBlock(out(), max, outputLang(out()))}
+        {hasAnsi(out()) ? <AnsiText text={truncate(out(), max)} /> : codeBlock(out(), max, outputLang(out()))}
         <div class="meta">
           {fmtDur(r.data?.durationMs)}
           {/* #46: a killed shell said nothing here beyond a generic · FAILED, so
@@ -6177,7 +6082,7 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
             : r.data?.ok === false
               ? " · FAILED"
               : ""}
-          <CopyBtn text={out()} />
+          <CopyBtn text={hasAnsi(out()) ? stripAnsi(out()) : out()} />
         </div>
       </>
     ) : (
@@ -6462,7 +6367,11 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
         <span class="toolcopy">
           <CopyBtn text={cmdText()} label="⧉ cmd" title={`copy the ${name} arguments`} />
           <Show when={res()}>
-            <CopyBtn text={out()} label="⧉ out" title="copy this tool's full output" />
+            <CopyBtn
+              text={hasAnsi(out()) ? stripAnsi(out()) : out()}
+              label="⧉ out"
+              title="copy this tool's full output (escapes removed)"
+            />
           </Show>
         </span>
       </summary>
