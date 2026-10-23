@@ -27,7 +27,8 @@ import { groupedWith, type RowLike } from "./lib/row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./lib/question-answered";
 import { reconcilePending, type PendingEcho } from "./lib/pending-echo";
 // #141: pure + exported, so the session switcher is testable rather than re-implemented
-import { resolveTimelineSession } from "./lib/session-index";
+import { linkableSessionId, resolveTimelineSession } from "./lib/session-index";
+import { rememberTextareaHeight, storedTextareaHeight, trackTextareaHeight } from "./lib/textarea-size";
 // #146: the scope predicates are PRODUCTION, so the tests can assert the same code
 // the handler runs — a test-local copy proves nothing (#75)
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
@@ -2229,7 +2230,42 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // Falls back to the agent id for brand-new agents whose first session dir
     // isn't listed yet (the events fetch still works: same log).
     if (!sessionsByAgent().size) void refreshSessionIndex(); // first select before index landed
-    let tid = latestSessionOf(id, forceSession) ?? id;
+    /**
+     * NEVER let the agent id become the timeline handle once we know better.
+     *
+     * `?? id` was a fallback for a brand-new agent whose first session directory is not listed
+     * yet — but it also fired for any agent when the session INDEX had not landed, and that value
+     * is what `navigate()` writes into the URL. The result was `/session/<agentId>`, which is not a
+     * session id at all: TWO tabs deep-linking to different sessions then both resolved through
+     * `latestSessionOf(agentId)` and opened the SAME one ("それぞれリロードするとどっちも
+     * /session/tyb2-8 になってしまった").
+     *
+     * An explicit request is honoured as-is while the index is unknown: the server answers
+     * `?session=<id>` regardless, and the index will confirm it a moment later. Falling back to the
+     * agent id only happens when there is neither a request nor any owned session.
+     */
+    /**
+     * `resolved` first — and when the index has nothing to say, NEVER the agent id.
+     *
+     * The two-tabs bug: `latestSessionOf(...) ?? id` put the AGENT id into the URL whenever the
+     * index had not landed, and an agent id resolves to that agent's latest session — so two tabs
+     * deep-linked to different sessions both opened the same one.
+     *
+     * `forceSession` only fills the gap when the index is genuinely EMPTY (nothing to resolve
+     * against). Once ownership data exists, resolution has an opinion and it wins: honouring a
+     * request the agent does not own would let a crafted URL cross into another timeline.
+     */
+    /**
+     * `resolved` decides when the index has an opinion; otherwise the request may name a session
+     * the index has not scanned yet.
+     *
+     * `forceSession` must be a REAL session id, though. Passing an arbitrary path segment through
+     * (the boot URL is often a placeholder like `/session/test`) would make it the timeline handle
+     * and the events fetch would ask for a session that does not exist.
+     */
+    const resolved = latestSessionOf(id, forceSession);
+    const requested = forceSession && masterSessionIndex().has(forceSession) ? forceSession : null;
+    let tid = resolved ?? requested ?? id;
     if (prevId !== id || tid !== prevTid) {
       // remember what the outgoing session looked like so returning is instant
       if (prevTid && prevEvents.length) {
@@ -2735,7 +2771,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   // internal session ids never are — deep links stay valid forever.
   const pathId = () => decodeURIComponent(location.pathname.split("/")[2] ?? "");
   function navigate(sessionId: string, push = true) {
-    const url = `/session/${encodeURIComponent(sessionId)}`;
+    /**
+     * The URL carries a SESSION id, so refuse to write anything the index does not know.
+     *
+     * This is the structural half of the two-tabs bug: an agent id reaching here produced
+     * `/session/<agentId>`, which every tab then resolves to that agent's LATEST session — so two
+     * tabs pointed at different sessions collapsed onto one after a reload.
+     *
+     * A session that is genuinely new (its directory not scanned yet) is the one case where the
+     * index cannot confirm; there the caller passes a real id and this passes it through. What is
+     * refused is a handle the index positively maps to a DIFFERENT agent, and the bare agent id.
+     */
+    const linkable = linkableSessionId(
+      sessionId,
+      masterSessionIndex(),
+      agents().map((a) => a.id),
+    );
+    if (!linkable) return; // see linkableSessionId — an agent id here merges every tab
+    const url = `/session/${encodeURIComponent(linkable)}`;
     if (push) history.pushState(null, "", url);
     else history.replaceState(null, "", url);
   }
@@ -3947,6 +4000,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   // on every agent snapshot, and status flips / <Show> boundary crossings
   // rebuilt the form subtree — silently wiping half-typed goals mid-input.
   const [goalDraft, setGoalDraft] = createSignal("");
+  /**
+   * The goal box is draggable and remembered — same treatment as the todo editor.
+   *
+   * Reported as "goalの枠をtodoみたいに伸縮できるようにしないと長いgoalがあるときに画面占有率が強制的
+   * に高い": it was a fixed `rows={3}`, so a long goal permanently owned three lines of a narrow
+   * panel. `resize: vertical` was already on it, but the drag did not survive a reload.
+   */
+  const [goalHeight, setGoalHeight] = createSignal(storedTextareaHeight("goal"));
+  const goalHeightStyle = () => (goalHeight() > 0 ? { height: `${goalHeight()}px` } : undefined);
+  const trackGoalHeight = (el: HTMLTextAreaElement) => {
+    const stop = trackTextareaHeight(el, (h) => {
+      setGoalHeight((cur) => {
+        if (Math.abs(cur - h) < 1) return cur;
+        rememberTextareaHeight("goal", h);
+        return h;
+      });
+    });
+    onCleanup(stop);
+  };
   const [goalVerifyDraft, setGoalVerifyDraft] = createSignal("");
   const [_goalDirty, setGoalDirty] = createSignal(false);
   const [goalNotify, setGoalNotify] = createSignal(true);
@@ -5390,11 +5462,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-top:8px;margin-bottom:6px">
             <textarea
               id="goal-input"
+              ref={trackGoalHeight}
               rows={3}
               placeholder="set new goal…"
               value={goalDraft()}
               oninput={(e) => { setGoalDraft(e.currentTarget.value); setGoalDirty(true); }}
-              style="background:var(--bg-darkest);border:none;border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;width:100%;resize:vertical"
+              style={{
+                ...(goalHeightStyle() ?? {}),
+                background: "var(--bg-darkest)", border: "none", "border-radius": "6px",
+                padding: "6px 8px", color: "var(--fg)", font: "inherit",
+                width: "100%", resize: "vertical",
+              }}
+              title="drag the bottom edge to make this taller — the height is remembered"
             />
             <textarea
               id="goal-verify-input"
@@ -6121,4 +6200,3 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
  * A component is mounted ONCE and its props update in place, so the `<input>` is the same DOM node
  * across renders and the caret stays put.
  */
-

@@ -737,7 +737,11 @@ console.log("deep render ok: feed rows present");
     await new Promise((r) => setTimeout(r, 250));
     const before = w.document.body.textContent.includes("thinking");
     if (!before) {
-      console.error("#97 check could not create the thinking… row — the test would pass vacuously");
+      console.error(
+        "#97 check could not create the thinking… row — the test would pass vacuously (url=" +
+          w.location.pathname +
+          ")",
+      );
       process.exit(1);
     }
     if (!sock?.onmessage) {

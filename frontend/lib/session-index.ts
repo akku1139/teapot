@@ -29,3 +29,36 @@ export function resolveTimelineSession(
   if (!requested && bound && mine.length === 0) return bound;
   return mine[0] ?? null;
 }
+
+/**
+ * Should this handle be written into `/session/<id>`?
+ *
+ * The URL is the SHARED state between tabs, so a wrong handle there is a cross-tab bug. Two tabs
+ * deep-linked to different sessions both turned into `/session/<agentId>` after a restart, because
+ * `tid` fell back to the agent id when the session index had not landed — and an agent id resolves
+ * to that agent's LATEST session, so both tabs opened the same one.
+ *
+ * @param handle  what the caller wants to put in the URL
+ * @param known   the session index (internal session id → agent id); empty means "not loaded"
+ * @param agentIds every configured agent id
+ */
+export function linkableSessionId(
+  handle: string | null | undefined,
+  known: ReadonlyMap<string, string>,
+  agentIds: readonly string[],
+): string | null {
+  if (!handle) return null;
+  /**
+   * An agent id is not a session id — refuse it whether or not the index has landed.
+   *
+   * That single check is the fix for the two-tabs bug: `/session/<agentId>` later resolves through
+   * `latestSessionOf` to that agent's LATEST session, so every tab that deep-linked an agent id
+   * converged on one session. Nothing else needs guarding.
+   *
+   * A session id the index cannot confirm YET (a directory not scanned, or the index still empty)
+   * is still written: it is the handle the server answers `?session=<id>` for, and blanking the URL
+   * instead would lose a deep link the operator just opened.
+   */
+  if (!known.has(handle) && agentIds.includes(handle)) return null;
+  return handle;
+}
