@@ -1046,34 +1046,12 @@ export class Agent {
   }
 
   /**
-   * A context size we are willing to act on.
+   * The context size the prune/compact gates act on.
    *
-   * `lastUsage.input` is the provider's own count, so it is normally the
-   * most accurate number available — but a provider that under-reports (a proxy
-   * that omits the field's real value, a broken gateway, a model served through
-   * a shim) makes BOTH safety gates believe the context is nearly empty:
-   *
-   *     maybePrune()    est < budget * 0.6   -> 0 prunes, forever
-   *     maybeCompact()  before < budget       -> 0 compactions, forever
-   *
-   * Reproduced: ~40k characters of real conversation, provider reporting
-   * `prompt_tokens: 10` — zero prunes, zero compactions, and a gauge reading 10,
-   * so nothing looks wrong. The context then overflows for real, with the
-   * defence that exists to stop exactly that switched off.
-   *
-   * So the reported number is used, but never as the ONLY number: it is floored
-   * against the local estimate. The estimate is a heuristic; the point is that
-   * `??` was the wrong way to combine a measurement with a floor — it only falls
-   * back when the value is ABSENT, so a confidently wrong value was trusted more
-   * than the guess.
-   *
-   * The floor is a HALF of the local estimate. A quarter was tried first and
-   * was too weak to clear the 0.6-of-budget threshold for a realistic session
-   * (estimate 5108 → floored 1277 against a 3600 bar), so the guard still would
-   * not have fired. Half keeps the intent — catch "reported 10 when the real
-   * prompt is large" — without arguing with a provider whose tokenizer
-   * legitimately differs from ours, since a provider within 2x of the estimate
-   * is not the failure mode being defended against.
+   * `lastUsage.input` is the provider's own count, but a proxy or shim that under-reports it would
+   * make BOTH gates believe the context is nearly empty, switching off the defence entirely. So it
+   * is floored at HALF the local estimate: a provider within 2x of our tokenizer is legitimate, a
+   * provider reporting ~10 tokens for a large prompt is not.
    */
   private contextSizeForBudgeting(): number {
     const estimated = this.estimateTokens();

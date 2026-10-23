@@ -187,31 +187,16 @@ const FEED_TYPES = new Set([
   // The expansion below still handles a `sub` row so an OLD log that already
   // contains one renders as an attributed child row rather than vanishing.
 ]);
-// system_note rows never RENDER, but two of them drive pending-echo state:
-// prompt-delivered flips the echo to "sent" and must ALSO refresh the feed so
-// the logged prompt row replaces the echo right away (otherwise the "sent ✓"
-// echo lingered until some unrelated event happened to refresh the timeline)
+// system_note rows never render, but prompt-delivered must refresh the feed so the logged prompt
+// row replaces the pending echo immediately.
 const NOTE_FEED_TYPES = new Set(["system_note"]);
 
 /**
- * The types that actually DRAW a row — `FEED_TYPES` minus the ones that pass the
- * filter but render nothing.
+ * Types that actually DRAW a row: `FEED_TYPES` minus the ones that pass the filter but render
+ * nothing. A type with no render branch still becomes its neighbours' grouping `prev`, and
+ * `groupedWith()` keys on TYPE — so an invisible row splits a run of tool calls in half.
  *
- * `state` is the offender that was measured: it is in `FEED_TYPES`, neither
- * MessageRow nor SwitchContent has a branch for it, and yet it became the
- * grouping `prev` of the next row. Because `groupedWith()` keys on the row TYPE,
- * an invisible row CUT a run of bash calls in half — reported as "bashが連続なのに
- * 両方にアイコンがついてる", and it also merged unrelated runs, which stole the icon
- * from a run's FIRST row.
- *
- * `system_note` renders only for a few event kinds (runaway-detected, error-retry,
- * background-exit, context-compacted, context-compaction-started). The rest —
- * `prompt-delivered`, `session-restored`, `llm-retry`, … — are log-only, and they
- * have exactly the same effect on grouping, so they are dropped from the chain by
- * the note-event check below rather than by type.
- *
- * Kept as an explicit list so adding a feed type without a render branch is a
- * visible omission: the tests assert every member renders something.
+ * Kept explicit so adding a feed type without a render branch is a visible omission.
  */
 const RENDERED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
