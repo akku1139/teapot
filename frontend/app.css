@@ -263,8 +263,47 @@ html[data-bg-image="on"] button.iconbtn {
   border: 1px solid var(--line-strong);
   color: var(--fg);
   /* the border must follow the control's own corner, or an outline button is a sharp rectangle
-     sitting inside a rounded UI — the same complaint the theme cards produced */
+    sitting inside a rounded UI — the same complaint the theme cards produced */
   border-radius: var(--radius-md);
+}
+/**
+ * The ACTION buttons are outlines too — filled only when they are the engaged state.
+ *
+ * Reported as a regression: "透明なテーマのときにstart/stop, (model) apply, save goal/task, send
+ * (prompt)あたりのボタンが前はボーダーだけ色を付けるようにしてたはずなのに、今は塗りつぶされてる".
+ *
+ * They were excluded from the outline rule on the reasoning that a primary action "must outrank the
+ * rest" — true in isolation, wrong over a wallpaper: a filled chip is exactly the solid tile the
+ * outline treatment exists to avoid, and these are the buttons an operator looks at most. The
+ * hierarchy is carried by the ACCENT BORDER and text instead, which reads at least as clearly over
+ * a photo.
+ *
+ * `.danger` (the ■ stop state) keeps a red border rather than a red fill: a filled red button was
+ * the loudest thing on the screen, and stopping is a routine action.
+ */
+html[data-bg-image="on"] button.primarybtn,
+html[data-bg-image="on"] button.okbtn,
+html[data-bg-image="on"] button.savebtn,
+html[data-bg-image="on"] button.runbtn {
+  background-color: transparent;
+  border: 1px solid var(--acc);
+  color: var(--acc);
+  border-radius: var(--radius-md);
+}
+html[data-bg-image="on"] button.okbtn {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+html[data-bg-image="on"] button.runbtn.danger {
+  border-color: var(--err);
+  color: var(--err);
+}
+html[data-bg-image="on"] button.primarybtn:hover:not(:disabled),
+html[data-bg-image="on"] button.okbtn:hover:not(:disabled),
+html[data-bg-image="on"] button.savebtn:hover:not(:disabled),
+html[data-bg-image="on"] button.runbtn:hover:not(:disabled) {
+  filter: none;
+  background-color: color-mix(in srgb, currentColor 14%, transparent);
 }
 /**
  * HOVER fills faintly and tints the border — the other half of the two-channel scheme.

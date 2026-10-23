@@ -599,6 +599,19 @@ export class Agent {
    */
   private pendingPrompts: { source: string; text: string; images?: { url: string; name?: string }[]; id?: string }[] = [];
   private stopRequested = false;
+  /**
+   * "Finish the round you are in, then stop" — a LIVE UPDATE stop.
+   *
+   * `stop()` aborts the in-flight LLM call and the running tool, which is right for an operator
+   * pressing ■ (they want it to stop NOW). It is wrong for a live update: aborting mid-tool leaves
+   * a half-written file and a call that never got its result, and the session then resumes from a
+   * state that never existed.
+   *
+   * Asked for as "動作中のエージェントループを適切なタイミング(ツール実行完了や生成終了などで1ターンが
+   * 終わる)で停止する". The loop already checks `stopRequested` at the TOP of each round, so this flag
+   * only has to make the loop notice at that boundary instead of being yanked out of it.
+   */
+  private windDownRequested = false;
   private wake: (() => void) | null = null;
   /** set while a long-parking tool (wait_children) holds the run chain */
   private parkedByTool = false;
@@ -2492,7 +2505,15 @@ export class Agent {
 
   /** Main auto-run loop: turn -> tools -> turn ... -> done/idle/stop. */
   private async loop(): Promise<void> {
-    while (!this.stopRequested) {
+    /**
+     * The ROUND BOUNDARY is where a live update stops this loop.
+     *
+     * `windDownRequested` is set by `windDownForUpdate()`; reaching here means the previous round
+     * ran to completion (its tool returned, its generation finished), which is exactly the "1ターン
+     * が終わる" moment the operator asked for. Nothing is aborted, so the log ends on a complete
+     * round and the next process resumes from a real state.
+     */
+    while (!this.stopRequested && !this.windDownRequested) {
       try {
         // stop() aborted the tool signal and nothing re-armed it (only the
         // parkedByTool path ever did), so EVERY tool after a stop returned
@@ -4928,6 +4949,66 @@ export class Agent {
     this.toolAbort.abort();
     await this.runChain.catch(() => {});
     await this.log.close();
+  }
+
+  /**
+   * Stop at the NEXT TURN BOUNDARY, without aborting anything.
+   *
+   * This is the live-update stop. `dispose()`/`stop()` abort the in-flight LLM call and kill the
+   * running tool, which is right for ■ but wrong for an update: a tool cut off mid-write leaves a
+   * half-written file, and a call whose result never arrives means the session resumes from a state
+   * that never existed.
+   *
+   * Asked for as "動作中のエージェントループを適切なタイミング(ツール実行完了や生成終了などで1ターン
+   * が終わる)で停止する". `loop()` checks `windDownRequested` at the top of each round, so setting the
+   * flag is enough for a busy agent — the round in flight finishes normally.
+   *
+   * A PARKED agent is the case the flag alone cannot reach: `wait_children` and a background-shell
+   * wait sit in `await` with no round to finish, so they would hold the update until the timeout.
+   * Those are released by waking them (the wait resolves, the loop comes round, and the flag is
+   * seen at the top); nothing is killed, so the child/job keeps existing and the resumed session
+   * can still reach it.
+   *
+   * `idle` agents are already at a boundary — their `windDownRequested` is simply set, so a prompt
+   * arriving between now and the exec does not start a round that would be cut off.
+   */
+  async windDownForUpdate(timeoutMs: number): Promise<void> {
+    this.windDownRequested = true;
+    // release a parked wait (wait_children / bg-shell) so the loop can come round to the check
+    this.wake?.();
+    if (this.status === "idle") {
+      this.status = "idle";
+      this.statusReason = "paused for a live update";
+      return;
+    }
+    /**
+     * Wait for the round to end, bounded.
+     *
+     * `settled()` resolves when the run chain drains, which is exactly "the turn finished". The
+     * timeout exists only for a wedged agent (an LLM call that never returns); the caller reports
+     * which agents hit it rather than leaving them silently half-stopped.
+     */
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.settled(),
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`did not reach a turn boundary within ${timeoutMs}ms`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+      this.status = "idle";
+      this.statusReason = "paused for a live update";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** true once `windDownForUpdate()` has been asked and the round has ended */
+  get windingDownForUpdate(): boolean {
+    return this.windDownRequested;
   }
 
   /* ---------- fork / branch management (session layer) ---------- */

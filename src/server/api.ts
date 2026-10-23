@@ -1720,16 +1720,40 @@ const MAX_WS_CLIENTS = 64;
   const notFound = (c: Context, what: string, id: string) =>
     c.json({ error: `${what} not found: ${id || "(no id given)"}` }, 404);
 
-  app.get("/api/version", (c) => c.json({ version: master.getVersion() }));
+  /**
+   * `uptimeSeconds` exists so the UI can tell "the server restarted" apart from "it is still the
+   * old one" even when the VERSION did not change.
+   *
+   * The reload after a live update used to key off `version !== __APP_VERSION__` alone. That is
+   * baked into the bundle at build time, so it works for a published update — but a restart that
+   * ships the same version number (a local build, or a fix released without a bump) left the client
+   * polling for the full timeout while a perfectly healthy server was already answering. Process
+   * uptime is the honest signal: it can only be small if the image was replaced.
+   */
+  app.get("/api/version", (c) =>
+    c.json({ version: master.getVersion(), uptimeSeconds: Math.round(process.uptime()) }),
+  );
 
-  // trigger a full server restart (agents stopped gracefully, new process spawned)
-  app.post("/api/update/restart", async (c) => {
-    try {
-      await master.restartServer();
-      return c.json({ ok: true });
-    } catch (err) {
-      return c.json({ error: (err as Error).message }, 500);
-    }
+  /**
+   * Live update: answer FIRST, then replace the process.
+   *
+   * `restartServer()` ends in `process.execve`, which does not return — so awaiting it here meant
+   * the response never flushed and the browser saw `SocketError: other side closed` instead of
+   * `{ok:true}` (MEASURED: "restart endpoint must answer: SocketError"). The browser then could not
+   * tell a successful update from a crashed one, which is exactly the state the reload logic below
+   * has to distinguish.
+   *
+   * So the handler returns immediately and the handover runs on the next tick. That also gives the
+   * pending wind-down (which can take minutes for a long build) room to finish before the image is
+   * replaced.
+   */
+  app.post("/api/update/restart", (c) => {
+    setImmediate(() => {
+      void master.restartServer().catch((err) => {
+        console.error("[teapot] live update failed:", (err as Error).message);
+      });
+    });
+    return c.json({ ok: true, restarting: true });
   });
 
   // scheduled tasks with computed next-fire times (cron visibility for the UI)

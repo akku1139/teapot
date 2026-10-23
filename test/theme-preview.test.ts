@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { previewLayers, veilColour } from "../frontend/theme-preview.ts";
+import { previewLayers, veilColour, backgroundImageValue } from "../frontend/theme-preview.ts";
 
 test("the preview derives its panel opacities from the theme's own slider (#theme-preview)", () => {
   const dense = previewLayers(1, 0.9);
@@ -67,4 +67,39 @@ test("the veil tints toward the THEME's surface, never toward black (#theme-prev
   assert.match(veilColour("#232630", 0.2), /20%/, "the dim value must reach the mix");
   // an unsupported `color-mix` degrades to the plain surface, which is still readable
   assert.match(veilColour("#232630", 0), /0%/);
+});
+
+test("a stored image URL becomes a VALID background-image value (#theme-preview)", () => {
+  /**
+   * Reported as "テーマカードの背景画像ができてない" with markup showing
+   * `<span class="tprev-bg"></span>` — no style at all.
+   *
+   * `CustomTheme.backgroundImage` holds a BARE URL (`/api/assets/<hex>.png`, a `data:` URI, or an
+   * `http(s)://` URL). Assigning that straight to `background-image` is invalid CSS and the browser
+   * drops the declaration, so the element renders with no image while the title still says
+   * "with a background image". `url()` is what makes it a value.
+   */
+  assert.equal(
+    backgroundImageValue("/api/assets/0123456789abcdef0123456789abcdef.png"),
+    'url("/api/assets/0123456789abcdef0123456789abcdef.png")',
+    "a server-relative asset path must be wrapped",
+  );
+  assert.equal(
+    backgroundImageValue("https://example.test/a b.png"),
+    'url("https://example.test/a b.png")',
+    "quotes keep a remote URL with spaces intact",
+  );
+  const data = "data:image/png;base64,iVBORw0KGgo=";
+  assert.equal(
+    backgroundImageValue(data),
+    `url("${data}")`,
+    "a data URI survives: colours and commas inside the quotes are part of the value",
+  );
+  assert.equal(backgroundImageValue(undefined), undefined, "no image means no layer");
+  assert.equal(backgroundImageValue("   "), undefined, "blank is not an image");
+  // a quote in the value cannot break out of the declaration
+  assert.ok(
+    !/url\(".*".*"\)/.test(backgroundImageValue('a"b')!),
+    `an embedded quote must be escaped, got ${String(backgroundImageValue('a"b'))}`,
+  );
 });

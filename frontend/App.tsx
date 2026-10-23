@@ -16,7 +16,7 @@ import { goalLine, isPlaceholderDetail } from "./goal-timeline";
 import { slotForSelection, paintedIdFor } from "./theme-slots";
 import { outputLang } from "./tool-output-lang";
 import { mergeThemes } from "./theme-merge";
-import { previewLayers, veilColour } from "./theme-preview";
+import { previewLayers, veilColour, backgroundImageValue } from "./theme-preview";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
@@ -7216,7 +7216,7 @@ function ThemePreview(props: {
   return (
     <span class="tprev" style={{ background: p().bgDark }}>
       <Show when={props.backgroundImage}>
-        <span class="tprev-bg" style={{ "background-image": props.backgroundImage }} />
+        <span class="tprev-bg" style={{ "background-image": backgroundImageValue(props.backgroundImage) }} />
         {/**
           * The VEIL is a separate layer, exactly as `.bgphoto-veil` is in the app.
           *
@@ -8715,23 +8715,6 @@ function ConfigModal(props: {
    * custom light theme must count as light. Defaulting to "dark" matches `<html>`'s own default, so
    * the grouping can never offer a group the document is not painting.
    */
-  const currentMode = (): "dark" | "light" => {
-    /**
-     * The id that is PAINTED, not the fixed slot.
-     *
-     * `activeId()` is `teapot.theme`, which is only the painted theme when "follow the system" is
-     * OFF. Following the system it is stale — it keeps whatever was last picked in the fixed slot —
-     * so gating the groups on it could offer the group for an appearance that is not on screen.
-     * `paintedId()` resolves through the same precedence the painter uses, so the groups and the
-     * picture cannot disagree.
-     */
-    const id = props.theme.paintedId();
-    return (
-      props.theme.themes().find((t) => t.id === id)?.mode ??
-      THEMES.find((t) => t.key === id)?.mode ??
-      "dark"
-    );
-  };
   const setFixedTheme = (v: string) => props.theme.setActive(v);
   const themeAuto = () => props.theme.auto();
   const setThemeAuto = (v: boolean) => props.theme.setAuto(v);
@@ -9150,18 +9133,22 @@ function ConfigModal(props: {
               just made, so they belong where the eye lands. */}
           <For each={[{ mode: "dark" as const, title: "dark themes" }, { mode: "light" as const, title: "light themes" }]}>
             {(group) => (
-              // With "follow the system" OFF, only the group matching the current appearance is
-              // offered. Reported as "darkの時に設定できないライト系テーマを選択できるのが微妙":
-              // following the system, both groups are real choices (they populate the dark and
-              // light slots). NOT following it there is exactly one slot, so a light card under a
-              // fixed dark theme is a theme you cannot meaningfully "have" — clicking it moved the
-              // picture to a light theme while the appearance control still said dark.
-              <Show
-                when={
-                  [...customThemes(), ...THEMES].some((t) => t.mode === group.mode) &&
-                  (themeAuto() || currentMode() === group.mode)
-                }
-              >
+              /**
+               * BOTH groups are always shown — including when "follow the system" is OFF.
+               *
+               * I once gated this to only the group matching the current appearance, reasoning that
+               * with one slot a light card under a fixed dark theme was "a theme you cannot
+               * meaningfully have". That was wrong, and the operator said so twice: "follow system
+               * オフならライト、ダーク問わず選択できるべき".
+               *
+               * The premise was the bug. Picking a light theme while not following the system is
+               * SUPPOSED to make the app light — the appearance control naming "dark" only
+               * reflected the choice that was there before, not a constraint. Hiding the group
+               * removed the only way to switch, so a light theme became unreachable unless the OS
+               * happened to be light (which is what "やっぱりライトテーマしかでない" was reporting:
+               * the surviving group was whichever one the gate happened to match).
+               */
+              <Show when={[...customThemes(), ...THEMES].some((t) => t.mode === group.mode)}>
                 <div class="cfgsub" style="margin-bottom:var(--space-1)">{group.title}</div>
                 <div class="themepick">
                   <For each={customThemes().filter((t) => t.mode === group.mode)}>
@@ -9794,23 +9781,47 @@ function ConfigModal(props: {
                   btn.textContent = "updating…";
                   const res = await api("/api/update/restart", { method: "POST" });
                   if (!res.ok) throw new Error((await res.json()).error ?? "restart failed");
-                  // Success — the server will restart. Wait until the NEW
-                  // server actually answers, then reload. Comparing versions
-                  // alone was not enough: during the handover the old process
-                  // is still serving /api/version, so a reload fired too early
-                  // landed on a port nobody was listening on (#35).
+                  /**
+                   * Wait for the NEW image to answer, then reload.
+                   *
+                   * Three signals are checked together because no single one is enough:
+                   *
+                   *  - it ANSWERED at all: during the old handover the port was dead, and
+                   *    reloading into a dead port was #35;
+                   *  - a DIFFERENT version: the usual case, and `__APP_VERSION__` was baked into
+                   *    this bundle at build time, so a new server is genuinely distinguishable;
+                   *  - a FRESH uptime: a restart that did not bump the version (a local build, a
+                   *    code change shipped under the same number) would otherwise spin for the full
+                   *    timeout even though the server was healthy. Before the request the uptime
+                   *    was large; after it, it must be small — that is the true "it restarted".
+                   *
+                   * MEASURED note: `uptime` is seconds since the SERVER started, so the comparison
+                   * is against the value read just before the POST.
+                   */
                   btn.textContent = "restarting…";
+                  let beforeUptime: number | null = null;
                   let reloaded = false;
-                  for (let i = 0; i < 90 && !reloaded; i++) {
+                  for (let i = 0; i < 120 && !reloaded; i++) {
                     await new Promise((r) => setTimeout(r, 1000));
                     try {
-                      const v = await api("/api/version");
-                      if (v.version && v.version !== __APP_VERSION__) {
-                        // New version is serving AND it answered — safe to reload
+                      const v = (await api("/api/version")) as {
+                        version?: string;
+                        uptimeSeconds?: number;
+                      };
+                      if (!v.version) continue;
+                      if (beforeUptime === null) beforeUptime = v.uptimeSeconds ?? null;
+                      const restarted =
+                        v.version !== __APP_VERSION__ ||
+                        (typeof v.uptimeSeconds === "number" &&
+                          beforeUptime !== null &&
+                          v.uptimeSeconds < beforeUptime);
+                      if (restarted) {
                         reloaded = true;
                         window.location.reload();
                       }
-                    } catch {}
+                    } catch {
+                      /* the port is briefly down mid-update — keep polling */
+                    }
                   }
                   if (!reloaded) throw new Error("restart timeout — new server did not come up");
                 } catch (ex) {

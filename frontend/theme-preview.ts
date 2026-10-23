@@ -71,3 +71,25 @@ export function veilColour(surface: string, dim: number): string {
   // `color-mix` degrades to the untinted surface where unsupported, which is still readable
   return `color-mix(in srgb, ${surface} ${pct}%, transparent)`;
 }
+
+/**
+ * The CSS `background-image` value for a theme's stored image.
+ *
+ * #theme-preview: `CustomTheme.backgroundImage` holds a BARE URL — `/api/assets/<hex>.png`, a
+ * `data:` URI, or an `http(s)://` URL (see `sanitizeTheme`, which accepts exactly those three
+ * shapes). Assigning that straight to `background-image` is invalid CSS, so the element rendered
+ * with no image at all while looking perfectly correct in the markup:
+ *
+ *     <span class="tprev-bg"></span>        ← the reported HTML: the style is missing entirely
+ *
+ * MEASURED: the operator's own card showed `<span class="tprev-bg">` with no `style` attribute
+ * despite `title="… · with a background image"`, because the browser drops an invalid declaration.
+ *
+ * Returns `undefined` for an empty value so the caller keeps its plain palette, and quotes the URL
+ * so a `data:` URI containing `;` or `,` survives.
+ */
+export function backgroundImageValue(image?: string): string | undefined {
+  const v = image?.trim();
+  if (!v) return undefined;
+  return `url("${v.replace(/"/g, "%22")}")`;
+}

@@ -6,83 +6,9 @@
  * First run (no config file): boot anyway and finish setup in the web UI.
  */
 import { existsSync, realpathSync } from "node:fs";
-import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { loadConfig, resolveConfigPath, Master } from "./master.ts";
 import { buildApp, serveApp } from "./server/api.ts";
-
-/**
- * Resolve once nothing is listening on port/host, i.e. the previous server has
- * released it. Used only by the live-update handover: binding while the old
- * process still holds the socket fails with EADDRINUSE (#35).
- *
- * Returns false on timeout so the caller can warn and try anyway, rather than
- * hanging a boot forever because of a wedged predecessor.
- */
-async function waitForPortFree(
-  port: number,
-  host: string | undefined,
-  timeoutMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  // 0.0.0.0 / :: means "all interfaces" — probe the loopback the old process
-  // was actually reachable on.
-  const probeHost = !host || host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-  while (Date.now() < deadline) {
-    const free = await new Promise<boolean>((resolve) => {
-      const s = createServer();
-      s.once("error", () => resolve(false)); // still in use
-      s.once("listening", () => s.close(() => resolve(true)));
-      s.listen(port, probeHost);
-    });
-    if (free) return true;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return false;
-}
-
-/* ---------- live-update handover: keeping the operator's terminal (#35) ---------- */
-
-/** is `pid` still running? (EPERM means alive but not ours to signal) */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-/**
- * Watch the replacement on the operator's behalf.
- *
- * The terminal is still wired to THIS process, so their Ctrl-C arrives here
- * first: forward the signal so the replacement actually stops, and leave once
- * it exits — otherwise the shell waits on a supervisor with nothing left to
- * supervise and Ctrl-C looks broken.
- *
- * shutdown() cannot be reused for this: its `shuttingDown` latch is already set
- * by the SIGTERM that started the handover, so a later Ctrl-C would be swallowed
- * and this process would never exit.
- */
-function supervise(pid: number): void {
-  let signalled = false;
-  const forward = (sig: NodeJS.Signals) => {
-    // Once the replacement is on its way out, stop bouncing signals: a second
-    // SIGINT arriving during its shutdown would re-raise the same failure and
-    // the operator would have to press Ctrl-C several times to be heard.
-    if (signalled) return;
-    signalled = true;
-    try {
-      process.kill(pid, sig);
-    } catch {
-      /* already gone — the poll loop below notices and exits */
-    }
-  };
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => forward(sig));
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Parse `teapot [--port N] [-p N] [--host addr] [--config file] [config.json]`.
@@ -156,30 +82,15 @@ async function main(): Promise<void> {
   if (hostOverride) config.host = hostOverride;
   console.log(`[teapot] config: ${configPath}${configExisted ? "" : " (not found — first run)"}`);
 
-  // Live update: the process we replace still holds the port. Ask it to release
-  // it, then WAIT until the port is genuinely free before binding. Binding
-  // into a live socket died with EADDRINUSE, and because index.ts swallows
-  // uncaught exceptions ("the master survived") that left two processes running
-  // while neither served anything — the port then answered nothing at all
-  // (measured: 1150/1237 probes refused during handover) (#35).
-  const fromPid = process.env.TEAPOT_RESTART_FROM
-    ? parseInt(process.env.TEAPOT_RESTART_FROM, 10)
-    : NaN;
-  if (!Number.isNaN(fromPid) && fromPid !== process.pid) {
-    console.log(`[teapot] restart: releasing port from old process ${fromPid}...`);
-    try {
-      // Flush the old process's agents and let it release the socket. It must
-      // NOT wait for us — that would deadlock against our bind below.
-      process.kill(fromPid, "SIGTERM");
-    } catch {
-      /* already gone */
-    }
-    if (!(await waitForPortFree(config.port, config.host, 30_000)))
-      console.warn(
-        `[teapot] warning: could not confirm ${config.host}:${config.port} is free — binding anyway`,
-      );
-  }
-
+  /**
+   * NO PORT HANDOVER DANCE.
+   *
+   * This used to read `TEAPOT_RESTART_FROM`, SIGTERM the predecessor and poll until the port was
+   * free, because the successor was a SEPARATE process racing the old one for one socket. The live
+   * update now replaces the process in place with `process.execve`, so the pid never changes: the
+   * exec releases the listener as part of replacing the image (verified) and this process is the
+   * only one that ever binds. The whole EADDRINUSE window #35 worked around cannot occur.
+   */
   const hasProviders = Object.keys(config.providers ?? {}).length > 0;
   if (!config.llm.apiKey && !hasProviders)
     console.warn("[teapot] warning: no API key configured — finish setup in the web UI");
@@ -188,6 +99,24 @@ async function main(): Promise<void> {
   const master = new Master(config, configPath);
   master.configFileExists = configExisted;
   await master.start();
+
+  /**
+   * LIVE UPDATE: resume what the previous image was running.
+   *
+   * The set was written to the config by `restartServer()` immediately before the exec, because
+   * after a restart the log cannot tell "was working when the update hit" from "finished" or
+   * "stopped by the operator" — resuming every configured agent would start work nobody asked for,
+   * and resuming none is the bug being fixed ("サーバーを再起動して動作中だったセッションのエージェント
+   * ループを再開").
+   *
+   * Deliberately AFTER `start()` so the agents exist, and BEFORE the port is served so the operator
+   * reloading the page sees the resumed sessions already moving.
+   */
+  if (process.env.TEAPOT_RESUMED) {
+    delete process.env.TEAPOT_RESUMED;
+    const resumed = await master.resumeAfterUpdate();
+    if (resumed.length) console.log(`[teapot] live update: ${resumed.length} session(s) resumed`);
+  }
 
   // ACP mode (#15): JSON-RPC over stdio, no HTTP server. Deliberately placed
   // AFTER the master is up (so config is resolved and agents work) but BEFORE
@@ -202,7 +131,9 @@ async function main(): Promise<void> {
   }
 
   const app = buildApp(master);
-  const server = serveApp(app, config.port, config.host);
+  // kept for the process lifetime; nothing closes it explicitly any more (the supervisor
+  // branch that did is gone — `process.execve` replaces the image and releases the socket)
+  serveApp(app, config.port, config.host);
   /**
    * Say out loud when the API has no auth, and when it is reachable beyond loopback.
    *
@@ -241,26 +172,21 @@ async function main(): Promise<void> {
   const shutdown = async (signal?: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    // SUPERVISOR MODE. When a live update replaced us we are no longer the
-    // server, but we are still the process the SHELL waits on and the one that
-    // owns the terminal; exiting here dumped the operator back to the prompt
-    // mid-session while the new server kept running in the background (#35). So
-    // we keep the job slot, forward signals to the replacement, and leave only
-    // once it is gone. The replacement is the child we spawned ourselves, so we
-    // hold it directly — no pid through the environment for the two processes to
-    // disagree over.
-    if (master.replacementPid !== null) {
-      const replacement = master.replacementPid;
-      console.log(`[teapot] handing the terminal to the new server (pid ${replacement})...`);
-      // Release the port FIRST: the replacement is blocked in waitForPortFree
-      // waiting for exactly this, and it will SIGTERM us again if we do not go.
-      await server.close();
-      console.log("[teapot] port released; supervising the new server");
-      supervise(replacement);
-      while (pidAlive(replacement)) await sleep(500);
-      console.log("[teapot] new server exited; releasing the terminal");
-      process.exit(0);
-    }
+    /**
+     * THERE IS NO SUPERVISOR MODE ANY MORE — and removing it IS the memory-leak fix.
+     *
+     * The old live update spawned a successor and stayed resident as its supervisor, polling
+     * `pidAlive(replacement)` every 500ms for the ENTIRE lifetime of the new server. Everything
+     * this process owned stayed alive with it: every agent object and its log handles, every `bus`
+     * listener, the 15s master tick, plus three MORE signal handlers that `supervise()` added on
+     * top of the ones `shutdown()` had already registered. Each update therefore left another full
+     * copy of the server resident, which is the reported leak.
+     *
+     * `restartServer()` now replaces the image in place with `process.execve`, so there is no
+     * successor to supervise: the exec reuses this pid, this process group and this terminal, so
+     * nothing is orphaned and nothing lingers. `execve` only resolves if it FAILED, and that path
+     * throws inside `restartServer`, so nothing is left trusting this branch.
+     */
     console.log(`\n[teapot] shutting down${signal ? ` (${signal})` : ""}...`);
     await Promise.allSettled([...master.agents.values()].map((a) => a.dispose()));
     // During a live update the replacement SIGTERMs us to take the port. Linger

@@ -175,3 +175,35 @@ test("buttons that are PRIMARY actions keep their fill by class, not inline styl
     "the chrome buttons must still be outlined by an explicit allowlist (#ui)",
   );
 });
+
+test("the ACTION buttons are outlines over a wallpaper too (#ui)", async () => {
+  /**
+   * Reported as a regression in v0.36.7: "透明なテーマのときにstart/stop, (model) apply, save
+   * goal/task, send (prompt)あたりのボタンが前はボーダーだけ色を付けるようにしてたはずなのに、今は
+   * 塗りつぶされてる".
+   *
+   * They were excluded from the outline treatment on the reasoning that a primary action "must
+   * outrank the rest". That reasoning is wrong over a wallpaper: a filled chip IS the solid tile the
+   * outline treatment exists to remove, and these are the buttons an operator looks at most. The
+   * hierarchy is carried by the accent border and text instead.
+   */
+  const css = stripSourceComments(readSource("frontend/app.css"));
+  const rules = rulesMatching(css, ["data-bg-image", "button\\.(primarybtn|okbtn|savebtn|runbtn)"]);
+  assert.ok(
+    rules.length > 0,
+    "the action buttons need a wallpaper rule — without one they keep their solid fill (#ui)",
+  );
+  for (const cls of ["primarybtn", "okbtn", "savebtn", "runbtn"]) {
+    const rule = rules.find((r) => new RegExp(`button\\.${cls}\\b`).test(r.selector));
+    assert.ok(rule, `.${cls} must be covered by the outline treatment (#ui)`);
+    assert.equal(
+      decl(rule!.body, "background-color"),
+      "transparent",
+      `.${cls} must be transparent over a wallpaper, not a filled chip (#ui)`,
+    );
+    assert.ok(
+      /1px solid/.test(decl(rule!.body, "border") ?? ""),
+      `.${cls} must be marked by a border once it has no fill (#ui)`,
+    );
+  }
+});

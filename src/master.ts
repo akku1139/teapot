@@ -348,6 +348,16 @@ export interface TeapotConfig {
   customThemes?: unknown[];
   /** which custom theme id each appearance slot names, when following the system */
   themePrefs?: { fixed?: string; auto?: boolean; dark?: string; light?: string };
+  /**
+   * Sessions a LIVE UPDATE must resume.
+   *
+   * Written immediately before the process replaces itself, consumed on the next boot and cleared.
+   * It exists because "which agents were working" is not derivable from the log afterwards: an
+   * agent that was mid-round looks exactly like one the operator stopped, and resume-on-boot for
+   * EVERY configured agent would start work nobody asked for. So the set is decided at shutdown,
+   * when the answer is still known, and is deliberately transient.
+   */
+  resumeAfterUpdate?: string[];
 }
 
 const CONFIG_DIR =
@@ -721,6 +731,18 @@ export class Master {
      */
     if (this.config.customThemes !== undefined) this.raw.customThemes = this.config.customThemes;
     if (this.config.themePrefs !== undefined) this.raw.themePrefs = this.config.themePrefs;
+    /**
+     * The live-update resume set — and the reason it needs this line is the whole point of it.
+     *
+     * `resumeAfterUpdate()` CLEARS the set so a crash cannot make a later boot resume hours-old
+     * work. Without this mirror the clear lived only in memory, so the file kept the old set and the
+     * NEXT update would resume the same sessions again — MEASURED: a boot with
+     * `resumeAfterUpdate: ["worker"]` left the file unchanged at `["worker"]` after consuming it.
+     *
+     * Written unconditionally (not only when defined): `[]` is a meaningful value here, and skipping
+     * it is what kept the stale list on disk.
+     */
+    this.raw.resumeAfterUpdate = this.config.resumeAfterUpdate;
     if (this.config.shortContext !== undefined) this.raw.shortContext = this.config.shortContext;
     if (this.config.pluginsDir !== undefined) this.raw.pluginsDir = this.config.pluginsDir;
     if (this.raw.progressIntervalMs === undefined && this.config.progressIntervalMs !== undefined)
@@ -2586,45 +2608,189 @@ if (active().length === 0) wake();
     }
   }
 
-  /** Restart the server process (spawns a new master, keeps this one alive until ready). */
+  /**
+   * Live update: stop at a turn boundary, write the resume set, then REPLACE THIS PROCESS IN PLACE.
+   *
+   * ## Why exec instead of spawning a successor
+   *
+   * The previous design spawned a child and kept the old process alive as its supervisor, polling
+   * `pidAlive(replacement)` forever. That is the reported memory leak — and it was structural, not
+   * a stray handle:
+   *
+   *   - the OLD process stayed resident for the ENTIRE LIFETIME of the new one, holding its agent
+   *     objects, its log file handles, every `bus` listener and its 15s tick;
+   *   - `supervise()` added three MORE signal listeners (`SIGINT`/`SIGTERM`/`SIGHUP`) to a process
+   *     that had already registered the same three for `shutdown()`, so each update left a process
+   *     with doubled handlers;
+   *   - and the handover needed a 1.5s sleep plus a port-polling dance in the new process, because
+   *     two processes cannot hold one port.
+   *
+   * `process.execve()` (Node 26+) removes the whole category: the image is replaced under the SAME
+   * pid, so the process group, the controlling terminal and therefore the operator's foreground job
+   * all stay put — the daemonization problem #35 fixed by hand cannot occur. The port is released
+   * as part of the exec (verified: a listener bound before `execve` is free immediately after), so
+   * the successor binds with no polling and no window in which both are half-served.
+   *
+   * `execveSync` does not exist; this is the async form. It does not return on success.
+   */
+  /**
+   * How long a live update waits for agents to reach a turn boundary.
+   *
+   * Generous: a round can be a several-minute build. The alternative to waiting is aborting a tool
+   * mid-write, so the cap exists only to bound a wedged agent, and those are reported.
+   */
+  private updateWindDownMs = 180_000;
+
+  /**
+   * Ask every agent to stop at its next turn boundary; returns the ids that did not make it.
+   *
+   * Distinct from `stopAllAgents` (which DISPOSES): disposal aborts in-flight work, and the whole
+   * point here is to leave the log on a completed round. A live update must not truncate the turn
+   * it interrupted.
+   */
+  async windDownAllAgents(timeoutMs = this.updateWindDownMs): Promise<string[]> {
+    const ids = [...this.agents.keys()];
+    if (!ids.length) return [];
+    console.log(`[teapot] live update: waiting for ${ids.length} agent(s) to reach a turn boundary...`);
+    const stuck = await Promise.all(
+      ids.map(async (id) => {
+        const a = this.agents.get(id);
+        if (!a) return null;
+        try {
+          await a.windDownForUpdate(timeoutMs);
+          return null;
+        } catch {
+          return id;
+        }
+      }),
+    );
+    return stuck.filter((v): v is string => v !== null);
+  }
+
+  /**
+   * The sessions the successor must resume: everything that was WORKING at this moment.
+   *
+   * Captured here (not derived on boot) because after the exec the log cannot distinguish "stopped
+   * by a live update mid-round" from "finished" or "stopped by the operator".
+   */
+  takeResumeSet(): string[] {
+    const out: string[] = [];
+    for (const [id, a] of this.agents) {
+      // `live` covers running, parked on a tool, and needs_operator — all states where the
+      // operator's mental model is "this thing is in the middle of something".
+      if (a.isLive()) out.push(id);
+    }
+    return out;
+  }
+
+  /**
+   * Resume what the previous image was running, then FORGET the set.
+   *
+   * Called once at boot. Clearing it immediately means a crash before the agents start cannot make
+   * the next boot resume work that has been idle for hours: the set describes one handover.
+   */
+  async resumeAfterUpdate(): Promise<string[]> {
+    const ids = this.config.resumeAfterUpdate ?? [];
+    if (!ids.length) return [];
+    this.config.resumeAfterUpdate = [];
+    this.saveConfig();
+    const started: string[] = [];
+    for (const id of ids) {
+      const a = this.agents.get(id);
+      if (!a) continue; // the agent was removed while we were restarting
+      try {
+        a.start("resumed after a live update");
+        started.push(id);
+      } catch (err) {
+        console.error(`[teapot] could not resume ${id}:`, (err as Error).message);
+      }
+    }
+    const missing = ids.filter((id) => !this.agents.has(id));
+    if (missing.length)
+      console.log(`[teapot] live update: not resuming removed agent(s): ${missing.join(", ")}`);
+    if (started.length) console.log(`[teapot] live update: resumed ${started.length} session(s)`);
+    return started;
+  }
+
   async restartServer(): Promise<void> {
-    console.log("[teapot] restarting server...");
-    // Stop all agents first
-    await this.stopAllAgents(30_000);
+    console.log("[teapot] live update: restarting...");
 
-    // Spawn a new process that will become the new master
-    // We keep THIS process alive until the new one is ready to accept connections
-    const execPath = process.execPath;
-    const args = process.argv.slice(1);
-    const env = { ...process.env };
-    // Tell the new process it's a restart (it will read the version from the old one)
-    env.TEAPOT_RESTART_FROM = String(process.pid);
-    // Mark OURSELVES as a live-update predecessor too. Our own SIGTERM handler
-    // (src/index.ts) lingers when this var is set, so /api/update/restart's
-    // response still reaches the browser before we exit — otherwise the new
-    // process SIGTERMs us the instant it binds the port and the browser sees a
-    // dropped connection instead of {ok:true} (#35).
-    process.env.TEAPOT_RESTART_FROM = String(process.pid);
+    /**
+     * 1. WIND DOWN — do not abort.
+     *
+     * `stopAllAgents` calls `dispose()`, which aborts the in-flight LLM call and the running tool.
+     * For an operator pressing ■ that is correct; for a live update it cuts a tool off mid-write
+     * and leaves a call whose result never arrives, so the resumed session starts from a state that
+     * never existed. `windDownForUpdate()` instead lets each agent finish its current round.
+     */
+    const interrupted = await this.windDownAllAgents(this.updateWindDownMs);
+    if (interrupted.length)
+      console.log(
+        `[teapot] live update: ${interrupted.length} agent(s) did not reach a turn boundary in ` +
+          `time and were stopped: ${interrupted.join(", ")}`,
+      );
 
-    // #35: remember the replacement so this process can hand the operator's
-    // terminal over to it. Without that, the old process exited, the shell's
-    // foreground job ended, and the operator was dumped back at the prompt while
-    // the new server ran on in the background.
-    this.replacementPid = null; // cleared below, once the pid is known
-    const child = spawn(execPath, args, {
-      // NOT detached, and NOT stdio:"ignore" (#35). Both made the live update
-      // silently daemonize: the replacement inherited nothing from this
-      // process, so its console.log output vanished — you could not see what it
-      // was doing — and it outlived the terminal, so Ctrl-C and a closing
-      // shell could no longer stop it. Inheriting stdio keeps the logs on the
-      // same console and, without `detached`, the child stays in this process
-      // group so it receives the same Ctrl-C.
-      stdio: "inherit",
-      env,
-    });
+    /**
+     * 2. REMEMBER WHAT TO RESUME.
+     *
+     * Written to the config BEFORE the exec, because after it this process no longer exists. Only
+     * agents that were actually working go in — an idle agent must NOT be started by the new
+     * process, or a live update would begin doing work the operator never asked for.
+     */
+    this.config.resumeAfterUpdate = this.takeResumeSet();
+    this.saveConfig();
+    console.log(
+      `[teapot] live update: ${this.config.resumeAfterUpdate.length} session(s) will resume`,
+    );
 
-    this.replacementPid = child.pid ?? null;
-    await new Promise((r) => setTimeout(r, 1_500));
-    void child; // deliberately not unref()'d — see above
+    // 3. terminals: closing them is what makes their `detached` spawns safe (see stopAllAgents)
+    const closed = closeAllTerminals();
+    if (closed) console.log(`[teapot] ⌻ closed ${closed} terminal(s)`);
+
+    /**
+     * 4. EXEC.
+     *
+     * `TEAPOT_RESUMED` tells the new image this was a live update, so it resumes rather than
+     * treating the sessions as merely idle. It also suppresses the "config was edited" banner in
+     * cases where the operator did not touch anything.
+     */
+    const env: NodeJS.ProcessEnv = { ...process.env, TEAPOT_RESUMED: "1" };
+    const execve = (process as unknown as {
+      execve?: (file: string, args: string[], env: NodeJS.ProcessEnv) => Promise<never>;
+    }).execve;
+    if (!execve) {
+      throw new Error(
+        "live update needs process.execve (Node 22+); restart the server by hand on this runtime",
+      );
+    }
+    console.log("[teapot] live update: replacing this process in place (same pid, same terminal)");
+    /**
+     * Build the argv for the replacement image.
+     *
+     * `process.execArgv` carries runtime flags that must precede the entry file — but under
+     * `node --test` it is polluted with the RUNNER's own flags (`--test-concurrency`,
+     * `--test-isolation=process`, dozens of tuning knobs). Re-passing those made the new image
+     * re-enter test-runner mode instead of booting: MEASURED as
+     * `src/index.ts: bad option: --config`, i.e. the new image never started.
+     *
+     * So only the flags that make a TypeScript entry runnable are forwarded. A flag missing here
+     * simply means the new image boots with node's defaults, which is what a live update wants;
+     * anything else the operator set lives in `env` and the shell.
+     */
+    const FORWARDABLE =
+      /^--(experimental-strip-types|experimental-transform-types|no-warnings|enable-source-maps|import|require|conditions)$/;
+    const forwardable = process.execArgv.filter((a) => FORWARDABLE.test(a.split("=")[0] ?? ""));
+    /**
+     * `args[0]` MUST be the program, exactly as a shell would pass it.
+     *
+     * `execve` does not use the `file` argument as `argv[0]` — node then reads what it thinks is
+     * the first ARGUMENT as the entry point and hands the rest to its own option parser. Verified
+     * in isolation: passing `[script, "--config", …]` yields `script: bad option: --config`, while
+     * `[execPath, script, "--config", …]` boots. The new image would otherwise never start, leaving
+     * the port dark after a live update.
+     */
+    await execve(process.execPath, [process.execPath, ...forwardable, ...process.argv.slice(1)], env);
+    // execve only resolves if it FAILED to exec
+    throw new Error("execve returned without replacing the process");
   }
 }
