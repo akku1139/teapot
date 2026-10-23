@@ -93,6 +93,16 @@ import { IconBtn, CopyBtn, Modal } from "./components/chrome";
 import { AnsiText, BashElapsed, HighlightedCode, ThinkingTimer } from "./components/code";
 import { hasAnsi, stripAnsi } from "./lib/ansi";
 import { CodePreview, NumberField, ThemePreview, TodoEditor } from "./components/settings-parts";
+import {
+  AUTHORS,
+  HARNESS_AUTH,
+  authorOf,
+  fmtK,
+  fmtTs,
+  oneLine,
+  rawOf,
+  type Ev,
+} from "./lib/timeline-row";
 
 declare const __APP_VERSION__: string;
 
@@ -131,19 +141,7 @@ interface Agent {
   ctx?: { usedTokens: number; compactAt: number; window: number; compactAtIsManual?: boolean; compacting?: string };
 }
 
-interface Ev {
-  id: string; seq: number; ts: string; session: string; branch: string;
-  type: string; parent: string | null; data: any;
-}
 
-const AUTHORS: Record<string, { name: string; icon: string; color: string }> = {
-  prompt: { name: "you", icon: "🟧", color: "#faa81a" },
-  user: { name: "you", icon: "🟧", color: "#faa81a" },
-  message: { name: "agent", icon: "🫖", color: "#5865f2" },
-  progress: { name: "progress", icon: "📈", color: "#3ba55d" },
-  question: { name: "agent", icon: "❓", color: "#5865f2" }, // ask_user comes from the agent too
-};
-const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
 
 /* ---------- transient toast hint (module scope: also used by SwitchContent) ---------- */
 const [flash, setFlash] = createSignal("");
@@ -186,17 +184,6 @@ const THEMES: ThemeMeta[] = [
 ];
 
 /** author for an event — mirrored sub-agent rows act under their own id */
-const authorOf = (e: Ev) => {
-  if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
-  if (e.type === "tool_call" || e.type === "tool_result")
-    return { name: String(e.data?.name ?? "tool"), icon: "⚙", color: "#3ba0c9" };
-  if (e.type === "prompt") {
-    const src = String(e.data?.source ?? "user");
-    if (src === "user") return AUTHORS.prompt;
-    return src.startsWith("scheduler:") ? { name: src.slice(10), icon: "📣", color: "#3ba55d" } : HARNESS_AUTH;
-  }
-  return AUTHORS[e.type] ?? { name: e.type, icon: "•", color: "#9298a5" };
-};
 
 // state/error/fork/goal render as dividers or embeds inside the feed
 const FEED_TYPES = new Set([
@@ -249,10 +236,6 @@ const RENDERED_NOTE_EVENTS = new Set([
   "context-compacted",
   "context-compaction-started",
 ]);
-const fmtTs = (iso: string) => {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
 
 async function api(path: string, opts?: RequestInit) {
   const token = localStorage.getItem("teapot.token");
@@ -6382,24 +6365,6 @@ function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?:
 }
 
 /** The un-rendered source text of a chat row — what "copy raw" should give. */
-function rawOf(e: Ev): string {
-  const d = e.data ?? {};
-  if (e.type === "prompt") return String(d.text ?? "");
-  if (e.type === "message") {
-    // include reasoning when present, separated, so nothing is lost
-    const r = typeof d.reasoning === "string" && d.reasoning.trim()
-      ? `<reasoning>\n${d.reasoning}\n</reasoning>\n\n`
-      : "";
-    return `${r}${String(d.content ?? "")}`;
-  }
-  if (e.type === "tool_call") {
-    // the header copy button used to sit on tool rows too and copied ""
-    // (rawOf only knew prompts/messages) — tool rows get dedicated
-    // command/output buttons inside ToolRow instead, so nothing here
-    return "";
-  }
-  return "";
-}
 
 function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: () => Ev | undefined; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
@@ -6825,13 +6790,6 @@ function relTime(iso: string): string {
 }
 
 /** compact token counts with k/m/b suffixes: 12345 → "12k", 2.2M → "2.2m" */
-function fmtK(n: number): string {
-  if (n >= 1e9) return `${+(n / 1e9).toFixed(1)}b`;
-  if (n >= 1e6) return `${+(n / 1e6).toFixed(1)}m`;
-  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
-}
 
 /** session cost in USD: cents below $1, whole dollars above — no noise */
 function costFmt(usd: number): string {
@@ -6843,10 +6801,6 @@ function costFmt(usd: number): string {
 }
 
 /** single-line preview with collapsed whitespace */
-function oneLine(s: string, n: number): string {
-  const line = s.replace(/\s+/g, " ").trim();
-  return truncate(line, n);
-}
 
 /* ---------- copy-to-clipboard button ---------- */
 /** Centered icon button — the shared home for emoji-glyph buttons. Emoji
