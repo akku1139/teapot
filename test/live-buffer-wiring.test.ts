@@ -31,7 +31,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pruneDeadLiveBuffers } from "../frontend/live-buffer.ts";
+import { pruneDeadLiveBuffers } from "../frontend/lib/live-buffer.ts";
 
 test("the sweep helper itself still drops a stale buffer (#40)", () => {
   // A minimum contract so this file is not empty: the helper the effect calls must do

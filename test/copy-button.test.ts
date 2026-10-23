@@ -30,7 +30,7 @@ import assert from "node:assert/strict";
  * `copyText` now lives in `frontend/clipboard.ts` and both App.tsx and this file
  * import it, so the tests drive the code that runs.
  */
-import { copyText } from "../frontend/clipboard.ts";
+import { copyText } from "../frontend/lib/clipboard.ts";
 import { fakeStaging } from "./helpers/staging.ts";
 
 /* ---------- the crash itself ---------- */

@@ -27,7 +27,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { eventBelongsOnTimeline } from "../frontend/session-scope.ts";
+import { eventBelongsOnTimeline } from "../frontend/lib/session-scope.ts";
 
 /* ---------- 1: the fallback timeline must accept frames ---------- */
 

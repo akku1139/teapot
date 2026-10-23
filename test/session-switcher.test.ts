@@ -24,7 +24,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveTimelineSession } from "../frontend/session-index.ts";
+import { resolveTimelineSession } from "../frontend/lib/session-index.ts";
 
 // newest first, as /api/agents/:id/sessions returns them
 const SESSIONS = ["alpha-s2", "alpha-s1"];

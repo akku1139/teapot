@@ -20,7 +20,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTimeline, type TimelineEvent } from "../frontend/timeline.ts";
+import { buildTimeline, type TimelineEvent } from "../frontend/lib/timeline.ts";
 
 const FEED = new Set(["prompt", "message", "tool_call", "tool_result", "system_note", "decision", "progress"]);
 const RENDERED = new Set(["prompt", "message", "tool_call", "tool_result", "decision", "progress"]);

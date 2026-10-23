@@ -49,7 +49,7 @@ test("the whole production tree strips without losing code (#75)", () => {
     "src/master.ts",
     "src/agent/agent.ts",
     "frontend/App.tsx",
-    "frontend/session-scope.ts",
+    "frontend/lib/session-scope.ts",
   ];
   for (const f of files) {
     const raw = readFileSync(new URL(`../${f}`, import.meta.url), "utf8");

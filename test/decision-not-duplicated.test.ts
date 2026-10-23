@@ -28,7 +28,7 @@ const agent = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "u
  * behaviour — the decision showing once — was completely intact. It would equally have
  * stayed green if the filter had been left in place but made unreachable.
  */
-import { buildTimeline, type TimelineEvent } from "../frontend/timeline.ts";
+import { buildTimeline, type TimelineEvent } from "../frontend/lib/timeline.ts";
 
 const FEED = new Set([
   "prompt", "message", "tool_call", "tool_result", "system_note", "decision", "progress",

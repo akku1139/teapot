@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { goalLine, isPlaceholderDetail } from "../frontend/goal-timeline.ts";
+import { goalLine, isPlaceholderDetail } from "../frontend/lib/goal-timeline.ts";
 
 /** a card whose body says nothing is the bug, whatever it is called */
 function assertHasBody(data: Record<string, unknown>, why: string) {

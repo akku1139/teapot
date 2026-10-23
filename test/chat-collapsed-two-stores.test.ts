@@ -32,7 +32,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { treeRowsOf, sidebarRowsOf, descendantsOf } from "../frontend/sidebar-tree.ts";
+import { treeRowsOf, sidebarRowsOf, descendantsOf } from "../frontend/lib/sidebar-tree.ts";
 
 interface A {
   id: string;

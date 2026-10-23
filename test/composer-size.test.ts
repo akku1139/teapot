@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerHeight } from "../frontend/composer-size.ts";
+import { composerHeight } from "../frontend/lib/composer-size.ts";
 
 const MAX = 360;
 

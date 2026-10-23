@@ -18,7 +18,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { treeRowsOf, sidebarRowsOf, chatGroupKeyOf } from "../frontend/sidebar-tree.ts";
+import { treeRowsOf, sidebarRowsOf, chatGroupKeyOf } from "../frontend/lib/sidebar-tree.ts";
 
 interface A {
   id: string;

@@ -1,6 +1,6 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
-import { fmtDur } from "./format";
+import { fmtDur } from "./lib/format";
 import {
   applyDelta,
   clearLive,
@@ -10,38 +10,38 @@ import {
   isOwnLiveWork,
   pruneDeadLiveBuffers,
   reconcileLiveBuffer,
-} from "./live-buffer";
-import { buildTimeline, type TimelineEvent, type PendingEchoLike } from "./timeline";
-import { goalLine, isPlaceholderDetail } from "./goal-timeline";
-import { slotForSelection, paintedIdFor } from "./theme-slots";
-import { outputLang } from "./tool-output-lang";
-import { mergeThemes } from "./theme-merge";
-import { previewLayers, veilColour, backgroundImageValue } from "./theme-preview";
-import { BG_WIDTHS, bgSrc, bgSrcSet } from "./bg-srcset";
+} from "./lib/live-buffer";
+import { buildTimeline, type TimelineEvent, type PendingEchoLike } from "./lib/timeline";
+import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
+import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
+import { outputLang } from "./lib/tool-output-lang";
+import { mergeThemes } from "./lib/theme-merge";
+import { previewLayers, veilColour, backgroundImageValue } from "./lib/theme-preview";
+import { BG_WIDTHS, bgSrc, bgSrcSet } from "./lib/bg-srcset";
 // #98: descendant-aware counting, so the 🧩 badge matches the real subtree.
-import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./sidebar-tree";
+import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./lib/sidebar-tree";
 // #75: extracted so the tests drive the code that runs — they used to carry their
 // own copy, and deleting the real execCommand fallback left them green.
-import { copyText } from "./clipboard";
-import { groupedWith, type RowLike } from "./row-grouping";
-import { answeredQuestionIdsOf, type QuestionEvent } from "./question-answered";
-import { reconcilePending, type PendingEcho } from "./pending-echo";
+import { copyText } from "./lib/clipboard";
+import { groupedWith, type RowLike } from "./lib/row-grouping";
+import { answeredQuestionIdsOf, type QuestionEvent } from "./lib/question-answered";
+import { reconcilePending, type PendingEcho } from "./lib/pending-echo";
 // #141: pure + exported, so the session switcher is testable rather than re-implemented
-import { resolveTimelineSession } from "./session-index";
+import { resolveTimelineSession } from "./lib/session-index";
 // #146: the scope predicates are PRODUCTION, so the tests can assert the same code
 // the handler runs — a test-local copy proves nothing (#75)
-import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./session-scope";
-import { retintTerminal, themeColors } from "./terminal-theme";
-import { shellOutcome, shellHint, outcomeMarker } from "./shell-outcome";
+import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
+import { retintTerminal, themeColors } from "./lib/terminal-theme";
+import { shellOutcome, shellHint, outcomeMarker } from "./lib/shell-outcome";
 import {
   treeRowsOf,
   sidebarRowsOf,
   workspaceOf as workspaceOfPure,
   chatGroupKeyOf,
   wsChatCountsOf,
-} from "./sidebar-tree";
-import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./model-selection";
-import { composerValueChanged, shouldWriteComposerValue } from "./composer-ime";
+} from "./lib/sidebar-tree";
+import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./lib/model-selection";
+import { composerValueChanged, shouldWriteComposerValue } from "./lib/composer-ime";
 import {
   atTail,
   classifyScroll,
@@ -52,8 +52,8 @@ import {
   shouldShowJumpToPresent,
   type ScrollCause,
   type TailSample,
-} from "./scroll-policy";
-import { composerHeight } from "./composer-size";
+} from "./lib/scroll-policy";
+import { composerHeight } from "./lib/composer-size";
 import {
   applyCustomTheme,
   loadCustomThemes,
@@ -68,7 +68,7 @@ import {
   resolveActiveTheme,
   type CustomTheme,
   type ThemePalette,
-} from "./theme-store";
+} from "./lib/theme-store";
 
 /* Rendered-markdown cache: old messages were re-parsing their whole body on
  * EVERY prepend/refresh pass (scrolling back through a long session parsed
@@ -86,8 +86,8 @@ function renderMarkdownCached(src: string): string {
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { clampPaneIndex, indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./term-tabs";
-import { pickAfterArchive } from "./archive-target";
+import { clampPaneIndex, indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./lib/term-tabs";
+import { pickAfterArchive } from "./lib/archive-target";
 
 declare const __APP_VERSION__: string;
 
@@ -6029,7 +6029,7 @@ function HighlightedCode(props: { text: string; lang?: string }) {
      */
     void (async () => {
       try {
-        const { highlightLangChunks } = await import("./shiki");
+        const { highlightLangChunks } = await import("./lib/shiki");
         let acc = "";
         for await (const chunk of highlightLangChunks(lang, text)) acc += chunk;
         if (!acc) return;
@@ -7962,7 +7962,7 @@ function FilesPanel(props: { agentId: string; workspace: string }) {
     setHlHtml("");
     setHlPending(true);
     try {
-      const { highlightChunks } = await import("./shiki");
+      const { highlightChunks } = await import("./lib/shiki");
       for await (const chunk of highlightChunks(p.path, p.content)) {
         if (hlRun !== run) return;
         setHlHtml((prev) => prev + chunk);

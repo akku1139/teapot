@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/sidebar-tree.ts";
+import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/lib/sidebar-tree.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
 // #110: POSIX-only — POSIX filesystem paths.

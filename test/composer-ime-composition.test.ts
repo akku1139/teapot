@@ -25,7 +25,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readSourceUrl } from "./helpers/source.ts";
-import { composerValueChanged, shouldWriteComposerValue } from "../frontend/composer-ime.ts";
+import { composerValueChanged, shouldWriteComposerValue } from "../frontend/lib/composer-ime.ts";
 
 const _app = readSourceUrl(new URL("../frontend/App.tsx", import.meta.url));
 

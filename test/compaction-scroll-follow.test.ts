@@ -22,7 +22,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { atTail, classifyScroll, distanceToTail, nextFollowing } from "../frontend/scroll-policy.ts";
+import { atTail, classifyScroll, distanceToTail, nextFollowing } from "../frontend/lib/scroll-policy.ts";
 
 const VIEWPORT = 800;
 const at = (top: number, height: number) => ({ top, height, viewport: VIEWPORT });

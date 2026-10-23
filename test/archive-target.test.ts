@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickAfterArchive } from "../frontend/archive-target.ts";
+import { pickAfterArchive } from "../frontend/lib/archive-target.ts";
 
 const a = (id: string, workspaceMissing = false) => ({ id, workspaceMissing });
 

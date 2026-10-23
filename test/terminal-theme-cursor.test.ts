@@ -22,7 +22,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { themeColors, retintTerminal, type XtermTheme } from "../frontend/terminal-theme.ts";
+import { themeColors, retintTerminal, type XtermTheme } from "../frontend/lib/terminal-theme.ts";
 
 test("themeColors explicitly names the cursor colours (#137)", () => {
   const want = themeColors();

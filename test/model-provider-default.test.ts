@@ -18,7 +18,7 @@ import {
   modelOnProviderSwitch,
   modelPlaceholderFor,
   providerDefaultModel,
-} from "../frontend/model-selection.ts";
+} from "../frontend/lib/model-selection.ts";
 
 const PROVIDERS = {
   openrouter: { model: "anthropic/claude-sonnet-4" },

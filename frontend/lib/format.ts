@@ -26,3 +26,7 @@ export function fmtDur(ms: number | undefined | null): string {
   const m = Math.round((n % 3_600_000) / 60_000);
   return m ? `${h}h ${m}m` : `${h}h`;
 }
+
+export function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + " …" : s;
+}

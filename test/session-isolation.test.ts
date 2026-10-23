@@ -40,7 +40,7 @@ import assert from "node:assert/strict";
 import {
   eventBelongsOnTimeline,
   deltaBelongsToTimeline,
-} from "../frontend/session-scope.ts";
+} from "../frontend/lib/session-scope.ts";
 
 const EV = (agent: string, session: string) => ({ agent, session });
 

@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { descendantsOf } from "../frontend/sidebar-tree.ts";
+import { descendantsOf } from "../frontend/lib/sidebar-tree.ts";
 
 interface A {
   id: string;

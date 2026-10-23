@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { subAgentDisplayName } from "../frontend/sidebar-tree.ts";
+import { subAgentDisplayName } from "../frontend/lib/sidebar-tree.ts";
 
 const PERSONAS = ["reviewer", "tester", "researcher", "implementer"];
 

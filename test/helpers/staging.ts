@@ -7,7 +7,7 @@
  * tests about the DECISION (which path is taken) rather than about the absence
  * of a browser.
  */
-import type { StagingTextarea } from "../../frontend/clipboard.ts";
+import type { StagingTextarea } from "../../frontend/lib/clipboard.ts";
 
 export function fakeStaging(): StagingTextarea & { removed: number; selected: number } {
   const el = {

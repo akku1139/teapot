@@ -35,7 +35,7 @@ import {
   workspaceOf,
   chatGroupKeyOf,
   type TreeAgent,
-} from "../frontend/sidebar-tree.ts";
+} from "../frontend/lib/sidebar-tree.ts";
 
 const a = (id: string, workspace: string, parent = ""): TreeAgent => ({ id, workspace, parent });
 

@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pendingFloor, resequenceToDelivery } from "../frontend/timeline-order.ts";
+import { pendingFloor, resequenceToDelivery } from "../frontend/lib/timeline-order.ts";
 import { blockFrom } from "./helpers/source.ts";
 
 interface Row {

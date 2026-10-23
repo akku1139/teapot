@@ -32,7 +32,7 @@ type Echo = PendingEcho;
  * stale copy — the same failure mode as `row-grouping` and
  * `question-answered`.
  */
-import { reconcilePending, type PendingEcho } from "../frontend/pending-echo.ts";
+import { reconcilePending, type PendingEcho } from "../frontend/lib/pending-echo.ts";
 
 const P = (id: number | string, text: string, promptId?: string): Echo => ({ id: String(id), text, promptId, at: 0 });
 const ids = (list: Echo[]) => list.map((p) => Number(p.id)).sort((a, b) => a - b);

@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { goalLine, auditPhase, isAuditLifecycle } from "../frontend/goal-timeline.ts";
+import { goalLine, auditPhase, isAuditLifecycle } from "../frontend/lib/goal-timeline.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { readEvents } from "../src/log/events.ts";

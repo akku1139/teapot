@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { previewLayers, veilColour, backgroundImageValue } from "../frontend/theme-preview.ts";
+import { previewLayers, veilColour, backgroundImageValue } from "../frontend/lib/theme-preview.ts";
 
 test("the preview derives its panel opacities from the theme's own slider (#theme-preview)", () => {
   const dense = previewLayers(1, 0.9);

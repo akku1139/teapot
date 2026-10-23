@@ -12,12 +12,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/sidebar-tree.ts";
+import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/lib/sidebar-tree.ts";
 
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 // #58 moved the row-building rules into ./sidebar-tree so they could be unit
 // tested; the wiring assertion below follows the code to its new home.
-const tree = readFileSync(new URL("../frontend/sidebar-tree.ts", import.meta.url), "utf8");
+const tree = readFileSync(new URL("../frontend/lib/sidebar-tree.ts", import.meta.url), "utf8");
 function treeHas(label: string, re: RegExp): void {
   if (!re.test(tree)) assert.fail(`${label}\n  expected sidebar-tree.ts to match: ${re}`);
 }

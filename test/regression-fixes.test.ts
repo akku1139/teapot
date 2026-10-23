@@ -301,7 +301,7 @@ test("regression: a cancelled prompt is marked withdrawn by the pipeline (#19)",
   // for a real reason: it pinned the SPELLING of the filter, so it went red the moment
   // the pipeline moved into `frontend/timeline.ts` with the behaviour fully intact.
   // This drives the real pipeline instead and asserts the ROW it produces.
-  const { buildTimeline } = await import("../frontend/timeline.ts");
+  const { buildTimeline } = await import("../frontend/lib/timeline.ts");
   const FEED = new Set(["prompt", "message", "system_note"]);
   const RENDERED = new Set(["prompt", "message"]);
 

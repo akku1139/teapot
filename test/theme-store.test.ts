@@ -27,7 +27,7 @@ import {
   sanitizeTheme,
   saveCustomThemes,
   type CustomTheme,
-} from "../frontend/theme-store.ts";
+} from "../frontend/lib/theme-store.ts";
 
 const palette = () => ({ ...DEFAULT_PALETTE });
 const theme = (over: Partial<CustomTheme> = {}): CustomTheme => ({

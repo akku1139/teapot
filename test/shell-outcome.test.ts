@@ -19,8 +19,8 @@ import {
   shellOutcome,
   outcomeMarker,
   shellHint,
-} from "../frontend/shell-outcome.ts";
-import { fmtDur } from "../frontend/format.ts";
+} from "../frontend/lib/shell-outcome.ts";
+import { fmtDur } from "../frontend/lib/format.ts";
 
 const opts = (o: Partial<Parameters<typeof shellHint>[0]> = {}) => ({
   outcome: "ok" as const,

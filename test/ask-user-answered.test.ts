@@ -31,7 +31,7 @@ import assert from "node:assert/strict";
  * The rule now lives in `frontend/question-answered.ts` and App.tsx calls it, so
  * these tests drive the code that runs.
  */
-import { answeredQuestionIdsOf as answeredQuestionIds } from "../frontend/question-answered.ts";
+import { answeredQuestionIdsOf as answeredQuestionIds } from "../frontend/lib/question-answered.ts";
 
 type Ev = { id: string; seq: number; type: string; data: Record<string, unknown> };
 

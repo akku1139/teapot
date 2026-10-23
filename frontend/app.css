@@ -2303,6 +2303,78 @@ html[data-appearance="dark"] .filepreview .shiki span,
 html[data-appearance="dark"] .toolbody.shiki,
 html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 .filepreview .shiki,
+/**
+ * ANSI SGR colours in tool output.
+ *
+ * A program that colours its output (Renode's monitor, a test runner, `git --color`) emitted raw
+ * `ESC[91m…` bytes and the card showed them literally. `frontend/ansi.ts` turns them into spans with
+ * these classes; the PALETTE lives here so tool output is themed like everything else instead of
+ * carrying hardcoded hex from a random program.
+ *
+ * The 16 ANSI names are mapped onto the theme's own semantic tokens wherever one fits (error text
+ * uses `--err`, success uses `--ok`, dim uses `--dim`), and the rest are mixes of the foreground so
+ * every one of the ten themes gets a readable, coherent set rather than a fixed xterm palette that
+ * fights a light background.
+ */
+.toolbody.ansi { color: var(--fg); }
+.toolbody.ansi .ansi-bold { font-weight: 700; }
+.toolbody.ansi .ansi-dim { opacity: 0.72; }
+.toolbody.ansi .ansi-italic { font-style: italic; }
+.toolbody.ansi .ansi-underline { text-decoration: underline; }
+/* reverse video: swap what the card paints, which is what the escape means */
+.toolbody.ansi .ansi-inverse {
+  background: var(--fg);
+  color: var(--bg-darkest);
+}
+
+.toolbody.ansi .ansi-fg-black { color: var(--dim); }
+.toolbody.ansi .ansi-fg-red { color: var(--err); }
+.toolbody.ansi .ansi-fg-green { color: var(--ok); }
+.toolbody.ansi .ansi-fg-yellow { color: var(--warn); }
+.toolbody.ansi .ansi-fg-blue { color: var(--acc); }
+.toolbody.ansi .ansi-fg-magenta { color: color-mix(in srgb, var(--acc) 55%, var(--err)); }
+.toolbody.ansi .ansi-fg-cyan { color: var(--tool); }
+.toolbody.ansi .ansi-fg-white { color: var(--fg); }
+
+/* bright variants read as the same hue, shifted toward the foreground for legibility on a dark or
+   light surface alike */
+.toolbody.ansi .ansi-fg-bright-black { color: var(--dim); opacity: 0.85; }
+.toolbody.ansi .ansi-fg-bright-red { color: color-mix(in srgb, var(--err) 80%, var(--fg)); }
+.toolbody.ansi .ansi-fg-bright-green { color: color-mix(in srgb, var(--ok) 80%, var(--fg)); }
+.toolbody.ansi .ansi-fg-bright-yellow { color: color-mix(in srgb, var(--warn) 80%, var(--fg)); }
+.toolbody.ansi .ansi-fg-bright-blue { color: color-mix(in srgb, var(--acc) 80%, var(--fg)); }
+.toolbody.ansi .ansi-fg-bright-magenta { color: color-mix(in srgb, var(--acc) 40%, var(--err)); }
+.toolbody.ansi .ansi-fg-bright-cyan { color: color-mix(in srgb, var(--tool) 80%, var(--fg)); }
+.toolbody.ansi .ansi-fg-bright-white { color: var(--fg); font-weight: 600; }
+
+/**
+ * 256-colour and truecolour requests get a NEUTRAL treatment.
+ *
+ * The colour is the PROGRAM's, not the theme's, and reproducing `rgb(10,20,30)` verbatim is how a
+ * light theme ends up with unreadable text. What matters is that the escape is consumed and the
+ * text stays legible; the hue is approximated by the accent so the output still reads as "coloured".
+ */
+.toolbody.ansi .ansi-fg-ext { color: var(--acc); }
+
+/* backgrounds: translucent tints so 16-colour highlights do not become solid slabs over a photo */
+.toolbody.ansi .ansi-bg-black { background: color-mix(in srgb, var(--bg-darkest) 80%, transparent); }
+.toolbody.ansi .ansi-bg-red { background: color-mix(in srgb, var(--err) 22%, transparent); }
+.toolbody.ansi .ansi-bg-green { background: color-mix(in srgb, var(--ok) 22%, transparent); }
+.toolbody.ansi .ansi-bg-yellow { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+.toolbody.ansi .ansi-bg-blue { background: color-mix(in srgb, var(--acc) 22%, transparent); }
+.toolbody.ansi .ansi-bg-magenta { background: color-mix(in srgb, var(--acc) 16%, transparent); }
+.toolbody.ansi .ansi-bg-cyan { background: color-mix(in srgb, var(--tool) 22%, transparent); }
+.toolbody.ansi .ansi-bg-white { background: color-mix(in srgb, var(--fg) 18%, transparent); }
+.toolbody.ansi .ansi-bg-bright-black { background: color-mix(in srgb, var(--fg) 12%, transparent); }
+.toolbody.ansi .ansi-bg-bright-red { background: color-mix(in srgb, var(--err) 32%, transparent); }
+.toolbody.ansi .ansi-bg-bright-green { background: color-mix(in srgb, var(--ok) 32%, transparent); }
+.toolbody.ansi .ansi-bg-bright-yellow { background: color-mix(in srgb, var(--warn) 32%, transparent); }
+.toolbody.ansi .ansi-bg-bright-blue { background: color-mix(in srgb, var(--acc) 32%, transparent); }
+.toolbody.ansi .ansi-bg-bright-magenta { background: color-mix(in srgb, var(--acc) 26%, transparent); }
+.toolbody.ansi .ansi-bg-bright-cyan { background: color-mix(in srgb, var(--tool) 32%, transparent); }
+.toolbody.ansi .ansi-bg-bright-white { background: color-mix(in srgb, var(--fg) 26%, transparent); }
+.toolbody.ansi .ansi-bg-ext { background: color-mix(in srgb, var(--acc) 22%, transparent); }
+
 .toolbody.shiki {
   margin: 0;
   padding: 10px 12px;

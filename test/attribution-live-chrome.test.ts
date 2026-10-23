@@ -30,7 +30,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isOwnLiveWork } from "../frontend/live-buffer.ts";
+import { isOwnLiveWork } from "../frontend/lib/live-buffer.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
 // #110: POSIX-only — runs POSIX commands through the bash tool.

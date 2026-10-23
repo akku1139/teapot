@@ -31,7 +31,7 @@ import {
   sidebarRowsOf,
   wsChatCountsOf,
   type TreeAgent,
-} from "../frontend/sidebar-tree.ts";
+} from "../frontend/lib/sidebar-tree.ts";
 
 const _app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 

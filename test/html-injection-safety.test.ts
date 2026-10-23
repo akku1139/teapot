@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Window } from "happy-dom";
-// the SAME primitive frontend/shiki.ts imports (shiki/core re-exports it)
+// the SAME primitive frontend/lib/shiki.ts imports (shiki/core re-exports it)
 import { hastToHtml } from "shiki/core";
 import { renderMarkdown } from "../frontend/md.js";
 

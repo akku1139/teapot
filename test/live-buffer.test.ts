@@ -23,7 +23,7 @@ import {
   isCoveredByLog,
   pruneDeadLiveBuffers,
   type LiveBuf,
-} from "../frontend/live-buffer.ts";
+} from "../frontend/lib/live-buffer.ts";
 
 const buf = (text: string): LiveBuf => ({ text, reasoning: "", at: 1000 });
 

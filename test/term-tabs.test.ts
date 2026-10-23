@@ -20,7 +20,7 @@ import {
   indexAfterAppend,
   paneIndexAfterClose,
   rightPaneSeed,
-} from "../frontend/term-tabs.ts";
+} from "../frontend/lib/term-tabs.ts";
 
 test("the index of a newly appended tab is the OLD length (#172)", () => {
   // the regression: reading `length` after the append gives one past the end
@@ -87,7 +87,7 @@ test("the right pane seeds on a DIFFERENT tab than the left (#172)", () => {
  * The repair rule is pure, so it is tested rather than trusted.
  */
 test("an out-of-range pane index is repaired to a real tab (#172)", async () => {
-  const { clampPaneIndex } = await import("../frontend/term-tabs.ts");
+  const { clampPaneIndex } = await import("../frontend/lib/term-tabs.ts");
   // the tab that was shown is gone and the list is shorter
   assert.equal(clampPaneIndex(3, 2), 1, "past the end clamps to the last tab");
   assert.equal(clampPaneIndex(1, 1), 0, "one past a single tab clamps to it");

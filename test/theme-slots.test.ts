@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { slotForSelection, paintedIdFor } from "../frontend/theme-slots.ts";
+import { slotForSelection, paintedIdFor } from "../frontend/lib/theme-slots.ts";
 
 test("not following the system, every selection goes to the ONE fixed slot (#theme-slots)", () => {
   assert.deepEqual(slotForSelection(false, "dark"), { slot: "fixed", key: "teapot.theme" });

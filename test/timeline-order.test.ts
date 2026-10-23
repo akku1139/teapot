@@ -17,7 +17,7 @@ import {
   placeEchoesBelow,
   resequenceToDelivery,
   pendingFloor,
-} from "../frontend/timeline-order.ts";
+} from "../frontend/lib/timeline-order.ts";
 
 const row = (seq: number, id: string) => ({ seq, id, type: "message" });
 

@@ -14,8 +14,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mergeThemes } from "../frontend/theme-merge.ts";
-import type { CustomTheme } from "../frontend/theme-store.ts";
+import { mergeThemes } from "../frontend/lib/theme-merge.ts";
+import type { CustomTheme } from "../frontend/lib/theme-store.ts";
 
 const PALETTE = {
   bgDarkest: "#1a1c22", bgDark: "#232630", bgMid: "#2b2e39", bgLight: "#343845",

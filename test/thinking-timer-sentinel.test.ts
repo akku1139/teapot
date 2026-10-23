@@ -52,7 +52,7 @@ const _here = path.dirname(fileURLToPath(import.meta.url));
  *
  * The clock now may only be cleared when the block it measures is gone.
  */
-import { clearThinkClockIfDone } from "../frontend/live-buffer.ts";
+import { clearThinkClockIfDone } from "../frontend/lib/live-buffer.ts";
 
 const agent = (status: string) => ({ id: "a1", status, session: "s1" });
 const bubble = (text = "", reasoning = "") => ({ text, reasoning });

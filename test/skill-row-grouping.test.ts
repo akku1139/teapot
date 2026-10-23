@@ -24,7 +24,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupedWith, type RowLike } from "../frontend/row-grouping.ts";
+import { groupedWith, type RowLike } from "../frontend/lib/row-grouping.ts";
 
 const row = (type: string, data: Record<string, unknown> = {}): RowLike => ({
   type,

@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fmtDur } from "../frontend/format.ts";
+import { fmtDur } from "../frontend/lib/format.ts";
 
 test("fmtDur: the issue's own example becomes readable (#24)", () => {
   // verbatim from the issue report

@@ -39,7 +39,7 @@ import {
   isLiveStatus,
   pruneDeadLiveBuffers,
   type LiveBuf,
-} from "../frontend/live-buffer.ts";
+} from "../frontend/lib/live-buffer.ts";
 
 const _here = path.dirname(fileURLToPath(import.meta.url));
 

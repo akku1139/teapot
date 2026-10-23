@@ -32,7 +32,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { shouldShowCollapseCaret } from "../frontend/sidebar-tree.ts";
+import { shouldShowCollapseCaret } from "../frontend/lib/sidebar-tree.ts";
 
 /** the reported case: no sub-agents, not collapsed -> no caret */
 test("a childless EXPANDED chat shows no caret (#106)", () => {

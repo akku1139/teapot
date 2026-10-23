@@ -27,7 +27,7 @@ import {
   nextFollowing,
   shouldPin,
   shouldShowJumpToPresent,
-} from "../frontend/scroll-policy.ts";
+} from "../frontend/lib/scroll-policy.ts";
 
 const vp = (top: number, height = 2000, viewport = 800) => ({ top, height, viewport });
 /** the tail of a 2000-tall content in an 800 viewport */

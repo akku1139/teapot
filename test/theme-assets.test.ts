@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import { buildApp } from "../src/server/api.ts";
 import { Master } from "../src/master.ts";
-import { sanitizeTheme, DEFAULT_PALETTE, applyCustomTheme } from "../frontend/theme-store.ts";
+import { sanitizeTheme, DEFAULT_PALETTE, applyCustomTheme } from "../frontend/lib/theme-store.ts";
 import { readSource, stripSourceComments } from "./helpers/source.ts";
 import { cssRuleBody } from "./helpers/css.ts";
 
@@ -127,7 +127,7 @@ test("code and tool output get an OPAQUE surface when a background image is set 
    * the photo shows through the code. `applyCustomTheme` now also writes `--bg-darkest-solid`
    * with the alpha stripped, and the stylesheet uses it for machine output when an image is set.
    */
-  const { opaque } = await import("../frontend/theme-store.ts");
+  const { opaque } = await import("../frontend/lib/theme-store.ts");
   assert.equal(opaque("#1a1c2200"), "#1a1c22", "alpha must be stripped");
   assert.equal(opaque("#1A1C22"), "#1A1C22", "an opaque colour is unchanged");
   assert.equal(opaque("rgb(0 0 0 / 0%)"), "rgb(0 0 0 / 0%)", "non-hex is left alone");
@@ -508,7 +508,7 @@ test("a bash command and a JSON argument object are HIGHLIGHTED (#ui)", async ()
    * by LANGUAGE rather than by path, because tool content is not a file — `langForPath` has nothing
    * to work from.
    */
-  const shiki = await readSource("frontend/shiki.ts");
+  const shiki = await readSource("frontend/lib/shiki.ts");
   assert.match(shiki, /export async function\* highlightLangChunks\(/, "a language-based entry point must exist");
   const app = await readSource("frontend/App.tsx");
   assert.match(app, /lang="json"/, "the argument object is highlighted as JSON");
