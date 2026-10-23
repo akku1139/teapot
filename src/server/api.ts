@@ -1087,12 +1087,28 @@ const MAX_WS_CLIENTS = 64;
    * clickable link instead of hanging the request for minutes.
    */
   app.post("/api/mcp/oauth/start", async (c) => {
-    const body = await c.req.json<{ name?: string; scopes?: string[] }>().catch(() => null);
+    const body = await c.req
+      .json<{ name?: string; scopes?: string[]; url?: string; transport?: McpServerConfig["transport"] }>()
+      .catch(() => null);
     if (!body?.name) return c.json({ error: "missing name" }, 400);
+    /**
+     * Accept a server that has not been SAVED yet.
+     *
+     * Requiring a saved entry forced the operator through save → dialog closes → reopen → authorize,
+     * and then a second save afterwards to keep the grant attached. Asked as "未保存のMCPサーバーに
+     * 対してOAuthまでした状態を後から保存するというちょっとめんどくさいフローが発生しちゃう".
+     *
+     * The URL from the request wins when present; otherwise the saved entry is used. Nothing is
+     * written here — the grant is stored per server NAME in the OAuth store, so saving afterwards
+     * keeps it.
+     */
     const saved = (master.config.mcpServers ?? []).find((m) => m.name === body.name);
-    if (!saved?.url)
+    const targetUrl = String(body.url ?? saved?.url ?? "").trim();
+    if (!targetUrl)
       return c.json({ error: "this server has no url — OAuth needs an http(s) endpoint" }, 400);
     try {
+      // register the candidate so the flow has a config to drive; replaced by the real one on save
+      mcp.registerUnsaved({ name: body.name, url: targetUrl, transport: body.transport ?? "http", enabled: true });
       // `startOAuth` drives the SDK's own flow: discovery, dynamic registration, and the
       // PKCE challenge all happen inside `connectMcp`, so this returns as soon as there
       // is a URL to open. The exchange finishes when the browser hits the callback.

@@ -207,3 +207,45 @@ test("a transport is ONE-SHOT, so finishAuth must hand back a fresh connection (
       "tokens the exchange just stored)",
   );
 });
+
+test("the 401's OWN connection is carried to the callback leg (#mcp)", async () => {
+  /**
+   * THE reason Notion AND Canva both reported `UnauthorizedError: Unauthorized` after a completed
+   * browser authorization.
+   *
+   * The callback handler called `connectMcp` a SECOND time before `finishAuth`. With no token yet
+   * that attempt 401s again, so the exchange never ran — and the second failure is what surfaced.
+   * A new transport could not help anyway: MEASURED, a transport is ONE-SHOT
+   * ("StreamableHTTPClientTransport already started!"), so only the instance that started the flow
+   * can redeem the code.
+   *
+   * `connectMcp` therefore attaches it to the thrown error, and the caller must use THAT rather
+   * than reconnecting.
+   */
+  const mcp = await readFile(path.join(import.meta.dirname, "..", "src", "agent", "mcp.ts"), "utf8");
+  assert.match(
+    mcp,
+    /throw Object\.assign\(err as Error, \{ connection: conn \}\)/,
+    "the failed connect must carry the live connection, or the callback leg has nothing to finish on",
+  );
+  assert.match(
+    mcp,
+    /if \(!auth\) await client\.close\(\)/,
+    "and it must only close the client when there is NO provider — closing it destroys the flow",
+  );
+
+  const reg = await readFile(
+    path.join(import.meta.dirname, "..", "src", "agent", "mcp-registry.ts"),
+    "utf8",
+  );
+  assert.match(
+    reg,
+    /const conn = pendingConn;/,
+    "the callback leg must reuse the connection from the 401, not call connectMcp again — that second " +
+      "call 401s before any token exists, which is the reported failure (#mcp)",
+  );
+  assert.ok(
+    !/await loop\.wait\(FLOW_TIMEOUT_MS\);[\s\S]{0,200}await connectMcp\(st\.config/.test(reg),
+    "reconnecting in the callback leg is the bug, not an implementation detail",
+  );
+});

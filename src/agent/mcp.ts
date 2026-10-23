@@ -143,6 +143,64 @@ function toTools(list: { tools?: Array<Record<string, unknown>> }, server: strin
  * `auth` is optional: without it the transports send only the static headers, which is
  * the common case (a local server, or a static API key).
  */
+function buildConnection(
+  cfg: McpServerConfig,
+  client: Client,
+  session: StreamableHTTPClientTransport | SSEClientTransport | StdioClientTransport,
+  auth?: McpAuth,
+): McpConnection {
+  return {
+    async tools() {
+      // one page is the norm; follow the cursor so a server that paginates is not
+      // silently truncated
+      const all: McpTool[] = [];
+      let cursor: string | undefined;
+      const seen = new Set<string>();
+      for (let page = 0; page < 50; page++) {
+        const res = await client.listTools(cursor ? { cursor } : undefined);
+        all.push(...toTools(res as { tools?: Array<Record<string, unknown>> }, cfg.name));
+        const next = (res as { nextCursor?: unknown }).nextCursor;
+        if (typeof next !== "string") return all;
+        if (seen.has(next)) throw new Error("MCP tool pagination returned the same cursor twice");
+        seen.add(next);
+        cursor = next;
+      }
+      throw new Error("MCP tools/list did not finish within 50 pages");
+    },
+    async call(name, args) {
+      const res = await client.callTool({ name, arguments: (args ?? {}) as Record<string, unknown> });
+      return resultText(res as { content?: Array<{ type?: string; text?: string }>; isError?: boolean });
+    },
+    async finishAuth(code, iss) {
+      if (!(session instanceof StreamableHTTPClientTransport) && !(session instanceof SSEClientTransport))
+        throw new Error("this transport has no OAuth flow");
+      /**
+       * Exchange on THIS transport — the PKCE verifier and the discovery record are read from the
+       * provider, but the request is issued with this instance's fetch/init.
+       */
+      await (session as StreamableHTTPClientTransport).finishAuth(
+        iss === undefined ? code : (new URLSearchParams({ code, iss }) as never),
+      );
+      /**
+       * …then build a FRESH connection, because this one cannot be revived.
+       *
+       * A transport is one-shot: after the 401 that started the flow, connecting again throws
+       * "already started" even without `close()`. MEASURED, and it is why the flow appeared to
+       * complete and then report `UnauthorizedError: Unauthorized` — `client.connect` on a spent
+       * transport fails with no message of its own, and the SDK's UnauthorizedError defaults its
+       * text to the word "Unauthorized".
+       *
+       * The provider is shared, so the new instance reads the tokens the exchange just stored.
+       */
+      await client.close().catch(() => {});
+      return await connectMcp(cfg, auth);
+    },
+    async close() {
+      await client.close().catch(() => {});
+    },
+  };;
+}
+
 export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<McpConnection> {
   const transport = cfg.transport ?? (cfg.command && !cfg.url ? "stdio" : "http");
   const client = new Client({ name: "teapot", version: "1" });
@@ -204,57 +262,18 @@ export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<
      * flow on it). Without a provider there is nothing to complete, so it is closed as before.
      */
     if (!auth) await client.close().catch(() => {});
+    /**
+     * Attach the connection so the OAuth caller can CONTINUE on this exact instance.
+     *
+     * The transport that received the 401 is the one that must redeem the code (a transport cannot
+     * be restarted), so the caller needs a handle to it — rebuilding one loses the flow.
+     */
+    if (auth) {
+      const conn = buildConnection(cfg, client, session, auth);
+      throw Object.assign(err as Error, { connection: conn });
+    }
     throw err;
   }
 
-  return {
-    async tools() {
-      // one page is the norm; follow the cursor so a server that paginates is not
-      // silently truncated
-      const all: McpTool[] = [];
-      let cursor: string | undefined;
-      const seen = new Set<string>();
-      for (let page = 0; page < 50; page++) {
-        const res = await client.listTools(cursor ? { cursor } : undefined);
-        all.push(...toTools(res as { tools?: Array<Record<string, unknown>> }, cfg.name));
-        const next = (res as { nextCursor?: unknown }).nextCursor;
-        if (typeof next !== "string") return all;
-        if (seen.has(next)) throw new Error("MCP tool pagination returned the same cursor twice");
-        seen.add(next);
-        cursor = next;
-      }
-      throw new Error("MCP tools/list did not finish within 50 pages");
-    },
-    async call(name, args) {
-      const res = await client.callTool({ name, arguments: (args ?? {}) as Record<string, unknown> });
-      return resultText(res as { content?: Array<{ type?: string; text?: string }>; isError?: boolean });
-    },
-    async finishAuth(code, iss) {
-      if (!(session instanceof StreamableHTTPClientTransport) && !(session instanceof SSEClientTransport))
-        throw new Error("this transport has no OAuth flow");
-      /**
-       * Exchange on THIS transport — the PKCE verifier and the discovery record are read from the
-       * provider, but the request is issued with this instance's fetch/init.
-       */
-      await (session as StreamableHTTPClientTransport).finishAuth(
-        iss === undefined ? code : (new URLSearchParams({ code, iss }) as never),
-      );
-      /**
-       * …then build a FRESH connection, because this one cannot be revived.
-       *
-       * A transport is one-shot: after the 401 that started the flow, connecting again throws
-       * "already started" even without `close()`. MEASURED, and it is why the flow appeared to
-       * complete and then report `UnauthorizedError: Unauthorized` — `client.connect` on a spent
-       * transport fails with no message of its own, and the SDK's UnauthorizedError defaults its
-       * text to the word "Unauthorized".
-       *
-       * The provider is shared, so the new instance reads the tokens the exchange just stored.
-       */
-      await client.close().catch(() => {});
-      return await connectMcp(cfg, auth);
-    },
-    async close() {
-      await client.close().catch(() => {});
-    },
-  };
+  return buildConnection(cfg, client, session, auth);
 }

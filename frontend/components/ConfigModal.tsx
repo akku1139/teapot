@@ -690,6 +690,40 @@ export function ConfigModal(props: {
       }
     >
   >({});
+  /**
+   * Pending debounce timers for the URL-triggered OAuth probe, keyed by row.
+   *
+   * A plain object rather than a closure per row: a row can be removed while its timer is pending,
+   * so the callback re-reads `mcpServers()[i]` and bails when the row is gone.
+   */
+  const urlProbeTimers: Record<number, ReturnType<typeof setTimeout> | undefined> = {};
+  /**
+   * Ask the server whether an UNSAVED config needs OAuth, and show the 🔑 button if so.
+   *
+   * `/api/mcp/test` takes a config and never touches the saved list, so this is safe to run before
+   * a save — which is the point: the operator should not have to save, close, reopen and authorize.
+   */
+  const probeOAuth = async (i: number, cfg: Record<string, unknown>) => {
+    if (!mcpServers()[i]) return; // the row was removed while the timer was pending
+    const r = (await api("/api/mcp/test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(cfg),
+    }).catch(() => null)) as { ok?: boolean; error?: string; needsOAuth?: boolean; tools?: unknown[] } | null;
+    if (!mcpServers()[i]) return;
+    // only a DEFINITE answer replaces the status: a network blip must not wipe what is shown
+    if (!r) return;
+    setMcpStatus((m) => ({
+      ...m,
+      [i]: r.ok
+        ? { kind: "ok", text: `${(r.tools as unknown[] | undefined)?.length ?? 0} tools` }
+        : {
+            kind: "err",
+            text: r.needsOAuth ? "needs authorization — press 🔑" : r.error ?? "no response",
+            ...(r.needsOAuth ? { needsOAuth: true } : {}),
+          },
+    }));
+  };
   // live per-server state, refreshed when the section is opened
   const [mcpStates, setMcpStates] = createSignal<Record<string, any>>({});
   /**
@@ -756,7 +790,14 @@ export function ConfigModal(props: {
     const r = (await api("/api/mcp/oauth/start", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: srv.name }),
+      /**
+       * Send the URL too, so an UNSAVED server can be authorized.
+       *
+       * The endpoint used to require the name to exist in `config.mcpServers`, which forced
+       * save → dialog closes → reopen → authorize → save again. The grant is stored per server
+       * NAME, so authorizing first and saving afterwards keeps it.
+       */
+      body: JSON.stringify({ name: srv.name, url: srv.url }),
     }).catch(() => null)) as
       | { ok?: boolean; url?: string; error?: string; alreadyAuthorized?: boolean }
       | null;
@@ -1571,7 +1612,30 @@ export function ConfigModal(props: {
                       <input
                         placeholder="https://example.com/mcp  (or leave empty for a stdio command)"
                         value={srv().url ?? ""}
-                        oninput={(e) => upd({ url: e.currentTarget.value })}
+                        oninput={(e) => {
+                          upd({ url: e.currentTarget.value });
+                          /**
+                           * Detect OAuth from the URL alone, WITHOUT saving.
+                           *
+                           * Asked as "OAuthのdetectはURLが入力されて数秒経ったら未保存でも検出してみると
+                           * かがいいと思う (未保存のMCPサーバーに対してOAuthまでした状態を後から保存すると
+                           * いうちょっとめんどくさいフローが発生しちゃうので要検討)".
+                           *
+                           * `/api/mcp/test` already answers `needsOAuth` for an arbitrary config — it
+                           * never touches the saved list — so the probe costs nothing but a request,
+                           * and it means the 🔑 button can appear before a save/reopen round trip.
+                           *
+                           * Debounced because this fires per keystroke and every call is a real
+                           * network attempt. 700ms is long enough to finish typing a URL and short
+                           * enough to feel automatic.
+                           */
+                          const mine = e.currentTarget.value.trim();
+                          clearTimeout(urlProbeTimers[i]);
+                          if (!/^https?:\/\//.test(mine)) return;
+                          urlProbeTimers[i] = setTimeout(() => {
+                            void probeOAuth(i, { ...mcpServers()[i], url: mine });
+                          }, 700);
+                        }}
                       />
                       <label style="display:flex;gap:3px;align-items:center;white-space:nowrap;color:var(--dim);font-size:11px">
                         <input

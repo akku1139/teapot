@@ -243,6 +243,22 @@ export class McpRegistry {
    * so the SDK performs discovery and produces the authorization URL. The returned URL is
    * what the UI opens; the promise behind it settles when the browser comes back.
    */
+  /**
+   * Register a server that is not in the saved config yet, so a flow can run against it.
+   *
+   * The settings panel lets the operator authorize a server before saving it — the alternative was
+   * save → the dialog closes → reopen → authorize → save again. The grant lives in the OAuth store
+   * keyed by NAME, so nothing here needs to reach `config.mcpServers`; a later `apply()` with the
+   * saved list replaces this entry.
+   */
+  registerUnsaved(cfg: McpServerConfig): void {
+    const existing = this.servers.get(cfg.name);
+    // never clobber a live connection with a draft
+    if (existing?.connection) return;
+    if (existing) existing.config = cfg;
+    else this.servers.set(cfg.name, { config: cfg, status: "disconnected", tools: [] } as never);
+  }
+
   async startOAuth(name: string, opts: { scopes?: string[] } = {}): Promise<{ url: string }> {
     const st = this.servers.get(name);
     if (!st) throw new Error(`no such MCP server: ${name}`);
@@ -267,6 +283,20 @@ export class McpRegistry {
     // A connect attempt is what drives the SDK: it discovers the authorization server,
     // registers a client if needed, and calls redirectToAuthorization before throwing.
     st.oauthRequired = true;
+    /**
+     * KEEP the connection from the 401, not just its side effects.
+     *
+     * `connectMcp` throws on the 401 that starts the flow, but the transport inside it is the ONE
+     * that will redeem the code — a transport cannot be re-started ("already started"), so building
+     * a second one here and calling `finishAuth` on it is not equivalent. MEASURED: calling
+     * `connectMcp` again in the callback handler produced another Unauthorized (no token yet) and
+     * the exchange never ran, which is why BOTH Notion and Canva reported
+     * `UnauthorizedError: Unauthorized`.
+     *
+     * `pendingConn` holds the instance whose provider already did discovery; the callback leg
+     * finishes the exchange on it and gets a fresh, usable connection back.
+     */
+    let pendingConn: McpConnection | null = null;
     try {
       const conn = await connectMcp(st.config, { provider: auth });
       // already authorized (a stored refresh token was good): no flow needed
@@ -277,6 +307,11 @@ export class McpRegistry {
       await this.finishFlow(name, pending);
       return { url: "" };
     } catch (err) {
+      /**
+       * The failed attempt still produced a connection object with a live provider. `connectMcp`
+       * only closes the client when NO provider was supplied, precisely so this path can continue.
+       */
+      pendingConn = (err as { connection?: McpConnection }).connection ?? null;
       const url = auth.pendingUrl();
       if (!url) {
         const message = (err as Error).message;
@@ -289,7 +324,16 @@ export class McpRegistry {
       void (async () => {
         try {
           const { code, iss } = await loop.wait(FLOW_TIMEOUT_MS);
-          const conn = await connectMcp(st.config, { provider: auth });
+          /**
+           * THE CONNECTION FROM THE 401, not a new one.
+           *
+           * This used to call `connectMcp` again, which — with no token yet — 401s a SECOND time.
+           * `finishAuth` therefore never ran, and both Notion and Canva surfaced
+           * `UnauthorizedError: Unauthorized` after a completed browser authorization. The
+           * exchange could only ever happen on the transport that started the flow.
+           */
+          const conn = pendingConn;
+          if (!conn) throw new Error("the authorization flow lost its connection");
           /**
            * Supply `iss` from OUR discovery record when the callback omitted it.
            *
