@@ -154,8 +154,28 @@ export function goalLine(d: GoalEventData): GoalLine {
           markdown: true,
           hasCard: true,
         };
-      // "done" is logged BEFORE the audit runs, so it must not read as final
-      if (s === "done")
+      /**
+       * "done" has TWO causes, and only one of them is a claim awaiting an audit.
+       *
+       * `by: "operator"` is the operator deciding the work is finished — no agent `finish()` was
+       * called and no audit runs (`setGoalStatus` only writes the state; `handleFinish` is the
+       * audited path). The wording was unconditional, so marking a goal done by hand announced
+       * "the agent called finish(goalComplete=true); the verification contract is now being audited"
+       * — a claim nobody made and an audit that would never happen.
+       *
+       * Everything else (an agent's finish, or an older event with no `by`) keeps the pending-audit
+       * wording: `done` IS logged before the audit runs, so it must not read as final there.
+       */
+      if (s === "done") {
+        const by = String(d.by ?? "").trim();
+        if (by === "operator")
+          return {
+            label: "🏁 goal marked done",
+            detail: "you marked this goal done — no audit runs for a manual completion",
+            tone: "",
+            markdown: false,
+            hasCard: true,
+          };
         return {
           label: "🏁 finish claimed — pending audit",
           detail: "the agent called finish(goalComplete=true); the verification contract is now being audited",
@@ -163,6 +183,7 @@ export function goalLine(d: GoalEventData): GoalLine {
           markdown: false,
           hasCard: true,
         };
+      }
       /**
        * "active" has TWO causes, and they are not the same news.
        *

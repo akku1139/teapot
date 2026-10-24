@@ -276,3 +276,38 @@ test("the API records WHY a status changed, so the two `active` causes stay dist
     await agent.dispose();
   });
 });
+
+/**
+ * A goal the OPERATOR marked done is not a finish() claim.
+ *
+ * `setGoalStatus` writes `by: "operator"` and runs no audit; `handleFinish` is the audited path.
+ * The wording was unconditional, so marking a goal done by hand announced
+ *
+ *     "the agent called finish(goalComplete=true); the verification contract is now being audited"
+ *
+ * — a claim nobody made, and an audit that would never happen. MEASURED against the live log
+ * (`teapot-10-16854917`, 16:34:06: `status=done by='operator'`).
+ */
+test("a manual completion is not described as an agent finish claim (#goal)", () => {
+  const manual = goalLine({ event: "status", status: "done", by: "operator" });
+  assert.doesNotMatch(
+    manual.detail,
+    /the agent called finish/,
+    "a manual done must not announce a finish() the agent never made (#goal)",
+  );
+  assert.doesNotMatch(manual.detail, /being audited/, "and no audit runs for it (#goal)");
+  assert.match(manual.label, /marked done/, "the label must say who did it (#goal)");
+});
+
+test("an AGENT's done still reads as a claim awaiting audit (#goal)", () => {
+  // `done` IS logged before the audit runs, so that path must keep the pending wording
+  const agent = goalLine({ event: "status", status: "done" });
+  assert.match(agent.detail, /the agent called finish/, "the audited path keeps its wording (#goal)");
+  assert.match(agent.label, /pending audit/, "and still says the audit is pending (#goal)");
+});
+
+test("an older log with no `by` keeps the pending-audit wording (#goal)", () => {
+  // events predating the `by` field: the neutral reading is the safe one
+  assert.match(goalLine({ event: "status", status: "done", by: undefined }).detail, /the agent called finish/);
+  assert.match(goalLine({ event: "status", status: "done", by: "" }).detail, /the agent called finish/);
+});
