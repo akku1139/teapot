@@ -22,6 +22,7 @@ import {
   isTurnBoundary,
   isCoveredByLog,
   pruneDeadLiveBuffers,
+  reconcileLiveBuffer,
   type LiveBuf,
 } from "../frontend/lib/live-buffer.ts";
 
@@ -206,4 +207,67 @@ describe("pruneDeadLiveBuffers (#40)", () => {
   });
 
 
+});
+
+/* ---------- the two halves settle independently ---------- */
+
+/**
+ * Reported: "reasoningだけしてtool発行したらreasoningのliveがタイムラインに残留する".
+ *
+ * The mechanism was one boolean serving two questions. `isCoveredByLog` asked "does the log carry
+ * this bubble's TEXT?"; for a reasoning-only buffer there is no text, so it fell through to "is the
+ * agent still live?", which stays true for the WHOLE turn — including the tool run, when the model
+ * cannot be thinking. Nothing retired the 💭 block, so it sat there next to the tool row it had
+ * already preceded.
+ *
+ * These pin the boundary in three directions, because a patch that fixes only the reported case
+ * would pass a single test while still being one boolean.
+ */
+const reasoningBuf = (reasoning: string, at = 1000): LiveBuf => ({ text: "", reasoning, at });
+const toolStart = (ts: string) => ({ type: "tool_start", ts, data: {} });
+
+test("reasoning is retired once a tool call starts after it (#40)", () => {
+  const events = [toolStart(new Date(2000).toISOString())];
+  assert.equal(
+    isCoveredByLog(reasoningBuf("let me look at the config"), events, "running"),
+    true,
+    "the model cannot be thinking and running a tool at once — the 💭 block is over (#40)",
+  );
+});
+
+test("reasoning survives while it is still the newest thing (#40)", () => {
+  // no tool call yet: the stretch is in progress and dropping it blanks the bubble mid-thought
+  assert.equal(
+    isCoveredByLog(reasoningBuf("still thinking"), [], "running"),
+    false,
+    "nothing has superseded this reasoning, so it must stay (#40)",
+  );
+});
+
+test("a LATER reasoning stretch is not cleared by an EARLIER tool call (#40)", () => {
+  /**
+   * After a tool result the model reasons again. Those deltas advance `at` past the old
+   * `tool_start`, so the fresh stretch must survive — a check that only asked "does a tool_start
+   * exist" would retire every subsequent thought on the turn.
+   */
+  const events = [toolStart(new Date(1000).toISOString())];
+  assert.equal(
+    isCoveredByLog(reasoningBuf("now that I have the file, thinking again", 5000), events, "running"),
+    false,
+    "a tool call BEFORE this reasoning does not end it (#40)",
+  );
+});
+
+test("streaming TEXT keeps its bubble while stale reasoning is retired (#40)", () => {
+  /**
+   * The reason the halves had to be split: a reply can be mid-stream (the log does not have it, so
+   * its bubble must stay) at the same moment the thinking stretch is provably over. One boolean
+   * could only answer one of them.
+   */
+  const mixed: LiveBuf = { text: "half a repl", reasoning: "thinking that is done", at: 1000 };
+  const events = [toolStart(new Date(2000).toISOString())];
+  const rest = reconcileLiveBuffer(mixed, events, "running");
+  assert.ok(rest, "the reply is not in the log yet, so the bubble stays (#40)");
+  assert.equal(rest!.text, "half a repl", "unpersisted text must be kept (#40)");
+  assert.equal(rest!.reasoning, "", "and the finished thinking block dropped (#40)");
 });

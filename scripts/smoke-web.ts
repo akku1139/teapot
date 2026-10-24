@@ -356,6 +356,8 @@ setGlobal("WebSocket", MockWS);
 // was saved cannot do it from the url alone
 /** every fetch the bundle made, with the method and parsed body a check can assert on */
 const requests: { url: string; method: string; body: any }[] = [];
+/** the BASE fetch stub, so a check that overrides it can put it back */
+let baseFetch: typeof fetch | undefined;
 setGlobal("fetch", async (url, init) => {
   fetchCount++;
   const u0 = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
@@ -371,6 +373,7 @@ setGlobal("fetch", async (url, init) => {
   requestedUrls.push(String(url));
   return { ok: true, status: 200, json: async () => apiResponse(u0) };
 });
+baseFetch = globalThis.fetch;
 
 // surface async render explosions loudly instead of dying silently
 const briefStack = (err) => String(err?.stack ?? "").split("\n").slice(0, 6).join("\n");
@@ -794,6 +797,128 @@ console.log("deep render ok: feed rows present");
       `idle session leaves no thinking… row (#97) — was ${before ? "present" : "absent"}, now ${after ? "PRESENT" : "gone"}`,
     );
   }
+}
+
+/* ---------- reasoning followed by a tool call must not leave the 💭 block ------
+ * Reported: "reasoningだけしてtool発行したらreasoningのliveがタイムラインに残留する".
+ *
+ * Two things this check has to get right, or it passes vacuously:
+ *
+ *   1. the agent must STAY `running`. The status sweep retires the whole buffer when an agent goes
+ *      idle, so a stub that reports `idle` clears the row for a reason that has nothing to do with
+ *      this bug — measured: the pre-fix code passed until the stub was pinned to `running`;
+ *   2. the `tool_start` must be in the event feed the app READS, because the rule compares its
+ *      timestamp against the last delta. A socket frame alone is not enough: the next refresh
+ *      re-reads `/events` and the synthetic row disappears.
+ *
+ * The rule itself lives in `reconcileLiveBuffer`, and the failure mode this repository keeps
+ * hitting is a correct helper with dead wiring — so this drives the REAL bundle.
+ */
+{
+  const LIVE_AGENT = { ...AGENT, status: "running", pendingPrompts: 1 };
+  const TOOL_TS = new Date(Date.now() + 5000).toISOString();
+  const LIVE_EVENTS = [
+    ...EVENTS,
+    {
+      id: "live-tool-1",
+      seq: 9001,
+      ts: TOOL_TS,
+      agent: AGENT.id,
+      session: "alpha-s1",
+      branch: "br0",
+      parent: null,
+      type: "tool_start",
+      data: { callId: "c-live", name: "bash", args: { command: "ls" } },
+    },
+  ];
+  let liveToolVisible = false;
+  setGlobal("fetch", async (url) => {
+    const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
+    const u = raw.split("?")[0];
+    if (u === "/api/agents")
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ agents: [LIVE_AGENT, { ...LIVE_AGENT, id: "beta", workspace: "/tmp/other-project" }] }),
+      };
+    if (u === `/api/agents/${AGENT.id}/events`)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          events: liveToolVisible ? LIVE_EVENTS : EVENTS,
+          total: (liveToolVisible ? LIVE_EVENTS : EVENTS).length,
+        }),
+      };
+    return apiResponse(url);
+  });
+  const sock = MockWS.instances.at(-1);
+  if (!sock) {
+    console.error("reasoning→tool check: no app socket — the bundle never opened one");
+    process.exit(1);
+  }
+  // 1) a reasoning-only buffer → the 💭 row is on screen
+  for (const sid of ["alpha", "alpha-s1", "alpha-s2"]) {
+    sock.onmessage?.({
+      data: JSON.stringify({
+        kind: "agent-update",
+        agentId: AGENT.id,
+        snapshot: { ...LIVE_AGENT, status: "running" },
+      }),
+    });
+    sock.onmessage?.({
+      data: JSON.stringify({
+        kind: "llm-delta",
+        agentId: AGENT.id,
+        sessionId: sid,
+        text: "",
+        reasoning: "weighing which file to open",
+      }),
+    });
+  }
+  await waitFor("the reasoning bubble to render", () =>
+    w.document.body.textContent.includes("weighing which file to open"),
+  );
+  // 2) a tool call starts — the thinking stretch is over, the turn is still running
+  liveToolVisible = true;
+  for (const sid of ["alpha", "alpha-s1", "alpha-s2"]) {
+    sock.onmessage?.({
+      data: JSON.stringify({
+        kind: "agent-update",
+        agentId: AGENT.id,
+        snapshot: { ...LIVE_AGENT, status: "running" },
+      }),
+    });
+    sock.onmessage?.({
+      data: JSON.stringify({
+        kind: "event",
+        agentId: AGENT.id,
+        sessionId: sid,
+        event: LIVE_EVENTS.at(-1),
+      }),
+    });
+  }
+  // PRECONDITION: the agent is STILL running. If the stub or a sweep made it idle, the row would
+  // disappear for an unrelated reason and this check would prove nothing.
+  await new Promise((r) => setTimeout(r, 500));
+  const statusText = w.document.querySelector(".chan-head")?.textContent ?? "";
+  if (!statusText.includes("running") && w.document.body.textContent.includes("▶ start")) {
+    console.error(
+      "reasoning→tool check: the agent is IDLE, so the status sweep — not this rule — would " +
+        "clear the row. The check would pass vacuously.",
+    );
+    process.exit(1);
+  }
+  if (w.document.body.textContent.includes("weighing which file to open")) {
+    console.error(
+      "reasoning→tool REGRESSION: the 💭 block is still on the timeline after a tool call started " +
+        "while the turn is still running — stale reasoning must be retired",
+    );
+    process.exit(1);
+  }
+  console.log("reasoning followed by a tool call leaves no stale 💭 block");
+  // hand the base stub back: leaving it installed made a LATER check see this check's agent list
+  if (baseFetch) setGlobal("fetch", baseFetch);
 }
 
 /* ---------- a whitespace-only reasoning delta must not draw an empty block ----

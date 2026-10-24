@@ -53,40 +53,107 @@ export function isLiveStatus(status: string | undefined): boolean {
 }
 
 /**
- * Is the live bubble already covered by the log?
+ * What may still be painted from a live buffer, and whether the bubble is warranted at all.
  *
- * "Covered" must mean the log REALLY has this content, because the caller's next
- * action is to destroy the bubble. Getting it wrong in the safe direction costs a
- * duplicate for one frame; getting it wrong in the other direction makes the message
- * VANISH and then reappear — which is the reported "writing 状態から確定イベントになる時に
- * 一瞬メッセージが消える".
+ * The buffer holds two halves that settle INDEPENDENTLY and for different reasons:
  *
- * The old rule was `if (!isLiveStatus(status)) return true` — i.e. "the agent stopped,
- * so whatever the log says, drop the bubble". But a turn ends BEFORE the log's
- * `message` event has been delivered: the status flips as the turn settles, and the
- * assistant event lands a frame later. In that window the log holds no matching
- * content at all, so the bubble was destroyed while nothing had replaced it.
+ *   - `text` is retired when an assistant message in the log carries exactly that text. Until then
+ *     the bubble is the only copy, and dropping it makes the reply VANISH then reappear.
+ *   - `reasoning` is never logged as a message, so "is it covered" is the wrong question for it. It
+ *     is STALE once the turn has moved past thinking — a tool call started after the last reasoning
+ *     delta. The model cannot be thinking and executing at once.
  *
- * So:
- *   - NOTHING buffered (no text, no reasoning) → nothing to lose, covered.
- *   - text present → only when the log holds an assistant message with that text.
- *   - text present but NO assistant messages in the log at all → NOT covered. This is
- *     the settling window, and holding the bubble one extra frame is invisible.
+ * Asking both with one boolean is what left a 💭 block on the timeline above the tool row it had
+ * already preceded: a reasoning-only buffer has no text to find, so the old function fell back to
+ * "is the agent still live?", which stays TRUE through the whole turn including the tool run.
+ *
+ * Three things keep the bubble alive, and they are listed here rather than folded into the
+ * predicates: leftover text, leftover reasoning, and a LIVE agent — an empty bubble is how the UI
+ * says "working" before the first chunk arrives.
+ */
+export interface LiveBufferStatus {
+  /** the log holds an assistant message with exactly this text — the text half may go */
+  textCovered: boolean;
+  /** the thinking stretch that produced this reasoning is over — the reasoning half may go */
+  reasoningStale: boolean;
+}
+
+export function liveBufferStatus(
+  buf: LiveBuf,
+  events: { type?: string; ts?: string; data?: { role?: string; content?: string } }[],
+  status: string | undefined,
+): LiveBufferStatus {
+  const text = buf.text.trim();
+  const assistant = assistantTexts(events);
+  const live = isLiveStatus(status);
+  return {
+    /**
+     * EMPTY text is not "covered text" but there is nothing to lose, so it counts as retired. The
+     * settling window is the subtle case: the turn has ended and the log holds NO assistant message
+     * yet, so the event simply has not been delivered — that text is not redundant, it is early.
+     */
+    textCovered: !text || assistant.has(text),
+    reasoningStale: !buf.reasoning.trim() || !live || startedToolCallSince(events, buf.at),
+  };
+}
+
+/** The halves that may still be painted, after retiring whatever the log has caught up with. */
+export function liveBufferRemainder(
+  buf: LiveBuf,
+  events: { type?: string; ts?: string; data?: { role?: string; content?: string } }[],
+  status: string | undefined,
+): { text: string; reasoning: string; live: boolean; empty: boolean } {
+  const st = liveBufferStatus(buf, events, status);
+  const text = st.textCovered ? "" : buf.text;
+  const reasoning = st.reasoningStale ? "" : buf.reasoning;
+  const live = isLiveStatus(status);
+  /**
+   * A LIVE agent keeps its bubble only while it still has something to show, or while it has shown
+   * NOTHING yet.
+   *
+   * `sawContent` is the "nothing yet" case: before the first delta an empty bubble is how the UI
+   * says "working", so it must survive. Once the buffer HAS carried content and both halves have
+   * been retired, the bubble is spent — an agent running a tool is still `running`, and keeping the
+   * bubble for that reason is what left a 💭 block over the tool row it preceded.
+   */
+  const nothingPending = !text.trim() && !reasoning.trim();
+  const sawContent = !!buf.text.trim() || !!buf.reasoning.trim();
+  return { text, reasoning, live, empty: nothingPending && (!live || sawContent) };
+}
+
+/**
+ * Is the WHOLE live bubble redundant?
+ *
+ * Redundant only when it has nothing left to paint AND the agent is no longer working — a live
+ * agent's empty bubble is the "working" indicator, not a leftover.
  */
 export function isCoveredByLog(
   buf: LiveBuf | null | undefined,
-  events: { type?: string; data?: { role?: string; content?: string } }[],
+  events: { type?: string; ts?: string; data?: { role?: string; content?: string } }[],
   status: string | undefined,
 ): boolean {
+  // defensive: with no buffer there is no bubble, and the caller only asks when one exists
   if (!buf) return false;
-  if (!buf.text) return !isLiveStatus(status);
-  const body = buf.text.trim();
-  // Even when the agent has stopped, an EMPTY assistant history cannot be what this
-  // bubble became — the event has simply not arrived yet.
-  const anyAssistant = events.some((e) => e.type === "message" && e.data?.role === "assistant");
-  if (!isLiveStatus(status)) return anyAssistant && assistantTexts(events).has(body);
-  if (!anyAssistant) return false;
-  return assistantTexts(events).has(body);
+  return liveBufferRemainder(buf, events, status).empty;
+}
+
+/**
+ * Did a tool call START after this buffer's last delta?
+ *
+ * Reasoning for a turn arrives, then the model emits a tool call and stops thinking. An event later
+ * than the last delta is proof the thinking stretch is over; deltas arriving after it push `at`
+ * forward again, so a LATER stretch is not cleared by an earlier call.
+ */
+function startedToolCallSince(
+  events: { type?: string; ts?: string }[],
+  at: number,
+): boolean {
+  if (!at) return false;
+  return events.some((e) => {
+    if (e.type !== "tool_start") return false;
+    const t = Date.parse(String(e.ts ?? ""));
+    return Number.isFinite(t) && t > at;
+  });
 }
 
 /** the trimmed text of every assistant message the log currently holds */
@@ -165,16 +232,23 @@ export function pruneDeadLiveBuffers<T>(
  */
 export function reconcileLiveBuffer(
   buf: LiveBuf | null | undefined,
-  events: { type?: string; data?: { role?: string; content?: string } }[],
+  events: { type?: string; ts?: string; data?: { role?: string; content?: string } }[],
   status: string | undefined,
 ): LiveBuf | null {
   if (!buf) return null;
-  // The one authority on "is this bubble redundant" is `isCoveredByLog`. This used to
-  // short-circuit on `!isLiveStatus(status)` FIRST, which dropped the bubble the moment
-  // the agent stopped — before the log's assistant event had been delivered — and that
-  // is the frame where the message vanished from the timeline.
-  if (isCoveredByLog(buf, events, status)) return null;
-  return buf;
+  /**
+   * Retire the halves the log has caught up with and KEEP the rest.
+   *
+   * Returning `null` for either signal drops content that is still the only copy — the settling
+   * frame where a reply vanishes, or a reasoning block still streaming. Returning the buffer
+   * unchanged for both is what left a 💭 block on screen after its tool row had already been
+   * painted. One buffer, two independently-settling halves, so the result is a buffer with each
+   * half cleared on its own evidence.
+   */
+  const rest = liveBufferRemainder(buf, events, status);
+  if (rest.empty) return null;
+  if (rest.text === buf.text && rest.reasoning === buf.reasoning) return buf;
+  return { text: rest.text, reasoning: rest.reasoning, at: buf.at };
 }
 
 /**

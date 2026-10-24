@@ -5,7 +5,6 @@ import {
   applyDelta,
   clearLive,
   clearThinkClockIfDone,
-  isCoveredByLog,
   isTurnBoundary,
   isOwnLiveWork,
   pruneDeadLiveBuffers,
@@ -1016,6 +1015,19 @@ export default function App() {
       else m.delete(id);
       return m;
     });
+  };
+  /**
+   * Apply the shared reconcile rule to the CURRENT buffer, keeping whichever halves survive.
+   *
+   * ONE place calls this, and it is the same rule the feed refresh uses — a second copy of "which
+   * halves are settled" is how the two paths drifted before.
+   */
+  const settleLiveBuffer = () => {
+    const buf = live();
+    if (!buf) return;
+    const next = reconcileLiveBuffer(buf, events(), sel()?.status);
+    if (!next) setLive(null);
+    else if (next.text !== buf.text || next.reasoning !== buf.reasoning) setLive(next);
   };
   // markdown-rendered live body, throttled so per-chunk deltas don't re-parse
   // the whole (growing) text on every single WS message
@@ -2720,8 +2732,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // A PARTIAL stream is untouched: `isCoveredByLog` needs the full text, so
         // the bubble survives until the reply it is showing is actually persisted.
         if (msg.event?.type === "message" && (msg.event.data as { role?: string })?.role === "assistant") {
-          const buf = live();
-          if (buf && isCoveredByLog(buf, events(), sel()?.status)) setLive(null);
+          settleLiveBuffer();
         }
         pendingRefresh = true;
         if (document.visibilityState !== "visible") return;

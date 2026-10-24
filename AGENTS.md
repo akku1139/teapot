@@ -473,6 +473,26 @@ out with only five unresolved names because everything it called had already mov
   running" and "finished 5 minutes ago", and MEASURED, it wasted most of a turn on every release
   in one session. Wrap it in `timeout` so a wedged run cannot block the loop forever.
 
+- **Run release and CI monitoring as a BACKGROUND bash job, not in the foreground.**
+
+  ```sh
+  # bash(background=true) — returns a job id immediately, notifies on exit
+  for wf in test.yml windows.yml publish.yml; do
+    id=$(gh run list --workflow=$wf --limit 1 --json databaseId -q '.[0].databaseId')
+    timeout 850 gh run watch $id --exit-status --interval 20 >/dev/null 2>&1 || exit 1
+  done
+  node scripts/wait-npm-version.ts <version>
+  ```
+
+  Watching three workflows and then the npm tarball is 5–20 minutes of pure waiting, and in the
+  FOREGROUND it costs the whole turn: nothing else can be read, fixed or measured while it runs.
+  A release is the one thing here that needs no attention between "push" and "done", so it is
+  exactly the work to park in the background. Measured: the same release loop consumed two
+  consecutive turns foregrounded, and zero turns backgrounded.
+
+  The same applies to any other long single-purpose wait (`pnpm test` while debugging something
+  else, a bulk audit script). Foreground is for a command whose OUTPUT you are about to act on.
+
 ## Live update: `process.execve`, not a supervised child
 
 The update button replaces the process **in place** (`process.execve`, Node 22+). Do not reintroduce
@@ -517,6 +537,38 @@ changing code for one of them:
    that the code you are about to change is actually called: instrument it, or
    assert the call site, not the helper.
 3. **Write the test so it fails on the old code** before you call it fixed.
+
+## Do not patch a symptom into a condition
+
+The tempting fix for "this one case is wrong" is one more `if` in the function that already decides.
+It works, it is small, and it makes the next case impossible to reason about — because the function
+was not answering one question to begin with.
+
+**The tell:** you are adding a condition (or a third early `return`) to a function whose name
+promises a single answer ("is it covered?", "is it live?", "should it render?"), and the new
+condition is about a DIFFERENT subject than the existing ones. MEASURED, on `isCoveredByLog`: it
+answered "does the log carry this bubble's TEXT?" and was asked, by a later report, "has the
+REASONING stretch ended?" — two questions, one boolean. Patching in a `tool_start` timestamp check
+made the reported case pass while leaving the shape that produced it: the next caller cannot tell
+which question it just asked, and the following bug is guaranteed.
+
+**What to do instead:**
+
+1. **Name the questions separately and return something that carries them.** `liveBufferStatus()`
+   returning `{ textCovered, reasoningStale }` makes the call site say which one it acts on. A
+   function that has to answer twice should not answer in one boolean.
+2. **Put the decision in the CALLER that owns the action.** The renderer is the only place that
+   knows whether it is about to paint text, reasoning, or both — so it is the only place that can
+   decide correctly.
+3. **Make every input the question needs be a parameter.** If a rule depends on event timestamps,
+   take the events; do not reach for a module-level clock or a global flag.
+4. **Add the report's case as a test AND the neighbouring cases that share the mechanism.** For the
+   reasoning bug: reasoning→tool (clear), reasoning→text (keep), later reasoning after the tool
+   (keep). One test would have passed against a wrong patch; three pin the boundary.
+
+A guard that refuses the whole class is worth more than a condition that satisfies one report. If
+you cannot find the class, say so in the commit body rather than leaving a `if` with no explanation
+of what still is not covered.
 
 ## Debugging, and when to stop reasoning
 
