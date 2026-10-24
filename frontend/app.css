@@ -957,13 +957,48 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
  * 同じなのが微妙 / 点滅してるせいで圧迫感もある". Neither pulses now: a pulse draws the eye
  * continuously, and on the self-wait there was nothing for the eye to find.
  */
-.dot.waiting { background: var(--dim); box-shadow: none; }
+/**
+ * `waiting` is ALIVE and working on its own — it must not look like `stopped`.
+ *
+ * It was `--dim`, the same colour as `stopped`, so an agent parked on `wait_children` or a
+ * background job read as dead in the sidebar: reported as "セッションがwaitingなのに左パネルでは
+ * アイコンが灰色".
+ *
+ * Three states now have three marks, and the difference is carried by HUE and WEIGHT rather than a
+ * pulse (a pulse draws the eye continuously, which the accent ring already does):
+ *
+ *   running         filled --ok, with a glow      alive and moving
+ *   waiting         --ok RING, hollow              alive, holding for its own work
+ *   needs_operator  --acc ring                     alive, holding for a HUMAN
+ *   stopped         filled --dim                   nothing running
+ *
+ * `waiting` shares `--ok` with `running` because the agent genuinely is working — the ring says
+ * "not consuming anything right now" while the colour keeps it in the alive family. `needs_operator`
+ * keeps the ACCENT so "you are needed" stays a different colour from "it is busy", which is the
+ * distinction the old shared dot lost (「wait_for_children と ask_user でアイコン色が同じなのが微妙」).
+ */
+.dot.waiting {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--ok);
+}
 .dot.needs_operator {
   background: var(--acc);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--acc) 35%, transparent);
 }
+/**
+ * The badge follows the DOT's scheme, because they sit on the same screen.
+ *
+ * `waiting`, `needs_operator` and `done` were all `--acc`, so the header could not answer "does this
+ * need me?" any more than the grey dot could answer "is this alive?" (both reported). One rule, in
+ * one place: hue says what KIND of state, weight says how much attention it wants.
+ *
+ *   running         --ok    alive, moving
+ *   waiting         --ok    alive, holding for its own work (same family as running — it IS working)
+ *   needs_operator  --acc   alive, holding for a HUMAN (the one colour that means "you")
+ *   done            --ok    finished successfully; the accent belongs to "you", not to "finished"
+ */
+.badge.waiting { color: var(--ok); }
 .badge.needs_operator { color: var(--acc); }
-.badge.waiting { color: var(--acc); }
 .dot.idle { background: var(--warn); }
 .dot.stopped { background: var(--dim); }
 .dot.error { background: var(--err); box-shadow: 0 0 6px var(--err); }
@@ -1053,7 +1088,7 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
   font-weight: 500;
 }
 .badge.running { color: var(--ok); } .badge.error { color: var(--err); }
-.badge.idle { color: var(--warn); } .badge.done { color: var(--acc); }
+.badge.idle { color: var(--warn); } .badge.done { color: var(--ok); }
 .badge.queued { color: var(--warn); background: #faa81a1a; border: 1px solid #faa81a44; white-space: nowrap; }
 
 /**
