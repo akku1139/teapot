@@ -103,7 +103,7 @@ export function goalLine(d: GoalEventData): GoalLine {
   switch (auditPhase(d)) {
     case "audit-started":
       return {
-        label: "🔍 completion audit started",
+        label: "🔍️ completion audit started",
         detail: String(d.verify ?? "").trim() || "checking the verification contract…",
         tone: "",
         // NOT markdown, deliberately (#41): the contract is a COMMAND-shaped string
@@ -136,7 +136,7 @@ export function goalLine(d: GoalEventData): GoalLine {
     }
     case "audit-failed":
       return {
-        label: "🔍 audit unavailable — finish accepted",
+        label: "🔍️ audit unavailable — finish accepted",
         detail: String(d.detail ?? "").trim() || "the auditor could not be reached",
         tone: "err",
         markdown: false,

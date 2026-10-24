@@ -829,7 +829,7 @@ export default function App() {
   /** 📄🖼️→📄 style badge for a model's input/output modalities */
   const modalityBadge = (m?: { modalities?: { input: string[]; output: string[] } }): string => {
     const icon: Record<string, string> = {
-      text: "📄", image: "🖼️", audio: "🔊", video: "🎬", file: "📎",
+      text: "📄", image: "🖼️", audio: "🔊", video: "🎬️", file: "📎",
     };
     const side = (list?: string[]) =>
       (list ?? ["text"]).map((k) => icon[k] ?? k).join("");
@@ -4008,7 +4008,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         `archive agent ${id}?\n\n` +
           (subs > 0 ? `Its ${subs} sub-agent${subs === 1 ? "" : "s"} will be archived too.\n\n` : "") +
           "They stop running and leave the list, but the config and full session history are " +
-          "KEPT — restore any of them from ⚙ settings → archive.",
+          "KEPT — restore any of them from ⚙️ settings → archive.",
       )
     )
       return;
@@ -4136,7 +4136,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     <Show when={authLocked()}>
       <div class="overlay">
         <div class="modal" style="max-width:360px">
-          <div class="modal-head"><b>🔒 sign in</b><span /></div>
+          <div class="modal-head"><b>🔒️ sign in</b><span /></div>
           <form
             onsubmit={(e) => {
               e.preventDefault();
@@ -4428,7 +4428,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 {row.a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
                 <Show when={subtreeUnread(row.a.id) > 0}>
                   <span class="notifbadge" title={`${subtreeUnread(row.a.id)} unread notification${subtreeUnread(row.a.id) > 1 ? "s" : ""} (including sub-agents)`}>
-                    🔔{subtreeUnread(row.a.id)}
+                    🔔️{subtreeUnread(row.a.id)}
                   </span>
                 </Show>
                 {/* Collapsed tree: surface how many subs are hidden so a busy
@@ -4495,7 +4495,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 if (!showNotifs()) setNotifs((l) => l.map((n) => ({ ...n, read: true })));
               }}
             >
-              🔔<Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
+              🔔️<Show when={unreadCount() > 0}><i class="notifdot">{unreadCount()}</i></Show>
             </button>
             <IconBtn
               icon="👻"
@@ -4514,10 +4514,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               }}
             />
             <IconBtn icon="＋" title="new agent" onClick={() => { loadCfg(); setShowNew(true); }} />
-            {/* 🎨 themes moved into ⚙ settings → appearance: a theme is a PREFERENCE, not a
+            {/* 🎨 themes moved into ⚙️ settings → appearance: a theme is a PREFERENCE, not a
                 per-session action, and the editor (palette rows + a background picker) needs
                 room a popover cannot give. */}
-            <IconBtn icon="⚙" title="settings" onClick={() => { loadCfg(); setShowCfg(true); }} />
+            <IconBtn icon="⚙️" title="settings" onClick={() => { loadCfg(); setShowCfg(true); }} />
           </div>
           <div class="brand-row">
             <div class="brand">
@@ -4595,7 +4595,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 working. It used to be the same weight as the controls beside it,
                 so the header read as one undifferentiated row of text. */}
             <span class="sub" title={`${sel()!.model} · ${sel()!.session}/${sel()!.branch} · turns ${sel()!.stats.turns} · tools ${sel()!.stats.toolCalls}`}>
-              {sel()!.model} · {sel()!.session}/{sel()!.branch} · {sel()!.stats.turns}↻ {sel()!.stats.toolCalls}⚙
+              {sel()!.model} · {sel()!.session}/{sel()!.branch} · {sel()!.stats.turns}↻ {sel()!.stats.toolCalls}⚙️
             </span>
             <span class="head-actions">
               {/* No ℹ glyph here.
@@ -4644,7 +4644,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 * beside it — the toggle is the most-used control, and its neighbour should not be
                 * the only irreversible action in the row (it is reversible, but not obviously so).
                 */}
-              <IconBtn icon="🗄" title="archive this agent — reversible: it leaves the list but keeps its config and history (restore in ⚙ settings → archive)" onClick={archiveSelected} />
+              <IconBtn icon="🗄" title="archive this agent — reversible: it leaves the list but keeps its config and history (restore in ⚙️ settings → archive)" onClick={archiveSelected} />
               <IconBtn icon="⑂" title="fork: branch off the conversation here — try things without disturbing the main line" onClick={forkSelected} />
               <IconBtn icon="⌨" title="terminal (t)" onClick={toggleTerm} />
               {/* the panel toggle advertises its STATE, not just its action: `active` fills
@@ -5229,7 +5229,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              *
              * It used to hold a permanent keyboard cheat-sheet under the composer, which the
              * operator reads once and then has to look past forever. The same text now lives in
-             * ⚙ settings → ❔ help, where it is found when it is needed; a keyboard reference is
+             * ⚙️ settings → ❔️ help, where it is found when it is needed; a keyboard reference is
              * something you consult, not something you stare at while typing.
              */}
             {/**
@@ -5501,7 +5501,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </div>
             <Show when={sel()!.goal.verify}>
               <div class="card verifycard" title="verification contract — finish(goalComplete=true) is audited against these requirements by an independent reviewer before the goal counts as done">
-                <div class="vtitle">🔍 verification contract</div>
+                <div class="vtitle">🔍️ verification contract</div>
                 <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.verify))} />
               </div>
             </Show>
@@ -5853,7 +5853,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               unrelated to the agent being viewed. That reasoning justified SHOWING it less
               prominently, not hiding it: an unread schedule is a schedule you forget is
               running, and the section is short (a few rows) so folding saved no real space. */}
-          <h3 title="cron tasks, all agents — click a row to open that agent. Edit them in ⚙ settings → scheduled tasks.">
+          <h3 title="cron tasks, all agents — click a row to open that agent. Edit them in ⚙️ settings → scheduled tasks.">
             ⏰ schedule
             <Show when={tasks().length > 0}>
               <span class="muted" style="text-transform:none;letter-spacing:0">· {tasks().length} · all agents</span>
@@ -5861,7 +5861,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </h3>
           <Show
             when={tasks().length > 0}
-            fallback={<div class="muted">no scheduled tasks — add them in ⚙ settings ("scheduled tasks")</div>}
+            fallback={<div class="muted">no scheduled tasks — add them in ⚙️ settings ("scheduled tasks")</div>}
           >
             <For each={tasks()}>
               {(t) => (
@@ -5927,7 +5927,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   }}
                 >
                   <div class="nhead">
-                    <span class="nicon">{n.kind === "finish" ? "✅" : n.kind === "question" ? "❓" : n.kind === "error" ? "⚠️" : "📈"}</span>
+                    <span class="nicon">{n.kind === "finish" ? "✅" : n.kind === "question" ? "❓️" : n.kind === "error" ? "⚠️" : "📈"}</span>
                     <span class="ntitle">{n.title}</span>
                     <span class="meta muted">{relTime(new Date(n.at).toISOString())}</span>
                     <button

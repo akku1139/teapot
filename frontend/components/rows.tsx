@@ -47,8 +47,8 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   // ALWAYS said these two bash calls group — but ToolRow never received `prev`, so
   // the rule never ran for tool rows and every one of them rendered a full head:
   //
-  //     embed class="embed done" summary="⚙ $ echo ALPHA3ms…"
-  //     embed class="embed done" summary="⚙ $ echo BETA3ms…"     <- reported
+  //     embed class="embed done" summary="⚙️ $ echo ALPHA3ms…"
+  //     embed class="embed done" summary="⚙️ $ echo BETA3ms…"     <- reported
   //
   // helper was right and the CALL was missing. A run of commands therefore read as
   // a stack of unrelated blocks, which is the "timeline is cluttered" complaint.
@@ -181,9 +181,9 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
     () => {
   const r = res();
   void r;
-  // per-tool summary line: [label, hint]. There is no icon: the default was "⚙" for
+  // per-tool summary line: [label, hint]. There is no icon: the default was "⚙️" for
   // every tool and no case ever overrode it, so it identified nothing — the tool NAME
-  // is already in the row's author slot, and a grouped row showed no ⚙ at all, which is
+  // is already in the row's author slot, and a grouped row showed no ⚙️ at all, which is
   // the inconsistency this removes.
   let label = name;
   let hint: string | null = "";
@@ -747,7 +747,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
         <div class={"embed question" + (answered() ? " answered" : "")}>
           {/* questions are model-written and often carry markdown (code refs,
               lists) — render them like progress embeds instead of dumping raw */}
-          <div>❓ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
+          <div>❓️ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
           <Show when={answered()}>
             <div class="meta" style="color:var(--ok)">✓ answered — continuing below</div>
           </Show>

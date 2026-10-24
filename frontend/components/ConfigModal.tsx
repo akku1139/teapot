@@ -957,7 +957,7 @@ export function ConfigModal(props: {
     // what the agent can load: skills it wrote itself, workspace ones, and bundled ones
     { key: "skills", label: "🧠 skills", hint: "reusable playbooks available to the selected session" },
     // where the explanations that used to sit permanently under the UI now live
-    { key: "help", label: "❔ help", hint: "keyboard shortcuts and what each toggle does" },
+    { key: "help", label: "❔️ help", hint: "keyboard shortcuts and what each toggle does" },
   ];
 
   const agentIds = () => (props.cfg.agents ?? []).map((a: any) => a.id);

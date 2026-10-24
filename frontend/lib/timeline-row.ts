@@ -10,7 +10,7 @@ export const AUTHORS: Record<string, { name: string; icon: string; color: string
   user: { name: "you", icon: "🟧", color: "#faa81a" },
   message: { name: "agent", icon: "🫖", color: "#5865f2" },
   progress: { name: "progress", icon: "📈", color: "#3ba55d" },
-  question: { name: "agent", icon: "❓", color: "#5865f2" }, // ask_user comes from the agent too
+  question: { name: "agent", icon: "❓️", color: "#5865f2" }, // ask_user comes from the agent too
 };
 
 export const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
@@ -18,7 +18,7 @@ export const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
 export const authorOf = (e: Ev) => {
   if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
   if (e.type === "tool_call" || e.type === "tool_result")
-    return { name: String(e.data?.name ?? "tool"), icon: "⚙", color: "#3ba0c9" };
+    return { name: String(e.data?.name ?? "tool"), icon: "⚙️", color: "#3ba0c9" };
   if (e.type === "prompt") {
     const src = String(e.data?.source ?? "user");
     if (src === "user") return AUTHORS.prompt;
