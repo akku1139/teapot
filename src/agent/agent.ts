@@ -2459,6 +2459,20 @@ export class Agent {
   private stopSeq = 0;
   /** #95: set when this round already injected a harness progress request */
   private progressRequestedThisRound = false;
+  /**
+   * The turn number at which an auto-continue nudge was injected.
+   *
+   * `progressRequestedThisRound` covers ONE direction (progress asked first, nudge stands down). The
+   * reverse was unguarded: the nudge is appended at the END of a round, and the NEXT round's first
+   * turn calls `maybeRequestProgress()` — so one boundary carried "Continue working toward the
+   * current goal" and then "Please give a brief progress report now", 2ms apart. MEASURED: 21
+   * occurrences after the #95 fix, e.g. teapot-6-cca1d159 at 14:00:50 — the #182 report.
+   *
+   * A TURN NUMBER, not a boolean, because the nudge recurs every round in an auto-continue loop: a
+   * flag set at the end of one round would suppress the report at every later boundary and progress
+   * reports would stop for the whole session (MEASURED as three broken progress tests).
+   */
+  private nudgedAtTurn = -1;
 
   /**
    * CONTROL PLANE: fired on every status change, immediately, independent of the
@@ -2672,6 +2686,8 @@ export class Agent {
           text: nudge,
         });
         this.messages.push({ role: "user", content: nudge });
+        // the nudge is consumed by the NEXT turn, which is the one that must not also ask for a report
+        this.nudgedAtTurn = this.stats.turns + 1;
       } catch (err) {
         const name = (err as Error).name;
         // a stop (user abort or pre-call guard) is control flow, not a failure
@@ -4173,6 +4189,14 @@ export class Agent {
       this.activityChars >= this.opts.progressMinChars ||
       this.turnsSinceProgress >= this.opts.progressMaxQuietTurns;
     if (!elapsedOk || !activityOk) return; // stalling provider → don't waste a turn asking
+    /**
+     * ONE harness instruction per boundary, in EITHER order.
+     *
+     * This is the mirror of the `progressRequestedThisRound` check in the auto-continue branch. A
+     * nudge injected at the end of a round is consumed by the NEXT round's first turn, which is
+     * where this runs — so without this the model receives both, back to back.
+     */
+    if (this.nudgedAtTurn === this.stats.turns) return;
     // remember that this boundary already carries an instruction, so the
     // auto-continue nudge can stand down instead of pairing with it.
     this.progressRequestedThisRound = true;
