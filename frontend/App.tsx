@@ -451,6 +451,20 @@ export default function App() {
    *      stable across a re-wrap (the rows above it changed height), but the row is.
    */
   let lastContentHeight = 0;
+  /**
+   * The topmost visible row, kept current by the SCROLL path (throttled to 100ms).
+   *
+   * `restoreAfterBoxChange` needs it, and it must be a value captured while the reader was looking
+   * at the content — measuring at the moment the box changes compares a row against itself
+   * (`firstVisibleRow` returns the row AND its `top` in one frame, so the delta is always 0). That
+   * is why narrowing the window kept `scrollTop` at 2701 while `scrollHeight` shrank 6753 → 5941 and
+   * the reader's place moved two rows (message 15 → 18).
+   *
+   * Declared here, not beside `resyncAfterUnskip`, so the ResizeObserver path is outside its
+   * temporal dead zone.
+   */
+  let unskipAnchor: { sel: string; top: number } | null = null;
+  let unskipAnchorAt = 0;
   let feedRo: ResizeObserver | undefined;
   let feedRoEl: HTMLElement | undefined;
   let feedRoRaf = 0;
@@ -503,7 +517,15 @@ export default function App() {
       pinToTail();
       return;
     }
-    const anchorRow = firstVisibleRow(f);
+    /**
+     * Use the anchor the SCROLL path maintains (`unskipAnchor`), not one measured here.
+     *
+     * Measuring here compared a row's position against itself: `firstVisibleRow(f)` returns the row
+     * AND its `top` in the same frame, so `delta` was always 0 and this branch did nothing. That is
+     * why narrowing the window kept `scrollTop` at 2701 while `scrollHeight` shrank 6753 → 5941 and
+     * the reader's place moved two rows (message 15 → 18).
+     */
+    const anchorRow = unskipAnchor;
     if (!anchorRow) return;
     const el = f.querySelector<HTMLElement>(anchorRow.sel);
     if (!el) return;
@@ -3746,8 +3768,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * re-applied after. Captured on every scroll delivery while not following: cheap (one row,
    * found by the same binary search a resize already uses) and always current.
    */
-  let unskipAnchor: { sel: string; top: number } | null = null;
-  let unskipAnchorAt = 0;
   /**
    * How many unskip corrections may run before the next reader gesture.
    *
@@ -3840,7 +3860,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       reader.readAsDataURL(f);
     }
   };
-  const sendText = async (text: string, targetId?: string) => {
+  /**
+   * `source` says WHO is speaking.
+   *
+   * A slash command that injects harness text (`/skill` sends `[harness] Force-load and follow …`)
+   * arrived on the timeline as a message "from you", because the route hardcoded "user". The client
+   * is the only side that knows an instruction came from the harness rather than the operator.
+   */
+  const sendText = async (text: string, targetId?: string, source?: "harness") => {
     const id = targetId ?? selected();
     if (!id) return;
     const images = pendingImages();
@@ -3848,7 +3875,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const r = await api(`/api/agents/${id}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, start: true, ...(images.length ? { images } : {}) }),
+        body: JSON.stringify({ text, start: true, ...(source ? { source } : {}), ...(images.length ? { images } : {}) }),
       });
       // optimistic echo — replaced by the logged event once the feed catches up.
       // promptId links it to the later prompt-delivered note (real LLM payload).
@@ -4020,6 +4047,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (!arg) { flashHint("usage: /skill <name>"); return; }
         await sendText(
           `[harness] Force-load and follow the skill "${arg}" now: call load_skill("${arg}") and execute its playbook for the current task.`,
+          undefined,
+          "harness",
         );
         flashHint(`skill "${arg}" dispatched`);
       }
@@ -4642,11 +4671,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <Show when={(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 0}>
               <span
                 class="badge queued"
-                title={
-                  sel()!.status === "stopped"
-                    ? `${sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you are still queued, but this agent is STOPPED — nothing will run until you press start (or it is resumed). Each can be withdrawn with ✕ cancel while it is still queued.`
-                    : `${sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0} message${(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 1 ? "s" : ""} from you waiting in the queue. They will be handed to the model at its next turn boundary — the timeline shows them as "pending (queued)…" until then, and each can be withdrawn with ✕ cancel while it's still queued.`
-                }
+                title={(() => {
+                  /**
+                   * Count and describe the queue by WHO queued each message.
+                   *
+                   * The badge counted every queued prompt but called them all "from you", and
+                   * harness prompts (an audit retry, a "keep going" nudge) are in the same queue —
+                   * so the count grew for messages the operator never wrote (#122). A harness
+                   * message also cannot be withdrawn, so promising "each can be withdrawn with ✕
+                   * cancel" was false for exactly those.
+                   */
+                  const q = sel()!.pendingPromptQueue ?? [];
+                  const n = q.length || sel()!.pendingPromptIds?.length || sel()!.pendingPrompts || 0;
+                  const mine = q.length ? q.filter((x) => (x.source ?? "user") === "user").length : n;
+                  const harness = n - mine;
+                  const label = `${n} message${n > 1 ? "s" : ""} queued${harness ? ` — ${mine} from you, ${harness} from the harness` : " from you"}`;
+                  const stopped = sel()!.status === "stopped";
+                  return (
+                    `${label}. ${stopped ? "This agent is STOPPED, so nothing will run until you press start (or it is resumed)." : "They are handed to the model at its next turn boundary — the timeline shows them as queued… until then."}` +
+                    (mine ? " Yours can be withdrawn with ✕ cancel while still queued." : "")
+                  );
+                })()}
               >
                 ⏳ {sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts} of yours queued{sel()!.status === "stopped" ? " (stopped)" : ""}
               </span>

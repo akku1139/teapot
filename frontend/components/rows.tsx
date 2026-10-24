@@ -231,9 +231,18 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
                 {bgJob ? <> · kill with <b>action="kill"</b></> : null}
               </div>
             ) : null}
-            {/* the command gets SHELL highlighting: it is the one tool input where the syntax
-                carries meaning (quoting, pipes, flags), not just data */}
-            {cmd !== label.slice(isBg ? 2 : 2) ? codeBlock(cmd, 800, "shellscript") : null}
+            {/**
+              * The command, in FULL, with shell highlighting — it is the one tool input where the
+              * syntax carries meaning (quoting, pipes, flags), not just data.
+              *
+              * `codeBlock(cmd, 800, …)` cut it at 800 characters, so a heredoc or a long pipeline
+              * showed its first few lines and a `…`. The card is already a `<details>` the operator
+              * opened deliberately, and the same mistake in the RESULT block was fixed by rendering
+              * it whole — the arguments deserve the same answer.
+              */}
+            {cmd !== label.slice(isBg ? 2 : 2) ? (
+              <HighlightedCode text={cmd} lang="shellscript" />
+            ) : null}
             {resultBlock()}
           </>
         );

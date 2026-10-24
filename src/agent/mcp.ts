@@ -24,10 +24,40 @@
  * document from a different issuer.
  */
 
-import { Client } from "@modelcontextprotocol/client";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { SSEClientTransport } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+/**
+ * The MCP SDK is loaded ON DEMAND, not on import.
+ *
+ * MEASURED: importing `@modelcontextprotocol/client` costs +30MB RSS on its own, and this module is
+ * in the server's boot path (through the registry) whether or not any MCP server is configured — on
+ * almost every machine, none are. `connectMcp` is already `async`, so a dynamic import there moves
+ * the cost to the first actual connection and leaves the baseline alone.
+ *
+ * The TYPES stay static (they are erased at runtime); only the constructors are resolved lazily.
+ * `instanceof` checks are replaced by a capability test, because the classes do not exist until the
+ * import has run.
+ */
+import type { Client } from "@modelcontextprotocol/client";
+import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { SSEClientTransport } from "@modelcontextprotocol/client";
+import type { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+
+type McpSdk = typeof import("@modelcontextprotocol/client") & {
+  StdioClientTransport: typeof import("@modelcontextprotocol/client/stdio").StdioClientTransport;
+};
+let sdkPromise: Promise<McpSdk> | undefined;
+/** resolved once, on the first connection attempt */
+async function mcpSdk(): Promise<McpSdk> {
+  if (!sdkPromise) {
+    sdkPromise = (async () => {
+      const [client, stdio] = await Promise.all([
+        import("@modelcontextprotocol/client"),
+        import("@modelcontextprotocol/client/stdio"),
+      ]);
+      return { ...client, StdioClientTransport: stdio.StdioClientTransport } as McpSdk;
+    })();
+  }
+  return sdkPromise;
+}
 import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 
 /** One tool as the server described it. */
@@ -172,7 +202,8 @@ function buildConnection(
       return resultText(res as { content?: Array<{ type?: string; text?: string }>; isError?: boolean });
     },
     async finishAuth(code, iss) {
-      if (!(session instanceof StreamableHTTPClientTransport) && !(session instanceof SSEClientTransport))
+      // a capability test, not `instanceof`: the SDK classes do not exist until the import has run
+      if (typeof (session as { finishAuth?: unknown }).finishAuth !== "function")
         throw new Error("this transport has no OAuth flow");
       /**
        * Exchange on THIS transport — the PKCE verifier and the discovery record are read from the
@@ -202,14 +233,15 @@ function buildConnection(
 }
 
 export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<McpConnection> {
+  const sdk = await mcpSdk();
   const transport = cfg.transport ?? (cfg.command && !cfg.url ? "stdio" : "http");
-  const client = new Client({ name: "teapot", version: "1" });
+  const client = new sdk.Client({ name: "teapot", version: "1" });
 
   let session: StreamableHTTPClientTransport | SSEClientTransport | StdioClientTransport;
 
   if (transport === "stdio") {
     if (!cfg.command) throw new Error(`MCP server "${cfg.name}" has no command`);
-    session = new StdioClientTransport({
+    session = new sdk.StdioClientTransport({
       command: cfg.command,
       args: cfg.args ?? [],
       env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
@@ -223,7 +255,7 @@ export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<
     const url = new URL(cfg.url);
     if (!["http:", "https:"].includes(url.protocol))
       throw new Error(`MCP server "${cfg.name}" must use http(s), not ${url.protocol}`);
-    session = new SSEClientTransport(url, {
+    session = new sdk.SSEClientTransport(url, {
       // `manual`, NOT follow: an MCP endpoint that redirects is nearly always an HTML
       // login page, and following it replaces a clear auth problem with a parse error
       redirectPolicy: "same-origin",
@@ -235,7 +267,7 @@ export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<
     const url = new URL(cfg.url);
     if (!["http:", "https:"].includes(url.protocol))
       throw new Error(`MCP server "${cfg.name}" must use http(s), not ${url.protocol}`);
-    session = new StreamableHTTPClientTransport(url, {
+    session = new sdk.StreamableHTTPClientTransport(url, {
       redirectPolicy: "same-origin",
       ...(cfg.headers ? { requestInit: { headers: cfg.headers } } : {}),
       ...(auth ? { authProvider: auth.provider } : {}),

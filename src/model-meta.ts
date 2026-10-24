@@ -3,7 +3,7 @@
  * Used to auto-populate contextWindowTokens so compaction budgets derive
  * from the real window instead of the safe default.
  */
-import { providerHeaders } from "./agent/llm.ts";
+import { providerHeaders } from "./agent/provider-headers.ts";
 
 export interface ModelMeta {
   id: string;

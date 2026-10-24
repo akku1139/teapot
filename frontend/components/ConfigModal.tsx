@@ -2027,19 +2027,26 @@ export function ConfigModal(props: {
                               working URL with the wrong scopes looked identical. The names
                               answer "did that do what I wanted"; the description says which one
                               to reach for. */}
+                          {/* A `details` because a server can expose dozens of tools and the list
+                              had no way to be put away — it stayed open under the row forever,
+                              pushing every other server down the panel. Closed by default: the
+                              count in the head already answers "did it connect". */}
                           <Show when={(st2().tools?.length ?? 0) > 0}>
-                            <ul class="mcptools">
-                              <For each={st2().tools ?? []}>
-                                {(t2) => (
-                                  <li title={t2.description ?? ""}>
-                                    <code class="mono">{t2.name}</code>
-                                    <Show when={t2.description}>
-                                      <span class="mcptool-desc">{t2.description}</span>
-                                    </Show>
-                                  </li>
-                                )}
-                              </For>
-                            </ul>
+                            <details class="mcptools-wrap">
+                              <summary>show {st2().tools?.length} tool{st2().tools?.length === 1 ? "" : "s"}</summary>
+                              <ul class="mcptools">
+                                <For each={st2().tools ?? []}>
+                                  {(t2) => (
+                                    <li title={t2.description ?? ""}>
+                                      <code class="mono">{t2.name}</code>
+                                      <Show when={t2.description}>
+                                        <span class="mcptool-desc">{t2.description}</span>
+                                      </Show>
+                                    </li>
+                                  )}
+                                </For>
+                              </ul>
+                            </details>
                           </Show>
                         </div>
                       )}

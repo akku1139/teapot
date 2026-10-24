@@ -584,7 +584,22 @@ html[data-bg-image="on"] body { background: transparent; }
      { display: none }`, so at equal specificity the base rule won and the ✕
      was invisible at EVERY width. `.rightbar` raises specificity to 0,2,0 and
      beats the base rule no matter where the build places it. */
+  /**
+   * Sticky (so the ✕ cannot scroll away), and flush with the panel's top edge.
+   *
+   * It used to bleed over the panel's padding with `margin: -14px -14px 0`, and a negative margin
+   * does not pull a STICKY element up — the box is pinned by its sticky position. MEASURED:
+   * `panelTop=0 headTop=14 gap=14` with `margin-top: -14px` computed, i.e. a 14px band of panel
+   * padding above the row.
+   *
+   * The inset therefore comes from the PANEL's padding, not the row's margin: draw the row
+   * edge-to-edge and drop the panel's top padding so the row IS the top edge. Sticky is kept —
+   * `position: static` would let the panel's own `overflow-y: auto` scroll the close button out of
+   * reach, which is exactly what #50 fixed.
+   */
   .rightbar .rightbarhead { position: sticky; top: 0; z-index: 1; display: flex; }
+  /* no top padding in drawer mode: the head IS the top edge */
+  .rightbar:has(.rightbarhead) { padding-top: 0; }
   .rightbar {
     position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw); z-index: 5;
     transform: translateX(100%); transition: transform .18s ease, box-shadow .18s ease;
@@ -1787,8 +1802,9 @@ html[data-bg-image="on"] .composer form {
    through the ✕ row. */
 .rightbarhead {
   display: none; align-items: center; justify-content: space-between; gap: var(--space-4);
-  /* bleed over the panel's own padding so the bar spans edge to edge */
-  margin: -14px -14px 0; padding: 10px 14px;
+  /* the row spans the panel edge to edge; padding (not a negative margin) does the inset, so no
+     sticky box can leave a band above it */
+  margin: 0; padding: 10px 14px;
   background: var(--bg-dark); border-bottom: 1px solid var(--line);
 }
 .rightbarhead .muted { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; }
@@ -2243,10 +2259,19 @@ html[data-bg-image="on"] .composer form {
 /* the discovered tool list. Two lines per tool at most — name, then a truncated description —
    because the point is RECOGNITION ("is the one I want in here"), not documentation. The full
    description is the row's `title`. */
-.mcptools { list-style: none; margin: 3px 0 0; padding: 0 0 0 2px; display: flex; flex-direction: column; gap: 2px; }
-.mcptools li { display: flex; gap: var(--space-3); align-items: baseline; min-width: 0; color: var(--dim); }
-.mcptools code { color: var(--fg); font-size: 11px; flex-shrink: 0; }
-.mcptool-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; min-width: 0; }
+/**
+ * The discovered tool list must not scroll sideways.
+ *
+ * `code { flex-shrink: 0 }` refused to shrink the tool NAME, and a namespaced MCP name
+ * (`mcp__server__some_long_tool`) is long enough to exceed the panel on its own — the row grew and
+ * the list scrolled horizontally (reported from the settings panel). A name may WRAP: it is an
+ * identifier, so breaking it is ugly but readable, while a horizontal scrollbar hides half the list
+ * behind a gesture nobody expects in a settings form.
+ */
+.mcptools { list-style: none; margin: 3px 0 0; padding: 0 0 0 2px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mcptools li { display: flex; gap: var(--space-3); align-items: baseline; min-width: 0; color: var(--dim); flex-wrap: wrap; }
+.mcptools code { color: var(--fg); font-size: 11px; min-width: 0; overflow-wrap: anywhere; }
+.mcptool-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; min-width: 0; flex: 1 1 10ch; }
 /* live connection state — a coloured dot reads faster than the word does */
 .mcpstate { font-size: var(--text-xs); white-space: nowrap; color: var(--dim); }
 .mcpstate.connected { color: var(--ok); }
@@ -3043,3 +3068,8 @@ html[data-bg-image="on"] .content pre code {
  */
 html[data-bg-image="on"] .bgpreview { background-color: var(--bg-mid); }
 html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-solid, var(--bg-darkest)); }
+/* the tool list is collapsible: a server can expose dozens, and an always-open list pushed every
+   other row off the panel */
+.mcptools-wrap { margin-top: 3px; }
+.mcptools-wrap > summary { cursor: pointer; color: var(--dim); font-size: 11px; }
+.mcptools-wrap > summary:hover { color: var(--fg); }

@@ -15,7 +15,17 @@
  * protocol itself belongs to the SDK — see `mcp-oauth-manager.ts` for the provider.
  */
 
-import { connectMcp, type McpAuth, type McpConnection, type McpServerConfig, type McpTool } from "./mcp.ts";
+import type { McpAuth, McpConnection, McpServerConfig, McpTool } from "./mcp.ts";
+/**
+ * `connectMcp` is imported LAZILY, and only as a value.
+ *
+ * A static import here pulls `mcp.ts`, which lazily loads `@modelcontextprotocol/client` — but a
+ * static EDGE from this module means the bundler/runtime must resolve the whole file graph at load.
+ * MEASURED: this module alone cost +48.7MB RSS. The registry is constructed at boot on every
+ * machine, while a connection is only attempted when a server is actually configured.
+ */
+const connectMcp = async (...args: Parameters<typeof import("./mcp.ts").connectMcp>) =>
+  (await import("./mcp.ts")).connectMcp(...args);
 import {
   FLOW_TIMEOUT_MS,
   McpAuthStore,
@@ -110,6 +120,28 @@ export class McpRegistry {
 
   states(): McpServerState[] {
     return [...this.servers.values()];
+  }
+
+  /** the state of ONE server, or undefined when it is not configured */
+  state(name: string): McpServerState | undefined {
+    return this.servers.get(name);
+  }
+
+  /**
+   * Record an out-of-band successful connection for a SAVED server.
+   *
+   * `/api/mcp/test` opens a throwaway connection (it must not disturb the live one) but the result is
+   * real evidence about the same config, so the row's badge has to reflect it. Without this a server
+   * that failed at boot stayed `● error` after a test successfully listed its tools.
+   */
+  recordSuccess(name: string, tools: McpServerState["tools"]): void {
+    const st = this.servers.get(name);
+    if (!st) return; // testing an unsaved edit must not invent an entry
+    st.status = "connected";
+    st.tools = tools;
+    st.lastError = undefined;
+    st.lastChecked = Date.now();
+    st.oauthRequired = false;
   }
 
   /** the OAuth state of one server, for the settings panel */

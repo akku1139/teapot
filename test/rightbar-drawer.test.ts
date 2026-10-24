@@ -133,11 +133,26 @@ test("the ✕ row is STICKY — the panel scrolls, the close button must not (#5
     /border-bottom:\s*1px solid var\(--line\)/,
     "content scrolling under a bare row reads as broken (#50)",
   );
-  // and it must bleed over the panel padding, or the bar stops short of the edges
+  /**
+   * …and it must reach the panel's top edge — but the inset comes from the PANEL, not a negative
+   * margin on the row.
+   *
+   * This asserted `margin: -14px -14px 0`. A negative margin does not pull a STICKY box up: the
+   * element is pinned by its sticky position, so the panel's 14px of top padding stayed above the
+   * row and showed as a band of empty panel — MEASURED as `panelTop=0 headTop=14 gap=14` with
+   * `margin-top: -14px` computed. The row now has `margin: 0` and the PANEL drops its top padding
+   * (`.rightbar:has(.rightbarhead) { padding-top: 0 }`), which makes the row the top edge for real.
+   */
   assert.match(
     base,
-    /margin:\s*-14px -14px 0/,
-    "the row must span the panel's padding, or it looks like a floating chip (#50)",
+    /margin:\s*0;/,
+    "no negative margin on the row — it cannot move a sticky box, and it left a 14px gap (#50)",
+  );
+  const narrow2 = narrowBlock();
+  assert.match(
+    narrow2,
+    /\.rightbar:has\(\.rightbarhead\)\s*\{[^}]*padding-top:\s*0/,
+    "the PANEL must drop its top padding so the sticky row is flush with the top edge (#50)",
   );
 });
 

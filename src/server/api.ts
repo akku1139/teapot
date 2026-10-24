@@ -1191,6 +1191,18 @@ const MAX_WS_CLIENTS = 64;
       const conn = await connectMcp({ ...body, enabled: true });
       try {
         const tools = await conn.tools();
+        /**
+         * A successful test CLEARS the row's `error`.
+         *
+         * The test used a throwaway connection and never touched the registry, so the saved
+         * server's state kept whatever the last boot produced: a server that had failed at boot
+         * (or while it was unauthorized) stayed `● error` even after a test listed its tools —
+         * reported as "起動時に error だったno authのMCPサーバーをtestしてうまく接続できたのに、ステータスが
+         * errorのまま". The test IS evidence about the same config, so it updates the same state.
+         *
+         * Only for an entry that already exists: `test` on an unsaved edit must not invent one.
+         */
+        mcp.recordSuccess(body.name, tools);
         return c.json({
           ok: true,
           tools: tools.map((t) => ({ name: t.name, description: t.description })),
@@ -1237,7 +1249,7 @@ const MAX_WS_CLIENTS = 64;
     const a = master.agents.get(c.req.param("id"));
     if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req
-      .json<{ text?: string; start?: boolean; images?: { url: string; name?: string }[] }>()
+      .json<{ text?: string; start?: boolean; source?: "user" | "harness"; images?: { url: string; name?: string }[] }>()
       .catch(() => null); // #110
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (!body.text?.trim() && !body.images?.length)
@@ -1253,7 +1265,18 @@ const MAX_WS_CLIENTS = 64;
     // returns immediately: the prompt is logged + broadcast now, delivered to
     // the model at the next turn boundary (never blocks on a running agent).
     // promptId ties the UI's pending echo to the later prompt-delivered note.
-    const promptId = a.enqueuePrompt(text || "(see attached image)", "user", images.length ? images : undefined);
+    /**
+     * `source` is the CALLER's to state, defaulting to "user".
+     *
+     * A UI slash command that injects harness text (`/skill` sends
+     * `[harness] Force-load and follow …`) was arriving as a message "from you": the route hardcoded
+     * "user", so the timeline attributed the harness's own instruction to the operator. A prompt's
+     * source is data the client knows and the server cannot infer from the text.
+     *
+     * Only the two values that exist are accepted; anything else is the operator.
+     */
+    const src = body.source === "harness" ? "harness" : "user";
+    const promptId = a.enqueuePrompt(text || "(see attached image)", src, images.length ? images : undefined);
     if (body.start !== false && a.status !== "running") a.start("prompt");
     return c.json({ ok: true, promptId, queued: a.snapshot().pendingPrompts });
   });
