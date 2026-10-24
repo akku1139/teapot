@@ -888,8 +888,14 @@ console.log("deep render ok: feed rows present");
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const fail = (msg) => { console.error(`#58 REGRESSION: ${msg}`); process.exit(1); };
 
-  // the fixture gives alpha three sessions; ask for an OLD one on purpose
-  const want = "alpha-s1";
+  /**
+   * Ask for a DIFFERENT session than the one we booted at.
+   *
+   * The window now boots at BOOT_SESSION (alpha-s1), so navigating to the same id is a no-op by
+   * design — `select()` ignores a repeat of what is already showing. This check needs a real move,
+   * so it asks for alpha-s9, the NEWEST, which is neither the bound session nor the boot one.
+   */
+  const want = "alpha-s9";
   history.replaceState(null, "", `/session/${want}`);
   requestedUrls.length = 0;
   // drive it the way a Back/Forward would: change the URL, then fire popstate
@@ -908,6 +914,14 @@ console.log("deep render ok: feed rows present");
   if (!location.pathname.includes(want))
     fail(`the URL was rewritten away from ${want} to ${location.pathname} (#58)`);
   console.log("deep render ok: a deep link opens the session it names (#58)");
+  /**
+   * RETURN to the boot session. This check moved the timeline to `want`, and every later check that
+   * drives socket frames for alpha-s1 would silently target a session that is no longer displayed —
+   * a precondition failure three checks downstream with no visible connection to this one.
+   */
+  history.replaceState(null, "", `/session/${BOOT_SESSION}`);
+  w.dispatchEvent(new w.PopStateEvent("popstate", { bubbles: true }));
+  await sleep(400);
 }
 
 /* ---------- #52: the timeline Copy buttons must actually copy -------------

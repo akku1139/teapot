@@ -60,3 +60,55 @@ test("the ?session= helper never keys off the agent id (#routing)", async () => 
     "the question is whether the index KNOWS the id, and that governs whether it is sent",
   );
 });
+
+test("the session index shares its in-flight request, and the latch means LANDED (#routing)", async () => {
+  /**
+   * MEASURED at boot, after the ?session= fix had already shipped:
+   *
+   *     want=tyb2-8-0161a4af  owner=undefined  idx=0  agents=tyb2-8,teapot-10
+   *
+   * The index was EMPTY when the deep link resolved, so no owner was found and the boot fell
+   * through to `localStorage` — opening another agent's session under this URL. Reloading
+   * /session/tyb2-8-0161a4af showed teapot-10's timeline.
+   *
+   * Cause: `refreshSessionIndex` set its `fetched` latch BEFORE awaiting. `refreshAgents()` fires an
+   * un-awaited refresh at boot, so the `await` in `onMount` found the latch set, returned
+   * immediately, and the caller read an index that had not arrived. A boolean cannot distinguish
+   * "in flight" from "landed".
+   */
+  const src = await readSource("frontend/App.tsx");
+  const at = src.indexOf("async function refreshSessionIndex(");
+  assert.ok(at > 0, "refreshSessionIndex must exist");
+  const body = src.slice(at, src.indexOf("\n  }\n", at));
+
+  assert.match(
+    body,
+    /if \(indexInFlight\) return indexInFlight/,
+    "a second caller must JOIN the request in flight — returning early with an empty index is how " +
+      "the deep link lost its owner",
+  );
+  assert.match(
+    body,
+    /indexInFlight = run/,
+    "the in-flight promise must be recorded so concurrent callers can await it",
+  );
+  // the latch is set INSIDE the fetch, i.e. after the data arrived
+  const latchAt = body.indexOf("indexFetched = true");
+  const awaitAt = body.indexOf("await api(\"/api/sessions\")");
+  assert.ok(awaitAt > 0, "the fetch must be awaited");
+  assert.ok(
+    latchAt > awaitAt,
+    "the `landed` latch must be set AFTER the data arrives — setting it before the await makes " +
+      "every later caller read an empty index",
+  );
+  // and a failure must not leave it latched forever
+  assert.match(
+    body,
+    /catch \{[\s\S]{0,120}\}/,
+    "a failed fetch must leave the latch clear so the next caller retries",
+  );
+  assert.ok(
+    !/catch \{[\s\S]{0,200}indexFetched = true/.test(body),
+    "and must certainly not mark the index as fetched on failure",
+  );
+});

@@ -249,30 +249,51 @@ export default function App() {
    * tell apart. This index is built from the logs themselves and covers all of them.
    */
   const [sessionTitles, setSessionTitles] = createSignal<Map<string, string>>(new Map());
-  let sessionIndexFetched = false;
+  let indexFetched = false;
+  /** the request in flight, so concurrent callers await the SAME one */
+  let indexInFlight: Promise<void> | null = null;
+  /**
+   * Fetch the session index once, sharing the in-flight request between callers.
+   *
+   * The latch means "LANDED", not "started". Setting it before the `await` let a second caller
+   * return immediately with the index still empty — MEASURED at boot: `refreshAgents()` fires an
+   * un-awaited refresh, `onMount` awaits its own, gets nothing, finds no owner for the deep link,
+   * and falls through to `localStorage`, opening ANOTHER agent's session under this URL
+   * (want=tyb2-8-0161a4af owner=undefined idx=0).
+   *
+   * `force` refetches; a failed fetch leaves the latch clear so it can be retried.
+   */
   async function refreshSessionIndex(force = false): Promise<void> {
-    // A permanent latch meant a session created or deleted while the tab was
-    // open never appeared — the UI kept a handle to a session that no longer
-    // existed, which is the unusable half of #39. Refetch when asked; the
-    // caller decides when that is worth it.
-    if (sessionIndexFetched && !force) return;
-    sessionIndexFetched = true;
-    try {
-      const r = await api("/api/sessions");
-      const byId = new Map<string, string>();
-      const byAgent = new Map<string, string[]>();
-      const titles = new Map<string, string>();
-      for (const s of r.sessions ?? []) {
-        byId.set(s.id, s.agentId);
-        if (typeof s.title === "string" && s.title) titles.set(s.id, s.title);
-        const list = byAgent.get(s.agentId) ?? [];
-        list.push(s.id); // server returns newest first
-        byAgent.set(s.agentId, list);
+    if (indexInFlight) return indexInFlight;
+    if (indexFetched && !force) return;
+    const run = (async () => {
+      try {
+        const r = await api("/api/sessions");
+        const byId = new Map<string, string>();
+        const byAgent = new Map<string, string[]>();
+        const titles = new Map<string, string>();
+        for (const s of r.sessions ?? []) {
+          byId.set(s.id, s.agentId);
+          if (typeof s.title === "string" && s.title) titles.set(s.id, s.title);
+          const list = byAgent.get(s.agentId) ?? [];
+          list.push(s.id); // server returns newest first
+          byAgent.set(s.agentId, list);
+        }
+        setMasterSessionIndex(byId);
+        setSessionsByAgent(byAgent);
+        setSessionTitles(titles);
+        indexFetched = true;
+      } catch {
+        /* transient — the latch stays clear so the next caller retries */
       }
-      setMasterSessionIndex(byId);
-      setSessionsByAgent(byAgent);
-      setSessionTitles(titles);
-    } catch { /* transient — retried on next agent-set change */ }
+    })();
+    indexInFlight = run;
+    try {
+      await run;
+    } finally {
+      // only clear OUR entry: a `force` refetch started while this one ran owns the slot now
+      if (indexInFlight === run) indexInFlight = null;
+    }
   }
   const [events, setEvents] = createSignal<Ev[]>([]);
   const [eventsTotal, setEventsTotal] = createSignal(0); // server-side count (window is capped)
