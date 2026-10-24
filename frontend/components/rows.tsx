@@ -7,6 +7,7 @@ import { flashHint } from "../lib/flash";
 import { hasAnsi, stripAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
 import { goalLine } from "../lib/goal-timeline";
+import { toneOf } from "../lib/timeline-row";
 import { renderMarkdown } from "../md";
 import { renderMarkdownCached } from "../lib/markdown";
 import { groupedWith, type RowLike } from "../lib/row-grouping";
@@ -647,14 +648,14 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
           faint 🧩s read as separate "sub messages" instead of continuation
           lines. Hover still shows time+branch via the title. */}
       {/**
-       * The author COLOUR is data (it comes from `authorOf`), so it crosses as a custom property —
-       * one custom property, not a style block. Everything else about the avatar is in app.css,
-       * because this element exists once per row: an inline style here is parsed and applied again
-       * for every one of the ~1,100 rows the feed holds.
+       * The author's colour is a CLASS now, not a custom property.
+       *
+       * `style={{ "--author": colour }}` was still an inline style on an element created once per
+       * row (~1,100 per session) — the exact cost this file's other rules exist to avoid. The
+       * palette is a fixed set, so `toneOf()` maps it to one of five classes.
        */}
       <div
-        class={"avatar avghost" + (grouped() ? " ghosted" : "")}
-        style={{ "--author": a.color }}
+        class={`avatar avghost tone-${toneOf(a.color)}` + (grouped() ? " ghosted" : "")}
         title={grouped() ? `${fmtTs(e.ts)} · ${e.branch}` : undefined}
       >
         {grouped() ? "" : a.icon}
@@ -663,7 +664,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
         {grouped() && <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`} />}
         <Show when={!grouped()}>
           <div class="msg-head">
-            <span class="author" style={{ "--author": a.color }}>{a.name}</span>
+            <span class={`author tone-${toneOf(a.color)}`}>{a.name}</span>
             <Show when={e.data?.actor}>
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>

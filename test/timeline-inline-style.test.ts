@@ -30,9 +30,19 @@ test("timeline row components carry no inline styles (#ui)", async () => {
    * A data-driven value may cross as a CUSTOM PROPERTY (`style={{ "--author": colour }}`): that is
    * one property for a value the stylesheet cannot know, not a style block re-applied per row.
    */
-  const ALLOWED_OBJECT_KEYS = /^style=\{\{\s*"--[a-z-]+":/;
+  /**
+   * NOTHING is allowed now, and the custom-property exception is gone with its last user.
+   *
+   * `style={{ "--author": colour }}` was sanctioned here as "one property is not a style block".
+   * It was still an inline style on an element created once per row — ~1,100 of them when a session
+   * opens — and the palette is a fixed set, so `toneOf()` maps it to a class instead. MEASURED after:
+   * zero `[style]` elements inside the feed.
+   */
+  const ALLOWED_OBJECT_KEYS = /^$NEVER_MATCH$/;
   for (const rel of ROW_FILES) {
-    const src = await readFile(path.join(import.meta.dirname, "..", rel), "utf8");
+    const raw = await readFile(path.join(import.meta.dirname, "..", rel), "utf8");
+    // strip comments: a fix's own explanation quotes the code it replaced
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
     const hits: string[] = [];
     for (const m of src.matchAll(/style=\{?"[^"]+"|style=\{\{[^}]*\}\}/g)) {
       if (ALLOWED_OBJECT_KEYS.test(m[0])) continue; // a single custom property is the sanctioned form

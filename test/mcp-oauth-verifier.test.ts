@@ -77,13 +77,19 @@ test("a registration made with a DIFFERENT redirect URI is not reused (#mcp)", a
     clientInformation: {
       client_id: "cid",
       client_secret: "csec",
-      redirect_uris: ["http://127.0.0.1/callback"], // portless: cannot match this run
+      redirect_uris: ["http://127.0.0.1/callback"], // portless placeholder
     },
   } as never);
-  assert.equal(
+  /**
+   * CORRECTED: this asserted that a portless record must be thrown away. Keeping it is the whole
+   * point — see the note in `mcp-oauth-stale-grant.test.ts`. A loopback port belongs to the
+   * listener, not to the client's identity (RFC 8252 §7.3), and re-registering issues a new
+   * client_id, which invalidates the grant that the operator just obtained.
+   */
+  assert.notEqual(
     auth.clientInformation(),
     undefined,
-    "a registration for another redirect URI must not be reused, or the exchange is rejected",
+    "a loopback record must be REUSED across ports, or every flow re-registers and drops the grant",
   );
 
   // one that DOES match this instance's redirect is reused, so a repeat flow needs no re-register

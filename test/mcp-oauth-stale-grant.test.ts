@@ -63,10 +63,36 @@ test("a placeholder reconnect KEEPS the grant; a real mismatch declines it (#mcp
     placeholder.tokens(),
     "a portless placeholder cannot refute a registration, so it must not discard the grant (#mcp)",
   );
-  // a listener-backed URL the record does not list IS a genuine mismatch, and is still declined
-  const mismatch = new ServerAuth("srv", "http://127.0.0.1:59999/callback", async () => {});
+  /**
+   * CORRECTED. This used to treat "a different loopback PORT" as a genuine mismatch, and that
+   * assumption is what kept destroying grants.
+   *
+   * MEASURED from this machine's real store: Notion's record held
+   * `redirect_uris: ["http://127.0.0.1:33337/callback"]` — the ephemeral port of the flow that
+   * authorized it — while every reconnect runs on a new port. Comparing them literally means "never
+   * matches", so the SDK re-registered, which issued a NEW client_id, which
+   * `saveClientInformation` correctly treats as invalidating the grant. Canva's entry showed the
+   * result: `clientId`/`clientInformation` present and `accessToken`/`refreshToken` GONE.
+   *
+   * RFC 8252 §7.3 lets a loopback redirect use any port, so the port is the listener's business and
+   * not the client's identity.
+   */
+  const otherPort = new ServerAuth("srv", "http://127.0.0.1:59999/callback", async () => {});
+  await otherPort.hydrate(structuredClone(STALE));
+  assert.ok(
+    otherPort.tokens(),
+    "a different loopback PORT is the same registration — comparing ports re-registers on every " +
+      "flow and throws the grant away (#mcp)",
+  );
+
+  // a NON-loopback redirect the record does not list IS a genuine mismatch, and is still declined
+  const mismatch = new ServerAuth("srv", "https://example.test/callback", async () => {});
   await mismatch.hydrate(structuredClone(STALE));
-  assert.equal(mismatch.tokens(), undefined, "a genuinely mismatched client is still not presented");
+  assert.equal(
+    mismatch.tokens(),
+    undefined,
+    "a registration for a different HOST is a genuine mismatch and is still not presented (#mcp)",
+  );
 });
 
 test("a grant IS used when the stored registration matches a real listener (#mcp)", async () => {

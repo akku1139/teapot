@@ -178,6 +178,29 @@ export class McpRegistry {
     return auth;
   }
 
+  /**
+   * Try a configuration WITHOUT disturbing the saved connection, using the SAVED credentials.
+   *
+   * `test` used `connectMcp(cfg)` with no auth provider "on purpose", so an authorized server
+   * answered 401 and the row said "needs a grant (🔑 authorize)" while the same server was
+   * `● connected` with 65 tools two lines above — reported as "Notionは 🔑 authorized なのに
+   * Error POSTing to endpoint · needs a grant". A test that ignores the token it is testing cannot
+   * answer the question the button asks.
+   *
+   * The connection is throwaway (closed by the caller) and the registry entry is only touched on
+   * success, so a test against an unsaved edit cannot invent or corrupt an entry.
+   */
+  async testConfig(cfg: McpServerConfig): Promise<{ tools: McpTool[] }> {
+    const auth = await this.authFor(cfg.name);
+    const authArg: McpAuth | undefined = auth ? { provider: auth } : undefined;
+    const conn = await connectMcp({ ...cfg, enabled: true }, authArg);
+    try {
+      return { tools: await conn.tools() };
+    } finally {
+      await conn.close();
+    }
+  }
+
   /** connect one server (idempotent) and discover its tools */
   async connect(name: string): Promise<McpServerState> {
     const st = this.servers.get(name);

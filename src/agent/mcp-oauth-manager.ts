@@ -152,6 +152,35 @@ export class ServerAuth implements OAuthClientProvider {
     };
   }
 
+  /**
+   * Does a recorded redirect URI describe THIS loopback listener?
+   *
+   * The callback binds an EPHEMERAL port (`server.listen(0)`), so `redirectUrl` carries a different
+   * port on every attempt while the registration is bound to the one it was created with. Comparing
+   * them literally means "never matches", which re-registers on every flow — and re-registering
+   * issues a NEW client_id, which `saveClientInformation` correctly treats as invalidating the
+   * grant. MEASURED: Canva's store had `clientId`/`clientInformation` and NO `accessToken`/
+   * `refreshToken`, i.e. the authorization kept working and the token was thrown away by this loop.
+   *
+   * A loopback port is an implementation detail of the listener, not an identity of the client: the
+   * authorization server redirects to whatever port the request named, and RFC 8252 §7.3 explicitly
+   * allows a loopback redirect to use any port. So the comparison ignores it, and only the
+   * scheme/host/path have to agree.
+   */
+  private redirectMatches(recorded: string): boolean {
+    if (recorded === this.redirectUrl) return true;
+    try {
+      const a = new URL(recorded);
+      const b = new URL(this.redirectUrl);
+      const loopback = (h: string) => h === "127.0.0.1" || h === "::1" || h === "localhost";
+      if (!loopback(a.hostname) || !loopback(b.hostname)) return false;
+      // any loopback host is interchangeable with any other, and the port is the listener's
+      return a.protocol === b.protocol && a.pathname === b.pathname;
+    } catch {
+      return false; // unparseable record: cannot claim a match
+    }
+  }
+
   clientInformation(): StoredOAuthClientInformation | undefined {
     if (!this.store.clientId) return undefined;
     /**
@@ -186,7 +215,7 @@ export class ServerAuth implements OAuthClientProvider {
        * server bound to the client id, so absence keeps the registration.
        */
       if (uris.length === 0) return stored;
-      if (uris.includes(this.redirectUrl)) return stored;
+      if (uris.some((u) => this.redirectMatches(String(u)))) return stored;
       // a recorded URI that cannot match this run: re-register rather than send one it never saw
       return undefined;
     }
@@ -202,28 +231,26 @@ export class ServerAuth implements OAuthClientProvider {
    * True when a redirect URI was recorded and it is not the one this flow listens on — the same
    * condition `clientInformation()` acts on, factored out so `tokens()` cannot disagree with it.
    */
+  /**
+   * Is the STORED registration unusable for this run?
+   *
+   * The SAME comparison `clientInformation()` uses (`redirectMatches`), factored out so `tokens()`
+   * cannot disagree with it about one record. Everything below used to be re-derived here, and the
+   * two definitions drifted twice — once reporting stale where the other reused, once the reverse.
+   *
+   * - no recorded list  → not stale. "Unknown" is not "wrong": some registration responses omit
+   *   `redirect_uris`, and treating absence as a mismatch re-registers on every flow.
+   * - a loopback record → matches whatever port this run listens on (see `redirectMatches`), which
+   *   is what stops the re-register → new client_id → grant-dropped loop.
+   * - anything else      → stale: a record naming a different host cannot be reused.
+   */
   private registrationIsStale(): boolean {
     const stored = this.store.clientInformation as { redirect_uris?: unknown } | undefined;
     const uris = Array.isArray(stored?.redirect_uris) ? (stored.redirect_uris as string[]) : [];
-    if (uris.length === 0) return false; // unknown is not wrong: older records omit the list
-    /**
-     * A PLACEHOLDER redirect says NOTHING either way — so it must not be treated as stale.
-     *
-     * `authFor()` builds every reconnect's provider with `http://127.0.0.1/callback`, no port,
-     * because none exists until a flow opens a listener. An earlier version called that
-     * unconditionally stale, which made `tokens()` DROP the grant on every reconnect: a server that
-     * had been authorized minutes earlier reported "needs a grant" again (MEASURED: Notion and
-     * Canva both lost their access token after a restart, with `teapot.theme`-style certainty that
-     * the authorization itself had worked).
-     *
-     * A placeholder can neither confirm nor refute a registration, so the honest answer is "I do not
-     * know" — and an unknown registration keeps its grant. A real mismatch (a listener-backed URL
-     * the record does not list) is still reported, which is the case that actually produced
-     * `Client ID mismatch`.
-     */
-    if (!/:\d+\//.test(this.redirectUrl)) return false;
-    return !uris.includes(this.redirectUrl);
+    if (uris.length === 0) return false; // unknown is not wrong
+    return !uris.some((u) => this.redirectMatches(String(u)));
   }
+
 
   async saveClientInformation(info: StoredOAuthClientInformation, _ctx?: unknown): Promise<void> {
     const i = info as { client_id?: unknown; client_secret?: unknown };

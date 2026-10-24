@@ -15,6 +15,25 @@ export const AUTHORS: Record<string, { name: string; icon: string; color: string
 
 export const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
 
+/**
+ * The author's colour, as a CLASS rather than an inline style.
+ *
+ * `style={{ "--author": colour }}` was one custom property per row, and a row is created ~1,100
+ * times when a session opens — the same argument that moved every other row detail into the
+ * stylesheet. The palette is a fixed set (one colour per author kind), so it maps to a class.
+ */
+export const AUTHOR_TONES = ["you", "agent", "progress", "harness", "tool"] as const;
+export type AuthorTone = (typeof AUTHOR_TONES)[number];
+
+const TONE_OF: Record<string, AuthorTone> = {
+  "#faa81a": "you",
+  "#5865f2": "agent",
+  "#3ba55d": "progress",
+  "#3ba0c9": "tool",
+};
+
+export const toneOf = (color: string): AuthorTone => TONE_OF[color] ?? "agent";
+
 export const authorOf = (e: Ev) => {
   if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
   if (e.type === "tool_call" || e.type === "tool_result")

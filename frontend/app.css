@@ -2779,6 +2779,18 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
  * `color-mix` with `transparent` rather than an `#rrggbb33` suffix: the suffix only works for a
  * six-digit hex, and it silently produced an invalid colour for any other notation.
  */
+/**
+ * Author tones: the fixed palette `authorOf` returns, as classes.
+ *
+ * `--author` used to be set as an inline custom property on every row (~1,100 elements when a
+ * session opens). The palette is closed — one colour per author kind — so a class carries it and the
+ * stylesheet is parsed once.
+ */
+.tone-you { --author: #faa81a; }
+.tone-agent { --author: #5865f2; }
+.tone-progress { --author: #3ba55d; }
+.tone-harness { --author: #3ba55d; }
+.tone-tool { --author: #3ba0c9; }
 .avatar.avghost {
   background: color-mix(in srgb, var(--author, var(--bg-mid)) 20%, transparent);
   border: 1px solid color-mix(in srgb, var(--author, var(--line)) 40%, transparent);

@@ -1185,12 +1185,16 @@ const MAX_WS_CLIENTS = 64;
     const body = await c.req.json<McpServerConfig>().catch(() => null);
     if (!body?.name) return c.json({ error: "a server needs a name" }, 400);
     try {
-      // no OAuth provider here on purpose: `test` answers "is this reachable and what
-      // does it expose", which an unauthorized server can still answer with a clear 401.
-      // Starting a browser flow from a test button would be a surprise.
-      const conn = await connectMcp({ ...body, enabled: true });
-      try {
-        const tools = await conn.tools();
+      /**
+       * Uses the SAVED credentials, and still never starts a browser flow.
+       *
+       * The distinction matters: the point of `test` is "does this server work AS CONFIGURED", so it
+       * must present the grant the operator already obtained. It used to connect anonymously "on
+       * purpose" and report 401 — the row then said "needs a grant" for a server that was already
+       * `● connected`.
+       */
+      {
+        const { tools } = await mcp.testConfig(body as McpServerConfig);
         /**
          * A successful test CLEARS the row's `error`.
          *
@@ -1207,8 +1211,6 @@ const MAX_WS_CLIENTS = 64;
           ok: true,
           tools: tools.map((t) => ({ name: t.name, description: t.description })),
         });
-      } finally {
-        await conn.close();
       }
     } catch (err) {
       const message = (err as Error).message;
