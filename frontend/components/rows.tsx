@@ -127,15 +127,28 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
     <HighlightedCode text={truncate(text, max)} lang={lang} />
   );
   /** the ARGUMENT block: same surface as the output, and JSON-highlighted when it is an object */
-  const argsBlock = (max = 2000) => (
-    <HighlightedCode text={truncate(JSON.stringify(d.args ?? {}, null, 1), max)} lang="json" />
-  );
-  const resultBlock = (max = 4000) =>
+  const argsBlock = () => <HighlightedCode text={JSON.stringify(d.args ?? {}, null, 1)} lang="json" />;
+  /**
+   * The tool's output, in FULL.
+   *
+   * Not truncated, and not folded either: a tool row is ALREADY a `<details>`, so the operator
+   * opens the card deliberately — a second fold behind the first is another gate, and a character
+   * budget discards what they just asked to see.
+   *
+   * Measured over 91,048 real tool results: median 293 chars, p90 2,364, p99 8,000, max 8,000 —
+   * the server caps a result at 8,000, so "show it all" is bounded and cheap. `.toolbody` keeps its
+   * own max-height with a scrollbar for the rare tall one.
+   */
+  const resultBlock = () =>
     (() => {
       const r = res();
       return r ? (
       <>
-        {hasAnsi(out()) ? <AnsiText text={truncate(out(), max)} /> : codeBlock(out(), max, outputLang(out()))}
+        {hasAnsi(out()) ? (
+          <AnsiText text={out()} />
+        ) : (
+          <HighlightedCode text={out()} lang={outputLang(out())} />
+        )}
         <div class="meta">
           {fmtDur(r.data?.durationMs)}
           {/* #46: a killed shell said nothing here beyond a generic · FAILED, so
@@ -187,7 +200,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   // the inconsistency this removes.
   let label = name;
   let hint: string | null = "";
-  let body: any = argsBlock(2000);
+  let body: any = argsBlock();
   try {
     switch (name) {
       case "bash": {
@@ -220,7 +233,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
             {/* the command gets SHELL highlighting: it is the one tool input where the syntax
                 carries meaning (quoting, pipes, flags), not just data */}
             {cmd !== label.slice(isBg ? 2 : 2) ? codeBlock(cmd, 800, "shellscript") : null}
-            {resultBlock(6000)}
+            {resultBlock()}
           </>
         );
         break;
@@ -233,7 +246,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         else if (d.args?.offset) bits.push(`from L${d.args.offset}`);
         if (d.args?.limit) bits.push(`≤${d.args.limit} lines`);
         hint = bits.join(" · ");
-        body = resultBlock(6000);
+        body = resultBlock();
         break;
       }
       case "write_file": {
@@ -296,7 +309,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       }
       case "list_dir": {
         label = argStr("path") || ".";
-        body = resultBlock(4000);
+        body = resultBlock();
         break;
       }
       case "read_url": {
@@ -314,7 +327,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
                 <a href={argStr("url")} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">open ↗</a>
               </Show>
             </div>
-            {resultBlock(3000)}
+            {resultBlock()}
           </>
         );
         break;
@@ -325,7 +338,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         const jobId = argStr("job_id") || "(?)";
         label = `bash_output ${jobId}`;
         hint = action;
-        body = resultBlock(4000);
+        body = resultBlock();
         break;
       }
       case "load_skill": {
@@ -373,8 +386,8 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         hint = res() ? fmtDur(res()!.data?.durationMs) : null;
         body = (
           <>
-            {argsBlock(2000)}
-            {resultBlock(4000)}
+            {argsBlock()}
+            {resultBlock()}
           </>
         );
         break;
@@ -703,7 +716,10 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
             </span>
             <CopyBtn text={out} />
           </summary>
-          <div class="mono">{truncate(out, 4000)}</div>
+          {/* In FULL, like a paired result: the operator opened the card to read it, and this
+              path used to cut at 4000 chars — so an evicted call showed a truncated output while a
+              surviving one showed everything, from what looked like the same row. */}
+          <div class="mono">{out}</div>
           <div class="meta">
             {fmtDur(e.data.durationMs)}
             {name === "bash"

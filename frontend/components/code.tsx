@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { ansiRuns, hasAnsi } from "../lib/ansi";
-import { fmtDur, truncate } from "../lib/format";
+import { fmtDur } from "../lib/format";
 import { cacheHighlighted, highlightedHtml } from "../lib/highlight-cache";
 
 
