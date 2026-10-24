@@ -2739,10 +2739,18 @@ if (active().length === 0) wake();
   /**
    * How long a live update waits for agents to reach a turn boundary.
    *
-   * Generous: a round can be a several-minute build. The alternative to waiting is aborting a tool
-   * mid-write, so the cap exists only to bound a wedged agent, and those are reported.
+   * It must be comparable to a TOOL's own ceiling, not to a human's patience. MEASURED: a live update
+   * waited 180s while a `bash` call was in flight, gave up, and killed it — the timeline then showed
+   * `✖ fail … not completed — the agent restarted while this tool was running` for work that was
+   * about to return (that call had been running ~300s, well within the 3600s a `bash` call may take).
+   * Waiting too SHORT is what turns a clean update into a truncated turn.
+   *
+   * 15 minutes: three times the longest call seen in the wild (a ~300s `bash`) and still short of a
+   * `bash` call's own 3600s ceiling. Waiting an entire tool ceiling would block the update for an
+   * hour, which defeats the purpose of updating; waiting 180s interrupted work that was about to
+   * finish. The interrupted case is not lost — the resumed session is told exactly what happened.
    */
-  private updateWindDownMs = 180_000;
+  private updateWindDownMs = 900_000;
 
   /**
    * Ask every agent to stop at its next turn boundary; returns the ids that did not make it.
@@ -2752,8 +2760,22 @@ if (active().length === 0) wake();
    * it interrupted.
    */
   async windDownAllAgents(timeoutMs = this.updateWindDownMs): Promise<string[]> {
-    const ids = [...this.agents.keys()];
-    if (!ids.length) return [];
+    /**
+     * Only agents with WORK IN FLIGHT need to be waited for.
+     *
+     * This asked every loaded agent, and the log then said "waiting for 440 agent(s)" on a machine
+     * with one working session (MEASURED: 511 configured, 71 archived, 440 loaded). The count was
+     * false in the most alarming direction — it read as 440 interrupted jobs — and the call itself is
+     * not free: each idle agent gets a `windDownRequested` flag set and a `wake()`, which is
+     * pointless state churn on agents that are doing nothing.
+     */
+    const ids = [...this.agents.entries()]
+      .filter(([, a]) => a.isLive())
+      .map(([id]) => id);
+    if (!ids.length) {
+      console.log("[teapot] live update: nothing is running — no need to wait for a turn boundary");
+      return [];
+    }
     console.log(`[teapot] live update: waiting for ${ids.length} agent(s) to reach a turn boundary...`);
     const stuck = await Promise.all(
       ids.map(async (id) => {
@@ -2868,6 +2890,24 @@ if (active().length === 0) wake();
     }
     console.log("[teapot] live update: replacing this process in place (same pid, same terminal)");
     /**
+     * Give the heap back BEFORE the new image allocates its own.
+     *
+     * `execve` replaces the image in place, so the outgoing heap is still resident while the incoming
+     * one grows. MEASURED on a long-lived server: `VmHWM` reached 1092MB after an update while the
+     * steady state was 323MB, and the boot peak was visible in the status banner as
+     * `602.4MB / 423.3MB`. A sandbox boot of the same 832 sessions measured only 250MB, so the extra
+     * gigabyte is not the data — it is two heaps overlapping.
+     *
+     * `global.gc` exists only with `--expose-gc`; without it this is a cheap no-op and the peak simply
+     * stays as it was, which is the old behaviour.
+     */
+    const gc = (globalThis as { gc?: () => void }).gc;
+    if (typeof gc === "function") {
+      // twice: the first pass frees what is unreachable, the second collects what the first freed
+      gc();
+      gc();
+    }
+    /**
      * Build the argv for the replacement image.
      *
      * `process.execArgv` carries runtime flags that must precede the entry file — but under
@@ -2881,7 +2921,7 @@ if (active().length === 0) wake();
      * anything else the operator set lives in `env` and the shell.
      */
     const FORWARDABLE =
-      /^--(experimental-strip-types|experimental-transform-types|no-warnings|enable-source-maps|import|require|conditions)$/;
+      /^--(experimental-strip-types|experimental-transform-types|no-warnings|enable-source-maps|import|require|conditions|expose-gc)$/;
     const forwardable = process.execArgv.filter((a) => FORWARDABLE.test(a.split("=")[0] ?? ""));
     /**
      * `args[0]` MUST be the program, exactly as a shell would pass it.

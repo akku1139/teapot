@@ -5087,14 +5087,32 @@ export class Agent {
     /**
      * Wait for the round to end, bounded.
      *
-     * `settled()` resolves when the run chain drains, which is exactly "the turn finished". The
-     * timeout exists only for a wedged agent (an LLM call that never returns); the caller reports
-     * which agents hit it rather than leaving them silently half-stopped.
+     * `settled()` resolves when the run chain drains, which is "the turn finished" — but a
+     * BACKGROUND SHELL is not on that chain. The round deliberately ends while a dev server,
+     * watcher or long build keeps running (`hasRunningBgShells` breaks the loop instead of nagging),
+     * so `settled()` is already resolved and this used to return immediately.
+     *
+     * MEASURED: an update then reached `dispose()`, which calls `killBgShells` — a live update killed
+     * every background job on the machine, with no wait and no notice. A background job is work in
+     * flight, which is the whole reason `isLive()` counts it, so it must be waited for here too.
+     *
+     * The timeout exists only for a wedged agent (an LLM call that never returns, or a job that will
+     * never exit); the caller reports which agents hit it rather than leaving them silently
+     * half-stopped.
      */
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = async () => {
+      await this.settled();
+      // wait out any background job this agent owns, polling the same owner-scoped question
+      // `isLive()` uses — a sibling's job in the shared workspace is not this agent's work
+      while (hasRunningBgShellsFor(this.toolCtx.cwd, this.opts.id)) {
+        if (this.stopRequested) break;
+        await this.sleepInterruptible(500);
+      }
+    };
     try {
       await Promise.race([
-        this.settled(),
+        done(),
         new Promise<void>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(`did not reach a turn boundary within ${timeoutMs}ms`)),
