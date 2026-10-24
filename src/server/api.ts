@@ -938,11 +938,26 @@ const MAX_WS_CLIENTS = 64;
 
   // ---- config (view/edit from the web UI) ----
   app.get("/api/config", (c) => {
-    const mask = (p: Record<string, { baseUrl: string; apiKey?: string; model?: string }> | undefined) =>
+    /**
+     * Mask EVERY credential, including each entry of the `apiKeys` pool.
+     *
+     * Only `apiKey` was masked, so a provider holding three keys answered with one masked key and
+     * no `apiKeys` at all — the settings dialog could not show the pool it was editing, and saving
+     * that view wrote the single key back. The rotation the operator configured existed nowhere
+     * they could see.
+     */
+    const maskKey = (k: string | undefined) => (k ? "•••" + String(k).slice(-4) : undefined);
+    const mask = (
+      p: Record<string, { baseUrl: string; apiKey?: string; apiKeys?: string[]; model?: string }> | undefined,
+    ) =>
       Object.fromEntries(
         Object.entries(p ?? {}).map(([k, v]) => [
           k,
-          { ...v, apiKey: v.apiKey ? "•••" + String(v.apiKey).slice(-4) : undefined },
+          {
+            ...v,
+            apiKey: maskKey(v.apiKey),
+            ...(Array.isArray(v.apiKeys) ? { apiKeys: v.apiKeys.map(maskKey) } : {}),
+          },
         ]),
       );
     return c.json({
@@ -998,11 +1013,36 @@ const MAX_WS_CLIENTS = 64;
       // keep masked keys intact: "•••1234" means "unchanged"
       const prev = master.config.providers ?? {};
       const providers: Record<string, ProviderConfig> = {};
+      /**
+       * Persist the WHOLE `apiKeys` pool, which is what the settings dialog edits.
+       *
+       * This built only `apiKey`, so every key after the first was discarded on save: the operator
+       * could add three and the config kept one. `apiKey` is still written as `apiKeys[0]` because
+       * other readers expect the legacy field (see `migrateProviderKeys`).
+       *
+       * A key arrives masked as "•••1234" when untouched, meaning "the stored value" — resolved
+       * POSITIONALLY against the previous list, so editing key 2 does not overwrite key 1.
+       */
       for (const [name, p] of Object.entries(patch.providers ?? {})) {
-        const masked = !p.apiKey || p.apiKey.startsWith("•••");
+        const stored = prev[name]?.apiKeys ?? (prev[name]?.apiKey ? [prev[name].apiKey] : []);
+        const resolve = (k: string | undefined, i: number) => {
+          if (!k || k.startsWith("•••")) return stored[i];
+          return k;
+        };
+        const incoming = Array.isArray(p.apiKeys) && p.apiKeys.length ? p.apiKeys : undefined;
+        const keys = incoming
+          ? incoming.map((k, i) => resolve(k, i)).filter((k): k is string => !!k)
+          : [];
+        // a provider with NO pool keeps the legacy single-key path, including "unchanged"
+        const single = !incoming
+          ? !p.apiKey || p.apiKey.startsWith("•••")
+            ? stored[0]
+            : p.apiKey
+          : keys[0];
         providers[name] = {
           baseUrl: p.baseUrl ?? "",
-          apiKey: masked ? prev[name]?.apiKey : p.apiKey,
+          ...(single ? { apiKey: single } : {}),
+          ...(keys.length ? { apiKeys: keys } : {}),
           ...(p.model ? { model: p.model } : {}),
         };
       }

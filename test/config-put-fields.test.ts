@@ -89,3 +89,73 @@ test("contextWindowTokens: null clears the pin (same contract as contextTokenBud
     await server.close();
   }
 });
+
+test("PUT /api/config persists the whole apiKeys pool, not just the first key (#170)", async () => {
+  /**
+   * Same class as the four fields above: the schema VALIDATED `apiKeys`, answered 200, and the
+   * route built a provider with `apiKey` only — so every key after the first was discarded on
+   * save. The operator could register three credentials for rotation (the UI has + add key, and
+   * says the pool fails over), watch it accept them, and the config kept one.
+   *
+   * GET was complicit: it masked only `apiKey`, so the settings dialog was handed a single masked
+   * key and no pool at all — it could not even show what it was editing.
+   */
+  const dataDir = mkdtempInRootSync("cfg-keys-");
+  const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
+  const app = buildApp(m);
+  const port = await freePort();
+  const server = serveApp(app, port, "127.0.0.1");
+  try {
+    const pool = ["key-AAA", "key-BBB", "key-CCC"];
+    const put = await call(port, "PUT", "/api/config", {
+      providers: { probe: { baseUrl: "https://example.test/v1", apiKeys: pool, model: "m1" } },
+    });
+    assert.equal(put.status, 200, `PUT must succeed: ${JSON.stringify(put.json)}`);
+
+    const raw = JSON.parse(readFileSync(`${dataDir}/config.json`, "utf8"));
+    assert.deepEqual(
+      raw.providers.probe.apiKeys,
+      pool,
+      "all three keys must persist — dropping them is how 'I added 3 keys but it still " +
+        "rate-limits' happens (#170)",
+    );
+    assert.equal(raw.providers.probe.apiKey, "key-AAA", "the legacy field stays in step with [0]");
+
+    // GET must hand the dialog EVERY key, masked — otherwise it cannot render the pool
+    const get = await call(port, "GET", "/api/config");
+    const shown = get.json.providers.probe;
+    assert.equal(shown.apiKeys?.length, 3, "GET must return the pool it is asking the UI to edit (#170)");
+    for (const [i, k] of shown.apiKeys.entries()) {
+      assert.match(
+        k,
+        /^•••/,
+        `key ${i} must be masked — the UI must never receive a plaintext credential`,
+      );
+      assert.ok(k.endsWith(pool[i].slice(-3)), `key ${i} must still identify WHICH stored key it is`);
+    }
+
+    // saving that masked view back UNCHANGED must keep the real values
+    await call(port, "PUT", "/api/config", {
+      providers: { probe: { baseUrl: shown.baseUrl, apiKey: shown.apiKey, apiKeys: shown.apiKeys, model: shown.model } },
+    });
+    assert.deepEqual(
+      JSON.parse(readFileSync(`${dataDir}/config.json`, "utf8")).providers.probe.apiKeys,
+      pool,
+      "an untouched masked pool means 'the stored values' — a round trip must not corrupt them (#170)",
+    );
+
+    // …and replacing only the SECOND entry must not disturb the others
+    const edited = [...shown.apiKeys];
+    edited[1] = "key-NEW";
+    await call(port, "PUT", "/api/config", {
+      providers: { probe: { baseUrl: shown.baseUrl, apiKeys: edited, model: shown.model } },
+    });
+    assert.deepEqual(
+      JSON.parse(readFileSync(`${dataDir}/config.json`, "utf8")).providers.probe.apiKeys,
+      ["key-AAA", "key-NEW", "key-CCC"],
+      "a mask must resolve POSITIONALLY, or editing one key rewrites the rest (#170)",
+    );
+  } finally {
+    await server.close();
+  }
+});
