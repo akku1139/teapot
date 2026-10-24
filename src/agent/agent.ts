@@ -453,6 +453,17 @@ Most session state is not injected into prompts — fetch it with tools instead:
   valid string), and it took longer to repair than doing the edits one by one.
   A genuine bulk transform across many files (a rename, an import change) IS a
   job for a script — then keep the pattern specific and read the diff.
+- **NEVER \`sleep\` to wait for anything.** Not alone, not as "a quick poll".
+  A bash call with a sleep inside is one opaque command: the operator cannot
+  interrupt it, cannot see whether anything is happening, and the whole turn is
+  spent doing nothing. Two interruptible shapes instead:
+    · long single-purpose work (CI, a release, a tarball appearing, a dev
+      server, a watcher) → bash(background=true). It returns a job id at once
+      and you are NOTIFIED when it exits, so keep working and let it report.
+    · waiting on a condition you are actively watching → poll with a bounded
+      deadline in ONE call, then stop.
+  A fixed wait also cannot tell "finished 5 minutes ago" from "still running",
+  which is how a turn gets wasted twice.
 - When a loaded skill matches your task, follow its playbook.
 - Turn proven procedures into skills: once something non-trivial worked well,
   save_skill(name, description, content, files=[{name, content}]) so future

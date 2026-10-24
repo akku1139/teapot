@@ -1829,7 +1829,8 @@ export const TOOLS: ToolDef[] = [
           description:
             "true = start the command and return IMMEDIATELY with a job id. You are NOTIFIED at your " +
             "next turn boundary when it exits (exit code + output tail) — no polling needed. " +
-            "Use bash_output only to fetch FULL output mid-run or after. Use for dev servers, watchers, long builds.",
+            "Use bash_output only to fetch FULL output mid-run or after. Use for dev servers, watchers, " +
+            "long builds, and any release/CI wait (gh run watch, a tarball appearing) — never `sleep`.",
         },
       },
       required: ["command"],

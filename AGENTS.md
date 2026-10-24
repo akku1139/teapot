@@ -493,6 +493,29 @@ out with only five unresolved names because everything it called had already mov
   The same applies to any other long single-purpose wait (`pnpm test` while debugging something
   else, a bulk audit script). Foreground is for a command whose OUTPUT you are about to act on.
 
+- **Never `sleep` to wait for something.** Not in the foreground, and not as "a quick poll".
+
+  ```sh
+  sleep 200; npm view teapot-coding-agent version    # ← NEVER
+  ```
+
+  `bash` with a `sleep` inside it is UNINTERRUPTIBLE from the operator's side: the call is one
+  opaque command that runs to completion, so a 200 s sleep is 200 s in which the session cannot be
+  steered, and nobody can see whether anything is happening. `wait_children` and a background job
+  are both interruptible — the operator can stop them, and they report on their own.
+
+  Waiting for a condition is a POLL with a bounded deadline, or a background job notification:
+
+  ```sh
+  # background job, notified on exit — the preferred shape for a release
+  node scripts/wait-npm-version.ts <version>
+  ```
+
+  Fixed-duration sleeping is also how a test rots (#136): it passes on a fast machine and fails as
+  "precondition not met" on a loaded one, with no hint that it merely ran out of clock. The same
+  reasoning applies to the agent's own waiting — a `sleep` cannot tell "finished 5 minutes ago"
+  from "still running".
+
 ## Live update: `process.execve`, not a supervised child
 
 The update button replaces the process **in place** (`process.execve`, Node 22+). Do not reintroduce

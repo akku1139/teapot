@@ -16,16 +16,52 @@ import { readFile } from "node:fs/promises";
 const ROW_FILES = ["frontend/components/rows.tsx", "frontend/components/code.tsx"];
 
 test("timeline row components carry no inline styles (#ui)", async () => {
+  /**
+   * THREE spellings, and the old check matched only the first two.
+   *
+   *     style="a:b"        literal
+   *     style={"a:b"}      expression wrapping a literal
+   *     style={{ a: b }}   OBJECT — this is what Solid actually emitted
+   *
+   * The regex was `/style=\{?"[^"]+"/`, so every `style={{…}}` was invisible to it. MEASURED: two
+   * real violations (the actor avatar and the author name) were sitting in `rows.tsx` while this
+   * test was green — the exact failure mode it exists to prevent, in the test itself.
+   *
+   * A data-driven value may cross as a CUSTOM PROPERTY (`style={{ "--author": colour }}`): that is
+   * one property for a value the stylesheet cannot know, not a style block re-applied per row.
+   */
+  const ALLOWED_OBJECT_KEYS = /^style=\{\{\s*"--[a-z-]+":/;
   for (const rel of ROW_FILES) {
     const src = await readFile(path.join(import.meta.dirname, "..", rel), "utf8");
-    const hits = [...src.matchAll(/style=\{?"[^"]+"/g)].map((m) => {
+    const hits: string[] = [];
+    for (const m of src.matchAll(/style=\{?"[^"]+"|style=\{\{[^}]*\}\}/g)) {
+      if (ALLOWED_OBJECT_KEYS.test(m[0])) continue; // a single custom property is the sanctioned form
       const line = src.slice(0, m.index).split("\n").length;
-      return `${rel}:${line}`;
-    });
+      hits.push(`${rel}:${line} ${m[0].slice(0, 40)}`);
+    }
     assert.deepEqual(
       hits,
       [],
-      "an inline style here is re-applied for EVERY row — move it to app.css and use a class",
+      "an inline style here is re-applied for EVERY row — move it to app.css and use a class " +
+        "(a data-driven colour may cross as one custom property)",
     );
   }
+});
+
+test("a grouped row dims the DISC, never the glyph (#ui)", async () => {
+  /**
+   * `opacity` on `.avatar.ghosted` faded the emoji along with the circle. The operator's point:
+   * fading the circle is right, fading the character is not — a lighter emoji is just a worse
+   * emoji, not a quieter row.
+   */
+  const css = await readFile(path.join(import.meta.dirname, "..", "frontend/app.css"), "utf8");
+  const at = css.indexOf(".avatar.ghosted");
+  assert.ok(at > 0, "the grouped-avatar rule must exist");
+  const rule = css.slice(at, css.indexOf("}", at));
+  assert.doesNotMatch(
+    rule,
+    /opacity\s*:/,
+    "dimming the disc is done with colour — `opacity` here also fades the emoji (#ui)",
+  );
+  assert.match(rule, /background|border|transition/, "and it must actually dim something");
 });

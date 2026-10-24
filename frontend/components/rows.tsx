@@ -601,9 +601,15 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
           run — same avatar slot, but EMPTY (no faded ghost icon): a column of
           faint 🧩s read as separate "sub messages" instead of continuation
           lines. Hover still shows time+branch via the title. */}
+      {/**
+       * The author COLOUR is data (it comes from `authorOf`), so it crosses as a custom property —
+       * one custom property, not a style block. Everything else about the avatar is in app.css,
+       * because this element exists once per row: an inline style here is parsed and applied again
+       * for every one of the ~1,100 rows the feed holds.
+       */}
       <div
         class={"avatar avghost" + (grouped() ? " ghosted" : "")}
-        style={{ background: grouped() ? "transparent" : a.color + "33", border: grouped() ? "1px solid transparent" : `1px solid ${a.color}66` }}
+        style={{ "--author": a.color }}
         title={grouped() ? `${fmtTs(e.ts)} · ${e.branch}` : undefined}
       >
         {grouped() ? "" : a.icon}
@@ -612,7 +618,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
         {grouped() && <span class="grouptime" title={`${fmtTs(e.ts)} · ${e.branch}`} />}
         <Show when={!grouped()}>
           <div class="msg-head">
-            <span class="author" style={{ color: a.color }}>{a.name}</span>
+            <span class="author" style={{ "--author": a.color }}>{a.name}</span>
             <Show when={e.data?.actor}>
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>

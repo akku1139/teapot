@@ -2669,8 +2669,30 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
 /* grouped message rows: tiny hover-only timestamp dot */
 /* grouped (continuation) rows: avatar is faded, full opacity on hover with
    the exact time shown in its tooltip — layout matches the run's first row */
-.avatar.ghosted { opacity: .35; transition: opacity .15s; }
-.msg:hover .avatar.ghosted { opacity: 1; }
+/**
+ * The avatar disc, tinted from the author's own colour (set by rows.tsx as `--author`).
+ *
+ * `color-mix` with `transparent` rather than an `#rrggbb33` suffix: the suffix only works for a
+ * six-digit hex, and it silently produced an invalid colour for any other notation.
+ */
+.avatar.avghost {
+  background: color-mix(in srgb, var(--author, var(--bg-mid)) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--author, var(--line)) 40%, transparent);
+}
+.avatar.avghost.ghosted { background: transparent; border-color: transparent; }
+.author { color: var(--author, var(--fg)); }
+
+/**
+ * A grouped row fades the DISC, never the glyph.
+ *
+ * `opacity` on the whole element faded the emoji with it, so a continuation row's 🧩 read as "a
+ * washed-out icon" rather than "a quieter row" — the operator's point was that fading the CIRCLE is
+ * right and fading the character is not, because a lighter version of an emoji is just a worse
+ * emoji. Only the background and border are dimmed; the glyph keeps full contrast.
+ */
+.avatar.ghosted {
+  transition: background-color .15s, border-color .15s;
+}
 .grouptime { display: none; }
 
 /* notification items: unread state + per-item read button */
