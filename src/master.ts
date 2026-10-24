@@ -2626,7 +2626,15 @@ if (active().length === 0) wake();
       uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
       rssMb: +(mu.rss / 1048576).toFixed(1),
       heapUsedMb: +(mu.heapUsed / 1048576).toFixed(1),
-      cpuMsTotal: cu.user + cu.system,
+      /**
+       * `process.cpuUsage()` reports MICROseconds, so this is divided by 1000.
+       *
+       * The field is named `cpuMsTotal` and was not converted, so it read 1000x too high — a
+       * 1900-second-old process reported 18,313,198 "ms" against a real 18,310ms of CPU, which
+       * looks like 9.6 cores burning continuously. That is how a healthy idle server got
+       * investigated as a runaway loop.
+       */
+      cpuMsTotal: Math.round((cu.user + cu.system) / 1000),
       loadavg1: +(os.loadavg()[0]).toFixed(2),
       agents: [...this.agents.values()].map((a) => ({
         id: a.opts_id(),
