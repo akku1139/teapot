@@ -1457,8 +1457,34 @@ html[data-bg-image="on"] .embed {
   background: none; border: 1px solid var(--bg-light); color: var(--dim);
   border-radius: var(--radius-sm); font-size: var(--text-xs); cursor: pointer; padding: 0 5px;
   line-height: 16px; flex-shrink: 0;
+  /**
+   * A FIXED em box, so the feedback glyph cannot resize the button.
+   *
+   * The label swaps `⧉ copy` → `✓` while copying, and with padding-only sizing the button got
+   * narrower — which shifted every sibling in the footer, including the ✎ edit button ("copyボタン
+   * を押すとコピーできたときに横幅が変わるので、editの位置がずれる").
+   *
+   * `min-width` in `em` rather than `px`: the label is text, so the reservation has to follow the
+   * font size. `tabular-nums` is irrelevant here but `white-space: nowrap` is not — a wrapped label
+   * would change HEIGHT instead, which is the same bug one axis over.
+   */
+  min-width: 4.6em;
+  text-align: center;
+  white-space: nowrap;
 }
 .copybtn:hover { color: var(--fg); filter: brightness(1.3); }
+/**
+ * Timeline-row details, in the STYLESHEET rather than inline.
+ *
+ * `style="…"` on a row element is re-parsed and re-applied for every row the feed creates — and
+ * this feed holds ~1,100 rows — so a per-row inline style costs far more than the one-off it looks
+ * like. These four were the only inline styles left inside components that render per event.
+ */
+.answerdone { color: var(--ok); }
+.progembed { border-color: var(--ok); }
+.compactnote { font-size: 11.5px; margin-top: 2px; }
+.compactkept { margin-top: 6px; }
+
 .embed summary { display: flex; align-items: center; gap: var(--space-3); }
 /* per-tool copy cluster pushed to the row's right edge */
 .toolcopy { margin-left: auto; display: flex; gap: var(--space-2); flex-shrink: 0; }

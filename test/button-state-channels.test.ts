@@ -373,3 +373,28 @@ test("host capability readouts belong in help, not skills (#ui)", async () => {
     );
   }
 });
+
+test("the copy button cannot resize when its label changes (#ui)", async () => {
+  /**
+   * Reported: "メッセージのcopyボタンを押すとコピーできたときに横幅が変わるので、editの位置がずれる".
+   *
+   * The label swaps `⧉ copy` → `✓` for feedback, and with padding-only sizing the button got
+   * narrower — which shifted every sibling in the `.msgfoot` row, including ✎ edit.
+   *
+   * A fixed em box is the fix; `px` would not follow the font size, and the reservation has to
+   * cover the longest label (`⧉ copy`, `⧉ cmd`) rather than the shortest.
+   */
+  const css = stripSourceComments(readSource("frontend/app.css"));
+  const body = /\.copybtn\s*\{([^}]*)\}/.exec(css)?.[1];
+  assert.ok(body, ".copybtn must have a rule");
+  assert.match(
+    body!,
+    /min-width:\s*[\d.]+em/,
+    "the button needs a reserved width in `em` so a label swap cannot change its size (#ui)",
+  );
+  assert.match(
+    body!,
+    /white-space:\s*nowrap/,
+    "and nowrap, or a long label wraps instead and changes the HEIGHT — the same bug one axis over",
+  );
+});

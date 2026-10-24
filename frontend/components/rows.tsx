@@ -749,7 +749,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
               lists) — render them like progress embeds instead of dumping raw */}
           <div>❓️ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
           <Show when={answered()}>
-            <div class="meta" style="color:var(--ok)">✓ answered — continuing below</div>
+            <div class="meta answerdone">✓ answered — continuing below</div>
           </Show>
           <Show when={opts.length > 0}>
             <div class="qopts">
@@ -786,7 +786,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
     }
     case "progress":
       return (
-        <div class="embed" style="border-color: var(--ok)">
+        <div class="embed progembed">
           {/* progress bodies are model-written markdown — render them, don't
               dump raw text (structured fields keep their labels) */}
           <div>📈 <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.doing ?? ""))} /></div>
@@ -817,7 +817,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
               {String(e.data.mode ?? "") === "truncate" ? " · older history dropped" : ""}
             </span>
             <Show when={String(e.data.mode ?? "") === "truncate"}>
-              <div class="muted" style="font-size:11.5px;margin-top:2px">
+              <div class="muted compactnote">
                 the summary pass produced nothing, so the oldest messages were dropped instead — the
                 session continues with the recent tail intact
               </div>
@@ -834,7 +834,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
             </span>
           </summary>
           <Show when={e.data.summary}>
-            <div class="vtitle" style="margin-top:6px">what the agent kept</div>
+            <div class="vtitle compactkept">what the agent kept</div>
             <div class="content" innerHTML={renderMarkdownCached(String(e.data.summary))} />
           </Show>
         </details>
