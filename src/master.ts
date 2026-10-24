@@ -165,7 +165,7 @@ export const SUB_PERSONAS: Record<
   { label: string; directive: string; readOnly?: boolean }
 > = {
   reviewer: {
-    label: "🔍 reviewer",
+    label: "🔍️ reviewer",
     directive:
       "ROLE: code reviewer. Inspect the change set, judge correctness, style, tests; report concrete findings as a prioritized list.",
     readOnly: true,
@@ -176,13 +176,13 @@ export const SUB_PERSONAS: Record<
       "ROLE: test engineer. Write and run tests for the task at hand, hunt edge cases, report pass/fail with exact commands.",
   },
   researcher: {
-    label: "🔎 researcher",
+    label: "🔎️ researcher",
     directive:
       "ROLE: read-only explorer. Search the codebase/docs, map how things work, and report a compact briefing with file:line references.",
     readOnly: true,
   },
   implementer: {
-    label: "🔨 implementer",
+    label: "🔨️ implementer",
     directive:
       "ROLE: hands-on implementer. Make the change end-to-end (code + tests), keep edits small and verified, then report what changed and why.",
   },
@@ -546,7 +546,7 @@ function printAgentEvent(e: TeapotEvent): void {
       line = `${c("33", "▶ prompt")} (${d.source}) ${clip1(d.text, 110)}`;
       break;
     case "tool_call":
-      line = `${c("36", "⚙ exec")} ${d.name} ${dim(clip1(JSON.stringify(d.args ?? {}), 130))}`;
+      line = `${c("36", "⚙️ exec")} ${d.name} ${dim(clip1(JSON.stringify(d.args ?? {}), 130))}`;
       break;
     case "tool_result": {
       const ok = d.ok !== false;

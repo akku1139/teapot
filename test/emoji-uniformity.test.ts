@@ -34,7 +34,13 @@ async function walk(dir: string, out: string[] = []): Promise<string[]> {
 }
 
 test("every text-default emoji carries VS16, so one icon cannot render two ways (#ui)", async () => {
-  const files = await walk(path.join(import.meta.dirname, "..", "frontend"));
+  /**
+   * BOTH trees. The first version walked only `frontend/`, so a server-authored string surfaced in
+   * the UI escaped it: `"use 🔑 authorize in ⚙ settings"` in `mcp-registry.ts` was bare while every
+   * button showed `⚙️`. Text the operator reads can come from either side.
+   */
+  const root = path.join(import.meta.dirname, "..");
+  const files = [...(await walk(path.join(root, "frontend"))), ...(await walk(path.join(root, "src")))];
   const bare: string[] = [];
   let seen = 0;
   for (const f of files) {

@@ -196,16 +196,79 @@ export class ServerAuth implements OAuthClientProvider {
     } as StoredOAuthClientInformation;
   }
 
+  /**
+   * Is the STORED registration unusable for this run?
+   *
+   * True when a redirect URI was recorded and it is not the one this flow listens on — the same
+   * condition `clientInformation()` acts on, factored out so `tokens()` cannot disagree with it.
+   */
+  private registrationIsStale(): boolean {
+    const stored = this.store.clientInformation as { redirect_uris?: unknown } | undefined;
+    const uris = Array.isArray(stored?.redirect_uris) ? (stored.redirect_uris as string[]) : [];
+    if (uris.length === 0) return false; // unknown is not wrong: older records omit the list
+    /**
+     * A PLACEHOLDER redirect cannot vouch for a registration.
+     *
+     * `authFor()` builds a provider with `http://127.0.0.1/callback` — no port, because none exists
+     * until a flow opens a listener — and a REconnect uses that instance. A record registered from
+     * the same placeholder therefore MATCHES, the check says "not stale", and the grant obtained
+     * under a real port is presented to a client the server no longer knows: `Client ID mismatch`
+     * (MEASURED on Notion and Canva, every reconnect).
+     *
+     * Only a listener-backed URL can confirm a registration, so this refuses to reuse tokens
+     * without one. The panel then shows 🔑 authorize instead of a failure with no way forward.
+     */
+    if (!/:\d+\//.test(this.redirectUrl)) return true;
+    return !uris.includes(this.redirectUrl);
+  }
+
   async saveClientInformation(info: StoredOAuthClientInformation, _ctx?: unknown): Promise<void> {
     const i = info as { client_id?: unknown; client_secret?: unknown };
+    const previous = this.store.clientId;
     if (typeof i?.client_id === "string") this.store.clientId = i.client_id;
     if (typeof i?.client_secret === "string") this.store.clientSecret = i.client_secret;
+    /**
+     * A NEW client id INVALIDATES the grant issued to the old one.
+     *
+     * `clientInformation()` returns undefined when the stored registration cannot match this run's
+     * redirect URI, which makes the SDK register afresh. Keeping the old tokens across that is fatal:
+     * the refresh request authenticates as the NEW client while presenting a refresh token the
+     * authorization server bound to the OLD one, and the server answers
+     * `invalid_grant: Client ID mismatch` — MEASURED against both Notion and Canva, where every
+     * reconnect failed for exactly this reason while the store still held a valid-looking token.
+     *
+     * Dropping them turns that into an honest "needs a grant": the panel shows 🔑 authorize, and
+     * completing it issues a token pair for the client that actually exists.
+     */
+    if (previous && typeof i?.client_id === "string" && i.client_id !== previous) {
+      this.store.accessToken = undefined;
+      this.store.refreshToken = undefined;
+      this.store.expiresAt = undefined;
+    }
     // keep the whole payload: a future field (a client id issued with metadata) survives
     this.store.clientInformation = info as Record<string, unknown>;
     await this.persist(this.server, this.store);
   }
 
   tokens(_ctx?: unknown): StoredOAuthTokens | undefined {
+    /**
+     * A grant whose client can no longer be reused must not be presented.
+     *
+     * `clientInformation()` returns undefined when the stored registration cannot match this run's
+     * redirect URI, which makes the SDK register afresh — but `tokens()` would still hand back the
+     * token pair the OLD client obtained. The refresh then authenticates as the new client while
+     * presenting the old client's refresh token, and the server answers
+     * `invalid_grant: Client ID mismatch` (MEASURED against Notion and Canva: every reconnect failed
+     * this way while the store held a token that looked valid).
+     *
+     * Returning nothing makes the flow an honest "needs a grant" instead: the panel offers 🔑, and
+     * completing it issues a pair for the client that actually exists.
+     */
+    if (this.store.accessToken && this.registrationIsStale()) {
+      this.store.accessToken = undefined;
+      this.store.refreshToken = undefined;
+      this.store.expiresAt = undefined;
+    }
     if (!this.store.accessToken) return undefined;
     return {
       access_token: this.store.accessToken,

@@ -186,7 +186,7 @@ export class McpRegistry {
         /unauthoriz|invalid_token|authorization required/i.test(msg);
       if (needsAuth) {
         st.oauthRequired = true;
-        st.lastError = "this server requires OAuth — use 🔑 authorize in ⚙ settings → MCP servers";
+        st.lastError = "this server requires OAuth — use 🔑 authorize in ⚙️ settings → MCP servers";
       }
       throw err;
     }

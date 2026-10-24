@@ -1589,7 +1589,7 @@ export class Agent {
     }
     // newest usage event seeds the context gauge right after reload —
     // inputTokens from the LAST turn is the live context size, and cached
-    // must ride along or the "⚡ N% cached" pill disappears after a restart
+    // must ride along or the "⚡️ N% cached" pill disappears after a restart
     for (let i = own.length - 1; i >= 0; i--) {
       if (own[i]!.type === "usage") {
         const u = own[i]!.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
@@ -3903,7 +3903,7 @@ export class Agent {
             operatorFacing: true,
             content: approved
               ? `✅ completion audit: APPROVED — ${feedback}`
-              : `🔍 completion audit: CHANGES REQUIRED — ${feedback}`,
+              : `🔍️ completion audit: CHANGES REQUIRED — ${feedback}`,
           });
           if (!approved) {
             this.consecutiveAuditRejects++;
