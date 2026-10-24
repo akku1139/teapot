@@ -25,7 +25,7 @@ importers:
         version: 4.13.13
       openai:
         specifier: ^7.30.1
-        version: 7.30.1(ws@8.22.0)(zod@4.6.5)
+        version: 7.34.0(ws@8.22.0)(zod@4.6.5)
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -869,10 +869,9 @@ packages:
   oniguruma-to-es@4.3.6:
     resolution: {integrity: sha512-csuQ9x3Yr0cEIs/Zgx/OEt9iBw9vqIunAPQkx19R/fiMq2oGVTgcMqO/V3Ybqefr1TBvosI6jU539ksaBULJyA==}
 
-  openai@7.30.1:
-    resolution: {integrity: sha512-YgiPjBgXdItqTsgAR138bu9aHxBb3/L7qiiP8ucU8e9msRfF8cjRtp8y5qYW7E3Oe9O8UWejQZERf37dtdvoTg==}
+  openai@7.34.0:
+    resolution: {integrity: sha512-PMwuTQ/3cVyWZJOVpb6bzlrQj17uImlnUGQWqh5zHlN/snwK5ww4ZUHW8NYGtH6f9PQOEPxyD/f8WJVIHp1q2A==}
     engines: {node: '>=22.0.0'}
-    hasBin: true
     peerDependencies:
       '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
       '@smithy/hash-node': '>=4.3.0 <5'
@@ -1762,7 +1761,7 @@ snapshots:
       regex: 6.1.0
       regex-recursion: 6.0.2
 
-  openai@7.30.1(ws@8.22.0)(zod@4.6.5):
+  openai@7.34.0(ws@8.22.0)(zod@4.6.5):
     optionalDependencies:
       ws: 8.22.0
       zod: 4.6.5
