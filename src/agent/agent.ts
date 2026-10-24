@@ -174,6 +174,14 @@ export interface AgentOptions {
   contextWindowTokens?: number;
   /** rebuild conversation from the JSONL log on init (default true) */
   restoreSession?: boolean;
+  /**
+   * Fired once, after the first USER prompt of a session is logged.
+   *
+   * The host uses it to derive and STORE a session title. Doing it here rather than during a list
+   * keeps the cost per session instead of per `/api/sessions`, and it is the moment the title
+   * becomes derivable at all.
+   */
+  onFirstUserPrompt?: (sessionId: string) => void;
   /** provider name this agent was created with (for the UI's model switcher) */
   provider?: string;
   /** shared skill dir (defaults to none; workspace skills always enabled) */
@@ -744,6 +752,7 @@ export class Agent {
       contextTokenBudget: 96_000,
       contextWindowTokens: 0,
       restoreSession: true,
+      onFirstUserPrompt: () => {},
       globalSkillsDir: "",
       pluginSkillRoots: [],
       shortContext: false,
@@ -2196,6 +2205,10 @@ export class Agent {
           ...(promptId ? { promptId } : {}),
         }),
       )
+      .then(() => {
+        // a session's label comes from its FIRST user prompt; the host stores it once
+        if (source === "user") this.opts.onFirstUserPrompt?.(this.currentSession);
+      })
       .then(() =>
         bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
       )

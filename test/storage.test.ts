@@ -573,6 +573,8 @@ test("legacy flat <id>.jsonl is migrated into sessions/<id>/chat.jsonl", async (
     await mkdir(path.dirname(path.join(dataDir, "s.jsonl")), { recursive: true });
     await writeFile(path.join(dataDir, "s.jsonl"), '{"v":1,"id":"e1","seq":1,"ts":"2026-01-01T00:00:00Z","agent":"s","session":"s","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"old"}}\n');
     const m = mkMaster(dataDir);
+    // the flat-layout move is a BOOT migration now (src/migrations/), not something addAgent does
+    await m.start();
 
     const a = await m.addAgent({ id: "s", workspace: ws, provider: "p" }); // restart semantics
     const dir = a.snapshot().sessionDir;

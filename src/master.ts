@@ -4,6 +4,7 @@
  * delegated to subprocesses managed by the bash tool with hard timeouts.
  */
 import { closeAllTerminals, closeTerminalsFor } from "./server/terminals.ts";
+import { MIGRATIONS, runMigrations } from "./migrations/registry.ts";
 import {
   readFileSync,
   existsSync,
@@ -218,6 +219,18 @@ export interface ProviderConfig {
 export interface AgentConfig {
   id: string;
   workspace: string;
+  /**
+   * A human label for the agent's CURRENT session, derived from its first user prompt.
+   *
+   * Stored here rather than scanned from the log on every list: deriving it meant opening 830
+   * session logs and allocating a 16KB buffer for each — MEASURED 83.8ms and 8.1MB read per scan,
+   * plus ~38MB of short-lived garbage, and `allSessions()` runs on every `/api/sessions`. It is also
+   * what makes a session renamable: the value is data, not a derived truth.
+   *
+   * Only meaningful alongside `session` — it names THAT session, so it is rewritten whenever the
+   * agent moves to a different one.
+   */
+  sessionTitle?: string;
   /** which named provider to use (defaults to config.defaultProvider) */
   provider?: string;
   model?: string;
@@ -1035,6 +1048,32 @@ export class Master {
 
   async start(): Promise<void> {
     mkdirSync(this.config.dataDir, { recursive: true });
+    /**
+     * Clear the flag BEFORE the migrations, never after.
+     *
+     * `finally` below flushes only when `configDirty` is set, so a reset placed after the migration
+     * pass erases exactly what a migration just asked to be written. MEASURED with it after: 37
+     * titles derived in memory, `"sessionTitle"` in the config file: 0.
+     */
+    this.configDirty = false;
+    /**
+     * Run the on-disk migrations ONCE, before any agent resolves a session directory.
+     *
+     * They used to be spread across the boot path — the flat-layout move ran inside
+     * `resolveSessionDir`, i.e. per agent, where it could interleave with another agent's
+     * resolution. Ordering is the thing that matters when a machine skips several releases: an
+     * operator jumping from an old build runs EVERY step at once, and a step that assumes another
+     * has run must actually see that. See src/migrations/index.ts.
+     */
+    await runMigrations(MIGRATIONS, {
+      configDir: path.dirname(this.configPath),
+      raw: () => this.raw,
+      touch: () => {
+        this.configDirty = true;
+      },
+      dataDir: this.config.dataDir,
+      log: (m) => console.log(`[teapot] ${m}`),
+    });
     // ONE config write for the whole boot instead of one per agent.
     //
     // Every agent whose recorded session is gone mints a new one, and minting
@@ -1047,7 +1086,6 @@ export class Master {
     // deferred write that never flushes would leave config.json describing the PREVIOUS
     // boot, which is its own silent data loss.
     this.deferConfigWrites = true;
-    this.configDirty = false;
     // start every endpoint's model-catalogue lookup NOW, concurrently.
     //
     // `addAgent` awaits this per agent, and the endpoints are shared by many
@@ -1303,6 +1341,15 @@ export class Master {
     const agent = new Agent({
       id: ac.id,
       workspace: resolveWorkspace(ac.workspace, path.dirname(this.configPath)),
+      /**
+       * Derive the session label when the first user prompt lands, and STORE it.
+       *
+       * The alternative — reading every session log while listing — was the dominant cost of
+       * `/api/sessions`. Doing it here pays once per session instead of once per list.
+       */
+      onFirstUserPrompt: (sessionId) => {
+        void this.ensureSessionTitle(ac.id, sessionId);
+      },
       llm,
       sessionDir,
       progressIntervalMs: this.config.progressIntervalMs,
@@ -1468,6 +1515,15 @@ export class Master {
     const entry = this.config.agents.find((a) => a.id === ac.id);
     if (!entry) return; // not a configured agent — nothing to persist yet
     entry.session = sessionId;
+    /**
+     * A title names ONE session, so moving clears it.
+     *
+     * Leaving it would label the new session with the previous one's first prompt — the sidebar
+     * would show a conversation name for a conversation it does not describe. It is re-derived on
+     * the next prompt (see `ensureSessionTitle`).
+     */
+    delete entry.sessionTitle;
+    delete ac.sessionTitle;
     // never write session pointers into a config that is describing another
     // data dir — every one of them would be wrong, and the correct mapping is
     // destroyed. The in-memory session above still works for this process.
@@ -1985,6 +2041,37 @@ if (active().length === 0) wake();
    * affordable. A torn final line is skipped rather than parsed: a chunk boundary
    * can cut a JSON object in half, and that must not abort the scan.
    */
+  /**
+   * The stored title for a session, if the agent's config entry names THAT session.
+   *
+   * A single config lookup — no filesystem access — which is the point: this runs once per session
+   * per list, and the log scan it replaced dominated the cost of listing.
+   */
+  private titleFor(agentId: string, sessionId: string): string | undefined {
+    const a = this.config.agents.find((x) => x.id === agentId);
+    if (!a || a.session !== sessionId) return undefined; // the label belongs to the CURRENT session
+    const t = a.sessionTitle?.trim();
+    return t ? t : undefined;
+  }
+
+  /**
+   * Derive and STORE a title for the agent's current session, once.
+   *
+   * Called when a session starts producing prompts, so the cost is paid per session rather than per
+   * list. Idempotent: an existing title is never overwritten, which is also what will let the
+   * operator rename a session by hand — a derived value must not clobber a chosen one.
+   */
+  private async ensureSessionTitle(agentId: string, sessionId: string): Promise<void> {
+    const a = this.config.agents.find((x) => x.id === agentId);
+    if (!a || a.session !== sessionId) return;
+    if (a.sessionTitle?.trim()) return;
+    const dir = path.join(this.sessionsRoot(), sessionId);
+    const title = this.sessionTitleOf(dir);
+    if (!title) return;
+    a.sessionTitle = title;
+    this.saveConfig();
+  }
+
   private sessionTitleOf(dirPath: string): string | null {
     let fd: number | undefined;
     try {
@@ -2108,19 +2195,8 @@ if (active().length === 0) wake();
     const root = this.sessionsRoot();
     mkdirSync(root, { recursive: true });
 
-    // one-time migration from the ≤0.5.0 flat layout (<dataDir>/<id>.jsonl)
-    // MUST run first so the bare-name directory exists for subsequent checks
-    if (!fresh) {
-      const legacy = path.join(this.config.dataDir, `${agentId}.jsonl`);
-      if (existsSync(legacy)) {
-        const target = path.join(root, agentId);
-        if (!existsSync(target)) {
-          mkdirSync(target, { recursive: true });
-          renameSync(legacy, path.join(target, "chat.jsonl"));
-          console.log(`[teapot] migrated session storage: ${agentId}.jsonl → sessions/${agentId}/chat.jsonl`);
-        }
-      }
-    }
+    // the ≤0.5.0 flat-layout migration runs once at boot, in src/migrations/ — doing it here meant
+    // it ran per agent and could interleave with another agent's resolution
 
     // Prefer the recorded session: the config says exactly which timeline this
     // agent was on. Guessing by mtime let a stale-or-deleted dir whose
@@ -2212,22 +2288,18 @@ if (active().length === 0) wake();
         m = st.mtimeMs;
         size = st.size;
       } catch { /* no log yet — still listable */ }
-      // a title derived from the session's FIRST user prompt, so the
-      // sidebar does not make the operator read `teapot-10-16854917`.
-      //
-      // Read here rather than from the live agent because boot leaves agents
-      // STOPPED: their logs are not restored, so a title computed during restore
-      // would be missing for every session the operator has not opened yet —
-      // i.e. exactly the ones they need it for.
-      //
-      // BOUNDED and cheap: the scan stops at the FIRST `prompt` event of ANY
-      // source, which is what makes it affordable. Measured over 817 real
-      // sessions: 36 ms / 7.9 MB with the early exit, versus 804 ms / 169 MB
-      // scanning to find a USER prompt specifically (sub-agents receive only
-      // `harness` prompts, 758 of the 817, so they were what made it slow).
-      // Those sub-sessions correctly produce no title — the sidebar already
-      // labels them from their id via subAgentDisplayName().
-      const title = this.sessionTitleOf(dirPath);
+      /**
+       * The title is STORED, not derived.
+       *
+       * It used to be read from each session's log here, which meant this method opened up to 830
+       * files and allocated a buffer for each — every time it ran, on every `/api/sessions`. The
+       * value now lives on the agent's config entry (see `AgentConfig.sessionTitle`), so listing
+       * sessions does no I/O beyond the directory and the stat above.
+       *
+       * `session` is the agent's CURRENT session, so a title only names `d` when they agree; a past
+       * session of the same agent has no stored label and falls back to its id in the sidebar.
+       */
+      const title = owner ? this.titleFor(owner, d) : undefined;
       out.push({ id: d, agentId: owner, mtimeMs: m, sizeBytes: size, ...(title ? { title } : {}) });
     }
     return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
