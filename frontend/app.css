@@ -965,6 +965,15 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 .channel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
 .chan-head {
   display: flex; align-items: center; gap: var(--space-3);
+  /**
+   * `min-width: 0` + `flex-wrap`: a flex container refuses to go below its content's min-content
+   * width, and every child here is `white-space: nowrap` (the title, the model line, `▶ start`,
+   * the icons). On a phone width the row therefore stayed wider than the column and its right end
+   * was cut off — "上バーの右側が見切れる". Wrapping moves the overflow to a second row instead of
+   * off-screen, which keeps every control reachable.
+   */
+  flex-wrap: wrap;
+  min-width: 0;
   padding: var(--space-4) var(--space-6);
   /* 1px, not 2px: a heavy rule under the title bar is the single strongest
      "enterprise chrome" cue in the app — it boxes the content in. A hairline
@@ -1653,12 +1662,20 @@ details.reasoning .thinkscroll {
 /* ---- composer ---- */
 .composer { padding: 0 16px 18px; position: relative; }
 .composer form { background: var(--bg-light); border-radius: var(--radius-lg); display: flex; gap: var(--space-4); padding: 10px 12px; align-items: flex-end; }
-/* the maximized composer is the same surface, just larger — same alpha, same colour */
+/**
+ * The maximized composer is the SAME surface as the normal one, only larger — so it takes the
+ * prompt box's own alpha, not the panel's.
+ *
+ * It used `--surface-alpha + 0.06` (0.88 at this operator's 0.87 setting) while `.composer form`
+ * used `--surface-alpha-composer` (0.44), so maximizing made the box twice as opaque and the
+ * wallpaper stopped showing through: "最大化した入力欄が背景付きテーマで背景透過されてない".
+ * Two formulas for one surface is how they drifted apart; there is now one.
+ */
 html[data-bg-image="on"] .composer.maximized,
 html[data-bg-image="on"] .composer.maximized::before {
   background-color: color-mix(
     in srgb,
-    var(--bg-dark-solid, #232630) calc(min(1, var(--surface-alpha, 0.82) + 0.06) * 100%),
+    var(--bg-light-solid, #343845) calc(var(--surface-alpha-composer) * 100%),
     transparent
   );
 }
@@ -2204,6 +2221,38 @@ html[data-bg-image="on"] .composer form {
 .archrow button { flex: none; white-space: nowrap; }
 .archrow .archrestore { background: var(--acc); border-color: var(--acc); color: #fff; font-weight: 600; }
 .archrow .archrestore:hover { filter: brightness(1.12); }
+/**
+ * PHONE WIDTH: the main column owns its width, and the prompt box keeps its height.
+ *
+ * Reported together from a phone-sized viewport:
+ *   1. the top bar's right side was cut off;
+ *   2. the timeline scrolled SIDEWAYS, so reading it meant panning;
+ *   3. maximizing, and the 📎 button, left the input very short — worse because the attachment
+ *      button sits to the LEFT of the box rather than above it.
+ *
+ * (2) is a missing `min-width: 0` on the flex chain: one wide child (a long unbreakable command or
+ * URL in a tool row) sets the min-content width of the whole column, and a scroll container then
+ * grows to it. `min-width: 0` on the column plus `overflow-wrap` on the code surfaces is what
+ * actually stops the panning; `overflow-x: hidden` alone would silently clip instead.
+ */
+@media (max-width: 620px) {
+  .chan-head { padding: var(--space-3) var(--space-4); gap: var(--space-2); }
+  .chan-head .sub { flex-basis: 100%; } /* the model/session line drops to its own row */
+
+  .channel, .feed, .timeline { min-width: 0; max-width: 100%; }
+  .feed, .timeline { overflow-x: hidden; }
+  /* the real culprit for a sideways timeline: an unbreakable run in a tool row */
+  .toolbody, .mono, .content, .card { overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+
+  /* (3) buttons must not take the box's width: stack them under it instead of beside it */
+  .composer { padding: 0 10px 12px; }
+  .composer form { flex-wrap: wrap; gap: var(--space-2); padding: 8px; }
+  .composer form > textarea { flex: 1 1 100%; min-height: 54px; }
+  /* the controls share one row under the textarea, so the box keeps the full width */
+  .composer form > button, .composer form > .iconbtn { flex: 0 0 auto; }
+  .composer form > button[type="submit"] { margin-left: auto; }
+  .composer.maximized form > textarea { min-height: 0; }
+}
 @media (max-width: 620px) {
   .cfgrow.archrow { flex-wrap: wrap; }
   .archrow button { flex: 1 1 auto; }
@@ -2562,7 +2611,7 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
    * panel alpha (see `.composer form`); the maximized state must use the SAME surface, or the one
    * mode that covers the most screen is the one mode that loses the theme.
    */
-  background-color: var(--bg-dark);
+  background-color: var(--bg-light);
   /* #65: the BOTTOM padding must match the normal composer's 18px. It was 10px
      here, so maximizing moved the hint 8px and the composer's bottom edge with
      it — which is the whole complaint, and it survived the earlier min-height:0
@@ -2576,7 +2625,7 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
    own scroll handler alive and it could steal the composer's clicks) */
 .composer.maximized::before {
   content: ""; position: absolute; inset: 0 0 0 0;
-  background: var(--bg-dark); z-index: -1;
+  background: var(--bg-light); z-index: -1;
 }
 .composer.maximized form {
   /* #65: `min-height: 0` is load-bearing. A flex item will not shrink below
