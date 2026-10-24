@@ -549,6 +549,8 @@ export function ConfigModal(props: {
     setLight: (v: string) => void;
     setThemes: (v: CustomTheme[]) => void;
     setActive: (v: string) => void;
+    /** persist the appearance — called by SAVE, never by a preview */
+    commitAppearance: (v: { auto: boolean; dark: string; light: string; fixed: string }) => void;
   };
 }) {
   /**
@@ -973,14 +975,73 @@ export function ConfigModal(props: {
    * custom light theme must count as light. Defaulting to "dark" matches `<html>`'s own default, so
    * the grouping can never offer a group the document is not painting.
    */
-  const setFixedTheme = (v: string) => props.theme.setActive(v);
-  const themeAuto = () => props.theme.auto();
-  const setThemeAuto = (v: boolean) => props.theme.setAuto(v);
-  const sysDarkTheme = () => props.theme.dark();
-  const setSysDarkTheme = (v: string) => props.theme.setDark(v);
-  const sysLightTheme = () => props.theme.light();
-  const setSysLightTheme = (v: string) => props.theme.setLight(v);
+  /**
+   * APPEARANCE IS A DRAFT UNTIL SAVE.
+   *
+   * Every other section here commits on the save button, and themes used to commit on click — so
+   * the same dialog had two meanings for "apply". Reported as "save settingsボタンがあるのにテーマは
+   * saveしなくても適用確定してるから設定の操作に一貫性が無い".
+   *
+   * The PREVIEW still has to be immediate (you cannot choose a colour you cannot see), so the draft
+   * is pushed to the live theme on every change and only PERSISTED on save:
+   *
+   *   click  → the screen changes            (preview)
+   *   save   → written to localStorage        (commit)
+   *   close  → the stored values are restored (discard)
+   *
+   * The draft starts from whatever is stored, so an untouched dialog commits nothing new.
+   */
+  /**
+   * The state as STORED when the dialog opened — captured ONCE, so a discard can restore it.
+   *
+   * `props.theme.*()` reads the live signal, which the preview has already changed; reading it at
+   * revert time would restore the preview, not the stored value.
+   */
+  const storedAppearance = {
+    auto: localStorage.getItem("teapot.theme.auto") === "1",
+    dark: localStorage.getItem("teapot.theme.dark") ?? "dark",
+    light: localStorage.getItem("teapot.theme.light") ?? "light",
+    fixed: localStorage.getItem("teapot.theme") ?? "dark",
+  };
+  const draft = createSignal(storedAppearance);
+  const draftOf = draft[0];
+  /**
+   * Push a draft to the LIVE theme without storing it.
+   *
+   * `props.theme.set*` persists (it has to, for the sidebar's own theme switch), so previewing
+   * through it would commit. The setters below therefore write the signal and let `commit` own
+   * storage — see `commitAppearance`.
+   */
+  const applyDraft = (next: Partial<ReturnType<typeof draftOf>>) => {
+    const merged = { ...draftOf(), ...next };
+    draft[1](merged);
+    props.theme.setAuto(merged.auto);
+    props.theme.setDark(merged.dark);
+    props.theme.setLight(merged.light);
+    props.theme.setActive(merged.fixed);
+  };
+  const setFixedTheme = (v: string) => applyDraft({ fixed: v });
+  const themeAuto = () => draftOf().auto;
+  const setThemeAuto = (v: boolean) => applyDraft({ auto: v });
+  const sysDarkTheme = () => draftOf().dark;
+  const setSysDarkTheme = (v: string) => applyDraft({ dark: v });
+  const sysLightTheme = () => draftOf().light;
+  const setSysLightTheme = (v: string) => applyDraft({ light: v });
   const setCustomThemes = (v: CustomTheme[]) => props.theme.setThemes(v);
+
+  /**
+   * Restore the stored appearance — the DISCARD path.
+   *
+   * Called when the dialog closes without saving. Without it the preview would silently become the
+   * committed state, which is the inconsistency this whole change removes.
+   */
+  const revertAppearance = () => {
+    const s = storedAppearance;
+    props.theme.setAuto(s.auto);
+    props.theme.setDark(s.dark);
+    props.theme.setLight(s.light);
+    props.theme.setActive(s.fixed);
+  };
 
   /**
    * A PRESET's palette, read back from the stylesheet so a preview can be drawn for it.
@@ -1179,7 +1240,16 @@ export function ConfigModal(props: {
        * already unmounting would never be painted, and the operator would see the dialog vanish
        * with no confirmation.
        */
+      /**
+       * COMMIT the appearance here, not on click.
+       *
+       * Everything the operator can see is already live (the preview pushed it); this makes it
+       * survive a reload, which is what "save settings" means for every other section.
+       */
+      props.theme.commitAppearance(draftOf());
       setSaveState("saved");
+      // the draft IS the stored state now: closing must not revert what was just saved
+      Object.assign(storedAppearance, draftOf());
       setTimeout(() => {
         setSaveState("idle");
         props.onClose();
@@ -1193,7 +1263,20 @@ export function ConfigModal(props: {
 
 
   return (
-    <Modal title="settings" onClose={props.onClose}>
+    <Modal
+      title="settings"
+      onClose={() => {
+        /**
+         * CLOSING DISCARDS an unsaved appearance preview.
+         *
+         * The preview writes the live theme so the choice is visible; without this, closing the
+         * dialog would silently keep a change the operator never saved — the inconsistency that
+         * "save settings" is supposed to resolve.
+         */
+        revertAppearance();
+        props.onClose();
+      }}
+    >
       <form onsubmit={save} style="display:flex;flex-direction:column;gap:12px;min-height:0">
         {/* A MENU, not one long column. With several providers — each holding
             several keys — the stacked form was a wall of inputs whose extent
@@ -1341,7 +1424,6 @@ export function ConfigModal(props: {
                 checked={themeAuto()}
                 onchange={(e) => {
                   setThemeAuto(e.currentTarget.checked);
-                  localStorage.setItem("teapot.theme.auto", e.currentTarget.checked ? "1" : "0");
                 }}
               />
             </label>
@@ -1359,7 +1441,6 @@ export function ConfigModal(props: {
                     value={sysDarkTheme()}
                     onchange={(e) => {
                       setSysDarkTheme(e.currentTarget.value);
-                      localStorage.setItem("teapot.theme.dark", e.currentTarget.value);
                     }}
                   >
                     <For each={customThemes().filter((t) => t.mode === "dark").map((t) => ({ key: t.id, label: `${t.label} (custom)` })).concat(THEMES.filter((t) => t.mode === "dark"))}>
@@ -1373,7 +1454,6 @@ export function ConfigModal(props: {
                     value={sysLightTheme()}
                     onchange={(e) => {
                       setSysLightTheme(e.currentTarget.value);
-                      localStorage.setItem("teapot.theme.light", e.currentTarget.value);
                     }}
                   >
                     <For each={customThemes().filter((t) => t.mode === "light").map((t) => ({ key: t.id, label: `${t.label} (custom)` })).concat(THEMES.filter((t) => t.mode === "light"))}>
@@ -1537,7 +1617,6 @@ export function ConfigModal(props: {
               if (target.slot === "dark") setSysDarkTheme(id);
               else if (target.slot === "light") setSysLightTheme(id);
               else setFixedTheme(id);
-              localStorage.setItem(target.key, id);
             }}
           />
         </fieldset>

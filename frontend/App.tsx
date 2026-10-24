@@ -5976,13 +5976,38 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           activeId: fixedTheme,
           paintedId: paintedThemeId,
           auto: themeAuto,
-          setAuto: setThemeAuto,
+          setAuto: (v: boolean) => {
+            setThemeAuto(v);
+            localStorage.setItem("teapot.theme.auto", v ? "1" : "0");
+          },
           dark: sysDarkTheme,
+          /**
+           * PREVIEW setters: they change what is painted and write NOTHING.
+           *
+           * The settings dialog previews an appearance before committing it, so a preview must not
+           * be a commit. Storage belongs to `commitAppearance` alone, which the save button calls.
+           *
+           * These used to be the bare Solid setters with every caller expected to persist, and
+           * `pickThemeCard` did not — MEASURED: clicking a light card while "follow the system" was
+           * on left the painted theme `dark` and never wrote `teapot.theme.light`.
+           */
           setDark: setSysDarkTheme,
           light: sysLightTheme,
           setLight: setSysLightTheme,
           setThemes: setCustomThemes,
           setActive: setFixedTheme,
+          /**
+           * Commit the appearance to storage — the SAVE path.
+           *
+           * Split from the setters above so a preview cannot decide anything. Everything the
+           * operator can see is already live by this point; this only makes it survive a reload.
+           */
+          commitAppearance: (v: { auto: boolean; dark: string; light: string; fixed: string }) => {
+            localStorage.setItem("teapot.theme.auto", v.auto ? "1" : "0");
+            localStorage.setItem("teapot.theme.dark", v.dark);
+            localStorage.setItem("teapot.theme.light", v.light);
+            localStorage.setItem("teapot.theme", v.fixed);
+          },
         }}
       />
     </Show>
