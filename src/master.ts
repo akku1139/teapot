@@ -634,6 +634,17 @@ export function sanitizeAgentId(id: string): string {
 
 export class Master {
   readonly agents = new Map<string, Agent>();
+  /**
+   * Configured agents that could NOT be loaded, with the reason.
+   *
+   * `addAgent` throws when an entry is unusable (no model configured, duplicate id, unknown
+   * provider) and the boot loop skips it so one bad entry cannot take the server down. The skip was
+   * SILENT, though, and the agent's sessions stayed in `/api/sessions` — so the sidebar offered a
+   * timeline that `/api/agents/<id>/events` answered with 404, and the UI sat on "loading timeline…"
+   * (reported as "セッション切り替えがバカ重い"). Recording the reason turns that into something the
+   * UI can explain.
+   */
+  readonly unavailableAgents = new Map<string, string>();
   /** Agent Plugins loaded at boot (#162); their skill roots are offered to every agent */
   plugins: LoadedPlugin[] = [];
 
@@ -1117,13 +1128,18 @@ export class Master {
         // archived agents keep their config entry and their history but do not run;
         // starting one would spend a provider request and mint/rewrite a session for
         // something the operator deliberately put away.
-        if (ac.archived) continue;
+        if (ac.archived) {
+          // archived: not started, but its history must stay readable (the sidebar lists it)
+          this.unavailableAgents.set(ac.id, "archived");
+          continue;
+        }
         try {
           await this.addAgent(ac);
         } catch (err) {
           // one bad entry (duplicate id, unknown provider, …) must not take the
           // whole master down — skip it loudly and keep serving the rest
           console.error(`[teapot] skipping agent "${ac.id}": ${(err as Error).message}`);
+          this.unavailableAgents.set(ac.id, (err as Error).message);
         }
       }
       for (const t of this.config.tasks ?? []) {
@@ -2020,16 +2036,44 @@ if (active().length === 0) wake();
    * manifests: 493 agents were silently moved to empty sessions, and the
    * mapping back was only recoverable from these `agent` fields.
    */
+  /**
+   * The owning agent, from the log's FIRST line.
+   *
+   * Read with a bounded `readSync` rather than `readFileSync(...).split("\n").find(...)`.
+   *
+   * MEASURED on this machine: 831 session logs totalling 471.8MB, the largest 50.6MB, nine of them
+   * over 10MB. `readFileSync` decoded a whole log to reach its first line, and `split("\n")`
+   * allocated an array of every line in it — for ONE field of the first event. Called once per
+   * directory while resolving sessions, that is tens of megabytes of transient allocation per pass,
+   * which is the baseline this boot carried.
+   *
+   * The first line is the first event (the log is append-only, in order), so a single small read
+   * answers the question.
+   */
   private logOwner(dirName: string): string | null {
+    let fd: number | undefined;
     try {
-      const first = readFileSync(path.join(this.sessionsRoot(), dirName, "chat.jsonl"), "utf8")
-        .split("\n")
-        .find((l) => l.trim());
-      if (!first) return null;
-      const parsed = JSON.parse(first) as { agent?: unknown };
+      fd = openSync(path.join(this.sessionsRoot(), dirName, "chat.jsonl"), "r");
+      const buf = Buffer.alloc(8 * 1024);
+      const n = readSync(fd, buf, 0, buf.length, 0);
+      if (n <= 0) return null;
+      // a torn final line cannot be the one we want: take the first COMPLETE line
+      const head = buf.subarray(0, n).toString("utf8");
+      const nl = head.indexOf("\n");
+      const line = (nl >= 0 ? head.slice(0, nl) : head).trim();
+      if (!line) return null;
+      const parsed = JSON.parse(line) as { agent?: unknown };
       return typeof parsed.agent === "string" && parsed.agent ? parsed.agent : null;
     } catch {
       return null; // no log / unreadable head — cannot prove anything
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* already closed */
+        }
+      }
     }
   }
 
@@ -2575,6 +2619,15 @@ if (active().length === 0) wake();
   private tick(): void {
     const now = new Date();
     const minuteKey = Math.floor(now.getTime() / 60_000);
+    /**
+     * Push the runtime numbers instead of making every tab poll them.
+     *
+     * `/api/metrics` was fetched on a 30s timer by each connected client, which is a GET whose
+     * ANSWER the server already has — the one shape a push socket makes redundant. It rides this
+     * existing 15s tick (the same "no extra timers" rule as the rest of the master) and a client that
+     * was asleep simply re-reads over HTTP on wake, which is what the recovery path is for.
+     */
+    if (bus.listenerCount("update") > 0) bus.emit("update", { kind: "metrics", metrics: this.metrics() });
     for (const t of this.tasks) {
       try {
         if (!matches(t.schedule, now)) continue;
@@ -2587,6 +2640,8 @@ if (active().length === 0) wake();
         const agent = this.agents.get(t.task.agent);
         if (!agent) continue;
         console.log(`[teapot] scheduled task "${t.task.id}" -> agent ${t.task.agent}`);
+        // "last"/"next" changed, so the schedule table the UI shows is now stale
+        bus.emit("update", { kind: "tasks", tasks: this.tasksView() });
         void (async () => {
           if (t.task.forked) await agent.fork();
           await agent.enqueuePrompt(t.task.prompt, `scheduler:${t.task.id}`);

@@ -2679,6 +2679,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         });
         return; // snapshot IS the update; no feed refresh needed for it alone
       }
+      /**
+       * Server-wide state, PUSHED.
+       *
+       * These replace the 30s `/api/metrics` + `/api/tasks` poll. The payload IS the answer, so there
+       * is nothing to fetch — assigning it is the whole handler.
+       */
+      if (msg.kind === "metrics" && msg.metrics) {
+        setMetrics(msg.metrics);
+        return;
+      }
+      if (msg.kind === "tasks" && Array.isArray(msg.tasks)) {
+        setTasks(msg.tasks);
+        return;
+      }
       if (msg.kind === "event") {
         const et = msg.event?.type;
         const ed = msg.event?.data ?? {};
@@ -2832,6 +2846,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // So: on every return to visible, ask for what we are missing. The cursor
       // makes it proportional — a tab that slept for a minute and missed nothing
       // costs one cheap request that returns empty.
+      /**
+       * The server-wide numbers are HTTP on WAKE, socket the rest of the time.
+       *
+       * `metrics` and `tasks` used to be polled every 30s, which covered the sleeping-tab case by
+       * accident. With the poll gone, the recovery path has to include them — a tab that slept
+       * missed no metric PUSH it could apply, because a push it did not receive never happened.
+       */
+      void refreshMetrics();
+      void loadTasks();
       const id = selected();
       if (!id) return;
       if (pendingRefresh) {
@@ -3457,11 +3480,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       .catch(() => {
         /* an older server without /api/terminals: keep working with local tabs */
       });
-    const mi = setInterval(() => {
-      refreshMetrics();
-      loadTasks();
-    }, 30_000);
-    onCleanup(() => clearInterval(mi));
+    /**
+     * No polling timer here any more.
+     *
+     * `metrics` and `tasks` arrive on the socket (`kind: "metrics"` / `kind: "tasks"`), because the
+     * server already ticks every 15s and a GET whose answer the server holds is exactly what a push
+     * socket replaces. A 30s interval per tab meant every open window asked the same two questions
+     * forever, and it could not tell that the answer had not changed.
+     *
+     * HTTP stays as the RECOVERY path — a tab waking after a long sleep re-reads on visibilitychange
+     * (see the refresh below), which is when a REST read is genuinely needed.
+     */
+    onCleanup(() => {});
   });
 
   const SLASH_COMMANDS = [

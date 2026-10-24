@@ -1654,7 +1654,41 @@ const MAX_WS_CLIENTS = 64;
   }
   app.get("/api/agents/:id/events", async (c) => {
     const a = master.agents.get(c.req.param("id"));
-    if (!a) return notFound(c, "agent", c.req.param("id"));
+    if (!a) {
+      /**
+       * An agent that FAILED TO LOAD still owns its history.
+       *
+       * `addAgent` throws for an unusable entry (no model configured, unknown provider) and boot
+       * skips it, but its session directories remain on disk and `/api/sessions` lists them — so the
+       * sidebar offered a timeline this endpoint answered with 404 and the UI sat on "loading
+       * timeline…". MEASURED: `teapot-9` and `mediapad-t5-root-attempt` on this machine, each with a
+       * 13–23MB log that could not be opened at all.
+       *
+       * Reading is safe: the log is an append-only file, the events are the same shape, and the
+       * caller only ever renders them. The response says WHY the agent is not live so the UI can
+       * explain it instead of showing a dead panel.
+       */
+      const why = master.unavailableAgents.get(c.req.param("id"));
+      if (why) {
+        const sessionQ = c.req.query("session");
+        // the caller always names a session (the UI routes by internal id); fall back to the
+        // newest dir this agent owns so a bare request still answers something
+        const dir = sessionQ ?? master.sessionsOf(c.req.param("id"))[0]?.id;
+        const file = dir ? path.join(master.sessionsRoot(), dir, "chat.jsonl") : null;
+        if (file) {
+          const limit = Math.min(Number(c.req.query("limit") ?? 2000), 20000);
+          const tail = await readEventsTail(file, limit);
+          return c.json({
+            events: tail.events,
+            total: tail.total,
+            partial: tail.truncated,
+            // the agent cannot run, but its history is readable — say so plainly
+            unavailable: why,
+          });
+        }
+      }
+      return notFound(c, "agent", c.req.param("id"));
+    }
     // the frontend pairs a tool_call with its tool_result by walking the
     // events it holds, so a window that can contain a result WITHOUT its call
     // strands the bash row at "waiting for output…" forever — the call scrolled
