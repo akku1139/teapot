@@ -2050,7 +2050,7 @@ if (active().length === 0) wake();
   private titleFor(agentId: string, sessionId: string): string | undefined {
     const a = this.config.agents.find((x) => x.id === agentId);
     if (!a || a.session !== sessionId) return undefined; // the label belongs to the CURRENT session
-    const t = a.sessionTitle?.trim();
+    const t = typeof a.sessionTitle === "string" ? a.sessionTitle.trim() : "";
     return t ? t : undefined;
   }
 
@@ -2066,9 +2066,9 @@ if (active().length === 0) wake();
     if (!a || a.session !== sessionId) return;
     if (a.sessionTitle?.trim()) return;
     const dir = path.join(this.sessionsRoot(), sessionId);
-    const title = this.sessionTitleOf(dir);
-    if (!title) return;
-    a.sessionTitle = title;
+    // the session id when nothing is derivable — see the migration: it never changes, so this
+    // cannot leave the field unset and have the derivation re-run on every boot
+    a.sessionTitle = this.sessionTitleOf(dir) ?? sessionId;
     this.saveConfig();
   }
 

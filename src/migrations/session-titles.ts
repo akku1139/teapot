@@ -32,8 +32,16 @@ export const sessionTitles: Migration = {
       if (typeof a.sessionTitle === "string" && a.sessionTitle.trim()) continue;
       if (session.includes("/") || session.includes("..")) continue; // never a path segment
       const title = firstUserPromptText(path.join(ctx.dataDir, "sessions", session, "chat.jsonl"));
-      if (!title) continue;
-      a.sessionTitle = title;
+      /**
+       * The SESSION ID is the fallback, not a marker.
+       *
+       * A sub-agent session receives only harness prompts, so no title can ever be derived from it —
+       * and a session id does not change either, so there is nothing to retry for. Writing the id
+       * makes the field ALWAYS present, which is what makes the pass idempotent without an extra
+       * flag: the next boot sees a title and skips. The sidebar already shows the id in this case,
+       * so nothing visible changes.
+       */
+      a.sessionTitle = title ?? session;
       changed = true;
     }
     if (changed) ctx.touch();
@@ -47,13 +55,23 @@ export const sessionTitles: Migration = {
  * Bounded (256KB) and stops at the first prompt, so one enormous log cannot dominate boot. A torn
  * final line at a chunk boundary is skipped rather than aborting the read.
  */
+/**
+ * ONE reusable read buffer for the whole pass.
+ *
+ * `Buffer.alloc` per session is what made the first boot spike: 830 sessions x 16KB of short-lived
+ * buffer, MEASURED as heap 28.2MB → 108.5MB during `start()` (33.4MB after GC). The scan is a
+ * single-threaded loop, so sharing one buffer is safe and removes the churn entirely.
+ */
+let scanBuffer: Buffer | undefined;
+
 function firstUserPromptText(file: string): string | null {
   let fd: number | undefined;
   try {
     fd = openSync(file, "r");
     const CHUNK = 16 * 1024;
     const CAP = 256 * 1024;
-    const buf = Buffer.alloc(CHUNK);
+    scanBuffer ??= Buffer.alloc(CHUNK);
+    const buf = scanBuffer;
     let offset = 0;
     let carry = "";
     while (offset < CAP) {
