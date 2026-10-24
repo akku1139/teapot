@@ -102,16 +102,24 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     setKids((prev) => {
       const old = prev.get(path);
       if (!old) return new Map(prev).set(path, rows);
-      const merged = old.map((o) => {
-        const fresh = rows.find((r) => r.path === o.path);
+      /**
+       * Order comes from the FRESH response, identity from the previous row.
+       *
+       * This walked `old` and looked each entry up in `rows`, so the cached ORDER was preserved and
+       * the server's sort never took effect on a refresh — reloading a directory left it in whatever
+       * order it had first been read (reported: "リロードを重ねた結果…ディレクトリ先、アルファベット順
+       * オーダーになってない"). The reference-preserving trick below is about avoiding remounts, not
+       * about ordering: map over `rows` and reuse the previous object when it is equivalent.
+       */
+      const byPath = new Map(old.map((o) => [o.path, o]));
+      const merged = rows.map((fresh) => {
+        const o = byPath.get(fresh.path);
         // keep the previous object when nothing changed → no remount
-        return fresh && fresh.dir === o.dir && fresh.size === o.size &&
-               fresh.ignored === o.ignored && fresh.name === o.name
+        return o && o.dir === fresh.dir && o.size === fresh.size &&
+               o.ignored === fresh.ignored && o.name === fresh.name
           ? o
-          : (fresh ?? o);
+          : fresh;
       });
-      // append genuinely new entries (created since the last fetch)
-      for (const r of rows) if (!old.some((o) => o.path === r.path)) merged.push(r);
       // drop entries that vanished from disk — but never the one being previewed
       const kept = merged.filter((m) => rows.some((r) => r.path === m.path) || ui.preview?.path === m.path);
       const next = new Map(prev);

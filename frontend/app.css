@@ -1803,6 +1803,50 @@ html[data-bg-image="on"] .composer form {
 .rightbar h3:first-of-type { margin-top: 0; }
 .card { background: var(--bg-darkest); border-radius: var(--radius-lg); padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
 /**
+ * A card's BODY never scrolls sideways.
+ *
+ * `white-space: pre-wrap` on `.card` stops at the first child that re-declares it, and every
+ * markdown code fence does exactly that: a fenced block becomes `<pre>`, which sets
+ * `white-space: pre`. So a card whose content happened to be command-shaped scrolled horizontally
+ * while its neighbours wrapped — measured on the audit card ("🔍️ completion audit started") against
+ * the goal card next to it, rendered from the same component.
+ *
+ * `.toolbody` solved this by hand for tool output. This is the same fix stated once, for every card
+ * body, so a new card cannot miss it: the wrapping is enforced on `pre` and `code` themselves,
+ * because those are what re-declare it.
+ *
+ * `min-width: 0` matters as well — a flex or grid child defaults to `min-width: auto` and refuses
+ * to shrink below its content even with wrapping enabled.
+ */
+.card .cardbody,
+.card pre,
+.card code,
+.card .content {
+  min-width: 0;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-x: hidden;
+}
+/* the label row above a card body */
+.card .ctitle {
+  font-weight: 600;
+  font-size: var(--text-xs);
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: 4px;
+}
+.card .ctitle .meta { margin-left: auto; }
+/* a card's tone, as one left rule — the meaning of the card is visible before it is read */
+.card-ok { border-left: 3px solid var(--ok); margin-top: 6px; }
+.card-warn { border-left: 3px solid var(--warn); margin-top: 6px; }
+.card-tool { border-left: 3px solid var(--tool); margin-top: 6px; }
+/**
  * The GOAL card is not a log excerpt — it is the thing the agent is working toward.
  *
  * `max-height: 200px` with `overflow-y: auto` is right for tool output and long results, but on

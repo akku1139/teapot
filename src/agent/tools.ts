@@ -39,6 +39,16 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** read-only persona: mutating tools are refused (enforced, not advisory) */
   readOnly?: boolean;
+  /**
+   * Tools a read-only caller may use ANYWAY.
+   *
+   * The completion auditor is read-only in intent — it checks a claim, it does not do the work — but
+   * `bash` is on the mutating list because it CAN write. Judging "the tests pass" without being able
+   * to run them forces the auditor to take the worker's word for it, which is the one thing an
+   * independent review must not do. The caller names the exception explicitly instead of getting a
+   * blanket pass, so the default stays closed.
+   */
+  allowMutatingForReview?: string[];
   /** sub-agent management hooks (wired by the master; absent → tools refuse) */
   subAgents?: {
     /** depth of THIS agent in the spawn tree (0 = top level) */
@@ -2691,7 +2701,7 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
   if (!def) return { ok: false, result: `unknown tool: ${name}` };
   if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
   // read-only personas (researcher/reviewer) are enforced, not just asked
-  if (ctx.readOnly && MUTATING_TOOLS.has(name))
+  if (ctx.readOnly && MUTATING_TOOLS.has(name) && !ctx.allowMutatingForReview?.includes(name))
     return { ok: false, result: `${name} is blocked: this agent runs with read-only tools` };
   // repair the call before handing it to the tool. A model that sends
   // {"cmd":"ls"} or {"limit":"100"} should get the work done, not a generic parse

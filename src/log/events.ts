@@ -35,7 +35,17 @@ export type EventType =
   | "sub_fork" // child session header: data:{parentAgent, parentSession, upToEvent}
   | "sub" // mirrored child activity in the parent feed: data:{sub, type, data}
   | "decision" // agent recorded a choice + rationale: data:{decision, rationale, alternatives?}
-  | "compaction"; // context compaction happened: data:{summary?, tokensBefore/After, mode}
+  | "compaction" // context compaction happened: data:{summary?, tokensBefore/After, mode}
+  /**
+   * One step of the completion AUDIT, mirrored into the worker's timeline.
+   *
+   * The audit is a separate LLM conversation, so its work used to be invisible: the timeline showed
+   * `audit-started` and then only its verdict, and a run that produced no verdict at all left the
+   * operator with a bare `audit-failed` and no way to see what the auditor had actually done
+   * (MEASURED in github-bug-research-1f48715f: three audits, no visible activity, an abandonment
+   * that read like a provider problem). These rows carry the auditor's own steps.
+   */
+  | "audit_step"; // data:{step:"started"|"thinking"|"tool"|"tool_done"|"reply", ...}
 
 export interface TeapotEvent {
   v: 1;

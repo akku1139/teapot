@@ -10,6 +10,7 @@ import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from 
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
+import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
 import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { sessionTitleFrom } from "../session-title.ts";
@@ -411,6 +412,12 @@ const UPDATE_INSTRUCTION = [
 /** framing around the prior notes when an update pass carries them forward */
 const SUMMARY_OPEN = "<conversation_checkpoint>\n";
 const SUMMARY_CLOSE = "\n</conversation_checkpoint>";
+
+/**
+ * What the completion auditor may use. Read-only by construction — it inspects artifacts to check a
+ * claim, and must not be able to change what it is judging.
+ */
+const AUDIT_READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "bash"]);
 
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
@@ -3756,6 +3763,28 @@ export class Agent {
    * it — the retry prompt should carry the same context an approved one
    * would — while emitting no `final: true`.
    */
+  /**
+   * A COMPACT account of what the worker actually did, for the auditor.
+   *
+   * Not the conversation: see the note at the audit call. This is the last few assistant turns plus
+   * the tools they ran, which is what a reviewer needs to see whether the claimed work happened —
+   * and it stays small enough that the auditor can still answer the question it was asked.
+   */
+  private auditEvidence(summary: unknown): string {
+    const lines: string[] = [];
+    for (let i = this.messages.length - 1; i >= 0 && lines.length < 24; i--) {
+      const m = this.messages[i]!;
+      const text = String(m.content ?? "").trim();
+      if (!text) continue;
+      if (m.role === "user") break; // stop at the request that started this round
+      const who = m.role === "assistant" ? "worker" : m.role;
+      lines.push(`${who}: ${text.replace(/\s+/g, " ").slice(0, 400)}`);
+    }
+    const tail = String(summary ?? "").trim();
+    if (tail && !lines.some((l) => l.includes(tail.slice(0, 60)))) lines.unshift(`finish summary: ${tail}`);
+    return lines.reverse().join("\n").slice(0, 6000);
+  }
+
   private async captureRecentTurns(): Promise<string[]> {
     const recent: string[] = [];
     for (let i = this.messages.length - 1; i >= 0 && recent.length < 6; i--) {
@@ -3796,6 +3825,70 @@ export class Agent {
     return recent;
   }
 
+  /**
+   * Run the completion auditor, streaming its steps into the timeline.
+   *
+   * The auditor is a real review, not a single question: pi-goal-x gives it read-only tools so it
+   * can inspect the artifacts instead of trusting the worker's summary, and it reports its progress
+   * as it goes. Both matter here:
+   *
+   *   - WITHOUT the tools the auditor could only re-read the claim it was asked to check, which is
+   *     how three audits in github-bug-research-1f48715f replied in prose and produced no verdict;
+   *   - WITHOUT the progress rows the timeline showed `audit-started` and then nothing until the
+   *     verdict, so an audit that produced no verdict was indistinguishable from one that never ran.
+   *
+   * Bounded by `AUDIT_MAX_STEPS`: an auditor that keeps reading is doing work the operator cannot
+   * see the end of, and the worker is blocked while it runs.
+   */
+  private async runAuditor(first: ChatMessage[]): Promise<string> {
+    const AUDIT_MAX_STEPS = 12;
+    const step = (data: Record<string, unknown>) =>
+      this.log.append("audit_step", this.currentSession, this.currentBranch, data).catch(() => {});
+    const auditTools = toolSpecs().filter((t) => AUDIT_READ_ONLY_TOOLS.has(t.function.name));
+    const messages: ChatMessage[] = [...first];
+    await step({ step: "started", tools: auditTools.map((t) => t.function.name) });
+    for (let i = 0; i < AUDIT_MAX_STEPS; i++) {
+      const res = await this.callLlm(messages, auditTools);
+      const text = String(res.message.content ?? "");
+      const calls = res.message.tool_calls ?? [];
+      if (!calls.length) {
+        if (text.trim()) await step({ step: "reply", text: text.slice(0, 400) });
+        return text;
+      }
+      messages.push({ role: "assistant", content: text, tool_calls: calls });
+      for (const call of calls) {
+        await step({ step: "tool", name: call.function?.name, args: String(call.function?.arguments ?? "").slice(0, 200) });
+        let out: { ok: boolean; result: string };
+        try {
+          out = await executeTool(String(call.function?.name ?? ""), String(call.function?.arguments ?? "{}"), {
+            ...this.toolCtx,
+            readOnly: true,
+            allowMutatingForReview: ["bash"],
+          });
+        } catch (err) {
+          out = { ok: false, result: `tool failed: ${String((err as Error).message).slice(0, 200)}` };
+        }
+        await step({
+          step: "tool_done",
+          name: call.function?.name,
+          ok: out.ok,
+          chars: out.result.length,
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: out.result.slice(0, 20_000),
+        });
+      }
+    }
+    // out of steps: ask once for the verdict alone, with no tools to reach for
+    const final = await this.callLlm(
+      [...messages, { role: "user", content: "Stop investigating. Reply with the verdict line only." }],
+      [],
+    );
+    return String(final.message.content ?? "");
+  }
+
   private async handleFinish(argsJson: string): Promise<void> {
     const args = safeParse(argsJson);
     if (args.goalComplete === true && this.goal.status !== "done") {
@@ -3811,43 +3904,30 @@ export class Agent {
         // number the attempts — the final carries the attempt that approved it
         this.auditAttempts++;
         try {
-          const auditPrompt =
-            `You are an independent completion AUDITOR (not the worker). Decide whether the goal is genuinely complete.\n\n` +
-            `GOAL:\n${this.goal.text.slice(0, 4000)}\n\nVERIFICATION CONTRACT (must ALL hold):\n${this.goal.verify.slice(0, 2000)}\n\n` +
-            `WORKER'S FINAL SUMMARY:\n${String(args.summary ?? "").slice(0, 3000)}\n\n` +
-            `Conversation evidence follows. Reply with EXACTLY one line starting either\n` +
-            `"APPROVED: <one-sentence justification>" or\n` +
-            `"CHANGES-REQUIRED: <the specific gaps that must be addressed>".`;
-          const res = await this.callLlm(
-            [
-              ...this.buildMessages(),
-              { role: "user", content: auditPrompt },
-            ],
-            [], // no tools — verdict only
-          );
-          const text = String(res.message.content ?? "");
-          // a reply that is NOT a verdict must not be read as a rejection.
-          //
-          // `/^APPROVED\b/i.test("")` is false, so an auditor that returned
-          // nothing — truncated, refused, or leaked provider tool-call markup —
-          // was scored `changes-required` with no reason. Seven times in one
-          // session: the worker was told to "address these gaps" while being
-          // given none, and the fallback text was the contract it had already
-          // read. A reason-less rejection carries no information and only
-          // teaches everyone that the audit is noise.
-          //
-          // So an unusable reply is treated as NO VERDICT, exactly like an
-          // auditor that threw — the `catch` below already fails open with the
-          // reasoning "a flaky provider can't trap work in an unauditable
-          // loop". The same situation reached by another route gets the same
-          // answer.
-          const verdictLine = text.trim();
-          // provider fallbacks for a message with no usable text; treating one
-          // of these as a "reason" is worse than treating it as nothing
-          const PLACEHOLDER = /^\((tool call|no content|no output)\)$/i;
-          const usable = verdictLine.length > 0 && !PLACEHOLDER.test(verdictLine);
-          const decided = usable && /^(APPROVED|CHANGES-REQUIRED)\b/i.test(verdictLine);
-          if (!decided) {
+          /**
+           * The auditor runs in its OWN conversation.
+           *
+           * It used to be `buildMessages()` + one more user turn — the worker's entire conversation,
+           * handed to a model that was then told "you are an auditor, not the worker". MEASURED in
+           * github-bug-research-1f48715f: with ~220k tokens of work log in front of it, the auditor
+           * replied by CONTINUING the work (prose, no verdict) on all three attempts, and the goal
+           * was abandoned with the audit never actually running.
+           *
+           * A review is not a continuation. The auditor gets the objective, the contract and the
+           * worker's claim — everything it needs to judge — and nothing to continue.
+           */
+          const evidence = this.auditEvidence(args.summary);
+          const auditMessages: ChatMessage[] = [
+            { role: "user", content: auditPrompt({ goal: this.goal.text, verify: this.goal.verify, summary: String(args.summary ?? ""), evidence }) },
+          ];
+          const text = await this.runAuditor(auditMessages);
+          /**
+           * The verdict is the reply's LAST line — see `parseAuditVerdict`. Anything else is NO
+           * VERDICT, never a rejection: a reason-less "fix these gaps" carries no information and
+           * only teaches everyone that the audit is noise.
+           */
+          const verdict = parseAuditVerdict(text);
+          if (verdict.kind === "none") {
             // an unusable reply is NOT an approval. The old path failed
             // OPEN — recorded the failure and marked the goal done anyway —
             // so a verification contract was "satisfied" that nobody verified.
@@ -3856,11 +3936,22 @@ export class Agent {
             this.auditUnavailableStreak++;
             await this.log.append("system_note", this.currentSession, this.currentBranch, {
               event: "audit-failed",
-              detail: usable
-                ? `auditor reply had no verdict: ${verdictLine.slice(0, 200)}`
-                : "auditor returned no verdict",
+              detail: verdict.detail,
               attempt: this.auditUnavailableStreak,
             });
+            /**
+             * A no-verdict reply gets a bounded number of retries, then the operator decides.
+             *
+             * MEASURED in github-bug-research-1f48715f: three audits in six minutes all failed the
+             * same way, and the retry prompt told the worker to "re-check the contract yourself, then
+             * finish again" — which cannot help, because the worker's re-verification was never what
+             * the auditor was missing. It re-ran the SAME call against the SAME model with the SAME
+             * reply shape, so the loop cost three rounds and ended at the cap anyway.
+             *
+             * The retry is worth keeping for the transient case (a provider hiccup, a truncated
+             * reply), and the prompt now asks for the thing that actually helps — a concise statement
+             * of what was verified. Three attempts, then a loud note.
+             */
             if (this.auditUnavailableStreak < 3) {
               this.queueAuditUnavailableRetry();
               await this.captureRecentTurns();
@@ -3877,8 +3968,9 @@ export class Agent {
             await this.captureRecentTurns();
             return;
           }
-          const approved = /^APPROVED\b/i.test(verdictLine);
-          const feedback = verdictLine.replace(/^(APPROVED|CHANGES-REQUIRED)\s*[:—-]?\s*/i, "").trim();
+          const approved = verdict.kind === "approved";
+          // the parser already separated marker from reason
+          const feedback = verdict.reason;
           // storing the literal "(no detail)" made the UI draw a card
           // whose whole content was the absence of a reason, and that same
           // string landed in goal.md for the right panel. An empty string is
@@ -4001,15 +4093,19 @@ export class Agent {
   }
 
   /**
-   * the retry prompt for an audit that could not produce a verdict.
-   * Carries a real instruction (unlike a reason-less rejection — #90), so the
-   * worker re-checks the contract itself instead of being told to fix nothing.
+   * The retry prompt for an audit that could not produce a verdict.
+   *
+   * It asks the worker to make the NEXT audit easier to answer, which is the only thing within its
+   * power: a no-verdict reply means the auditor could not judge from what it was given, so a
+   * concise statement of what was verified is the actual fix. It does NOT claim the work is
+   * unverified-and-must-be-redone; the work may be fine and the auditor simply failed, and telling
+   * the worker to redo it produced the repeat loop measured in github-bug-research-1f48715f.
    */
   private queueAuditUnavailableRetry(): void {
     const text =
-      `[harness] The completion audit could not run (the auditor returned no verdict). ` +
-      `Do NOT treat the work as verified: re-check the verification contract yourself, item by item, ` +
-      `then finish with goalComplete=true again.\n\n` +
+      `[harness] The completion audit could not produce a verdict — that is a problem with the ` +
+      `AUDIT, not a finding about your work. Before finishing again, state plainly and briefly what ` +
+      `you verified for each item of the contract, so the auditor has something to judge.\n\n` +
       `${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
     this.pendingPrompts.push({ source: "harness", text });
     // log the row: a push-only prompt is invisible on the timeline and lost to

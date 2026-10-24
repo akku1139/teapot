@@ -1,5 +1,6 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { AnsiText, BashElapsed, HighlightedCode } from "./code";
+import { Card } from "./card";
 import { CopyBtn, IconBtn } from "./chrome";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
@@ -507,16 +508,51 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
             alone rather than getting a placeholder card. `hasCard` is
             the explicit flag, so this is never a guess from an empty string. */}
         <Show when={line.hasCard}>
-          <div
-            class={"card " + (line.tone === "ok" ? "auditcard ok" : line.tone === "warn" ? "auditcard" : "verifycard")}
-            innerHTML={
-              line.markdown
-                ? renderMarkdown(line.detail)
-                : renderMarkdown(`\`\`\`\n${line.detail}\n\`\`\``)
-            }
+          <Card
+            tone={line.tone === "ok" ? "ok" : line.tone === "warn" ? "warn" : "tool"}
+            markdown={line.markdown}
+            body={line.detail}
           />
         </Show>
       </div>
+    );
+  }
+  /**
+   * One step of the completion audit.
+   *
+   * The auditor runs in its own conversation, so without these rows the timeline showed
+   * `audit-started` and then only the verdict — an audit that produced NO verdict was
+   * indistinguishable from one that never ran (measured: three silent audits, then an abandonment
+   * that read like a provider fault). These are the auditor's own steps, attributed to it.
+   */
+  if (e.type === "audit_step") {
+    const st = String(e.data?.step ?? "");
+    const name = String(e.data?.name ?? "");
+    const label =
+      st === "started"
+        ? "🔍️ auditor started"
+        : st === "tool"
+          ? `🔍️ auditor → ${name}`
+          : st === "tool_done"
+            ? `🔍️ auditor ← ${name} ${e.data?.ok === false ? "failed" : `${String(e.data?.chars ?? 0)} chars`}`
+            : st === "reply"
+              ? "🔍️ auditor replied"
+              : "🔍️ auditor";
+    return (
+      <details class="embed auditstep">
+        <summary>
+          <span class="meta">{label}</span>
+          <Show when={st === "tool" && e.data?.args}>
+            <span class="meta muted">{truncate(String(e.data?.args ?? ""), 120)}</span>
+          </Show>
+        </summary>
+        <Show when={st === "reply" && e.data?.text}>
+          <pre class="mono toolbody">{String(e.data?.text ?? "")}</pre>
+        </Show>
+        <Show when={st === "tool" && e.data?.args}>
+          <pre class="mono toolbody">{String(e.data?.args ?? "")}</pre>
+        </Show>
+      </details>
     );
   }
   if (e.type === "todo") {

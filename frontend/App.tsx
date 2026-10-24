@@ -12,6 +12,7 @@ import {
 } from "./lib/live-buffer";
 import { buildTimeline, type TimelineEvent, type PendingEchoLike } from "./lib/timeline";
 import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
+import { Card } from "./components/card";
 import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
 import { outputLang } from "./lib/tool-output-lang";
 import { mergeThemes } from "./lib/theme-merge";
@@ -178,6 +179,7 @@ let imeInProgress = false;
 const FEED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
   "state", "error", "fork", "goal", "todo", "question", "decision", "compaction",
+  "audit_step",
   "system_note",
   // NOTE: "sub" is deliberately NOT here. A child's activity is no longer
   // mirrored into the parent's log — those rows flooded the parent's
@@ -199,7 +201,7 @@ const NOTE_FEED_TYPES = new Set(["system_note"]);
  */
 const RENDERED_TYPES = new Set([
   "user", "message", "prompt", "tool_call", "tool_result", "progress",
-  "error", "fork", "goal", "todo", "question", "decision", "compaction",
+  "error", "fork", "goal", "todo", "question", "decision", "compaction", "audit_step",
 ]);
 
 /** system_note shapes that DO draw a divider/embed; the rest are log-only. */
@@ -5533,29 +5535,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.text))} />
             </div>
             <Show when={sel()!.goal.verify}>
-              <div class="card verifycard" title="verification contract — finish(goalComplete=true) is audited against these requirements by an independent reviewer before the goal counts as done">
-                <div class="vtitle">🔍️ verification contract</div>
-                <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.verify))} />
-              </div>
+              <Card
+                title="🔍️ verification contract"
+                tone="tool"
+                body={String(sel()!.goal.verify)}
+              />
             </Show>
             <Show when={sel()!.goal.audit}>
               {(a) => (
-                <div class={"card auditcard " + (a().verdict === "approved" ? "ok" : "warn")}>
-                  <div class="vtitle">
-                    {a().verdict === "approved" ? "✅ audit: approved" : "⚠ audit: changes required"}
-                    <span class="meta muted" style="margin-left:auto">{relTime(a().at)}</span>
-                  </div>
-                  {/* #51: the auditor can return a verdict with no reason.
-                      An empty card says less than an honest one-liner. */}
-                  <div
-                    class="content"
-                    innerHTML={
-                      isPlaceholderDetail(a().feedback)
-                        ? renderMarkdown("_the auditor returned a verdict with no detail_")
-                        : renderMarkdown(a().feedback)
-                    }
-                  />
-                </div>
+                <Card
+                  title={a().verdict === "approved" ? "✅ audit: approved" : "⚠ audit: changes required"}
+                  meta={relTime(a().at)}
+                  tone={a().verdict === "approved" ? "ok" : "warn"}
+                  body={
+                    isPlaceholderDetail(a().feedback)
+                      ? "_the auditor returned a verdict with no detail_"
+                      : a().feedback
+                  }
+                />
               )}
             </Show>
           </Show>

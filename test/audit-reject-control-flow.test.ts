@@ -85,7 +85,7 @@ function rejectingPair(ws: string, sd: string, cap?: number) {
   return { a, calls, getAuditHistory: () => auditHistory };
 }
 
-test("the auditor receives an ANSWERED tool call (#128)", async () => {
+test("the auditor gets its OWN conversation, not the worker's (#128)", async () => {
   await useTempDirs(["t128a-", "t128b-"], async ([ws, sd]) => {
     const { a, getAuditHistory } = rejectingPair(ws!, sd!);
     await a.init();
@@ -96,18 +96,26 @@ test("the auditor receives an ANSWERED tool call (#128)", async () => {
     await new Promise((r) => setTimeout(r, 1200));
     try {
       const h = getAuditHistory() ?? [];
-      const assistant = h.find((m) => m.toolCalls);
-      const tool = h.find((m) => m.role === "tool");
-      assert.ok(assistant, `the finish call must be in the auditor's history (#128): ${JSON.stringify(h)}`);
+      /**
+       * CORRECTED — this used to require the worker's `finish` tool_call to be in the auditor's
+       * history, with an answered `tool` message after it. That arrangement is what BROKE the audit:
+       * the auditor was handed the worker's whole conversation (a measured ~220k tokens) and told to
+       * switch roles, so it kept doing the work instead of judging it. Three audits in
+       * github-bug-research-1f48715f replied in prose with no verdict and the goal was abandoned.
+       *
+       * A review is not a continuation. The auditor's conversation is its own: one user turn carrying
+       * the objective, the contract and the (labelled untrusted) claim. Asserting the ABSENCE is the
+       * point — a later change that reintroduces the work log would fail here.
+       */
+      assert.equal(h.length, 1, `the auditor starts from a single prepared turn: ${JSON.stringify(h)}`);
+      assert.equal(h[0]?.role, "user", "and it is a user turn (#128)");
       assert.ok(
-        tool,
-        `every tool_call must be answered before the audit LLM call (#128): ${JSON.stringify(h)}`,
+        !h.some((m) => m.toolCalls),
+        "the worker's tool calls must NOT reach the auditor — that is what made it continue the work (#128)",
       );
-      // and the tool message must come AFTER the assistant that asked for it,
-      // or it answers nothing
       assert.ok(
-        h.indexOf(tool) > h.indexOf(assistant),
-        `the tool message must follow the assistant tool_call (#128): ${JSON.stringify(h)}`,
+        !h.some((m) => m.role === "tool"),
+        "and neither must the worker's tool results (#128)",
       );
     } finally {
       a.stop("done");
