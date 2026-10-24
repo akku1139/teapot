@@ -70,3 +70,42 @@ test("the settings dialog previews, commits on save, and reverts on close (#them
     "closing must revert — otherwise an unsaved preview silently becomes the state (#theme)",
   );
 });
+
+test("following the system marks BOTH slots, and the last click previews (#theme)", async () => {
+  /**
+   * "follow systemの時はdarkとlightでそれぞれ選択中のやつに枠が出て、最後に押したテーマが
+   * プレビューされるべきなのに前バージョンから変わってない".
+   *
+   * Two separate misses:
+   *
+   *   1. only `paintedIdFor()` was marked — the slot the OS is IN — so the other choice was
+   *      invisible without flipping the system setting;
+   *   2. the painter resolved `want` from that same OS slot, so clicking a LIGHT card while the OS
+   *      is dark asked for the dark slot and nothing changed. Measured: painted stayed `dark`.
+   */
+  const modal = stripSourceComments(readSource("frontend/components/ConfigModal.tsx"));
+  const chosen = modal.slice(modal.indexOf("const themeCardChosen"));
+  assert.match(
+    chosen.slice(0, 500),
+    /id === props\.theme\.dark\(\) \|\| id === props\.theme\.light\(\)/,
+    "following the system, BOTH slot choices carry a frame — marking only the painted one hides " +
+      "the other choice entirely (#theme)",
+  );
+
+  const app = stripSourceComments(readSource("frontend/App.tsx"));
+  // the PAINTER (not the background-image helper) must honour the preview override
+  const paintAt = app.indexOf("document.documentElement.dataset.theme = active");
+  assert.ok(paintAt > 0, "the painter must exist");
+  const before = app.slice(Math.max(0, paintAt - 2600), paintAt);
+  assert.match(
+    before,
+    /previewTheme\(\)/,
+    "the painter must read the preview override — otherwise a light card clicked while the OS is " +
+      "dark cannot be previewed, because slot resolution asks for the dark slot (#theme)",
+  );
+  assert.match(
+    before,
+    /previewId \?\?/,
+    "and the override must WIN over slot resolution (#theme)",
+  );
+});

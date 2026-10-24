@@ -46,23 +46,31 @@ const mk = async (redirectUrl: string) => {
   return { auth, saved };
 };
 
-test("a placeholder redirect cannot vouch for a stored grant (#mcp)", async () => {
+test("a placeholder reconnect KEEPS the grant; a real mismatch declines it (#mcp)", async () => {
   /**
-   * The reported path: a plain reconnect, which uses the placeholder provider. Trusting the grant
-   * here is what produced `Client ID mismatch` with no way for the operator to understand it.
+   * CORRECTED. This test used to assert that a portless placeholder DROPPED the grant, and that
+   * "fix" is what broke MCP authentication: `authFor()` builds every reconnect's provider with
+   * `http://127.0.0.1/callback`, so the check fired on EVERY reconnect and `tokens()` erased the
+   * stored tokens. MEASURED: both Notion's and Canva's grants were gone from `mcp-oauth.json`
+   * minutes after a successful authorization.
+   *
+   * The distinction that matters: DECLINE a presentation, never DELETE the stored value. Declining
+   * is reversible; erasing costs a full re-authorization.
    */
-  const { auth } = await mk("http://127.0.0.1/callback");
-  assert.equal(
-    auth.tokens(),
-    undefined,
-    "without a listener-backed redirect there is no evidence the grant still applies, so it must " +
-      "not be presented — the failure it causes names the CLIENT, not the actual problem",
+  const placeholder = new ServerAuth("srv", "http://127.0.0.1/callback", async () => {});
+  await placeholder.hydrate(structuredClone(STALE));
+  assert.ok(
+    placeholder.tokens(),
+    "a portless placeholder cannot refute a registration, so it must not discard the grant (#mcp)",
   );
+  // a listener-backed URL the record does not list IS a genuine mismatch, and is still declined
+  const mismatch = new ServerAuth("srv", "http://127.0.0.1:59999/callback", async () => {});
+  await mismatch.hydrate(structuredClone(STALE));
+  assert.equal(mismatch.tokens(), undefined, "a genuinely mismatched client is still not presented");
 });
 
 test("a grant IS used when the stored registration matches a real listener (#mcp)", async () => {
   // the healthy case must keep working: a reused port means the registration is genuinely current
-  const { auth } = await mk("http://127.0.0.1:41234/callback");
   const stored = {
     ...STALE,
     clientInformation: { client_id: "old-client", redirect_uris: ["http://127.0.0.1:41234/callback"] },
@@ -70,8 +78,6 @@ test("a grant IS used when the stored registration matches a real listener (#mcp
   const a2 = new ServerAuth("srv", "http://127.0.0.1:41234/callback", async () => {});
   await a2.hydrate(structuredClone(stored));
   assert.ok(a2.tokens(), "a matching registration keeps its grant — no needless re-authorization");
-  // and the placeholder instance above is NOT the same situation
-  assert.equal(auth.tokens(), undefined);
 });
 
 test("a rotated client id drops the tokens of the old one (#mcp)", async () => {

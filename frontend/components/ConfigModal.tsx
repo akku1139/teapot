@@ -551,6 +551,8 @@ export function ConfigModal(props: {
     setActive: (v: string) => void;
     /** persist the appearance — called by SAVE, never by a preview */
     commitAppearance: (v: { auto: boolean; dark: string; light: string; fixed: string }) => void;
+    /** paint this id regardless of the slot the OS selects, or null to stop previewing */
+    preview: (id: string | null) => void;
   };
 }) {
   /**
@@ -890,26 +892,33 @@ export function ConfigModal(props: {
    */
   const pickThemeCard = (id: string, mode: "dark" | "light") => {
     const { slot } = slotForSelection(props.theme.auto(), mode);
-    if (slot === "dark") props.theme.setDark(id);
-    else if (slot === "light") props.theme.setLight(id);
-    else props.theme.setActive(id);
+    /**
+     * Through `applyDraft`, so a card click is BOTH a draft edit and a preview.
+     *
+     * Calling the setters directly wrote the slot but never previewed, so a light card clicked
+     * while the OS is dark still showed nothing — the painter reads the slot matching the OS.
+     */
+    if (slot === "dark") setSysDarkTheme(id);
+    else if (slot === "light") setSysLightTheme(id);
+    else setFixedTheme(id);
   };
   /**
-   * Which card reads as selected: while following the system, the slot for the mode the OS is IN —
-   * that is the painted theme, i.e. the one on screen. Keying it off the fixed slot marked a card
-   * that was not visible and left the real one unmarked.
+   * Which card reads as selected.
+   *
+   * Following the system there are TWO slots, so BOTH marked cards are legitimate — the dark choice
+   * and the light choice each carry a frame, because each is the answer for one appearance. Asked
+   * as "follow systemの時はdarkとlightでそれぞれ選択中のやつに枠が出て、最後に押したテーマが
+   * プレビューされるべき".
+   *
+   * Marking only `paintedIdFor()` (the slot the OS is currently in) hid the other choice entirely:
+   * the operator could not see what their light theme was set to without flipping the OS.
+   *
+   * Not following the system there is one slot, so exactly one card is marked.
    */
   const themeCardChosen = (id: string) =>
-    paintedIdFor({
-      auto: props.theme.auto(),
-      fixed: props.theme.activeId(),
-      dark: props.theme.dark(),
-      light: props.theme.light(),
-      prefersLight:
-        typeof window !== "undefined" && typeof window.matchMedia === "function"
-          ? window.matchMedia("(prefers-color-scheme: light)").matches
-          : false,
-    }) === id;
+    props.theme.auto()
+      ? id === props.theme.dark() || id === props.theme.light()
+      : id === props.theme.activeId();
   // the archive list is SERVER state (which entries are archived), fetched on open
   // and after every action — not derived from props.cfg, which carries the config as
   // loaded and would go stale the moment an agent is archived from the controls panel
@@ -1019,6 +1028,16 @@ export function ConfigModal(props: {
     props.theme.setDark(merged.dark);
     props.theme.setLight(merged.light);
     props.theme.setActive(merged.fixed);
+    /**
+     * PREVIEW the theme just chosen, whichever slot it landed in.
+     *
+     * Following the system the painter reads the slot matching the OS appearance, so choosing the
+     * LIGHT theme while the OS is dark wrote a value nothing painted — the click looked dead.
+     * Previewing the id directly makes the last-clicked theme visible regardless of which slot the
+     * OS selects, which is what "最後に押したテーマがプレビューされる" means.
+     */
+    const chosen = next.dark ?? next.light ?? next.fixed;
+    if (chosen) props.theme.preview(chosen);
   };
   const setFixedTheme = (v: string) => applyDraft({ fixed: v });
   const themeAuto = () => draftOf().auto;
@@ -1041,6 +1060,8 @@ export function ConfigModal(props: {
     props.theme.setDark(s.dark);
     props.theme.setLight(s.light);
     props.theme.setActive(s.fixed);
+    // stop previewing: back to whichever slot the OS selects
+    props.theme.preview(null);
   };
 
   /**
@@ -1247,6 +1268,7 @@ export function ConfigModal(props: {
        * survive a reload, which is what "save settings" means for every other section.
        */
       props.theme.commitAppearance(draftOf());
+      props.theme.preview(null); // the committed state now paints itself
       setSaveState("saved");
       // the draft IS the stored state now: closing must not revert what was just saved
       Object.assign(storedAppearance, draftOf());

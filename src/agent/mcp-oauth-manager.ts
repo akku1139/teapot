@@ -207,18 +207,21 @@ export class ServerAuth implements OAuthClientProvider {
     const uris = Array.isArray(stored?.redirect_uris) ? (stored.redirect_uris as string[]) : [];
     if (uris.length === 0) return false; // unknown is not wrong: older records omit the list
     /**
-     * A PLACEHOLDER redirect cannot vouch for a registration.
+     * A PLACEHOLDER redirect says NOTHING either way — so it must not be treated as stale.
      *
-     * `authFor()` builds a provider with `http://127.0.0.1/callback` — no port, because none exists
-     * until a flow opens a listener — and a REconnect uses that instance. A record registered from
-     * the same placeholder therefore MATCHES, the check says "not stale", and the grant obtained
-     * under a real port is presented to a client the server no longer knows: `Client ID mismatch`
-     * (MEASURED on Notion and Canva, every reconnect).
+     * `authFor()` builds every reconnect's provider with `http://127.0.0.1/callback`, no port,
+     * because none exists until a flow opens a listener. An earlier version called that
+     * unconditionally stale, which made `tokens()` DROP the grant on every reconnect: a server that
+     * had been authorized minutes earlier reported "needs a grant" again (MEASURED: Notion and
+     * Canva both lost their access token after a restart, with `teapot.theme`-style certainty that
+     * the authorization itself had worked).
      *
-     * Only a listener-backed URL can confirm a registration, so this refuses to reuse tokens
-     * without one. The panel then shows 🔑 authorize instead of a failure with no way forward.
+     * A placeholder can neither confirm nor refute a registration, so the honest answer is "I do not
+     * know" — and an unknown registration keeps its grant. A real mismatch (a listener-backed URL
+     * the record does not list) is still reported, which is the case that actually produced
+     * `Client ID mismatch`.
      */
-    if (!/:\d+\//.test(this.redirectUrl)) return true;
+    if (!/:\d+\//.test(this.redirectUrl)) return false;
     return !uris.includes(this.redirectUrl);
   }
 
@@ -264,11 +267,20 @@ export class ServerAuth implements OAuthClientProvider {
      * Returning nothing makes the flow an honest "needs a grant" instead: the panel offers 🔑, and
      * completing it issues a pair for the client that actually exists.
      */
-    if (this.store.accessToken && this.registrationIsStale()) {
-      this.store.accessToken = undefined;
-      this.store.refreshToken = undefined;
-      this.store.expiresAt = undefined;
-    }
+    /**
+     * A registration we cannot vouch for means DO NOT PRESENT the grant — never DELETE it.
+     *
+     * This used to clear the stored tokens here, and clearing is not the same as declining: the
+     * store persists on the next write, so an "I cannot verify this" answer from a placeholder
+     * provider ERASED a working grant minutes after it was obtained (MEASURED on this machine:
+     * both Notion's and Canva's `accessToken`/`refreshToken` were gone from mcp-oauth.json while the
+     * authorizations themselves had succeeded).
+     *
+     * Declining is reversible — the next connect that CAN verify the registration reads the tokens
+     * again. Erasing is not: it costs the operator a full re-authorization for a transient
+     * uncertainty.
+     */
+    if (this.store.accessToken && this.registrationIsStale()) return undefined;
     if (!this.store.accessToken) return undefined;
     return {
       access_token: this.store.accessToken,

@@ -323,11 +323,14 @@ export default function App() {
    * kind of drift that makes a setting look broken.
    */
   const activeBgImage = () => {
-    const want = themeAuto()
-      ? sysPrefersLight()
-        ? sysLightTheme()
-        : sysDarkTheme()
-      : fixedTheme();
+    const preview = previewTheme();
+    const want =
+      preview ??
+      (themeAuto()
+        ? sysPrefersLight()
+          ? sysLightTheme()
+          : sysDarkTheme()
+        : fixedTheme());
     return customThemes().find((t) => t.id === want)?.backgroundImage ?? "";
   };
   /**
@@ -689,6 +692,17 @@ export default function App() {
    * That is why the two are separate signals: `fixedTheme` names a preset OR a custom id, and
    * `customThemes` is the palette behind that id.
    */
+  /**
+   * A theme id to PAINT regardless of which slot the OS selects — the settings PREVIEW.
+   *
+   * Following the system, `want` comes from the slot matching the OS appearance, so clicking a
+   * LIGHT card while the OS is dark could not show anything: the painter asked for the dark slot.
+   * Reported as "最後に押したテーマがプレビューされるべきなのに変わってない".
+   *
+   * `null` means "no preview": the normal slot resolution applies, which is the state the app
+   * returns to when the dialog closes.
+   */
+  const [previewTheme, setPreviewTheme] = createSignal<string | null>(null);
   const [customThemes, setCustomThemes] = createSignal<CustomTheme[]>(loadCustomThemes());
   /**
    * UNION the server's themes with this browser's — never replace one set with the other.
@@ -738,11 +752,19 @@ export default function App() {
   });
   // single writer: resolves the active theme and slaps it on <html>
   createEffect(() => {
-    const want = themeAuto()
+    /**
+     * A preview WINS over slot resolution.
+     *
+     * Following the system, `want` comes from the slot matching the OS appearance, so clicking a
+     * LIGHT card while the OS is dark asked the painter for the dark slot and nothing changed.
+     * "最後に押したテーマがプレビューされるべき" is what this override is for.
+     */
+    const previewId = previewTheme();
+    const want = previewId ?? (themeAuto()
       ? sysPrefersLight()
         ? sysLightTheme()
         : sysDarkTheme()
-      : fixedTheme();
+      : fixedTheme());
     /**
      * A stored id can name a theme that no longer exists: deleted in another tab, dropped by
      * `saveCustomThemes` when storage was full, or written by an older build. The attribute was
@@ -5996,6 +6018,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           setLight: setSysLightTheme,
           setThemes: setCustomThemes,
           setActive: setFixedTheme,
+          /** paint this id regardless of the slot the OS selects — the settings preview */
+          preview: (id: string | null) => setPreviewTheme(id),
           /**
            * Commit the appearance to storage — the SAVE path.
            *
