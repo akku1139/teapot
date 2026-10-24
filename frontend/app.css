@@ -1627,6 +1627,15 @@ details.reasoning .thinkscroll {
 /* ---- composer ---- */
 .composer { padding: 0 16px 18px; position: relative; }
 .composer form { background: var(--bg-light); border-radius: var(--radius-lg); display: flex; gap: var(--space-4); padding: 10px 12px; align-items: flex-end; }
+/* the maximized composer is the same surface, just larger — same alpha, same colour */
+html[data-bg-image="on"] .composer.maximized,
+html[data-bg-image="on"] .composer.maximized::before {
+  background-color: color-mix(
+    in srgb,
+    var(--bg-dark-solid, #232630) calc(min(1, var(--surface-alpha, 0.82) + 0.06) * 100%),
+    transparent
+  );
+}
 /**
  * The PROMPT BOX is translucent at PANEL strength, not control strength.
  *
@@ -2520,7 +2529,14 @@ html[data-appearance="light"] .filepreview .shiki { background-color: var(--shik
 .composer .hint { flex-shrink: 0; }
 .composer.maximized {
   position: absolute; inset: 0; z-index: 5;
-  background: var(--bg-dark);
+  /**
+   * OPAQUE here would hide the wallpaper, which is exactly what happened: maximizing the composer
+   * painted a solid slab over the whole content column and the background image vanished
+   * ("プロンプト欄を最大化すると背景画像がでてない"). The un-maximized composer already takes the
+   * panel alpha (see `.composer form`); the maximized state must use the SAME surface, or the one
+   * mode that covers the most screen is the one mode that loses the theme.
+   */
+  background-color: var(--bg-dark);
   /* #65: the BOTTOM padding must match the normal composer's 18px. It was 10px
      here, so maximizing moved the hint 8px and the composer's bottom edge with
      it — which is the whole complaint, and it survived the earlier min-height:0

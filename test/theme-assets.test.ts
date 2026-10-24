@@ -579,3 +579,33 @@ test("a NESTED tool body steps back instead of repeating its parent's fill (#ui)
   assert.match(deep, /color-mix\(/, "a third level keeps stepping rather than vanishing");
   assert.match(deep, /border:/, "with a border carrying the cue");
 });
+
+test("the MAXIMIZED composer shows the wallpaper too (#ui)", async () => {
+  /**
+   * Reported: "プロンプト欄を最大化すると背景画像がでてない".
+   *
+   * `.composer.maximized` paints over the whole content column (`position: absolute; inset: 0`) and
+   * used a raw `background: var(--bg-dark)` — an opaque slab over the one mode that covers the most
+   * screen. The un-maximized composer already took the panel alpha; the maximized one has to use
+   * the SAME surface or the theme disappears exactly where it is most visible.
+   *
+   * Asserted as the CSS contract, since no browser is available in the suite: the wallpaper rule
+   * must exist for BOTH the element and its `::before` (which is what actually covers the feed).
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  for (const sel of [".composer.maximized", ".composer.maximized::before"]) {
+    assert.ok(
+      css.includes(sel),
+      `${sel} must be covered by a wallpaper rule — its opaque fill hides the image (#ui)`,
+    );
+  }
+  // and the fill must be an alpha mix, not a solid colour
+  const at = css.indexOf('html[data-bg-image="on"] .composer.maximized');
+  const body = css.slice(at, css.indexOf("}", at));
+  assert.match(
+    body,
+    /color-mix\(/,
+    "the surface must take the theme's alpha — a solid colour is what hid the wallpaper (#ui)",
+  );
+  assert.match(body, /--surface-alpha/, "and the alpha is the theme's own setting");
+});
