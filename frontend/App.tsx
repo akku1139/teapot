@@ -2482,6 +2482,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let timer: ReturnType<typeof setTimeout> | null = null;
   onCleanup(() => ws?.close());
   let pendingRefresh = false;
+  /** set when a socket frame reveals a GAP; cleared by the one REST read that closes it */
+  let feedNeedsRead = false;
   // the visibilitychange listener is registered ONCE below (outside
   // connectWs) — a reconnect used to add another copy each time, leaking
   // closures and timers with every reconnect cycle
@@ -2756,6 +2758,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // order and can only pair a result with a call it has already seen, and
         // `agentActive` comes from refreshAgents. So merge for immediacy AND
         // refresh for coherence — see the #145 note that follows.
+        /**
+         * Does the feed need a REST read for coherence?
+         *
+         * Only when the socket could have missed something: `seq` is monotonic per session, so a
+         * delivered seq more than one past the newest held row means a gap (a reconnect, or the
+         * 300-event window). Otherwise the socket payload IS the data and the read is redundant —
+         * it used to run on every burst, several times a second on a busy session.
+         */
+        {
+          const heldSeq = events().at(-1)?.seq ?? 0;
+          const arriving = Number((msg.event as { seq?: number })?.seq ?? 0);
+          if (!heldSeq || (arriving > 0 && arriving > heldSeq + 1)) feedNeedsRead = true;
+        }
         mergeEvents([msg.event as Ev]);
         // a LOGGED assistant reply covers the live bubble the INSTANT it is
         // merged — `mergeEvents` is synchronous and `isCoveredByLog` compares the
@@ -2793,8 +2808,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     pendingRefresh = false;
     const runFeedRefresh = async () => {
         timer = null;
-        await refreshAgents();
-        await refreshMetrics();
+        /**
+         * NO agent/metrics refetch here.
+         *
+         * `refreshAgents()` and `refreshMetrics()` ran on every event burst, so a busy session issued
+         * both over HTTP several times a second while the socket was ALREADY delivering the same
+         * facts: every `agent-update` frame carries a full `snapshot`, and metrics now arrive as
+         * `kind: "metrics"`. Two sources for one value is how they disagree, and the HTTP copy is the
+         * one that can be stale.
+         *
+         * The fetches stay where they are the only source — the initial load, a reconnect catch-up,
+         * and a waking tab (all of which may have missed pushes).
+         */
         if (selected()) {
           // compare last event ID, not array length: the /events window is
           // capped at 300, so long sessions have a CONSTANT length and a
@@ -2808,7 +2833,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           // already been corrected by a scroll handler, or was about to be, and the view
           // jumped away right when a round kicked off.
           const _fetchStartedAt = Date.now();
-          await loadEvents(selected()!);
+          /**
+           * Re-read the feed only when the socket could have MISSED something.
+           *
+           * The socket already merged the event (`mergeEvents([msg.event])`), so this read is for
+           * coherence — pairing a result with its call, and the rows a burst may have skipped. Doing
+           * it on EVERY burst meant a busy session issued `/events` several times a second for data
+           * the socket had already delivered.
+           *
+           * A gap is detectable without asking: `seq` is monotonic per session, so a delivered event
+           * whose seq is more than one past the newest held row means something was dropped (a
+           * reconnect, or the 300-event window). Only then is a full read the answer.
+           */
+          if (feedNeedsRead) {
+            feedNeedsRead = false;
+            await loadEvents(selected()!);
+          }
           // reconcile the bubble on EVERY pass, NOT inside the
           // "did the newest id change" test below — the socket MERGES the event
           // before scheduling this refresh, so that test reads false here and the
