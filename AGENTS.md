@@ -158,6 +158,24 @@ script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
   and "▶ start" kept sending `/stop`). 250 test cases of this kind were deleted; the
   whole suite was green through a dead button the entire time.
 
+  **It was re-broken anyway — 32 files, 217 cases — so a test now enforces the rule.**
+  `test/no-source-text-tests.test.ts` fails if any test file reads implementation code
+  via `readSource`, and its own vacuity is checked (planted violations must be refused).
+  A rule enforced only by memory gets re-broken, and it was re-broken by the session
+  that had just written it down. Two examples of what it cost, both MEASURED:
+
+  - a test asserted `/sessionCounts/` in `master.ts`. The behaviour it "protected"
+    (`archivedAgents()` counting sessions) still passed when the OLD slow implementation
+    was restored, and only failed when the count was made wrong. The source test could
+    not tell those two apart — which is the whole problem.
+  - a test asserted `json: () => import("shiki/langs/json.mjs")` in the source. That
+    passes while the loader points at a module that no longer exists; CALLING
+    `highlightLangChunks` and asserting the output carries `--shiki-` does not.
+
+  A stylesheet (`app.css`) remains the one legitimate read: happy-dom does no layout, so
+  the rendered contract (`flex: 1`, `overflow-y: auto`) has to be stated as CSS, and a
+  class rename breaks the UI and the test together.
+
 - **Test the behaviour instead.** Put pure logic in a `.ts` helper next to `App.tsx`
   (e.g. `frontend/session-scope.ts`) and unit-test it directly with `node --test`.
   Anything that depends on the real bundle — rendering, the drawer, the live buffer,
@@ -321,6 +339,17 @@ out with only five unresolved names because everything it called had already mov
   some client state is keyed by **agent**. When adding state, decide which of
   the two it belongs to and say so in a comment; mixing them is the root of
   several long-lived bugs (#40, #146).
+  - The names are the trap, so: **`agent.id` is the public SLUG** (`tyb2-9`),
+    **`agent.session` is the internal session id** (also the directory name).
+    `id` alone is ambiguous wherever `session` is in scope — name such a field
+    `agentId` / `sessionId`. `config.json` persists the slug as `id` and MUST
+    keep that key, or every config written by an earlier version breaks.
+  - MEASURED cost of getting it wrong: the ⏳ badge counted `sel().pendingPrompts`
+    (the SELECTED AGENT) while the feed rendered `pendingMsgs()` (the VIEWED
+    SESSION), so one session showed "1 message queued" for another's queue, and
+    echoes were filed under `pendingKey()` — the timeline on screen — even when
+    the prompt had been sent to a different agent. The fix was to make the two
+    counts come from ONE pipeline run, not to add a second check.
 - The server sends authoritative snapshots over the WebSocket; REST is a
   fallback/resync path. Prefer extending the socket payload over adding a poll.
 - **The intended timeline architecture** (and the direction to move in): every
@@ -500,12 +529,17 @@ out with only five unresolved names because everything it called had already mov
 
   ```sh
   # bash(background=true) — returns a job id immediately, notifies on exit
-  for wf in test.yml windows.yml publish.yml; do
-    id=$(gh run list --workflow=$wf --limit 1 --json databaseId -q '.[0].databaseId')
-    timeout 850 gh run watch $id --exit-status --interval 20 >/dev/null 2>&1 || exit 1
-  done
-  node scripts/wait-npm-version.ts <version>
+  node scripts/wait-release.ts <version>
   ```
+
+  It watches `test.yml`, `windows.yml` and `publish.yml`, then the npm tarball, and reports one of
+  three outcomes per workflow: `success`, `FAILURE` (naming the failing step) or `STILL RUNNING`
+  (a timeout, which is NOT a failure). Exit is non-zero only for a real failure, so it cannot report
+  a wedged runner as a red build — the trap described above, which this script replaced.
+
+  The hand-rolled loop it supersedes read:
+  `timeout 850 gh run watch $id --exit-status || exit 1` — where `||` fires for both a failed run
+  and an expired watch, which is exactly how v0.37.47 was misreported.
 
   Watching three workflows and then the npm tarball is 5–20 minutes of pure waiting, and in the
   FOREGROUND it costs the whole turn: nothing else can be read, fixed or measured while it runs.
