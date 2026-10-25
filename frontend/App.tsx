@@ -1220,7 +1220,16 @@ export default function App() {
   createEffect(() => {
     const queue = sel()?.pendingPromptQueue;
     if (!queue?.length) return;
-    const key = pendingKey();
+    /**
+     * Filed under the SELECTED AGENT's session, not the one on screen.
+     *
+     * `sel()` is an AGENT and `pendingKey()` is a TIMELINE — an agent's session and the session
+     * being viewed are the same handle for a live agent and different for an older one, which is
+     * exactly when this ran wrong: viewing session A while agent B had a queued prompt materialised
+     * B's message into A's feed and raised A's ⏳ badge for a queue A did not have. Filing by the
+     * queue's owner keeps the two views independent.
+     */
+    const key = sel()?.session || pendingKey();
     const have = new Set(pendingFor(key).map((p) => p.promptId).filter(Boolean));
     const missing = queue.filter((q) => q.id && !have.has(q.id));
     if (!missing.length) return;
@@ -1268,10 +1277,20 @@ export default function App() {
    * echo — leaves the echo on the timeline while the count says zero. Reported as "youのはずっと
    * queuedが外れないし、タイムライン上部にはqueuedのカウントが出てない".
    */
+  /**
+   * How many of the operator's messages are waiting to be consumed, for the feed being SHOWN.
+   *
+   * Both sides have to describe the same feed. `pendingMsgs()` is the echoes of the visible
+   * timeline (`pendingKey()`); `sel()` is the selected AGENT, whose session is a different handle
+   * for an agent whose session has moved on. Taking the max of two different subjects raised the
+   * ⏳ badge on a session that had nothing queued, and the message it counted was someone else's.
+   */
   const queuedCount = () => {
-    const fromServer = sel()?.pendingPromptQueue?.length ?? sel()?.pendingPromptIds?.length ?? sel()?.pendingPrompts ?? 0;
-    const fromEchoes = pendingMsgs().length;
-    return Math.max(fromServer, fromEchoes);
+    const mine = sel()?.session === pendingKey() || !sel()?.session;
+    const fromServer = mine
+      ? sel()?.pendingPromptQueue?.length ?? sel()?.pendingPromptIds?.length ?? sel()?.pendingPrompts ?? 0
+      : 0;
+    return Math.max(fromServer, pendingMsgs().length);
   };
   /**
    * Is the selected agent doing work that `stop` would stop?
@@ -4034,6 +4053,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const id = targetId ?? selected();
     if (!id) return;
     const images = pendingImages();
+    // the echo is filed under the SESSION OF THE AGENT BEING PROMPTED, which is the same handle
+    // `pendingKey()` uses (an internal session id, not an agent id). Sending does not require
+    // looking at that session — a harness prompt targets an agent that is not selected — and
+    // keying by the visible timeline put the echo under whatever was on screen, so an unrelated
+    // session showed "⏳ 1 message queued" and drew someone else's message in its feed.
+    const echoKey = agents().find((a) => a.id === id)?.session || id;
     try {
       const r = await api(`/api/agents/${id}/prompt`, {
         method: "POST",
@@ -4042,8 +4067,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       });
       // optimistic echo — replaced by the logged event once the feed catches up.
       // promptId links it to the later prompt-delivered note (real LLM payload).
-      writePending(pendingKey(), [
-        ...pendingMsgs(),
+      //
+      // Keyed by the AGENT WE SENT TO, not by the timeline on screen. Sending does not require
+      // looking at the session — a harness prompt is fired at an agent that is not selected — and
+      // the old key put that echo under the VISIBLE session, so an unrelated session showed
+      // "⏳ 1 message queued" with someone else's message drawn in its timeline.
+      writePending(echoKey, [
+        ...pendingFor(echoKey),
         {
           id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
           text,
