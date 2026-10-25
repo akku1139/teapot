@@ -2808,6 +2808,15 @@ if (active().length === 0) wake();
   private updateWindDownMs = 900_000;
 
   /**
+   * True from the moment a live update starts until the process is replaced.
+   *
+   * A Ctrl-C during the wind-down used to run the ordinary shutdown path — dispose every agent, then
+   * exit — which discarded the resume set that had just been written and left the operator's work
+   * stopped with no explanation.
+   */
+  updateInFlight = false;
+
+  /**
    * Ask every agent to stop at its next turn boundary; returns the ids that did not make it.
    *
    * Distinct from `stopAllAgents` (which DISPOSES): disposal aborts in-flight work, and the whole
@@ -2894,6 +2903,8 @@ if (active().length === 0) wake();
 
   async restartServer(): Promise<void> {
     console.log("[teapot] live update: restarting...");
+    // a Ctrl-C from here until the exec is ambiguous; signal handlers consult this
+    this.updateInFlight = true;
 
     /**
      * 1. WIND DOWN — do not abort.
@@ -2903,21 +2914,34 @@ if (active().length === 0) wake();
      * and leaves a call whose result never arrives, so the resumed session starts from a state that
      * never existed. `windDownForUpdate()` instead lets each agent finish its current round.
      */
+    /**
+     * 2. REMEMBER WHAT TO RESUME — before winding down, not after.
+     *
+     * `takeResumeSet()` asks `isLive()`, and `windDownForUpdate()` SETS `status = "idle"` as its
+     * success condition. Taking the set afterwards therefore collected nothing: MEASURED in a real
+     * update whose log reads
+     *
+     *     waiting for 1 agent(s) to reach a turn boundary...
+     *     0 session(s) will resume
+     *     resumed 0 session(s)
+     *
+     * — the one agent that was working was recorded as "not working" by the very step that had just
+     * made it stop, so the work never came back.
+     *
+     * Captured first, the set describes what the operator saw when they pressed update.
+     */
+    this.config.resumeAfterUpdate = this.takeResumeSet();
     const interrupted = await this.windDownAllAgents(this.updateWindDownMs);
     if (interrupted.length)
       console.log(
         `[teapot] live update: ${interrupted.length} agent(s) did not reach a turn boundary in ` +
           `time and were stopped: ${interrupted.join(", ")}`,
       );
-
     /**
-     * 2. REMEMBER WHAT TO RESUME.
-     *
      * Written to the config BEFORE the exec, because after it this process no longer exists. Only
      * agents that were actually working go in — an idle agent must NOT be started by the new
      * process, or a live update would begin doing work the operator never asked for.
      */
-    this.config.resumeAfterUpdate = this.takeResumeSet();
     this.saveConfig();
     console.log(
       `[teapot] live update: ${this.config.resumeAfterUpdate.length} session(s) will resume`,

@@ -201,6 +201,33 @@ async function main(): Promise<void> {
      * nothing is orphaned and nothing lingers. `execve` only resolves if it FAILED, and that path
      * throws inside `restartServer`, so nothing is left trusting this branch.
      */
+    /**
+     * Ctrl-C during a live update must not cancel the handover half-way.
+     *
+     * `restartServer()` records what to resume and then execs. A SIGINT in that window ran this
+     * shutdown path, which DISPOSES every agent and exits — so the operator saw
+     *
+     *     [teapot] live update: waiting for 1 agent(s)…
+     *     ^C
+     *     [teapot] shutting down (SIGINT)...
+     *     [teapot] live update: 0 session(s) will resume
+     *
+     * and the work that was running never came back. The flag is set by `restartServer()` for the
+     * whole duration of the handover, which is exactly the window where the operator's ^C is
+     * ambiguous: it can mean "cancel the update" or "stop the server", and treating it as the latter
+     * silently discards the resume set that was just written.
+     *
+     * A second ^C while an update is in flight is the escape hatch — that is why this checks the
+     * signal rather than ignoring it outright.
+     */
+    const updating = master.updateInFlight === true;
+    if (updating && signal === "SIGINT" && !process.env.TEAPOT_FORCE_SHUTDOWN) {
+      console.log("\n[teapot] live update is in progress — press ^C again to abort it and stop");
+      process.env.TEAPOT_FORCE_SHUTDOWN = "1";
+      // do NOT reset `shuttingDown`: the next signal must get through, so clear it
+      shuttingDown = false;
+      return;
+    }
     console.log(`\n[teapot] shutting down${signal ? ` (${signal})` : ""}...`);
     await Promise.allSettled([...master.agents.values()].map((a) => a.dispose()));
     // During a live update the replacement SIGTERMs us to take the port. Linger
