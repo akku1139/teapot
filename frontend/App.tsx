@@ -1236,6 +1236,20 @@ export default function App() {
   });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
   /**
+   * How many messages are queued for the visible session — from EITHER source.
+   *
+   * The badge was gated on the AGENT SNAPSHOT alone (`pendingPromptIds`). An echo is the same fact
+   * from the other side: the UI just sent the prompt and has not seen it delivered yet, and a
+   * snapshot that has not caught up — or a delivery note for another session that never cleared the
+   * echo — leaves the echo on the timeline while the count says zero. Reported as "youのはずっと
+   * queuedが外れないし、タイムライン上部にはqueuedのカウントが出てない".
+   */
+  const queuedCount = () => {
+    const fromServer = sel()?.pendingPromptQueue?.length ?? sel()?.pendingPromptIds?.length ?? sel()?.pendingPrompts ?? 0;
+    const fromEchoes = pendingMsgs().length;
+    return Math.max(fromServer, fromEchoes);
+  };
+  /**
    * Is the selected agent doing work that `stop` would stop?
    *
    * The server is the authority (`Agent.live`), because the client genuinely
@@ -2725,13 +2739,33 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         // drops the echo. BOTH fall through so the feed refresh below picks up
         // the logged prompt row in the same pass (the old early-returns made
         // the "sent ✓" echo linger until some unrelated event refreshed).
-        if (et === "system_note" && ed.event === "prompt-delivered" && msg.agentId === selected()) {
-          // delivery = the message now belongs to the log row. REMOVE the echo
-          // from the list (the display filter alone kept it forever, and any
-          // filter regression resurfaced it as a duplicate row).
-          writePending(pendingKey(), pendingMsgs().filter((p) => p.promptId !== ed.promptId));
-        } else if (et === "system_note" && ed.event === "prompt-cancelled" && msg.agentId === selected()) {
-          writePending(pendingKey(), pendingMsgs().filter((p) => p.promptId !== ed.promptId));
+        /**
+         * A delivery/cancel note clears its echo for ANY session, not just the visible one.
+         *
+         * The two cases were gated on `msg.agentId === selected()`. Echoes are stored PER SESSION
+         * (`pendingBySession`), so a prompt delivered while the operator was reading a different
+         * session kept its echo forever — "you" stayed `queued` with no way to clear it, reported as
+         * "youのはずっとqueuedが外れない". The note names the session, which is all that is needed to
+         * find the right map; the VISIBLE one was never the right filter.
+         */
+        if (et === "system_note" && (ed.event === "prompt-delivered" || ed.event === "prompt-cancelled")) {
+          const pid = String(ed.promptId ?? "");
+          if (pid) {
+            /**
+             * Which session's echoes to touch: the note carries the session it belongs to, and the
+             * visible one is a safe fallback for an older event that predates the field.
+             */
+            const holder = String((msg.event as { session?: string })?.session ?? "");
+            const keys = new Set<string>();
+            if (holder) keys.add(holder);
+            keys.add(pendingKey());
+            for (const [k, list] of pendingBySession) if (list.some((p) => p.promptId === pid)) keys.add(k);
+            for (const k of keys) {
+              const cur = pendingFor(k);
+              if (!cur.some((p) => p.promptId === pid)) continue;
+              writePending(k, cur.filter((p) => p.promptId !== pid));
+            }
+          }
         }
         if (FEED_IRRELEVANT.has(et) && !NOTE_FEED_TYPES.has(et)) return;
         // notify the operator about notable moments from ANY session — that's
@@ -4708,7 +4742,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             >
               {sel()!.status}
             </span>
-            <Show when={(sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts ?? 0) > 0}>
+            <Show when={queuedCount() > 0}>
               <span
                 class="badge queued"
                 title={(() => {

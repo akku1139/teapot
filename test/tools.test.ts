@@ -751,3 +751,68 @@ test("a stop aborts a foreground bash, so `sleep` cannot swallow the interrupt (
     );
   });
 });
+
+/**
+ * The four `edit_file` failures measured in tyb2-9-8155867c — each refused, and none of the
+ * messages named what the model had actually done wrong.
+ */
+test("a hashline new_text is stripped, never pasted into the file (#7)", async () => {
+  await withCtx(async (ctx) => {
+    await executeTool("write_file", JSON.stringify({ path: "f.c", content: "int a;\nint b;\nint c;\n" }), ctx);
+    // read with anchors, exactly as the tool tells the model to
+    const read = await executeTool("read_file", JSON.stringify({ path: "f.c", line_ids: "hash" }), ctx);
+    const rowB = read.result.split("\n").find((l) => /\| int b;$/.test(l))!;
+    assert.ok(rowB, `the anchored read must contain the target row: ${read.result}`);
+    // the measured mistake: new_text carrying the READ's anchors — the model meant "these lines,
+    // rewritten" but pasted the gutter on both sides, so old_text and new_text were IDENTICAL
+    const r = await executeTool(
+      "edit_file",
+      JSON.stringify({ path: "f.c", old_text: rowB, new_text: rowB.replace("int b;", "int B;") }),
+      ctx,
+    );
+    assert.ok(r.ok, `the anchors must be stripped from new_text and the edit applied: ${r.result}`);
+    const after = await readFile(path.join(ctx.cwd, "f.c"), "utf8");
+    assert.doesNotMatch(
+      after,
+      /\d+:[0-9a-f]{4}\|/,
+      `a hashline gutter written into source is corruption: ${JSON.stringify(after)}`,
+    );
+    assert.ok(r.ok || /anchor|not found/i.test(r.result), `a refusal must name the anchors: ${r.result}`);
+  });
+});
+
+test("a base_content too small to BE the file does not trigger the stale guard (#5)", async () => {
+  await withCtx(async (ctx) => {
+    await executeTool(
+      "write_file",
+      JSON.stringify({ path: "big.txt", content: "x".repeat(5000) + "\nneedle\n" }),
+      ctx,
+    );
+    // MEASURED: two of four calls passed base_content: "x" and were told the file "changed on disk"
+    const r = await executeTool(
+      "edit_file",
+      JSON.stringify({ path: "big.txt", old_text: "needle", new_text: "thread", base_content: "x" }),
+      ctx,
+    );
+    assert.equal(r.ok, true, `an unusable base_content must not block a valid edit: ${r.result}`);
+  });
+});
+
+test("a repeated opening line does not make a good anchor look disproportionate (#7)", async () => {
+  await withCtx(async (ctx) => {
+    // the anchor's first line appears twice; only the LATER occurrence leads to a valid block
+    const body = ["if (x) {", "  a();", "}", "", "if (x) {", "  b();", "}"].join("\n") + "\n";
+    await executeTool("write_file", JSON.stringify({ path: "r.c", content: body }), ctx);
+    const r = await executeTool(
+      "edit_file",
+      JSON.stringify({ path: "r.c", old_text: "if (x) {\n  b();\n}", new_text: "if (x) {\n  B();\n}" }),
+      ctx,
+    );
+    assert.equal(
+      r.ok,
+      true,
+      `a 3-line anchor must not be refused because its first line also appears earlier: ${r.result}`,
+    );
+    assert.match(await readFile(path.join(ctx.cwd, "r.c"), "utf8"), /B\(\);/, "and it lands on the intended copy");
+  });
+});

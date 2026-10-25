@@ -232,6 +232,34 @@ export function applyEol(content: string, eol: Eol | null): string {
  */
 function staleGuard(pathArg: string, base: unknown, current: string | null): ToolResult | null {
   if (typeof base !== "string") return null; // not supplied → no check
+  /**
+   * A base_content that cannot BE the file is not evidence of a change.
+   *
+   * MEASURED in tyb2-9-8155867c: four `edit_file` calls, two of which passed `base_content: "x"` —
+   * a single byte — and were refused with "changed on disk since you read it … your base_content: 1
+   * bytes, on disk now: 52351 bytes". The guard was right that the bytes differ and useless about
+   * it: nothing in the file's history can make "x" the content of a 52KB script, so the message sent
+   * the model to re-read a file it had never successfully checked against.
+   *
+   * A guard whose input cannot be the thing it guards is noise. Below a plausible-file floor the
+   * value is treated as not supplied — the edit still has to pass the anchor checks, which is where
+   * a stale read is actually caught.
+   */
+  /**
+   * A base_content that is a tiny FRACTION of the file cannot be its content.
+   *
+   * MEASURED in tyb2-9-8155867c: two of four `edit_file` calls passed `base_content: "x"` — one
+   * byte — and were refused with "changed on disk since you read it … your base_content: 1 bytes, on
+   * disk now: 52351 bytes". The guard was right that the bytes differ and useless about it: nothing
+   * can make "x" the content of a 52KB script, so the message sent the model to re-read a file whose
+   * state was never in question.
+   *
+   * The test is "unmistakably not this file", NOT "short": a legitimately small file edited by a
+   * model that re-read it must keep the guard, which is what the two #5 tests would have lost.
+   */
+  const MIN_PLAUSIBLE_BASE = 16;
+  if (base.length < MIN_PLAUSIBLE_BASE && current !== null && current.length >= MIN_PLAUSIBLE_BASE * 4)
+    return null;
   if (base === current) return null; // unchanged → proceed
   const rel = pathArg;
   return {
@@ -703,8 +731,11 @@ export function disproportionateSpan(text: string, anchor: string): string | nul
    * the guard unreachable exactly when it matters.
    */
   const anchorFirst = anchorLines[0]!.trimEnd();
-  const start = text.split("\n").findIndex((l) => l.trimEnd() === anchorFirst);
-  if (start < 0) return null; // its first line is not in the file at all: not this guard's case
+  const allSrcLines = text.split("\n");
+  /** every place the anchor's first line appears — the BEST one decides, not the first */
+  const starts: number[] = [];
+  for (let i = 0; i < allSrcLines.length; i++) if (allSrcLines[i]!.trimEnd() === anchorFirst) starts.push(i);
+  if (!starts.length) return null; // its first line is not in the file at all: not this guard's case
 
   /**
    * How many file lines does the anchor COVER, allowing the same trailing-whitespace tolerance
@@ -714,29 +745,48 @@ export function disproportionateSpan(text: string, anchor: string): string | nul
    * the anchor requires consuming more than twice its own line count, the anchor is too loose:
    * applying it would replace a region the model did not point at.
    */
-  const srcLines = text.split("\n");
-  const firstLine = start;
-  let fileAt = firstLine;
-  let consumed = 0;
-  for (let a = 0; a < anchorLines.length; a++) {
-    const want = anchorLines[a]!.trimEnd();
-    let found = -1;
-    for (let f = fileAt; f < srcLines.length; f++) {
-      if (srcLines[f]!.trimEnd() === want) {
-        found = f;
+  const srcLines = allSrcLines;
+  /**
+   * EVERY candidate start is considered, and the guard only fires when ALL of them overshoot.
+   *
+   * Probing just the FIRST occurrence was wrong whenever the anchor's opening line is not unique —
+   * `\tif (pwrseq->skip_power_cycle) {` appears more than once in that file, and the first one led
+   * the walk into a distant match, so a legitimate 7-line anchor was refused for "covering 58
+   * lines". MEASURED in tyb2-9-8155867c: the model then abandoned `edit_file` for that region.
+   *
+   * The guard's question is "could this anchor be read as pointing somewhere else?" — if ANY
+   * plausible reading fits inside the tolerance, it cannot.
+   */
+  let best = Number.POSITIVE_INFINITY;
+  for (const start of starts) {
+    let fileAt = start;
+    let consumed = 0;
+    let ok = true;
+    for (let a = 0; a < anchorLines.length; a++) {
+      const want = anchorLines[a]!.trimEnd();
+      let found = -1;
+      for (let f = fileAt; f < srcLines.length; f++) {
+        if (srcLines[f]!.trimEnd() === want) {
+          found = f;
+          break;
+        }
+      }
+      if (found < 0) {
+        ok = false;
         break;
       }
+      consumed = found - start + 1;
+      fileAt = found + 1;
     }
-    if (found < 0) return null; // did not resolve under tolerance; not this guard's business
-    consumed = found - firstLine + 1;
-    if (consumed > askedLines * 2) {
-      return (
-        `old_text spans ${askedLines} line(s) but only resolves after covering ${consumed} ` +
-        `lines of the file — refusing a disproportionate match. An anchor this loose would ` +
-        `rewrite a region you did not intend. Re-read the file and copy a tighter block.`
-      );
-    }
-    fileAt = found + 1;
+    if (ok) best = Math.min(best, consumed);
+  }
+  if (!Number.isFinite(best)) return null; // did not resolve under tolerance; not this guard's business
+  if (best > askedLines * 2) {
+    return (
+      `old_text spans ${askedLines} line(s) but the nearest reading of it covers ${best} ` +
+      `lines of the file — refusing a disproportionate match. An anchor this loose would ` +
+      `rewrite a region you did not intend. Re-read the file and copy a tighter block.`
+    );
   }
   return null;
 }
@@ -1286,9 +1336,27 @@ export function resolveAnchor(
           `hash ${JSON.stringify(anchor.hash)} is not a valid anchor (expected 4 hex chars) — re-read the file and copy the anchor verbatim`,
     };
   if (hits.length === 1) return { index: hits[0]!, how: "unique" };
+  /**
+   * Several lines share this hash — because the hash is DERIVED FROM CONTENT.
+   *
+   * That is the structural weakness of this format compared with the anchor-table implementations
+   * (`pi-hashline-edit-pro` allocates an anchor per line "never derived from content, so
+   * byte-identical lines never share an anchor"). Here two identical lines are one anchor, so the
+   * line number has to break the tie by proximity — a guess, and a guess that can be wrong in a file
+   * with repeated blocks.
+   *
+   * The guess is kept (refusing outright would make editing any file with repeated lines
+   * impossible), but it is now REPORTED instead of being a silent choice: the caller appends it to
+   * the tool result, so a model that landed on the wrong copy can see why.
+   */
   const target = anchor.line - 1;
   const best = hits.reduce((a, b) => (Math.abs(b - target) < Math.abs(a - target) ? b : a));
-  return { index: best, how: `ambiguous, resolved by proximity to line ${anchor.line}` };
+  return {
+    index: best,
+    how:
+      `line ${anchor.line} shares its content hash with ${hits.length - 1} other line(s) — ` +
+      `resolved by proximity, VERIFY you edited the copy you meant`,
+  };
 }
 
 /** Is this whole block a hashline block (every line carries an anchor)? */
@@ -1581,8 +1649,10 @@ export const TOOLS: ToolDef[] = [
       "Make exactly ONE small, unique replacement in one existing file — the cheapest tool for a single spot change. " +
       "Copy old_text from the file contents (NOT from read_file's `N| ` prefixed display); it must appear exactly once — " +
       "if it matches several places, add surrounding lines or pass replace_all=true. " +
-      "Or read with read_file(line_ids:\"hash\") and pass that block VERBATIM — `LINE:HASH| ` anchors are verified against the " +
-      "current file, and a block whose anchors no longer match is refused as a stale read instead of editing the wrong lines. " +
+      "Or read with read_file(line_ids:\"hash\") and pass that block VERBATIM as old_text — `LINE:HASH| ` anchors are verified " +
+      "against the current file, and a block whose anchors no longer match is refused as a stale read instead of editing the " +
+      "wrong lines. IMPORTANT with anchors: they belong to the READ, so new_text must be PLAIN content with NO `N:HASH| ` " +
+      "prefixes (they are stripped if sent, but sending them means old_text and new_text look identical). " +
       "Two or more changes (or a rename/delete) → use apply_patch instead. " +
       "Pass base_content (the bytes you read) whenever the file may have changed under you — especially with replace_all, which otherwise rewrites occurrences that appeared after you read.",
     parameters: {
@@ -1606,7 +1676,7 @@ export const TOOLS: ToolDef[] = [
       const stale = staleGuard(str(args.path), args.base_content, text);
       if (stale) return stale;
       let oldText = str(args.old_text);
-      const newText = str(args.new_text);
+      let newText = str(args.new_text);
       // the single most common edit_file failure in the real logs (22
       // occurrences) said only "old_text is required", while the tool's own
       // schema already documents the better form. Name it and say what to do —
@@ -1635,6 +1705,19 @@ export const TOOLS: ToolDef[] = [
       let hashNote = "";
       let hashNotes: string[] = [];
       let hashSpan: { start: number; end: number } | null = null;
+      /**
+       * A hashline-formatted `new_text` is STRIPPED, not pasted.
+       *
+       * MEASURED in tyb2-9-8155867c: `old_text` and `new_text` were IDENTICAL, both carrying anchors
+       * (`155c| …`, `59d3| …`) copied from the read. The model meant "these lines, rewritten" but
+       * pasted the anchor gutter on both sides. The result was refused as "old_text not found",
+       * which names the wrong argument — the anchors had already been resolved away, so the literal
+       * search could not find them, and the reply never mentioned the real mistake.
+       *
+       * The anchors belong to the READ, not to the file. Stripping them from `new_text` is what the
+       * model meant, and writing them into the source would be corruption.
+       */
+      const newTextHasAnchors = isHashlineBlock(newText);
       if (isHashlineBlock(oldText)) {
         const srcLines = text.replace(/\r\n/g, "\n").split("\n");
         const r = resolveHashlineBlock(oldText, srcLines);
@@ -1643,6 +1726,26 @@ export const TOOLS: ToolDef[] = [
           oldText = r.text;
           hashNotes = r.notes;
           hashSpan = { start: r.indices[0]!, end: r.indices[r.indices.length - 1]! + 1 };
+        }
+      }
+      /**
+       * Drop anchors from `new_text` — they are the READ's numbering, not file content.
+       *
+       * A block whose anchors cannot be resolved is still stripped (the content is what was meant);
+       * writing `155c| ` into a source file would be corruption, so the safe direction is to remove
+       * them and let the rest of the edit be judged on its text.
+       */
+      if (newTextHasAnchors) {
+        const stripped = newText
+          .split("\n")
+          .map((l) => {
+            const a = ANCHOR_RE.exec(l);
+            return a ? l.slice(l.indexOf("|") + 1).replace(/^ /, "") : l;
+          })
+          .join("\n");
+        if (stripped !== newText) {
+          newText = stripped;
+          hashNotes = [...hashNotes, "removed the hashline anchors from new_text (they belong to the read, not the file)"];
         }
       }
       let count = hashNote ? 0 : text.split(oldText).length - 1;
