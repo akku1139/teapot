@@ -732,8 +732,14 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
         <>
           <Show when={typeof e.data.reasoning === "string" && e.data.reasoning.trim()}>
             <details class="reasoning">
-              <summary>💭 reasoning{String(e.data.reasoning).length > 4000 ? ` (${fmtK(String(e.data.reasoning).length)} — truncated)` : ""}</summary>
-              <div class="mono">{truncate(String(e.data.reasoning), 8000)}</div>
+              {/**
+                * In FULL. Truncating bought nothing: the block is inside a `<details>` that starts
+                * closed, and when opened it scrolls — so the text was already gated twice, and
+                * cutting it only removed the part the operator opened it to read. Reported as
+                * "長いreasoningをturncatedするのをやめる、隠れててスクロールも効くので切り取る意味がない".
+                */}
+              <summary>💭 reasoning</summary>
+              <div class="mono">{String(e.data.reasoning)}</div>
             </details>
           </Show>
           <div class="content" innerHTML={renderMarkdownCached(String(e.data.content ?? ""))} />

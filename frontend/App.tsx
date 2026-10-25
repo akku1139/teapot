@@ -2334,8 +2334,30 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   // session restores its last-known rows INSTANTLY, then loadEvents refreshes
   // in the background. Without this, every switch cleared the feed and
   // re-fetched (a visible blank flash + full round trip).
-  const timelineCache = new Map<string, { events: Ev[]; total: number; at: number }>();
+  /**
+   * Per-session timeline snapshots, capped by BYTES as well as by count.
+   *
+   * Returning to a recently viewed session restores its rows instantly instead of blanking the feed
+   * and re-fetching. But a snapshot holds every event object of that session, and real logs on this
+   * machine run to 72,923 events / 52.8MB of JSON in ONE session — six of those is hundreds of
+   * megabytes of live JS objects, which is the frontend growth reported as "ずっと開いてると900MBとか
+   * いく". A count-only cap cannot see that: six small sessions are cheap and six huge ones are not,
+   * and the count says 6 either way.
+   *
+   * MEASURED sizes on this machine: the eight largest logs total 183MB of JSON, so a byte budget is
+   * the number that actually bounds retention.
+   */
+  const timelineCache = new Map<string, { events: Ev[]; total: number; at: number; bytes: number }>();
   const TIMELINE_CACHE_MAX = 6;
+  /** ~24MB of retained event data: several small sessions, or one large one. */
+  const TIMELINE_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+  /** a cheap upper bound on what one event retains — content plus every field a row renders */
+  const approxEventBytes = (e: Ev): number => {
+    const d = e.data as Record<string, unknown> | undefined;
+    let n = 64; // the envelope (id, seq, ts, type, branch, session…)
+    if (d) for (const v of Object.values(d)) if (typeof v === "string") n += v.length * 2;
+    return n;
+  };
 
   /**
    * The session an agent should open: the one the server says it is BOUND to, falling back to the
@@ -2400,10 +2422,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (prevId !== id || tid !== prevTid) {
       // remember what the outgoing session looked like so returning is instant
       if (prevTid && prevEvents.length) {
-        timelineCache.set(prevTid, { events: prevEvents, total: prevTotal, at: Date.now() });
-        if (timelineCache.size > TIMELINE_CACHE_MAX) {
+        const bytes = prevEvents.reduce((n, e) => n + approxEventBytes(e), 0);
+        // a single snapshot bigger than the whole budget is not worth keeping: restoring it costs a
+        // memory spike for one switch, which is exactly what the re-fetch path already handles
+        if (bytes <= TIMELINE_CACHE_MAX_BYTES) {
+          timelineCache.set(prevTid, { events: prevEvents, total: prevTotal, at: Date.now(), bytes });
+        }
+        /**
+         * Evict oldest-first until BOTH budgets hold. The byte budget is the one that matters: six
+         * snapshots of a 72k-event session is hundreds of MB, while six snapshots of a small
+         * conversation is a few MB — a count alone cannot tell them apart.
+         */
+        const totalBytes = () => [...timelineCache.values()].reduce((n, v) => n + v.bytes, 0);
+        while (timelineCache.size > TIMELINE_CACHE_MAX || totalBytes() > TIMELINE_CACHE_MAX_BYTES) {
           const oldest = [...timelineCache.entries()].sort((x, y) => x[1].at - y[1].at)[0];
-          if (oldest) timelineCache.delete(oldest[0]);
+          if (!oldest) break;
+          timelineCache.delete(oldest[0]);
         }
       }
       // drop the previous session's timeline immediately — otherwise it stays
@@ -2446,10 +2480,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // re-stabilized into evCache so reference identity survives the switch.
     const cached = timelineCache.get(tid);
     if (cached?.events.length) {
-      // stabilize() re-registers every row under THIS session's scoped keys
-      stabilize(cached.events);
+      /**
+       * ONE `stabilize()` call.
+       *
+       * It ran twice — once for effect and once for the value — and the first call was pure waste:
+       * `stabilize` WRITES to `evCache` on the way through, so the second pass found every key
+       * already present and returned the same objects. MEASURED on a 2,000-event session: switching
+       * back to a previously-loaded session cost 1,942ms with a 553ms frozen frame, and that is the
+       * "1回でもロードしたことがあるセッションに再度移動すると絶望的にラグい" report.
+       */
       setEvents(stabilize(cached.events));
       setEventsTotal(cached.total);
+      /**
+       * A cached session still has to REFRESH, and that is not instant.
+       *
+       * The spinner was gated on `!events().length`, which is true for a first load and false here —
+       * so a switch that had to re-fetch showed a perfectly good (but stale) timeline with no sign
+       * anything was happening, which reads as "the UI is frozen". The rows stay on screen; the
+       * spinner says a refresh is in flight.
+       */
+      setLoadingFeed(true);
       requestAnimationFrame(() => {
         if (selected() === id) scrollBottom(true);
       });
