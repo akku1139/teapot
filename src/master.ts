@@ -217,6 +217,22 @@ export interface ProviderConfig {
 }
 
 export interface AgentConfig {
+  /**
+   * The agent's PUBLIC name — a slug like `tyb2-9`, shown in the UI and used to address the agent
+   * over HTTP and between agents. It is NOT an internal identifier.
+   *
+   * Two different things are called "id" across this codebase, and telling them apart is what this
+   * note is for:
+   *
+   *   - **this field** — the display slug. Persisted as `id` in `config.json`, so the key name must
+   *     stay even if the concept is clearer as "slug": renaming it would break every config written
+   *     by an earlier version.
+   *   - **`session`** — the internal session id, which is also the session's directory name.
+   *
+   * A bug came from mixing them: the badge counted the SELECTED AGENT's queue while the feed showed
+   * the VIEWED SESSION's echoes, so one session reported a queue it did not have. Whenever a value
+   * could be either, name it (`agentId` / `sessionId`) rather than `id`.
+   */
   id: string;
   workspace: string;
   /**
@@ -2469,12 +2485,23 @@ if (active().length === 0) wake();
   }> {
     const archived = this.config.agents.filter((a) => a.archived);
     const ids = new Set(archived.map((a) => a.id));
+    /**
+     * ONE session scan for the whole list.
+     *
+     * `sessionsOf(id)` calls `allSessions()`, which reads every session directory, stats each log
+     * and backfills a manifest for any that lacks one — so mapping over the archived entries made
+     * this O(archived × sessions). Reported as "🗄 archive のロードが遅すぎる". Counting from a
+     * single scan makes it O(sessions) once, which is what the list actually needs: how many
+     * sessions each entry has.
+     */
+    const sessionCounts = new Map<string, number>();
+    for (const s of this.allSessions()) sessionCounts.set(s.agentId, (sessionCounts.get(s.agentId) ?? 0) + 1);
     return archived
       .map((a) => ({
         id: a.id,
         workspace: a.workspace,
         ...(a.archivedAt !== undefined ? { archivedAt: a.archivedAt } : {}),
-        sessions: this.sessionsOf(a.id).length,
+        sessions: sessionCounts.get(a.id) ?? 0,
         // A sub-agent is listed under its parent rather than as an equal entry: the
         // operator archived ONE thing, and a flat list of every descendant makes it
         // look like they did several. Only an ARCHIVED parent counts — otherwise a
@@ -2679,8 +2706,28 @@ if (active().length === 0) wake();
     const cu = process.cpuUsage();
     return {
       uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
+      /**
+       * `rssMb` is the process's RESIDENT size, which is not a leak gauge.
+       *
+       * V8 keeps freed pages in its arenas instead of returning them, so RSS sits well above the
+       * live set and only falls on a major GC — reported as "メモリ使用量が多い ... さっきはheapが
+       * 400MBあったのでGCされた?". MEASURED on this machine (442 agents, 836 sessions): a fresh boot
+       * was 37MB heap, and 490 `/api/sessions` calls took it to 50MB heap / 203MB RSS and no
+       * further — flat, GC-reclaimable, not a leak. `heapUsedMb` is the number that answers "is
+       * something growing"; `rssMb` alone cannot, which is why both are reported.
+       */
       rssMb: +(mu.rss / 1048576).toFixed(1),
       heapUsedMb: +(mu.heapUsed / 1048576).toFixed(1),
+      /**
+       * What V8 has actually committed to the heap.
+       *
+       * `heapUsedMb` includes garbage that has not been collected yet, so it can read 400MB one
+       * minute and 200MB the next without anything having been freed to the OS. `heapTotal` after a
+       * GC is the live-set answer, reported by node's own counters so it exists on every platform.
+       */
+      heapTotalMb: +(mu.heapTotal / 1048576).toFixed(1),
+      /** non-heap memory: buffers, native strings, the compiled bundle — the usual RSS/heap gap */
+      externalMb: +(mu.external / 1048576).toFixed(1),
       /**
        * `process.cpuUsage()` reports MICROseconds, so this is divided by 1000.
        *

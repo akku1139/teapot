@@ -56,6 +56,7 @@ import {
   type TailSample,
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
+import { agentLabel, agentLabelWithId } from "./lib/agent-label";
 import {
   applyCustomTheme,
   loadCustomThemes,
@@ -127,10 +128,19 @@ const NARROW_PX = 1100;
 
 /* ---------- types ---------- */
 interface Agent {
+  /**
+   * The agent's display slug (`tyb2-9`). NOT an internal identifier.
+   *
+   * Two things are called "id" here and mixing them caused a real bug: the ⏳ badge counted THIS
+   * agent's `pendingPrompts` while the feed rendered the VIEWED session's echoes, so a session
+   * showed a queue it did not have. When a field could be either, name it (`agentId` /
+   * `sessionId`) — `id` alone is ambiguous wherever `session` is also in scope.
+   */
   id: string; status: string; statusReason: string; workspace: string;
   /** is work in flight that `stop` would stop? `status` alone cannot say — a
    *  parked tool and queued prompts are both live while status reads "idle" */
   live?: boolean;
+  /** the INTERNAL session id (also its directory name) — never the display slug */
   session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
   /** #155: a short label derived from the session's first user prompt. Absent
    *  when that prompt had no usable line — the sidebar falls back to the id. */
@@ -3203,7 +3213,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   createEffect(() => {
     const a = sel();
     const base = a
-      ? `${isSelLive() ? "▶ " : a.status === "error" ? "⚠ " : ""}${a.id} · teapot`
+      ? `${isSelLive() ? "▶ " : a.status === "error" ? "⚠ " : ""}${agentLabel(a)} · teapot`
       : "teapot";
     // unread notification count in the tab title — "(2) linux · teapot"
     document.title = unreadCount() > 0 ? `(${unreadCount()}) ${base}` : base;
@@ -4784,11 +4794,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   title={
                     row.a.workspaceMissing
                       ? `workspace not found on disk (${row.a.workspace}) — it will be created when this session runs`
-                      : (row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? ""))
-                        ? `${row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? "")} — ${row.a.id}`
-                        : row.a.id
+                      : agentLabelWithId({ id: row.a.id, sessionTitle: row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? "") })
                   }
-                >{row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? "") ?? row.a.id}</span>
+                >{agentLabel({ id: row.a.id, sessionTitle: row.a.sessionTitle ?? sessionTitles().get(row.a.session ?? "") })}</span>
                 {row.a.workspaceMissing ? <span class="ghosttag" title="workspace missing">👻</span> : null}
                 <Show when={subtreeUnread(row.a.id) > 0}>
                   <span class="notifbadge" title={`${subtreeUnread(row.a.id)} unread notification${subtreeUnread(row.a.id) > 1 ? "s" : ""} (including sub-agents)`}>
@@ -4891,7 +4899,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </div>
           <div class="metrics">
             <Show when={metrics()}>
-              master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB<br />
+              {/**
+                * `rss` leads but does not answer "is it leaking".
+                *
+                * V8 keeps freed pages in its arenas, so RSS sits far above the live set and only
+                * drops on a major GC — an operator watching it saw "501.4MB · heap 220.3MB" and
+                * reasonably asked whether memory was out of control. The committed heap and the
+                * non-heap (`ext`) are shown alongside so the gap is readable at a glance instead
+                * of needing a measurement session to interpret.
+                */}
+              master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB
+              <Show when={metrics().heapTotalMb !== undefined}> · total {metrics().heapTotalMb}MB</Show>
+              <Show when={metrics().externalMb !== undefined}> · ext {metrics().externalMb}MB</Show>
+              <br />
               load1 {metrics().loadavg1} · up {Math.floor(metrics().uptimeSec / 60)}m
             </Show>
           </div>
@@ -4916,7 +4936,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               >☰</button>
             </Show>
             <span class="hash">#</span>
-            <span class="title">{sel()!.id}</span>
+            <span class="title" title={agentLabelWithId(sel(), sel()!.session)}>{agentLabel(sel())}</span>
             {/**
              * The badge carries the status; its tooltip carries the REASON, and only when the
              * reason adds something.
