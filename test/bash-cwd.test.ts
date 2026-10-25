@@ -141,13 +141,23 @@ test("a backgrounded bash job also stays in the workspace (#34)", async () => {
     // Poll for the file the background shell writes from ITS cwd. If the login
     // profile won, the shell cd'd to / and wrote /.bgcwd — which never appears
     // here — so "not found" must FAIL the test, not quietly pass it.
-    let seen: string | null = null;
-    for (let i = 0; i < 100 && seen === null; i++) {
+    /**
+     * Poll until the file has CONTENT, not merely until it exists.
+     *
+     * The shell creates `.bgcwd` first and writes to it second, so a read that lands between the two
+     * returns "" — and the old loop stopped on anything non-null, then reported the empty string as
+     * "background shell ran in the workspace (never cd'd away)", which names the wrong cause
+     * entirely. MEASURED as a CI failure on `actual: ''`: the file was there and the answer was one
+     * poll away.
+     */
+    let seen = "";
+    for (let i = 0; i < 100 && !seen; i++) {
       try {
         seen = readFileSync(path.join(ws, ".bgcwd"), "utf8").trim();
       } catch {
-        await new Promise((res) => setTimeout(res, 50));
+        /* not created yet */
       }
+      if (!seen) await new Promise((res) => setTimeout(res, 50));
     }
     assert.equal(seen, ws, "background shell ran in the workspace (never cd'd away)");
   });
