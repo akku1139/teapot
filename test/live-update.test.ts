@@ -44,8 +44,14 @@ interface Boot {
   readonly out: string;
 }
 
+/**
+ * Ask the OS for a free port.
+ *
+ * The port is RELEASED before it is used, so this is not a reservation: between `close()` and the
+ * server's `listen` another process can take it. That race is unavoidable this way, so callers must
+ * be able to retry rather than assume the answer is still free — see `bootOnFreePort`.
+ */
 function freePort(): Promise<number> {
-  // ask the OS for an unused port, then release it — good enough for tests
   return new Promise((resolve, reject) => {
     const s = createServer();
     s.on("error", reject);
@@ -54,6 +60,44 @@ function freePort(): Promise<number> {
       s.close(() => resolve(p));
     });
   });
+}
+
+/**
+ * Boot on a free port, retrying when the port is taken between the probe and the bind.
+ *
+ * MEASURED on CI: `publish.yml` failed with `EADDRINUSE: address already in use 127.0.0.1:38529`
+ * and the test reported "the live update never started its exec", which points at the FEATURE when
+ * the fixture was at fault. Any process on the runner can grab a released port, so a single probe is
+ * a guess; a few attempts turn a flaky red build into the non-event it is.
+ */
+async function bootOnFreePort(
+  tag: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+  seed: Record<string, unknown> = {},
+): Promise<Boot> {
+  let last: Boot | null = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const b = await boot(tag, await freePort(), extraEnv, seed);
+    /**
+     * Wait for ONE of: the server answers, or the child DIES.
+     *
+     * A `listen` failure (EADDRINUSE) does not always exit the process — this codebase deliberately
+     * swallows uncaught exceptions in places — so "wait for a 200" alone would spin until the outer
+     * timeout with the port still dark. Death and readiness are the only two settled states, and a
+     * dead child is what makes the retry happen.
+     */
+    const settled = await waitFor(async () => {
+      if (b.proc.exitCode !== null || b.proc.signalCode !== null) return true;
+      return (await get(b.port, "/api/version")).status === 200;
+    }, 8_000);
+    // a bind failure shows up in the child's own output; treat it as "retry with a new port"
+    const bindFailed = /EADDRINUSE|EACCES/.test(b.out);
+    if (settled && b.proc.exitCode === null && !bindFailed) return b;
+    last = b;
+    killTree(b.proc);
+    rmSync(b.dir, { recursive: true, force: true });
+  }
+  throw new Error(`could not bind a free port after 5 attempts: ${last?.out ?? ""}`);
 }
 
 async function waitFor(
@@ -140,7 +184,18 @@ async function get(
   method = "GET",
 ): Promise<{ status: number; body: string }> {
   try {
-    const r = await fetch(`http://127.0.0.1:${port}${p}`, { method });
+    /**
+     * A TIMEOUT, because `fetch` to a port nobody is listening on does not always reject.
+     *
+     * Without this, a `listen` that failed (EADDRINUSE) left the probe hanging instead of reporting
+     * "nothing answered" — MEASURED: a retry loop that should have finished in seconds sat until the
+     * outer timeout, which reads as the FEATURE hanging. `status: 0` already means "nothing
+     * answered", so a timed-out probe is the same answer rather than an exception.
+     */
+    const r = await fetch(`http://127.0.0.1:${port}${p}`, {
+      method,
+      signal: AbortSignal.timeout(2_000),
+    });
     return { status: r.status, body: await r.text() };
   } catch (e) {
     return { status: 0, body: String((e as Error).cause ?? e) };
@@ -165,8 +220,8 @@ async function get(
  * nothing lingering behind afterwards.
  */
 test("live update: the SAME process keeps serving — no successor, nothing left resident (#35)", async (t) => {
-  const port = await freePort();
-  const a = await boot("exec", port);
+  const a = await bootOnFreePort("exec");
+  const port = a.port;
   t.after(() => {
     killTree(a.proc);
     rmSync(a.dir, { recursive: true, force: true });
@@ -240,13 +295,13 @@ test("live update: a session that was WORKING is resumed by the new image (#resu
    * assertion is that the set was CONSUMED (cleared from the file) and the boot said so. Driving a
    * real agent into a working state instead would need a live LLM; this covers the wiring.
    */
-  const port = await freePort();
   // one configured agent, and that agent in the resume set — exactly what restartServer() writes
-  const a = await boot("resume", port, { TEAPOT_RESUMED: "1" }, {
+  const a = await bootOnFreePort("resume", { TEAPOT_RESUMED: "1" }, {
     agents: [{ id: "worker", workspace: "/tmp", provider: "p", session: "s1" }],
     providers: { p: { baseUrl: "http://x", apiKey: "k", model: "m" } },
     resumeAfterUpdate: ["worker"],
   });
+  const port = a.port;
   t.after(() => {
     killTree(a.proc);
     rmSync(a.dir, { recursive: true, force: true });
@@ -282,8 +337,8 @@ test("live update: the port is never left unowned (#35)", async (t) => {
   // What must never happen is the port staying dark: the pre-exec failure mode was the successor
   // dying with EADDRINUSE while (index.ts swallows uncaught exceptions) BOTH processes stayed alive
   // serving nothing, forever.
-  const port = await freePort();
-  const a = await boot("hold", port);
+  const a = await bootOnFreePort("hold");
+  const port = a.port;
   t.after(() => {
     killTree(a.proc);
     rmSync(a.dir, { recursive: true, force: true });
