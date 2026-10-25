@@ -33,21 +33,35 @@ export function ThinkingTimer(props: { startedAt: number }) {
     onCleanup(() => clearInterval(t));
   });
   /**
-   * 0 is the "not armed" sentinel, never a timestamp.
+   * A THUNK, and the elapsed value must be computed INSIDE it.
    *
-   * `now() - 0` is elapsed since the EPOCH, and the readout said "thinking 498029h 10m" — reported
-   * twice. A `!props.startedAt` guard was added for exactly this and it was not enough: a clock armed
-   * for an EARLIER stretch survives while a stale live bubble keeps it "meaningful", and then the
-   * elapsed time is measured from a moment that has nothing to do with what is on screen.
+   * The counter froze at whatever it read on first render ("20ms", "65ms" — reported as "thinking右の
+   * 思考時間カウンタが動かない", and the random value is the giveaway: it is the moment the render
+   * happened). The original was an expression in JSX —
+   * `{fmtDur(Math.max(0, now() - props.startedAt))}` — which Solid tracks and re-evaluates on every
+   * tick. Hoisting it to `const elapsed = …` above the `return` read `now()` ONCE and handed Solid a
+   * finished string, so nothing subscribed any more. A guard added later caused that hoist; the
+   * mechanism was never the problem, the placement was.
    *
-   * So the sanity check is on the RESULT, not just on the sentinel: a duration longer than any
-   * plausible single thinking stretch means the timestamp is not about this block, and showing
-   * nothing is honest where a five-digit hour count is not.
+   * `BashElapsed` right above always did it this way (`txt()`), which is why only the thinking timer
+   * was frozen.
+   *
+   * 0 is the "not armed" sentinel, never a timestamp: `now() - 0` is elapsed since the EPOCH and the
+   * readout said "thinking 498029h 10m". The sanity check is on the RESULT rather than only on the
+   * sentinel, because a clock armed for an EARLIER stretch can survive with a stale bubble — a
+   * duration longer than any plausible thinking stretch means the timestamp is not about this block.
    */
-  if (!props.startedAt) return null;
-  const elapsed = Math.max(0, now() - props.startedAt);
-  if (elapsed > 24 * 60 * 60 * 1000) return null; // > a day cannot be one thinking stretch
-  return <span class="thinktimer">{fmtDur(elapsed)}</span>;
+  const txt = () => {
+    if (!props.startedAt) return null;
+    const elapsed = Math.max(0, now() - props.startedAt);
+    if (elapsed > 24 * 60 * 60 * 1000) return null; // > a day cannot be one thinking stretch
+    return fmtDur(elapsed);
+  };
+  return (
+    <Show when={txt() !== null} fallback={null}>
+      <span class="thinktimer">{txt()}</span>
+    </Show>
+  );
 }
 
 export function AnsiText(props: { text: string }) {
