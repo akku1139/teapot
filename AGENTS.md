@@ -294,6 +294,19 @@ out with only five unresolved names because everything it called had already mov
   button can read "▶ start" while its frozen handler posts `/stop`. That shipped —
   after a stop, the agent could never be restarted. Write
   `onclick={() => (cond() ? a() : b())()}` so the choice is made at click time.
+- **A ticking readout must be computed INSIDE the template, not hoisted above it.**
+  Same family as the frozen handler: a signal read in the component body runs once.
+  `{fmtDur(now() - startedAt)}` in JSX is tracked and re-evaluates every tick;
+  `const elapsed = now() - startedAt` above the `return` hands the template a
+  finished string and the counter freezes at whatever it read on first render.
+
+  MEASURED: the thinking timer showed "20ms" and stayed there — different values on
+  different runs, which is the diagnosis, not noise (the number is the instant the
+  render happened). It broke when a bounds check was added and hoisted the read; the
+  guard was fine, the PLACEMENT was not. A frozen counter that still displays a value
+  is a broken subscription, not a broken clock. `frontend/components/code.tsx` has
+  both shapes side by side — `BashElapsed` was always a thunk (`txt()`) and never
+  froze, which is how the difference went unnoticed.
 - The composer is an **uncontrolled** textarea on purpose: `value={draft()}`
   writes the DOM on every keystroke, which ends an in-flight IME composition and
   discards the kana being typed. Sync the value through the gated effect in
