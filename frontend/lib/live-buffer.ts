@@ -93,7 +93,24 @@ export function liveBufferStatus(
      * yet, so the event simply has not been delivered — that text is not redundant, it is early.
      */
     textCovered: !text || assistant.has(text),
-    reasoningStale: !buf.reasoning.trim() || !live || startedToolCallSince(events, buf.at),
+    /**
+     * Reasoning is stale on ANY of three independent signals.
+     *
+     *  1. it is empty — nothing to paint;
+     *  2. the log's assistant message ALREADY CARRIES IT. This is the strongest evidence and it was
+     *     missing: reasoning is persisted with the assistant turn, so a logged copy means the live
+     *     one is a duplicate by definition. MEASURED in tyb2-8-0161a4af: the log held `e53519`
+     *     (assistant, with this exact reasoning) and the 💭 block was ALSO on screen, because the
+     *     only signals were the status and a tool-call timestamp — and a delta arriving after the
+     *     event was merged pushed `buf.at` past the `tool_call`, so the timestamp check said "still
+     *     thinking" about text that had already been written to disk;
+     *  3. a tool call started after the last delta (the timestamp rule, kept as a fast path for a
+     *     model that is thinking but has not produced its message yet).
+     */
+    reasoningStale:
+      !buf.reasoning.trim() ||
+      loggedReasoning(events).has(buf.reasoning.trim()) ||
+      (live && startedToolCallSince(events, buf.at)),
   };
 }
 
@@ -166,6 +183,18 @@ function startedToolCallSince(
     const t = Date.parse(String(e.ts ?? ""));
     return Number.isFinite(t) && t > at;
   });
+}
+
+/** the trimmed REASONING of every assistant message the log currently holds */
+function loggedReasoning(
+  events: { data?: { reasoning?: unknown } }[] | readonly { data?: unknown }[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const e of events) {
+    const r = String((e.data as { reasoning?: unknown } | undefined)?.reasoning ?? "").trim();
+    if (r) out.add(r);
+  }
+  return out;
 }
 
 /** the trimmed text of every assistant message the log currently holds */

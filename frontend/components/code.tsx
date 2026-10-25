@@ -32,11 +32,22 @@ export function ThinkingTimer(props: { startedAt: number }) {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
-  // `startedAt` is 0 until a reasoning delta arms the clock, which is the
-  // state right after a session switch. `now() - 0` is elapsed since the EPOCH, so
-  // it flashed "thinking 497531h". 0 is a sentinel, never a timestamp.
+  /**
+   * 0 is the "not armed" sentinel, never a timestamp.
+   *
+   * `now() - 0` is elapsed since the EPOCH, and the readout said "thinking 498029h 10m" — reported
+   * twice. A `!props.startedAt` guard was added for exactly this and it was not enough: a clock armed
+   * for an EARLIER stretch survives while a stale live bubble keeps it "meaningful", and then the
+   * elapsed time is measured from a moment that has nothing to do with what is on screen.
+   *
+   * So the sanity check is on the RESULT, not just on the sentinel: a duration longer than any
+   * plausible single thinking stretch means the timestamp is not about this block, and showing
+   * nothing is honest where a five-digit hour count is not.
+   */
   if (!props.startedAt) return null;
-  return <span class="thinktimer">{fmtDur(Math.max(0, now() - props.startedAt))}</span>;
+  const elapsed = Math.max(0, now() - props.startedAt);
+  if (elapsed > 24 * 60 * 60 * 1000) return null; // > a day cannot be one thinking stretch
+  return <span class="thinktimer">{fmtDur(elapsed)}</span>;
 }
 
 export function AnsiText(props: { text: string }) {

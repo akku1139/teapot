@@ -304,3 +304,44 @@ test("the stale-reasoning guard names a REAL event type (#40)", async () => {
     );
   }
 });
+
+/**
+ * Reasoning the LOG already carries is stale, whatever the timestamps say.
+ *
+ * MEASURED in tyb2-8-0161a4af: `e53519` is an assistant message WITH reasoning, and the next event is
+ * `tool_call bash`. The timeline drew `e53519` correctly AND the 💭 block was still on screen as the
+ * live bubble, carrying the same text — reported twice ("live thinking の残留がまだ存在する").
+ *
+ * The only signals were the turn status and a `tool_call` timestamp, and a delta that arrived after
+ * the event was merged pushed `buf.at` PAST the tool call, so the timestamp rule concluded the model
+ * was still thinking about text already written to disk. The log carrying the text is direct proof
+ * and needs no clock at all.
+ */
+test("reasoning already in the log retires the live copy (#40)", () => {
+  const reasoning = "the decompiler models this as a 64-bit return";
+  const buf: LiveBuf = { text: "", reasoning, at: Date.now() }; // delta is the NEWEST thing
+  const events = [
+    { type: "message", ts: "2026-01-01T00:00:01Z", data: { role: "assistant", content: "checking", reasoning } },
+    { type: "tool_call", ts: "2026-01-01T00:00:02Z", data: {} },
+  ];
+  assert.equal(
+    isCoveredByLog(buf, events, "running"),
+    true,
+    "the log holds this reasoning, so the live copy is a duplicate — a timestamp comparison can be " +
+      "beaten by a late delta, which is exactly what happened (#40)",
+  );
+});
+
+test("reasoning the log does NOT carry survives (#40)", () => {
+  // the fast path still has to work for a stretch that has not been persisted yet
+  const buf: LiveBuf = { text: "", reasoning: "still weighing the options", at: 1000 };
+  assert.equal(
+    isCoveredByLog(
+      buf,
+      [{ type: "message", data: { role: "assistant", content: "x", reasoning: "something else" } } as never],
+      "running",
+    ),
+    false,
+    "an unpersisted thinking stretch must stay visible (#40)",
+  );
+});

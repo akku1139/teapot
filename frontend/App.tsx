@@ -2868,9 +2868,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         //
         // A PARTIAL stream is untouched: `isCoveredByLog` needs the full text, so
         // the bubble survives until the reply it is showing is actually persisted.
-        if (msg.event?.type === "message" && (msg.event.data as { role?: string })?.role === "assistant") {
-          settleLiveBuffer();
-        }
+        /**
+         * ANY logged event settles the live halves it has caught up with — not only an assistant
+         * message.
+         *
+         * MEASURED in tyb2-8-0161a4af: the log holds `e53519` (assistant, with reasoning) and the
+         * NEXT event is `tool_call bash`. The timeline drew `e53519` correctly and the 💭 block was
+         * ALSO still on screen as the live bubble, carrying the same text — because this hook only
+         * ran for an assistant-message frame, and a `tool_call`/`tool_result`/`state` frame is what
+         * actually proves the thinking stretch ended.
+         *
+         * `reconcileLiveBuffer` decides per half: text waits until the log carries it, reasoning is
+         * stale once a tool call starts after its last delta.
+         *
+         * Scoped to `event` frames: those are LOGGED rows, which is the only evidence either half
+         * can be settled by. An `agent-update`/snapshot frame carries no log content, and running
+         * this there retires a bubble that the very next delta would have kept alive.
+         */
+        if (msg.event) settleLiveBuffer();
         pendingRefresh = true;
         if (document.visibilityState !== "visible") return;
         if (timer) return;

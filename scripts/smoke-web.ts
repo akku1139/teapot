@@ -916,6 +916,21 @@ console.log("deep render ok: feed rows present");
       }),
     });
   }
+  /**
+   * PRECONDITION: a LIVE row must exist, or everything below passes vacuously.
+   *
+   * MEASURED: earlier checks leave the agent idle and the feed on a different session, so the delta
+   * was gated out and there was no `.msg.live` at all — the "still thinking?" assertion then found
+   * nothing and passed with the bug fully present. A check must establish what it needs rather than
+   * inherit it from the previous scenario.
+   */
+  if (!w.document.querySelector(".msg.live")) {
+    console.error(
+      "reasoning→tool check could not create a LIVE row (status/session gate) — the assertion " +
+        "after the tool call would pass vacuously",
+    );
+    process.exit(1);
+  }
   // PRECONDITION: the agent is STILL running. If the stub or a sweep made it idle, the row would
   // disappear for an unrelated reason and this check would prove nothing.
   await new Promise((r) => setTimeout(r, 500));
@@ -927,10 +942,30 @@ console.log("deep render ok: feed rows present");
     );
     process.exit(1);
   }
-  if (w.document.body.textContent.includes("weighing which file to open")) {
+  /**
+   * Look INSIDE the live row, not at body text.
+   *
+   * `document.body.textContent` includes the SETTLED row too, so this check could not tell the live
+   * bubble's reasoning from the log row's — and in the real report (tyb2-8-0161a4af) the settled row
+   * is exactly where that text legitimately belongs. MEASURED: the bug reproduces with the log row
+   * correct and the 💭 block ALSO on screen, which a body-wide search reads as "still present" and
+   * refuses either way.
+   *
+   * The live row is `.msg.live`; anything 💭 inside it is the residue.
+   */
+  const liveRow = w.document.querySelector(".msg.live");
+  const liveStillThinking = !!liveRow?.querySelector("details.reasoning");
+  if (process.env.SMOKE_DEBUG_LIVE) {
     console.error(
-      "reasoning→tool REGRESSION: the 💭 block is still on the timeline after a tool call started " +
-        "while the turn is still running — stale reasoning must be retired",
+      "DEBUG live row=" + (liveRow ? JSON.stringify(liveRow.textContent.slice(0, 120)) : "NONE") +
+      " reasoningBlock=" + liveStillThinking,
+    );
+    console.error("DEBUG events in feed=" + w.document.querySelectorAll("[data-eid]").length);
+  }
+  if (liveRow && liveStillThinking) {
+    console.error(
+      "reasoning→tool REGRESSION: the LIVE bubble still renders a 💭 block after a tool call " +
+        "started while the turn is running — stale reasoning must be retired from the live row",
     );
     process.exit(1);
   }
