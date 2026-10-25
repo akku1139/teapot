@@ -209,7 +209,30 @@ export class McpRegistry {
       st.status = "disabled";
       return st;
     }
-    if (st.status === "connected" && st.connection) return st;
+    if (st.status === "connected" && st.connection) {
+      /**
+       * A cached connection is not proof the server is still there.
+       *
+       * This used to return immediately, so a server that restarted kept `status: "connected"` with
+       * its OLD tool list while the transport underneath was dead. The UI's `test` button opened a
+       * FRESH connection (`testConfig`), so it reported success and the tools appeared — and the
+       * agent, going through this cached path, could not call any of them. Reported as "test をすると
+       * 接続に成功するのに、エージェントからは呼べない".
+       *
+       * A cheap liveness probe settles it: a server that answers is reused, one that does not is
+       * dropped so the reconnect below builds a new transport. `tools()` is the cheapest call that
+       * exercises the transport for real (unlike reading the cached list).
+       */
+      try {
+        st.tools = await st.connection.tools();
+        st.lastChecked = Date.now();
+        return st;
+      } catch {
+        st.connection = undefined;
+        st.tools = [];
+        st.status = "disconnected";
+      }
+    }
     st.status = "connecting";
     st.lastError = undefined;
     const auth = await this.authFor(name);
@@ -286,6 +309,22 @@ export class McpRegistry {
       const r = await this.servers.get(parts.server)!.connection!.call(parts.tool, args);
       return { ok: r.ok, text: r.text };
     } catch (err) {
+      /**
+       * A failed call means the transport is suspect, not just this one call.
+       *
+       * Leaving `status: "connected"` made the next attempt reuse the same dead connection, so one
+       * server restart broke every subsequent call until the process restarted. Dropping the
+       * connection here lets `connect()` rebuild it on the next attempt — and the tools list is
+       * cleared with it, because a stale list is what let the UI show tools that could not be called.
+       */
+      const st = this.servers.get(parts.server);
+      if (st) {
+        st.connection = undefined;
+        st.tools = [];
+        st.status = "disconnected";
+        st.lastError = (err as Error).message;
+        st.lastChecked = Date.now();
+      }
       return { ok: false, text: `MCP call failed: ${(err as Error).message}` };
     }
   }

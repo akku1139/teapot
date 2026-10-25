@@ -2313,6 +2313,56 @@ html[data-bg-image="on"] .composer form {
 .mcpstate.error { color: var(--err); }
 .mcpstate.disabled { color: var(--dim); }
 
+/**
+ * The MCP row's secondary action ("disconnect").
+ *
+ * It carried `class="archrestore"`, which is styled ONLY as `.archrow .archrestore` — so inside an
+ * MCP row it had no rule at all and rendered as a browser-default button beside the properly styled
+ * 🔑 authorize, which is what read as "disconnect ボタン微妙じゃない?". Its own class, matched to
+ * the neighbouring button's size, and `--err` because it destroys the stored grant.
+ */
+.mcpdisconnect {
+  font-size: var(--text-xs);
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--err);
+  cursor: pointer;
+}
+.mcpdisconnect:hover { border-color: var(--err); filter: brightness(1.15); }
+
+/**
+ * The credential row inside a server's details.
+ *
+ * Separated from the tool list above it by a rule and pushed to the far side, so the destructive
+ * control is never adjacent to something clicked often. This is the "Delete lives in the edit
+ * dialog" placement OpenWebUI uses, not a third button in the row's control strip.
+ */
+.mcpdanger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-xs);
+}
+
+/** the primary action on an MCP row, same size as `.mcpdisconnect` */
+.mcpauthorize {
+  font-size: var(--text-xs);
+  padding: 1px 7px;
+  border: 1px solid var(--acc);
+  border-radius: 6px;
+  background: var(--acc);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mcpauthorize:hover { filter: brightness(1.12); }
+
 /* archive rows: the entry and its cost go on the left, the two actions on the right.
    `delete` is the only irreversible control in the settings dialog, so it keeps the
    danger styling and sits apart from `restore` — a misclick between them must not be
@@ -2456,7 +2506,69 @@ html[data-bg-image="on"] .composer form {
 
 /* ---------- shiki file preview (FilesPanel modal) ---------- */
 /* wrapper scrolls both axes; the <pre> inside fills it */
-.filepreview { max-height: 62vh; overflow: auto; border-radius: var(--radius-lg); }
+/**
+ * The file preview WRAPS; it must not scroll sideways.
+ *
+ * `overflow: auto` allows both axes, and a `<pre>` from shiki does not wrap, so any line longer than
+ * the modal made the whole preview scroll horizontally — reported as "ファイルウィンドウの中が横
+ * スクロールする / 折り返しにしたほうがいい". The plain-text fallback in `CodePreview` already declares
+ * `white-space: pre-wrap`; the highlighted branch renders shiki's own `<pre>`, so the rule has to be
+ * restated here for the element the HTML actually creates.
+ *
+ * `overflow-x: hidden` is deliberate rather than relying on wrapping alone: a single long token (a
+ * base64 blob, a minified path) cannot wrap, and letting it scroll on ONE axis is the thing being
+ * fixed. The vertical scroll stays, so a long file is still readable.
+ */
+.filepreview { max-height: 62vh; overflow-y: auto; overflow-x: hidden; border-radius: var(--radius-lg); }
+.filepreview pre,
+.filepreview code {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+/**
+ * shiki's OWN pre/code, which the rule above has to beat.
+ *
+ * MEASURED after adding the wrap: `.filepreview` and its `<pre>` reported 0px of horizontal
+ * overflow while the `<code>` inside still reported 157 — and its `clientWidth` was 0. `<code>` is
+ * INLINE, so inside a wrapping `<pre>` it collapses to zero width and keeps its content's intrinsic
+ * width, which is what the scrollbar was tracking. It has to be a BLOCK to be laid out at the
+ * container's width.
+ */
+.filepreview .shiki,
+.filepreview .shiki pre,
+.filepreview .shiki code,
+.filepreview pre.shiki,
+.filepreview code.shiki {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+  max-width: 100%;
+}
+.filepreview .shiki code,
+.filepreview code.shiki {
+  /**
+   * `display: block` AND `min-width: 0`.
+   *
+   * `<code>` is an inline element, so inside a wrapping `<pre>` it collapsed to `clientWidth: 0`
+   * while keeping its content's width — MEASURED 0/157 on the element the scrollbar was tracking,
+   * with both ancestors already at 0. `display: block` gives it a box; `min-width: 0` stops a
+   * flex/grid ancestor from refusing to shrink it below its content. This is the same pair
+   * `.toolbody.shiki code` needed for the identical symptom in a tool card.
+   */
+  display: block;
+  min-width: 0;
+  width: auto;
+}
+/* shiki wraps each source line in `span.line`; inline spans cannot break inside a long token */
+.filepreview .shiki code .line,
+.filepreview code.shiki .line {
+  display: inline;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 /* preview-modal toolbar: code / edit / markdown-preview switches */
 .filetoolbar { display: flex; gap: var(--space-3); margin-bottom: 8px; }
 .filetoolbar button {

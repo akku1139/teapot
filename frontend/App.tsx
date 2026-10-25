@@ -2546,10 +2546,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // streaming bubble; the map keeps every session's stream independently.
       setCompacting(null);
       setMissed(0);
-      // follow mode must NOT leak across sessions: leaving it false showed
-      // "jump to present" on a brand-new/empty timeline whose feed had never
-      // been scrolled (the pill only disappears once a real scroll lands)
-      setAtBottom(true);
+      /**
+       * Follow mode must not leak across sessions the WRONG way.
+       *
+       * This was `setAtBottom(true)` unconditionally, which made every switch look like "the
+       * reader is following" — so leaving a session while scrolled UP came back pinned to the tail
+       * (MEASURED: left at row e33 / 9094px from the tail, returned at e237 / 0px). Reported as
+       * "移動前にスクロール追従になってたら、移動後も一番下で追従されててほしい" — the inverse case,
+       * and the reason it never worked is that the flag was reset before the restore could read it.
+       *
+       * The remembered position decides. The `true` default only covers a session we have never
+       * seen, where there is no reader position to preserve and the tail is the only sensible
+       * arrival point.
+       */
+      setAtBottom(scrollMemory.get(tid)?.atTail ?? true);
       // a session switch changes the geometry completely, so the previous sample would
       // read as an enormous scroll in whichever direction
       lastSample = undefined;
@@ -2634,6 +2644,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * first page simply does not match and we fall back to the tail rather than guessing a pixel.
      */
     const restore = scrollMemory.get(tid);
+    /**
+     * Restore the FOLLOW state before anything async runs, not inside the rAF below.
+     *
+     * `backfillUntilScrollable()` is called after this and exits early on `atBottom()` — "a session
+     * following the tail has nothing to backfill FOR". That guard is what prevents the reported
+     * "移動後に数十分前のアイテムまで遡る": the eager fill would pull up to 20 OLDER pages, and the
+     * prepended history leaves the viewport parked far above the tail.
+     *
+     * It could not do its job here. `atBottom()` was only set inside the rAF, so between the switch
+     * and that frame it still held the value it had for the OUTGOING session (or a stale default),
+     * and backfill made its decision on that. Setting it synchronously means the guard reads the
+     * reader's real intent for THIS session — following stays following, and a reader who was
+     * scrolled up still gets their history backfilled.
+     */
+    setAtBottom(restore ? restore.atTail : true);
     requestAnimationFrame(() => {
       if (selected() !== id) return;
       if (restore) {
@@ -2642,10 +2667,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (f && row) {
           f.scrollTop += row.getBoundingClientRect().top - f.getBoundingClientRect().top + restore.delta;
           ledger = { top: f.scrollTop, height: f.scrollHeight };
-          setAtBottom(restore.atTail);
+          // a following reader must be EXACTLY at the tail, not merely near it
           if (restore.atTail) scrollBottom(true);
           return;
         }
+        /**
+         * The remembered row is not in the first page.
+         *
+         * Going to the tail would be wrong for a reader who was scrolled UP: it is the opposite of
+         * where they were, and `loadOlder()` will pull the page that contains their row when they
+         * scroll. Only a following reader lands at the bottom; anyone else keeps the first page and
+         * lets the history fill in on demand.
+         */
+        if (restore.atTail) scrollBottom(true);
+        return;
       }
       scrollBottom(true);
     });

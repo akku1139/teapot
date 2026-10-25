@@ -1981,28 +1981,27 @@ export function ConfigModal(props: {
                       <Show when={oauthStateFrom(mcpOAuth(), String(srv().name ?? ""))?.required && !oauthStateFrom(mcpOAuth(), String(srv().name ?? ""))?.authorized}>
                         <button
                           type="button"
-                          class="archrestore"
+                          class="mcpauthorize"
                           onclick={() => void startMcpOAuth(i, srv())}
                           title="start the OAuth flow: a browser tab opens, and the tools appear when you finish"
                         >🔑 authorize</button>
                       </Show>
                       <Show when={oauthStateFrom(mcpOAuth(), String(srv().name ?? ""))?.authorized}>
-                        <span class="mcpstate connected" title="an OAuth access token is usable">
+                        {/*
+                          Status only, not an action.
+                          `disconnect` used to sit right here, in the row's control strip next to
+                          `test` and `save` — one misclick from deleting the grant, and it read as
+                          a peer of the harmless buttons ("しくじってクリックしそうなところに大々的に
+                          置くのどうなの?"). The action moved into the server's expanded detail below,
+                          which is the shape OpenWebUI uses for the same job: their connection row
+                          shows state, and Delete lives inside the EDIT modal behind a confirm
+                          dialog. `on/off` is the enable checkbox — a switch is state, a grant is a
+                          credential, and putting them side by side made two different things look
+                          like the same kind of toggle ("on/offのチェックボックスもあるし意味論が微妙").
+                        */}
+                        <span class="mcpstate connected" title="an OAuth access token is usable — disconnect it under the server's details">
                           🔑 authorized
                         </span>
-                        <button
-                          type="button"
-                          onclick={async () => {
-                            await api("/api/mcp/oauth/disconnect", {
-                              method: "POST",
-                              headers: { "content-type": "application/json" },
-                              body: JSON.stringify({ name: srv().name }),
-                            }).catch(() => {});
-                            await refreshMcpOAuth(srv().name);
-                            setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "disconnected" } }));
-                          }}
-                          title="forget the stored grant (the refresh token is deleted)"
-                        >disconnect</button>
                       </Show>
                       <Show when={st()}>
                         <span
@@ -2057,6 +2056,37 @@ export function ConfigModal(props: {
                                 </For>
                               </ul>
                             </details>
+                          </Show>
+                          {/*
+                            The destructive action lives HERE, under the server's details.
+
+                            OpenWebUI's connection settings use the same shape: the list row shows
+                            state, and Delete lives inside the EDIT dialog behind a confirm. Two
+                            reasons it matters here beyond "less ugly": a grant is a CREDENTIAL, not
+                            a setting, so it should not sit beside the on/off checkbox as if they
+                            were the same kind of toggle; and disconnecting deletes the refresh
+                            token, so recovering means a browser round trip — a misclick next to
+                            `test` costs far more than a misclick on `test`.
+                          */}
+                          <Show when={oauthStateFrom(mcpOAuth(), String(srv().name ?? ""))?.authorized}>
+                            <div class="mcpdanger">
+                              <span class="muted">OAuth grant</span>
+                              <button
+                                type="button"
+                                class="mcpdisconnect"
+                                onclick={async () => {
+                                  if (!confirm(`Disconnect ${srv().name}?\n\nThe stored OAuth grant is deleted and you will have to authorize again in a browser.`)) return;
+                                  await api("/api/mcp/oauth/disconnect", {
+                                    method: "POST",
+                                    headers: { "content-type": "application/json" },
+                                    body: JSON.stringify({ name: srv().name }),
+                                  }).catch(() => {});
+                                  await refreshMcpOAuth(srv().name);
+                                  setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "disconnected" } }));
+                                }}
+                                title="forget the stored grant (the refresh token is deleted, so authorizing again needs a browser)"
+                              >disconnect</button>
+                            </div>
                           </Show>
                         </div>
                       )}

@@ -26,7 +26,12 @@ test("fmtDur: seconds take over below a minute", () => {
   assert.equal(fmtDur(1_000), "1.0s");
   assert.equal(fmtDur(1_500), "1.5s");
   assert.equal(fmtDur(59_400), "59.4s");
-  assert.equal(fmtDur(59_999), "60.0s");
+  /**
+   * This pinned "60.0s" — a value that cannot exist, and the bug reported as "2分60秒とは???".
+   * The assertion encoded the defect, so the fix could not land without correcting it: sub-minute
+   * durations FLOOR to a tenth, which keeps 59.9s readable and never reaches 60.
+   */
+  assert.equal(fmtDur(59_999), "59.9s");
 });
 
 test("fmtDur: minutes, dropping a zero seconds part (#24)", () => {

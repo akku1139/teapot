@@ -1,0 +1,58 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+/**
+ * A file preview WRAPS; it never scrolls sideways.
+ *
+ * Reported as "右パネルfilesからファイルウィンドウの中が横スクロールする / 折り返しにしたほうがいい".
+ * `happy-dom` does no layout, so the contract has to be stated as CSS — that is the one legitimate
+ * stylesheet read in this repo. What is asserted is the set of declarations that TOGETHER stop the
+ * scroll, because each one alone was measurably insufficient:
+ *
+ *   - `overflow-x: hidden` on the container stops the container scrolling;
+ *   - `white-space: pre-wrap` on shiki's own `<pre>` is needed because shiki ships `pre`;
+ *   - `display: block` + `min-width: 0` on `<code>` is what actually fixed it — MEASURED, the
+ *     code element reported `clientWidth: 0` / `scrollWidth: 157` while BOTH ancestors were
+ *     already at 0, because an inline element inside a wrapping `<pre>` has no box to wrap in.
+ *
+ * The last point is the one worth remembering: a stylesheet can look correct (the computed
+ * `white-space` on `<code>` really was `pre-wrap`) and still scroll, because the missing piece was a
+ * DISPLAY mode, not a wrap mode.
+ */
+const css = readFileSync("frontend/app.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+/** the body of a rule whose SELECTOR LIST contains `selector` (these rules are grouped) */
+const rule = (selector: string): string => {
+  const bodies: string[] = [];
+  for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const selectors = m[1]!.split(",").map((s) => s.trim());
+    if (selectors.includes(selector)) bodies.push(m[2]!);
+  }
+  return bodies.join("\n");
+};
+
+test("the preview container does not scroll horizontally (#files)", () => {
+  const body = rule(".filepreview");
+  assert.ok(body, ".filepreview must have its own rule");
+  assert.match(body, /overflow-x:\s*hidden/, "the container must not scroll sideways (#files)");
+  assert.match(body, /overflow-y:\s*auto|overflow:\s*auto/, "but a long file must still scroll vertically");
+});
+
+test("shiki's own pre and code are told to wrap (#files)", () => {
+  /**
+   * shiki emits `<pre class="shiki">` with `white-space: pre` of its own, so a rule on the wrapper
+   * does not reach it. The selector must NAME the inner elements.
+   */
+  const wrapped = [".filepreview .shiki pre", ".filepreview .shiki code"];
+  for (const sel of wrapped) {
+    const body = rule(sel);
+    assert.ok(body, `${sel} must be styled, or shiki's own defaults win (#files)`);
+    assert.match(body, /white-space:\s*pre-wrap/, `${sel} must wrap (#files)`);
+  }
+});
+
+test("the code element is a BLOCK with min-width 0 — the reason it scrolled (#files)", () => {
+  const body = rule(".filepreview .shiki code") + rule(".filepreview code.shiki");
+  assert.match(body, /display:\s*block/, "an inline <code> has no box to wrap in — MEASURED clientWidth 0 (#files)");
+  assert.match(body, /min-width:\s*0/, "and a flex/grid ancestor must be allowed to shrink it (#files)");
+});
