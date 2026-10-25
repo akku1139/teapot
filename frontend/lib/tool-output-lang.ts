@@ -35,3 +35,35 @@ export function outputLang(text: string): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * Reformat a JSON tool result the way the ARGUMENTS beside it are formatted.
+ *
+ * `argsBlock` renders `JSON.stringify(args, null, 1)` — one field per line. An output that is also
+ * JSON was shown as whatever the server happened to send, so a single-line blob sat next to a
+ * pretty-printed argument block for the same call: same data, two shapes, and the output side was
+ * the unreadable one (most MCP tools return JSON).
+ *
+ * Only WHOLE JSON values are reformatted. `outputLang` already decides that (it parses), so this
+ * reuses the same test rather than guessing — a truncated result or shell output must come through
+ * byte-identical, because reformatting something that is not JSON would be a confident lie about the
+ * content. A value that is already pretty-printed is left alone (rewriting it would change the byte
+ * count for no gain).
+ *
+ * Indent 1 matches `argsBlock`, so a call and its result line up.
+ */
+export function formatToolOutput(text: string): string {
+  if (outputLang(text) !== "json") return text;
+  try {
+    const value: unknown = JSON.parse(text.trim());
+    const pretty = JSON.stringify(value, null, 1);
+    /**
+     * Already laid out → leave it alone. `pretty` is ALWAYS multi-line for an object, so the test has
+     * to be on the INPUT: reformatting something the server already formatted would only churn the
+     * bytes (and reorder nothing, since key order is preserved).
+     */
+    return text.trim().split("\n").length > 1 ? text : pretty;
+  } catch {
+    return text;
+  }
+}

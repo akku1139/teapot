@@ -13,7 +13,7 @@ import { renderMarkdownCached } from "../lib/markdown";
 import { groupedWith, type RowLike } from "../lib/row-grouping";
 import { outcomeMarker, shellHint, shellOutcome } from "../lib/shell-outcome";
 import { authorOf, fmtK, fmtTs, oneLine, rawOf, type Ev } from "../lib/timeline-row";
-import { outputLang } from "../lib/tool-output-lang";
+import { formatToolOutput, outputLang } from "../lib/tool-output-lang";
 
 
 export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => void }) {
@@ -149,7 +149,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         {hasAnsi(out()) ? (
           <AnsiText text={out()} />
         ) : (
-          <HighlightedCode text={out()} lang={outputLang(out())} />
+          <HighlightedCode text={formatToolOutput(out())} lang={outputLang(out())} />
         )}
         <div class="meta">
           {fmtDur(r.data?.durationMs)}
@@ -160,7 +160,9 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
             : r.data?.ok === false
               ? " · FAILED"
               : ""}
-          <CopyBtn text={hasAnsi(out()) ? stripAnsi(out()) : out()} />
+          {/* copy exactly what is SHOWN: the same JSON reformatting, so the clipboard and the card
+              cannot disagree about the content */}
+          <CopyBtn text={hasAnsi(out()) ? stripAnsi(out()) : formatToolOutput(out())} />
         </div>
       </>
     ) : (
