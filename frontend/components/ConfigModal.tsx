@@ -4,6 +4,7 @@ import { CodePreview, NumberField, ThemePreview, TodoEditor } from "./settings-p
 import { api } from "../lib/api";
 import { bgSrc, bgSrcSet } from "../lib/bg-srcset";
 import { flashHint } from "../lib/flash";
+import { oauthStateFrom } from "../lib/mcp-oauth-key";
 import { relTime } from "../lib/format";
 import { renderMarkdownCached } from "../lib/markdown";
 import { PROVIDER_PRESETS } from "../lib/provider-presets";
@@ -754,9 +755,7 @@ export function ConfigModal(props: {
    * the dropdown re-renders when authorization completes.
    */
   const oauthState = (name: string) => {
-    const key = String(name ?? "").trim();
-    if (!key) return null;
-    const st = mcpOAuth()[key];
+    const st = oauthStateFrom(mcpOAuth(), name);
     return st && (st.required || st.authorized) ? st : null;
   };
   const refreshMcpStates = async () => {
@@ -831,7 +830,18 @@ export function ConfigModal(props: {
         () => null,
       )) as any;
       if (!st || st.error) continue;
-      setMcpOAuth((m) => ({ ...m, [i]: st }));
+      /**
+       * Keyed by NAME, like every reader of this map.
+       *
+       * This wrote `[i]` — the row INDEX — while `mcpOAuth()` is read as
+       * `mcpOAuth()[server.name]` everywhere. Index 0 therefore answered for whatever server
+       * happened to be first, so a freshly authorized server showed nothing and an unrelated row
+       * could pick up its state. Reported as "何故かCanvaだけ 🔑 authorized って出てる" with three
+       * OAuth servers configured: only the row whose index coincided with a written key matched.
+       * The map's own docblock already said "keyed by name because that is the identity that cannot
+       * drift"; this call was the one place that had not been converted.
+       */
+      setMcpOAuth((m) => ({ ...m, [srv.name]: st }));
       if (st.authorized) {
         setMcpStatus((m) => ({
           ...m,
@@ -1968,7 +1978,7 @@ export function ConfigModal(props: {
                           server wants a grant. Without this the operator sees only
                           "error" and has to know the difference between a bad header
                           and a missing grant. */}
-                      <Show when={mcpOAuth()[String(srv().name ?? "").trim()]?.required && !mcpOAuth()[String(srv().name ?? "").trim()]?.authorized}>
+                      <Show when={oauthStateFrom(mcpOAuth(), String(srv().name ?? ""))?.required && !oauthStateFrom(mcpOAuth(), String(srv().name ?? ""))?.authorized}>
                         <button
                           type="button"
                           class="archrestore"
@@ -1976,7 +1986,7 @@ export function ConfigModal(props: {
                           title="start the OAuth flow: a browser tab opens, and the tools appear when you finish"
                         >🔑 authorize</button>
                       </Show>
-                      <Show when={mcpOAuth()[String(srv().name ?? "").trim()]?.authorized}>
+                      <Show when={oauthStateFrom(mcpOAuth(), String(srv().name ?? ""))?.authorized}>
                         <span class="mcpstate connected" title="an OAuth access token is usable">
                           🔑 authorized
                         </span>

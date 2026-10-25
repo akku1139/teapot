@@ -37,6 +37,8 @@
     "typecheck-web": "tsc -p tsconfig.frontend.json",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json",
     "lint": "oxlint src frontend test scripts",
+    "lint:comments": "node scripts/find-stacked-comments.ts",
+    "lint:comments:strict": "node scripts/find-stacked-comments.ts --strict",
     "start": "node dist/index.js",
     "dev": "node src/index.ts",
     "dev-web": "vite",

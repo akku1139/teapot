@@ -46,7 +46,6 @@ import {
   type ReasoningEffort,
 } from "./model-meta.ts";
 
-/** how deep sub-agent spawning may nest (parent=0, its subs=1, …) */
 /**
  * Did the effective data dir come from an ENV OVERRIDE that disagrees with the
  * config file's own `dataDir`?
@@ -521,7 +520,6 @@ export function loadConfig(configPath: string): TeapotConfig {
   };
 }
 
-/** Raw parsed user config (for lossless persistence of web edits). */
 /**
  * Can this path be replaced by an atomic rename?
  *
@@ -838,7 +836,6 @@ export class Master {
     this.saveConfig();
   }
 
-  /** write-and-rename, so config.json is never observed empty or half-written */
   /**
    * The shared pool for a provider, created on first use.
    *

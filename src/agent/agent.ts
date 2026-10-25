@@ -169,7 +169,6 @@ export interface AgentOptions {
   supportedEfforts?: string[];
   maxConsecutiveToolErrors?: number;
   /** estimated-token budget; older history is compacted when exceeded */
-  /** estimated-token budget; older history is compacted when exceeded */
   contextTokenBudget?: number;
   /** the model's real context window — powers the % gauge in the web UI */
   contextWindowTokens?: number;
@@ -246,13 +245,6 @@ export interface AgentOptions {
   chatFn?: ChatFn;
 }
 
-/**
- * SYSTEM_TEMPLATE must stay byte-identical across every request of a session:
- * provider prefix caches key on it, so changing it (or injecting per-turn
- * state) re-prices the whole context. That is why session state lives behind
- * meta tools instead. The cache rationale itself stays HERE in a comment —
- * the model does not need our cost-engineering notes every turn.
- */
 /**
  * Recent context kept VERBATIM through a compaction, in tokens.
  *
@@ -419,6 +411,13 @@ const SUMMARY_CLOSE = "\n</conversation_checkpoint>";
  */
 const AUDIT_READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "bash"]);
 
+/**
+ * SYSTEM_TEMPLATE must stay byte-identical across every request of a session:
+ * provider prefix caches key on it, so changing it (or injecting per-turn
+ * state) re-prices the whole context. That is why session state lives behind
+ * meta tools instead. The cache rationale itself stays HERE in a comment —
+ * the model does not need our cost-engineering notes every turn.
+ */
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
 Most session state is not injected into prompts — fetch it with tools instead:
@@ -868,30 +867,13 @@ export class Agent {
   private consecutiveCompactFailures = 0;
 
   /**
-   * Rescan skill roots — but only when something actually changed.
-   * This used to run a readdir per root plus a read of every SKILL.md at the
-   * top of EVERY turn; the cache is only ever read by list_skills, so that
-   * was pure I/O on the hot path. A cheap stat fingerprint of the roots and
-   * their SKILL.md files gates the real scan, so a turn only pays when a
-   * skill was added, edited or removed (save_skill writes one, so a
-   * self-created skill still shows up on the very next turn).
-   */
-  /**
-   * Render the skill catalogue for the system prompt.
-   *
-   * Name + description only, one line each — the full SKILL.md is what
-   * load_skill() is for, and this block goes into EVERY request of the session,
-   * so it has to stay small. The description is what the model matches its task
-   * against, so a skill with a poor description is effectively undiscoverable;
-   * that is worth knowing when authoring one.
-   */
-  /**
    * A bounded DIGEST of memory.md: every heading, plus its first line.
    *
-   * they are genuinely long — 2.6KB is the median, and the largest hold full project briefs. A
-   * model that never sees them cannot decide to consult them: that is the whole finding of #48
-   * (182 writes, 13 reads after a write). A model that sees the WHOLE file pays for it on every
-   * request and breaks the prefix cache.
+   * Memory notes are worth this much because they are what a later session reads instead of
+   * re-learning the workspace: they are genuinely long — 2.6KB is the median, and the largest hold
+   * full project briefs. A model that never sees them cannot decide to consult them: that is the
+   * whole finding of #48 (182 writes, 13 reads after a write). A model that sees the WHOLE file
+   * pays for it on every request and breaks the prefix cache.
    *
    * Codex solves this with a `MEMORY_SUMMARY` in the prompt plus a searchable registry on disk.
    * This is the same shape: the digest says what memory HOLDS, `read_memory(query)` fetches the
@@ -1194,6 +1176,12 @@ export class Agent {
     );
   }
 
+  /** recently read workspace files (most recent first) — post-compact restore */
+  private recentReads: string[] = [];
+  private trackFileRead(p: string): void {
+    this.recentReads = [p, ...this.recentReads.filter((x) => x !== p)].slice(0, 5);
+  }
+
   /**
    * A background shell (bash background=true) finished. Two channels:
    * 1. a system_note row in the timeline — the operator sees the outcome
@@ -1202,12 +1190,6 @@ export class Agent {
    *    agent learns exit code + output tail WITHOUT having to poll
    *    bash_output blindly. Failed jobs say so loudly so the model reacts.
    */
-  /** recently read workspace files (most recent first) — post-compact restore */
-  private recentReads: string[] = [];
-  private trackFileRead(p: string): void {
-    this.recentReads = [p, ...this.recentReads.filter((x) => x !== p)].slice(0, 5);
-  }
-
   private onBackgroundJobExit(info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }): void {
     const ok = info.code === 0;
     const one = info.cmd.replace(/\s+/g, " ").slice(0, 80);
@@ -4882,7 +4864,6 @@ export class Agent {
     }
   }
 
-  /** Ask the model for dense continuation notes over the compacted range. */
   /**
    * Summarize `old` into continuation notes.
    *
