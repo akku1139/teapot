@@ -169,6 +169,16 @@ script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
   bubble has text, that the element is scrollable) or it passes vacuously, and it
   must be verified to FAIL against the pre-fix code.
 
+- **A reproduction of a per-session bug must assert WHICH session is on screen.**
+  Navigating to `/session/<id>` is not enough: the route resolves through
+  `masterSessionIndex()`, so a session that no agent points at does not switch and
+  the UI keeps rendering the previous one. MEASURED: a "prompting s1 while viewing s2
+  leaks into s2" reproduction passed against pre-fix code with one agent and two
+  session dirs — it was still viewing s1, so it proved nothing about separation. Read
+  the header's `.sub` line (`model · session/branch`) and fail if it is not the
+  session under test. A fixture that cannot reach the state reports the absence of a
+  bug as the presence of one.
+
 - **Do not add a test per assertion.** Prefer one test that would fail for the real
   reason over five that pin incidental strings. Delete tests that no longer protect
   anything; a suite that grows without bound gets ignored.
