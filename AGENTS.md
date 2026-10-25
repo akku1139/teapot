@@ -214,6 +214,22 @@ script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
   against — an abandoned 30 s timer kept a test file's process alive for 20 s of
   pure idle after its work was done.
 
+- **A port you released is not a port you own.** Asking the OS for `listen(0)` and then
+  `close()`ing to learn the number leaves a window where any process on the runner can take it, so a
+  fixture that does this must be able to RETRY. MEASURED: `publish.yml` went red on v0.37.52 with
+  `EADDRINUSE 127.0.0.1:38529`, the version never reached npm, and the failure message —
+  "the live update never started its exec" — pointed at the feature. The comment in the fixture even
+  said "good enough for tests"; a failed publish is the counter-example.
+
+  The safe shapes, in order of preference:
+  - bind and HOLD a server for the whole test (`listen(0)` then read `address()`), which is what
+    every other suite here does;
+  - or retry the boot on a fresh port, treating `EADDRINUSE` in the child's output as "try again".
+
+  And give any HTTP probe an `AbortSignal.timeout`: MEASURED, `fetch` to a port nobody is listening
+  on did not reject — it hung until the outer timeout, so the retry loop that was meant to fix the
+  race looked like the feature hanging instead.
+
 - If production code hardcodes a delay the test must wait out, make it injectable
   instead of sleeping (`llmRetryWaitsMs` exists for exactly this). Test time is a
   real cost: it is why an over-long suite gets skipped locally and stops being run.
