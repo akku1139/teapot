@@ -20,12 +20,26 @@ test("the tail re-pin keys on content, not just the compaction banner (#scroll)"
   // the marker is a COMMENT, so find it in the raw source and take the code that follows it
   const at = raw.indexOf("Re-pin after ANY in-feed content change");
   assert.ok(at > 0, "the content re-pin effect must exist and say why");
-  const block = stripSourceComments(raw.slice(at, at + 2000));
+  const block = stripSourceComments(raw.slice(at, at + 3400));
+  /**
+   * `chatEvents()`, not `events()`.
+   *
+   * The event list was the right answer for LOG rows — a goal card, a divider or a todo row all
+   * arrive that way — and it was not enough: the feed renders `chatEvents()`, which is `events()`
+   * PLUS the pending echoes. MEASURED gap: a message the operator just sent gets an echo at the
+   * bottom without touching `events().length`, so a following reader was not carried to it.
+   */
   assert.match(
     block,
-    /void events\(\)\.length/,
-    "the effect must read the EVENT LIST — a goal card, a divider or a todo row all arrive that " +
-      "way, and none of them changes the feed's box (#scroll)",
+    /void chatEvents\(\)\.length/,
+    "the effect must read the RENDERED list (chatEvents), because echoes change the feed without " +
+      "touching the log (#scroll)",
+  );
+  assert.match(
+    block,
+    /olderDone|loadingFeed|loadingOlder/,
+    "and the rows that render OUTSIDE <For> — they appear on their own and move a follower too " +
+      "(#scroll)",
   );
   assert.match(
     block,

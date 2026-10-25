@@ -1007,6 +1007,30 @@ export default function App() {
     void events().length;
     void eventsTotal();
     void compacting();
+    /**
+     * `chatEvents().length`, not just `events().length`.
+     *
+     * The feed renders `chatEvents()`, which is `events()` PLUS the pending echoes and minus the
+     * rows the pipeline hides. Keying the re-pin on the raw log length therefore missed every change
+     * that is not a new LOG row: a message the operator just sent gets an ECHO at the bottom, a
+     * delivered prompt loses its echo, and neither touches `events().length`. The row appears (or
+     * disappears) under a reader who is following and nothing pins.
+     */
+    void chatEvents().length;
+    /**
+     * …and the two rows that live OUTSIDE `<For>`.
+     *
+     * Every child of the feed that can appear on its own has to be named here, because this effect
+     * is the only thing that re-pins for content INSIDE the feed (its box does not change — `flex: 1`
+     * in a fixed-height column). Two were missing: the "beginning of log" divider and the tail
+     * loading row. Auditing the JSX against this list is the check; a new feed child needs a line
+     * here or a reader who is following will not be carried to it.
+     */
+    void olderDone();
+    void loadingFeed();
+    // a PREPEND is handled by the scroll anchor, but this row is centred content that appears on its
+    // own — and when the log is shorter than one page it never prepends at all
+    void loadingOlder();
     const f = feedEl();
     if (!f) return;
     const height = f.scrollHeight;
