@@ -821,14 +821,32 @@ console.log("deep render ok: feed rows present");
     ...EVENTS,
     {
       id: "live-tool-1",
-      seq: 9001,
+      seq: 702,
       ts: TOOL_TS,
       agent: AGENT.id,
       session: "alpha-s1",
       branch: "br0",
       parent: null,
-      type: "tool_start",
+      type: "tool_call",
       data: { callId: "c-live", name: "bash", args: { command: "ls" } },
+    },
+    /**
+     * …and its RESULT. A `tool_call` must be a real pair: an unpaired call stays in the feed as a
+     * running row, and it changed the grouping of a LATER check ("the bash after a write_file was
+     * grouped into its run"). MEASURED: adding just the call broke that check and adding the result
+     * restores it — the fixture has to look like the thing the app emits, or it perturbs unrelated
+     * assertions.
+     */
+    {
+      id: "live-tool-1-result",
+      seq: 703,
+      ts: TOOL_TS,
+      agent: AGENT.id,
+      session: "alpha-s1",
+      branch: "br0",
+      parent: "live-tool-1",
+      type: "tool_result",
+      data: { callId: "c-live", name: "bash", ok: true, durationMs: 5, result: "a.txt" },
     },
   ];
   let liveToolVisible = false;

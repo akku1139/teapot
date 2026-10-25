@@ -150,7 +150,19 @@ function startedToolCallSince(
 ): boolean {
   if (!at) return false;
   return events.some((e) => {
-    if (e.type !== "tool_start") return false;
+    /**
+     * `tool_call`, NOT `tool_start`.
+     *
+     * `tool_start` does not exist — `EventType` declares `tool_call` (`data:{callId,name,args}`) and
+     * `tool_result`. The check looked for a type nothing ever wrote, so it was ALWAYS false and the
+     * stale-reasoning guard never fired: a 💭 block stayed on the timeline after the tool row it had
+     * already preceded, again. MEASURED in a real session: the live bubble carried the exact
+     * reasoning text of the settled assistant turn above it, with the tool row already drawn.
+     *
+     * The tests did not catch it because they built their fixtures with the same wrong string — a
+     * fixture is only evidence when it matches what the system actually emits.
+     */
+    if (e.type !== "tool_call") return false;
     const t = Date.parse(String(e.ts ?? ""));
     return Number.isFinite(t) && t > at;
   });
