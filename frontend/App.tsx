@@ -10,7 +10,7 @@ import {
   pruneDeadLiveBuffers,
   reconcileLiveBuffer,
 } from "./lib/live-buffer";
-import { buildTimeline, type TimelineEvent, type PendingEchoLike } from "./lib/timeline";
+import { buildTimelineWithCount, type TimelineEvent, type PendingEchoLike } from "./lib/timeline";
 import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
 import { Card } from "./components/card";
 import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
@@ -45,6 +45,7 @@ import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPla
 import { composerValueChanged, shouldWriteComposerValue } from "./lib/composer-ime";
 import {
   atTail,
+  AT_TAIL_PX,
   classifyScroll,
   distanceToTail,
   gapToTail,
@@ -1280,17 +1281,23 @@ export default function App() {
   /**
    * How many of the operator's messages are waiting to be consumed, for the feed being SHOWN.
    *
-   * Both sides have to describe the same feed. `pendingMsgs()` is the echoes of the visible
-   * timeline (`pendingKey()`); `sel()` is the selected AGENT, whose session is a different handle
-   * for an agent whose session has moved on. Taking the max of two different subjects raised the
-   * ⏳ badge on a session that had nothing queued, and the message it counted was someone else's.
+   * Counted from the LOG, through the same rule that decides whether a queued ROW is drawn
+   * (`pendingEchoCount` → `remainingEchoes`). It used to count `pendingMsgs()` — client memory —
+   * so the badge could outlive the row it was counting: the feed showed nothing queued and the
+   * badge still said "⏳ 1 message queued", until a session switch rebuilt the list from the log.
+   * Two implementations of "still pending" is exactly how those two drift apart.
+   *
+   * The server count is still needed for the case the client cannot see: a queue entry it has no
+   * echo for at all (opened in another tab, or sent before a reload). It describes THIS feed only
+   * when the selected agent's session is the one on screen — `sel()` is an agent and
+   * `pendingKey()` is a timeline, and those differ for anyone else's session.
    */
   const queuedCount = () => {
     const mine = sel()?.session === pendingKey() || !sel()?.session;
     const fromServer = mine
       ? sel()?.pendingPromptQueue?.length ?? sel()?.pendingPromptIds?.length ?? sel()?.pendingPrompts ?? 0
       : 0;
-    return Math.max(fromServer, pendingMsgs().length);
+    return Math.max(fromServer, pendingCount());
   };
   /**
    * Is the selected agent doing work that `stop` would stop?
@@ -1573,12 +1580,17 @@ const isTimelineLive = (): boolean => {
   const answeredQuestionIds = createMemo(() =>
     answeredQuestionIdsOf(events() as unknown as QuestionEvent[], locallyAnswered()),
   );
-  const chatEvents = createMemo(() =>
+  /**
+   * The pipeline's result: the rows, and how many queued echoes are actually among them.
+   *
+   * One memo, because the ⏳ badge and the feed must not disagree — see `buildTimelineWithCount`.
+   */
+  const timeline = createMemo(() =>
     // The pipeline lives in ./timeline so its stages cannot be reordered by accident
     // and so it can be driven with a plain array (#timeline-refactor). It used to be a
     // ~240-line memo that MUTATED its own input rows, so a re-run saw the previous
     // run's writes — the structural reason timeline bugs were intermittent.
-    buildTimeline({
+    buildTimelineWithCount({
       events: events() as TimelineEvent[],
       consumed: pairInfo().consumed,
       pending: pendingMsgs() as PendingEchoLike[],
@@ -1586,8 +1598,11 @@ const isTimelineLive = (): boolean => {
       feedTypes: FEED_TYPES,
       renderedTypes: RENDERED_TYPES,
       renderedNoteEvents: RENDERED_NOTE_EVENTS,
-    }) as Ev[],
+    }),
   );
+  const chatEvents = () => timeline().rows as Ev[];
+  /** queued echoes the feed is DRAWING — the log's answer, not client memory's */
+  const pendingCount = () => timeline().pendingCount;
   /**
    * Each row paired with the row ABOVE it, computed once per rebuild.
    *
@@ -2391,6 +2406,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * the number that actually bounds retention.
    */
   const timelineCache = new Map<string, { events: Ev[]; total: number; at: number; bytes: number }>();
+  /**
+   * Where the reader was in each session, as a ROW and an offset — never a pixel `scrollTop`.
+   *
+   * A pixel offset is not portable between sessions: `scrollTop` is an offset into content whose
+   * height differs, and the browser CLAMPS it to the maximum for the new content. So a stale value
+   * from a long session landed hundreds of messages back in a short one, and coming back to the
+   * long session could not restore anything at all because `select()` unconditionally scrolled to
+   * the tail. Reported as "セッションを移ってから戻ると数百個前のメッセージまでスクロールが移動する".
+   *
+   * `data-eid` is the row's log event id: stable across re-wrap, and it names the ROW rather than a
+   * distance, which is the only thing that means the same in a different conversation.
+   */
+  const scrollMemory = new Map<string, { eid: string; delta: number; atTail: boolean }>();
+  const SCROLL_MEMORY_MAX = 24;
   const TIMELINE_CACHE_MAX = 6;
   /** ~24MB of retained event data: several small sessions, or one large one. */
   const TIMELINE_CACHE_MAX_BYTES = 24 * 1024 * 1024;
@@ -2463,6 +2492,33 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const requested = forceSession && masterSessionIndex().has(forceSession) ? forceSession : null;
     let tid = resolved ?? requested ?? id;
     if (prevId !== id || tid !== prevTid) {
+      /**
+       * Remember where the reader was in the OUTGOING session, as a ROW rather than a pixel.
+       *
+       * This MUST be the first thing in the switch, before any signal is written. Solid propagates
+       * a write synchronously, so `setSelected(id)` has already re-run the feed's `<For>` by the
+       * time the next line executes — capturing after it measured an EMPTY feed (`anchor: null`,
+       * `scrollTop: 0`) and remembered nothing. A pixel `scrollTop` is also not portable between
+       * sessions: it is an offset into content of a different height and the browser clamps it, so
+       * a stale value from a long session landed hundreds of messages back in a short one.
+       * `data-eid` names the ROW, which is the only thing that means the same in another conversation.
+       */
+      {
+        const f = feedEl();
+        const anchor = f ? firstVisibleRow(f) : null;
+        const outKey = prevTid || prevId;
+        if (f && outKey && anchor) {
+          const row = f.querySelector<HTMLElement>(anchor.sel);
+          const eid = row?.dataset.eid ?? "";
+          const atTail = f.scrollHeight - f.scrollTop - f.clientHeight <= AT_TAIL_PX;
+          if (eid) scrollMemory.set(outKey, { eid, delta: f.getBoundingClientRect().top - anchor.top, atTail });
+          while (scrollMemory.size > SCROLL_MEMORY_MAX) {
+            const oldest = scrollMemory.keys().next().value;
+            if (oldest === undefined) break;
+            scrollMemory.delete(oldest);
+          }
+        }
+      }
       // remember what the outgoing session looked like so returning is instant
       if (prevTid && prevEvents.length) {
         const bytes = prevEvents.reduce((n, e) => n + approxEventBytes(e), 0);
@@ -2510,10 +2566,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setBranchFilter(null);
     setOlderDone(false);
     setLoadingOlder(false);
-    // this used to CLEAR the list, so echoes were lost on every switch and
-    // a still-queued message came back looking settled. Save the outgoing
-    // session's echoes and restore the incoming session's, like the draft and
-    // the timeline cache above.
     writePending(prevTid || prevId || "?", pendingMsgs());
     setPendingMsgs(pendingFor(tid || id));
     localStorage.setItem("teapot.session", id);
@@ -2543,9 +2595,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        * spinner says a refresh is in flight.
        */
       setLoadingFeed(true);
-      requestAnimationFrame(() => {
-        if (selected() === id) scrollBottom(true);
-      });
+      // the rows paint from cache in the same frame; restoring here and again after the fetch would
+      // fight over `scrollTop`, so only the post-fetch restore moves it
+      if (!scrollMemory.has(tid)) {
+        requestAnimationFrame(() => {
+          if (selected() === id) scrollBottom(true);
+        });
+      }
     }
     // lazy sessions sit in "stopped" until touched — clicking loads them
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
@@ -2575,8 +2631,29 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setCompacting(
       sel()?.ctx?.compacting ? { phase: String(sel()!.ctx!.compacting) } : null,
     );
+    /**
+     * Restore where the reader was, if we know; otherwise go to the tail.
+     *
+     * This used to be `scrollBottom(true)` unconditionally, so every switch — including coming back
+     * to what you were reading — threw the position away. The remembered position is a row id, so
+     * it survives rows being re-wrapped or the page being re-fetched; a row that is no longer in the
+     * first page simply does not match and we fall back to the tail rather than guessing a pixel.
+     */
+    const restore = scrollMemory.get(tid);
     requestAnimationFrame(() => {
-      if (selected() === id) scrollBottom(true);
+      if (selected() !== id) return;
+      if (restore) {
+        const f = feedEl();
+        const row = f?.querySelector<HTMLElement>(`[data-eid="${CSS.escape(restore.eid)}"]`);
+        if (f && row) {
+          f.scrollTop += row.getBoundingClientRect().top - f.getBoundingClientRect().top + restore.delta;
+          ledger = { top: f.scrollTop, height: f.scrollHeight };
+          setAtBottom(restore.atTail);
+          if (restore.atTail) scrollBottom(true);
+          return;
+        }
+      }
+      scrollBottom(true);
     });
     // the first page may not fill the viewport — pull older pages until it
     // does (or history runs out), so infinite scroll is always reachable

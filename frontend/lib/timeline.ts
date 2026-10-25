@@ -323,12 +323,44 @@ export function remainingEchoes(
 }
 
 /**
+ * How many echoes the feed is actually DRAWING.
+ *
+ * The badge used to count the raw `pending` list, which is CLIENT MEMORY, while the rows were
+ * chosen from the LOG. Any state where the two disagree showed a ⏳ badge over a feed with no
+ * queued row in it — and "the log is authoritative" is the rule this whole file already follows.
+ * Reported as a badge that would not clear until a session switch rebuilt it.
+ *
+ * Exported so the count and the drawing come from ONE decision. A second implementation of
+ * "is this still pending" is how they drift apart.
+ */
+export function pendingEchoCount(
+  pending: readonly PendingEchoLike[],
+  lifecycle: ReturnType<typeof promptLifecycle>,
+): number {
+  return remainingEchoes(pending, lifecycle).length;
+}
+
+/**
  * The whole pipeline, in the order the stages MUST run.
  *
  * Exported as one function so the component cannot reorder the stages by accident, and
  * so a test can drive the real sequence with a plain array.
  */
 export function buildTimeline(input: TimelineInput): TimelineEvent[] {
+  return buildTimelineWithCount(input).rows;
+}
+
+/**
+ * The pipeline, plus the count the ⏳ badge needs — from ONE pass.
+ *
+ * These have to agree, so they come out of the same run: the badge reported a queued message whose
+ * row the feed had already dropped, because the count came from client memory while the rows came
+ * from the log. Deriving both here makes that disagreement unrepresentable rather than merely fixed.
+ */
+export function buildTimelineWithCount(input: TimelineInput): {
+  rows: TimelineEvent[];
+  pendingCount: number;
+} {
   // 1
   const candidates = feedCandidates(input);
   // 2
@@ -347,5 +379,5 @@ export function buildTimeline(input: TimelineInput): TimelineEvent[] {
   const resequenced = resequencePrompts(visible, lifecycle);
   // 7
   const echoes = remainingEchoes(input.pending, lifecycle).map(input.echo);
-  return placeEchoesBelow(resequenced, echoes);
+  return { rows: placeEchoesBelow(resequenced, echoes), pendingCount: echoes.length };
 }

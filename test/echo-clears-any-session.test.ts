@@ -38,8 +38,22 @@ test("the queued badge counts echoes as well as the snapshot (#echo)", () => {
   const app = readSource("frontend/App.tsx");
   const at = app.indexOf("const queuedCount = () =>");
   assert.ok(at > 0, "there must be one place that answers 'how many are queued' (#echo)");
-  const body = app.slice(at, at + 500);
-  assert.match(body, /pendingMsgs\(\)/, "echoes are the other half of the answer (#echo)");
+  const body = app.slice(at, at + 700);
+  /**
+   * The echo half comes from `pendingCount()` — the pipeline's own count — and NOT from
+   * `pendingMsgs().length`.
+   *
+   * `pendingMsgs()` is client memory; the rows are chosen from the LOG. Counting memory made the
+   * badge outlive the row it counted: the feed showed nothing queued and "⏳ 1 message queued"
+   * stayed until a session switch rebuilt the list. Asserting the raw list here is what kept that
+   * alive, so the assertion is now the shared decision.
+   */
+  assert.match(body, /pendingCount\(\)/, "echoes are the other half of the answer, from the pipeline (#echo)");
+  assert.doesNotMatch(
+    body,
+    /pendingMsgs\(\)\.length/,
+    "counting client memory is the drift this replaced — the log decides (#echo)",
+  );
   assert.match(body, /pendingPromptQueue|pendingPromptIds|pendingPrompts/, "and the snapshot is one half (#echo)");
   // the gate must use it, or the memo is dead code and the badge stays hidden
   assert.match(
