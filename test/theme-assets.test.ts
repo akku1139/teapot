@@ -500,21 +500,27 @@ test("tool content is highlighted by LANGUAGE, not by file path (#ui)", async ()
   /**
    * Asked for as "bashコードや、ツール入力JSONとかをShikiハイライトできるといいかも". Tool content has
    * no path, so `langForPath` cannot help — the entry point takes a language NAME.
+   *
+   * Driven for REAL rather than read out of the source: the property that matters is "a grammar is
+   * bundled and produces highlighted output", and only calling it can show that. Reading the file
+   * would pass while the loader entry pointed at a module that no longer exists, which is exactly
+   * the silent fallback-to-plain-text this test exists to prevent.
    */
-  const shiki = await readSource("frontend/lib/shiki.ts");
-  assert.match(
-    shiki,
-    /export async function\* highlightLangChunks\(/,
-    "a language-based entry point must exist, because tool content has no file path to derive one from",
-  );
-  // ...and the two languages a tool card needs must be BUNDLED, or the call silently yields nothing
-  for (const lang of ["json", "shellscript"]) {
-    assert.match(
-      shiki,
-      new RegExp(`^\\s*${lang}: \\(\\) => import\\("shiki/langs/${lang}\\.mjs"\\)`, "m"),
-      `${lang} must have a grammar loader — an unregistered language returns no chunks and the ` +
-        `caller silently falls back to plain text`,
-    );
+  const { highlightLangChunks } = await import("../frontend/lib/shiki.ts");
+  for (const [lang, code] of [
+    ["json", '{"a":1}'],
+    ["shellscript", "ls -la /tmp"],
+  ] as const) {
+    let html = "";
+    for await (const chunk of highlightLangChunks(lang, code)) html += chunk;
+    assert.ok(html.length > 0, `${lang} must produce output — an unregistered grammar yields nothing`);
+    /**
+     * A `--shiki-*` variable in the markup is what proves a GRAMMAR ran. Without one the helper
+     * returns the text unchanged, which looks identical in the UI until you notice nothing is
+     * coloured — the silent fallback this test exists to catch.
+     */
+    assert.match(html, /--shiki-/, `${lang} must be tokenised, not echoed back as plain text`);
+    assert.match(html, /a/, "and the content must survive");
   }
 });
 

@@ -483,6 +483,19 @@ out with only five unresolved names because everything it called had already mov
   running" and "finished 5 minutes ago", and MEASURED, it wasted most of a turn on every release
   in one session. Wrap it in `timeout` so a wedged run cannot block the loop forever.
 
+  **A `timeout` expiry is NOT a test failure — check `status` before believing it.** The `|| echo
+  FAILED` idiom above reports whatever the timeout killed, so a slow runner reads as a red build.
+  MEASURED on v0.37.47: the Windows job sat `in_progress` for 40+ minutes, the watch hit its 1500s
+  timeout, and the loop announced `FAILED windows.yml` — while v0.37.48 (same code, later commit)
+  passed the identical job. Before investigating, ask what the run itself says:
+
+  ```sh
+  gh run view <run-id> --json status,conclusion -q '"\(.status) \(.conclusion)"'
+  # in_progress → nothing failed; the watch gave up. Cancel the wedged run, do not chase a ghost.
+  ```
+
+  Only `status=completed` with `conclusion=failure` is a failure worth a log dive.
+
 - **Run release and CI monitoring as a BACKGROUND bash job, not in the foreground.**
 
   ```sh

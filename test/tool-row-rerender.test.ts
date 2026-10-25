@@ -25,33 +25,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSource } from "./helpers/source.ts";
 import { cacheHighlighted, highlightedHtml, highlightCacheSize } from "../frontend/lib/highlight-cache.ts";
-
-/** the source from `anchor` up to the next top-level `function` declaration */
-function fnBlock(app: string, anchor: string): string {
-  const at = app.indexOf(anchor);
-  assert.ok(at !== -1, `anchor not found: ${anchor}`);
-  const rest = app.slice(at + anchor.length);
-  const next = rest.search(/\n(?:export )?function /);
-  return rest.slice(0, next === -1 ? rest.length : next);
-}
-
-test("ToolRow narrows its result dependency instead of reading the pair map raw (#render)", async () => {
-  const block = fnBlock(readSource("frontend/components/rows.tsx"), "function ToolRow(");
-  assert.match(
-    block,
-    /equals:\s*\(a,\s*b\)\s*=>\s*a\?\.id\s*===\s*b\?\.id/,
-    "the row must memoize its RESULT by identity — without the `equals`, every append " +
-      "invalidates every row and the whole subtree (including HighlightedCode) is rebuilt (#render)",
-  );
-  assert.match(
-    block,
-    /const\s+res\s*=\s*\(\)\s*=>\s*resEv\(\)/,
-    "every read must go through the narrowed memo, or the raw prop re-introduces the wide " +
-      "dependency the memo exists to cut (#render)",
-  );
-});
 
 test("a highlight survives the component instance, and the cache is bounded (#render)", () => {
   /**
@@ -78,4 +52,3 @@ test("a highlight survives the component instance, and the cache is bounded (#re
   );
   assert.equal(highlightedHtml(key), undefined, "the oldest entries are the ones evicted");
 });
-

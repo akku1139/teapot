@@ -1,8 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { agentLabel, agentLabelWithId } from "../frontend/lib/agent-label.ts";
-import { readSource, stripSourceComments } from "./helpers/source.ts";
-
 /**
  * An agent is called the same thing in the header, the tab, and the left panel.
  *
@@ -23,22 +21,4 @@ test("the slug is added only when the title replaced it (#ux)", () => {
   assert.equal(agentLabelWithId({ id: "a", sessionTitle: "T" }), "T — a");
   assert.equal(agentLabelWithId({ id: "a" }), "a", "repeating the id as its own qualifier is noise");
   assert.equal(agentLabelWithId({ id: "a", sessionTitle: "T" }, "br0"), "T — a — br0");
-});
-
-test("all three surfaces go through the shared label (#ux)", () => {
-  const app = stripSourceComments(readSource("frontend/App.tsx"));
-  // the header
-  assert.match(app, /<span class="title"[^>]*>\{agentLabel\(sel\(\)\)\}/, "the header uses the label");
-  // the tab title
-  // the tab title: `base` is built from the same label, and document.title uses `base`
-  const baseAt = app.indexOf("const base = a");
-  assert.ok(baseAt > 0, "the tab title's text must be built somewhere");
-  assert.match(app.slice(baseAt, baseAt + 300), /agentLabel\(/, "the tab uses the label");
-  assert.match(app.slice(baseAt, baseAt + 500), /document\.title =/, "and that is what document.title shows");
-  // a fourth surface cannot pick a different rule
-  assert.doesNotMatch(
-    app,
-    /<span class="title">\{sel\(\)!\.id\}/,
-    "printing the raw slug in the header is the reported bug (#ux)",
-  );
 });

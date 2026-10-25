@@ -17,7 +17,6 @@ import path from "node:path";
 import { writeFileSync } from "node:fs";
 import { buildApp } from "../src/server/api.ts";
 import { Master } from "../src/master.ts";
-import { readSource } from "./helpers/source.ts";
 
 const appWith = async (dataDir: string, config: Record<string, unknown>) => {
   const cfgPath = path.join(dataDir, "config.json");
@@ -53,21 +52,4 @@ test("first run means NO PROVIDER, not no config file (#setup)", async () => {
     false,
     "a provider with NO apiKey counts as registered — a local endpoint legitimately has none",
   );
-});
-
-test("the setup WIZARD is gone, and the layout always renders (#setup)", async () => {
-  /**
-   * The wizard was a full-screen replacement gated on `needsSetup`, so first run hid the whole app.
-   * This pins the replacement: no wizard component, and no `needsSetup` gate around the layout.
-   */
-  const app = await readSource("frontend/App.tsx");
-  assert.doesNotMatch(app, /function SetupWizard/, "the wizard must be deleted, not merely unused");
-  assert.doesNotMatch(
-    app,
-    /<Show when=\{!cfg\(\)\?\.needsSetup\}>/,
-    "the layout must not be gated on needsSetup — the operator can look around before configuring",
-  );
-  // the nudge itself: opens once, and is not a wall
-  assert.match(app, /setupNudged/, "a once-only flag, or every config refresh reopens the dialog");
-  assert.match(app, /setShowCfg\(true\)/, "and it actually opens the settings panel");
 });

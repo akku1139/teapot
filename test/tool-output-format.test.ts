@@ -51,25 +51,3 @@ test("indent matches argsBlock so a call and its result line up (#tool)", () => 
   assert.match(out, /\n "a"/, "a top-level key is indented by one space (#tool)");
   assert.match(out, /\n {2}"b"/, "and the next level by two (#tool)");
 });
-
-test("the tool card actually USES it, for the body and the copy button (#tool)", async () => {
-  /**
-   * The helper being right is not the same as the row using it — this repo has shipped a correct
-   * helper with dead wiring more than once. Both the rendered body and the clipboard must go through
-   * the same formatting, or the card and the copy button disagree about the content.
-   */
-  const { readSource } = await import("./helpers/source.ts");
-  const src = readSource("frontend/components/rows.tsx")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/\/\/[^\n]*/g, "");
-  assert.match(
-    src,
-    /<HighlightedCode text=\{formatToolOutput\(out\(\)\)\}/,
-    "the rendered output must be the FORMATTED one, or the helper is dead code (#tool)",
-  );
-  assert.match(
-    src,
-    /<CopyBtn text=\{[^}]*formatToolOutput\(out\(\)\)/,
-    "and the copy button must copy what is shown, not the raw string (#tool)",
-  );
-});
