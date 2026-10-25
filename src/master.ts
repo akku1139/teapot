@@ -2903,8 +2903,25 @@ if (active().length === 0) wake();
 
   async restartServer(): Promise<void> {
     console.log("[teapot] live update: restarting...");
-    // a Ctrl-C from here until the exec is ambiguous; signal handlers consult this
+    /**
+     * A Ctrl-C from here until the exec is ambiguous; signal handlers consult this.
+     *
+     * Every early RETURN below clears it again. `execve` only resolves if it FAILED, and the
+     * `!execve` branch throws — on either path the process keeps running, so leaving the flag set
+     * would make the FIRST ^C refuse forever with a message that promises a second one works. The
+     * flag is therefore a promise about the CURRENT moment, not a one-way switch.
+     */
     this.updateInFlight = true;
+    try {
+      await this.handoverToNewImage();
+    } finally {
+      // only reached when the handover did NOT replace the process
+      this.updateInFlight = false;
+    }
+  }
+
+  /** wind down, record what to resume, and exec. Never returns on success. */
+  private async handoverToNewImage(): Promise<void> {
 
     /**
      * 1. WIND DOWN — do not abort.

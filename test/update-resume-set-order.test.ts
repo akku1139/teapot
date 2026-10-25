@@ -51,3 +51,26 @@ test("^C during an update does not silently cancel the handover (#update)", () =
     "and a second ^C must get through — refusing outright would trap the operator (#update)",
   );
 });
+
+test("a FAILED handover clears updateInFlight, or ^C is blocked forever (#update)", () => {
+  /**
+   * `updateInFlight` makes the FIRST ^C refuse with "press ^C again". That is a promise about the
+   * current moment, so it must be cleared on every path that leaves the process running:
+   *
+   *   - `!execve` throws (node < 22, or a runtime without it)
+   *   - `execve` resolves, which means it FAILED to exec
+   *
+   * Without the `finally` the flag stayed true after a failed update, so every later ^C was refused
+   * once first — an operator pressing it twice to stop a stuck server would be told to press it
+   * again, for no reason, forever.
+   */
+  const src = readSource("src/master.ts");
+  const at = src.indexOf("async restartServer()");
+  const body = src.slice(at, src.indexOf("private async handoverToNewImage", at));
+  assert.match(body, /finally\s*\{/, "the handover must clear the flag on the failure path (#update)");
+  assert.match(
+    body,
+    /this\.updateInFlight = false/,
+    "and the flag must actually be reset there (#update)",
+  );
+});
