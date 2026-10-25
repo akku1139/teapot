@@ -3120,3 +3120,13 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
 .mcptools-wrap { margin-top: 3px; }
 .mcptools-wrap > summary { cursor: pointer; color: var(--dim); font-size: 11px; }
 .mcptools-wrap > summary:hover { color: var(--fg); }
+/* the TAIL loading row: a refresh is in flight while the cached rows stay readable */
+.feedloading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: 8px 0 4px;
+  color: var(--dim);
+  font-size: var(--text-xs);
+}

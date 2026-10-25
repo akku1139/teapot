@@ -738,7 +738,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
                 * cutting it only removed the part the operator opened it to read. Reported as
                 * "長いreasoningをturncatedするのをやめる、隠れててスクロールも効くので切り取る意味がない".
                 */}
-              <summary>💭 reasoning</summary>
+              <summary>💭 thinking</summary>
               <div class="mono">{String(e.data.reasoning)}</div>
             </details>
           </Show>

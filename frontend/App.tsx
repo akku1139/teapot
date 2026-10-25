@@ -4832,7 +4832,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   );
                 })()}
               >
-                ⏳ {sel()!.pendingPromptIds?.length ?? sel()!.pendingPrompts} of yours queued{sel()!.status === "stopped" ? " (stopped)" : ""}
+                {/**
+                  * The LABEL must come from the same count as the visibility test.
+                  *
+                  * `<Show>` was gated on `queuedCount()` (snapshot OR echoes) while the text read
+                  * the snapshot alone, so an echo-only queue rendered "⏳ 0 of yours queued" —
+                  * a badge that says there is nothing while announcing itself.
+                  */}
+                ⏳ {queuedCount()} {queuedCount() === 1 ? "message" : "messages"} queued
+                {sel()!.status === "stopped" ? " (stopped)" : ""}
               </span>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>
@@ -5167,6 +5175,34 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   />
                 )}
               </For>
+              {/**
+                * A TAIL indicator while a refresh is in flight.
+                *
+                * Switching to a session that was already loaded paints its cached rows immediately,
+                * then re-fetches — and that second step had NO visible sign, because the full-screen
+                * spinner is gated on an EMPTY feed. The operator saw a complete-looking (but stale)
+                * timeline that did not update for a while, reported as "最新アイテムをロードしている
+                * 間に loading timeline... が出てなくてUXも悪い".
+                *
+                * At the BOTTOM of the feed rather than as a full-screen overlay: the rows on screen
+                * are still valid, so covering them would throw away the reason they are cached. The
+                * browser keeps the tail pinned because this row is part of the feed — the same
+                * mechanism that follows new messages.
+                */}
+              {/**
+                * `loadingFeed()` is the ONLY condition.
+                *
+                * Requiring rows as well made this dead: a switch clears the feed and hydrates from
+                * cache within the same task, so there is no frame where both "loading" and "has
+                * rows" hold — MEASURED as `feedloading` never appearing at all. The full-screen
+                * spinner above already covers the empty case; this row is for the case where the
+                * fetch is in flight, whatever is on screen.
+                */}
+              <Show when={loadingFeed()}>
+                <div class="feedloading">
+                  <span class="spinner" aria-hidden="true" /> loading newer events…
+                </div>
+              </Show>
               {/* #146: `live()` is keyed by AGENT, so a buffer saved while another
                   session of the same agent was on screen would still render here.
                   Show the bubble only for the session actually being displayed. */}
