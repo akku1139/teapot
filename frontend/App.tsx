@@ -719,14 +719,6 @@ export default function App() {
     localStorage.getItem("teapot.theme.light") ?? "light",
   );
   /**
-   * Operator-authored themes, persisted separately from the preset choice.
-   *
-   * A preset is a `[data-theme]` block in app.css; a custom theme cannot be one (nothing in the
-   * browser can write a stylesheet), so it is applied as INLINE custom properties on `<html>`.
-   * That is why the two are separate signals: `fixedTheme` names a preset OR a custom id, and
-   * `customThemes` is the palette behind that id.
-   */
-  /**
    * A theme id to PAINT regardless of which slot the OS selects — the settings PREVIEW.
    *
    * Following the system, `want` comes from the slot matching the OS appearance, so clicking a
@@ -737,6 +729,14 @@ export default function App() {
    * returns to when the dialog closes.
    */
   const [previewTheme, setPreviewTheme] = createSignal<string | null>(null);
+  /**
+   * Operator-authored themes, persisted separately from the preset choice.
+   *
+   * A preset is a `[data-theme]` block in app.css; a custom theme cannot be one (nothing in the
+   * browser can write a stylesheet), so it is applied as INLINE custom properties on `<html>`.
+   * That is why the two are separate signals: `fixedTheme` names a preset OR a custom id, and
+   * `customThemes` is the palette behind that id.
+   */
   const [customThemes, setCustomThemes] = createSignal<CustomTheme[]>(loadCustomThemes());
   /**
    * UNION the server's themes with this browser's — never replace one set with the other.
@@ -1280,15 +1280,6 @@ export default function App() {
   });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
   /**
-   * How many messages are queued for the visible session — from EITHER source.
-   *
-   * The badge was gated on the AGENT SNAPSHOT alone (`pendingPromptIds`). An echo is the same fact
-   * from the other side: the UI just sent the prompt and has not seen it delivered yet, and a
-   * snapshot that has not caught up — or a delivery note for another session that never cleared the
-   * echo — leaves the echo on the timeline while the count says zero. Reported as "youのはずっと
-   * queuedが外れないし、タイムライン上部にはqueuedのカウントが出てない".
-   */
-  /**
    * How many of the operator's messages are waiting to be consumed, for the feed being SHOWN.
    *
    * Counted from the LOG, through the same rule that decides whether a queued ROW is drawn
@@ -1614,21 +1605,16 @@ const isTimelineLive = (): boolean => {
   /** queued echoes the feed is DRAWING — the log's answer, not client memory's */
   const pendingCount = () => timeline().pendingCount;
   /**
-   * Each row paired with the row ABOVE it, computed once per rebuild.
-   *
-   * WHY THIS EXISTS: the template used to pass `prev={chatEvents()[i() - 1]}`
-   * directly. Inside `<For>`, `i` is a SIGNAL (`mapArray` does `indexes[j] = createSignal(i)`
-   * and re-runs `indexes[j](j)` when slots shift), so every one of the ~16,600 rendered rows
-   * became a SUBSCRIBER of the whole `chatEvents()` memo through that read. Any change to
-   * the timeline therefore re-ran that lookup in every row, and each re-run walked the memo's
-   * dependency graph — on a large session the UI was unusable on load.
-   *
-   * Pairing up front is O(n) once per rebuild and gives each row a plain value: `prev` is
-   * then a prop comparison, not a reactive dependency on the entire array. `groupedWith()`
-   * only needs the immediately preceding row, so nothing else is lost.
-   */
-  /**
    * Each row paired with its neighbours, REUSING the wrapper objects.
+   *
+   * ## Why the pair is computed up front
+   *
+   * Passing `prev={chatEvents()[i() - 1]}` into the template does not work: inside `<For>`, `i` is a
+   * SIGNAL (`mapArray` does `indexes[j] = createSignal(i)`), so every rendered row became a
+   * SUBSCRIBER of the whole `chatEvents()` memo through that read. Any timeline change then re-ran
+   * the lookup in every row, walking the memo's dependency graph — on a large session the UI was
+   * unusable on load. Pairing up front is O(n) once per rebuild and gives each row a plain value,
+   * so `prev` is a prop comparison rather than a reactive dependency on the entire array.
    *
    * ## Why the wrapper must be reference-stable (#scroll)
    *
@@ -2030,17 +2016,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * A page is cheap (a tail read) and the clamp is server-side, so ask for the
    * size the pairing actually needs rather than a round number that undoes the
    * fix.
+   *
+   * MEASURED across every session log: the largest observed gap is **1284** events (wait_children;
+   * bash tops out at ~302). Headroom at the worst case is ~716 events and **zero** gaps reach 2000,
+   * so eviction is not currently reachable.
+   *
+   * Recorded because this looks like a tuning knob worth "fixing" and is not: raising it costs a
+   * bigger fetch on every refresh. If a future session does produce a gap near 2000, that is the
+   * signal to raise it — not this comment.
    */
-  // gap between a `tool_call` and its `tool_result`, or the call is evicted while
-  // the command runs and the row can only be rescued by the orphan path.
-  //
-  // Across every session log: the largest observed gap is **1284** events
-  // (wait_children; bash tops out at ~302). Headroom at the worst case is ~716
-  // events and **zero** gaps reach 2000, so eviction is not currently reachable.
-  //
-  // Recorded because this looks like a tuning knob worth "fixing" and is not:
-  // raising it costs a bigger fetch on every refresh. If a future session does
-  // produce a gap near 2000, that is the signal to raise it — not this comment.
   const FEED_PAGE = 2000;
 
   // null = show everything; otherwise only the chosen branch's events

@@ -94,7 +94,19 @@ for (const file of files) {
       groups.push(g);
       i = g.end + 1;
     }
-    if (groups.length >= 2) {
+    /**
+     * A SECTION BANNER is not an orphan.
+     *
+     * `/* ---------- themes ---------- *\/` is a navigational marker, and the block under it
+     * explains the code that follows. That is a deliberate grouping, so a run whose FIRST group is
+     * a banner is skipped. Judging "is this comment stale" by shape alone cannot be done; the
+     * banner case is the one shape that is unambiguously intentional.
+     */
+    const isBanner = (g: Group): boolean => {
+      const text = lines.slice(g.start, g.end + 1).join("\n");
+      return /^\/\*\s*-{3,}/.test(text.trim());
+    };
+    if (groups.length >= 2 && !isBanner(groups[0]!)) {
       const next = lines[i] ?? "";
       hits.push({
         file: path.relative(ROOT, file),

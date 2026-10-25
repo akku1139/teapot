@@ -1147,14 +1147,6 @@ export class Agent {
   }
 
   /**
-   * Is this agent doing in-flight work that a WAITER (wait_children) should
-   * hold for? Deliberately narrower than isLive(): queued prompts are DORMANT
-   * work (a stopped/idle child touches them only after it is started), so
-   * they must not keep a parent parked on a child that is visibly idle —
-   * that wait would hang. isLive() answers "stop vs start" (#59/#133); this
-   * answers "is work in flight".
-   */
-  /**
    * The text of every prompt still waiting for a turn boundary.
    *
    * Read-only view for callers that need to know WHAT is queued, not just how
@@ -1165,6 +1157,14 @@ export class Agent {
     return this.pendingPrompts.map((p) => p.text);
   }
 
+  /**
+   * Is this agent doing in-flight work that a WAITER (wait_children) should
+   * hold for? Deliberately narrower than isLive(): queued prompts are DORMANT
+   * work (a stopped/idle child touches them only after it is started), so
+   * they must not keep a parent parked on a child that is visibly idle —
+   * that wait would hang. isLive() answers "stop vs start" (#59/#133); this
+   * answers "is work in flight".
+   */
   isBusy(): boolean {
     if (this.stopRequested) return false;
     return (
@@ -1299,11 +1299,6 @@ export class Agent {
     }
   }
 
-  /**
-   * Restore the conversation from the JSONL log exactly once, on demand.
-   * Everything that touches history (prompts, start, fork, UI selection)
-   * funnels through here; boot stays cheap no matter how many sessions exist.
-   */
   /**
    * Resolve the session/workspace this agent operates on.
    *
@@ -1480,16 +1475,6 @@ export class Agent {
   }
 
   /**
-   * Rebuild the in-memory conversation from the JSONL event log so a restart
-   * continues where the agent left off instead of starting blank.
-   *
-   * Strategy: find the most recent event overall (its branch is where the
-   * agent was), walk the `parent` chain backwards (crossing fork points),
-   * then replay events forward into ChatMessages. Meta-tool calls
-   * (finish / report_progress) never produced logged tool results, so we
-   * synthesize their responses to keep the message sequence valid.
-   */
-  /**
    * Resolve a leading sub_fork header: load the parent session's file (and
    * recurse if THAT one is itself a sub_fork), take its lineage up to the
    * recorded event, and return it prepended to our own events. Never copies
@@ -1534,6 +1519,17 @@ export class Agent {
     return [...prefix, ...own.filter((e) => e !== header)];
   }
 
+  /**
+   * Restore the conversation from the JSONL log exactly once, on demand.
+   * Everything that touches history (prompts, start, fork, UI selection)
+   * funnels through here; boot stays cheap no matter how many sessions exist.
+   *
+   * Strategy: find the most recent event overall (its branch is where the
+   * agent was), walk the `parent` chain backwards (crossing fork points),
+   * then replay events forward into ChatMessages. Meta-tool calls
+   * (finish / report_progress) never produced logged tool results, so we
+   * synthesize their responses to keep the message sequence valid.
+   */
   private async restoreFromLog(): Promise<void> {
     const own = await readEvents(this.log.filePath);
     if (own.length === 0) return;
@@ -1857,14 +1853,6 @@ export class Agent {
     await this.log.append("todo", this.currentSession, this.currentBranch, { event: "set", by });
   }
 
-  /**
-   * Update SPECIFIC checkbox items without rewriting the whole list — the
-   * full-replacement path made agents lazy (a mid-task progress tick meant
-   * re-emitting the entire markdown, so they skipped updates) and risky (one
-   * sloppy regeneration mangled unrelated sections). Items are matched by
-   * normalized text; unknown items are reported back instead of silently
-   * dropped. Returns a short human-readable summary for the tool result.
-   */
   /**
    * Apply surgical changes to todo.md.
    *
