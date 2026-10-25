@@ -47,10 +47,33 @@ test("POST /prompt records the SOURCE the caller states (#skill)", async () => {
     });
     assert.equal(h.status, 200, `prompt must be accepted: ${JSON.stringify(h.json)}`);
     // an unknown source must fall back to the operator, not be trusted
-    await call(port, "POST", "/api/agents/a1/prompt", { text: "hello", start: false, source: "root" as never });
+    try {
+      await call(port, "POST", "/api/agents/a1/prompt", { text: "hello", start: false, source: "root" as never });
+    } catch {
+      /* the second write is independent; a failure here must not mask the first assertion */
+    }
 
     const a = m.agents.get("a1")!;
-    const evs = await readEvents(a.log.filePath);
+    /**
+     * Wait for BOTH rows before reading.
+     *
+     * `enqueuePrompt` appends through `ensureReady()`, so the write lands some time after the HTTP
+     * answer — on Windows that gap was long enough that the status request ran between the two
+     * appends and the assertions saw only one row (`source: undefined`). Poll for the rows the test
+     * is about instead of assuming one round trip is enough.
+     */
+    const readWithRows = async () => {
+      for (let i = 0; i < 40; i++) {
+        const evs = await readEvents(a.log.filePath).catch(() => []);
+        const prompts = evs.filter((e) => e.type === "prompt");
+        const hasHarness = prompts.some((e) => String((e.data as { text?: string }).text ?? "").includes("Force-load"));
+        const hasPlain = prompts.some((e) => String((e.data as { text?: string }).text ?? "") === "hello");
+        if (hasHarness && hasPlain) return evs;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return await readEvents(a.log.filePath);
+    };
+    const evs = await readWithRows();
     const prompts = evs.filter((e) => e.type === "prompt");
     const harnessRow = prompts.find((e) => String((e.data as { text?: string }).text ?? "").includes("Force-load"));
     assert.equal(
