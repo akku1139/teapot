@@ -190,16 +190,29 @@ test("the suppression is recorded in the log (#95)", { timeout: 30_000 }, async 
     await agent.setGoal("keep going");
     agent.enqueuePrompt("go", "user");
     agent.start("t");
-    // Bounded: with the suppression removed the agent pairs prompts forever, so
-    // an unbounded wait would hang the suite instead of failing it.
-    await new Promise((r) => setTimeout(r, 300));
     const { readEvents } = await import("../src/log/events.ts");
-    const events = await readEvents(agent.log.filePath);
-    const notes = events.filter(
-      (e) =>
-        e.type === "system_note" &&
-        (e.data as { event?: string })?.event === "auto-continue-suppressed",
-    );
+    /**
+     * POLL for the note, never wait a fixed duration.
+     *
+     * This slept 300ms and the note was expected by then; on Windows it was not, so the suite failed
+     * on timing rather than on behaviour. The bound still exists for the real failure mode: with the
+     * suppression removed the agent pairs prompts forever, so an unbounded wait would hang the suite
+     * instead of failing it.
+     */
+    const notes: Awaited<ReturnType<typeof readEvents>> = [];
+    for (let i = 0; i < 100; i++) {
+      const events = await readEvents(agent.log.filePath);
+      notes.length = 0;
+      notes.push(
+        ...events.filter(
+          (e) =>
+            e.type === "system_note" &&
+            (e.data as { event?: string })?.event === "auto-continue-suppressed",
+        ),
+      );
+      if (notes.length) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
     assert.ok(
       notes.length > 0,
       "the suppressed nudge must be recorded (#95) — otherwise it looks like auto-continue broke",
