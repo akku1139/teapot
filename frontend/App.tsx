@@ -57,6 +57,7 @@ import {
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
 import { agentLabel, agentLabelWithId } from "./lib/agent-label";
+import { queuedBadgeCount } from "./lib/queued-count";
 import {
   applyCustomTheme,
   loadCustomThemes,
@@ -1213,6 +1214,20 @@ export default function App() {
     const mine = pendingFor(key);
     const next = reconcilePending(mine, queued, liveIds);
     if (next !== mine) writePending(key, next);
+    /**
+     * NOTHING is swept for other sessions here.
+     *
+     * `deliveredIds` is derived from `events()` — the log of the session ON SCREEN. Using it to judge
+     * another session's echoes is evidence about the wrong session, and MEASURED it dropped a live
+     * echo in the smoke fixture ("PENDING ECHO MISSING pending STYLE"). An echo that is still queued
+     * and an id that another session delivered are unrelated facts.
+     *
+     * The session you left is cleared by the `prompt-delivered` note, which scans EVERY key
+     * (`pendingBySession`) rather than the visible one — that is the correct mechanism, because the
+     * note carries the session it belongs to. A stale echo after returning therefore means the note
+     * never arrived, and the honest repair is to re-read the queue for that session (below), not to
+     * infer delivery from another session's log.
+     */
   });
 
   /**
@@ -1295,10 +1310,17 @@ export default function App() {
    */
   const queuedCount = () => {
     const mine = sel()?.session === pendingKey() || !sel()?.session;
-    const fromServer = mine
-      ? sel()?.pendingPromptQueue?.length ?? sel()?.pendingPromptIds?.length ?? sel()?.pendingPrompts ?? 0
-      : 0;
-    return Math.max(fromServer, pendingCount());
+    /**
+     * The MAXIMUM of the server's three views, not a `??` chain.
+     *
+     * `a ?? b ?? c` falls through only on null/undefined, and the snapshot always sends all three —
+     * so `pendingPromptQueue: []` STOPPED the chain at 0 and hid a non-zero `pendingPrompts`.
+     * MEASURED: `{queue: [], ids: [], pendingPrompts: 3}` produced a badge of 0, i.e. a queue the
+     * operator could not see, the exact opposite of what the badge is for. The three are the same
+     * fact in different shapes (queue = with text, ids = identity, count = the oldest field), so a
+     * server that fills one and not the others must still be counted.
+     */
+    return queuedBadgeCount({ sameSession: !!mine, agent: sel(), echoCount: pendingCount() });
   };
   /**
    * Is the selected agent doing work that `stop` would stop?
