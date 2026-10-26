@@ -133,6 +133,20 @@ export async function fetchModelList(
                 completion: Number(m.pricing.completion ?? 0),
               }
             : undefined,
+        /**
+         * `modalities` is only known when the provider PUBLISHES it — in practice OpenRouter's
+         * `architecture.input_modalities`.
+         *
+         * Every other endpoint omits the field, so this stays `undefined` and the UI must treat it as
+         * UNKNOWN rather than as "text only". Reported as "Command Code GOATのモデルカタログが
+         * input/outputのフォーマットを適切に提供していない? OpenRouterしかちゃんと対応できてない可能性は
+         * ある" — which is exactly right, and the code was right not to invent a value.
+         *
+         * The consequence to know about: without a modality list nothing can decide "this model
+         * accepts an image", so an operator's screenshot reaches the model as a FILE PATH and an agent
+         * that tries `read_file` gets bytes. The guard for that lives in `read_file` (it refuses a
+         * binary file by name instead of returning mojibake), so the failure is at least legible.
+         */
         modalities:
           Array.isArray(m.architecture?.input_modalities) && m.architecture!.input_modalities!.length
             ? {

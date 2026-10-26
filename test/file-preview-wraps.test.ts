@@ -56,3 +56,27 @@ test("the code element is a BLOCK with min-width 0 — the reason it scrolled (#
   assert.match(body, /display:\s*block/, "an inline <code> has no box to wrap in — MEASURED clientWidth 0 (#files)");
   assert.match(body, /min-width:\s*0/, "and a flex/grid ancestor must be allowed to shrink it (#files)");
 });
+
+test("the code background is the THEME's surface, never shiki's white (#files)", () => {
+  /**
+   * Reported as "ファイルツリーからのコードプレビューでshikiが効いてると背景が真っ白".
+   *
+   * shiki runs in dual-theme mode (`shiki-themes github-light github-dark`), so its inline style
+   * sets `--shiki-light-bg: #fff` on the `<pre>`. Only the LIGHT appearance had an explicit
+   * override, so every DARK theme fell through to that white — a preview that blinded the operator
+   * in a dark UI. A tool card never had the bug because `.toolbody` paints its own surface
+   * underneath; the preview had none.
+   *
+   * The contract: the container carries the theme surface and shiki's own background is transparent,
+   * for EVERY appearance rather than only one.
+   */
+  const container = rule(".filepreview");
+  assert.match(container, /background:\s*var\(--bg/, "the preview must paint a theme surface (#files)");
+
+  const shikiBg = [...css.matchAll(/([^{}]*\.filepreview[^{}]*\.shiki[^{}]*)\{([^}]*)\}/g)]
+    .filter((m) => /background-color/.test(m[2]!))
+    .map((m) => m[2]!)
+    .join("\n");
+  assert.match(shikiBg, /background-color:\s*transparent/, "shiki's own background must be transparent (#files)");
+  assert.match(shikiBg, /!important/, "it is an inline style on the element, so the rule must win (#files)");
+});

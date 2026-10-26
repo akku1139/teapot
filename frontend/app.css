@@ -2757,7 +2757,25 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 .toolbody.shiki pre.shiki code .line {
   display: inline;
 }
-html[data-appearance="light"] .filepreview .shiki { background-color: var(--shiki-light-bg); }
+/**
+ * shiki's inline `--shiki-light-bg: #fff` must never be the visible surface.
+ *
+ * Only the LIGHT appearance was given an explicit background, so every dark theme fell through to
+ * shiki's own white — reported as "ファイルツリーからのコードプレビューでshikiが効いてると背景が真っ白".
+ * `shiki-themes github-light github-dark` emits BOTH palettes at once (dual-theme mode), and the
+ * light one wins by default because it is what the inline `style` sets.
+ *
+ * A tool card does not have this problem because `.toolbody` paints its own surface underneath, so
+ * the preview gets the same treatment: the theme's surface for the box, and shiki's background made
+ * transparent so it cannot override it.
+ */
+.filepreview .shiki,
+.filepreview pre.shiki {
+  background-color: transparent !important;
+}
+.filepreview { background: var(--bg-darkest); }
+html[data-appearance="light"] .filepreview .shiki { background-color: transparent !important; }
+html[data-appearance="light"] .filepreview { background: var(--bg-light); }
 
 /* notification center (pops above the sidebar footer) */
 .notifbtn { position: relative; }

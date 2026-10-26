@@ -3485,23 +3485,66 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // ATTACH to the server-side terminal this tab represents, by its id. Without
       // `?terminal=`, the server would create a fresh shell and this tab would be looking at a
       // different process than the one the list says it is (#term-shared).
-      const w = new WebSocket(
-        `${proto}${location.host}/api/agents/${encodeURIComponent(tab.agentId)}/term?terminal=${encodeURIComponent(tab.key)}${wsTokenQuery()}`,
-      );
-      w.onmessage = (m) => {
-        const msg = JSON.parse(m.data);
-        if (msg.kind === "data") t.write(msg.data);
-        else if (msg.kind === "exit") {
-          t.write(`\r\n\x1b[2m[terminal exited ${msg.code ?? ""}]\x1b[0m\r\n`);
-          // the shell is gone on the server too, so drop the tab rather than leaving a dead
-          // one that re-attaches forever
-          setTermTabs((list) => list.filter((x) => x.key !== tab.key));
-          liveTerms.get(tab.key)?.term.dispose();
-          liveTerms.delete(tab.key);
-        } else if (msg.kind === "attach" && msg.error) {
-          t.write(`\r\n\x1b[2m[${msg.error}]\x1b[0m\r\n`);
-        }
+      const termUrl = () =>
+        `${proto}${location.host}/api/agents/${encodeURIComponent(tab.agentId)}/term?terminal=${encodeURIComponent(tab.key)}${wsTokenQuery()}`;
+      /**
+       * A MUTABLE holder, because the socket has to be REPLACED on reconnect.
+       *
+       * It was a `const` and every handler closed over it, so there was no way to recover: once the
+       * connection dropped, `onData` kept checking `readyState` on a dead socket and silently
+       * discarded every keystroke. The socket is also where the server pushes output, so a dead one
+       * means the pane shows a frozen screen with no error.
+       */
+      let w = new WebSocket(termUrl());
+      let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+      /** the shell is gone or the server refused us — a reconnect would be pointless */
+      let permanent = false;
+      const wire = (sock: WebSocket) => {
+        sock.onmessage = (m) => {
+          const msg = JSON.parse(m.data);
+          if (msg.kind === "data") t.write(msg.data);
+          else if (msg.kind === "ping") {
+            /* the server's keep-alive: receiving it is the whole point */
+          } else if (msg.kind === "exit") {
+            permanent = true;
+            t.write(`\r\n\x1b[2m[terminal exited ${msg.code ?? ""}]\x1b[0m\r\n`);
+            // the shell is gone on the server too, so drop the tab rather than leaving a dead
+            // one that re-attaches forever
+            setTermTabs((list) => list.filter((x) => x.key !== tab.key));
+            liveTerms.get(tab.key)?.term.dispose();
+            liveTerms.delete(tab.key);
+          } else if (msg.kind === "attach" && msg.error) {
+            permanent = true;
+            t.write(`\r\n\x1b[2m[${msg.error}]\x1b[0m\r\n`);
+          }
+        };
+        /**
+         * RECONNECT, because an idle terminal socket is dropped and the pane used to die silently.
+         *
+         * MEASURED on the operator's server: three terminals open, two showing `clients: 0` and
+         * frozen, while the one in use stayed alive. The main socket has always reconnected
+         * (`sock.onclose` at the client, a 30s keep-alive at the server); this one had neither, so
+         * a drop was permanent and invisible.
+         *
+         * Reattaching is cheap and LOSSLESS by design: the server replays the terminal's backlog on
+         * attach, so the screen is rebuilt from the pty rather than from what this tab missed. The
+         * shell itself never died — detaching is not killing.
+         */
+        sock.onclose = () => {
+          if (permanent || !liveTerms.has(tab.key)) return; // nothing to reconnect TO
+          if (reconnectTimer) return;
+          t.write(`\r\n\x1b[2m[connection lost — reconnecting…]\x1b[0m\r\n`);
+          reconnectTimer = setTimeout(function again() {
+            reconnectTimer = undefined;
+            if (!liveTerms.has(tab.key)) return; // tab closed while we waited
+            const next = new WebSocket(termUrl());
+            w = next;
+            wire(next);
+            next.addEventListener("open", () => pushResize());
+          }, 1500);
+        };
       };
+      wire(w);
       t.onData((d: string) => {
         if (w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: d }));
       });

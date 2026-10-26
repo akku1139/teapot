@@ -489,6 +489,7 @@ const MAX_WS_CLIENTS = 64;
         }
       };
       let ws: { send: (s: string) => void; close: () => void };
+      let ka: ReturnType<typeof setInterval> | undefined;
       return {
         onOpen(_evt, socket) {
           ws = socket;
@@ -503,6 +504,27 @@ const MAX_WS_CLIENTS = 64;
             return;
           }
           let id = wanted;
+          /**
+           * A keep-alive ping, because an idle terminal socket is killed silently.
+           *
+           * The main socket has done this since it was written (30s ping, reaping a client that
+           * stops answering), and the terminal socket did not. A terminal is idle by nature — the
+           * operator opens a shell, walks away, comes back — so it is exactly the connection a proxy
+           * or an OS idle timeout drops. MEASURED on the operator's own server: three terminals
+           * open, two of them `clients: 0` with the panes still on screen and dead, while the one
+           * being used stayed attached.
+           *
+           * The ping also gives the CLIENT a liveness signal to notice a half-open socket: TCP can
+           * stay "open" locally after the peer is gone, and without traffic there is nothing to
+           * fail on.
+           */
+          ka = setInterval(() => {
+            try {
+              socket.send(JSON.stringify({ kind: "ping" }));
+            } catch {
+              /* onClose detaches */
+            }
+          }, 30_000);
           if (!id) {
             const created = createTerminal(agentId, agent.workspace);
             if (!created.ok) {
@@ -550,6 +572,7 @@ const MAX_WS_CLIENTS = 64;
           }
         },
         onClose() {
+          if (ka) clearInterval(ka);
           // DETACH, do not kill: a reload must not destroy the shell (#term-shared)
           if (!attachedId) return;
           detachTerminal(attachedId, sink);

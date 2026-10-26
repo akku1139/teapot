@@ -133,6 +133,52 @@ async function readText(p: string): Promise<string> {
 }
 
 /**
+ * Is this file binary, i.e. not something `read_file` should return as text?
+ *
+ * `readText` decodes with "utf8" unconditionally, so pointing `read_file` at an image returned the
+ * raw bytes as a lossy string — reported as "画像をread_fileしてバイナリが帰ってきてる". The model then
+ * spends tokens on unreadable mojibake and cannot tell it is looking at data rather than source.
+ *
+ * The test is the classic one, applied to the FIRST block only: a NUL byte means "not text". Reads
+ * are bounded, because deciding costs a file read and the answer never needs the whole file.
+ */
+export async function looksBinary(p: string): Promise<{ binary: boolean; bytes: number; kind: string }> {
+  const fh = await fs.open(p, "r");
+  try {
+    const st = await fh.stat();
+    const head = Buffer.alloc(Math.min(4096, Math.max(0, st.size)));
+    if (head.length) await fh.read(head, 0, head.length, 0);
+    /**
+     * MAGIC BYTES FIRST, then the NUL test.
+     *
+     * A NUL scan alone missed PDF and zip: their headers contain no zero byte in the first few
+     * bytes, so `%PDF-1.4` and `PK\x03\x04` both read as "text" — MEASURED, and it would have
+     * shipped a silent hole. A known signature is proof regardless of what the bytes happen to
+     * contain; the NUL test is the fallback for everything unrecognised.
+     */
+    const kind = sniff(head);
+    if (kind) return { binary: true, bytes: st.size, kind };
+    return { binary: head.includes(0), bytes: st.size, kind: head.includes(0) ? "binary" : "text" };
+  } finally {
+    await fh.close();
+  }
+}
+
+/** the guessed format from magic bytes, or null when nothing is recognised */
+function sniff(head: Buffer): string | null {
+  const hex = (n: number) => head.subarray(0, n).toString("hex");
+  if (hex(8).startsWith("89504e47")) return "PNG image";
+  if (hex(3) === "ffd8ff") return "JPEG image";
+  if (head.subarray(0, 4).toString("latin1") === "GIF8") return "GIF image";
+  if (head.subarray(0, 4).toString("latin1") === "PK\x03\x04") return "zip archive";
+  if (hex(4) === "25504446") return "PDF";
+  if (hex(4) === "7f454c46") return "ELF binary";
+  if (hex(2) === "1f8b") return "gzip archive";
+  if (head.subarray(0, 5).toString("latin1") === "{\\rtf") return "RTF document";
+  return null;
+}
+
+/**
  * Persist a `write_file` payload and report what line endings it used (#84/#109).
  *
  * Extracted so the two paths — a file whose own EOL was detected, and one decided
@@ -1482,6 +1528,25 @@ export const TOOLS: ToolDef[] = [
       const p = safeJoin(ctx.cwd, str(args.path));
       let text: string;
       try {
+        /**
+         * Refuse a BINARY file instead of decoding it as UTF-8.
+         *
+         * `readText` has no notion of encoding, so `read_file` on an image returned the raw bytes as
+         * a lossy string — reported as "画像をread_fileしてバイナリが帰ってきてる". The model then pays
+         * for mojibake it cannot interpret and has no way to tell "this is data" from "this is
+         * source". Naming the likely type (PNG/JPEG/PDF/ELF/zip) is what lets it choose the right
+         * next step instead of retrying the same read.
+         */
+        const probe = await looksBinary(p);
+        if (probe.binary) {
+          return {
+            ok: false,
+            result:
+              `${str(args.path)} is a ${probe.kind} (${probe.bytes} bytes), not text — read_file returns ` +
+              `file CONTENT, so binary data would arrive as unreadable bytes. Use bash (file, identify, ` +
+              `xxd) to inspect it, or a tool that handles this format.`,
+          };
+        }
         text = await readText(p);
       } catch (err) {
         // name the file, not just the errno: a multi-file read reports each bad
