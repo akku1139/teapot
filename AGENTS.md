@@ -727,6 +727,40 @@ A pty terminal has the same shape and got the same answer (`detach`, keep runnin
 next connect) — and note that THIS case is the one where `nohup` is a feature: the job survived an
 OOM kill precisely because the agent had used it.
 
+## Known-open: a stale ⏳ badge after returning to a session
+
+**Reported, NOT reproduced.** The sequence given was: send while queued → switch to another session
+→ the queue drains (message sent) → switch back → the message is there but the ⏳ badge still shows
+one queued.
+
+Three attempts against a real build, each verified to have actually switched sessions (read the
+header's `.sub` line, not the URL):
+
+- delivery via `POST /start`
+- delivery at a normal turn boundary
+- a switch made immediately after sending, inside the drain-then-request window
+
+All three cleared correctly. The operator's own suspicion is a CLIENT SLEEP or a network drop, which a
+local fixture cannot produce — and that fits the mechanism: while the socket is disconnected, a
+`prompt-delivered` note is never delivered, so the echo survives with nothing left to clear it.
+
+### What was tried and must NOT be repeated
+
+A sweep that cleared other sessions' echoes using `deliveredIds`. `deliveredIds` is derived from
+`events()` — the log of the session ON SCREEN — so judging a DIFFERENT session with it is evidence
+about the wrong subject. MEASURED: it dropped a live echo and broke the bundle smoke test
+("PENDING ECHO MISSING pending STYLE"). The correct cleaner is the `prompt-delivered` note, which
+scans every key in `pendingBySession` precisely because it carries the session it belongs to.
+
+So the repair, when this is picked up, is one of:
+- make the note survive a disconnect (a resync of delivered ids on reconnect), or
+- re-read that session's queue on switch and drop echoes it cannot account for — but ONLY with
+  evidence belonging to THAT session.
+
+A fixed bug found on the way is worth keeping in mind here: the badge read the server's three queue
+fields as `a ?? b ?? c`, and an EMPTY ARRAY stopped the chain at 0 (`{queue: [], ids: [],
+pendingPrompts: 3}` showed 0). Now `frontend/lib/queued-count.ts`, max of the three.
+
 ## A limit nobody can see is not a limit
 
 A cap that applies silently is the same bug as no cap, plus a surprise. Two reports, one cause:
