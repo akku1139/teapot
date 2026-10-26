@@ -3,7 +3,7 @@
  * Tool specs are plain JSON-schema function definitions — provider-agnostic.
  */
 import { spawn } from "node:child_process";
-import { existsSync, promises as fs, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, promises as fs, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   discoverSkills,
@@ -31,6 +31,17 @@ export interface ToolContext {
    * report `live: true`.
    */
   agentId?: string;
+  /**
+   * Where to keep a RECORD of background jobs, so a restart can still tell the operator that a job
+   * is running.
+   *
+   * The process itself cannot be recovered — `bgShellsByWs` holds a `ChildProcess`, and once the
+   * parent that spawned it is gone there is no fd left to read. But "pid 3174540 is still running"
+   * is far better than the silence that shipped: MEASURED on the operator's machine, a `nohup` sweep
+   * started at 10:28 outlived an OOM-killed harness, kept writing for three hours, and the new
+   * instance could only answer `unknown background job ... forgotten on harness restart`.
+   */
+  stateDir?: string;
   /** hard cap per command */
   defaultTimeoutMs: number;
   maxOutputBytes: number;
@@ -495,6 +506,81 @@ export function elapsed(t0: number, now = Date.now()): string {
   return `\n[took ${((now - t0) / 1000).toFixed(1)}s]`;
 }
 
+/**
+ * A background job as it is PERSISTED — no process handle, no output buffer.
+ *
+ * Deliberately minimal: after a restart the process is unreachable, so pretending to own it would be
+ * a lie the UI has to work around. What survives is the fact that it exists.
+ */
+export type BgJobRecord = {
+  id: string;
+  cmd: string;
+  owner: string;
+  workspace: string;
+  pid: number | null;
+  startedAt: number;
+  /** where the job's own stdout went, when the command redirected it somewhere we know */
+  logPath?: string;
+};
+
+const jobsFile = (dir: string): string => path.join(dir, "bg-jobs.json");
+
+/** read the persisted records, tolerating a missing or corrupt file (never throws) */
+function readJobRecords(dir: string): BgJobRecord[] {
+  try {
+    const raw = readFileSync(jobsFile(dir), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as BgJobRecord[]).filter((r) => r && typeof r.id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Write the records atomically enough for this purpose.
+ *
+ * A torn write here is not worth a fsync: the file is a hint for the NEXT boot, and the worst case is
+ * losing one restart's worth of "this was running". Losing a job's identity entirely (the shipped
+ * behaviour) is what this exists to stop.
+ */
+function writeJobRecords(dir: string, records: BgJobRecord[]): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(jobsFile(dir), JSON.stringify(records, null, 1));
+  } catch {
+    /* a read-only session dir must not break the tool */
+  }
+}
+
+/** add or update one record (by id) */
+function rememberJob(dir: string, rec: BgJobRecord): void {
+  const all = readJobRecords(dir).filter((r) => r.id !== rec.id);
+  all.push(rec);
+  writeJobRecords(dir, all);
+}
+
+/** drop a record — the job finished AND was reported, or was killed */
+function forgetJob(dir: string, id: string): void {
+  writeJobRecords(dir, readJobRecords(dir).filter((r) => r.id !== id));
+}
+
+/**
+ * Jobs a PREVIOUS process started and whose processes may still be alive.
+ *
+ * `alive` is answered by the caller (pidExists) rather than here, so this module stays free of the
+ * signal-plumbing and the test can drive either answer. A record whose pid is gone is stale and is
+ * dropped: reporting a finished job as running is the same class of lie as forgetting a live one.
+ */
+export function recoverableJobs(dir: string, alive: (pid: number) => boolean): BgJobRecord[] {
+  const all = readJobRecords(dir);
+  const live: BgJobRecord[] = [];
+  for (const r of all) {
+    if (r.pid !== null && alive(r.pid)) live.push(r);
+  }
+  if (live.length !== all.length) writeJobRecords(dir, live);
+  return live;
+}
+
 function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   const map = bgMapFor(ctx.cwd);
   // opportunistic cleanup of long-dead jobs so the map can't grow forever
@@ -521,6 +607,20 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     if (sh.out.length < 200_000) sh.out += chunk.toString("utf8");
     else sh.truncated = true;
   };
+  /**
+   * Persist the RECORD, so a later process can at least say this job exists.
+   *
+   * The `pid` is what makes it checkable on boot: a job whose pid is gone is dropped, one whose pid
+   * is alive is reported as "still running, output no longer reachable". That is the honest answer
+   * after a restart — see `ToolContext.stateDir`.
+   */
+  if (ctx.stateDir) {
+    rememberJob(ctx.stateDir, {
+      id, cmd, owner: ctx.agentId ?? "", workspace: ctx.cwd,
+      pid: child.pid ?? null,
+      startedAt: sh.startedAt,
+    });
+  }
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
   // "exit" (process gone) and "close" (all stdio drained) are DIFFERENT events.
@@ -541,6 +641,8 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     if (code !== null) sh.code = code;
     if (exitNotified) return;
     exitNotified = true;
+    // the job is over: its record must not claim otherwise on the next boot
+    if (ctx.stateDir) forgetJob(ctx.stateDir, id);
     // tell the harness so the agent learns the outcome WITHOUT polling
     try {
       ctx.onBackgroundExit?.({
@@ -591,7 +693,61 @@ export function isContextOverflow(err: unknown): boolean {
  * `owner` is included because several agents share one workspace (every sub-agent inherits its
  * parent's), and "whose job is this" is the first thing an operator asks when deciding what to kill.
  */
-export function listBgShells(cwd: string): Array<{
+export function listBgShells(cwd: string, stateDir?: string): Array<{
+  id: string;
+  cmd: string;
+  owner: string;
+  running: boolean;
+  /** true when the process outlived a harness restart: alive, but its output is unreachable */
+  detached?: boolean;
+  pid?: number | null;
+  code: number | null;
+  startedAt: number;
+  tail: string;
+  bytes: number;
+  truncated: boolean;
+}> {
+  const live = liveShells(cwd);
+  /**
+   * Records from a previous process are appended, marked `detached`.
+   *
+   * Without them a job that survived a restart is INVISIBLE — MEASURED: a 3-hour GPU sweep kept
+   * writing while the panel showed nothing and `bash_output` said "forgotten on harness restart".
+   * The process cannot be re-attached (no fd survives the parent), so `detached` is the whole truth
+   * the UI can be given: it is running, and its output lives wherever the command redirected it.
+   */
+  if (!stateDir) return live;
+  const known = new Set(live.map((j) => j.id));
+  const recovered = recoverableJobs(stateDir, pidExists)
+    .filter((r) => !known.has(r.id) && r.workspace === cwd)
+    .map((r) => ({
+      id: r.id,
+      cmd: r.cmd,
+      owner: r.owner,
+      running: true,
+      detached: true,
+      pid: r.pid,
+      code: null,
+      startedAt: r.startedAt,
+      tail: "",
+      bytes: 0,
+      truncated: false,
+    }));
+  return [...live, ...recovered].sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/** does this pid exist? (EPERM means it exists but is not ours to signal) */
+function pidExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** the jobs THIS process is running, as the UI sees them */
+function liveShells(cwd: string): Array<{
   id: string;
   cmd: string;
   owner: string;
@@ -621,18 +777,36 @@ export function listBgShells(cwd: string): Array<{
     .sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/** kill ONE background job; returns whether it existed */
-export function killBgShell(cwd: string, id: string): boolean {
+/**
+ * Kill ONE background job; returns whether it existed.
+ *
+ * A DETACHED job (a record from a previous process) is handled differently on purpose: the harness no
+ * longer owns that process, so this drops the RECORD and does NOT signal the pid. Killing a pid we
+ * merely remember is how an unrelated process gets killed after pid reuse — and the operator's own
+ * instruction was to never touch a job from an earlier session. The caller reports what happened.
+ */
+export function killBgShell(cwd: string, id: string, stateDir?: string): boolean {
   const m = bgShellsByWs.get(cwd);
   const b = m?.get(id);
-  if (!b) return false;
-  try {
-    killTree(b.child);
-  } catch {
-    /* already gone */
+  if (b) {
+    try {
+      killTree(b.child);
+    } catch {
+      /* already gone */
+    }
+    m!.delete(id);
+    if (stateDir) forgetJob(stateDir, id);
+    return true;
   }
-  m!.delete(id);
-  return true;
+  // not ours any more: forget it, leave the process alone
+  if (stateDir) {
+    const rec = readJobRecords(stateDir).find((r) => r.id === id);
+    if (rec) {
+      forgetJob(stateDir, id);
+      return true;
+    }
+  }
+  return false;
 }
 
 export function hasRunningBgShells(cwd: string): boolean {

@@ -3355,3 +3355,6 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
   white-space: pre-wrap; overflow-wrap: anywhere;
   font-size: var(--text-xs); line-height: 1.35;
 }
+
+/* a detached job explains itself instead of showing an empty output box */
+.bgjob-detached { margin-top: 6px; font-size: var(--text-xs); line-height: 1.4; color: var(--dim); }

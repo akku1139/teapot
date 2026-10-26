@@ -671,13 +671,15 @@ const MAX_WS_CLIENTS = 64;
   app.get("/api/agents/:id/bg-jobs", (c) => {
     const agent = master.agents.get(c.req.param("id"));
     if (!agent) return c.json({ error: "no such agent" }, 404);
-    return c.json({ jobs: listBgShells(agent.snapshot().workspace ?? "") });
+    const snap = agent.snapshot();
+    return c.json({ jobs: listBgShells(snap.workspace ?? "", snap.sessionDir) });
   });
 
   app.delete("/api/agents/:id/bg-jobs/:job", (c) => {
     const agent = master.agents.get(c.req.param("id"));
     if (!agent) return c.json({ error: "no such agent" }, 404);
-    const ok = killBgShell(agent.snapshot().workspace ?? "", c.req.param("job"));
+    const snap = agent.snapshot();
+    const ok = killBgShell(snap.workspace ?? "", c.req.param("job"), snap.sessionDir);
     return c.json({ ok }, ok ? 200 : 404);
   });
 

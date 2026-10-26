@@ -3321,7 +3321,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * socket event: nothing else on screen depends on it, and the whole point of the badge is that it
    * is quiet until you look. A 2s tick is the pace at which a log tail is readable.
    */
-  type BgJob = { id: string; cmd: string; owner: string; running: boolean; code: number | null; startedAt: number; tail: string; bytes: number; truncated: boolean };
+  type BgJob = {
+    id: string; cmd: string; owner: string; running: boolean; code: number | null;
+    startedAt: number; tail: string; bytes: number; truncated: boolean;
+    /** the process outlived a harness restart: alive, but its output is no longer reachable */
+    detached?: boolean; pid?: number | null;
+  };
   const [bgJobs, setBgJobs] = createSignal<BgJob[]>([]);
   const [showBg, setShowBg] = createSignal(false);
   const refreshBg = async () => {
@@ -5277,20 +5282,54 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                           <span class={"bgjob-dot " + (j.running ? "running" : "done")} title={j.running ? "running" : "finished"} />
                           <code class="mono bgjob-cmd" title={j.cmd}>{oneLine(j.cmd, 80)}</code>
                           <span class="muted bgjob-meta">
-                            {j.running ? fmtDur(Date.now() - j.startedAt) : `exit ${j.code ?? "?"}`}
+                            {j.detached
+                              ? `detached · pid ${j.pid ?? "?"}`
+                              : j.running
+                                ? fmtDur(Date.now() - j.startedAt)
+                                : `exit ${j.code ?? "?"}`}
                             {j.truncated ? " · truncated" : ""}
                           </span>
+                          {/**
+                            * A detached job gets "forget", not "kill".
+                            *
+                            * The harness no longer owns that process — it cannot read the output
+                            * and must not signal a pid it only remembers (pid reuse would kill
+                            * something unrelated). Telling the operator the truth is the point of
+                            * recovering the record at all.
+                            */}
                           <button
                             type="button"
                             class="bgjob-kill"
-                            title={j.running ? "kill this job (whole process group)" : "forget this finished job"}
+                            title={
+                              j.detached
+                                ? `this job survived a harness restart (pid ${j.pid ?? "?"}) — its output can no longer be read here; stop it yourself if needed`
+                                : j.running
+                                  ? "kill this job (whole process group)"
+                                  : "forget this finished job"
+                            }
                             onclick={async () => {
                               await api(`/api/agents/${encodeURIComponent(sel()!.id)}/bg-jobs/${encodeURIComponent(j.id)}`, { method: "DELETE" }).catch(() => {});
                               await refreshBg();
                             }}
-                          >{j.running ? "kill" : "clear"}</button>
+                          >{j.detached ? "forget" : j.running ? "kill" : "clear"}</button>
                         </div>
-                        <Show when={j.tail.trim()}>
+                        {/**
+                          * A detached job has no tail, and an empty box reads as "it printed
+                          * nothing". Say WHY instead — the output went to that process's own
+                          * stdout, which died with the harness.
+                          */}
+                        <Show
+                          when={j.tail.trim()}
+                          fallback={
+                            <Show when={j.detached}>
+                              <div class="muted bgjob-detached">
+                                this job outlived a harness restart, so its output is no longer captured
+                                here. it is still running as pid {j.pid ?? "?"} — read its own log, or
+                                stop it yourself.
+                              </div>
+                            </Show>
+                          }
+                        >
                           <pre class="mono bgjob-tail">{j.tail}</pre>
                         </Show>
                       </div>

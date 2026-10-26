@@ -809,6 +809,8 @@ export class Agent {
       // so a background job records WHICH agent started it: sibling agents share a workspace,
       // and `isLive()` must not count their jobs as this one's work in flight
       agentId: opts.id,
+      // the job RECORD lives beside the session, not in a global dir: it is this agent's history
+      stateDir: opts.sessionDir,
       defaultTimeoutMs: 120_000,
       maxOutputBytes: 60_000,
       skillRoots: this.skillRoots,
