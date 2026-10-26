@@ -2052,7 +2052,26 @@ export class Agent {
           durationMs: Date.now() - t0,
           result: capped,
         });
-        this.messages.push({ role: "tool", tool_call_id: call.id, content: capped });
+        /**
+         * A tool may hand the model an IMAGE (read_file on a picture).
+         *
+         * It rides on the tool message as `content_parts`, which `sanitize()` already knows how to send
+         * to a vision model. The text stays in `content` so the log, the timeline and a non-vision model
+         * all still see something meaningful.
+         */
+        this.messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: capped,
+          ...(result.image
+            ? {
+                content_parts: [
+                  { type: "text" as const, text: capped },
+                  { type: "image_url" as const, image_url: { url: result.image.url } },
+                ],
+              }
+            : {}),
+        });
         this.consecutiveToolErrors = result.ok ? 0 : this.consecutiveToolErrors + 1;
         if (this.consecutiveToolErrors >= this.opts.maxConsecutiveToolErrors) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {

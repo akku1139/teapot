@@ -49,6 +49,14 @@ export interface ToolContext {
 export interface ToolResult {
   ok: boolean;
   result: string;
+  /**
+   * An image the tool wants the MODEL to see, as a data URL.
+   *
+   * `result` stays text — it is what the log and the timeline show. The caller attaches this as a
+   * `content_parts` entry on the tool message, so a vision model actually receives the picture instead
+   * of a description of it.
+   */
+  image?: { url: string; name: string };
 }
 
 export interface ToolDef {
@@ -85,11 +93,22 @@ export async function looksBinary(p: string): Promise<{ binary: boolean; bytes: 
   }
 }
 
+/** the `looksBinary()` kinds that are pictures a vision model can actually receive */
+const IMAGE_MIME: Record<string, string | undefined> = {
+  "PNG image": "image/png",
+  "JPEG image": "image/jpeg",
+  "GIF image": "image/gif",
+  "WEBP image": "image/webp",
+};
+
 function sniff(head: Buffer): string | null {
   const hex = (n: number) => head.subarray(0, n).toString("hex");
   if (hex(8).startsWith("89504e47")) return "PNG image";
   if (hex(3) === "ffd8ff") return "JPEG image";
   if (head.subarray(0, 4).toString("latin1") === "GIF8") return "GIF image";
+  // RIFF....WEBP — the four bytes after "RIFF" are the size, so "WEBP" sits at offset 8
+  if (head.subarray(0, 4).toString("latin1") === "RIFF" && head.subarray(8, 12).toString("latin1") === "WEBP")
+    return "WEBP image";
   if (head.subarray(0, 4).toString("latin1") === "PK\x03\x04") return "zip archive";
   if (hex(4) === "25504446") return "PDF";
   if (hex(4) === "7f454c46") return "ELF binary";
@@ -1171,6 +1190,28 @@ export const TOOLS: ToolDef[] = [
       try {
         const probe = await looksBinary(p);
         if (probe.binary) {
+          /**
+           * An IMAGE is handed to the model as an image; anything else is still refused.
+           *
+           * Refusing images was never a feature — it was the fix for returning raw bytes as mangled
+           * text (`d907af3`). But the operator's point is the asymmetry: a user can attach a picture
+           * and the agent cannot, so the agent is asked to work on files it is not allowed to see.
+           * MEASURED: `read_file` had never been able to return an image at all; the multimodal commit
+           * (`257333a`) was the USER path (composer → `/prompt`), not a tool.
+           */
+          const mime = IMAGE_MIME[probe.kind];
+          if (mime) {
+            const buf = await fs.readFile(p);
+            const name = path.basename(p);
+            return {
+              ok: true,
+              result:
+                `${str(args.path)} is a ${probe.kind} (${probe.bytes} bytes) — the image itself is ` +
+                `attached to this message, so you are looking at it. Describe or reason about it ` +
+                `directly; there is no need to decode bytes.`,
+              image: { url: `data:${mime};base64,${buf.toString("base64")}`, name },
+            };
+          }
           return {
             ok: false,
             result:
