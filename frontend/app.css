@@ -2560,7 +2560,9 @@ html[data-bg-image="on"] .composer form {
  * base64 blob, a minified path) cannot wrap, and letting it scroll on ONE axis is the thing being
  * fixed. The vertical scroll stays, so a long file is still readable.
  */
-.filepreview { max-height: 62vh; overflow-y: auto; overflow-x: hidden; border-radius: var(--radius-lg); }
+/* no radius: it clipped the first/last characters at the edges, and the plain (no-shiki) path has
+   none either — the two must look identical. The vertical scroll stays, so a long file still scrolls. */
+.filepreview { max-height: 62vh; overflow-y: auto; overflow-x: hidden; }
 .filepreview pre,
 .filepreview code {
   white-space: pre-wrap;
@@ -2826,18 +2828,17 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
  */
 .shikiwrap {
   /**
-   * Mixed from the SURFACE IT SITS ON, not from the deepest token.
+   * NO background and NO border-radius.
    *
-   * `.toolbody` mixes `--bg-darkest` on a card that is already `--bg-darkest`, so it reads as a
-   * translucent layer of the same material. A preview lives inside a `--bg-mid` modal, where the same
-   * token is one step DEEPER than its container — MEASURED `#1a1c22` inside `#2b2e39`, i.e. a hole
-   * rather than a layer, which is the other half of "テーマの色に従ってない".
+   * Both were added here and both were wrong. The CONTAINER already paints the right surface — a
+   * `.modal` is `color-mix(--bg-mid-solid … transparent)` with `backdrop-filter: blur(2px)`, and the
+   * operator's point is that a file WITHOUT shiki already looks right because it inherits exactly
+   * that. A wrapper surface made the shiki case a different colour from the plain case in the same
+   * dialog, and its `border-radius` clipped the first/last characters at the edges.
    *
-   * `--bg-darkest` over `--bg-mid` at ~60% lands just below the modal while staying in the theme's
-   * own scale, and because it is a `color-mix` the wallpaper still shows through.
+   * So this class does only what shiki needs: kill shiki's own inline background, and make the
+   * `<pre>/<code>` wrap. Whatever surface it sits on shows through, identical to the no-shiki path.
    */
-  background: color-mix(in srgb, color-mix(in srgb, var(--bg-darkest) 60%, var(--bg-mid)) 88%, transparent);
-  border-radius: var(--radius-lg);
 }
 /* shiki's inline `--shiki-light-bg: #fff` must never be the visible surface: in dual-theme mode the
    LIGHT palette is what the inline style sets, so every dark theme showed a white block. */

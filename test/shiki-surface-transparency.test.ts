@@ -27,12 +27,21 @@ const rule = (sel: string): string =>
     .map((m) => m[2]!)
     .join("\n");
 
-test("the wrapper's surface is translucent and derived from the theme (#shiki)", () => {
+test("the wrapper paints NO surface of its own (#shiki)", () => {
+  /**
+   * The container already paints the right surface, and the operator's observation is the test: a
+   * file WITHOUT shiki looks right because it inherits the modal's own
+   * `color-mix(--bg-mid-solid … transparent)` + `backdrop-filter`. Giving the wrapper its own
+   * background made the shiki case a DIFFERENT colour from the plain case in the same dialog, and
+   * its `border-radius` clipped the first and last characters.
+   *
+   * So the wrapper's job is only the two things shiki needs: kill shiki's inline background, and make
+   * `<pre>/<code>` wrap. Any surface it inherits is the correct one by construction.
+   */
   const body = rule(".shikiwrap");
-  assert.ok(body, ".shikiwrap must exist — every shiki surface uses it");
-  assert.match(body, /background:\s*color-mix\(/, "the surface must be a mix, not a solid token");
-  assert.match(body, /transparent/, "and it must mix toward transparent, or it is opaque again");
-  assert.match(body, /var\(--bg-mid\)/, "mixed against the modal surface, so it is a layer of the SAME material");
+  assert.ok(body !== undefined, ".shikiwrap must exist — every shiki surface uses it");
+  assert.doesNotMatch(body, /background\s*:/, "no surface of its own — the container's must show through");
+  assert.doesNotMatch(body, /border-radius/, "and no radius: it clipped the edge characters");
 });
 
 test("shiki's own background can never win (#shiki)", () => {

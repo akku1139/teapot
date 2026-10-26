@@ -72,9 +72,12 @@ test("the code background is the THEME's surface, never shiki's white (#files)",
    */
   // the surface moved to the shared `.shikiwrap`, so a NEW shiki container is correct by
   // construction rather than by remembering to copy three selector lists
-  const container = rule(".shikiwrap");
-  assert.match(container, /background:\s*color-mix\(/, "the preview must paint a theme surface (#files)");
-  assert.match(container, /transparent/, "and it must be translucent (#files)");
+  /**
+   * The rendered background must MATCH the no-shiki path, which is what "looks right" means here: a
+   * plain file inherits the modal's own surface. So the wrapper paints nothing and only makes
+   * shiki's inline background lose — MEASURED identical (both `rgba(0,0,0,0)`, radius 0) after this.
+   */
+  assert.doesNotMatch(rule(".shikiwrap"), /background\s*:/, "the wrapper must not paint a surface (#files)");
   assert.match(rule(".shikiwrap .shiki"), /background-color:\s*transparent/, "shiki's own background must lose (#files)");
 
   const shikiBg = [...css.matchAll(/([^{}]*\.shikiwrap[^{}]*\.shiki[^{}]*)\{([^}]*)\}/g)]

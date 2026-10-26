@@ -30,61 +30,22 @@ import { expandTilde, homeDir } from "../home.ts";
 import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
 import type { ProviderConfig } from "../master.ts";
-import { providerHeaders } from "../agent/llm.ts";
 import { safeJoin } from "../agent/tools.ts";
+import { fetchModelList, type ModelMeta } from "../model-meta.ts";
 
-interface ModelEntry {
-id: string;
-  contextLength?: number;
-  pricing?: { prompt: number; completion: number };
-  modalities?: { input: string[]; output: string[] };
-}
-
-async function listModels(
-  baseUrl: string,
-  apiKey?: string,
-): Promise<ModelEntry[]> {
-  const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
-    headers: {
-      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-      ...providerHeaders(baseUrl), 
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`upstream ${res.status}`);
-    const j = (await res.json()) as {
-      data?: {
-        id?: string;
-        context_length?: number;
-        pricing?: { prompt?: string | number; completion?: string | number };
-        architecture?: {
-          modality?: string;
-          input_modalities?: string[];
-          output_modalities?: string[];
-        };
-      }[];
-    };
-    return (j.data ?? [])
-    .map((m) => ({
-      id: typeof m.id === "string" ? m.id : "",
-      contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
-      pricing:
-        m.pricing && (m.pricing.prompt !== undefined || m.pricing.completion !== undefined)
-          ? {
-              prompt: Number(m.pricing.prompt ?? 0),
-              completion: Number(m.pricing.completion ?? 0),
-            }
-          : undefined,
-      modalities:
-        Array.isArray(m.architecture?.input_modalities) && m.architecture!.input_modalities!.length
-          ? {
-              input: m.architecture!.input_modalities!,
-              output: m.architecture!.output_modalities ?? ["text"],
-            }
-          : undefined,
-    }))
-    .filter((m) => m.id)
-    .sort((a, b) => a.id.localeCompare(b.id));
+/**
+ * The model list the UI's picker shows, from models.dev.
+ *
+ * This used to be a SECOND parser that hit the provider's own `/models` and read OpenRouter's
+ * `architecture` field — so it reported no capabilities for every other provider. MEASURED:
+ * `deepseek/deepseek-v4.1-flash` on Command Code resolved correctly through `model-meta.ts` (input
+ * text+image) while this route returned `modalities: undefined`, because Command Code publishes no
+ * `architecture` at all. Two parsers for the same fact is exactly what the operator called "無駄で
+ * バグの元"; `model-meta.ts` is now the single source.
+ */
+async function listModels(baseUrl: string, apiKey?: string): Promise<ModelMeta[]> {
+  const list = await fetchModelList(baseUrl, apiKey);
+  return [...list].sort((a, b) => a.id.localeCompare(b.id));
 }
 import path from "node:path";
 import { bus } from "../bus.ts";
