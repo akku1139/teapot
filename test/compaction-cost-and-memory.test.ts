@@ -1,3 +1,24 @@
+/**
+ * Compaction cost and memory behaviour, after a survey of how other harnesses do it.
+ *
+ * MEASURED first, on this repo's own compaction call: the main loop sends
+ * `[system(coding agent), ...messages]` while the summarizer sends
+ * `[system(compressor), user(flat transcript)]`. The FIRST message differs, so no
+ * cacheable prefix is shared and the entire history is re-prefilled and re-billed
+ * at the summarizer's own full size.
+ *
+ * Every implementation surveyed (Pi, Codex, opencode, Kilo, Aider) engineers around
+ * that fact rather than trying to share the prefix:
+ *
+ *   - Pi: `cacheRetention: "none"` — "summarization requests disable prompt-cache
+ *     writes because these one-off prompts are unlikely to be reused"
+ *   - Codex: trims "from the beginning to preserve cache (prefix-based)"
+ *   - opencode/Kilo/Pi: UPDATE the previous summary instead of re-deriving it
+ *   - opencode: `SHRINK_STEPS [0.7, 0.5, 0.35]` on repeated overflow
+ *   - all: never cut inside a tool-call/result pair
+ *
+ * These tests pin what teapot now does about each.
+ */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -12,7 +33,11 @@ import { rm } from "node:fs/promises";
 const OR: LlmConfig = { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", model: "m" };
 const OTHER: LlmConfig = { baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m" };
 
+/* ---------- 1. cache control on the one-off call ---------- */
+
 test("a one-off summarize call asks the endpoint not to retain the prompt", () => {
+  // the saving is real: a cache WRITE premium paid for a prompt that is never read
+  // back is pure loss
   assert.deepEqual(cacheControlForRequest({ ...OR, oneOff: true }), { prompt_cache_retention: "24h" });
 });
 
@@ -21,8 +46,12 @@ test("the main loop does NOT carry the directive — its prefix IS reused", () =
 });
 
 test("a provider that was not verified to accept the field gets NOTHING", () => {
+  // sending an unknown body field is a 400 on strict OpenAI-compatible endpoints,
+  // and "send nothing" is exactly the previous behaviour, so this can only help
   assert.deepEqual(cacheControlForRequest({ ...OTHER, oneOff: true }), {});
 });
+
+/* ---------- 2. the summarize call is skipped when it is not worth it ---------- */
 
 const tc = (id: string, name: string, args: unknown) => ({
   id,
@@ -30,12 +59,20 @@ const tc = (id: string, name: string, args: unknown) => ({
   function: { name, arguments: JSON.stringify(args) },
 });
 
+/**
+ * Every workspace/session dir this file created, removed once the file's tests finish.
+ *
+ * `after` rather than per-test `finally` because the helper is shared by six tests and threading
+ * the paths back through each of them adds noise for no benefit — the file's lifetime is the
+ * right scope for cleanup.
+ */
 const madeDirs: string[] = [];
 after(async () => {
   for (const d of madeDirs) await rm(d, { recursive: true, force: true }).catch(() => {});
   madeDirs.length = 0;
 });
 
+/** an agent whose chatFn answers, and records whether the summarizer was called */
 async function compactingAgent(opts: {
   budget: number;
   rounds: number;
@@ -50,6 +87,7 @@ async function compactingAgent(opts: {
       summaries++;
       return { message: { role: "assistant", content: "- distilled notes" } };
     }
+    // every turn issues a large tool call, so the history grows on both sides
     return {
       message: {
         role: "assistant",
@@ -73,6 +111,14 @@ async function compactingAgent(opts: {
     agent.start("t");
     await agent.settled();
   }
+  /**
+   * Register the directories for removal when this test file finishes.
+   *
+   * MEASURED: this helper writes ~1000 files per invocation and its six tests each called it,
+   * leaving 40 directories of ~6.4MB in `/tmp/teapot-tests` — 195MB, the single largest source
+   * of litter. `dispose()` closes the log; it does not delete the workspace, and nothing else
+   * did either.
+   */
   madeDirs.push(ws, sd);
   return { agent, summaries: () => summaries };
 }
@@ -107,6 +153,8 @@ test("the cost decision is RECORDED, so it is auditable rather than invisible", 
   }
 });
 
+/* ---------- 3. update mode: notes are carried forward ---------- */
+
 test("a SECOND compaction UPDATES the previous notes instead of starting over", async () => {
   const { agent } = await compactingAgent({ budget: 8000, rounds: 8, promptChars: 12_000 });
   try {
@@ -126,6 +174,9 @@ test("a SECOND compaction UPDATES the previous notes instead of starting over", 
 });
 
 test("the previous notes are in the summarizer's INPUT, not just its instructions", async () => {
+  // opencode/Kilo/Pi all pass the prior summary as input. If only the prompt said
+  // "update the notes" without including them, the model would have nothing to
+  // update and the section would silently become a fresh summary.
   const ws = mkdtempInRootSync("cu-");
   const sd = mkdtempInRootSync("cus-");
   madeDirs.push(ws, sd);
@@ -134,6 +185,8 @@ test("the previous notes are in the summarizer's INPUT, not just its instruction
   const chatFn = async (_c: unknown, messages: unknown): Promise<LlmResult> => {
     const msgs = messages as { role: string; content?: string }[];
     if (isSummarizerRequest(msgs)) {
+      // the prior notes ride in the TRAILING message now, framed as a checkpoint —
+      // the request prefix is the conversation's own, so there is no other slot
       const user = String(msgs[msgs.length - 1]?.content ?? "");
       if (user.includes("<conversation_checkpoint>") && user.includes("NOTES-")) sawPriorNotes = true;
       return { message: { role: "assistant", content: `- NOTES-${n++}` } };
@@ -168,7 +221,11 @@ test("the previous notes are in the summarizer's INPUT, not just its instruction
   }
 });
 
+/* ---------- 4. truncation is no longer SILENT ---------- */
+
 test("dropping history tells the model, so a gap is not mistaken for a fact", async () => {
+  // The sharpest failure of a silent cut: the model sees a conversation starting
+  // mid-way and cannot tell "I forgot" from "this never happened".
   const ws = mkdtempInRootSync("ct-");
   const sd = mkdtempInRootSync("cts-");
   madeDirs.push(ws, sd);
@@ -209,6 +266,8 @@ test("dropping history tells the model, so a gap is not mistaken for a fact", as
     await agent.dispose();
   }
 });
+
+/* ---------- 5. the tool-pairing invariant survives every path ---------- */
 
 test("no compaction path leaves a dangling tool result (provider 400)", async () => {
   const { agent } = await compactingAgent({ budget: 8000, rounds: 8, promptChars: 12_000 });

@@ -3,6 +3,18 @@ import assert from "node:assert/strict";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import { executeTool, listBgShells, killBgShell } from "../src/agent/tools.ts";
 
+/**
+ * The operator can SEE and STOP the background shells an agent left running.
+ *
+ * Requested as "ユーザーからheadless bashの一覧、現在の(ライブ?)出力、コントロールとかできると良いね".
+ * The registry already held everything needed (`out`, `exited`, `owner`) — it simply had no read
+ * path, so a job started with `background=true` was visible only to the model through
+ * `bash_output`.
+ *
+ * Driven through the REAL tool call and then the same functions the UI route uses, because the
+ * property that matters is that the two agree: a list the route can serve but the tool never fills
+ * would look right and be empty.
+ */
 const ctxFor = (ws: string) => ({ cwd: ws, signal: undefined, maxOutputBytes: 1_000_000 }) as never;
 
 test("a started job is listed with its command, owner and LIVE tail (#bgjobs)", async () => {
@@ -10,6 +22,7 @@ test("a started job is listed with its command, owner and LIVE tail (#bgjobs)", 
   const r = await executeTool("bash", JSON.stringify({ command: "echo hello-from-bg; sleep 30", background: true }), ctxFor(ws));
   assert.ok(String(r.result).includes("started in background"), String(r.result));
 
+  // the shell needs a moment to flush its first line
   await new Promise((res) => setTimeout(res, 800));
 
   const jobs = listBgShells(ws);
@@ -32,10 +45,15 @@ test("killing removes it, and an unknown id is not an error (#bgjobs)", async ()
   assert.equal(killBgShell(ws, job!.id), true, "kill reports that it existed");
   assert.equal(listBgShells(ws).length, 0, "and the job is gone from the list");
 
+  // the button sends whatever id the row had; a stale one must not 500
   assert.equal(killBgShell(ws, "no-such-job"), false, "an unknown id reports false, not a throw");
 });
 
 test("a job that has finished stays listed with its exit code (#bgjobs)", async () => {
+  /**
+   * A finished job is the interesting one — you look BECAUSE it ended. Dropping it from the list the
+   * moment it exits would leave the operator with a notification and nothing to inspect.
+   */
   const ws = mkdtempInRootSync("bgjobs-done-");
   await executeTool("bash", JSON.stringify({ command: "echo done-now; exit 3", background: true }), ctxFor(ws));
   await new Promise((res) => setTimeout(res, 900));

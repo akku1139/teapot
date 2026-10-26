@@ -1,9 +1,37 @@
+/**
+ * #59 — "can't stop a session when a goal is active?"
+ *
+ * The ⏯ control is one button that reads either "▶ start" or "■ stop", and it
+ * chose between them with a single field:
+ *
+ *     sel()!.status === "running"
+ *
+ * That is not a safe proxy for "is there work in flight". `status` reports what
+ * the operator should SEE, and a long-parking tool deliberately makes that
+ * "idle" so a multi-minute `wait_children` is not a running spinner:
+ *
+ *     parkForTool() { ... this.status = "idle"; ... }   // loop still alive
+ *
+ * So an agent parked in `wait_children` — which is exactly what happens once it
+ * has spawned sub-agents and is waiting on them, i.e. with a goal in flight —
+ * offered **start** rather than stop. The user pressed stop and the agent
+ * started. Pressing it again called `/start` again. There was no stop button.
+ *
+ * The same wrong field drove the Escape interrupt, so Esc did nothing on a
+ * working agent either, and the tab title's ▶ indicator went missing.
+ *
+ * The client cannot derive this: `parkedByTool` was never sent. The server
+ * knows, so the server now says (`Agent.live`) and the UI trusts that.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { readSourceUrl } from "./helpers/source.ts";
 import { Agent } from "../src/agent/agent.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
+
+// via readSourceUrl so line endings are NORMALISED — these anchor on "\n", which a
+// raw readFileSync leaves as CRLF on Windows (#126)
 
 const reply = (content: string, calls?: any[]): LlmResult => ({
   message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
@@ -20,14 +48,20 @@ function mkAgent(ws: string, sessionDir: string, chatFn: any): Agent {
   } as any);
 }
 
+/* ---------- the rule ---------- */
+
 test("a parked agent is LIVE even though its status reads idle (#59)", async () => {
   await useTempDirs(["p59a-", "p59b-"], async ([ws, sessionDir]) => {
+    // wait_children parks the agent inside the tool: status goes "idle" while
+    // the loop is very much alive, which is the state the report describes.
     let release: (() => void) | undefined;
     const gate = new Promise<void>((r) => (release = r));
     let parkedSeen = false;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       if (!parkedSeen) {
         parkedSeen = true;
+        // wait_children with no ids parks until woken; poll until the agent has
+        // actually flipped to idle, then observe
         for (let i = 0; i < 200 && (agent as any).status !== "idle"; i++) {
           await new Promise((r) => setTimeout(r, 5));
         }
@@ -41,6 +75,8 @@ test("a parked agent is LIVE even though its status reads idle (#59)", async () 
           true,
           "precondition: the agent is parked in a tool, not finished (#59)",
         );
+        // THE BUG: status says idle, so the UI offered "start" and the user
+        // could not stop it
         assert.equal(
           (agent as any).isLive(),
           true,
@@ -63,6 +99,8 @@ test("a parked agent is LIVE even though its status reads idle (#59)", async () 
 });
 
 test("queued prompts make a STOPPED agent live (#59)", async () => {
+  // A stopped agent accepts prompts and holds them. A later start() consumes
+  // them, so there is pending work and the user must be able to withdraw it.
   await useTempDirs(["p59c-", "p59d-"], async ([ws, sessionDir]) => {
     const agent = mkAgent(ws!, sessionDir!, async () => reply("ok"));
     await agent.init();
@@ -75,6 +113,19 @@ test("queued prompts make a STOPPED agent live (#59)", async () => {
       1,
       "the prompt is held, not delivered (#59)",
     );
+    // #133: this asserted `true`, on the reasoning that held prompts are "pending
+    // work — the user must be able to stop/clear". But `live` drives ONE control:
+    //
+    //     onclick={isSelLive() ? act("/stop") : act("/start")}   (the composer's
+    //     control button)
+    //
+    // and a STOPPED agent pressing "stop" is a no-op that leaves the button showing
+    // stop forever. So the reasoning does not hold: it made the single toggle
+    // unusable, and #59's actual requirement — that the prompt be WITHDRAWABLE —
+    // is met independently, by the ✕ on the row itself, which posts to
+    // /api/agents/:id/prompt/cancel and never consults `isSelLive`.
+    //
+    // `pendingPrompts.length` is still asserted above, so the prompt is still held.
     assert.equal(
       agent.isLive(),
       false,
@@ -110,4 +161,6 @@ test("the snapshot ships `live` so the client can decide (#59)", async () => {
     await agent.dispose();
   });
 });
+
+/* ---------- wiring: the UI must trust the server ---------- */
 

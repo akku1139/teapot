@@ -1,3 +1,22 @@
+/**
+ * #86 — "stopped via api, then pressing ▶ start in the controls does nothing."
+ *
+ * A regression from #76, which made `stop(); start()` stop being silently lost.
+ * That fix let the restart proceed, but the stop's status write is DEFERRED onto
+ * the run chain, so it landed *after* the start's:
+ *
+ *     idle -> running -> running -> idle -> stopped -> running -> running -> idle
+ *
+ * The agent did resume — but it flashed "stopped" on the way and finished `idle`
+ * rather than `running`, so from the UI the operator's press looked like a no-op.
+ *
+ * `start()` clears `stopRequested` synchronously, which is what makes this
+ * detectable: by the time the stop's queued task runs, a start has already
+ * claimed the agent.
+ *
+ * Fixed with a monotonic sequence number. A start bumps it, so a stop write that
+ * has been overtaken loses.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -13,6 +32,7 @@ const mk = (ws: string, sd: string, chatFn: unknown) =>
     autoContinue: false,
   } as any);
 
+/** record every status transition the agent publishes */
 function traceStates(a: Agent): string[] {
   const seen: string[] = [];
   (a as any).log.onEvent = (e: { type: string; data?: { to?: unknown } }) => {
@@ -42,6 +62,7 @@ test("a start after a stop does not flash 'stopped' (#86)", async () => {
     agent.enqueuePrompt("go", "user");
     agent.start("t");
     await new Promise((r) => setTimeout(r, 40));
+    // exactly the reported sequence: stop, then immediately press start
     agent.stop("stopped via api");
     agent.start("controls start");
     release();
@@ -58,6 +79,9 @@ test("a start after a stop does not flash 'stopped' (#86)", async () => {
 });
 
 test("a genuine stop still reports 'stopped' (#86)", async () => {
+  // The regression this fix could have caused: a stop issued while the agent is
+  // really running must still land. The first version of the fix guarded on
+  // `status === "running"` and broke exactly this.
   await useTempDirs(["s86c-", "s86d-"], async ([ws, sd]) => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => {

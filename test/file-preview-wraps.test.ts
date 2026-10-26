@@ -2,7 +2,26 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+/**
+ * A file preview WRAPS; it never scrolls sideways.
+ *
+ * Reported as "右パネルfilesからファイルウィンドウの中が横スクロールする / 折り返しにしたほうがいい".
+ * `happy-dom` does no layout, so the contract has to be stated as CSS — that is the one legitimate
+ * stylesheet read in this repo. What is asserted is the set of declarations that TOGETHER stop the
+ * scroll, because each one alone was measurably insufficient:
+ *
+ *   - `overflow-x: hidden` on the container stops the container scrolling;
+ *   - `white-space: pre-wrap` on shiki's own `<pre>` is needed because shiki ships `pre`;
+ *   - `display: block` + `min-width: 0` on `<code>` is what actually fixed it — MEASURED, the
+ *     code element reported `clientWidth: 0` / `scrollWidth: 157` while BOTH ancestors were
+ *     already at 0, because an inline element inside a wrapping `<pre>` has no box to wrap in.
+ *
+ * The last point is the one worth remembering: a stylesheet can look correct (the computed
+ * `white-space` on `<code>` really was `pre-wrap`) and still scroll, because the missing piece was a
+ * DISPLAY mode, not a wrap mode.
+ */
 const css = readFileSync("frontend/app.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+/** the body of a rule whose SELECTOR LIST contains `selector` (these rules are grouped) */
 const rule = (selector: string): string => {
   const bodies: string[] = [];
   for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
@@ -20,6 +39,10 @@ test("the preview container does not scroll horizontally (#files)", () => {
 });
 
 test("shiki's own pre and code are told to wrap (#files)", () => {
+  /**
+   * shiki emits `<pre class="shiki">` with `white-space: pre` of its own, so a rule on the wrapper
+   * does not reach it. The selector must NAME the inner elements.
+   */
   const wrapped = [".filepreview .shiki pre", ".filepreview .shiki code"];
   for (const sel of wrapped) {
     const body = rule(sel);
@@ -35,6 +58,18 @@ test("the code element is a BLOCK with min-width 0 — the reason it scrolled (#
 });
 
 test("the code background is the THEME's surface, never shiki's white (#files)", () => {
+  /**
+   * Reported as "ファイルツリーからのコードプレビューでshikiが効いてると背景が真っ白".
+   *
+   * shiki runs in dual-theme mode (`shiki-themes github-light github-dark`), so its inline style
+   * sets `--shiki-light-bg: #fff` on the `<pre>`. Only the LIGHT appearance had an explicit
+   * override, so every DARK theme fell through to that white — a preview that blinded the operator
+   * in a dark UI. A tool card never had the bug because `.toolbody` paints its own surface
+   * underneath; the preview had none.
+   *
+   * The contract: the container carries the theme surface and shiki's own background is transparent,
+   * for EVERY appearance rather than only one.
+   */
   const container = rule(".filepreview");
   assert.match(container, /background:\s*var\(--bg/, "the preview must paint a theme surface (#files)");
 

@@ -1,3 +1,16 @@
+/**
+ * PUT /api/config が schema を通ったフィールドを捨てている。
+ *
+ * ConfigPatchSchema は contextWindowTokens / maxTurnsPerRound / onError /
+ * retryDelayMs を「有効」と判定して 200 を返すが、route は updateConfig に
+ * それらを渡していない（updateConfig の型に contextWindowTokens 自体がない）。
+ * 「保存しました」の後も GET /api/config は旧値 — 設定画面の context window
+ * は永遠に反映されない。
+ *
+ * Required: PUT で入れた 4 フィールドが master.config と GET /api/config に
+ * 反映され、config ファイルに persist されること。null で contextWindowTokens
+ * を解除できること（contextTokenBudget と同じ契約）。
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
@@ -39,15 +52,18 @@ test("PUT /api/config persists the fields it validates (context window, rounds, 
     });
     assert.equal(put.status, 200, `PUT must succeed: ${JSON.stringify(put.json)}`);
 
+    // the running config actually changed
     const cfg = m.config as unknown as Record<string, unknown>;
     assert.equal(cfg.contextWindowTokens, 200_000, "contextWindowTokens must reach the config (was dropped)");
     assert.equal(cfg.maxTurnsPerRound, 7, "maxTurnsPerRound must reach the config (was dropped by the route)");
     assert.equal(cfg.onError, "retry", "onError must reach the config (was dropped by the route)");
     assert.equal(cfg.retryDelayMs, 2_000, "retryDelayMs must reach the config (was dropped by the route)");
 
+    // and the GET the settings modal re-reads shows them
     const get = await call(port, "GET", "/api/config");
     assert.equal(get.json.contextWindowTokens, 200_000, "GET must show the saved window");
 
+    // and the file was persisted
     const raw = JSON.parse(readFileSync(`${dataDir}/config.json`, "utf8"));
     assert.equal(raw.contextWindowTokens, 200_000, "the value survives a restart");
   } finally {
@@ -75,6 +91,15 @@ test("contextWindowTokens: null clears the pin (same contract as contextTokenBud
 });
 
 test("PUT /api/config persists the whole apiKeys pool, not just the first key (#170)", async () => {
+  /**
+   * Same class as the four fields above: the schema VALIDATED `apiKeys`, answered 200, and the
+   * route built a provider with `apiKey` only — so every key after the first was discarded on
+   * save. The operator could register three credentials for rotation (the UI has + add key, and
+   * says the pool fails over), watch it accept them, and the config kept one.
+   *
+   * GET was complicit: it masked only `apiKey`, so the settings dialog was handed a single masked
+   * key and no pool at all — it could not even show what it was editing.
+   */
   const dataDir = mkdtempInRootSync("cfg-keys-");
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   const app = buildApp(m);
@@ -96,6 +121,7 @@ test("PUT /api/config persists the whole apiKeys pool, not just the first key (#
     );
     assert.equal(raw.providers.probe.apiKey, "key-AAA", "the legacy field stays in step with [0]");
 
+    // GET must hand the dialog EVERY key, masked — otherwise it cannot render the pool
     const get = await call(port, "GET", "/api/config");
     const shown = get.json.providers.probe;
     assert.equal(shown.apiKeys?.length, 3, "GET must return the pool it is asking the UI to edit (#170)");
@@ -108,6 +134,7 @@ test("PUT /api/config persists the whole apiKeys pool, not just the first key (#
       assert.ok(k.endsWith(pool[i].slice(-3)), `key ${i} must still identify WHICH stored key it is`);
     }
 
+    // saving that masked view back UNCHANGED must keep the real values
     await call(port, "PUT", "/api/config", {
       providers: { probe: { baseUrl: shown.baseUrl, apiKey: shown.apiKey, apiKeys: shown.apiKeys, model: shown.model } },
     });
@@ -117,6 +144,7 @@ test("PUT /api/config persists the whole apiKeys pool, not just the first key (#
       "an untouched masked pool means 'the stored values' — a round trip must not corrupt them (#170)",
     );
 
+    // …and replacing only the SECOND entry must not disturb the others
     const edited = [...shown.apiKeys];
     edited[1] = "key-NEW";
     await call(port, "PUT", "/api/config", {

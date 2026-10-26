@@ -1,3 +1,19 @@
+/**
+ * #31 — "Skill Discovery: right now the AI has a hard time finding skills."
+ *
+ * The system prompt named the skill TOOLS (`list_skills()` / `load_skill()`)
+ * but never the skills themselves. AGENTS.md and the workspace listing were
+ * injected; the catalogue was not. So the only way to discover a skill was to
+ * spend a tool call on list_skills() — and a model that does not know a skill
+ * exists has no reason to look.
+ *
+ * The catalogue is injected ONCE, alongside AGENTS.md and the workspace
+ * snapshot, because SYSTEM_TEMPLATE must stay byte-identical per session or the
+ * provider prefix cache is re-priced on every turn (#14's constraint). That is
+ * a real trade: a skill saved mid-session does not appear until the next
+ * session — but list_skills() still reports it, and re-rendering the prompt
+ * each turn would cost far more than it is worth.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -8,6 +24,7 @@ import type { LlmResult } from "../src/agent/llm.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" } as any;
 
+/** write a workspace skill and return its root */
 function seedSkill(ws: string, name: string, description: string) {
   const dir = path.join(ws, "skills", name);
   mkdirSync(dir, { recursive: true });
@@ -18,6 +35,7 @@ function seedSkill(ws: string, name: string, description: string) {
   return { dir: path.join(ws, "skills"), source: "workspace" as const };
 }
 
+/** run N turns, returning the system prompt of each */
 async function promptsOverTurns(
   ws: string,
   sessionDir: string,
@@ -52,6 +70,7 @@ test("available skills are listed in the system prompt (#31)", async () => {
   await useTempDirs(["sk31a-", "sk31b-", "sk31c-"], async ([_d, ws, sd]) => {
     const roots = [seedSkill(ws, "db-migration", "Safely migrate a Postgres schema.")];
     const [first] = await promptsOverTurns(ws, sd, roots, 1);
+    // the point of the issue: the model can SEE the skill without a tool call
     assert.match(first!, /## Skills available in this workspace/, "no catalogue in the prompt (#31)");
     assert.ok(first!.includes("db-migration"), "the skill name must be listed (#31)");
     assert.ok(
@@ -85,6 +104,9 @@ test("no catalogue block when there are no skills (#31)", async () => {
 });
 
 test("the system prompt stays byte-identical across turns (#31, prefix cache)", async () => {
+  // SYSTEM_TEMPLATE must not change per request or the provider prefix cache
+  // is re-priced every turn (#14). The catalogue is injected once for exactly
+  // this reason.
   await useTempDirs(["sk31j-", "sk31k-", "sk31l-"], async ([_d, ws, sd]) => {
     const roots = [seedSkill(ws, "s1", "does a thing")];
     const prompts = await promptsOverTurns(ws, sd, roots, 3);
@@ -100,6 +122,9 @@ test("the system prompt stays byte-identical across turns (#31, prefix cache)", 
 });
 
 test("a skill created mid-session does not mutate the frozen prompt (#31)", async () => {
+  // the deliberate trade: list_skills() reports the new skill, the frozen
+  // system prompt does not change. This pins that so a future "improvement"
+  // that injects per-turn does not silently re-price every request.
   await useTempDirs(["sk31m-", "sk31n-", "sk31o-"], async ([_d, ws, sd]) => {
     const roots = [seedSkill(ws, "s1", "does a thing")];
     const seen: string[] = [];

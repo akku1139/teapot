@@ -1,3 +1,25 @@
+/**
+ * #109 — does the model's view of a tool result change across a restart?
+ *
+ * The claim: the log stores `result.result.slice(0, 8000)` while the live
+ * `messages` array keeps the FULL text, and since a restore rebuilds `messages`
+ * from the log, a resumed model sees a shorter result than it had live
+ * (reported: 40012 bytes before, 8000 after).
+ *
+ * That is plausible from reading the two lines, so it needs a measurement rather
+ * than an argument — and the measurement so far says the opposite. Two things
+ * confound a naive fixture:
+ *
+ *   1. `maybePrune()` clips tool output IN PLACE once the session passes ~60% of
+ *      its token budget, and it runs on every turn. A scripted model that keeps
+ *      calling tools grows the context quickly, so the "live" value read after the
+ *      run is already pruned — and the restart then looks like it ADDED content.
+ *   2. bash output is itself capped (60 KB), so a fixture must actually exceed
+ *      8000 bytes to exercise the clip at all.
+ *
+ * So this test pins the pair of views in ONE turn, before any pruning can happen,
+ * and separately checks that pruning is the thing that shrinks a result later.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -5,10 +27,12 @@ import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
+// #110: POSIX-only — drives the bash tool, which still spawns /bin/bash (#110 item 2).
 markPosixOnly("drives the bash tool, which still spawns /bin/bash (#110 item 2)");
 
 const LOG_RESULT_CAP = 8000;
 
+/** one tool call producing >8 KB, then finish — exactly one turn of real work */
 function bigThenFinish() {
   let n = 0;
   return async () => {

@@ -1,9 +1,21 @@
+/**
+ * #150 — choosing a reasoning level must never COST a turn.
+ *
+ * The design decision, and why it is tested end to end rather than by predicate:
+ * the endpoints that need this control publish no capability list (measured:
+ * commandcode and google return only id/name/context_length), so the field is sent
+ * optimistically and dropped with ONE retry if the endpoint refuses it. The
+ * predicate tests live in reasoning-effort-providers.test.ts; this file drives the
+ * real `chat()` against a stub endpoint, because "the retry recovers" is a claim
+ * about the request path, not about a regex.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { chat, type LlmConfig } from "../src/agent/llm.ts";
 
+/** a stub OpenAI-compatible endpoint; records every body it receives */
 async function stub(reply: (body: Record<string, unknown>, n: number) => { status: number; json: unknown }) {
   const seen: Record<string, unknown>[] = [];
   const server: Server = createServer((req, res) => {
@@ -31,6 +43,7 @@ const OK = {
   usage: { prompt_tokens: 1, completion_tokens: 1 },
 };
 
+/** the verbatim refusal from the live Google endpoint */
 const GOOGLE_REFUSAL = {
   error: {
     code: 400,
@@ -78,6 +91,9 @@ test("an endpoint that ACCEPTS the field is not retried (no wasted call)", async
 });
 
 test("an UNRELATED 400 is surfaced, not masked by a needless retry (#150)", async () => {
+  // the failure mode of a sloppy matcher: a real error (bad key, bad model) gets
+  // retried without the field, the operator's choice vanishes, and the message
+  // they see is about the retry rather than the actual problem
   const s = await stub(() => ({ status: 400, json: { error: { message: "invalid api key" } } }));
   try {
     await assert.rejects(

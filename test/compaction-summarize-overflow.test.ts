@@ -1,3 +1,19 @@
+/**
+ * The summarizer request must SHRINK when it is itself too large.
+ *
+ * Replaying the conversation prefix (rather than a flattened transcript) is what makes
+ * the auxiliary call reuse the provider's KV cache — but it also means there is no
+ * 120k-character truncation keeping the input bounded any more. The replayed region is
+ * normally the head of a request that already succeeded, so it fits; it does not ALWAYS,
+ * because the cut can land such that the shadowed region is nearly the whole history,
+ * and because after a real overflow the conversation was over its window to begin with.
+ *
+ * So the request shrinks and retries, shedding LEADING messages — which keeps it a
+ * cacheable prefix of the routed request — a bounded number of times, exactly as ZCode
+ * does with its `prompt-too-long` retry count. This file is separate from
+ * compaction-liveness.test.ts because it drives a deliberately over-budget history with
+ * auto-compaction off, which is a different fixture from the liveness assertions.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -6,6 +22,17 @@ import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 test("a summarizer request that is TOO LARGE shrinks and retries (#127, #150)", async () => {
+  // The replayed prefix is normally the head of a request that already succeeded, so
+  // it fits. It does NOT always: the cut can land such that the shadowed region is
+  // nearly the whole history, and after a real overflow the conversation was over its
+  // window to begin with. There is no truncation to save it any more, so the request
+  // must SHRINK.
+  //
+  // The shrink sends FEWER LEADING messages, so it stays a cacheable prefix of the
+  // routed request. The mock rejects anything over `LIMIT` — how a real provider
+  // behaves — and `autoCompact: false` lets the history grow past it first, since
+  // leaving auto-compaction on keeps trimming the history below the limit and the
+  // condition would never arise.
   const ws = mkdtempInRootSync("t127x-");
   const sd = mkdtempInRootSync("t127y-");
   const LIMIT = 60_000;
@@ -29,6 +56,10 @@ test("a summarizer request that is TOO LARGE shrinks and retries (#127, #150)", 
         }
         return { message: { role: "assistant" as const, content: "S" } };
       }
+      // alternate: a tool call, then a plain reply, so each round ends after two
+      // turns. A mock that ALWAYS issues a tool call runs to maxTurnsPerRound (200)
+      // every round, and with `autoCompact: false` the history never shrinks — the
+      // test then takes minutes instead of seconds.
       n++;
       if (n % 2 === 0) return { message: { role: "assistant" as const, content: "done" } };
       return {
@@ -46,7 +77,7 @@ test("a summarizer request that is TOO LARGE shrinks and retries (#127, #150)", 
       };
     },
     autoContinue: false,
-    autoCompact: false, 
+    autoCompact: false, // let the history grow past LIMIT first
     contextTokenBudget: 4000,
   } as never) as Agent;
   await a.init();

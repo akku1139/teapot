@@ -1,9 +1,28 @@
+/**
+ * #89 — "finish() → notifies parent → audit reject. The parent should not be
+ * notified of the finish until the audit is complete."
+ *
+ * A goal with a `verify` contract goes through an INDEPENDENT completion audit:
+ * a tools-less LLM call that checks the contract against the conversation and
+ * the worker's summary. `CHANGES-REQUIRED` reopens the goal and queues the
+ * auditor's feedback as the next prompt.
+ *
+ * The bug: the rejection branch queued that retry and then **fell through** to
+ * the `log.append("message", { final: true })` below. That `final` flag is
+ * precisely what `onChildEvent` forwards to the parent — so a REJECTED
+ * completion told the parent the work was DONE, and the child then sat there
+ * retrying against a parent that had already moved on and stopped listening.
+ *
+ * Reproduced before the fix: goal `active`, one retry queued, and **two**
+ * `final: true` messages emitted.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 
+/** drive one child through: work → finish(goalComplete) → audit */
 async function run(
   ws: string,
   sd: string,
@@ -72,6 +91,8 @@ test("a REJECTED audit notifies nobody (#89)", async () => {
 });
 
 test("an APPROVED audit still notifies the parent (#89)", async () => {
+  // the regression this fix could have caused: a legitimate finish must still
+  // reach the parent, or no sub-agent would ever report
   await useTempDirs(["fa3-", "fa4-"], async ([ws, sd]) => {
     const r = await run(ws!, sd!, "APPROVED: everything checks out");
     assert.equal(r.status, "done", "an approved audit completes the goal (#89)");
@@ -80,6 +101,7 @@ test("an APPROVED audit still notifies the parent (#89)", async () => {
 });
 
 test("the rejection is still recorded for the operator (#89)", async () => {
+  // returning early must not swallow the audit trail
   await useTempDirs(["fa5-", "fa6-"], async ([ws, sd]) => {
     let call = 0;
     const agent = new Agent({

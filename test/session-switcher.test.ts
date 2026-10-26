@@ -1,7 +1,32 @@
+/**
+ * #58 / #141 — which session's timeline opens for an agent.
+ *
+ * ## Why this file was rewritten rather than deleted
+ *
+ * It previously defined its OWN `resolveSession` and asserted against that copy —
+ * three tests covering ZERO shipped code. The mutation that would have proved it
+ * is the simplest one there is: delete the logic from `App.tsx` entirely and the
+ * file stays green.
+ *
+ * So the logic is now `resolveTimelineSession()` in `frontend/session-index.ts`:
+ * pure in its three inputs, exported, and imported by `App.tsx`. These tests
+ * import it, so a change to the real behaviour fails here.
+ *
+ * ## The rules
+ *
+ *   1. an EXPLICIT request wins — but only if this agent owns it
+ *   2. otherwise the bound session, if the agent still owns it
+ *   3. otherwise the newest session it owns
+ *   4. no sessions at all → null
+ *
+ * Rule 1's second half is a security property, not a convenience: a crafted URL
+ * must not open another agent's timeline.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveTimelineSession } from "../frontend/lib/session-index.ts";
 
+// newest first, as /api/agents/:id/sessions returns them
 const SESSIONS = ["alpha-s2", "alpha-s1"];
 
 test("an explicitly requested session is honoured (#58)", () => {
@@ -38,6 +63,13 @@ test("a request for a session the agent does NOT own is refused (#58)", () => {
 });
 
 test("a bound session before the index lands is trusted; truly nothing is null (#58, #146)", () => {
+  // #146: with NO ownership data (the index scan has not landed for a
+  // brand-new agent), the bound session is the one the agent is attached to —
+  // the alternative is returning null, which falls timelineId back to the
+  // AGENT id, and a timeline handle that is an agent id drops every WS event
+  // (a session id never equals an agent id). This reversed the v0.28.1
+  // expectation and the three old assertions sat failing on upstream main;
+  // the ownership-index-present + stale-bound cases still fall to the newest.
   assert.equal(
     resolveTimelineSession([], "alpha-s2"),
     "alpha-s2",
@@ -47,7 +79,11 @@ test("a bound session before the index lands is trusted; truly nothing is null (
   assert.equal(resolveTimelineSession([], undefined), null, "no bound and no sessions (#58)");
 });
 
+/* ---------- the properties that are easy to break ---------- */
+
 test("a bound session the agent no longer owns is NOT honoured (#58)", () => {
+  // the bound session can disappear — a log deleted, a config edited. Trusting it
+  // would open a timeline that 404s.
   assert.equal(
     resolveTimelineSession(SESSIONS, "alpha-gone"),
     "alpha-s2",
@@ -56,6 +92,7 @@ test("a bound session the agent no longer owns is NOT honoured (#58)", () => {
 });
 
 test("the result is always one the agent owns, or null (#58)", () => {
+  // the invariant that matters: whatever comes back must be safe to open
   for (const bound of [undefined, "alpha-s1", "alpha-s2", "ghost"]) {
     for (const requested of [null, undefined, "alpha-s1", "beta-s1", "ghost"]) {
       const got = resolveTimelineSession(SESSIONS, bound, requested);
@@ -74,4 +111,6 @@ test("an explicit request beats a bound session (#58)", () => {
     "the whole point of #58: the request is authoritative, not the binding",
   );
 });
+
+/* ---------- anti-vacuity: the wiring must still exist ---------- */
 

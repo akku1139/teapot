@@ -1,3 +1,22 @@
+/**
+ * `EventLog.load()` reads only the TAIL now.
+ *
+ * It used to `readFile()` every log in full and JSON.parse every event, to learn
+ * two things that both live at the end of an append-only file:
+ *
+ *   - the highest `seq` (assigned monotonically, so the last complete line has it)
+ *   - the last event id per branch (`lastEventId()` is only ever called for the
+ *     CURRENT branch — fork and child-spawn — which is the most recent one)
+ *
+ * MEASURED over the real 813-session data dir (377 MB of logs): `load()` went
+ * from 2225 ms to 878 ms, and it no longer materialises one whole log as a
+ * string plus its `split` array.
+ *
+ * The risk this must pin is `seq`: if the tail read ever under-reports it, the
+ * next append reuses an id that already exists, and `mergeEvents` on the client
+ * DEDUPES BY ID — two distinct events would collapse into one row. So the
+ * assertions below are about exactness, not speed.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -5,6 +24,7 @@ import path from "node:path";
 import { useTempDir } from "./helpers/tmp.ts";
 import { EventLog, readEvents } from "../src/log/events.ts";
 
+/** a log with `n` well-formed events, returned as its JSONL text */
 function logText(n: number, agent = "a", branch = "br0"): string {
   const lines: string[] = [];
   let parent: string | null = null;
@@ -24,6 +44,8 @@ function logText(n: number, agent = "a", branch = "br0"): string {
 test("seq stays EXACT for a log far larger than the tail window (#143)", async () => {
   await useTempDir("loadtail-", async (dir) => {
     const file = path.join(dir, "chat.jsonl");
+    // ~1.2 MB of events: comfortably past the 512 KB tail window, so the load
+    // MUST be reading a window and still getting the right answer
     const N = 6000;
     writeFileSync(file, logText(N));
     assert.ok(readFileSync(file).length > 512 * 1024, "precondition: the log exceeds the tail window");
@@ -57,6 +79,8 @@ test("the current branch's head survives the window, so parent chaining continue
 test("a small log still loads completely, including older branches (#143)", async () => {
   await useTempDir("loadtail-", async (dir) => {
     const file = path.join(dir, "chat.jsonl");
+    // one event on a second branch, then lots on the first — a small file, so the
+    // whole thing is read and nothing is dropped
     const side = JSON.stringify({
       v: 1, id: "side1", seq: 1, ts: "2026-01-01T09:00:00.000Z", agent: "a", session: "s",
       branch: "side", parent: null, type: "message", data: {},

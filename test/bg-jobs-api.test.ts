@@ -6,6 +6,17 @@ import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
 import path from "node:path";
 
+/**
+ * The background-jobs ROUTE, driven over HTTP.
+ *
+ * Requested as "ユーザーからheadless bashの一覧、現在の(ライブ?)出力、コントロールとかできると良いね".
+ * The registry already held the jobs; what was missing was any way for the operator to see them, so
+ * the route is the thing that has to work — a unit test on the registry alone would pass while the
+ * panel stayed empty.
+ *
+ * Every field asserted here is one the popover READS. A rename on either side has to fail this test
+ * rather than silently rendering `undefined` in a row.
+ */
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
 function mkMaster(dataDir: string, ws: string): Master {
@@ -23,6 +34,7 @@ function mkMaster(dataDir: string, ws: string): Master {
 
 const ctxFor = (ws: string) => ({ cwd: ws, signal: undefined, maxOutputBytes: 1_000_000 }) as never;
 
+/** a Master with its agent registered — `agents` is filled by `start()`, not by the constructor */
 async function startedMaster(dataDir: string, ws: string): Promise<Master> {
   const m = mkMaster(dataDir, ws);
   await m.start();
@@ -33,6 +45,7 @@ test("GET /api/agents/:id/bg-jobs lists a running job with its tail (#bgjobs)", 
   const ws = mkdtempInRootSync("bgjobs-route-");
   const dataDir = mkdtempInRootSync("bgjobs-data-");
   await executeTool("bash", JSON.stringify({ command: "echo via-route; sleep 30", background: true }), ctxFor(ws));
+  // the shell needs a moment to flush its first line
   await new Promise((res) => setTimeout(res, 900));
 
   const app = buildApp(await startedMaster(dataDir, ws));
@@ -50,6 +63,7 @@ test("GET /api/agents/:id/bg-jobs lists a running job with its tail (#bgjobs)", 
   assert.ok(String(j.tail).length <= 4000, "bounded, so a huge log does not travel to the browser");
   assert.ok(String(j.cmd).includes("sleep 30"), "the command, so the operator knows what it is");
 
+  // cleanup: the job is real
   await app.request(`/api/agents/j1/bg-jobs/${String(j.id)}`, { method: "DELETE" });
 });
 
@@ -70,6 +84,7 @@ test("DELETE /api/agents/:id/bg-jobs/:job kills it; unknown ids are 404 (#bgjobs
   const after = (await (await app.request("/api/agents/j1/bg-jobs")).json()) as { jobs: unknown[] };
   assert.equal(after.jobs.length, 0, "the row is gone after the kill");
 
+  // a stale button (the job finished and was cleaned up) must not 500
   const stale = await app.request("/api/agents/j1/bg-jobs/no-such-job", { method: "DELETE" });
   assert.equal(stale.status, 404, "an unknown job is a 404, not a crash");
 });

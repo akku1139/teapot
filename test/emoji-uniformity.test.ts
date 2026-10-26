@@ -3,6 +3,21 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 
+/**
+ * Emoji that are TEXT-BY-DEFAULT need U+FE0F to render as emoji.
+ *
+ * Reported: "設定を開くボタンは '⚙' で、絵文字じゃないっぽいんだけど、設定ないのruntimeは '⚙️' で
+ * 絵文字になってる". `⚙` and `⚙️` are DIFFERENT strings — U+2699 alone, and U+2699 U+FE0F — so grep
+ * and sed miss one while the other renders. A browser with an emoji font shows the VS16 form in
+ * colour; the bare one falls back to the monochrome text glyph, so the SAME icon looked different in
+ * two places.
+ *
+ * This is not about taste: the same character with and without VS16 is an inconsistency no reviewer
+ * can see in a diff and no type checker can catch.
+ *
+ * Only TEXT-default characters are checked. Emoji-by-default ones (🎯 ✅ ⚠…) already render as
+ * emoji and adding VS16 there would be noise.
+ */
 const TEXT_DEFAULT = new Set(
   "⚙☕✈✂✉✏✒⚓⚡⛅⛎⛔⛪⛲⛳⛵⛺⛽❓❗❔❕➕➖➗⭐⭕⬅⬆⬇⬛⬜🌐🍽🎖🎗🎞🎟🎤🎧🎬🎰🎳🕐🕑🔍🔎🔒🔓🔔🔕🔖🔗🔨🔩🔪🔫🔮🔰🔱🔲🔳🕵🗺🗻🗼🗽🗾☺♥♦♠",
 );
@@ -19,6 +34,11 @@ async function walk(dir: string, out: string[] = []): Promise<string[]> {
 }
 
 test("every text-default emoji carries VS16, so one icon cannot render two ways (#ui)", async () => {
+  /**
+   * BOTH trees. The first version walked only `frontend/`, so a server-authored string surfaced in
+   * the UI escaped it: `"use 🔑 authorize in ⚙ settings"` in `mcp-registry.ts` was bare while every
+   * button showed `⚙️`. Text the operator reads can come from either side.
+   */
   const root = path.join(import.meta.dirname, "..");
   const files = [...(await walk(path.join(root, "frontend"))), ...(await walk(path.join(root, "src")))];
   const bare: string[] = [];

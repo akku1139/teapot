@@ -1,16 +1,46 @@
+/**
+ * #18 — "organise chats, make folders" (one-line issue, no spec).
+ *
+ * The part of this that needs no schema decision: the sidebar grouped ONLY by
+ * parent/child agent, so chats belonging to unrelated projects interleaved in
+ * one undifferentiated list — the actual "which chat was that?" problem. Every
+ * agent already carries its workspace, so grouping by it invents no new concept.
+ *
+ * A real folder system (persisted? nestable? multi-membership?) is a schema
+ * decision and was left to the operator; see the issue comment.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { sidebarRowsOf, treeRowsOf, workspaceOf } from "../frontend/lib/sidebar-tree.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
+// #110: POSIX-only — POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
 markPosixOnly("POSIX filesystem paths");
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
+/**
+ * #75 — this file used to re-implement `workspaceOf` and the header annotation
+ * as local "mirrors of the shipped" functions, and asserted against THOSE. That
+ * is the failure mode mutation testing exposed: destroying the real grouping in
+ * `sidebar-tree.ts` left all 8 tests here passing, because a replica passes by
+ * construction — it can only ever agree with itself.
+ *
+ * Both are now the shipped functions. The tests below are unchanged in intent;
+ * what changed is that they can now fail.
+ */
+
+/** the shipped rules, not a copy */
 const agentsOf = (rows: { id: string; parent: string; workspace: string }[]) => rows;
 
+/* ---------- the grouping rule ---------- */
+
 test("a sub-agent groups with its PARENT's workspace (#18)", () => {
+  // a sub-agent's own workspace field is usually empty; it must not become its
+  // own singleton group at the top of the sidebar
   const agents = [
     { id: "root", parent: "", workspace: "/tmp/proj" },
     { id: "child", parent: "root", workspace: "" },
@@ -37,6 +67,8 @@ test("a header appears only when the workspace changes (#18)", () => {
     treeRowsOf(agentsOf(agents), new Set(), false, new Set()),
     new Set(),
   );
+  // #62 made the header its OWN row, so there are exactly two headers for three
+  // agents across two directories — and the agent id appears once each
   assert.deepEqual(
     rows.filter((r) => r.headerOnly).map((r) => r.wsHeader),
     ["/p1", "/p2"],
@@ -56,6 +88,8 @@ test("each project gets exactly one header (#18)", () => {
     { id: "b1", parent: "", workspace: "/p2" },
     { id: "c1", parent: "", workspace: "/p3" },
   ];
+  // since #62 the header is its OWN row, so headers are counted from the
+  // headerOnly rows rather than mapped onto every chat row
   const rows = sidebarRowsOf(
     agentsOf(agents),
     treeRowsOf(agentsOf(agents), new Set(), false, new Set()),
@@ -83,6 +117,8 @@ test("an agent with no workspace does not get a stray header (#18)", () => {
     treeRowsOf(agentsOf(agents), new Set(), false, new Set()),
     new Set(),
   );
+  // the real rule: an agent with NO directory gets no header at all, rather
+  // than one labelled with the empty string
   assert.deepEqual(
     rows.filter((r) => r.headerOnly).map((r) => r.wsHeader),
     ["/p"],
@@ -95,7 +131,18 @@ test("an agent with no workspace does not get a stray header (#18)", () => {
 });
 
 test("the header is styled (#18)", () => {
+  // the header row itself is rendered by App.tsx from the rows computed here and is
+  // asserted against the real bundle in scripts/smoke-web.ts; its stylesheet rule is
+  // the part this file can pin.
   assert.match(css, /\.wsheader\s*\{/s, "the header needs its own style (#18)");
   assert.match(css, /\.wsheader \.wscaret/, "the collapse caret needs styling (#18)");
 });
 
+/* ---------- the real DOM check lives in the bundle smoke test ----------
+ *
+ * There used to be a test here that READ scripts/smoke-web.* and asserted it contained
+ * the string "expected one workspace header per project". That protected nothing: it
+ * passed as long as the phrase existed ANYWHERE in the file — including inside a comment
+ * or a console.error that could never run — and it went red when the script was renamed,
+ * which is not a behaviour change. The smoke script itself asserts the grouping against
+ * the real bundle, which is the check that can actually fail for the real reason. */

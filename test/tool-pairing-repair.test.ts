@@ -1,3 +1,23 @@
+/**
+ * #152 — a violated tool-call pairing gets a request refused with a USELESS message.
+ *
+ * MEASURED against the provider in the report (commandcode / deepseek-v4.1-flash). Three
+ * shapes, all rejected with:
+ *
+ *     {"message":"invalid request error","type":"invalid_request_error"}
+ *
+ *   - an assistant `tool_calls` entry with no matching `tool` result
+ *   - a `tool` result whose call is absent (its issuing prefix was compacted away)
+ *   - a kept tail that STARTS on a `tool` result
+ *
+ * Why this matters more than the status code: the message names neither the call nor the
+ * message, and it does not match the context-overflow patterns — so compaction recovery
+ * never runs, and the operator gets a bare 400. The request also cannot ever succeed, yet
+ * it is retried on the full staircase (5s + 5s + 30s) first.
+ *
+ * `repairToolPairing` runs inside `sanitize()`, which EVERY request path goes through
+ * (turns, the compaction summarizer, the ACP adapter), so one guard covers them all.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { repairToolPairing, type ChatMessage } from "../src/agent/llm.ts";
@@ -10,6 +30,7 @@ const call = (id: string, content = ""): ChatMessage => ({
 });
 const result = (id: string, c = "out"): ChatMessage => ({ role: "tool", tool_call_id: id, content: c });
 
+/** the invariant a provider enforces */
 function pairingErrors(msgs: ChatMessage[]): string[] {
   const calls = new Set<string>();
   for (const m of msgs) for (const t of m.tool_calls ?? []) if (t.id) calls.add(t.id);
@@ -21,6 +42,8 @@ function pairingErrors(msgs: ChatMessage[]): string[] {
     for (const t of m.tool_calls ?? []) if (!answered.has(t.id)) errs.push(`unanswered call ${t.id}`);
   }
   if (msgs[0]?.role === "tool") errs.push("starts with a tool result");
+  // a provider also refuses a duplicate answer and a result before its call —
+  // both were measured to return the same "invalid request error" (#152)
   const answers = msgs.filter((m) => m.role === "tool" && m.tool_call_id).map((m) => m.tool_call_id!);
   if (new Set(answers).size !== answers.length) errs.push("duplicate tool result");
   const issued = new Set<string>();
@@ -50,17 +73,21 @@ test("an UNANSWERED call gets a placeholder result, so the exchange survives (#1
 });
 
 test("a kept tail starting on a tool result is trimmed (#152)", () => {
+  // the compaction shape: the prefix that issued the call is gone, its result is not
   const fixed = repairToolPairing([result("gone", "orphan"), user("go"), call("c1"), result("c1")]);
   assert.deepEqual(pairingErrors(fixed), []);
   assert.notEqual(fixed[0]?.role, "tool", `must not start with a tool result (#152): ${JSON.stringify(fixed)}`);
 });
 
 test("a valid history is returned UNCHANGED — no reallocation, prefix intact (#152)", () => {
+  // identity matters: the prompt must stay byte-identical for prefix caching, and the
+  // fast path keeps the common case free
   const good: ChatMessage[] = [user("go"), call("c1"), result("c1"), { role: "assistant", content: "done" }];
   assert.equal(repairToolPairing(good), good, "the same array object, not a copy");
 });
 
 test("a multi-call batch answered ONE SHORT is repaired (#152)", () => {
+  // measured as the exact rejection: two calls, only one answered
   const two: ChatMessage = {
     role: "assistant",
     content: "",
@@ -80,7 +107,16 @@ test("an empty history, and one with no tool calls at all, pass through (#152)",
   assert.equal(repairToolPairing(plain), plain);
 });
 
+/* ---------- the two shapes the first version still let through (#152) ---------- */
+
+/**
+ * MEASURED against the live provider: the repair's first version dropped only
+ * unattributable results, and TWO shapes still came back 400 even after it ran —
+ * a duplicate answer, and a result placed BEFORE its call. A guard that reports success
+ * on a request the provider refuses is worse than no guard, because it hides the cause.
+ */
 test("a SECOND answer to one call is dropped (#152)", () => {
+  // strict providers refuse two responses for one call
   const fixed = repairToolPairing([user("go"), call("c1"), result("c1", "first"), result("c1", "second")]);
   assert.deepEqual(pairingErrors(fixed), []);
   const answers = fixed.filter((m) => m.role === "tool" && m.tool_call_id === "c1");
@@ -89,6 +125,7 @@ test("a SECOND answer to one call is dropped (#152)", () => {
 });
 
 test("a result placed BEFORE its call is repaired (#152)", () => {
+  // measured as the same rejection; the ordering is part of the contract
   const fixed = repairToolPairing([user("go"), result("c1", "out"), call("c1")]);
   assert.deepEqual(pairingErrors(fixed), []);
   const idx = (pred: (m: ChatMessage) => boolean) => fixed.findIndex(pred);

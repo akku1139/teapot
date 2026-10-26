@@ -1,3 +1,23 @@
+/**
+ * Does `buildTimeline()` return the SAME row objects when only one event is appended?
+ *
+ * ## Why this is the root-cause test
+ *
+ * Reported: "apply_patch のカードを展開していたのに、新しいメッセージが来ると展開していた
+ * のが閉じられる". An open `<details>` closing by itself means its row was disposed and
+ * re-created, because the browser throws away that state with the node.
+ *
+ * `<For>` keys on ITEM IDENTITY — it compares `items[i] === nextItems[i]`. So the question
+ * "did a row remount?" reduces entirely to "did this pipeline hand back a different object
+ * for the same row?" That is answerable here, with no DOM and no component, which is why
+ * this test exists: a DOM-shaped assertion cannot see a remount at all (it renders identical
+ * HTML), and a smoke test can only say "4 of 18 rows", not WHY.
+ *
+ * A first attempt at this problem added a cache in `App.tsx` keyed by row object. That hid
+ * the symptom for some rows while leaving the cause in place — the pipeline was still handing
+ * back fresh objects for every row it derived, so the cache simply missed on those. This file
+ * pins the invariant at the source instead.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildTimeline, type TimelineEvent } from "../frontend/lib/timeline.ts";
@@ -10,6 +30,7 @@ let seq = 0;
 const ev = (type: string, data: Record<string, unknown>): TimelineEvent =>
   ({ id: `e${++seq}`, seq, ts: "2026-01-01T00:00:00Z", type, data }) as TimelineEvent;
 
+/** run the pipeline the way the component does */
 function run(events: TimelineEvent[], pending: unknown[] = []): TimelineEvent[] {
   return buildTimeline({
     events,
@@ -22,6 +43,7 @@ function run(events: TimelineEvent[], pending: unknown[] = []): TimelineEvent[] 
   }) as TimelineEvent[];
 }
 
+/** the identity of each row, by id, so a rebuild can be compared */
 const byId = (rows: TimelineEvent[]) => new Map(rows.map((r) => [r.id, r]));
 
 test("appending one event keeps every existing row's OBJECT IDENTITY", () => {
@@ -42,7 +64,7 @@ test("appending one event keeps every existing row's OBJECT IDENTITY", () => {
   const changed: string[] = [];
   for (const row of second) {
     const prev = before.get(row.id);
-    if (!prev) continue; 
+    if (!prev) continue; // the new row, expected
     if (prev !== row) changed.push(row.id);
   }
   assert.deepEqual(
@@ -56,6 +78,9 @@ test("appending one event keeps every existing row's OBJECT IDENTITY", () => {
 });
 
 test("a PROMPT row keeps its identity across an append (the resequencing path)", () => {
+  // `resequencePrompts` rewrites a pending user prompt's `seq` to place it below settled
+  // rows, and marks a cancelled one. Both used object spreads, which allocate a NEW object
+  // on every rebuild — so every user prompt remounted on every incoming event.
   const base = [ev("prompt", { source: "user", text: "q", promptId: "p9" })];
   const first = run(base);
   assert.equal(first.length, 1, "precondition: one prompt row");
@@ -72,6 +97,7 @@ test("a PROMPT row keeps its identity across an append (the resequencing path)",
 
 test("a CANCELLED prompt keeps its identity across an append (the marker path)", () => {
   const base = [ev("prompt", { source: "user", text: "q", promptId: "p7" })];
+  // mark it cancelled the way the log does: a prompt-cancelled system note
   base.push(ev("system_note", { event: "prompt-cancelled", promptId: "p7" }));
   const first = run(base);
   const cancelled = first.find((r) => r.type === "prompt" && r.data?.source === "user");

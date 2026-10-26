@@ -1,3 +1,35 @@
+/**
+ * #142 — `stop_children` with an explicit id left DEEPER descendants running.
+ *
+ * ## The bug
+ *
+ * `stopChildrenFor` had two modes. With no `ids` it walked the whole subtree. With
+ * an explicit id it hand-rolled a one-level loop:
+ *
+ *     if (ids) {
+ *       const sub = this.childrenOf(id);
+ *       for (const { id: gid, agent: g } of sub) { g.stop(...); stopped.push(gid); }
+ *     } else {
+ *       walk(id);
+ *     }
+ *
+ * One level. So a great-grandchild was never reached:
+ *
+ *     root-sub           stopped
+ *     root-sub-sub       stopped
+ *     root-sub-sub-sub   running     <-- orphaned, still billing tokens
+ *
+ * The reason it was written that way is instructive: `walk` passed `ids` down
+ * unchanged, so after matching an explicit id every DESCENDANT failed
+ * `ids.includes(id)` and was skipped. The hand-rolled loop was working around
+ * that, and paying for it with an off-by-one in depth.
+ *
+ * ## The fix
+ *
+ * `inScope` becomes true once we are inside a subtree we were asked to stop, and
+ * stays true all the way down. One walk serves both modes, so the depth of a stop
+ * no longer depends on which branch was taken.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -6,6 +38,7 @@ import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
+/** a root with `depth` nested children (depth 0 = just the root) */
 async function tree(depth: number, extraSiblings = 0) {
   const dataDir = mkdtempInRootSync("t142a-");
   const ws = mkdtempInRootSync("t142w-");
@@ -35,6 +68,7 @@ const stopAll = async (m: Master) => {
 };
 
 test("stopping a child by id stops its WHOLE subtree (#142)", async () => {
+  // depth 4: the third level down is what the old one-level loop missed
   const { m, chain } = await tree(4);
   try {
     const r = await m.stopChildrenFor("root", [chain[0]!]);
@@ -57,6 +91,7 @@ test("stopping a child by id stops its WHOLE subtree (#142)", async () => {
 });
 
 test("a great-grandchild is stopped, not just direct children (#142)", async () => {
+  // the exact shape that shipped broken
   const { m, chain } = await tree(3);
   try {
     await m.stopChildrenFor("root", [chain[0]!]);
@@ -68,6 +103,7 @@ test("a great-grandchild is stopped, not just direct children (#142)", async () 
 });
 
 test("an explicit id does NOT stop a SIBLING (#142)", async () => {
+  // the scope guard must survive the fix: recursion is deeper, not wider
   const { m, chain, siblings } = await tree(2, 2);
   try {
     await m.stopChildrenFor("root", [chain[0]!]);

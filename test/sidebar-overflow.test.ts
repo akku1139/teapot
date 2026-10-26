@@ -1,3 +1,24 @@
+/**
+ * #60 — "the left panel sometimes scrolls horizontally."
+ *
+ * Reported as happening "when a sub-agent has notifications and sub-agents and
+ * also has a checkmark" — i.e. a chat row carrying several trailing badges at
+ * once: the 🔔 unread count, the 🧩 sub-agent count, and the ✓ goal-done tick.
+ *
+ * The row is a flex line, and every badge in it is `flex-shrink: 0` (deliberate
+ * — a badge that collapsed to a sliver would be unreadable). That left exactly
+ * one item with no intrinsic limit: the chat's own id. A long id plus a few
+ * badges could therefore exceed the sidebar's width, and because
+ * `.sidebar { overflow-y: auto }` computes `overflow-x` to `auto` too, the
+ * panel itself gained a horizontal scrollbar and the whole tree could be
+ * scrolled sideways out of view.
+ *
+ * The fix is the `min-width: 0` + ellipsis contract the notification list and
+ * the runtime panel already use: the id is the one item allowed to shrink, and
+ * the panel clips X instead of scrolling it.
+ *
+ * happy-dom does no layout, so these pin the CSS contract that governs it.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -5,10 +26,25 @@ import { cssRuleBody } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
+/**
+ * #75: this scanned the stylesheet itself and returned the RAW rule body, so a
+ * declaration that lived only inside an explanatory comment satisfied any
+ * assertion made on it — the same class that left `attach-x-circle` and
+ * `composer-attach` passing with their entire fix deleted.
+ *
+ * Now the shared helper, which strips comments and matches the selector exactly.
+ */
 function firstRule(selector: string): string {
   return cssRuleBody(css, selector);
 }
 
+/**
+ * Body of the rule that lets the chat id shrink.
+ *
+ * Located by its DECLARATION rather than by a slice of the selector: the
+ * explanatory comment above it names the same classes the selector excludes,
+ * so matching on selector text finds the comment's block instead.
+ */
 function shrinkableRule(): { selector: string; body: string } {
   const at = css.indexOf("min-width: 0; overflow: hidden; text-overflow: ellipsis");
   assert.notEqual(at, -1, "the shrinkable-id rule must exist (#60)");
@@ -20,6 +56,8 @@ function shrinkableRule(): { selector: string; body: string } {
   };
 }
 
+/* ---------- 1: the row must not be able to exceed its container ---------- */
+
 test("a sidebar row cannot be wider than the sidebar (#60)", () => {
   const row = firstRule(".agent-item ");
   assert.match(
@@ -29,7 +67,12 @@ test("a sidebar row cannot be wider than the sidebar (#60)", () => {
   );
 });
 
+/* ---------- 2: the id is the one item that shrinks ---------- */
+
 test("the chat id ellipsises so the badges keep their width (#60)", () => {
+  // The defect: every badge in the row is flex-shrink:0, so the id was the
+  // only candidate — and without min-width:0 a flex item refuses to shrink
+  // below its content width, so it never did.
   const shrinkable = shrinkableRule().body;
   assert.match(shrinkable, /min-width:\s*0/, "the id needs min-width:0 to shrink (#60)");
   assert.match(shrinkable, /overflow:\s*hidden/, "and must clip its overflow (#60)");
@@ -38,6 +81,7 @@ test("the chat id ellipsises so the badges keep their width (#60)", () => {
 });
 
 test("the badges are explicitly excluded from shrinking (#60)", () => {
+  // the exclusions live in the SELECTOR, not the body
   const shrinkable = shrinkableRule().selector;
   for (const cls of [
     "dot",
@@ -57,7 +101,12 @@ test("the badges are explicitly excluded from shrinking (#60)", () => {
   }
 });
 
+/* ---------- 3: the panel must clip, not scroll sideways ---------- */
+
 test("the sidebar never scrolls horizontally (#60)", () => {
+  // THE decisive bit: `overflow-y: auto` alone computes `overflow-x` to `auto`,
+  // so an overflowing row scrolls the entire panel sideways. Only an explicit
+  // hidden clips it.
   const sidebar = firstRule(".sidebar ");
   assert.match(sidebar, /overflow-x:\s*hidden/, "the panel must clip its X axis (#60)");
   assert.match(sidebar, /overflow-y:\s*auto/, "vertical scrolling is still wanted (#60)");
@@ -69,6 +118,10 @@ test("the scrolling list inside it can shrink too (#60)", () => {
   assert.match(list, /overflow-y:\s*auto/, "and still scroll vertically (#60)");
 });
 
+/* ---------- the ✓ needs a class to be excluded ---------- */
+
 test("the goal-done tick cannot be squeezed (#60)", () => {
+  // The ✓ is a bare fixed-width glyph. Left unclassed it would match the
+  // "shrinkable" rule above and be the one badge that could collapse.
   assert.match(firstRule(".agent-item .goaldone"), /flex-shrink:\s*0/, "the ✓ must not shrink (#60)");
 });

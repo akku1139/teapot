@@ -1,3 +1,35 @@
+/**
+ * #144 — an interrupted boot could EMPTY config.json.
+ *
+ * ## The report
+ *
+ * After updating to v0.28.1, boot printed dozens of
+ *
+ *     [teapot] session <id> for <agent> is gone; starting a new one
+ *
+ * lines before `master listening on …`. Pressing Ctrl-C during that window left a
+ * **zero-length config.json**, and the operator reported that restoring it "takes
+ * an hour".
+ *
+ * ## Two independent causes
+ *
+ * **1. The write was not atomic.** `saveConfig` used a bare `writeFileSync`, which
+ * TRUNCATES the target before writing. Any interruption during the write — a
+ * signal, a crash, a full disk — lands on an empty file. `config.json` holds every
+ * agent, provider and scheduled task, so the next boot reads `{}`.
+ *
+ * It is now write-temp → `fsync` → `rename`, and `rename` is atomic within a
+ * filesystem: the file is either the old content or the new, never empty.
+ *
+ * **2. Boot rewrote the file once per agent.** Every agent whose recorded session
+ * is gone mints a new one, and minting calls `recordSession` → `saveConfig`. So ~30
+ * agents meant ~30 full rewrites of a 148KB file before the server listened. That
+ * is what made the window long enough to hit by accident.
+ *
+ * Writes are now deferred during boot and flushed ONCE, in a `finally` so a throw
+ * mid-boot still persists what it changed — a deferred write that never flushes
+ * would describe the PREVIOUS boot, which is its own silent data loss.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
@@ -5,6 +37,19 @@ import path from "node:path";
 import { Master, type AgentConfig } from "../src/master.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
+/**
+ * write a config file with `n` agents, and return { path, agents }
+ *
+ * Each agent records a session that DOES NOT EXIST, which is the user's reported
+ * condition — their log was full of "session … is gone; starting a new one".
+ * That is what makes boot mint a new session per agent, and minting is what
+ * persists, so without it the write-counting test measures a boot that never
+ * writes at all (which is correct behaviour, and not what #144 is about).
+ *
+ * `workspace` is required: addAgent rejects an entry without one, and a rejected
+ * entry is skipped with a log line rather than loaded — so an agent list missing
+ * it silently produces zero agents and the test asserts nothing.
+ */
 function cfg(dataDir: string, n = 4): { path: string; agents: AgentConfig[] } {
   const ws = path.join(dataDir, "ws");
   mkdirSync(ws, { recursive: true });
@@ -12,7 +57,7 @@ function cfg(dataDir: string, n = 4): { path: string; agents: AgentConfig[] } {
     id: `a${i}`,
     provider: "p",
     workspace: ws,
-    session: `gone-${i}`, 
+    session: `gone-${i}`, // points at a directory that does not exist
   }));
   const p = path.join(dataDir, "config.json");
   writeFileSync(
@@ -26,6 +71,9 @@ function cfg(dataDir: string, n = 4): { path: string; agents: AgentConfig[] } {
   return { path: p, agents };
 }
 
+// The Master's OPTIONS are the config in production (`loadConfig` feeds them), so
+// the agents must be passed there — writing them only to the file, with
+// `agents: []` in the options, loads nothing and the test measures the wrong thing.
 function master(cfgPath: string, dataDir: string, agents: AgentConfig[]): Master {
   return new Master(
     {
@@ -39,6 +87,8 @@ function master(cfgPath: string, dataDir: string, agents: AgentConfig[]): Master
   );
 }
 
+/* ---------- the file is never left empty ---------- */
+
 test("saveConfig leaves a complete, parseable file (#144)", async () => {
   const dataDir = mkdtempInRootSync("t144a-");
   const { path: p, agents } = cfg(dataDir, 5);
@@ -51,6 +101,8 @@ test("saveConfig leaves a complete, parseable file (#144)", async () => {
 });
 
 test("the write is atomic — a new inode, not an in-place rewrite (#144)", async () => {
+  // rename() lands a DIFFERENT inode; an in-place truncate+write keeps the same
+  // one, which is exactly what leaves a window for an empty file
   const dataDir = mkdtempInRootSync("t144b-");
   const { path: p, agents } = cfg(dataDir, 3);
   const m = master(p, dataDir, agents);
@@ -73,12 +125,15 @@ test("no temp files are left behind (#144)", async () => {
   assert.deepEqual(leftovers, [], `a crashed write would leave these behind (#144): ${leftovers}`);
 });
 
+/* ---------- boot writes once, not once per agent ---------- */
+
 test("booting N agents performs ONE write, not N (#144)", async () => {
   const dataDir = mkdtempInRootSync("t144d-");
   const _ws = mkdtempInRootSync("t144w-");
   const { path: p, agents } = cfg(dataDir, 6);
   const m = master(p, dataDir, agents);
 
+  // count writes by inode changes — each rename-based save produces a new one
   let writes = 0;
   let last = statSync(p).ino;
   const realWrite = (m as unknown as { writeConfigAtomic(b: string): void }).writeConfigAtomic.bind(m);
@@ -103,6 +158,8 @@ test("booting N agents performs ONE write, not N (#144)", async () => {
 });
 
 test("the flushed config still describes this boot (#144)", async () => {
+  // a deferred write that never flushes would leave config.json describing the
+  // PREVIOUS boot — silent data loss of a different kind
   const dataDir = mkdtempInRootSync("t144e-");
   const _ws = mkdtempInRootSync("t144x-");
   const { path: p, agents } = cfg(dataDir, 3);
@@ -122,6 +179,7 @@ test("the flushed config still describes this boot (#144)", async () => {
 });
 
 test("a deferred write is dropped once boot ends (#144)", async () => {
+  // outside boot a save must be immediate, or an operator's rename would be lost
   const dataDir = mkdtempInRootSync("t144f-");
   const { path: p, agents } = cfg(dataDir, 2);
   const m = master(p, dataDir, agents);

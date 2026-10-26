@@ -2,6 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildTimelineWithCount } from "../frontend/lib/timeline.ts";
 
+/**
+ * The ⏳ badge must count the rows the feed is DRAWING.
+ *
+ * Reported twice: "⏳ 1 message queued" with nothing queued in the feed, and it only cleared after
+ * visiting another session and coming back. The count came from client memory (`pendingMsgs()`)
+ * while the rows came from the LOG (`remainingEchoes` consults `prompt-delivered` notes). Any state
+ * where those disagreed showed a badge over a feed with no queued row in it.
+ *
+ * The fix is not "also check the log" in a second place — that is how they drifted. Both come out
+ * of ONE pipeline run, so the disagreement is unrepresentable. These tests drive the real pipeline.
+ */
 const echo = (p: { id: string; text: string; at: number; promptId?: string }) => ({
   type: "message",
   seq: 1e9 + p.at,
@@ -46,6 +57,7 @@ const loggedPrompt = (pid: string, text: string) => ({
 });
 
 test("a stale echo with no queued row is NOT counted (#echo)", () => {
+  // the exact reported state: memory still holds an echo, the log says it was delivered
   const pid = "p-delivered";
   const { rows, pendingCount } = buildTimelineWithCount(
     input([loggedPrompt(pid, "hello"), deliveredNote(pid)], [{ id: "e1", text: "hello", at: 1, promptId: pid }]),
@@ -64,6 +76,7 @@ test("an echo the log has NOT seen is counted, and drawn (#echo)", () => {
 });
 
 test("the count equals the number of echo rows, for every combination (#echo)", () => {
+  // the invariant, driven rather than asserted case by case
   const states = [0, 1, 2].flatMap((n) =>
     [0, 1, 2].map((delivered) => {
       const pending = Array.from({ length: n }, (_, i) => ({

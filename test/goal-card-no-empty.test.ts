@@ -1,7 +1,21 @@
+/**
+ * #101 — "`🎯 goal paused` produces an empty card. If there is no content the
+ * card is unnecessary; showing only `🎯 goal paused` would be fine."
+ *
+ * A `status` goal event carries the STATUS but no `text`, and the generic status
+ * branch passed `detail: String(d.text ?? "").trim()` straight through. Every
+ * sibling branch already guards this — the no-status branch says "no status
+ * recorded", the unknown-event branch says "the X event carried no further
+ * detail" — because #41 and #51 were both exactly this bug. This one was missed.
+ *
+ * The operator's read is that it is a leftover from when the line was a centered
+ * banner; either way the rule is the same: never render a card with no body.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { goalLine, isPlaceholderDetail } from "../frontend/lib/goal-timeline.ts";
 
+/** a card whose body says nothing is the bug, whatever it is called */
 function assertHasBody(data: Record<string, unknown>, why: string) {
   const line = goalLine(data as never);
   const body = String(line.detail ?? "").trim();
@@ -28,6 +42,10 @@ test("a status event with NO status still gets a body (#41)", () => {
 });
 
 test("no goal event renders an EMPTY card (#41/#51/#101)", () => {
+  // The invariant is about CARDS, not about `detail`: #51 deliberately renders
+  // an approved audit with no reason as a LABEL with no card
+  // (`hasCard: verdictHasReason`), so demanding a body there would undo it.
+  // What must never happen is `hasCard: true` alongside an empty body.
   const events: Record<string, unknown>[] = [
     { event: "status", status: "paused" },
     { event: "status", status: "done" },
@@ -43,7 +61,7 @@ test("no goal event renders an EMPTY card (#41/#51/#101)", () => {
   ];
   for (const e of events) {
     const line = goalLine(e as never);
-    if (line.hasCard !== true) continue; 
+    if (line.hasCard !== true) continue; // a label with no card is the #51 design
     assert.ok(
       String(line.detail ?? "").trim().length > 0,
       `no empty cards: ${JSON.stringify(e)} produced a CARD with no body (#101)`,
@@ -52,12 +70,15 @@ test("no goal event renders an EMPTY card (#41/#51/#101)", () => {
 });
 
 test("an approved audit with no reason stays a LABEL, not a card (#51)", () => {
+  // pinned so the sweep above cannot be "fixed" by breaking this
   const line = goalLine({ event: "audit", verdict: "approved", detail: "" } as never);
   assert.equal(line.hasCard, false, "no reason means no card (#51)");
   assert.equal(line.label, "✅ audit: approved", "the label still reads (#51)");
 });
 
 test("the fallback names the status rather than reading generically (#101)", () => {
+  // "the goal is now paused" tells the operator what happened; a generic
+  // "no detail" would not
   const line = goalLine({ event: "status", status: "paused" } as never);
   assert.match(String(line.detail), /paused/, "the body must name the status (#101)");
 });

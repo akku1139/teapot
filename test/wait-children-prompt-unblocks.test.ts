@@ -1,9 +1,49 @@
+/**
+ * #120 — "a `wait_children` row does not reach 'complete' when a message is sent
+ * during the wait; going through an API reload (e.g. viewing another session and
+ * coming back) DOES complete it."
+ *
+ * The report's second half is the diagnostic: a reload re-reads the log, so the
+ * row completes. That means the log is fine and the LIVE path is not — the row
+ * was never re-rendered with a result it had.
+ *
+ * ## What this test establishes
+ *
+ * I could not reproduce the failure on the agent side. Driving the exact scenario
+ * — park, then send a prompt — the `tool_result` is logged within ~50ms and the
+ * agent reports `live:false` immediately, which is what the timeline's
+ * `staleDone` guard (`!agentActive && !res`) needs to mark the row done.
+ *
+ * Two harness faults nearly produced a false "reproduction" first, and both are
+ * worth recording:
+ *
+ *   1. `subAgents.list()` returning `[]` short-circuits `waitChildren` BEFORE the
+ *      park ("no live sub-agents to wait for"), so nothing parked at all;
+ *   2. replacing `toolCtx.signal` after `init()` gave the stub a DIFFERENT
+ *      AbortController from the one `enqueuePrompt` aborts — so the wait never
+ *      woke, and the row legitimately had no result.
+ *
+ * (2) is the interesting one: it looks exactly like the reported bug. The stub
+ * has to listen on `a.toolCtx.signal` itself, the way master.ts does.
+ *
+ * So this pins the route that works and documents the harness requirement, rather
+ * than asserting a fix for something I could not break. If the report's DOM can
+ * be captured, the remaining gap is in the UI projection, not here.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 
+/**
+ * Park the agent in wait_children with ONE live child, then send a prompt.
+ *
+ * The stub MUST listen on `a.toolCtx.signal`: master.ts passes exactly that
+ * signal to waitChildren, and `enqueuePrompt` aborts `this.toolAbort` and
+ * republishes it. A stub on its own controller never wakes, which mimics the
+ * reported bug without being it.
+ */
 async function parkThenPrompt(ws: string, sd: string) {
   let turn = 0;
   const a = new Agent({
@@ -37,6 +77,7 @@ async function parkThenPrompt(ws: string, sd: string) {
   const kid = { id: "kid", status: "running" };
   let parked = false;
   (a as unknown as { toolCtx: Record<string, unknown> }).toolCtx.subAgents = {
+    // a LIVE child: an empty list makes waitChildren short-circuit BEFORE parking
     list: () => [kid],
     spawn: async () => ({ id: "x" }),
     message: async () => {},
@@ -49,6 +90,7 @@ async function parkThenPrompt(ws: string, sd: string) {
           clearInterval(t);
           res({ note });
         };
+        // the agent's OWN signal — see the note above
         const sig = (a as unknown as { toolCtx: { signal: AbortSignal } }).toolCtx.signal;
         sig.addEventListener("abort", () => done("aborted while waiting"), { once: true });
       }),
@@ -88,6 +130,9 @@ test("a prompt during wait_children resolves the row (#120)", async () => {
 });
 
 test("the agent stops being live once the prompt takes over (#120)", async () => {
+  // this is what the timeline's `staleDone = !agentActive && !res` guard needs;
+  // a reload "fixes" the row because it re-reads the log, which is why the
+  // report saw the reload path succeed
   await useTempDirs(["t120c-", "t120d-"], async ([ws, sd]) => {
     const r = await parkThenPrompt(ws!, sd!);
     assert.equal(r.live, false, `the agent must report idle after the prompt (#120); live=${r.live}`);
@@ -95,6 +140,10 @@ test("the agent stops being live once the prompt takes over (#120)", async () =>
 });
 
 test("a parked agent IS live, so its rows are not stale (#120)", async () => {
+  // The precondition that makes the bug possible: while parked, `isLive()` is
+  // true (isLive() counts parkedByTool), so an unresolved row is NOT marked
+  // stale. If that ever stopped holding, a row mid-park would read "done" while
+  // the wait was still running.
   await useTempDirs(["t120e-", "t120f-"], async ([ws, sd]) => {
     let calls = 0;
     const a = new Agent({

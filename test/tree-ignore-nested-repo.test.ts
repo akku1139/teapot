@@ -1,3 +1,18 @@
+/**
+ * The file tree must report gitignored entries for a NESTED repository.
+ *
+ * Reported: with `~/work/tyb2` as the workspace, `mt6589-emulator/renode` was not marked ignored —
+ * even though `mt6589-emulator/.gitignore` line 1 is `renode/`.
+ *
+ * Cause: the lookup ran `git -C <workspace> check-ignore` with workspace-relative paths. A workspace
+ * is very often just a PARENT FOLDER holding several checkouts, and `git -C` on a non-repository
+ * exits with "not a git repository" — which the empty-output path read as "nothing is ignored".
+ * MEASURED against the real tree: the old form prints the fatal error, the new one (run from the
+ * directory being listed, bare names) prints `.gitignore|1|renode/|renode|`.
+ *
+ * The fixture reproduces the shape exactly: a plain parent directory containing a repo whose
+ * .gitignore excludes a subdirectory.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
@@ -7,6 +22,7 @@ import path from "node:path";
 import { buildApp } from "../src/server/api.ts";
 import { Master } from "../src/master.ts";
 
+/** git needs an identity to commit; these tests only need it to initialise a repo */
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, {
     cwd,
@@ -28,6 +44,7 @@ test("a nested repo's .gitignore is honoured by the tree (#ignore)", async (t) =
     return t.skip("git is not installed");
   }
 
+  // the workspace is a PLAIN DIRECTORY — this is the whole point
   const workspace = mkdtempInRootSync("nested-ws-");
   const repo = path.join(workspace, "mt6589-emulator");
   mkdirSync(path.join(repo, "renode"), { recursive: true });
@@ -56,6 +73,7 @@ test("a nested repo's .gitignore is honoured by the tree (#ignore)", async (t) =
   const body = (await res.json()) as { entries: { name: string; ignored?: boolean }[] };
   const byName = new Map(body.entries.map((e) => [e.name, e]));
 
+  // PRECONDITION: the directory listing must actually contain what we are asking about
   assert.ok(byName.has("renode"), `the listing must include renode; got ${[...byName.keys()].join(",")}`);
   assert.ok(byName.has("src"), "and an ordinary directory, so this is not a vacuous pass");
 

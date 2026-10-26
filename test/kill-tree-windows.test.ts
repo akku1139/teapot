@@ -1,15 +1,64 @@
+/**
+ * #110 (item 2) — a timeout or abort reported success even when nothing was killed.
+ *
+ * ## The defect, which is not really about Windows
+ *
+ * Both kill sites wrapped a POSIX **process-group** kill
+ * (`process.kill(-pid, "SIGKILL")`) in an empty `catch` commented "already gone".
+ *
+ * That comment is the bug. On Windows a group kill throws **always** — Node's own
+ * docs say so — so the empty catch is not the exceptional path there, it is the
+ * normal one. And because the catch was empty, nothing downstream could tell:
+ *
+ *   - on timeout, `killReason` was set to `TIMEOUT after …ms` regardless of
+ *     whether anything died, so the tool reported a timeout for a process that
+ *     was **still running**;
+ *   - on harness abort, the same — shutdown left the child alive;
+ *   - `bash({action:"kill"})` answered "killed" and dropped the job from the map
+ *     while the process kept running, now **untrackable**.
+ *
+ * A timeout that claims success is worse than a crash, because nothing afterwards
+ * looks wrong.
+ *
+ * ## Why these are unit tests
+ *
+ * The kill behaviour is platform-dependent and this box is not Windows, so the
+ * tests drive the helper with an explicit `platform` argument. That is the part
+ * that is platform-INDEPENDENT and actually defective — the silent swallow — so
+ * it is fully testable here. What cannot be tested without Windows is whether the
+ * process really dies; that is asserted by the helper's own return value, which
+ * the tests do check.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { killTree, describeKill, canKillProcessGroup } from "../src/agent/kill.ts";
 import { spawn } from "node:child_process";
 
+// #110: this file deliberately does NOT call markPosixOnly. The Windows CI job
+// exists BECAUSE of it — these are the win32/posix reporting branches, and
+// skipping the whole file on Windows would delete the only coverage of the
+// platform being tested.
+//
+// The individual cases that spawn `sleep`/`true`, or drive the bash tool (which
+// still hardcodes /bin/bash — item 2, unfixed), skip themselves with
+// `{ skip: isWindows }` / `{ skip: !isWindows }`. Marking the file would have
+// been exactly the "a real platform failure hides" outcome the marker exists to
+// prevent.
 const isWindows = process.platform === "win32";
+
+// #110: POSIX-only — spawns a POSIX binary; runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
+
+/* ---------- the platform distinction ---------- */
 
 test("only POSIX can kill a whole process group (#110)", () => {
   assert.equal(canKillProcessGroup("linux"), true, "POSIX has process groups (#110)");
   assert.equal(canKillProcessGroup("darwin"), true, "macOS too (#110)");
   assert.equal(canKillProcessGroup("win32"), false, "Windows does NOT (#110)");
 });
+
+/* ---------- the reporting, which is the actual fix ---------- */
 
 test("a kill that could not run is reported, not assumed (#110)", () => {
   const out = killTree(null, "linux");
@@ -19,6 +68,9 @@ test("a kill that could not run is reported, not assumed (#110)", () => {
 });
 
 test("win32 never claims the whole tree died (#110)", { skip: !isWindows }, () => {
+  // pid 0 is falsy, so it short-circuits at the no-pid guard and never REACHES the
+  // platform branch — which is why an earlier version of this test passed even
+  // with the win32 branch deleted. Drive a real pid instead.
   const real = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
   const out = killTree(real, "win32");
   assert.equal(out.wholeTree, false, "win32 must NEVER claim a whole-tree kill (#110)");
@@ -30,13 +82,20 @@ test("win32 never claims the whole tree died (#110)", { skip: !isWindows }, () =
 });
 
 test("win32 falls back to the direct child when there is no group (#110)", { skip: !isWindows }, () => {
+  // the branch that the pid-0 test missed: a REAL pid on win32 must still kill
+  // what it can, and report that the tree is not covered
   const child = spawn("sleep", ["30"], { stdio: "ignore" });
   const out = killTree(child, "win32");
   assert.equal(out.killed, true, `the direct child must still die (#110): ${JSON.stringify(out)}`);
   assert.equal(out.wholeTree, false, "and the tree must be reported as uncovered (#110)");
 });
 
+/* ---------- the timeout path, driven end to end ---------- */
+
 test("a timeout says whether anything was actually killed (#110)", { skip: isWindows }, async () => {
+  // The mutation that must fail: reporting "TIMEOUT after …ms" with no statement
+  // about the kill. That is the original bug — a timeout that claims success
+  // while the process runs on.
   const { useTempDirs } = await import("./helpers/tmp.ts");
   const { Agent } = await import("../src/agent/agent.ts");
   const { readEvents } = await import("../src/log/events.ts");
@@ -91,6 +150,8 @@ test("the description distinguishes a partial kill (#110)", () => {
   assert.match(describeKill(full), /whole process group/i, "a full kill says so (#110)");
 });
 
+/* ---------- against a real process, on the platform we can test ---------- */
+
 test("killing a real child on POSIX reports a whole-tree kill (#110)", { skip: isWindows }, async () => {
   const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
   await new Promise((r) => setTimeout(r, 120));
@@ -98,9 +159,10 @@ test("killing a real child on POSIX reports a whole-tree kill (#110)", { skip: i
   assert.equal(out.killed, true, `the real kill should succeed (#110): ${JSON.stringify(out)}`);
   assert.equal(out.wholeTree, true, "POSIX kills the group (#110)");
   await new Promise((r) => setTimeout(r, 120));
+  // the child must actually be gone
   let alive = true;
   try {
-    process.kill(child.pid!, 0); 
+    process.kill(child.pid!, 0); // signal 0 = existence probe
   } catch {
     alive = false;
   }
@@ -119,6 +181,8 @@ test("killing an already-dead pid reports already-gone, not success (#110)", { s
 });
 
 test("the helper never throws, even for a nonsense pid (#110)", () => {
+  // callers are timeouts and abort handlers; a throw there would replace the real
+  // message with a secondary failure
   for (const platform of ["linux", "win32"] as const) {
     assert.doesNotThrow(
       () => killTree({ pid: 2 ** 30 }, platform),

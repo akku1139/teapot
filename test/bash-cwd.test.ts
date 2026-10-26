@@ -1,3 +1,17 @@
+/**
+ * #34 — "the bash tool's cwd is maybe not the workspace directory?"
+ *
+ * Two independent defects made `pwd` differ from the agent's workspace:
+ *
+ *  A. a relative `"workspace"` in the config was resolved against
+ *     `process.cwd()`, i.e. wherever the daemon happened to be started, not
+ *     against the config file's directory (the shipped example config even
+ *     documents the relative form);
+ *  B. shells were spawned as `bash -lc`, so ~/.bash_profile or /etc/profile
+ *     could `cd` the agent out of its workspace.
+ *
+ * Both are silent — no error, just a plausible-looking wrong directory.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -7,7 +21,12 @@ import { resolveWorkspace, loadConfig, Master } from "../src/master.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
+// #110: POSIX-only — runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool");
+
+/* ---------- A: relative workspaces anchor to the config dir ---------- */
 
 test("resolveWorkspace: a relative workspace anchors to the config dir (#34)", () => {
   const base = "/srv/teapot-config";
@@ -18,6 +37,7 @@ test("resolveWorkspace: a relative workspace anchors to the config dir (#34)", (
 
 test("resolveWorkspace: absolute workspaces and ~ are left alone (#34)", () => {
   assert.equal(resolveWorkspace("/abs/ws", "/srv/teapot-config"), path.resolve("/abs/ws"));
+  // an absolute path must NOT be re-anchored onto the config dir
   assert.notEqual(resolveWorkspace("/abs/ws", "/somewhere/else"), "/srv/teapot-config/abs/ws");
   const home = process.env.HOME;
   if (home) {
@@ -27,6 +47,8 @@ test("resolveWorkspace: absolute workspaces and ~ are left alone (#34)", () => {
 
 test("a config with a relative workspace gives the agent the config-dir path (#34)", async () => {
   await useTempDirs(["wsrel-root-", "wsrel-out-"], async ([dataDir, _ws]) => {
+    // config lives in dataDir; its "workspace" entry is relative, exactly like
+    // teapot.config.example.json ships it
     const configDir = path.join(dataDir, "cfgdir");
     const configPath = path.join(configDir, "config.json");
     mkdirSync(configDir, { recursive: true });
@@ -48,15 +70,19 @@ test("a config with a relative workspace gives the agent the config-dir path (#3
       { id: "alpha", workspace: "workspaces/alpha", provider: "p" },
       { persist: false },
     );
+    // the agent's workspace must be the config-relative one, NOT process.cwd()
     assert.equal(agent.snapshot().workspace, target, "workspace anchored to the config dir");
     await m.stopAllAgents(2_000);
   });
 });
 
+/* ---------- B: the shell actually starts in the workspace ---------- */
+
 function ctxIn(dir: string): ToolContext {
   return { cwd: dir, defaultTimeoutMs: 10_000, maxOutputBytes: 10_000 };
 }
 
+/** strip the "[took Ns]" suffix the bash result now ends with (#26) */
 function stdoutOf(result: string): string {
   return result.replace(/\n?\[took [\d.]+s\]\s*$/, "").trim();
 }
@@ -71,6 +97,12 @@ test("bash runs with pwd == the workspace (#34)", async () => {
   });
 });
 
+/**
+ * Temporarily point $HOME at a directory holding a `.bash_profile` that cds
+ * to `/`. A login shell (`bash -lc`) sources it and leaves the workspace;
+ * `bash -c` does not. Hermetic: it does not depend on whatever profile the
+ * machine running the suite happens to have.
+ */
 async function withCdProfile<T>(home: string, fn: () => Promise<T>): Promise<T> {
   writeFileSync(path.join(home, ".bash_profile"), "#!/bin/bash\ncd /\n");
   const prev = process.env.HOME;
@@ -106,11 +138,24 @@ test("a backgrounded bash job also stays in the workspace (#34)", async () => {
     );
     assert.ok(start.ok, start.result);
     assert.match(start.result, /bg\d+/, `job id in ${start.result}`);
+    // Poll for the file the background shell writes from ITS cwd. If the login
+    // profile won, the shell cd'd to / and wrote /.bgcwd — which never appears
+    // here — so "not found" must FAIL the test, not quietly pass it.
+    /**
+     * Poll until the file has CONTENT, not merely until it exists.
+     *
+     * The shell creates `.bgcwd` first and writes to it second, so a read that lands between the two
+     * returns "" — and the old loop stopped on anything non-null, then reported the empty string as
+     * "background shell ran in the workspace (never cd'd away)", which names the wrong cause
+     * entirely. MEASURED as a CI failure on `actual: ''`: the file was there and the answer was one
+     * poll away.
+     */
     let seen = "";
     for (let i = 0; i < 100 && !seen; i++) {
       try {
         seen = readFileSync(path.join(ws, ".bgcwd"), "utf8").trim();
       } catch {
+        /* not created yet */
       }
       if (!seen) await new Promise((res) => setTimeout(res, 50));
     }
@@ -120,6 +165,8 @@ test("a backgrounded bash job also stays in the workspace (#34)", async () => {
 
 test("bash reports how long it took to the model (#26)", async () => {
   await useTempDirs(["wsdur-root-", "wsdur-ws-"], async ([_d, ws]) => {
+    // The model, not just the operator, must see the elapsed time — otherwise
+    // it re-issues commands that silently take tens of minutes.
     const ok = await executeTool("bash", JSON.stringify({ command: "sleep 0.3; echo hi" }), ctxIn(ws));
     assert.ok(ok.ok, ok.result);
     assert.match(ok.result, /\n\[took \d+\.\d+s\]$/, `success path reports elapsed: ${ok.result}`);

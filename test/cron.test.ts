@@ -36,6 +36,7 @@ test("cron: every hours", () => {
 
 test("cron: sunday as 7 matches day 0", () => {
   const s = parseSchedule("0 0 * * 7");
+  // 2026-08-23 is a Sunday
   assert.ok(matches(s, new Date(2026, 7, 23, 0, 0)));
   assert.ok(!matches(s, new Date(2026, 7, 24, 0, 0)));
 });
@@ -46,12 +47,12 @@ test("cron: rejects garbage", () => {
 });
 
 test("cron: nextFireAt finds the next matching minute", () => {
-  const from = new Date(2026, 5, 15, 10, 3, 0); 
+  const from = new Date(2026, 5, 15, 10, 3, 0); // 10:03
   const step = nextFireAt(parseSchedule("*/10 * * * *"), from);
   assert.equal(step, new Date(2026, 5, 15, 10, 10, 0).toISOString());
 
   const daily = nextFireAt(parseSchedule("30 8 * * *"), new Date(2026, 5, 15, 12, 0, 0));
-  assert.equal(daily, new Date(2026, 5, 16, 8, 30, 0).toISOString()); 
+  assert.equal(daily, new Date(2026, 5, 16, 8, 30, 0).toISOString()); // past 08:30 → tomorrow
 
   const every2h = nextFireAt(parseSchedule("every 2h"), new Date(2026, 5, 15, 10, 1, 0));
   assert.equal(every2h, new Date(2026, 5, 15, 12, 0, 0).toISOString());

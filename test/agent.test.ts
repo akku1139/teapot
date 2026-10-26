@@ -11,9 +11,14 @@ import { markPosixOnly } from "./helpers/posix-only.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { testTmpRoot } from "./helpers/tmp-root.ts";
 
+// #110: POSIX-only — runs POSIX commands through the bash tool.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool");
 
 const LLM: LlmConfig = { baseUrl: "http://mock", apiKey: "mock", model: "mock-model" };
+
+/* ---------- mock LLM ---------- */
 
 interface Req {
   messages: ChatMessage[];
@@ -51,6 +56,11 @@ const reply = (content: string, toolCalls?: ReturnType<typeof tc>[]): LlmResult 
   },
 });
 
+
+/**
+ * Callback-style mkAgent: the temp workspace/session dirs live exactly as long
+ * as `fn`, then are removed (tests dispose the agent inside `fn` as before).
+ */
 async function withAgent<T>(
   more: Partial<ConstructorParameters<typeof Agent>[0]>,
   fn: (a: Agent, ws: string, data: string) => Promise<T> | T,
@@ -69,6 +79,8 @@ async function withAgent<T>(
   });
 }
 
+/* ---------- basic round / finish ---------- */
+
 test("agent: plain answer ends round; finish marks goal done", async () => {
   const mock = mkMock((req): LlmResult => {
     if (req.n === 0)
@@ -85,12 +97,15 @@ test("agent: plain answer ends round; finish marks goal done", async () => {
     assert.equal(agent.status, "idle");
     assert.equal(agent.goal.status, "done");
     assert.equal(agent.stats.turns, 2);
+    // finish must leave an answered tool_call in history (API-valid sequence)
     const last = agent.conversation.at(-1)!;
     assert.equal(last.role, "tool");
     assert.equal(last.tool_call_id, "c2");
     await agent.dispose();
   });
 });
+
+/* ---------- stop aborts in-flight call ---------- */
 
 test("stop() interrupts a hanging LLM call immediately", async () => {
   await withAgent({
@@ -103,12 +118,13 @@ test("stop() interrupts a hanging LLM call immediately", async () => {
     }, async (agent) => {
     agent.enqueuePrompt("hello");
     agent.start("test");
-    await new Promise((r) => setTimeout(r, 50)); 
+    await new Promise((r) => setTimeout(r, 50)); // let the loop reach the hanging call
     const t0 = Date.now();
     agent.stop("user");
     await agent.settled();
     assert.equal(agent.status, "stopped");
     assert.ok(Date.now() - t0 < 900, `stop took too long: ${Date.now() - t0}ms`);
+    // stopping is control flow — no error events should be logged
     const events = await readEvents(agent.log.filePath);
     assert.ok(!events.some((e) => e.type === "error"), "stop must not log error events");
     await agent.dispose();
@@ -122,7 +138,7 @@ test("dispose() kills a running tool so master shutdown never hangs", { timeout:
   await withAgent({ chatFn: mock.chat }, async (agent) => {
     agent.enqueuePrompt("go");
     agent.start("test");
-    await new Promise((r) => setTimeout(r, 80)); 
+    await new Promise((r) => setTimeout(r, 80)); // loop is inside the 30s sleep command
     const t0 = Date.now();
     await agent.dispose();
     assert.ok(Date.now() - t0 < 3_000, `dispose took ${Date.now() - t0}ms — tool was not killed`);
@@ -159,11 +175,15 @@ test("stopping mid-stream keeps the partial reply in the log", async () => {
     const m = events.find((e) => e.type === "message" && (e.data as Record<string, unknown>).interrupted);
     assert.ok(m, "interrupted partial message must be logged");
     assert.match((m.data as Record<string, unknown>).content as string, /half-written rep/);
+    // the in-memory conversation keeps it too (restart replays it from the log)
     assert.ok(agent.conversation.some((x) => x.role === "assistant" && x.content?.includes("half-written")));
+    // stop is control flow — no error events
     assert.ok(!events.some((e) => e.type === "error"));
     await agent.dispose();
   });
 });
+
+/* ---------- prompt mailbox ---------- */
 
 test("prompts sent mid-run are logged instantly and delivered at the next turn boundary", { timeout: 20_000 }, async () => {
   let secondRoundUserTexts: (string | null)[] = [];
@@ -176,17 +196,19 @@ test("prompts sent mid-run are logged instantly and delivered at the next turn b
   await withAgent({ chatFn: mock.chat, autoContinue: false }, async (agent) => {
     agent.enqueuePrompt("first task");
     agent.start("test");
-    await new Promise((r) => setTimeout(r, 80)); 
+    await new Promise((r) => setTimeout(r, 80)); // first turn underway; bash tool sleeping
     assert.equal(agent.status, "running");
     const t0 = Date.now();
-    agent.enqueuePrompt("second, urgent"); 
+    agent.enqueuePrompt("second, urgent"); // must return immediately, not wait for the round
     assert.ok(Date.now() - t0 < 100, "enqueuePrompt must not block on the running loop");
     await agent.settled();
 
+    // delivered to the model as a user message at the turn boundary
     assert.ok(
       secondRoundUserTexts.includes("second, urgent"),
       `model should see the queued prompt, saw: ${JSON.stringify(secondRoundUserTexts)}`,
     );
+    // and logged while the first tool was still running → the UI sees it instantly
     const events = await readEvents(agent.log.filePath);
     const promptEv = events.find((e) => e.type === "prompt" && (e.data as Record<string, unknown>).text === "second, urgent");
     const toolResultEv = events.find((e) => e.type === "tool_result");
@@ -197,6 +219,8 @@ test("prompts sent mid-run are logged instantly and delivered at the next turn b
 });
 
 test("image attachments flow into multimodal content parts and survive replay", async () => {
+  // the model must receive OpenAI-style content parts (text + image_url), and
+  // a restart's log replay must rebuild the exact same request
   const seen: any[] = [];
   const chatFn = async (_cfg: unknown, messages: any) => {
     seen.push(JSON.parse(JSON.stringify(messages)));
@@ -209,6 +233,7 @@ test("image attachments flow into multimodal content parts and survive replay", 
     agent.start("t");
     await agent.settled();
     assert.equal(agent.status, "idle");
+    // find the user turn in what the LLM actually received
     const lastReq = seen[seen.length - 1]!;
     const userMsg = [...lastReq].reverse().find((m: any) => m.role === "user");
     assert.ok(Array.isArray(userMsg.content_parts), "multimodal message carries content parts");
@@ -217,6 +242,7 @@ test("image attachments flow into multimodal content parts and survive replay", 
     assert.equal(userMsg.content_parts[1].type, "image_url");
     assert.match(userMsg.content_parts[1].image_url.url, /^data:image\/png/);
 
+    // replay: a fresh agent over the same session dir rebuilds the same shape
     const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
     const promptEv = events.find((e) => e.type === "prompt");
     assert.ok(promptEv && Array.isArray((promptEv.data as any).images), "images persisted to the log");
@@ -226,7 +252,7 @@ test("image attachments flow into multimodal content parts and survive replay", 
       id: "t2",
       workspace: (agent as unknown as { opts: { workspace: string } }).opts.workspace,
       llm: LLM,
-      sessionDir: agent.snapshot().sessionDir, 
+      sessionDir: agent.snapshot().sessionDir, // same session → restore path
       continueDelayMs: 10,
       chatFn,
       autoContinue: false,
@@ -241,13 +267,19 @@ test("image attachments flow into multimodal content parts and survive replay", 
 });
 
 test("background bash exit notifies the agent at the next turn boundary", async () => {
+  // regression: background jobs were pure polling — the agent had no idea a
+  // job finished (or failed) until it happened to call bash_output. Now the
+  // exit folds into a later LLM call as a harness report with the exit code.
   let sawReport: string | null = null;
   let calls = 0;
   const chatFn = async (_cfg: unknown, messages: any): Promise<LlmResult> => {
     calls++;
     if (calls === 1) return reply("starting job", [tc("b1", "bash", { command: "echo hi; exit 3", background: true })]);
+    // the report stays in history — scan ALL user turns, not just the last
+    // (an auto-continue nudge lands after it and would hide it otherwise)
     if (!sawReport && messages.some((m: any) => m.role === "user" && /Background job report/.test(String(m.content)))) {
       sawReport = "reported";
+      // finish the goal so auto-continue stops instead of spinning forever
       return reply("noted, done", [tc("fin", "finish", { goalComplete: true })]);
     }
     return reply("working");
@@ -257,6 +289,13 @@ test("background bash exit notifies the agent at the next turn boundary", async 
     agent.enqueuePrompt("run something");
     agent.start("t");
     await agent.settled();
+    // the wake-up round runs on a NEW runChain (the job exits AFTER the first
+    // round settled) — wait for it to actually consume the report.
+    // Poll the condition we actually assert. The previous version waited for
+    // the report to be LOGGED, which happens synchronously inside
+    // drainBackgroundExits() — but the LLM call that READS it (setting
+    // sawReport) happens after, so under load the log check could win the
+    // race and assert on a not-yet-run turn. Wait for sawReport itself.
     for (let i = 0; i < 250 && !sawReport; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -273,15 +312,25 @@ test("background bash exit notifies the agent at the next turn boundary", async 
       (e) => e.type === "prompt" && /Background job report/.test(String((e.data as { text?: unknown })?.text ?? "")),
     );
     assert.ok(report, "the report must be logged as a prompt");
+    // the event payload is a loose record; name the field once rather than casting three times
     const reportText = String((report!.data as { text?: unknown }).text ?? "");
     assert.match(reportText, /bg\d+: FAILED with exit code 3/);
-    assert.match(reportText, /\|\s*hi/); 
+    assert.match(reportText, /\|\s*hi/); // output tail carried along
     const note = events.find((e) => e.type === "system_note" && (e.data as any).event === "background-exit");
     assert.ok(note, "a background-exit timeline row must be logged");
     await agent.dispose();
   });
 });
 test("a bg job that exits as the round parks still wakes the agent", async () => {
+  // regression: auto-continue breaks the round out while a bg job is alive,
+  // expecting the job's exit to be the wake-up. But the wake-up read
+  // `status === "idle"` exactly once — so when the job exited in the window
+  // between the loop's hasRunningBgShells() check and the loop flipping to
+  // idle, the callback saw "running", skipped start(), and the agent went
+  // idle forever with the exit report unread (auto-continue-suppressed, no
+  // nudge ever followed). Observed ~1 run in 10; the agent sat wedged until a
+  // human poked it. This drives the real bash background path, where the job's
+  // lifetime overlaps the round's teardown.
   let sawReport = false;
   let calls = 0;
   const chatFn = async (_cfg: unknown, messages: any): Promise<LlmResult> => {
@@ -313,6 +362,8 @@ test("a bg job that exits as the round parks still wakes the agent", async () =>
 });
 
 test("delivered prompt emits a prompt-delivered note carrying its promptId", async () => {
+  // the web UI flips a pending echo to "sent" and swaps it for the logged row
+  // based on THIS note — without it the "sent ✓" echo lingered indefinitely
   let round = 0;
   const mock = mkMock((req): LlmResult => {
     if (round === 0) {
@@ -327,7 +378,7 @@ test("delivered prompt emits a prompt-delivered note carrying its promptId", asy
     assert.ok(pid, "enqueuePrompt must return a promptId for user prompts");
     agent.start("test");
     await new Promise((r) => setTimeout(r, 50));
-    agent.enqueuePrompt("queued while busy").length; 
+    agent.enqueuePrompt("queued while busy").length; // second one also gets an id
     await agent.settled();
     const events = await readEvents(agent.log.filePath);
     const notes = events.filter(
@@ -336,6 +387,7 @@ test("delivered prompt emits a prompt-delivered note carrying its promptId", asy
     const pids = notes.map((n) => String((n.data as Record<string, unknown>).promptId));
     assert.equal(notes.length, 2, `both prompts must be delivered exactly once — got ${notes.length}`);
     assert.ok(pids.includes(pid), "the first prompt's id must appear on a delivered note");
+    // and every logged user prompt carries the same id the UI echoed with
     const logged = events.filter((e) => e.type === "prompt" && (e.data as any)?.source === "user");
     for (const l of logged)
       assert.ok((l.data as { promptId?: unknown }).promptId, "logged user prompts carry their echo id");
@@ -346,17 +398,19 @@ test("delivered prompt emits a prompt-delivered note carrying its promptId", asy
 test("an agent without a goal text does not auto-continue forever", { timeout: 15_000 }, async () => {
   let calls = 0;
   await withAgent({
+      // async: `ChatFn` returns a Promise, and a sync function is not assignable
       chatFn: async () => {
         calls++;
         return reply("ok, standing by");
       },
       continueDelayMs: 10,
+      // autoContinue defaults to true — but there is no goal to continue toward
     }, async (agent) => {
     agent.enqueuePrompt("hello");
     agent.start("test");
     await agent.settled();
     assert.equal(agent.status, "idle");
-    assert.equal(calls, 1); 
+    assert.equal(calls, 1); // one round, then stop instead of nudging itself forever
     await agent.dispose();
   });
 });
@@ -364,7 +418,7 @@ test("an agent without a goal text does not auto-continue forever", { timeout: 1
 test("a queued prompt keeps a finished round going", { timeout: 15_000 }, async () => {
   const mock = mkMock(async (req): Promise<LlmResult> => {
     if (req.n === 0) {
-      await new Promise((r) => setTimeout(r, 300)); 
+      await new Promise((r) => setTimeout(r, 300)); // keep round one open
       return reply("done with round one");
     }
     return reply("round two handled", [tc("f1", "finish", { goalComplete: true })]);
@@ -383,11 +437,16 @@ test("a queued prompt keeps a finished round going", { timeout: 15_000 }, async 
   });
 });
 
+/* ---------- progress gating ---------- */
+
 test("progress prompts wait for real output, not just elapsed time", { timeout: 25_000 }, async () => {
   let big = false;
   let sawAsk = false;
   let harnessedAt = Infinity;
   const mock: ChatFn = async (_cfg, _messages, tools) => {
+    // the harness's dedicated progress-report ask: its prompt is the LAST
+    // user message (it now carries tools too — the model answers by calling
+    // report_progress, which keeps its tool ledger consistent)
     const lastUser = [..._messages].reverse().find((m) => m.role === "user");
     if (!sawAsk && /Please give a brief progress report/.test(String(lastUser?.content ?? ""))) {
       harnessedAt = Math.min(harnessedAt, Date.now());
@@ -395,7 +454,7 @@ test("progress prompts wait for real output, not just elapsed time", { timeout: 
       return reply("reporting", [tc("rp", "report_progress", { doing: "on track" })]);
     }
     if (sawAsk) return reply("done", [tc("f", "finish", { goalComplete: true })]);
-    if (!big) return { message: { role: "assistant", content: "k" } }; 
+    if (!big) return { message: { role: "assistant", content: "k" } }; // stalling provider: tiny output
     return { message: { role: "assistant", content: "x".repeat(5000) } };
   };
   await withAgent({
@@ -408,14 +467,22 @@ test("progress prompts wait for real output, not just elapsed time", { timeout: 
     await agent.setGoal("grind away");
     agent.enqueuePrompt("go");
     agent.start("t");
-    await new Promise((r) => setTimeout(r, 150)); 
-    assert.equal(sawAsk, false); 
+    await new Promise((r) => setTimeout(r, 150)); // many tiny turns, way past the interval
+    assert.equal(sawAsk, false); // …but no progress request while nothing real happened
     const bigAt = Date.now();
     big = true;
     await agent.settled();
     assert.ok(Number.isFinite(harnessedAt), "a progress request should happen once output flows");
     assert.ok(harnessedAt >= bigAt, "progress request must not precede sufficient output");
     const events = await readEvents(agent.log.filePath);
+    // Count the PROGRESS REQUEST specifically. This used to match on the
+    // "[harness]" prefix alone, which stopped being equivalent in #136: the
+    // auto-continue nudge now carries that prefix too, so this filter started
+    // counting those as well — 26 turns produced 25 nudges plus the one real ask,
+    // and the assertion read `26 !== 1`.
+    //
+    // The intent is "exactly one progress request", so match the request's own
+    // wording (#45) rather than a prefix several instructions share.
     const asks = events.filter(
       (e) =>
         e.type === "prompt" &&
@@ -427,6 +494,10 @@ test("progress prompts wait for real output, not just elapsed time", { timeout: 
 });
 
 test("requested progress report appears exactly ONCE (no voluntary re-report)", async () => {
+  // regression: the old no-tools ask left the model's "did I report?" ledger
+  // unsolved — it answered in prose AND called report_progress on its next
+  // turn, so the timeline showed every requested report twice (one row was
+  // even the junk "(tool call)" placeholder)
   let reportedVoluntarily = false;
   let askedOnce = false;
   const mock: ChatFn = async (_cfg, messages) => {
@@ -435,15 +506,19 @@ test("requested progress report appears exactly ONCE (no voluntary re-report)", 
       askedOnce = true;
       return reply("reporting now", [tc("rp", "report_progress", { doing: "asked report" })]);
     }
+    // after the ask, a model that "helpfully" reports again would produce a
+    // SECOND progress card — the harness must not leave room for one
     if (!askedOnce && !reportedVoluntarily) {
       reportedVoluntarily = true;
       return reply("working on it", [tc("w1", "list_dir", {})]);
     }
     if (askedOnce)
       return reply("wrapping up", [tc("fin", "finish", { goalComplete: true })]);
-    return reply("all done"); 
+    return reply("all done"); // plain answer ends the round
   };
   await withAgent(
+    // user enqueue resets lastProgressAt, so the ask can only fire in a LATER
+    // round — auto-continue keeps the loop alive past the interval
     { chatFn: mock, progressIntervalMs: 50, progressMinChars: 1, autoContinue: true, continueDelayMs: 5 },
     async (agent) => {
       await agent.setGoal("exercise single-shot reporting");
@@ -458,6 +533,7 @@ test("requested progress report appears exactly ONCE (no voluntary re-report)", 
         cards.length,
         "no duplicate progress cards at the same moment",
       );
+      // and the model history stays API-valid: no [user, tool] hole
       const roles = agent.conversation.map((m) => m.role);
       for (let i = 0; i < roles.length; i++) {
         if (roles[i] === "tool") assert.equal(roles[i - 1], "assistant", `tool result at ${i} must follow an assistant turn`);
@@ -468,11 +544,16 @@ test("requested progress report appears exactly ONCE (no voluntary re-report)", 
 });
 
 test("requested report keeps a valid sequence even when the model calls other tools", async () => {
+  // the assistant carrier message (with tool_calls) must be pushed BEFORE any
+  // tool answer; skipping it produced [user, tool] which 400s on the next call
   const mock: ChatFn = async (_cfg, messages) => {
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (/Please give a brief progress report/.test(String(lastUser?.content ?? ""))) {
+      // model ignores the ask and calls something else entirely
       return reply("", [tc("x1", "get_goal", {})] as never);
     }
+    // any non-tool answer ends the round — the sequence check below is what
+    // matters (the assistant carrier must precede every tool result)
     return reply("round over");
   };
   await withAgent(
@@ -493,9 +574,11 @@ test("requested report keeps a valid sequence even when the model calls other to
   );
 });
 
+/* ---------- prompt-edit forks ---------- */
+
 test("editing a sent prompt forks and can summarize the abandoned tail", async () => {
   const mock = mkMock((req): LlmResult => {
-    if (isSummarizerRequest(req.messages)) return reply("- created hello.txt"); 
+    if (isSummarizerRequest(req.messages)) return reply("- created hello.txt"); // tail summarizer
     if (req.n === 0)
       return reply("creating", [tc("w1", "write_file", { path: "hello.txt", content: "hi" })]);
     return reply("done creating");
@@ -512,16 +595,19 @@ test("editing a sent prompt forks and can summarize the abandoned tail", async (
     assert.ok(r.droppedEvents >= 1);
     assert.notEqual(r.branch, "br0");
 
+    // fork event records why/where
     const ev2 = await readEvents(agent.log.filePath);
     const forkEv = ev2.find((e) => e.type === "fork" && (e.data as Record<string, unknown>).reason === "prompt-edited");
     assert.ok(forkEv);
     const newPrompt = ev2.filter((e) => e.type === "prompt").at(-1)!;
     assert.equal((newPrompt.data as Record<string, unknown>).text, "create hello2.txt instead");
 
+    // history keeps prefix + tail notes + edited prompt
     const texts = agent.conversation.map((m) => m.content ?? "");
     assert.ok(texts.some((t) => t.includes("another timeline")), "summary note expected");
     assert.match(texts.find((t) => t.includes("Notes from what happened")) ?? "", /created hello\.txt/);
 
+    // editing while running is refused
     agent.enqueuePrompt("kick");
     agent.start("kick");
     await new Promise((r2) => setTimeout(r2, 30));
@@ -533,6 +619,8 @@ test("editing a sent prompt forks and can summarize the abandoned tail", async (
     await agent.dispose();
   });
 });
+
+/* ---------- operator todo list ---------- */
 
 test("get_todo/set_todo round-trips the operator task list", async () => {
   const toolResults: string[] = [];
@@ -550,19 +638,21 @@ test("get_todo/set_todo round-trips the operator task list", async () => {
   };
   await withAgent({ chatFn: chat, autoContinue: false }, async (agent) => {
     await agent.setGoal("work the list");
-    await agent.setTodo("- [ ] a\n- [ ] b"); 
+    await agent.setTodo("- [ ] a\n- [ ] b"); // human wrote it via UI/API
     agent.enqueuePrompt("start working through the tasks");
     agent.start("t");
     await agent.settled();
 
-    assert.match(toolResults[0]!, /\[ \] a/); 
+    assert.match(toolResults[0]!, /\[ \] a/); // get_todo returned the list
     assert.match(toolResults[1]!, /task list replaced/);
-    assert.equal(agent.todo, "- [x] a\n- [ ] b"); 
+    assert.equal(agent.todo, "- [x] a\n- [ ] b"); // agent checked off an item
     const todoPath = path.join(agent.snapshot().sessionDir, "todo.md");
     assert.match(await readFile(todoPath, "utf8"), /\[x\] a/);
     await agent.dispose();
   });
 });
+
+/* ---------- ask_user parks the loop for the operator ---------- */
 
 test("ask_user waits for the operator and resumes with their answer", { timeout: 15_000 }, async () => {
   const mock = mkMock((req): LlmResult => {
@@ -570,6 +660,7 @@ test("ask_user waits for the operator and resumes with their answer", { timeout:
       return reply("need a decision", [
         tc("q", "ask_user", { question: "A or B?", options: ["do A", "do B"] }),
       ]);
+    // after resume, the operator's answer must be in front of us
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
     assert.match(lastUser?.content ?? "", /B/);
     return reply("went with B", [tc("f", "finish", { goalComplete: true })]);
@@ -578,6 +669,14 @@ test("ask_user waits for the operator and resumes with their answer", { timeout:
     await agent.setGoal("decide something");
     agent.enqueuePrompt("go");
     agent.start("t");
+    /**
+     * `ask_user` parks on the OPERATOR, which is now its own state.
+     *
+     * It used to be `waiting`, the same status a parked `wait_children` or a running background
+     * job uses — so the sidebar showed one identical pulsing dot for "needs your answer" and
+     * "will continue by itself", which are opposite things to do about it. Splitting the state
+     * means every consumer that branches on status is forced to consider both.
+     */
     for (let i = 0; i < 40 && agent.status !== "needs_operator"; i++)
       await new Promise((r) => setTimeout(r, 10));
     assert.equal(agent.status, "needs_operator");
@@ -588,6 +687,7 @@ test("ask_user waits for the operator and resumes with their answer", { timeout:
     assert.ok(q);
     assert.deepEqual((q.data as Record<string, unknown>).options, ["do A", "do B"]);
 
+    // operator taps an option → prompt + start → agent resumes
     agent.enqueuePrompt("B");
     agent.start("reply");
     await agent.settled();
@@ -597,7 +697,10 @@ test("ask_user waits for the operator and resumes with their answer", { timeout:
   });
 });
 
+/* ---------- compaction driven by real usage ---------- */
+
 test("session cost accumulates from usage when pricing is set", async () => {
+  // $3/M prompt, $15/M completion — a typical Sonnet-class price sheet
   const seen: { input?: number; output?: number; cachedInputTokens?: number }[] = [];
   const mock: ChatFn = (_cfg, _messages, _tools, _signal, onDelta) => {
     onDelta?.({ text: "working", reasoning: "" });
@@ -608,11 +711,15 @@ test("session cost accumulates from usage when pricing is set", async () => {
   };
   void seen;
   await withAgent({ chatFn: mock, autoContinue: false }, async (agent) => {
+    // pricing arrives AFTER boot (metadata races it) — the late-attach path
+    // must recompute the session cost from the log, not start from zero
     agent.enqueuePrompt("go");
     agent.start("t");
     await agent.settled();
     assert.equal(agent.stats.costUsd ?? 0, 0, "no pricing → no estimate");
     await agent.setModelPricing({ prompt: 0.000003, completion: 0.000015 });
+    // expected: (1M - 800k) * $3/M + 100k * $15/M + 800k * $3/M * 0.1
+    //         = 0.6 + 1.5 + 0.24 = $2.34
     const events = await readEvents(agent.log.filePath);
     const usages = events.filter((e) => e.type === "usage").length;
     assert.ok(usages >= 1, "usage event logged");
@@ -621,16 +728,29 @@ test("session cost accumulates from usage when pricing is set", async () => {
       Math.abs((agent.stats.costUsd ?? 0) - oneTurn) < 0.0001,
       `recomputed cost should be ~${oneTurn.toFixed(2)}, got ${agent.stats.costUsd}`,
     );
+    // snapshot hides cost entirely when pricing is unknown
     assert.equal(typeof agent.snapshot().stats.costUsd, "number");
     await agent.dispose();
   });
 });
 
 test("compaction keys off the API's prompt_tokens, not the char estimate", async () => {
+  // The history must be genuinely LONG as well as reported-large. A 3-message
+  // history has nothing worth summarizing: the recent-keep boundary lands on the
+  // tool result, safeCut backs the cut up to index 1, and the summarizable prefix
+  // is the opening prompt alone (~9 tokens) — so the cost gate correctly truncates.
+  // Each round therefore adds a big tool result, making the older half substantial.
   const big = "z".repeat(12_000);
+  // Alternate a tool call with a plain reply. A mock that ALWAYS issues a tool call
+  // runs each round to the 200-turn cap, and a constant `usage` keeps the history
+  // "over budget" forever — measured, that produced 199 compactions and 1000 LLM calls
+  // for five rounds, which took minutes and made this test flaky (it timed out on the
+  // previous code too, so the fixture was the problem, not the feature).
   const mock = mkMock((req): LlmResult => {
     if (isSummarizerRequest(req.messages)) return reply("- notes from earlier");
     if (req.n % 2 === 1) return reply("done");
+    // the provider reports a large prefix while the TEXT is modest — the old char
+    // heuristic alone would never have triggered on this history
     return {
       ...reply("working", [tc(`w${req.n}`, "bash", { cmd: `echo ${"e".repeat(40)}` })]),
       usage: { inputTokens: 40_000, outputTokens: 2 },
@@ -662,15 +782,25 @@ test("compactNow forces a pass and reports whether it ran", async () => {
     assert.equal(r.ran, true);
     assert.equal(agent.stats.compactions, 1);
     assert.match(agent.conversation[0]!.content ?? "", /Context was compacted/);
+    // second call: already-compacted tiny history has nothing to cut
     const r2 = await agent.compactNow();
     assert.equal(r2.ran, false);
     await agent.dispose();
   });
 });
 
+/* ---------- context compaction ---------- */
+
 test("compaction summarizes old turns when the budget is exceeded", async () => {
   const mock = mkMock((req): LlmResult => {
     if (isSummarizerRequest(req.messages)) return reply("- SUMMARY: made big.txt with filler; next: verify");
+    // A large tool call EVERY round. A short history cannot reach the summarizer at
+    // all: the recent-keep boundary lands on the tool result, safeCut backs the cut
+    // up to index 1, and the summarizable prefix collapses to the opening prompt
+    // (measured ~9 tokens) — so the cost gate correctly chooses truncation. The
+    // fixture has to be long enough that the OLDER half is worth summarizing.
+    // alternate, so each round ends instead of running to the turn cap (see the note
+    // in the test above — a constant tool-call stream made these fixtures minutes long)
     if (req.n % 2 === 1) return reply("done");
     return reply("writing", [tc(`w${req.n}`, "bash", { cmd: `echo ${"e".repeat(200)}` })]);
   });
@@ -682,11 +812,16 @@ test("compaction summarizes old turns when the budget is exceeded", async () => 
     }
 
     assert.equal(agent.status, "idle");
+    // >= 1, not == 1: a deliberately long history compacts repeatedly as it grows,
+    // and pinning the exact count would make the test fail on an unrelated change to
+    // how eagerly the budget is enforced. What it asserts is that the SUMMARIZE path
+    // ran — the note carries the summarizer's text, which truncation never produces.
     assert.ok(agent.stats.compactions >= 1, `expected a compaction, got ${agent.stats.compactions}`);
     const note = agent.conversation[0]!;
     assert.equal(note.role, "user");
     assert.match(note.content ?? "", /Context was compacted/);
     assert.match(note.content ?? "", /made big\.txt/, `the summary text must be the summarizer's, not a truncation notice: ${String(note.content).slice(0, 80)}`);
+    // kept tail still starts at a valid boundary and contains the exchange
     assert.equal(agent.conversation[1]!.role, "assistant");
     const events = await readEvents(agent.log.filePath);
     const noteEv = events.find(
@@ -696,6 +831,8 @@ test("compaction summarizes old turns when the budget is exceeded", async () => 
     await agent.dispose();
   });
 });
+
+/* ---------- session restore from JSONL ---------- */
 
 test("restart rebuilds conversation (incl. tool args/results) from the log", async () => {
   const first = mkMock((req): LlmResult =>
@@ -714,23 +851,25 @@ test("restart rebuilds conversation (incl. tool args/results) from the log", asy
       id: "t",
       workspace: ws,
       llm: LLM,
-      sessionDir: data, 
+      sessionDir: data, // restart → same session directory
       continueDelayMs: 10,
       chatFn: second.chat,
     });
     await b.init();
-    assert.equal(b.status, "stopped"); 
-    await b.load(); 
+    assert.equal(b.status, "stopped"); // lazy: not restored at boot
+    await b.load(); // explicit load (what clicking the agent in the UI does)
 
     const msgs = b.conversation;
-    assert.equal(msgs.length, 4); 
+    assert.equal(msgs.length, 4); // prompt, assistant+call, tool result, final assistant
     assert.deepEqual(
       msgs.map((m) => m.role),
       ["user", "assistant", "tool", "assistant"],
     );
+    // tool arguments were recovered from the logged tool_call event
     assert.match(msgs[1]!.tool_calls![0].function.arguments, /hello\.txt/);
     assert.match(msgs[2]!.content ?? "", /wrote/);
 
+    // restored agent can keep working without breaking the sequence
     b.enqueuePrompt("wrap up please");
     b.start("resume");
     await b.settled();
@@ -739,6 +878,8 @@ test("restart rebuilds conversation (incl. tool args/results) from the log", asy
     await b.dispose();
   });
 });
+
+/* ---------- runaway guard ---------- */
 
 test("consecutive tool failures trip the runaway guard", async () => {
   let n = 0;
@@ -756,11 +897,15 @@ test("consecutive tool failures trip the runaway guard", async () => {
 });
 
 test("tools recover after stop(): the abort signal is re-armed per round", async () => {
+  // regression: stop() aborted the shared tool signal and only the
+  // parkedByTool path ever re-armed it, so every tool in the NEXT round
+  // returned "aborted (harness shutdown)" until a full process restart
   let n = 0;
   const mock = mkMock(() =>
     n++ === 0 ? reply("working", [tc("t1", "list_dir", {})]) : reply("done"),
   );
   await withAgent({ chatFn: mock.chat, autoContinue: false }, async (agent) => {
+    // poison the signal exactly like a previous stop() would have
     (agent as unknown as { toolAbort: AbortController }).toolAbort.abort();
     agent.enqueuePrompt("go");
     agent.start("t");
@@ -778,6 +923,9 @@ test("tools recover after stop(): the abort signal is re-armed per round", async
 });
 
 test("failure counter resets between rounds (start works after an error)", async () => {
+  // regression: the counter only reset on tool SUCCESS, so an agent that hit
+  // the runaway limit stayed poisoned — the next start tripped "N consecutive
+  // failures" again on its very first failure and could never recover
   let failing = true;
   let calls = 0;
   await withAgent(
@@ -789,7 +937,7 @@ test("failure counter resets between rounds (start works after an error)", async
         return failing
           ? reply("try", [tc(`bad${calls}`, "read_file", { path: "missing.txt" })])
           : calls % 2 === 0
-            ? reply("recovered, all done") 
+            ? reply("recovered, all done") // plain answer ends the round
             : reply("recovering", [tc(`ok${calls}`, "list_dir", {})]);
       },
     },
@@ -809,13 +957,17 @@ test("failure counter resets between rounds (start works after an error)", async
 });
 
 test("onError:retry rides out runaway tool failures and recovers", async () => {
+  // default behavior stays "stop". With onError:"retry" a round-fatal error —
+  // INCLUDING the runaway trip (a tool that keeps failing) — surfaces, waits
+  // (doubled per attempt), and starts a fresh round AUTOMATICALLY. The runaway
+  // path is deterministic here: no LLM retry inside, so the test is fast.
   let calls = 0;
   let failing = true;
   const chatFn = async (): Promise<LlmResult> => {
     calls++;
     if (failing) return reply("try", [tc(`bad${calls}`, "read_file", { path: "missing.txt" })]);
     return calls % 2 === 0
-      ? reply("recovered, all done") 
+      ? reply("recovered, all done") // plain answer ends the recovering round
       : reply("recovering", [tc(`ok${calls}`, "list_dir", {})]);
   };
   await withAgent(
@@ -823,6 +975,8 @@ test("onError:retry rides out runaway tool failures and recovers", async () => {
     async (agent) => {
       agent.enqueuePrompt("break it");
       agent.start("r1");
+      // flip to healthy once runaway has tripped (2 failures logged); the
+      // outer retry then starts a fresh round that succeeds on its own
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline && calls < 3) await new Promise((r) => setTimeout(r, 20));
       assert.ok(calls >= 3, `runaway must trip after ${"the"} limit — calls=${calls}`);
@@ -841,11 +995,14 @@ test("onError:retry rides out runaway tool failures and recovers", async () => {
 });
 
 test("per-round turn cap ends the round silently and logs a note (no model nudge)", async () => {
+  // The cap is a HARNESS-side checkpoint: it logs round-turn-cap for the
+  // operator, but sends NO model-facing nudge — "the round ended, consider
+  // finish()" invited premature finishes that conflicted with the goal.
   let n = 0;
   await withAgent(
     {
       maxTurnsPerRound: 3,
-      autoContinue: false, 
+      autoContinue: false, // round simply ENDS at the cap; nothing nudges the model
       chatFn: async (): Promise<LlmResult> => {
         n++;
         return reply(`step ${n}`, [tc(`t${n}`, "list_dir", {})] as never);
@@ -855,8 +1012,8 @@ test("per-round turn cap ends the round silently and logs a note (no model nudge
       agent.enqueuePrompt("go");
       agent.start("test");
       await agent.settled();
-      assert.equal(agent.status, "idle"); 
-      assert.equal(agent.stats.turns, 3); 
+      assert.equal(agent.status, "idle"); // soft checkpoint — not an error
+      assert.equal(agent.stats.turns, 3); // exactly the cap, then the round ended
       const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
       assert.ok(
         events.find((e) => e.type === "system_note" && (e.data as any).event === "round-turn-cap"),
@@ -870,6 +1027,8 @@ test("per-round turn cap ends the round silently and logs a note (no model nudge
     },
   );
 });
+
+/* ---------- skills integration ---------- */
 
 test("agent saves, lists, then loads its own skill via tools", async () => {
   const body = "# Coffee protocol\n1. grind\n2. bloom\n3. pour";
@@ -885,11 +1044,11 @@ test("agent saves, lists, then loads its own skill via tools", async () => {
       ]);
     if (req.n === 1) return reply("checking my skills", [tc("s2", "list_skills", {})]);
     if (req.n === 2) {
-      assert.match(lastTool()!.content ?? "", /coffee-brewing/); 
+      assert.match(lastTool()!.content ?? "", /coffee-brewing/); // listed
       return reply("loading my skill", [tc("s3", "load_skill", { name: "coffee-brewing" })]);
     }
     if (req.n === 3) {
-      assert.match(lastTool()!.content ?? "", /grind/); 
+      assert.match(lastTool()!.content ?? "", /grind/); // full playbook returned
       return reply("skill loaded, finishing");
     }
     throw new Error("too many llm calls");
@@ -941,11 +1100,13 @@ test("set_todo updates: surgical checkbox flips without rewriting the list", asy
     agent.start("t");
     await agent.settled();
 
+    // exact section layout survives; both updated items are checked, "ship it" untouched
     assert.equal(
       agent.todo,
       "# plan\n\n## steps\n- [x] write the parser\n- [x] add tests for the parser\n- [ ] ship it\n",
     );
     assert.match(results[0]!, /1 item\(s\) updated/);
+    // unknown item is reported back, not silently dropped
     assert.match(results[1]!, /NOT FOUND in todo\.md: "no such item exists"/);
     assert.match(results[1]!, /1 item\(s\) updated/);
     await agent.dispose();
@@ -954,6 +1115,7 @@ test("set_todo updates: surgical checkbox flips without rewriting the list", asy
 
 test("compact budget: derived from window by default, manual only when configured", async () => {
   await useTempDirs(["teapot-cw-", "td-", "tm-", "tf-"], async ([ws, td, tm, tf]) => {
+  // derived: window known, no budget passed
   const derived = new Agent({
     id: "d",
     workspace: ws,
@@ -965,6 +1127,7 @@ test("compact budget: derived from window by default, manual only when configure
   assert.equal(derived.snapshot().ctx.compactAtIsManual, false);
   assert.equal(derived.snapshot().ctx.compactAt, Math.round(200_000 * 0.75));
 
+  // manual: explicit budget in config wins over derivation
   const manual = new Agent({
     id: "m",
     workspace: ws,
@@ -977,6 +1140,7 @@ test("compact budget: derived from window by default, manual only when configure
   assert.equal(manual.snapshot().ctx.compactAtIsManual, true);
   assert.equal(manual.snapshot().ctx.compactAt, 50_000);
 
+  // unknown window → default budget, still not "manual"
   const fallback = new Agent({
     id: "f",
     workspace: ws,
@@ -999,6 +1163,7 @@ test("verification contract: finish(goalComplete) is audited before done", async
     if (i === 0)
       return reply("attempting to finish", [tc("f1", "finish", { goalComplete: true, summary: "I did it" })]);
     if (i === 1)
+      // the auditor call: no tools, asks for APPROVED/CHANGES-REQUIRED
       return reply("CHANGES-REQUIRED: tests were never run and docs are missing");
     return reply("addressing gaps", [tc("f2", "finish", { goalComplete: false, summary: "still working" })]);
   };
@@ -1009,9 +1174,11 @@ test("verification contract: finish(goalComplete) is audited before done", async
     agent.start("t");
     await agent.settled();
 
+    // goal must NOT be done — audit rejected it
     assert.equal(agent.goal.status, "active", "changes-required must reopen the goal");
     assert.equal(agent.goal.audit?.verdict, "changes-required");
     assert.match(agent.goal.audit?.feedback ?? "", /tests were never run/);
+    // and the worker got the feedback queued as its next prompt
     assert.ok(
       calls[2]!.messages.some(
         (m) => m.role === "user" && String(m.content ?? "").includes("completion audit REJECTED"),
@@ -1038,6 +1205,7 @@ test("verification contract: auditor approval marks the goal done", async () => 
 
     assert.equal(agent.goal.status, "done");
     assert.equal(agent.goal.audit?.verdict, "approved");
+    // the audit outcome is visible in the timeline
     const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
     assert.ok(events.some((e) => e.type === "goal" && (e.data as any).event === "audit"));
     assert.ok(events.some((e) => e.type === "message" && String((e.data as any).content).includes("APPROVED")));
@@ -1053,7 +1221,7 @@ test("no verification contract: finish(goalComplete) marks done without audit", 
     throw new Error("auditor should not run without a verify contract");
   };
   await withAgent({ chatFn: chat, autoContinue: false }, async (agent) => {
-    await agent.setGoal("simple task"); 
+    await agent.setGoal("simple task"); // no verify
     agent.enqueuePrompt("go");
     agent.start("t");
     await agent.settled();
@@ -1076,6 +1244,7 @@ test("stopping mid-bash kills the process group and settles immediately", { time
   await withAgent({ chatFn: chat, autoContinue: false }, async (agent) => {
     agent.enqueuePrompt("go");
     agent.start("t");
+    // wait until the bash child is really running
     await new Promise((r) => setTimeout(r, 600));
     const t0 = Date.now();
     agent.stop("user interrupt");
@@ -1083,6 +1252,7 @@ test("stopping mid-bash kills the process group and settles immediately", { time
     const settleMs = Date.now() - t0;
     assert.equal(agent.status, "stopped");
     assert.ok(settleMs < 3_000, `stop must be prompt — took ${settleMs}ms`);
+    // the abort is recorded as the tool result with partial output preserved
     const events = await readEvents(agent.log.filePath);
     const tr = events.filter((e) => e.type === "tool_result").at(-1);
     assert.match(String(dataOf(tr!).result ?? ""), /ABORTED/);
@@ -1092,11 +1262,15 @@ test("stopping mid-bash kills the process group and settles immediately", { time
 
 test("compact budget re-derives when the model window changes (non-manual)", async () => {
   await withAgent({ autoContinue: false }, async (agent) => {
+    // simulate: model with a known 200k window, no manual budget
     (
       agent as unknown as { opts: { contextWindowTokens: number } }
     ).opts.contextWindowTokens = 200_000;
+    // trigger the same path setAgentModel uses via master — here we assert the
+    // derivation invariant the master relies on:
     const snap = agent.snapshot();
     void snap;
+    // direct check of the derivation rule used by both constructor & master
     const win = 200_000;
     const derived = Math.round(win * 0.75);
     assert.equal(derived, 150_000);
@@ -1121,6 +1295,7 @@ test("reload restores session stats and seeds the context gauge", async () => {
     await a.settled();
     const before = a.stats;
 
+    // fresh instance on the SAME session dir = what happens on teapot restart
     const b = new Agent({ id: "t2", workspace: ws, llm: LLM, sessionDir: sd });
     await b.init();
     await b.load();
@@ -1129,6 +1304,8 @@ test("reload restores session stats and seeds the context gauge", async () => {
     assert.equal(b.stats.toolCalls, before.toolCalls);
     assert.equal(b.stats.inputTokens, before.inputTokens);
     assert.equal(b.stats.cachedInputTokens, before.cachedInputTokens);
+    // the gauge seeds from real usage — not estimateTokens() (which would be
+    // ~0 right after restore and rendered as "0% of 1m")
     assert.equal(b.snapshot().ctx.usedTokens, usage.inputTokens);
     await b.dispose();
   });
@@ -1137,11 +1314,13 @@ test("reload restores session stats and seeds the context gauge", async () => {
 test("boot no longer creates a missing workspace; first tool run does", async () => {
   const { existsSync } = await import("node:fs");
   const missing = path.join(testTmpRoot(), `teapot-ghost-${Date.now()}`);
+  // `n` was never declared here: the chatFn threw ReferenceError on the first call, the
+  // agent swallowed it, and the test passed on the boot path it was really asserting.
   let n = 0;
   await useTempDir("teapot-ghost-sd-", async (sessionDir) => {
       const agent = new Agent({
         id: "g",
-        workspace: missing, 
+        workspace: missing, // deliberately nonexistent
         llm: LLM,
         sessionDir,
         chatFn: async () => {
@@ -1151,19 +1330,26 @@ test("boot no longer creates a missing workspace; first tool run does", async ()
         autoContinue: false,
       });
     await agent.init();
-    await agent.load(); 
+    await agent.load(); // what clicking the session in the UI does
+    // boot/load must NOT resurrect deleted project directories
     assert.equal(existsSync(missing), false, "workspace must not be created at boot");
     assert.equal(agent.snapshot().workspaceMissing, true);
     await agent.dispose();
   });
 });
 
+
 test("auto-continue is suppressed while a background bash runs; its exit wakes the agent", async () => {
+  // regression: an agent that parked work on `bash background=true` (dev
+  // server, watcher) got nagged with "Continue working toward the current
+  // goal" — it spun up duplicate work while it meant to WAIT. The job's exit
+  // notification is the wake-up; the nudge must not fire while it runs.
   const mock = mkMock((req): LlmResult => {
     if (req.n === 0)
       return reply("starting server", [tc("c1", "bash", { command: "sleep 0.3", background: true })]);
     if (req.n === 1)
       return reply("done for now", [tc("c2", "finish", { goalComplete: false, summary: "waiting on server" })]);
+    // after wake-up: the background report should be in context now
     if (req.n === 2) {
       const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
       assert.ok(
@@ -1178,6 +1364,8 @@ test("auto-continue is suppressed while a background bash runs; its exit wakes t
     await agent.setGoal("keep the dev server alive");
     agent.enqueuePrompt("start it and wait");
     agent.start("test");
+    // round 1 ends with the bg job running → auto-continue suppressed.
+    // Wait past the continue delay: no nudge may appear while the job runs…
     await agent.settled();
     await new Promise((r) => setTimeout(r, 60));
     const events = await readEvents(agent.log.filePath);
@@ -1188,6 +1376,7 @@ test("auto-continue is suppressed while a background bash runs; its exit wakes t
     const sup = events.find((e) => (e.data as any)?.event === "auto-continue-suppressed");
     assert.ok(sup, "suppression is visible in the log");
 
+    // …then the job exits → the agent resumes ON ITS OWN and consumes the report
     await new Promise((r) => setTimeout(r, 500));
     assert.equal(agent.snapshot().goal.status, "done");
     await agent.dispose();
@@ -1195,9 +1384,23 @@ test("auto-continue is suppressed while a background bash runs; its exit wakes t
 });
 
 test("reaching the round cap with auto-continue ON starts the NEXT round (#roundcap)", async () => {
+  // REPORTS: a session hit `⏸ round cap 200 turns`, logged `round complete`, and then sat
+  // idle instead of continuing. The cap is documented as a soft checkpoint that only
+  // LOGS — the round ends and auto-continue starts another — so if the agent goes idle
+  // here, something between the cap and the auto-continue gate is wrong.
+  //
+  // The distinction that matters: the existing cap test uses `autoContinue: false`, so it
+  // proves the round ENDS without asserting that anything CONTINUES. That is exactly the
+  // half that was never covered.
+  //
+  // BOUNDED on purpose: a mock that always calls a tool with auto-continue on never goes
+  // idle, so `settled()` would wait forever (measured — this test hung for 400 s before
+  // the bound existed). The mock stops the agent itself once it has seen enough.
   let n = 0;
   let caps = 0;
   let turnsAfter = 0;
+  // `withAgent` hands the agent to the callback, but the chatFn runs before that, so the
+  // agent is captured on the first turn instead of being referenced before it exists.
   let self: { stop: (why: string) => void } | null = null;
   await withAgent(
     {
@@ -1205,20 +1408,24 @@ test("reaching the round cap with auto-continue ON starts the NEXT round (#round
       autoContinue: true,
       chatFn: async (): Promise<LlmResult> => {
         n++;
+        // BOUND: without this the run never goes idle (always a tool call, always
+        // continue) and `settled()` waits forever — measured, 400 s.
         if (n > 8) self?.stop("enough");
         return reply(`step ${n}`, [tc(`t${n}`, "list_dir", {})] as never);
       },
     },
     async (agent) => {
       self = agent;
-      agent.setGoal("keep going"); 
+      agent.setGoal("keep going"); // auto-continue needs an ACTIVE goal
       agent.enqueuePrompt("go");
       agent.start("test");
       await agent.settled();
       const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
       caps = events.filter((e) => dataOf(e).event === "round-turn-cap").length;
       turnsAfter = agent.stats.turns;
+      // PRECONDITION: the cap was really reached, or "it continued" proves nothing
       assert.ok(caps >= 1, `precondition: the round cap must have been hit; turns=${turnsAfter}`);
+      // THE PROPERTY: the first round stopped at 3, and MORE turns followed
       assert.ok(
         turnsAfter > 3,
         `auto-continue must start another round after the cap (#roundcap); turns=${turnsAfter}`,
@@ -1228,6 +1435,13 @@ test("reaching the round cap with auto-continue ON starts the NEXT round (#round
 });
 
 test("set_todo can ADD an item — a new one is no longer just 'unknown' (#todo-add)", async () => {
+  // Report: the surgical path could only flip EXISTING checkboxes, so adding an item meant
+  // rewriting the whole list — the exact risk `updates` exists to avoid, and the operator's
+  // own headings/notes in todo.md would be at the mercy of a model re-emitting them.
+  //
+  // Codex (`update_plan`) and DeepSeek Harness (`todo/write`) both replace the whole list,
+  // which is safe when the harness OWNS the list. todo.md is a file the OPERATOR edits, so
+  // replacement stays opt-in (`content`) and `action:"add"` fills the gap instead.
   const results: string[] = [];
   let n = 0;
   const chat: ChatFn = async (_c, messages) => {
@@ -1263,10 +1477,13 @@ test("set_todo can ADD an item — a new one is no longer just 'unknown' (#todo-
     agent.start("t");
     await agent.settled();
 
+    // PRECONDITION + property: the operator's structure is INTACT — headings and the
+    // section survive, which is the whole reason this is not a whole-list rewrite
     assert.match(agent.todo, /^# plan\n\n## steps\n/, `headings must survive: ${agent.todo}`);
     assert.match(agent.todo, /- \[x\] write the parser/, "done still works");
     assert.match(agent.todo, /- \[ \] brand new task/, "the ADDED item is present and unchecked");
     assert.match(results[0]!, /1 item\(s\) added/, `the reply must say what happened: ${results[0]}`);
+    // second pass: `ship it` removed, `brand new task` reopened
     assert.doesNotMatch(agent.todo, /ship it/, "remove deletes the line");
     assert.match(agent.todo, /- \[ \] brand new task/, "reopen unchecks it again");
     assert.match(results[1]!, /1 item\(s\) removed/, `got: ${results[1]}`);
@@ -1280,6 +1497,8 @@ test("set_todo can ADD an item — a new one is no longer just 'unknown' (#todo-
 });
 
 test("set_todo keeps its old {item, done} shape working (#todo-add)", async () => {
+  // The `action` field is additive: a model (or a saved prompt) that only sends
+  // {item, done} must behave exactly as before. `done:false` means reopen.
   await withAgent({ chatFn: async () => reply("ok"), autoContinue: false }, async (agent) => {
     await agent.setTodo("- [x] one\n- [ ] two\n");
     const note = await agent.updateTodoItems([
@@ -1293,6 +1512,17 @@ test("set_todo keeps its old {item, done} shape working (#todo-add)", async () =
 });
 
 test("a progress REQUEST answered with a different tool does not answer 'progress recorded' (#progress)", async () => {
+  /**
+   * Reported from a real session: a `bash` call whose result was the literal string
+   * "progress recorded" with `durationMs: 0`, so the command never ran — its output only appeared a
+   * turn later, which read as a stray duplicate. The next `progress` row then said
+   * "(no report produced)".
+   *
+   * MEASURED (seq 62247/62248 in that log): the assistant turn carried exactly ONE tool call,
+   * `bash`, and the harness answered it with the report acknowledgement. The loop that answers a
+   * progress request wrote `"progress recorded"` for EVERY call instead of only for
+   * `report_progress`, so a model that chose to keep working was told its bash had reported.
+   */
   let sawAsk = false;
   const seen: { name: string; result: string }[] = [];
   await withAgent(
@@ -1302,6 +1532,7 @@ test("a progress REQUEST answered with a different tool does not answer 'progres
         const asked = /Please give a brief progress report/.test(String(lastUser?.content ?? ""));
         if (asked && !sawAsk) {
           sawAsk = true;
+          // chooses to keep working instead of reporting — the reported case
           return reply("", [tc("b1", "bash", { command: "echo still-working" })]);
         }
         if (sawAsk) return reply("done", [tc("f", "finish", { goalComplete: true })]);

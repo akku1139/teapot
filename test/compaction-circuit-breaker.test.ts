@@ -1,3 +1,17 @@
+/**
+ * A repeatedly failing auto-compaction must stop retrying (ZCode's circuit breaker).
+ *
+ * ZCode states the rule precisely: "Auto compact 失败不应让当前用户 turn 失败；它只增加连续
+ * 失败计数，达到 maxConsecutiveFailures 后跳过后续自动尝试，直到一次成功 compact 重置计数"
+ * (`max auto failures: 3`).
+ *
+ * The failure is usually ENVIRONMENTAL — an unavailable model, a provider outage — so
+ * retrying it on every turn re-burns the provider for a pass that cannot succeed.
+ *
+ * Measured before the breaker worked: 217 consecutive summarize failures in six rounds,
+ * with the counter stuck at 0. The reset was the bug — the truncate fallback also lands
+ * on the success path, so it kept clearing the count that the failure had just set.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -6,6 +20,7 @@ import { readEvents } from "../src/log/events.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
+/** an agent whose summarizer always fails and whose history keeps growing */
 async function failingSummarizer(rounds: number) {
   const ws = mkdtempInRootSync("cb-");
   const sd = mkdtempInRootSync("cbs-");
@@ -84,6 +99,7 @@ test("the failure never fails the agent's turn (ZCode: it must not) (#150)", asy
 });
 
 test("a MANUAL compaction still tries after the breaker has tripped (#150)", async () => {
+  // the breaker exists to stop eager AUTO retries, not to refuse an explicit request
   const { a, calls } = await failingSummarizer(4);
   try {
     const before = calls();

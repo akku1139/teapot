@@ -2,10 +2,25 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fmtDur } from "../frontend/lib/format.ts";
 
+/**
+ * A duration must never contain a unit value of 60.
+ *
+ * Reported as "2分60秒とは???". `fmtDur` floored the larger unit and rounded the remainder
+ * INDEPENDENTLY, so a value just below a boundary rounded up into an impossible number:
+ *
+ *   59999  -> "60.0s"
+ *   119999 -> "1m 60s"
+ *   3599999 -> "59m 60s"
+ *
+ * Driving the WHOLE range rather than the three reported values, because the bug is a boundary
+ * class, not three cases: any test that only pins 119999 would pass again the moment the same
+ * independent-rounding shape came back one unit down.
+ */
 test("no duration ever renders a 60 in any unit (#dur)", () => {
   const bad: string[] = [];
   for (let ms = 0; ms <= 7_300_000; ms += 137) {
     const s = fmtDur(ms);
+    // "60s", "60m", or a decimals form that rounded to 60 ("60.0s")
     if (/(^|\D)60(\.0)?[sm]/.test(s)) bad.push(`${ms} -> ${s}`);
   }
   assert.deepEqual(bad, [], "a duration with 60 seconds or 60 minutes means the rollover was lost");

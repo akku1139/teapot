@@ -1,3 +1,29 @@
+/**
+ * #140 — two bugs in the shipped package, both reported against v0.28.0.
+ *
+ * ## 1. `teapot` was not bootable from the `teapot` command
+ *
+ * `npm i -g teapot-coding-agent` creates a SYMLINK at `node_modules/.bin/teapot`
+ * and npm invokes the target THROUGH it, so `process.argv[1]` is the symlink path
+ * — `…/node_modules/.bin/teapot` — not the file it points at.
+ *
+ * My entry-point guard (added when `parseArgs` was extracted, so the module could
+ * be imported for testing without booting a server) compared `argv[1]` against
+ * `import.meta.url`'s pathname and two `endsWith` suffixes. A symlink path matches
+ * none of them, so `main()` never ran and the command exited 0 in silence.
+ *
+ * ## 2. `--host` was meaningless — the default was the opposite of the documented
+ *
+ * `--help` says "127.0.0.1 (default) · 0.0.0.0 exposes the UI to your network".
+ * The default was `process.env.TEAPOT_HOST`, i.e. UNDEFINED, and an undefined
+ * hostname makes `@hono/node-server` bind EVERY interface. So the default DID
+ * expose the UI to the network.
+ *
+ * Measured before the fix, with no `--host` at all: the server answered on the
+ * machine's LAN address as well as loopback.
+ *
+ * These are behavioural and are exercised by actually starting the built server.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -13,8 +39,17 @@ import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 
+/**
+ * How long a spawned server gets to print its listening line.
+ *
+ * #144: 30s was not enough under full-suite load — `node --test` runs files in
+ * parallel, and this file spawns THREE real servers, so it lost the race and the
+ * file reported `✖ (30043ms)`. The standalone run takes ~4.4s, so this is a
+ * scheduling margin, not a timeout that was doing useful work.
+ */
 const BOOT_TIMEOUT_MS = 60_000;
 
+/** a non-loopback IPv4 address, if this host has one */
 function lanAddress(): string | null {
   for (const addrs of Object.values(networkInterfaces())) {
     for (const a of addrs ?? []) {
@@ -24,10 +59,14 @@ function lanAddress(): string | null {
   return null;
 }
 
+/** run the built CLI and resolve once it prints the listening line */
 async function startServer(args: string[], dataDir: string): Promise<{ proc: import("node:child_process").ChildProcess; port: number; log: string }> {
   const entry = path.join(repo, "dist", "index.js");
   assert.ok(existsSync(entry), "precondition: dist is built");
   const port = await freePort();
+  // #143: isolate BOTH paths — see isolatedBootEnv. Redirecting only the data dir
+  // rewrites a developer's real config (every configured agent mints a session in
+  // the temp dir and persists that pointer into the real file).
   const boot = isolatedBootEnv(dataDir, port);
   const proc = spawn(process.execPath, [entry, "--port", String(port), ...args], {
     env: { ...process.env, ...boot.env },
@@ -64,7 +103,10 @@ async function reachable(port: number, host: string, ms = 2500): Promise<boolean
   }
 }
 
+/* ---------- 1. the entry point ---------- */
+
 test("the published bin actually starts (#140)", async (t) => {
+  // end-to-end: spawn the way npm does, THROUGH a symlink named `teapot`
   await useTempDirs(["t140a-"], async ([dataDir]) => {
     const binDir = mkdtempInRootSync("t140bin-");
     const link = path.join(binDir, "teapot");
@@ -72,10 +114,29 @@ test("the published bin actually starts (#140)", async (t) => {
     try {
       symlinkSync(path.join(repo, "dist", "index.js"), link);
     } catch (e) {
+      // #141: Windows runners commonly lack the privilege to create a symlink, and
+      // the throw happened at LOAD — killing the whole file with
+      // `✖ test/cli-boot-and-host.test.ts (238ms)` and no diagnostic.
+      //
+      // Skipping is honest: the symlink is the mechanism, and where the OS forbids
+      // it, `realpathSync` resolution cannot be exercised. The non-symlink boot
+      // below still runs on every platform, and the source-level assertion that
+      // `realpathSync` is used at all is platform-independent.
       t.skip(`cannot create a symlink here: ${(e as Error).message.slice(0, 60)}`);
       return;
     }
     const port = await freePort();
+    // #141: spawn `node <link>`, NOT `<link>`.
+    //
+    // Executing the file directly relies on its `#!/usr/bin/env node` shebang,
+    // which Windows does not honour — `spawn(link)` there fails immediately, and
+    // because the failure happened before the first assertion the whole FILE was
+    // reported as `✖ (249ms)` with no diagnostic.
+    //
+    // Passing the link as an ARGUMENT reproduces what npm actually does — argv[1]
+    // is the symlink path — and needs no shebang support, so the mechanism under
+    // test (#140: argv[1] must be resolved through the symlink) is exercised on
+    // every platform.
     const proc = spawn(process.execPath, [link, "--port", String(port)], {
       env: { ...process.env, ...isolatedBootEnv(dataDir!, port).env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -106,6 +167,10 @@ test("the published bin actually starts (#140)", async (t) => {
 });
 
 test("the built entry point boots when run DIRECTLY, on every platform (#140)", async () => {
+  // #141: the symlink test above skips where the OS forbids symlinks (Windows
+  // runners usually do), so without this the platform most likely to have the
+  // problem would have no end-to-end boot coverage at all. `node dist/index.js`
+  // is the other documented way to start the product, and it needs no privilege.
   await useTempDirs(["t140d-"], async ([dataDir]) => {
     const entry = path.join(repo, "dist", "index.js");
     assert.ok(existsSync(entry), "precondition: dist is built");
@@ -139,6 +204,8 @@ test("the built entry point boots when run DIRECTLY, on every platform (#140)", 
   });
 });
 
+/* ---------- 2. the default host ---------- */
+
 test("the default binds loopback only (#140)", async () => {
   const lan = lanAddress();
   await useTempDirs(["t140b-"], async ([dataDir]) => {
@@ -159,6 +226,8 @@ test("the default binds loopback only (#140)", async () => {
 });
 
 test("--host 0.0.0.0 still opts into exposure (#140)", async () => {
+  // the fix must not make --host meaningless — that was the second half of the
+  // report
   const lan = lanAddress();
   await useTempDirs(["t140c-"], async ([dataDir]) => {
     const { proc, port, log } = await startServer(["--host", "0.0.0.0"], dataDir!);
@@ -174,9 +243,11 @@ test("--host 0.0.0.0 still opts into exposure (#140)", async () => {
   });
 });
 
+/** a non-loopback IPv6 address, if this host has one */
 function lanAddress6(): string | null {
   for (const addrs of Object.values(networkInterfaces())) {
     for (const a of addrs ?? []) {
+      // node reports family as "IPv6" or the number 6 depending on version
       const fam = String(a.family);
       if ((fam === "IPv6" || fam === "6") && !a.internal && !a.address.startsWith("fe80::")) {
         return a.address;
@@ -187,12 +258,29 @@ function lanAddress6(): string | null {
 }
 
 test("--host 0.0.0.0 must be DUAL-STACK, not IPv4-only (#158 report)", async () => {
+  // Reported against v0.29.19: "--host 0.0.0.0 にしても tailscale 越しに接続できない",
+  // with the tell that an IPv4-only reverse proxy in front DID work. That
+  // asymmetry is the whole diagnosis:
+  //
+  //     listen({host:"0.0.0.0"}) -> bound 0.0.0.0 | family IPv4  <- IPv4 ONLY
+  //     listen({host:"::"})      -> bound ::      | family IPv6  <- DUAL STACK
+  //
+  // MEASURED on this host, teapot vs the proxy that worked:
+  //
+  //     0.0.0.0:7789  teapot  LISTEN 0.0.0.0:7789   IPv6 -> connection failed
+  //          *:7788  proxy   LISTEN       *:7788    IPv6 -> 200
+  //
+  // Tailscale gives the host BOTH families (100.x AND fd7a:…), so a client that
+  // resolves the host to its IPv6 address cannot reach an IPv4-only listener.
+  // "Expose to the network" has to mean the network that exists.
   const v6 = lanAddress6();
   await useTempDirs(["t158c-"], async ([dataDir]) => {
     const { proc, port, log } = await startServer(["--host", "0.0.0.0"], dataDir!);
     try {
       assert.match(log, /all interfaces/, "it must still report exposure (#140)");
       assert.ok(await reachable(port, "127.0.0.1"), "IPv4 loopback must serve");
+      // IPv6 loopback is always present, so this half never needs a LAN and can
+      // never skip — it is the assertion that fails on an IPv4-only bind
       assert.ok(
         await reachable(port, "[::1]"),
         "--host 0.0.0.0 must accept IPv6 too, or an IPv6 client cannot connect " +

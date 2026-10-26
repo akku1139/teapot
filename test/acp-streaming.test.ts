@@ -1,3 +1,15 @@
+/**
+ * #15 — streaming `session/update` during a turn.
+ *
+ * The baseline landed `drainOnce` and left it **never called**. The editor
+ * therefore saw nothing at all until a whole turn finished, which is the
+ * difference between a usable agent and a black box that eventually prints an
+ * answer. Nothing noticed, because the previous tests only covered the
+ * request/response contract — `drainOnce` had no test and no caller.
+ *
+ * The mapping is a pure function so it can be checked directly, and the turn
+ * itself is driven end to end so the wiring is covered too.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
@@ -8,7 +20,12 @@ import { AcpAdapter, updateForEvent } from "../src/acp/adapter.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
+// #110: POSIX-only — runs POSIX commands through the bash tool; POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool; POSIX filesystem paths");
+
+/* ---------- the mapping, in isolation ---------- */
 
 const ws = "/work/proj";
 
@@ -19,6 +36,9 @@ test("an assistant message becomes an agent_message_chunk (#15)", () => {
 });
 
 test("an empty or operator-facing message is NOT sent (#15)", () => {
+  // The completion audit's verdict is logged as a message but is NOT something
+  // the agent said; showing it as the agent speaking a harness verdict would be
+  // a lie to the editor.
   for (const data of [
     { content: "" },
     { content: "   " },
@@ -44,10 +64,13 @@ test("a tool_call becomes a tool_call with kind, title and location (#15)", () =
   assert.equal(u!.kind, "read", "read_file is a read (#15)");
   assert.equal(u!.status, "in_progress");
   assert.equal(u!.title, "src/a.ts", "the title is the path (#15)");
+  // locations are how an editor opens the file; they MUST be absolute
   assert.deepEqual(u!.locations, [{ path: "/work/proj/src/a.ts" }]);
 });
 
 test("tool kinds map onto the schema's own enum (#15)", () => {
+  // enum verified against schema/v1/schema.json: read, edit, delete, move,
+  // search, execute, fetch, think, switch_mode, other, description
   const kindOf = (name: string) =>
     (updateForEvent({ type: "tool_call", data: { callId: "x", name, args: {} } }, { workspace: ws })!
       .kind);
@@ -58,6 +81,7 @@ test("tool kinds map onto the schema's own enum (#15)", () => {
   assert.equal(kindOf("edit_file"), "edit");
   assert.equal(kindOf("write_file"), "edit");
   assert.equal(kindOf("apply_patch"), "edit");
+  // an unknown tool is "other", never a guess that implies a capability
   assert.equal(kindOf("spawn_agent"), "other");
 });
 
@@ -89,6 +113,8 @@ test("a tool_result becomes a tool_call_update with the outcome (#15)", () => {
 });
 
 test("internal events are NOT invented into tool calls (#15)", () => {
+  // The old drainOnce mapped EVERY non-message to a tool_call, so a state
+  // transition rendered as a bogus tool call in the editor.
   for (const type of ["state", "goal", "todo", "decision", "compaction", "system_note", "fork"]) {
     assert.equal(
       updateForEvent({ type, data: { from: "idle", to: "running" } }, { workspace: ws }),
@@ -97,6 +123,8 @@ test("internal events are NOT invented into tool calls (#15)", () => {
     );
   }
 });
+
+/* ---------- the turn, end to end ---------- */
 
 function mkMaster(dataDir: string): Master {
   return new Master(
@@ -112,6 +140,12 @@ function mkMaster(dataDir: string): Master {
   );
 }
 
+/**
+ * A scripted LLM that makes a REAL tool call, so the turn produces the events
+ * the editor actually needs streamed: a tool_call, its result, and the closing
+ * message. An unreachable endpoint produces only state/prompt events, all of
+ * which are correctly silent — that would prove nothing about streaming.
+ */
 function scriptedLlm() {
   const tc = (id: string, name: string, args: unknown) => ({
     id,
@@ -146,18 +180,9 @@ test("a prompt streams session/update WHILE the turn is still running (#15)", as
     await call(1, "initialize", { protocolVersion: 1 });
     await new Promise((r) => setTimeout(r, 80));
 
+    // the session's agent, wired to a scripted LLM
     await call(2, "session/new", { cwd: dataDir!, mcpServers: [] });
-    /**
-     * POLL, do not wait a fixed 400ms.
-     *
-     * `session/new` creates an agent, and agent creation races a model-catalog lookup against
-     * `MODEL_META_BOOT_MS` (1500ms) — so under a loaded runner this took longer than the old fixed
-     * wait and the test read `sent` before the reply arrived. MEASURED: the failure only appeared in
-     * the full suite, never when the file ran alone.
-     */
-    for (let i = 0; i < 100 && !sent.some((m) => m.id === 2); i++) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await new Promise((r) => setTimeout(r, 400));
     const sessionId = sent.find((m) => m.id === 2)?.result?.sessionId;
     assert.ok(sessionId, `session/new must return an id (#15); got ${JSON.stringify(sent)}`);
     const sessions = (adapter as unknown as {
@@ -166,6 +191,11 @@ test("a prompt streams session/update WHILE the turn is still running (#15)", as
     const session = sessions.get(sessionId!);
     assert.ok(session, "the session must be registered (#15)");
 
+    // Swap in a REAL agent driven by the scripted LLM. Mutating the existing
+    // one does not work: Agent captures `opts.chatFn` at construction, so the
+    // swap has to happen where the agent is BUILT. Doing it here rather than
+    // adding a test-only injection hook to the adapter keeps production code
+    // free of a seam that exists only for this test.
     const real = new Agent({
       id: sessionId!,
       workspace: dataDir!,
@@ -200,10 +230,12 @@ test("a prompt streams session/update WHILE the turn is still running (#15)", as
       `the closing message must be streamed (#15); got ${JSON.stringify(kinds)}`,
     );
 
+    // ordering: the call precedes its result
     assert.ok(
       kinds.indexOf("tool_call") < kinds.indexOf("tool_call_update"),
       `a result must follow its call (#15); got ${JSON.stringify(kinds)}`,
     );
+    // and the whole turn is answered
     assert.ok(
       sent.some((m) => m.id === 3),
       `session/prompt must answer (#15); got ${JSON.stringify(sent)}`,
@@ -214,11 +246,13 @@ test("a prompt streams session/update WHILE the turn is still running (#15)", as
       "streaming must precede the reply (#15)",
     );
 
+    // every notification is well-formed
     for (const u of updates) {
       assert.equal(u.jsonrpc, "2.0");
       assert.equal(u.params.sessionId, sessionId, "each update names its session (#15)");
       assert.equal(u.id, undefined, "a notification gets no id (#15)");
     }
+    // the tool call is addressed with the schema's required fields
     const call_ = updates.find((m) => m.params.update.sessionUpdate === "tool_call")!.params.update;
     assert.ok(call_.toolCallId, "tool_call requires toolCallId (#15)");
     assert.ok(call_.title, "tool_call requires title (#15)");
@@ -230,4 +264,6 @@ test("a prompt streams session/update WHILE the turn is still running (#15)", as
     await master.stopAllAgents?.(5_000);
   });
 });
+
+/* ---------- stdout is the protocol: nothing else may touch it ---------- */
 

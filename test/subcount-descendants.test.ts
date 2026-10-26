@@ -1,3 +1,19 @@
+/**
+ * #98 — "some sessions do not have their sub-agents counted."
+ *
+ * The sidebar's 🧩 badge counted only DIRECT children:
+ *
+ *     agents().filter((x) => x.parent === row.a.id)
+ *
+ * so a sub-agent that spawned its own was not counted at all. Worse, the
+ * `· ▶N` active count had the same shape, so a busy subtree several levels down
+ * rendered as an idle-looking parent — which is exactly the case the badge exists
+ * for: "a busy parent must not look idle with its subtree hidden".
+ *
+ * `subtreeUnread` in App.tsx already recursed for notifications, so the two
+ * badges could disagree about the same subtree. `descendantsOf()` is the shared
+ * version, cycle-guarded on `parent`.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { descendantsOf } from "../frontend/lib/sidebar-tree.ts";
@@ -11,6 +27,7 @@ interface A {
 const agent = (id: string, parent = "", status = "stopped"): A => ({ id, parent, workspace: "/w", status });
 const isLive = (a: A) => a.status === "running" || a.status === "waiting";
 
+/** what the badge rendered before, and what it renders now */
 function badge(agents: A[], root: string) {
   const direct = agents.filter((x) => x.parent === root);
   const all = descendantsOf(agents, root);
@@ -28,6 +45,7 @@ test("descendants are counted at every depth (#98)", () => {
 });
 
 test("a running NESTED sub-agent shows as active (#98)", () => {
+  // the badge's stated purpose: a busy parent must not look idle when collapsed
   const agents = [agent("root"), agent("a", "root"), agent("b", "a", "running")];
   assert.equal(badge(agents, "root").before, "1", "precondition: the old count missed it (#98)");
   assert.equal(badge(agents, "root").after, "2 · ▶1", "and it must now be visible (#98)");
@@ -39,12 +57,15 @@ test("three levels deep still counts and reports activity (#98)", () => {
 });
 
 test("direct children are still counted — no regression (#98)", () => {
+  // the reported case: 4 direct subs all stopped. The badge said 4 and must
+  // still say 4; this guards against "fixing" the undercount by over-counting
   const agents = [agent("teapot"), ...Array.from({ length: 4 }, (_, i) => agent(`s${i}`, "teapot"))];
   assert.equal(badge(agents, "teapot").before, "4");
   assert.equal(badge(agents, "teapot").after, "4", "must be unchanged (#98)");
 });
 
 test("siblings of a nested sub are not double-counted (#98)", () => {
+  // root -> a, root -> c, a -> b : the result must contain each id once
   const agents = [agent("root"), agent("a", "root"), agent("c", "root"), agent("b", "a")];
   const ids = descendantsOf(agents, "root").map((x) => x.id);
   assert.deepEqual(ids, ["a", "b", "c"], "each descendant appears exactly once (#98)");
@@ -52,6 +73,7 @@ test("siblings of a nested sub are not double-counted (#98)", () => {
 });
 
 test("a parent cycle terminates instead of recursing forever (#98)", () => {
+  // a corrupt log could contain a -> b -> a; the helper must not hang the UI
   const agents = [agent("root"), { ...agent("a", "b"), workspace: "/w" }, { ...agent("b", "a"), workspace: "/w" }];
   assert.doesNotThrow(() => descendantsOf(agents, "root"), "a cycle must not hang (#98)");
 });

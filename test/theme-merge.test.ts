@@ -1,3 +1,17 @@
+/**
+ * A THEME LIST FROM THE SERVER MUST NEVER DELETE THE ONE IN THE BROWSER.
+ *
+ * Reported: "テーマの follow the system がオフなのにライトテーマ(システムのテーマ)の選択肢しかでない".
+ *
+ * The cause was the server-sync reconciliation, added in v0.36.0 with the rule "a server with
+ * themes wins, because they are the durable copy". That rule is wrong in the direction that loses
+ * data: MEASURED in a sandbox whose config held ONE stale light theme, seven themes in the browser
+ * were replaced by that one — and because the survivor happened to be light, the appearance panel
+ * offered only light themes while the appearance was dark.
+ *
+ * Neither side is authoritative: a theme can be made on a phone and not yet synced, and the config
+ * file can hold themes from before this browser existed. The resolved list must be the UNION by id.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeThemes } from "../frontend/lib/theme-merge.ts";
@@ -14,6 +28,7 @@ const theme = (id: string, label = id): CustomTheme =>
   ({ id, label, mode: "dark", palette: PALETTE }) as CustomTheme;
 
 test("a server holding ONE theme does not delete the browser's others (#themes-merge)", () => {
+  // the reported case: the server had a single stale light theme, the browser had several
   const local = [theme("a"), theme("b"), theme("c")];
   const remote = [theme("stale")];
   const merged = mergeThemes(local, remote);
@@ -27,6 +42,7 @@ test("a server holding ONE theme does not delete the browser's others (#themes-m
 });
 
 test("the server's copy wins for an id both sides know (#themes-merge)", () => {
+  // the server is the durable copy, so an edited-there theme must not be shadowed by a stale local
   const local = [theme("shared", "old label")];
   const remote = [theme("shared", "new label")];
   const merged = mergeThemes(local, remote);

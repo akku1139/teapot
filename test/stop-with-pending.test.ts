@@ -1,3 +1,22 @@
+/**
+ * #9 — "stopping with a pending message behaves oddly."
+ *
+ * A previous fix (49524d1) addressed one symptom: the reconcile heuristic and a
+ * lying badge. This checks the two claims actually made in the latest report
+ * against current code.
+ *
+ *   1. pending messages are NOT withdrawn on stop
+ *   2. the UI still shows it as if it were running
+ *
+ * Claim 1 is intentional, not a bug: a stop must not destroy queued work. The
+ * agent is resumable, and a message silently vanishing on stop would be far
+ * worse than surviving. What matters is that (a) it is never DELIVERED while
+ * stopped, and (b) the UI says so plainly rather than implying progress.
+ *
+ * (b) used to be pinned by matching tooltip strings in App.tsx — source text,
+ * so those are gone; the badge and tooltip are asserted against the real bundle
+ * in scripts/smoke-web.ts.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -15,6 +34,8 @@ function agentWithQueue(ws: string, sd: string, opts: Record<string, unknown> = 
     ...opts,
   } as never) as Agent;
 }
+
+/* ---------- claim 1: the queue survives the stop, undelivered ---------- */
 
 test("stop does NOT withdraw a queued message (#9)", async () => {
   await useTempDirs(["s9a-", "s9b-"], async ([ws, sd]) => {
@@ -36,6 +57,7 @@ test("stop does NOT withdraw a queued message (#9)", async () => {
 });
 
 test("a stopped agent never delivers the queue (#9)", async () => {
+  // the dangerous direction: surviving is fine, DELIVERING while stopped is not
   await useTempDirs(["s9c-", "s9d-"], async ([ws, sd]) => {
     let llmCalls = 0;
     const a = agentWithQueue(ws!, sd!, {
@@ -58,6 +80,7 @@ test("a stopped agent never delivers the queue (#9)", async () => {
 });
 
 test("the queue is delivered on a later start (#9)", async () => {
+  // survival is only correct if resume actually delivers
   await useTempDirs(["s9e-", "s9f-"], async ([ws, sd]) => {
     let llmCalls = 0;
     const a = agentWithQueue(ws!, sd!, {
@@ -72,6 +95,13 @@ test("the queue is delivered on a later start (#9)", async () => {
     a.stop("test");
     await new Promise((r) => setTimeout(r, 120));
     a.start("resumed");
+    /**
+     * POLL for the delivery, do not sleep a fixed 400ms.
+     *
+     * A loaded runner (measured on windows-latest) had not delivered the queued prompt when the
+     * timer expired, and the failure read as a product bug rather than as a test that ran out of
+     * clock.
+     */
     const deadline = Date.now() + 5_000;
     let events = await readEvents(`${sd}/chat.jsonl`);
     const isDelivered = (evs: typeof events) =>
@@ -87,3 +117,11 @@ test("the queue is delivered on a later start (#9)", async () => {
   });
 });
 
+/*
+ * The three UI claims that stood here ("the badge says (stopped)", "the tooltip
+ * says nothing will run until start", "the two tooltip branches differ") all
+ * read App.tsx as TEXT and matched the strings they were checking. A test like
+ * that pins the spelling of JSX that has to work at runtime, so they were
+ * deleted. The badge/tooltip text is asserted against the REAL BUNDLE in
+ * scripts/smoke-web.ts, which can actually exercise the stopped state.
+ */

@@ -1,8 +1,44 @@
+/**
+ * #94 — what the parent is told about the work, once a finish audit is accepted.
+ *
+ * `captureRecentTurns()` fills a SIX-slot window. In the real log for
+ * `tyb2-5-sub-sound-deep-dive-4c13c187`, the accepted report's window was:
+ *
+ *     [tool]      leds-mt6320.c  newline=OK …            (548 chars, useful)
+ *     [assistant] All files clean. Let me run the final…    ( 72 chars, useful)
+ *     [tool]      ════ FINAL ════ checkpatch: 0 errors…    (293 chars, useful)
+ *     [assistant] (tool call)                            ( 23 chars, NOTHING)
+ *     [tool]      decision recorded to decisions.md      ( 40 chars, NOTHING)
+ *     [assistant] (tool call)                            ( 23 chars, NOTHING)
+ *
+ * Half the window was consumed by entries carrying no information:
+ *
+ *  - `llm.ts` rewrites any assistant/tool message with no usable text to the
+ *    literal "(tool call)" / "(no content)". Those are DISPLAY ARTIFACTS and
+ *    were reaching the parent verbatim.
+ *  - harness acknowledgements ("decision recorded to…") are addressed to the
+ *    OPERATOR, not to the agent that reads this next.
+ *
+ * Dropping them pulled real content back into the window — in the replay above,
+ * a 3,600-char finding that had been pushed out entirely.
+ *
+ * A tool CALL is still work; it is represented by the tool RESULT that follows,
+ * so the placeholder itself loses nothing.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+// #126: normalises CRLF so source anchors behave the same on Windows
 import { readSource } from "./helpers/source.ts";
 import { HARNESS_ACK, PLACEHOLDER_TEXT } from "../src/agent/agent.ts";
 
+// NOTE: a `readSource()` of agent.ts lived here and was never read. Deleted rather than
+// fixed — an unused binding is not an assertion, and keeping it made the file look like
+// it verified the source's shape when it verified nothing.
+
+/**
+ * The SHIPPED rules, imported — not re-typed. A copy could drift from the code
+ * it is meant to describe, which is the failure mode #75 exists about.
+ */
 const kept = (text: string): boolean => {
   const t = text.trim();
   if (!t) return false;
@@ -11,17 +47,23 @@ const kept = (text: string): boolean => {
   return true;
 };
 
+/* ---------- the filters, stated as behaviour ---------- */
+
 test("a '(tool call)' placeholder is not reported as content (#94)", () => {
+  // `kept` takes the raw message text; the "[assistant] " prefix is added later
   assert.equal(kept("(tool call)"), false, "#94");
   assert.equal(kept("x (tool call)"), true, "only a WHOLE placeholder is dropped (#94)");
 });
 
 test("EVERY parenthesised acknowledgement is dropped, not just three (#94)", () => {
+  // Measured across all session logs. My first filter listed three literals and
+  // caught 2 of the 10 forms actually reaching a parent — the rest are harness
+  // acks from answerMeta and the meta-tool handlers.
   const real = [
     "(tool call)",
     "(no content)",
     "(no output)",
-    "(tool_call)",            
+    "(tool_call)",            // underscore variant
     "(goal complete)",
     "(round ended)",
     "(round ended: finished)",
@@ -37,6 +79,8 @@ test("EVERY parenthesised acknowledgement is dropped, not just three (#94)", () 
 });
 
 test("real work is never mistaken for an acknowledgement (#94)", () => {
+  // the trade of matching a SHAPE: a genuine message that happened to be
+  // entirely parenthesised would also go. These must not.
   for (const g of [
     "All files clean, running the final verification.",
     "leds-mt6320.c newline=OK trailing-ws=0",
@@ -59,6 +103,8 @@ test("harness acknowledgements do not consume a slot (#94)", () => {
 });
 
 test("real findings are kept (#94)", () => {
+  // the regression this could have caused: filtering too eagerly and reporting
+  // an empty window, which tells the parent nothing at all
   for (const good of [
     "All files clean. Let me run the complete final verification.",
     "════ FINAL ════ checkpatch: total: 0 errors, 0 warnings, 718 lines checked",
@@ -68,7 +114,12 @@ test("real findings are kept (#94)", () => {
     assert.equal(kept(good), true, `#94 must keep: ${good.slice(0, 40)}`);
 });
 
+/* ---------- wired into the real capture ---------- */
+
 test("the filters are anchored, not substring matches (#94)", () => {
+  // Behavioural, not a regex-over-source check: the real log contained a
+  // 3,600-char finding, and a loose match that dropped it merely because it
+  // mentioned "memory" would be worse than not filtering at all.
   const longFinding =
     "I fixed the driver. The memory layout was wrong and I had to re-read the " +
     "datasheet twice before I understood the decision recorded in the log.";

@@ -5,9 +5,15 @@ import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
+// #110: POSIX-only — POSIX filesystem paths.
+// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
+// opting out is explicit rather than by filename.
 markPosixOnly("POSIX filesystem paths");
 
 test("stopAllAgents: gracefully stops all running agents", async () => {
+  // regression: live-update must NOT lose data — every running agent must
+  // be given a chance to flush its log + close subprocesses before the
+  // server restarts. The endpoint just calls stopAllAgents().
   await useTempDirs(["restart-root-", "restart-ws-"], async ([dataDir, ws]) => {
     const m = new Master(
       { port: 0, dataDir, llm: { baseUrl: "http://x", apiKey: "k", model: "m" },
@@ -24,6 +30,11 @@ test("stopAllAgents: gracefully stops all running agents", async () => {
 });
 
 test("getVersion: returns the real version from package.json (#33)", async () => {
+  // regression #33: the settings panel rendered the literal
+  // "current version: __APP_VERSION__". `__APP_VERSION__` is substituted by
+  // *vite* only, so the tsc-built backend shipped the raw placeholder. The
+  // version must now be read from package.json at runtime, in every context
+  // (built app, `pnpm dev`, node --test — none of which necessarily run vite).
   const expected = (
     JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
       version: string;

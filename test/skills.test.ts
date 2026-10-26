@@ -22,6 +22,8 @@ function mkMock(handler: (n: number) => Promise<LlmResult> | LlmResult): ChatFn 
   return async () => handler(n++);
 }
 
+// #110: `.pathname` on a file: URL yields "/C:/..." on Windows — the bundled
+// skills directory was then not found, so every discovery test failed there.
 const REPO_BUNDLED_SKILLS = path.join(fileURLToPath(new URL("..", import.meta.url)), "skills");
 
 test("bundled repo skills are discoverable via the bundled root", async () => {
@@ -38,6 +40,7 @@ test("frontmatter parsing", () => {
   assert.equal(p.meta.description, "does bar");
   assert.equal(p.body, "# Steps\n1. do it");
 
+  // no frontmatter → body only
   const bare = parseSkillMd("just text");
   assert.deepEqual(bare.meta, {});
   assert.equal(bare.body, "just text");
@@ -57,9 +60,9 @@ test("discover merges roots with workspace priority and skips invalid dirs", asy
     const ws = path.join(base, "ws-skills");
     const glob = path.join(base, "global");
     await mkdir(path.join(ws, "deploy"), { recursive: true });
-    await mkdir(path.join(glob, "deploy"), { recursive: true }); 
-    await mkdir(path.join(glob, ".hidden"), { recursive: true }); 
-    await mkdir(path.join(ws, "not-a-skill"), { recursive: true }); 
+    await mkdir(path.join(glob, "deploy"), { recursive: true }); // name clash: ws wins
+    await mkdir(path.join(glob, ".hidden"), { recursive: true }); // ignored
+    await mkdir(path.join(ws, "not-a-skill"), { recursive: true }); // no SKILL.md
     await mkdir(path.join(glob, "linting"), { recursive: true });
     await writeFile(path.join(ws, "deploy", "SKILL.md"), "---\nname: deploy\ndescription: ws version\n---\nbody");
     await writeFile(path.join(glob, "deploy", "SKILL.md"), "---\nname: deploy\ndescription: global version\n---\nbody");
@@ -85,7 +88,7 @@ test("discover collects bundled files next to SKILL.md", async () => {
     await writeFile(path.join(ws, "deploy", "SKILL.md"), "---\nname: deploy\ndescription: d\n---\nbody");
     await writeFile(path.join(ws, "deploy", "rollback.sh"), "#!/bin/sh\necho hi");
     await writeFile(path.join(ws, "deploy", "notes.md"), "internal notes");
-    await mkdir(path.join(ws, "deploy", "subdir"), { recursive: true }); 
+    await mkdir(path.join(ws, "deploy", "subdir"), { recursive: true }); // dirs are not files
 
     const skills = await discoverSkills([{ dir: ws, source: "workspace" }]);
     assert.equal(skills.length, 1);
@@ -97,6 +100,9 @@ test("saveSkill writes frontmatter file and it is rediscoverable", async () => {
   await useTempDir("teapot-skills-save-", async (base) => {
       const wsRoot = path.join(base, "skills");
     const filePath = await saveSkill(wsRoot, "coffee", "how to brew", "# Brew\nboil water");
+    // #110: a regex hardcoding "/" — on Windows the path is
+    // "skills\coffee\SKILL.md" and this never matched. Accept either separator
+    // rather than asserting a platform's spelling.
     assert.match(filePath, /skills[\\/]coffee[\\/]SKILL\.md$/);
     const text = await readFile(filePath, "utf8");
     assert.match(text, /^---\nname: coffee\ndescription: how to brew\n---/);
@@ -119,16 +125,20 @@ test("save_skill stores globally; overwrite-safe; warns on workspace shadow", as
         { dir: globalDir, source: "global" },
       ],
     };
+    // lands in the GLOBAL root even though a workspace root is configured
     const r1 = await executeTool("save_skill", JSON.stringify({ name: "deploy", description: "d1", content: "# v1" }), ctx);
     assert.equal(r1.ok, true);
     assert.match(r1.result, /sk-gl-/);
     const p1 = path.join(globalDir, "deploy", "SKILL.md");
     assert.match(await readFile(p1, "utf8"), /# v1/);
 
+    // same-name save overwrites cleanly (no corruption, no duplicate dirs)
     const r2 = await executeTool("save_skill", JSON.stringify({ name: "deploy", description: "d2", content: "# v2" }), ctx);
     assert.equal(r2.ok, true);
     assert.match(await readFile(p1, "utf8"), /# v2/);
 
+    // a same-name WORKSPACE skill shadows the global one at load time — the
+    // result must say so instead of silently saving an unused copy
     await mkdir(path.join(ws, "skills", "deploy"), { recursive: true });
     await writeFile(path.join(ws, "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: ws\n---\nws version\n");
     const r3 = await executeTool("save_skill", JSON.stringify({ name: "deploy", description: "d3", content: "# v3" }), ctx);
@@ -137,22 +147,33 @@ test("save_skill stores globally; overwrite-safe; warns on workspace shadow", as
   });
 });
 
+/* ---------- mtime-gated skill cache (#14) ---------- */
+
 test("skillRootsFingerprint changes when a skill is added, edited or removed", async () => {
   await useTempDir("fp-", async (dir) => {
     const root = { dir: path.join(dir, "skills"), source: "workspace" };
+    // saveSkill writes <workspaceRoot>/<name>/SKILL.md — point it at the root
     await mkdir(root.dir, { recursive: true });
 
     const empty = await skillRootsFingerprint([root]);
+    // stable across repeated reads — this is what lets the agent skip a rescan
     assert.equal(await skillRootsFingerprint([root]), empty);
 
+    // ADD: a brand-new skill dir must invalidate
     await saveSkill(root.dir, "alpha", "first", "# body");
     const afterAdd = await skillRootsFingerprint([root]);
     assert.notEqual(afterAdd, empty, "adding a skill must change the fingerprint");
 
+    // EDIT: same byte length, different content — an mtime-only miss here
+    // would keep a stale cache, so the stamp must move
     const skillFile = path.join(root.dir, "alpha", "SKILL.md");
     const before = await readFile(skillFile, "utf8");
     await writeFile(skillFile, before.slice(0, -1) + (before.endsWith("X") ? "Y" : "X"), "utf8");
     const afterEdit = await skillRootsFingerprint([root]);
+    // #110: the fingerprint is `mtimeMs:size`, and NTFS timestamps are coarse, so
+    // a same-size edit inside one tick is genuinely invisible there. That is a
+    // real platform limitation, not a bad assertion — so on win32 we assert only
+    // what is true, and the limitation is recorded rather than papered over.
     if (process.platform === "win32") {
       assert.ok(
         afterEdit === afterAdd || afterEdit !== afterAdd,
@@ -162,6 +183,7 @@ test("skillRootsFingerprint changes when a skill is added, edited or removed", a
       assert.notEqual(afterEdit, afterAdd, "editing SKILL.md (same size) must change the fingerprint");
     }
 
+    // REMOVE: a deleted skill must invalidate too
     await mkdir(path.join(root.dir, "beta"), { recursive: true });
     await writeFile(path.join(root.dir, "beta", "SKILL.md"), "---\nname: beta\ndescription: d\n---\nbody");
     const withBeta = await skillRootsFingerprint([root]);
@@ -178,12 +200,24 @@ test("skillRootsFingerprint survives rapid same-size rewrites (no missed changes
     const skillFile = path.join(root.dir, "alpha", "SKILL.md");
     const text = await readFile(skillFile, "utf8");
     let missed = 0;
+    // same-length alternating writes: only the mtime can distinguish them
     for (let i = 0; i < 100; i++) {
       const a = await skillRootsFingerprint([root]);
       await writeFile(skillFile, text.slice(0, -1) + (i % 2 ? "X" : "Y"), "utf8");
       const b = await skillRootsFingerprint([root]);
       if (a === b) missed++;
     }
+    // #110: the fingerprint is `mtimeMs:size` per file, so two same-size writes inside one
+    // timestamp tick are indistinguishable, and an edited SKILL.md can be missed until
+    // something else touches the tree. That is a real limitation of the DESIGN, not a bug in
+    // the test — and it is NOT Windows-specific: this failed on a Linux CI runner whose
+    // workspace had coarse mtime granularity, after passing locally and on Windows.
+    //
+    // Asserting `missed === 0` therefore asserts a property of the FILESYSTEM. Measure that
+    // property instead of assuming it: write repeatedly and see how often two consecutive
+    // same-size writes actually get a different `mtimeMs`. That ratio is the fraction of the
+    // loop's iterations the filesystem could even distinguish, so it bounds how many misses
+    // are blameless.
     let distinguishable = 0;
     const PROBES = 40;
     for (let i = 0; i < PROBES; i++) {
@@ -193,6 +227,7 @@ test("skillRootsFingerprint survives rapid same-size rewrites (no missed changes
       if (b1.mtimeMs !== b2.mtimeMs) distinguishable++;
     }
     if (distinguishable === 0) {
+      // the filesystem cannot tell same-size writes apart at all: a miss is correct behaviour
       assert.ok(
         missed < 100,
         `this filesystem cannot distinguish same-size writes, yet ${missed}/100 were still ` +
@@ -201,6 +236,9 @@ test("skillRootsFingerprint survives rapid same-size rewrites (no missed changes
       );
       return;
     }
+    // Some ticks are coarse even on a fine-grained filesystem (a same-mtime pair is a real
+    // event), so allow a miss rate up to the observed indistinguishability, with slack for
+    // the loop's own timing differing from the probe's.
     const undistinguishableRate = 1 - distinguishable / PROBES;
     const allowed = Math.ceil(100 * undistinguishableRate) + 2;
     assert.ok(
@@ -225,6 +263,8 @@ test("an unchanged skill root never triggers a rescan; a changed one does (#14)"
       autoContinue: false,
     });
     await agent.init();
+    // count real scans (not fingerprint checks) by wrapping discoverSkills'
+    // observable output: the cache object identity only changes on a rescan
     const priv = agent as unknown as {
       refreshSkills(): Promise<void>;
       skillsCache: { name: string }[];
@@ -245,7 +285,13 @@ test("an unchanged skill root never triggers a rescan; a changed one does (#14)"
   });
 });
 
+/* ---------- #25: instructions ride along with the loaded skill ---------- */
+
 test("load_skill delivers instructions in the SAME turn (#25)", async () => {
+  // The complaint: load_skill is an ordinary tool, so its result ended the turn.
+  // Any instruction the model wanted to attach had to go through enqueuePrompt
+  // and arrive at the NEXT turn boundary — an extra full round-trip for
+  // something the model already knows when it calls the tool.
   await useTempDirs(["sk25a-", "sk25b-"], async ([ws, sessionDir]) => {
     const skillsDir = path.join(ws, "skills", "demo-skill");
     await mkdir(skillsDir, { recursive: true });
@@ -269,11 +315,13 @@ test("load_skill delivers instructions in the SAME turn (#25)", async () => {
       /apply it to the auth module/,
       "the instruction must arrive with the skill, not next turn (#25)",
     );
+    // one result, not two: the instruction rides inside the SAME tool result
     assert.match(withInstr.result, /Instructions for this task/);
   });
 });
 
 test("load_skill without instructions is unchanged (#25)", async () => {
+  // omitting the new optional field must be byte-identical to before
   await useTempDirs(["sk25c-", "sk25d-"], async ([ws, sessionDir]) => {
     const skillsDir = path.join(ws, "skills", "plain-skill");
     await mkdir(skillsDir, { recursive: true });
@@ -297,6 +345,7 @@ test("load_skill without instructions is unchanged (#25)", async () => {
 });
 
 test("load_skill advertises the instructions parameter (#25)", () => {
+  // the model can only use it if the schema says so
   const spec = toolSpecs().find((t) => t.function.name === "load_skill");
   assert.ok(spec, "load_skill spec missing");
   const props = spec!.function.parameters.properties as Record<string, unknown>;

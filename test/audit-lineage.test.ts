@@ -1,3 +1,20 @@
+/**
+ * #91 / #94 — FINAL が監査とどう関係したかが event 自体に記録されていない。
+ *
+ * v0.28.1 の final event は `{ role, final: true, content, recentContext }` で、
+ * audit は別の goal event に分かれている。log reader は
+ * audit-started / audit / FINAL を近接して見て「推測」するしかなく、rejected
+ * attempt を跨いだ最終 final は「最初に何がダメで、何を直したのか」を運ばない。
+ *
+ * Required:
+ *   - approved を経た final は `audited: true` / `auditVerdict` /
+ *     `auditAttempt` を持つ
+ *   - rejected attempt を跨いだ final は `previousAuditVerdict` /
+ *     `previousAuditFeedback` も持つ（attempt 2 の approved なら 2 と書いてある）
+ *   - 監査なしの finish は監査 metadata を持たない
+ *   - UNVERIFIED で受理された final（#128 の capped 経路）は
+ *     `auditVerdict: "unavailable"` として騙らない
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -94,6 +111,9 @@ test("a final after a REJECTED attempt carries the previous verdict + feedback (
 });
 
 test("a NEW goal must not inherit the previous goal's rejection lineage (#A2)", async () => {
+  // goal1 gets rejected, then the operator sets goal2 in the same session.
+  // goal2's FIRST approval must not carry goal1's changes-required as its
+  // "previous" — and its attempt counter restarts at 1.
   await useTempDirs(["al9-", "al10-"], async ([ws, sd]) => {
     let call = 0;
     let audits = 0;
@@ -129,6 +149,7 @@ test("a NEW goal must not inherit the previous goal's rejection lineage (#A2)", 
       agent.enqueuePrompt("go", "user");
       agent.start("t");
       await Promise.race([agent.settled(), wait(8000)]);
+      // goal2: a fresh contract in the same session
       await agent.setGoal("goal two");
       (agent as unknown as { goal: { verify?: string } }).goal.verify = "must hold";
       await agent.setGoalStatus("active");
@@ -168,6 +189,9 @@ test("an UNAUDITED final carries no audit metadata", async () => {
 
 test("a capped-unaudited run emits NO final that could claim approval (#128 tie-in)", async () => {
   await useTempDirs(["al7-", "al8-"], async ([ws, sd]) => {
+    // three unusable audits: the cap stops the retries with a loud note and
+    // the goal stays ACTIVE — so no final may exist that could read as
+    // approved (merged semantics: upstream's reject-cap philosophy)
     let call = 0;
     const agent = new Agent({
       id: "c",
@@ -220,6 +244,16 @@ test("a capped-unaudited run emits NO final that could claim approval (#128 tie-
 });
 
 test("an APPROVED final after a rejection reports the work BEFORE it too (#94)", async () => {
+  /**
+   * Reported: "audit reject後の finish() で初回finishからの作業差分をおもに説明するから親エージェントが
+   * 理解しにくい".
+   *
+   * `recentContext` is the last six meaningful messages, which after a changes-required verdict
+   * is exactly the RETRY — a narrow fix-up. So the parent was told about the last few minutes of
+   * a multi-hour task and nothing else, and had no basis to judge whether the goal was met. The
+   * pre-rejection work is captured when the reject arrives and must be reported too, labelled so
+   * the parent can tell which part came when.
+   */
   await useTempDirs(["al9-", "al10-"], async ([ws, sd]) => {
     const r = await runLineage(
       ws!, sd!,
@@ -237,6 +271,7 @@ test("an APPROVED final after a rejection reports the work BEFORE it too (#94)",
         "cannot tell the original work from the fix-up",
     );
     assert.match(joined, /after the rejection/i, "and where the retry begins");
+    // the original work must actually be IN there, not just announced
     assert.match(joined, /work/i, "the pre-rejection activity must be present");
   });
 });

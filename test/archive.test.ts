@@ -1,3 +1,20 @@
+/**
+ * Archive is the reversible half of "remove".
+ *
+ * The old 🗑 remove deleted the agent's config entry while leaving `sessions/` on
+ * disk. The history survived, but nothing in the UI could reach it again — the session
+ * became reachable only by knowing its id and hand-editing config.json. That is a
+ * destructive answer to what is usually a temporary wish ("I am done with this for
+ * now"), so the two intents are now separate:
+ *
+ *   archive → stop it, hide it, KEEP the config entry and every session directory
+ *   restore → bring it back, live, pointing at the SAME session
+ *   purge   → delete the config entry AND the session directories (irreversible)
+ *
+ * The property worth testing is the one the old code broke: after archive→restore the
+ * history is still there. A test that only checked `archived === true` would pass
+ * against an implementation that had already erased the files.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
@@ -7,6 +24,7 @@ import { Master } from "../src/master.ts";
 import { buildApp } from "../src/server/api.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
+// POSIX-only: POSIX filesystem paths.
 markPosixOnly("POSIX filesystem paths");
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
@@ -17,6 +35,7 @@ function mkMaster(dataDir: string, agents: any[] = []): Master {
 
 const sessionsRoot = (dataDir: string) => path.join(dataDir, "sessions");
 
+/** the session directory names on disk — the thing archive must not destroy */
 const dirsOnDisk = (dataDir: string): string[] => {
   try {
     return readdirSync(sessionsRoot(dataDir));
@@ -39,6 +58,7 @@ test("archive keeps the config entry and every session directory (#archive)", as
     ).json()) as { agent: { id: string } };
     assert.equal(created.agent.id, "keeper");
 
+    // PRECONDITION: a session must exist, or "the files survived" is vacuous
     const before = dirsOnDisk(dataDir);
     assert.ok(before.length > 0, `precondition: agent creation must mint a session; saw ${before}`);
 
@@ -48,13 +68,16 @@ test("archive keeps the config entry and every session directory (#archive)", as
     assert.equal(body.archived, true);
     assert.deepEqual(body.ids, ["keeper"], "no sub-agents, so only itself");
 
+    // the config entry is still there, flagged
     const entry = m.config.agents.find((a) => a.id === "keeper");
     assert.ok(entry, "the config entry must be KEPT — that is what makes restore possible");
     assert.equal(entry.archived, true);
     assert.ok(typeof entry.archivedAt === "number", "archivedAt is used to sort the list");
 
+    // and nothing on disk was touched
     assert.deepEqual(dirsOnDisk(dataDir), before, "archiving must not delete any session");
 
+    // it is not running any more
     assert.equal(m.agents.get("keeper"), undefined, "an archived agent must not stay live");
     await m.stopAllAgents();
   });
@@ -82,6 +105,7 @@ test("restore brings the SAME session back, live (#archive)", async () => {
     assert.ok(entry, "the entry must still be present after restore");
     assert.equal(entry.archived, undefined, "restore must clear the flag");
     assert.equal(entry.archivedAt, undefined);
+    // THE POINT: the history is the same history, not a fresh empty session
     assert.equal(
       entry.session,
       sessionBefore,
@@ -115,6 +139,7 @@ test("purge erases both the entry and the session directories (#archive)", async
       undefined,
       "the config entry must be gone",
     );
+    // every directory that existed before is gone from disk
     for (const d of dirsBefore) {
       assert.equal(
         existsSync(path.join(sessionsRoot(dataDir), d)),
@@ -127,6 +152,8 @@ test("purge erases both the entry and the session directories (#archive)", async
 });
 
 test("boot starts configured agents but not archived ones (#archive)", async () => {
+  // An archived entry must not be resurrected by a restart. Starting it would also
+  // mint or rewrite a session for something the operator deliberately put away.
   await useTempDirs(["arch4-root-", "arch4-ws-"], async ([dataDir, ws]) => {
     const first = mkMaster(dataDir);
     const app = buildApp(first);
@@ -140,6 +167,7 @@ test("boot starts configured agents but not archived ones (#archive)", async () 
     await app.request("/api/agents/asleep/archive", { method: "POST" });
     await first.stopAllAgents();
 
+    // a fresh Master over the same dataDir = a restart
     const second = mkMaster(dataDir, first.config.agents);
     await second.start();
     try {
@@ -149,6 +177,7 @@ test("boot starts configured agents but not archived ones (#archive)", async () 
         undefined,
         "an ARCHIVED agent must not start at boot — it was put away on purpose",
       );
+      // and the archived entry itself is untouched, so a later restore still works
       const entry = second.config.agents.find((a) => a.id === "asleep");
       assert.ok(entry, "boot must not drop the archived entry from the config");
       assert.equal(entry.archived, true);
@@ -159,7 +188,12 @@ test("boot starts configured agents but not archived ones (#archive)", async () 
 });
 
 test("archiving a parent archives its whole SUBTREE (#archive)", async () => {
+  // A sub-agent cannot run once its parent is archived — the parent is what spawns it
+  // and what messages it. Leaving children in the list produced entries that looked
+  // usable and could never do anything, and their sessions stayed in the sidebar with
+  // no explanation of why nothing happened when clicked.
   await useTempDirs(["arch5-root-", "arch5-ws-"], async ([dataDir, ws]) => {
+    // three agents: parent → child → grandchild, plus an unrelated sibling
     const m = mkMaster(dataDir, [
       { id: "parent", workspace: ws!, provider: "p", model: "m" },
       { id: "child", workspace: ws!, provider: "p", model: "m", parent: "parent" },
@@ -167,10 +201,12 @@ test("archiving a parent archives its whole SUBTREE (#archive)", async () => {
       { id: "other", workspace: ws!, provider: "p", model: "m" },
     ]);
     const app = buildApp(m);
+    // boot them so the live map has entries: archiving must DISPOSE each one
     for (const id of ["parent", "child", "grandchild", "other"]) {
       try {
         await (m as any).addAgent({ id, workspace: ws, provider: "p", model: "m" });
       } catch {
+        /* the provider does not resolve in a test; the config entry still exists */
       }
     }
 
@@ -178,6 +214,7 @@ test("archiving a parent archives its whole SUBTREE (#archive)", async () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as { archived: boolean; ids: string[] };
 
+    // PRECONDITION: the fixture really is a 3-deep tree
     assert.equal(
       m.config.agents.filter((a) => a.id === "grandchild")[0]?.parent,
       "child",
@@ -197,6 +234,7 @@ test("archiving a parent archives its whole SUBTREE (#archive)", async () => {
       );
       assert.equal(m.agents.get(id), undefined, `${id} must not stay live`);
     }
+    // an unrelated agent is untouched — this is a subtree, not "archive everything"
     assert.equal(
       m.config.agents.find((a) => a.id === "other")?.archived,
       undefined,
@@ -206,6 +244,9 @@ test("archiving a parent archives its whole SUBTREE (#archive)", async () => {
 });
 
 test("restoring a parent restores its subtree too (#archive)", async () => {
+  // The inverse, and the reason the two must agree: a parent restored alone would come
+  // back unable to reach the work it delegated, while its children sat in the archive
+  // with no visible reason for being there.
   await useTempDirs(["arch6-root-", "arch6-ws-"], async ([dataDir, ws]) => {
     const m = mkMaster(dataDir, [
       { id: "p2", workspace: ws!, provider: "p", model: "m" },
@@ -214,6 +255,7 @@ test("restoring a parent restores its subtree too (#archive)", async () => {
     const app = buildApp(m);
 
     await app.request("/api/agents/p2/archive", { method: "POST" });
+    // PRECONDITION: both really are archived before we restore
     for (const id of ["p2", "c2"]) {
       assert.equal(m.config.agents.find((a) => a.id === id)?.archived, true);
     }

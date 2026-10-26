@@ -1,3 +1,25 @@
+/**
+ * #69 — `editPromptAt` resurrected the entire discarded tail after a restart,
+ * and `fork()` lost ALL history on restore.
+ *
+ * Both are the same class, and both were live on the path a restart rebuilds
+ * from rather than the live path:
+ *
+ *   - `editPromptAt` appended its `fork` event under the OLD branch, then seeded
+ *     the new branch from `lastEventId(currentBranch)` — the branch TIP, which
+ *     is one of the events the edit had just DISCARDED. lineageOf() walked
+ *     straight back through the discarded tail.
+ *   - `fork()` appended its `fork` event under the NEW branch, whose first
+ *     event therefore got `parent: null`, so lineageOf() walked an empty chain.
+ *     (Verified: 6 messages live, 0 restored.)
+ *
+ * The invariant these tests pin is the one that would have caught both:
+ *
+ *     LIVE MESSAGES === RESTORED MESSAGES
+ *
+ * Asserting "history is restored" is too weak — a superset also "has history".
+ * Asserting equality is what makes a resurrected tail fail.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -5,6 +27,7 @@ import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 import { dataOf } from "./helpers/event-data.ts";
 
+/** a real agent on a real log dir; chatFn is injected so turns are deterministic */
 function mk(ws: string, sd: string, chatFn: unknown): Agent {
   return new Agent({
     id: "t",
@@ -17,6 +40,7 @@ function mk(ws: string, sd: string, chatFn: unknown): Agent {
 }
 const texts = (a: Agent) => (a.conversation as any[]).map((m) => m.content ?? "").filter(Boolean);
 
+/** drive N prompt/answer turns */
 async function converse(a: Agent, prompts: string[]) {
   let n = 0;
   (a as any).opts.chatFn = async () => ({
@@ -37,6 +61,9 @@ test("editing a prompt: live and restored agree (#69)", async () => {
 
     const events = await readEvents(a.log.filePath);
     const q2 = events.find((e) => e.type === "prompt" && String(dataOf(e).text) === "Q2")!;
+    // `tail` is REQUIRED: this call used to omit it and pass `undefined`, so the test
+    // exercised a path the production code does not allow ("discard" drops the work
+    // after the edited prompt, which is what this test's comparison relies on).
     await a.editPromptAt(q2.id, "Q2-EDITED", "discard");
     const live = texts(a);
     await a.dispose();
@@ -97,6 +124,7 @@ test("a fork restores onto the NEW branch, not the old one (#69)", async () => {
 });
 
 test("an edit after a fork still restores exactly (#69)", async () => {
+  // the two paths interacting — the case neither test above covers
   await useTempDirs(["h69g-", "h69h-"], async ([ws, sd]) => {
     const a = mk(ws!, sd!, null);
     await a.init();

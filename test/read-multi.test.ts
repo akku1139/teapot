@@ -1,3 +1,16 @@
+/**
+ * #16 — "make read_file able to read several files / several places at once,
+ *        plus fuzzy search" (Codebuff has this)
+ *
+ * I could not find the reference implementation to copy, so the design follows
+ * what teapot actually lacked: read_file took ONE path, and there was no
+ * grep/glob tool at all, so locating code meant reading whole files one at a
+ * time.
+ *
+ * Two additions, both OPT-IN. A call with `path` alone must keep returning
+ * byte-identical output — #7's hashline anchors and the existing tests depend
+ * on the exact format — which several tests below assert directly.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -15,11 +28,18 @@ async function seed(ws: string) {
   await writeFile(path.join(ws, "README.md"), "# readme\n");
 }
 
+/* ---------- the single-file contract must not move (#16) ---------- */
+
 test("a plain single-path read keeps the historical format, minus the phantom line (#16/#7)", async () => {
   await useTempDirs(["m16a-", "m16b-"], async ([ws]) => {
     await seed(ws);
     const r = await executeTool("read_file", JSON.stringify({ path: "a.ts" }), ctx(ws));
     assert.ok(r.ok, r.result);
+    // #16 pinned `N| ` gutters byte-for-byte. #7 changed ONE thing on purpose:
+    // the trailing empty line a final newline splits into is not a line of the
+    // file, and a model copying the tail verbatim fed `edit_file` an old_text
+    // with a phantom row in it, so the edit failed for no visible reason. The
+    // gutter itself is unchanged.
     assert.equal(r.result, "1| AAA\n2| BBB", "single-read format changed (#16/#7)");
   });
 });
@@ -31,6 +51,8 @@ test("a missing single file still reports a readable error (#16)", async () => {
     assert.match(r.result, /cannot read nope\.ts/);
   });
 });
+
+/* ---------- multi-file (#16) ---------- */
 
 test("paths reads several files in one call (#16)", async () => {
   await useTempDirs(["m16e-", "m16f-"], async ([ws]) => {
@@ -66,6 +88,8 @@ test("paths is bounded so one call cannot flood the context (#16)", async () => 
 test("an empty paths array is refused, not silently a no-op (#16)", async () => {
   await useTempDirs(["m16k-", "m16l-"], async ([ws]) => {
     const r = await executeTool("read_file", JSON.stringify({ paths: [] }), ctx(ws));
+    // empty array falls through to the single-path path, which then reports the
+    // missing path — either way it must not claim success on nothing
     assert.equal(r.ok, false, "reading nothing must not report success (#16)");
   });
 });
@@ -73,12 +97,14 @@ test("an empty paths array is refused, not silently a no-op (#16)", async () => 
 test("paths works with the other read options (#16)", async () => {
   await useTempDirs(["m16m-", "m16n-"], async ([ws]) => {
     await seed(ws);
+    // pattern mode still applies per file
     const pat = await executeTool(
       "read_file",
       JSON.stringify({ paths: ["a.ts", "b.ts"], pattern: "A|C" }),
       ctx(ws),
     );
     assert.ok(pat.result.includes("--- a.ts ---"));
+    // and hashline anchors still render (#7 must not regress)
     const hash = await executeTool(
       "read_file",
       JSON.stringify({ paths: ["a.ts"], line_ids: "hash" }),
@@ -87,6 +113,8 @@ test("paths works with the other read options (#16)", async () => {
     assert.match(hash.result, /\d+:[0-9a-f]{4}\| AAA/, "hashline still works with paths (#7+#16)");
   });
 });
+
+/* ---------- fuzzy (#16) ---------- */
 
 test("fuzzyPathMatch matches loosely, ignoring separators and case (#16)", () => {
   assert.equal(fuzzyPathMatch("login", "src/auth/login.ts"), true);
@@ -134,6 +162,8 @@ test("fuzzy skips noise directories (#16)", async () => {
     assert.equal(r.ok, false, "node_modules must not be searched (#16)");
   });
 });
+
+/* ---------- the model has to be told these exist (#16) ---------- */
 
 test("the schema and description expose both features (#16)", () => {
   const spec = toolSpecs().find((t) => t.function.name === "read_file");

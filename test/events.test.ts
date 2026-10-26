@@ -35,9 +35,10 @@ test("events: torn trailing line is ignored and seq resumes after reload", async
     const log2 = new EventLog(f, "a");
     await log2.load();
     const e = await log2.append("message", "s", "br0", { role: "assistant", content: "two" });
-    assert.equal(e.seq, 2); 
+    assert.equal(e.seq, 2); // torn line's seq=9 must not be trusted
     assert.equal(e.parent, "e1");
     await log2.close();
+    // torn line stays unreadable junk (skipped); e1 + repaired-append e2 survive
     assert.equal((await readEvents(f)).length, 2);
   });
 });

@@ -1,3 +1,30 @@
+/**
+ * #127 — "manual compact 中なのに idle に見える"
+ *
+ * The state lived in TWO places that disagreed:
+ *
+ *   state machine:  status = idle
+ *   actually:       summarizer LLM call in flight
+ *
+ * `compactNow()` ran `maybeCompact(true)` on the run chain WITHOUT touching
+ * any lifecycle state, and — worse — the ORDER inside maybeCompact was:
+ *
+ *     bus.emit(compaction-progress: summarizing)   ← first notification
+ *     await log.append(context-compaction-started) ← async gap
+ *     this.compactPhase = "summarizing"            ← state set LAST
+ *
+ * so the first progress event fired while the snapshot still said
+ * `ctx.compacting = undefined`. A client observing REST/WS at that instant
+ * saw "idle, not compacting, but a summarizing banner" — three contradictory
+ * facts from three paths.
+ *
+ * Required (minimal contract — status enum stays as is):
+ *   - at the FIRST compaction-progress event, the snapshot must ALREADY
+ *     observe ctx.compacting = "summarizing" (state set before notify)
+ *   - throughout the manual compact: snapshot.live = true (stop must be
+ *     offered, "start" must not be)
+ *   - after it resolves: ctx.compacting gone, exactly one compaction recorded
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -22,7 +49,7 @@ test("manual compact is observable in the snapshot from the FIRST progress event
       chatFn: async () => {
         chatCalls++;
         if (chatCalls === 1) {
-          await summarizerBlocked; 
+          await summarizerBlocked; // the summarizer call is mid-flight
           return { message: { role: "assistant" as const, content: "compacted summary" } };
         }
         return { message: { role: "assistant" as const, content: "unused" } };
@@ -32,6 +59,7 @@ test("manual compact is observable in the snapshot from the FIRST progress event
     try {
       await a.init();
       await a.setGoal("g");
+      // a compactable history: plain alternating messages so safeCut has room
       const msgs: { role: "user" | "assistant"; content: string }[] = [];
       for (let i = 0; i < 40; i++) msgs.push({ role: i % 2 ? "assistant" : "user", content: `msg ${i} — filler for the summarizer` });
       (a as unknown as { messages: unknown[] }).messages = msgs;
@@ -40,6 +68,7 @@ test("manual compact is observable in the snapshot from the FIRST progress event
       const onUpdate = (raw: unknown) => {
         const ev = raw as { kind?: string };
         if (ev?.kind === "compaction-progress" && !snapAtFirstProgress) {
+          // the snapshot the REST/WS world would see at that exact instant
           snapAtFirstProgress = a.snapshot();
         }
       };
@@ -50,8 +79,13 @@ test("manual compact is observable in the snapshot from the FIRST progress event
         done = true;
         return r;
       });
+      // POLL, do not sleep a fixed duration (AGENTS.md). This asserted `chatCalls === 1`
+      // after `wait(300)`, which is a bet that the summarizer call has STARTED within 300ms —
+      // false on a loaded CI runner, where it failed as "precondition: the summarizer call is
+      // the one in flight" with no hint that the test merely ran out of clock.
       const deadline = Date.now() + 8000;
       while (chatCalls === 0 && Date.now() < deadline) await wait(10);
+      // …and wait for the progress event, which is what the assertion below is about
       while (!snapAtFirstProgress && Date.now() < deadline) await wait(10);
       assert.equal(done, false, "precondition: the manual compact is still running");
       assert.equal(chatCalls, 1, "precondition: the summarizer call is the one in flight");
@@ -68,8 +102,18 @@ test("manual compact is observable in the snapshot from the FIRST progress event
         "a manually-compacting agent is live (#59 semantics: stop, not start)",
       );
 
+      // and mid-flight (not just at the first event) the state stays consistent
       const mid = a.snapshot();
       assert.equal(mid.ctx?.compacting, "summarizing", "mid-compact snapshot shows the phase");
+      /**
+       * The DISPLAYED status must not contradict `live`.
+       *
+       * This used to assert `idle`, which pinned the exact inconsistency the operator
+       * reported elsewhere: a compacting agent has work in flight (stop would stop it), so a
+       * badge reading "idle" next to a ■ stop button is the UI lying about its own state. The
+       * enum is unchanged — "waiting" is a member of it — and `live` is still what logic keys
+       * off.
+       */
       assert.equal(
         mid.status,
         "waiting",

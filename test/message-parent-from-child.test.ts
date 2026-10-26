@@ -1,3 +1,35 @@
+/**
+ * #132 — "I want to message from a sub-agent to its parent agent, but it is
+ * refused."
+ *
+ * ## Cause
+ *
+ * `messageChild` only ever permitted parent → child:
+ *
+ *     if (!cfg || cfg.parent !== parentId) throw …
+ *
+ * so a child asking its parent a question was refused with the actively
+ * misleading
+ *
+ *     not your sub-agent: p1. no such sub-agent exists.
+ *
+ * — naming the parent's own id as nonexistent, when it is right there in
+ * `config.agents` with `parent: undefined`. The detail hint added by #11
+ * ("no such sub-agent exists") is what makes it actively wrong rather than merely
+ * unhelpful: it is confidently false.
+ *
+ * ## The rule now
+ *
+ * The parent link is the trust boundary:
+ *
+ *   child  -> its parent   ALLOWED
+ *   parent -> its child    ALLOWED
+ *   child  -> a SIBLING     refused
+ *   agent  -> itself        refused
+ *
+ * All four are asserted, because "allow the parent link" implemented as "allow
+ * anything" would pass only the first.
+ */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
@@ -6,10 +38,13 @@ import { fileURLToPath } from "node:url";
 import { Master } from "../src/master.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
+// #126: URL.pathname yields "/D:/a/…" on Windows, which does not resolve
 const _here = path.dirname(fileURLToPath(import.meta.url));
 
 let SHARED: Awaited<ReturnType<typeof buildTree>> | null = null;
 
+// the spawned children are real agents pointed at an unreachable provider, so
+// without this the runner waits on their retry timers long after the assertions
 after(async () => {
   const m = SHARED?.m;
   if (!m) return;
@@ -17,6 +52,14 @@ after(async () => {
   for (const a of [...m.agents.values()]) await a.settled().catch(() => {});
 });
 
+/**
+ * One tree for the whole file.
+ *
+ * Each `spawnChildFor` costs ~2s of real agent startup, so building a fresh tree
+ * per test made this file take 44s — long enough that it would get skipped or
+ * tolerated. The tree is read-only for these assertions (messageChild only
+ * enqueues), so sharing is safe.
+ */
 async function tree() {
   if (!SHARED) SHARED = await buildTree();
   return SHARED;
@@ -33,6 +76,7 @@ async function buildTree() {
   await m.spawnChildFor(parent, { task: "task A", context: "none" });
   await m.spawnChildFor(parent, { task: "task B", context: "none" });
   const kids = m.config.agents.filter((a) => a.parent === "p1").map((a) => a.id);
+  // no teardown: the tree is shared for the file's lifetime
   const stop = async () => {};
   return { m, kids, stop };
 }
@@ -53,6 +97,18 @@ async function allowed(from: string, to: string): Promise<{ ok: boolean; msg: st
   }
 }
 
+/**
+ * Did the message actually REACH the target's queue?
+ *
+ * The two "is allowed" tests below used to assert nothing at all: they called
+ * `messageChild` and passed as long as it did not throw. A message delivered to
+ * the WRONG agent, or silently dropped, satisfied them — so they proved only that
+ * the call was not refused, which the sibling test already covers.
+ *
+ * The meaningful assertion is that the text is in the recipient's pending
+ * prompts. `pendingPrompts` is the same queue `drainPendingPrompts` consumes, so
+ * this is the real delivery, not a side effect.
+ */
 function queuedFor(agentId: string, text: string): boolean {
   const a = SHARED?.m.agents.get(agentId);
   if (!a) return false;
@@ -88,6 +144,8 @@ test("a parent can still message its child, and the text ARRIVES (#132)", async 
 });
 
 test("a sub-agent still CANNOT message a sibling (#132)", async () => {
+  // "allow the parent link" implemented as "allow anything" would pass the first
+  // two tests alone
   const { m, kids, stop } = await tree();
   try {
     await assert.rejects(
@@ -110,6 +168,7 @@ test("an agent still cannot message itself (#132)", async () => {
 });
 
 test("the refusal for a sibling still names the real owner (#132)", async () => {
+  // #11's detail hint must survive the new branch
   const { m, kids, stop } = await tree();
   try {
     await assert.rejects(
