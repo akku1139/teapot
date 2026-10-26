@@ -698,8 +698,31 @@ A guard that refuses the whole class is worth more than a condition that satisfi
 you cannot find the class, say so in the commit body rather than leaving a `if` with no explanation
 of what still is not covered.
 
-## Debugging, and when to stop reasoning
+## A limit nobody can see is not a limit
 
+A cap that applies silently is the same bug as no cap, plus a surprise. Two reports, one cause:
+
+- the timeline rendered **no** timeout whenever the model omitted `timeout_ms`, because the row read
+  the ARG rather than the EFFECTIVE value — while the server ran the command under a real 120s
+  default. Every long command looked unlimited until it died.
+- the message an agent got was `TIMEOUT after 120000ms — killed`: no unit a human reads, no mention
+  that a parameter controlled it, no way out. MEASURED afterwards: an agent that never learned
+  `timeout_ms` existed retried the same too-long command several times.
+
+Rules that came out of it:
+
+1. **Display the value that is ENFORCED, not the one that was passed.** If a default applies, the UI
+   must resolve it the same way the server does. Put the default and the clamp in one function
+   (`effectiveBashTimeout`) and drive both sides through it; a duplicated constant is only acceptable
+   when a shared import would pull heavy code into the bundle, and then a parity TEST is mandatory.
+2. **An error the model sees is a prompt.** State what the limit was, whether it was the default or
+   explicit, what parameter changes it, and the escape hatch (`background=true` here). "TIMEOUT" alone
+   buys another identical attempt.
+3. **The parameter's own description is the first place to fix it.** `default 120000` was a number
+   with no unit and no warning that the harness kills the command — cheaper to fix there than to
+   handle the retries it causes.
+
+## Debugging, and when to stop reasoning
 - **When a synthetic reproduction disagrees with the real thing, believe the real
   thing.** A hand-built fixture said a `state` row did not break tool grouping;
   the actual log, replayed through the app's own filter, showed it did. The
