@@ -381,6 +381,25 @@ out with only five unresolved names because everything it called had already mov
     counts come from ONE pipeline run, not to add a second check.
 - The server sends authoritative snapshots over the WebSocket; REST is a
   fallback/resync path. Prefer extending the socket payload over adding a poll.
+- **Every WebSocket needs BOTH a keep-alive and a reconnect — on both sides.** A
+  socket without an `onclose` handler does not fail; it goes quiet. MEASURED on the
+  operator's own server: three terminals open, two showing `clients: 0` with their
+  panes still on screen and dead, while the one in use stayed attached — the tab
+  looked open and discarded every keystroke, and nothing was logged anywhere.
+
+  The main socket had both halves from the start (a 30s ping that reaps an
+  unresponsive client, and `sock.onclose` on the client); the terminal socket had
+  neither. The asymmetry is invisible while you are using the pane, because traffic
+  keeps it alive — it only shows up after the operator walks away, which is exactly a
+  terminal's normal life. When adding a socket, copy the main one's two lines.
+
+  Reattaching is often cheaper than it looks: the terminal registry replays its
+  backlog on attach, so the client rebuilds from the server's state rather than from
+  what it missed. Check for that before designing resume logic.
+
+  Note also that the socket handle must be MUTABLE (`let`, not `const`) if handlers
+  close over it — a `const` captured by `onData` cannot be replaced, so reconnection
+  is impossible without restructuring.
 - **The intended timeline architecture** (and the direction to move in): every
   logged event is broadcast over the WebSocket and MERGED client-side, so REST
   is needed only when switching session and when returning from sleep, where
