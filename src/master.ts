@@ -858,6 +858,15 @@ export class Master {
       ).toolCtx.subAgents = hooks;
     }
     await agent.init();
+    /**
+     * Seed the title from the SESSION, so a restart shows the name the operator gave it.
+     *
+     * `snapshot().sessionTitle` comes from the agent's own field, and that was only ever set by
+     * `renameSession` — so after a restart the UI fell back to the auto-generated name even though the
+     * title was on disk. The title is read from `session.json`, which is the one copy.
+     */
+    const seedTitle = this.readSessionTitle(path.basename(sessionDir));
+    if (seedTitle) agent.setSessionTitle(seedTitle);
     this.agents.set(ac.id, agent);
     if (opts.persist) {
       this.config.agents.push(ac);
@@ -873,6 +882,9 @@ export class Master {
     const entry = this.config.agents.find((a) => a.id === ac.id);
     if (!entry) return; 
     entry.session = sessionId;
+    // The title is NOT deleted here: it now lives in the session's own manifest, so moving to another
+    // session simply means reading a different one. (Deleting it was how a rename reverted to the
+    // auto-generated name on the next switch.)
     delete entry.sessionTitle;
     delete ac.sessionTitle;
     if (this.sessionsReadOnly) return;
@@ -1202,18 +1214,52 @@ if (active().length === 0) wake();
 
   private titleFor(agentId: string, sessionId: string): string | undefined {
     const a = this.config.agents.find((x) => x.id === agentId);
-    if (!a || a.session !== sessionId) return undefined; 
-    const t = typeof a.sessionTitle === "string" ? a.sessionTitle.trim() : "";
-    return t ? t : undefined;
+    if (!a || a.session !== sessionId) return undefined;
+    return this.readSessionTitle(sessionId) ?? undefined;
   }
 
+  /** The session's own name, from its manifest. One place, so it cannot go stale in another. */
+  private readSessionTitle(sessionId: string): string | null {
+    if (!sessionId || sessionId.includes("/") || sessionId.includes("..")) return null;
+    try {
+      const raw = JSON.parse(
+        readFileSync(path.join(this.sessionsRoot(), sessionId, "session.json"), "utf8"),
+      ) as { title?: unknown };
+      const t = typeof raw.title === "string" ? raw.title.trim() : "";
+      return t ? t : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeSessionTitle(sessionId: string, title: string): void {
+    if (!sessionId || sessionId.includes("/") || sessionId.includes("..")) return;
+    const file = path.join(this.sessionsRoot(), sessionId, "session.json");
+    let raw: Record<string, unknown> = { v: 1 };
+    try {
+      raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    } catch {
+    }
+    raw.title = title;
+    try {
+      writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`);
+    } catch {
+    }
+  }
+
+  /**
+   * Derive a session's title ONCE, into the session's own manifest.
+   *
+   * Deriving it at read time would be worse: `sessionsOf`/`archivedAgents` would scan a `chat.jsonl`
+   * per session on every call (MEASURED earlier: 0.87s for one archive toggle). Writing it down once,
+   * where the session lives, keeps that scan off the hot path and keeps the answer in ONE place.
+   */
   private async ensureSessionTitle(agentId: string, sessionId: string): Promise<void> {
     const a = this.config.agents.find((x) => x.id === agentId);
     if (!a || a.session !== sessionId) return;
-    if (a.sessionTitle?.trim()) return;
+    if (this.readSessionTitle(sessionId)) return;
     const dir = path.join(this.sessionsRoot(), sessionId);
-    a.sessionTitle = this.sessionTitleOf(dir) ?? sessionId;
-    this.saveConfig();
+    this.writeSessionTitle(sessionId, this.sessionTitleOf(dir) ?? sessionId);
   }
 
   private sessionTitleOf(dirPath: string): string | null {
@@ -1422,7 +1468,16 @@ if (active().length === 0) wake();
     if (a.session !== sessionId) throw new Error(`agent ${agentId} is not on session ${sessionId}`);
     const clean = title.replace(/\s+/g, " ").trim().slice(0, 80);
     if (!clean) throw new Error("a session title cannot be empty");
-    a.sessionTitle = clean;
+    /**
+     * The title belongs to the SESSION, so it is stored with the session.
+     *
+     * It used to live in `config.json` — a second copy of a fact the session directory already owns,
+     * which is how it went stale: `recordSession()` deletes `sessionTitle` whenever the agent moves
+     * session, so a rename followed by any session switch silently reverted the name to the
+     * auto-generated one, and `config.json` was the only place that ever knew better.
+     */
+    this.writeSessionTitle(sessionId, clean);
+    delete a.sessionTitle;
     this.saveConfig();
     this.agents.get(agentId)?.setSessionTitle(clean);
     bus.emit("update", { kind: "agent-update", agentId } satisfies BusEvent);

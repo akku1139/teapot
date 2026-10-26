@@ -66,11 +66,25 @@ test("a missing blob is DROPPED, never faked (#blobs)", async () => {
 });
 
 test("a path that climbs out of the session is refused (#blobs)", async () => {
-  await useTempDir("blobs5-", async (sessionDir) => {
+  /**
+   * The decoy lives INSIDE the managed root.
+   *
+   * It used to be written to `sessionDir/..`, i.e. one level above the directory `useTempDir()` owns
+   * and cleans — so every run left `/tmp/teapot-tests/secret.png` behind. A test that proves "we cannot
+   * read outside" must not itself write outside.
+   *
+   * `blobs/../secret.png` still escapes the blobs dir (the thing under test), while `../secret.png`
+   * relative to the sandbox stays inside what the helper deletes.
+   */
+  await useTempDir("blobs5-", async (root) => {
+    const sessionDir = path.join(root, "session");
     const dir = path.join(sessionDir, "blobs");
-    await fs.writeFile(path.join(sessionDir, "..", "secret.png"), PNG);
-    assert.equal(await resolveImage(dir, "blobs/../secret.png"), null);
-    assert.equal(await resolveImage(dir, "blobs/../../etc/passwd"), null);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(sessionDir, "secret.png"), PNG);
+    assert.equal(await resolveImage(dir, "blobs/../secret.png"), null, "a sibling of blobs/ is not a blob");
+    assert.equal(await resolveImage(dir, "blobs/../../etc/passwd"), null, "and neither is anything further out");
+    // a value WITHOUT the prefix is not ours to resolve — it is returned as-is (an http/data URL case)
+    assert.equal(await resolveImage(dir, "../secret.png"), "../secret.png");
   });
 });
 

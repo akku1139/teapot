@@ -1369,7 +1369,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let timer: ReturnType<typeof setTimeout> | null = null;
   onCleanup(() => ws?.close());
   let pendingRefresh = false;
-  let feedNeedsRead = false;
   let onTabVisible: (() => void) | null = null;
   document.addEventListener("visibilitychange", () => onTabVisible?.());
   onCleanup(() => { onTabVisible = null; });
@@ -1510,11 +1509,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (!eventBelongsOnTimeline(msg.event as { agent?: string; session?: string }, selected(), timelineId()))
           return;
 
-        {
-          const heldSeq = events().at(-1)?.seq ?? 0;
-          const arriving = Number((msg.event as { seq?: number })?.seq ?? 0);
-          if (!heldSeq || (arriving > 0 && arriving > heldSeq + 1)) feedNeedsRead = true;
-        }
+        /**
+         * A seq gap is FILLED by the socket, not by refetching `/events`.
+         *
+         * The socket delivers every event, so a gap only means the server had already written events
+         * this client had not seen — not that anything is missing. Refetching on each gap made the UI
+         * hammer `/api/agents/:id/events` (and `/skills`) whenever a burst of events arrived, which is
+         * exactly the redundant traffic the operator noticed. Only a genuine RECONNECT needs a read,
+         * and `catchUpAfterReconnect()` already does that.
+         */
         mergeEvents([msg.event as Ev]);
         if (msg.event) settleLiveBuffer();
         pendingRefresh = true;
@@ -1535,11 +1538,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (selected()) {
           const beforeId = events().at(-1)?.id;
           const beforeLen = events().length;
-          const _fetchStartedAt = Date.now();
-          if (feedNeedsRead) {
-            feedNeedsRead = false;
-            await loadEvents(selected()!);
-          }
           const buf = live();
           if (buf && !reconcileLiveBuffer(buf, events(), sel()?.status)) setLive(null);
           if (events().at(-1)?.id !== beforeId) {

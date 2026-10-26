@@ -663,6 +663,23 @@ console.log("deep render ok: feed rows present");
   await waitFor("the reasoning bubble to render", () =>
     w.document.body.textContent.includes("weighing which file to open"),
   );
+  /**
+   * Assert the PRECONDITION before the tool call: a LIVE row must exist, with a 💭 block.
+   *
+   * The rule under test clears the reasoning the moment a tool_call starts, so checking for the live
+   * row AFTERWARD would find it gone whether the rule worked or the row never existed — a vacuous pass.
+   * MEASURED: this assertion previously sat after the push and only ever passed because the client was
+   * refetching `/events`; once the socket delivers the events, the row was already settled by then.
+   */
+  const preRow = w.document.querySelector(".msg.live");
+  if (!preRow) {
+    console.error("reasoning→tool check could not create a LIVE row before the call — assertion would be vacuous");
+    process.exit(1);
+  }
+  if (!preRow.querySelector("details.reasoning")) {
+    console.error("reasoning→tool check: the live row has no 💭 block, so clearing it proves nothing");
+    process.exit(1);
+  }
   liveToolVisible = true;
   for (const sid of ["alpha", "alpha-s1", "alpha-s2"]) {
     sock.onmessage?.({
@@ -672,21 +689,16 @@ console.log("deep render ok: feed rows present");
         snapshot: { ...LIVE_AGENT, status: "running" },
       }),
     });
-    sock.onmessage?.({
-      data: JSON.stringify({
-        kind: "event",
-        agentId: AGENT.id,
-        sessionId: sid,
-        event: LIVE_EVENTS.at(-1),
-      }),
-    });
-  }
-  if (!w.document.querySelector(".msg.live")) {
-    console.error(
-      "reasoning→tool check could not create a LIVE row (status/session gate) — the assertion " +
-        "after the tool call would pass vacuously",
-    );
-    process.exit(1);
+    /**
+     * Both the tool_call and its result, because the RULE under test keys on the CALL.
+     *
+     * This used to push only `LIVE_EVENTS.at(-1)` (the result) and rely on the client refetching
+     * `/api/agents/:id/events` after the seq gap to discover the call. That refetch is gone — the socket
+     * delivers every event — so the fixture must deliver what actually happened: a call, then a result.
+     */
+    for (const ev of LIVE_EVENTS.slice(-2)) {
+      sock.onmessage?.({ data: JSON.stringify({ kind: "event", agentId: AGENT.id, sessionId: sid, event: ev }) });
+    }
   }
   await new Promise((r) => setTimeout(r, 500));
   const statusText = w.document.querySelector(".chan-head")?.textContent ?? "";
