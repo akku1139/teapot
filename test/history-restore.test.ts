@@ -64,7 +64,7 @@ test("editing a prompt: live and restored agree (#69)", async () => {
     // `tail` is REQUIRED: this call used to omit it and pass `undefined`, so the test
     // exercised a path the production code does not allow ("discard" drops the work
     // after the edited prompt, which is what this test's comparison relies on).
-    await a.editPromptAt(q2.id, "Q2-EDITED", "discard");
+    await a.editPromptAt(q2.id, "Q2-EDITED");
     const live = texts(a);
     await a.dispose();
 

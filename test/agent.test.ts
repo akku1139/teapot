@@ -576,9 +576,11 @@ test("requested report keeps a valid sequence even when the model calls other to
 
 /* ---------- prompt-edit forks ---------- */
 
-test("editing a sent prompt forks and can summarize the abandoned tail", async () => {
+test("editing a sent prompt forks and DISCARDS the abandoned tail", async () => {
   const mock = mkMock((req): LlmResult => {
-    if (isSummarizerRequest(req.messages)) return reply("- created hello.txt"); // tail summarizer
+    // no summarizer branch: the edit must never call the model. A `summarize` tail used to run one
+    // before forking, which is what made the edit block for a full round trip.
+    if (isSummarizerRequest(req.messages)) throw new Error("the tail must not be summarized");
     if (req.n === 0)
       return reply("creating", [tc("w1", "write_file", { path: "hello.txt", content: "hi" })]);
     return reply("done creating");
@@ -591,7 +593,7 @@ test("editing a sent prompt forks and can summarize the abandoned tail", async (
 
     const events = await readEvents(agent.log.filePath);
     const firstPrompt = events.find((e) => e.type === "prompt")!;
-    const r = await agent.editPromptAt(firstPrompt.id, "create hello2.txt instead", "summarize");
+    const r = await agent.editPromptAt(firstPrompt.id, "create hello2.txt instead");
     assert.ok(r.droppedEvents >= 1);
     assert.notEqual(r.branch, "br0");
 
@@ -602,17 +604,23 @@ test("editing a sent prompt forks and can summarize the abandoned tail", async (
     const newPrompt = ev2.filter((e) => e.type === "prompt").at(-1)!;
     assert.equal((newPrompt.data as Record<string, unknown>).text, "create hello2.txt instead");
 
-    // history keeps prefix + tail notes + edited prompt
+    // history keeps the prefix + the edited prompt, and NOTHING from the abandoned tail
     const texts = agent.conversation.map((m) => m.content ?? "");
-    assert.ok(texts.some((t) => t.includes("another timeline")), "summary note expected");
-    assert.match(texts.find((t) => t.includes("Notes from what happened")) ?? "", /created hello\.txt/);
+    assert.ok(
+      !texts.some((t) => t.includes("another timeline")),
+      "the abandoned tail must be discarded, not summarized into a note",
+    );
+    assert.ok(
+      texts.some((t) => t.includes("create hello2.txt instead")),
+      "and the edited text is what the new branch starts from",
+    );
 
     // editing while running is refused
     agent.enqueuePrompt("kick");
     agent.start("kick");
     await new Promise((r2) => setTimeout(r2, 30));
     if (agent.status === "running") {
-      await assert.rejects(() => agent.editPromptAt(firstPrompt.id, "x", "discard"));
+      await assert.rejects(() => agent.editPromptAt(firstPrompt.id, "x"));
       agent.stop("cleanup");
       await agent.settled();
     }

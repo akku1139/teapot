@@ -3971,7 +3971,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       {(ed) => {
         const idx = () => events().findIndex((e) => e.id === ed().eventId);
         const afterCount = () => Math.max(0, events().length - idx() - 1);
-        const [tail, setTail] = createSignal<"summarize" | "discard">(afterCount() > 0 ? "summarize" : "discard");
+        // no mode choice: the events after the edited prompt are DISCARDED. A "summarize" mode made
+        // the fork wait on a model round trip (the reported lag) and had no re-entrancy guard, so a
+        // second edit during it collided. Neither Pi nor OpenCode offers it, and it was never used
+        // here, so the choice is gone rather than made asynchronous.
         return (
           <Modal title="edit prompt — forks the conversation" onClose={() => setEditing(null)}>
             <form
@@ -3982,7 +3985,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   await api(`/api/agents/${selected()}/edit-prompt`, {
                     method: "POST",
                     headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ eventId: ed().eventId, text: ta.value, tail: tail() }),
+                    body: JSON.stringify({ eventId: ed().eventId, text: ta.value }),
                   });
                   setEditing(null);
                   refreshAgents();
@@ -3996,18 +3999,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             >
               <textarea id="edit-text" class="mono w100" rows={6} value={ed().text} />
               <Show when={afterCount() > 0}>
-                <div>
-                  <div style="font-size:12.5px;margin-bottom:4px">
-                    {afterCount()} event(s) came after this prompt — what should happen to them on the new branch?
-                  </div>
-                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
-                    <input type="radio" name="tail" checked={tail() === "summarize"} onchange={() => setTail("summarize")} />
-                    summarize them into a note the agent can still read
-                  </label>
-                  <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--fg)">
-                    <input type="radio" name="tail" checked={tail() === "discard"} onchange={() => setTail("discard")} />
-                    discard them entirely (clean timeline)
-                  </label>
+                <div style="font-size:12.5px;color:var(--dim)">
+                  {afterCount()} event(s) came after this prompt and will be discarded — the new branch
+                  starts from your edited text.
                 </div>
               </Show>
               <div style="display:flex;justify-content:flex-end;gap:8px">

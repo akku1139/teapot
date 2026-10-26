@@ -871,13 +871,45 @@ export class Agent {
     return { ran };
   }
 
+  /**
+   * Rewrite an earlier prompt and fork from there.
+   *
+   * The events after the edited prompt are DISCARDED, never summarized. A `summarize` mode used to
+   * call the model before forking, which made the edit block on a full round trip (the reported lag)
+   * and left `stopRequested` unset for the whole of it — so a second edit submitted while the first
+   * was summarizing read the same lineage and collided. Neither Pi nor OpenCode summarizes here, and
+   * the operator never used it, so the mode is gone rather than made asynchronous.
+   */
   async editPromptAt(
     eventId: string,
     text: string,
-    tail: "discard" | "summarize",
   ): Promise<{ droppedEvents: number; branch: string }> {
     if (this.status === "running" || this.parkedByTool || this.pendingPrompts.length)
       throw new Error("agent is running — stop it before editing history");
+    /**
+     * A LATCH, because the status check above cannot see a second call.
+     *
+     * `readEvents` and the log writes are awaits, so two requests arriving together both passed the
+     * check, both read the same lineage, and both forked — MEASURED in tyb2-9-8155867c while a
+     * `summarize` was in flight, and reachable without it by double-submitting the dialog. The latch
+     * is released in `finally`, so a failed edit does not wedge the agent.
+     */
+    if (this.editingHistory) throw new Error("an edit is already in progress — wait for it to finish");
+    this.editingHistory = true;
+    try {
+      return await this.editPromptAtInner(eventId, text);
+    } finally {
+      this.editingHistory = false;
+    }
+  }
+
+  /** true while an `editPromptAt` call owns the log; see the latch in the public method */
+  private editingHistory = false;
+
+  private async editPromptAtInner(
+    eventId: string,
+    text: string,
+  ): Promise<{ droppedEvents: number; branch: string }> {
     const all = await readEvents(this.log.filePath);
     const target = all.find((e) => e.id === eventId);
     if (!target || target.type !== "prompt")
@@ -891,23 +923,6 @@ export class Agent {
     const dropped = lineage.slice(tIdx); 
 
     const msgs = rebuildMessagesFrom(kept);
-    if (tail === "summarize" && dropped.length > 0) {
-      try {
-        const droppedMsgs = rebuildMessagesFrom(dropped);
-        if (droppedMsgs.length) {
-          const summary = await this.summarize(droppedMsgs);
-          if (summary.trim()) {
-            msgs.push({
-              role: "user",
-              content:
-                "[harness] The conversation continued past this point on another timeline. " +
-                `Notes from what happened there:\n\n${summary}`,
-            });
-          }
-        }
-      } catch {
-      }
-    }
     msgs.push({ role: "user", content: text });
 
     const newBranch = `br${this.branchCount()}${Date.now().toString(36).slice(-4)}`;
@@ -919,7 +934,6 @@ export class Agent {
       newBranch,
       reason: "prompt-edited",
       droppedEvents: dropped.length,
-      tailMode: tail,
     });
     const cutPoint = kept.at(-1)?.id ?? null;
     this.log.seedBranch(newBranch, cutPoint);

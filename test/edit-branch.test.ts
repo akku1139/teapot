@@ -88,7 +88,7 @@ test("the fork event keeps the chain linked to the pre-edit history (#38)", asyn
 
     const before = await readEvents(agent.log.filePath);
     const firstPrompt = before.find((e) => e.type === "prompt")!;
-    const r = await agent.editPromptAt(firstPrompt.id, "edited instead", "discard");
+    const r = await agent.editPromptAt(firstPrompt.id, "edited instead");
     assert.notEqual(r.branch, "br0", "an edit must fork");
 
     const after = await readEvents(agent.log.filePath);
@@ -138,7 +138,7 @@ test("a restart after an edit keeps the pre-edit context (#38)", async () => {
     await first.settled();
     const before = await readEvents(first.log.filePath);
     const firstPrompt = before.find((e) => e.type === "prompt")!;
-    await first.editPromptAt(firstPrompt.id, "edited instead", "discard");
+    await first.editPromptAt(firstPrompt.id, "edited instead");
     await first.dispose();
 
     // fresh agent over the same log = the restart path
@@ -191,7 +191,7 @@ test("editing is refused while the agent is parked on a tool (#38)", async () =>
     assert.ok(p);
     // status may read "idle" here (parked) — the guard must still refuse (#38)
     await assert.rejects(
-      () => agent.editPromptAt(p!.id, "edited", "discard"),
+      () => agent.editPromptAt(p!.id, "edited"),
       /running/i,
       "editing while parked must be refused (#38)",
     );
@@ -223,7 +223,7 @@ test("editing is refused while prompts are still queued (#38)", async () => {
       "prompt never reached the pending queue",
     );
     await assert.rejects(
-      () => agent.editPromptAt(p!.id, "edited", "discard"),
+      () => agent.editPromptAt(p!.id, "edited"),
       /running/i,
       "editing with queued prompts must be refused (#38)",
     );
@@ -257,7 +257,7 @@ test("an edit leaves no queued prompts from the old branch (#38)", async () => {
     // drop the queued one so the edit is allowed, then verify the edit itself
     // clears anything still queued from the old branch
     (agent as unknown as { pendingPrompts: unknown[] }).pendingPrompts = [];
-    await agent.editPromptAt(first.id, "edited", "discard");
+    await agent.editPromptAt(first.id, "edited");
     assert.equal(
       (agent as unknown as { pendingPrompts: unknown[] }).pendingPrompts.length,
       0,
@@ -314,7 +314,7 @@ test("the fork event is attributed to the branch it CREATED (#38)", async () => 
     await agent.settled();
     const events = await readEvents(agent.log.filePath);
     const first = events.find((e) => e.type === "prompt")!;
-    const r = await agent.editPromptAt(first.id, "edited", "discard");
+    const r = await agent.editPromptAt(first.id, "edited");
 
     const app = buildApp(m);
     const res = await app.request("/api/agents/t/branches");

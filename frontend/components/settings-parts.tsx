@@ -74,7 +74,7 @@ export function CodePreview(props: { path: string; content: string; html: string
         }
       >
         {}
-        <div class="filepreview" innerHTML={props.html} />
+        <div class="filepreview shikiwrap" innerHTML={props.html} />
       </Show>
       <Show when={props.truncated}>
         <div class="muted" style="padding-top:6px;font-size:11.5px">… truncated (first 100 KB)</div>

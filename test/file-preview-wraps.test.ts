@@ -43,7 +43,7 @@ test("shiki's own pre and code are told to wrap (#files)", () => {
    * shiki emits `<pre class="shiki">` with `white-space: pre` of its own, so a rule on the wrapper
    * does not reach it. The selector must NAME the inner elements.
    */
-  const wrapped = [".filepreview .shiki pre", ".filepreview .shiki code"];
+  const wrapped = [".shikiwrap .shiki pre", ".shikiwrap .shiki code"];
   for (const sel of wrapped) {
     const body = rule(sel);
     assert.ok(body, `${sel} must be styled, or shiki's own defaults win (#files)`);
@@ -52,7 +52,7 @@ test("shiki's own pre and code are told to wrap (#files)", () => {
 });
 
 test("the code element is a BLOCK with min-width 0 — the reason it scrolled (#files)", () => {
-  const body = rule(".filepreview .shiki code") + rule(".filepreview code.shiki");
+  const body = rule(".shikiwrap .shiki code") + rule(".shikiwrap code.shiki");
   assert.match(body, /display:\s*block/, "an inline <code> has no box to wrap in — MEASURED clientWidth 0 (#files)");
   assert.match(body, /min-width:\s*0/, "and a flex/grid ancestor must be allowed to shrink it (#files)");
 });
@@ -70,10 +70,14 @@ test("the code background is the THEME's surface, never shiki's white (#files)",
    * The contract: the container carries the theme surface and shiki's own background is transparent,
    * for EVERY appearance rather than only one.
    */
-  const container = rule(".filepreview");
-  assert.match(container, /background:\s*var\(--bg/, "the preview must paint a theme surface (#files)");
+  // the surface moved to the shared `.shikiwrap`, so a NEW shiki container is correct by
+  // construction rather than by remembering to copy three selector lists
+  const container = rule(".shikiwrap");
+  assert.match(container, /background:\s*color-mix\(/, "the preview must paint a theme surface (#files)");
+  assert.match(container, /transparent/, "and it must be translucent (#files)");
+  assert.match(rule(".shikiwrap .shiki"), /background-color:\s*transparent/, "shiki's own background must lose (#files)");
 
-  const shikiBg = [...css.matchAll(/([^{}]*\.filepreview[^{}]*\.shiki[^{}]*)\{([^}]*)\}/g)]
+  const shikiBg = [...css.matchAll(/([^{}]*\.shikiwrap[^{}]*\.shiki[^{}]*)\{([^}]*)\}/g)]
     .filter((m) => /background-color/.test(m[2]!))
     .map((m) => m[2]!)
     .join("\n");

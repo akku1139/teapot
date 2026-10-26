@@ -323,7 +323,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
                           truncated={!!pv().truncated}
                         />
                       }>
-                        <div class="content mdpreview" innerHTML={renderMarkdown(pv().content)} />
+                        <div class="content mdpreview shikiwrap" innerHTML={renderMarkdown(pv().content)} />
                       </Show>
                     }>
                       <div class="fileeditor">

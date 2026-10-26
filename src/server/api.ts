@@ -1196,16 +1196,14 @@ const MAX_WS_CLIENTS = 64;
     const a = master.agents.get(c.req.param("id"));
     if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req
-      .json<{ eventId?: string; text?: string; tail?: string }>()
+      .json<{ eventId?: string; text?: string }>()
       .catch(() => null);
     if (!body?.eventId || !body.text?.trim())
       return c.json({ error: "eventId and text required" }, 400);
     try {
-      const r = await a.editPromptAt(
-        body.eventId,
-        body.text,
-        body.tail === "summarize" ? "summarize" : "discard",
-      );
+      // a `tail` in the body is ignored on purpose: the events after the edit are discarded, so an
+      // older client still sending `tail: "summarize"` gets the fast path rather than an error
+      const r = await a.editPromptAt(body.eventId, body.text);
       a.start("edited prompt resent");
       return c.json({ ok: true, ...r });
     } catch (err) {

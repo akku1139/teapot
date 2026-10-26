@@ -2577,19 +2577,19 @@ html[data-bg-image="on"] .composer form {
  * width, which is what the scrollbar was tracking. It has to be a BLOCK to be laid out at the
  * container's width.
  */
-.filepreview .shiki,
-.filepreview .shiki pre,
-.filepreview .shiki code,
-.filepreview pre.shiki,
-.filepreview code.shiki {
+.shikiwrap .shiki,
+.shikiwrap .shiki pre,
+.shikiwrap .shiki code,
+.shikiwrap pre.shiki,
+.shikiwrap code.shiki {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
   overflow-x: hidden;
   max-width: 100%;
 }
-.filepreview .shiki code,
-.filepreview code.shiki {
+.shikiwrap .shiki code,
+.shikiwrap code.shiki {
   /**
    * `display: block` AND `min-width: 0`.
    *
@@ -2604,8 +2604,8 @@ html[data-bg-image="on"] .composer form {
   width: auto;
 }
 /* shiki wraps each source line in `span.line`; inline spans cannot break inside a long token */
-.filepreview .shiki code .line,
-.filepreview code.shiki .line {
+.shikiwrap .shiki code .line,
+.shikiwrap code.shiki .line {
   display: inline;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -2654,12 +2654,12 @@ html[data-bg-image="on"] .composer form {
 }
 .okbtn:disabled { opacity: .4; cursor: default; }
 /* rendered markdown inside the file preview modal */
-.mdpreview { max-height: 62vh; overflow: auto; background: var(--bg-darkest); border-radius: var(--radius-lg); padding: 14px 16px; }
+.mdpreview { max-height: 62vh; overflow: auto; border-radius: var(--radius-lg); padding: 14px 16px; }
 /* ALSO covers tool cards (`.toolbody.shiki`): a bash command and a JSON argument object are worth
    highlighting, and they need the same dual-theme variable pick as the file preview or the tokens
    render in the wrong palette. One selector list, so the two cannot drift. */
-.filepreview .shiki,
-.filepreview .shiki span,
+.shikiwrap .shiki,
+.shikiwrap .shiki span,
 .toolbody.shiki,
 .toolbody.shiki span {
   /* dual-theme mode (defaultColor:false) emits only --shiki-light/-dark
@@ -2669,8 +2669,8 @@ html[data-bg-image="on"] .composer form {
   font-family: ui-monospace, Menlo, monospace;
   font-size: var(--text-sm);
 }
-html[data-appearance="dark"] .filepreview .shiki,
-html[data-appearance="dark"] .filepreview .shiki span,
+html[data-appearance="dark"] .shikiwrap .shiki,
+html[data-appearance="dark"] .shikiwrap .shiki span,
 html[data-appearance="dark"] .toolbody.shiki,
 html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 .filepreview .shiki,
@@ -2799,24 +2799,53 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
   display: inline;
 }
 /**
- * shiki's inline `--shiki-light-bg: #fff` must never be the visible surface.
+ * The preview is a CHIP inside the modal, not a sheet of its own.
  *
- * Only the LIGHT appearance was given an explicit background, so every dark theme fell through to
- * shiki's own white — reported as "ファイルツリーからのコードプレビューでshikiが効いてると背景が真っ白".
- * `shiki-themes github-light github-dark` emits BOTH palettes at once (dual-theme mode), and the
- * light one wins by default because it is what the inline `style` sets.
+ * Two measured faults, reported as "背景透過されてない / 極めて透明感が低すぎるし、テーマの色に従ってない":
  *
- * A tool card does not have this problem because `.toolbody` paints its own surface underneath, so
- * the preview gets the same treatment: the theme's surface for the box, and shiki's background made
- * transparent so it cannot override it.
+ *   1. `background: var(--bg-darkest)` painted an OPAQUE fill. `--bg-darkest` is only a
+ *      `color-mix(… transparent)` under `html[data-bg-image="on"]`; with no wallpaper it is a plain
+ *      hex, so the preview was solid where every other surface lets the theme through.
+ *   2. `--bg-darkest` is DARKER than the modal's `--bg-mid`, so the preview read as a different
+ *      theme rather than a layer of the same one.
+ *
+ * `.toolbody` already solves both by mixing the surface at 70% against transparent, which is what
+ * makes a code block sit ON its card instead of cutting a hole in it. Same treatment here.
  */
-.filepreview .shiki,
-.filepreview pre.shiki {
+/**
+ * ONE wrapper for every shiki surface.
+ *
+ * The rules used to be written per container (`.filepreview .shiki`, `.toolbody.shiki`, …), which is
+ * why two of the three got it wrong in different ways: the file preview painted an opaque
+ * `--bg-darkest`, and the markdown preview still does. A single class means a new shiki surface is
+ * correct by construction instead of by remembering three selector lists.
+ *
+ * The surface is mixed at 70% like `.toolbody`, so a code block sits ON its card and lets the theme
+ * through — MEASURED: opaque `--bg-darkest` was `rgb(26,28,34)` while the modal behind it was
+ * `rgb(43,46,57)`, i.e. darker than its own container and unrelated to the theme's alpha scale.
+ */
+.shikiwrap {
+  /**
+   * Mixed from the SURFACE IT SITS ON, not from the deepest token.
+   *
+   * `.toolbody` mixes `--bg-darkest` on a card that is already `--bg-darkest`, so it reads as a
+   * translucent layer of the same material. A preview lives inside a `--bg-mid` modal, where the same
+   * token is one step DEEPER than its container — MEASURED `#1a1c22` inside `#2b2e39`, i.e. a hole
+   * rather than a layer, which is the other half of "テーマの色に従ってない".
+   *
+   * `--bg-darkest` over `--bg-mid` at ~60% lands just below the modal while staying in the theme's
+   * own scale, and because it is a `color-mix` the wallpaper still shows through.
+   */
+  background: color-mix(in srgb, color-mix(in srgb, var(--bg-darkest) 60%, var(--bg-mid)) 88%, transparent);
+  border-radius: var(--radius-lg);
+}
+/* shiki's inline `--shiki-light-bg: #fff` must never be the visible surface: in dual-theme mode the
+   LIGHT palette is what the inline style sets, so every dark theme showed a white block. */
+.shikiwrap .shiki,
+.shikiwrap pre.shiki,
+.shikiwrap code.shiki {
   background-color: transparent !important;
 }
-.filepreview { background: var(--bg-darkest); }
-html[data-appearance="light"] .filepreview .shiki { background-color: transparent !important; }
-html[data-appearance="light"] .filepreview { background: var(--bg-light); }
 
 /* notification center (pops above the sidebar footer) */
 .notifbtn { position: relative; }

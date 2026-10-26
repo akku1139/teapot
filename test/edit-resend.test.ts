@@ -49,7 +49,7 @@ test("after an edit the agent is startable (#96)", async () => {
 
     const events = await readEvents(agent.log.filePath);
     const q1 = events.find((e) => e.type === "prompt" && String((e.data as { text?: string })?.text) === "Q1")!;
-    await agent.editPromptAt(q1.id, "Q1-EDITED", "discard");
+    await agent.editPromptAt(q1.id, "Q1-EDITED");
 
     agent.start("controls start");
     await agent.settled();
@@ -91,7 +91,7 @@ test("the edited prompt is what the agent is asked to work on (#96)", async () =
 
     const events = await readEvents(agent.log.filePath);
     const first = events.find((e) => e.type === "prompt")!;
-    await agent.editPromptAt(first.id, "THE EDITED TEXT", "discard");
+    await agent.editPromptAt(first.id, "THE EDITED TEXT");
     agent.start("edited prompt resent");
     await agent.settled();
     await new Promise((r) => setTimeout(r, 150));
