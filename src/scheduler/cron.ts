@@ -1,8 +1,3 @@
-/**
- * Minimal 5-field cron matcher (minute hour day-of-month month day-of-week).
- * Also supports shorthand "every <n>s|m|h".
- * The master ticks once every 15s; matching is a handful of integer compares.
- */
 
 export interface Schedule {
   raw: string;
@@ -14,14 +9,12 @@ const BOUNDS: [number, number][] = [
   [0, 23],
   [1, 31],
   [1, 12],
-  [0, 7], // 0 and 7 are both Sunday
+  [0, 7], 
 ];
 
 function parseField(part: string, min: number, max: number): Set<number> {
   const out = new Set<number>();
   const clampOrThrow = (v: number): number => {
-    // accepting an out-of-range value produces a set that never matches, i.e. a
-    // cron that silently never fires ("99 * * * *")
     if (!Number.isInteger(v) || v < min || v > max)
       throw new Error(`bad cron field: ${part} (${min}-${max} expected)`);
     return v;
@@ -72,12 +65,10 @@ export function parseSchedule(spec: string): Schedule {
   };
 }
 
-/** Does this schedule fire at the given Date? */
 export function matches(schedule: Schedule, d: Date): boolean {
   const values = [d.getMinutes(), d.getHours(), d.getDate(), d.getMonth() + 1, d.getDay()];
   for (let i = 0; i < 5; i++) {
     if (!schedule.fields[i].has(values[i])) {
-      // Sunday alias: field 5 with 7 should also match day=0
       if (i === 4 && values[i] === 0 && schedule.fields[i].has(7)) continue;
       return false;
     }
@@ -85,14 +76,8 @@ export function matches(schedule: Schedule, d: Date): boolean {
   return true;
 }
 
-/**
- * Next fire time after `from`, scanning minute by minute (cheap: a handful of
- * integer compares per minute). The horizon is a year so an annual cron (a
- * December date seen in August) still resolves; a Feb-29-only cron can
- * legitimately report null most of the year.
- */
 export function nextFireAt(schedule: Schedule, from = new Date()): string | null {
-  const startMinute = Math.floor(from.getTime() / 60_000) + 1; // next whole minute
+  const startMinute = Math.floor(from.getTime() / 60_000) + 1; 
   const horizon = 60 * 24 * 366;
   for (let i = 0; i < horizon; i++) {
     const d = new Date((startMinute + i) * 60_000);

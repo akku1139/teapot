@@ -2,7 +2,6 @@ export type ProviderPreset = {
   key: string;
   label: string;
   url: string;
-  /** pre-filled model suggestion — empty means "keep what's typed" */
   model: string;
   hint?: string;
 };

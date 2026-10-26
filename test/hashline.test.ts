@@ -1,21 +1,3 @@
-/**
- * #7 / #4 — read_file's line numbers are unfriendly, and hashline edit support.
- *
- * The problem the two issues describe together: read_file prints an `N| `
- * gutter, but edit_file's old_text must NOT contain it. So every read plants a
- * trap, and the only mitigation was a sentence in the tool description.
- *
- * Format follows the established "hashline" convention used across AI coding
- * harnesses (quangdang46/hashline, kebbbnnn/hashline, opencode-hashline,
- * pi-hashline-edit-pro, mcp-hashline-edit-server, …):
- *
- *     12:a3f1| function calculateTotal(items) {
- *
- * `LINE:HASH| content` — the line number is KEPT and a content hash ADDED as an
- * integrity anchor. Verified against those implementations rather than invented:
- * the hash covers the STRIPPED content, blank lines get a reserved hash, and a
- * repeated hash is disambiguated by proximity to the anchor's line number.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFile, readFile } from "node:fs/promises";
@@ -36,8 +18,6 @@ const ctx = (dir: string) => ({ cwd: dir, defaultTimeoutMs: 5_000, maxOutputByte
 
 const SRC = "const x = 1;\nconst y = 2;\nconst z = 3;\n";
 
-/* ---------- the hash itself ---------- */
-
 test("hashLine is 4 hex chars, and blank lines get a reserved anchor (#7)", () => {
   assert.match(hashLine("const x = 1;"), /^[0-9a-f]{4}$/);
   assert.equal(hashLine(""), "    ", "blank lines use a reserved 4-space anchor");
@@ -45,7 +25,6 @@ test("hashLine is 4 hex chars, and blank lines get a reserved anchor (#7)", () =
 });
 
 test("hashLine hashes the STRIPPED content so re-indenting keeps the anchor (#7)", () => {
-  // whitespace-only changes must NOT invalidate an anchor
   assert.equal(hashLine("  const x = 1;"), hashLine("const x = 1;"));
   assert.equal(hashLine("\tconst x = 1;\t"), hashLine("const x = 1;"));
   assert.notEqual(hashLine("const x = 1;"), hashLine("const x = 2;"));
@@ -55,16 +34,12 @@ test("hashLine is deterministic across calls (#7)", () => {
   assert.equal(hashLine("let a = 1;"), hashLine("let a = 1;"));
 });
 
-/* ---------- the read side ---------- */
-
 test("renderHashlines emits LINE:HASH| content (#7)", () => {
   const out = renderHashlines(["const a = 1;", "const b = 2;"], 1);
   const rows = out.split("\n");
   assert.equal(rows.length, 2);
   assert.match(rows[0]!, /^1:[0-9a-f]{4}\| const a = 1;$/);
   assert.match(rows[1]!, /^2:[0-9a-f]{4}\| const b = 2;$/);
-  // the LINE NUMBER IS KEPT — that is the canonical format, and it keeps the
-  // output navigable for both humans and models
   assert.match(rows[0]!, /^1:/);
 });
 
@@ -82,7 +57,6 @@ test("read_file(line_ids:hash) returns the canonical format (#7)", async () => {
     const rows = r.result.split("\n");
     assert.match(rows[0]!, /^1:[0-9a-f]{4}\| const x = 1;$/);
     assert.match(rows[1]!, /^2:[0-9a-f]{4}\| const y = 2;$/);
-    // every content line is anchored and the hash matches the real content
     for (const row of rows) {
       const a = parseAnchor(row.slice(0, row.indexOf("|")));
       assert.ok(a, `unparseable anchor: ${row}`);
@@ -93,7 +67,6 @@ test("read_file(line_ids:hash) returns the canonical format (#7)", async () => {
 });
 
 test("the default read_file output is UNCHANGED (#7 is opt-in)", async () => {
-  // existing tests assert on `N| `; the format must not shift under them
   await useTempDir("hl-def-", async (dir) => {
     await writeFile(path.join(dir, "a.ts"), SRC);
     const r = await executeTool("read_file", JSON.stringify({ path: "a.ts" }), ctx(dir));
@@ -121,14 +94,12 @@ test("pattern mode also honours line_ids:hash (#7)", async () => {
   });
 });
 
-/* ---------- the edit side: anchors round-trip verbatim ---------- */
-
 test("a hashline block copied from read_file works as old_text VERBATIM (#4)", async () => {
   await useTempDir("hl-rt-", async (dir) => {
     const f = path.join(dir, "a.ts");
     await writeFile(f, SRC);
     const r = await executeTool("read_file", JSON.stringify({ path: "a.ts", line_ids: "hash" }), ctx(dir));
-    const block = r.result.split("\n").slice(1, 3).join("\n"); // lines 2-3, anchors intact
+    const block = r.result.split("\n").slice(1, 3).join("\n"); 
     assert.match(block, /^2:[0-9a-f]{4}\|/, "the block really does carry anchors");
 
     const e = await executeTool(
@@ -153,16 +124,13 @@ test("a single anchored line works as old_text (#4)", async () => {
   });
 });
 
-/* ---------- the property that makes it worth having: stale rejection ---------- */
-
 test("a stale read is REFUSED instead of editing the wrong lines (#4)", async () => {
   await useTempDir("hl-stale-", async (dir) => {
     const f = path.join(dir, "a.ts");
     await writeFile(f, SRC);
     const anchor = (await executeTool("read_file", JSON.stringify({ path: "a.ts", line_ids: "hash" }), ctx(dir)))
-      .result.split("\n")[1]!; // "2:<hash>| const y = 2;"
+      .result.split("\n")[1]!; 
 
-    // the file changes under the agent between read and edit
     await writeFile(f, "const x = 1;\nconst CHANGED = 9;\n");
     const e = await executeTool("edit_file", JSON.stringify({ path: "a.ts", old_text: anchor, new_text: "X" }), ctx(dir));
     assert.equal(e.ok, false, "a stale anchor must NOT silently edit (#4)");
@@ -180,12 +148,7 @@ test("a mistyped anchor is diagnosed as an anchor problem (#7)", async () => {
       ctx(dir),
     );
     assert.equal(e.ok, false);
-    // recognised as an ANCHOR that does not resolve — not "no similar text",
-    // which would send the model hunting for a whitespace problem
     assert.match(e.result, /hashline block but did not resolve/i, e.result);
-    // a NON-hex anchor is a different mistake from a stale read, and must not
-    // be reported as one — that would send the agent hunting for an edit it
-    // never lost (#7)
     assert.match(e.result, /not a valid anchor/i, `must name the real problem: ${e.result}`);
     assert.doesNotMatch(e.result, /changed since you read/i, "must not blame a stale read (#7)");
     assert.doesNotMatch(e.result, /trailing spaces/, "must not blame whitespace (#7)");
@@ -212,7 +175,6 @@ test("anchors survive lines shifting above them — the whole point (#4)", async
     await writeFile(f, SRC);
     const anchor = (await executeTool("read_file", JSON.stringify({ path: "a.ts", line_ids: "hash" }), ctx(dir)))
       .result.split("\n")[1]!;
-    // something is INSERTED above; the anchored content is now on line 3
     await writeFile(f, "const inserted = 0;\nconst x = 1;\nconst y = 2;\nconst z = 3;\n");
     const e = await executeTool("edit_file", JSON.stringify({ path: "a.ts", old_text: anchor, new_text: "const y = 22;" }), ctx(dir));
     assert.ok(e.ok, `an anchor must survive an unrelated insert above it (#4): ${e.result}`);
@@ -221,15 +183,11 @@ test("anchors survive lines shifting above them — the whole point (#4)", async
   });
 });
 
-/* ---------- ambiguity ---------- */
-
 test("a duplicated line resolves by proximity, not by luck (#4)", async () => {
   await useTempDir("hl-dup-", async (dir) => {
     const f = path.join(dir, "a.ts");
-    // identical lines at 1 and 3
     await writeFile(f, "dup\nkeep\ndup\n");
     const h = hashLine("dup");
-    // the anchor for the SECOND occurrence must win, not the first
     const e = await executeTool(
       "edit_file",
       JSON.stringify({ path: "a.ts", old_text: `3:${h}| dup`, new_text: "replaced" }),
@@ -252,16 +210,12 @@ test("resolveAnchor reports how it resolved (#4)", () => {
 });
 
 test("an unknown hash is never resolved by falling back to a line number (#4)", () => {
-  // this is the failure mode hashline exists to prevent: "close enough" edits
   const r = resolveAnchor(["a", "b"], { line: 2, hash: "zzzz" });
   assert.ok("error" in r, "an unknown hash must be an error, never a guess (#4)");
 });
 
-/* ---------- block detection ---------- */
-
 test("isHashlineBlock only accepts fully-anchored blocks (#7)", () => {
   assert.equal(isHashlineBlock("1:a851| const a = 1;\n2:b211| const b = 2;"), true);
-  // plain text that happens to contain a tab is NOT a hashline block
   assert.equal(isHashlineBlock("a\tb = 1;"), false);
   assert.equal(isHashlineBlock("const a = 1;"), false);
   assert.equal(isHashlineBlock(""), false);
@@ -282,8 +236,6 @@ test("resolveHashlineBlock refuses a block that reuses one line (#4)", () => {
   const r = resolveHashlineBlock(`1:${hashLine("a")}| a\n1:${hashLine("a")}| a`, lines);
   assert.ok("error" in r, "the same line twice must be refused");
 });
-
-/* ---------- blank lines ---------- */
 
 test("blank lines round-trip through the reserved anchor (#7)", async () => {
   await useTempDir("hl-blank-", async (dir) => {

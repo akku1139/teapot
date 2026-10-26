@@ -1,20 +1,3 @@
-/**
- * #56 — "I'd like the `/compact` START event on the timeline too; in the right
- *        panel alone it's hard to tell what happened."
- *
- * Compaction was only observable from its OUTCOME: the `context-compacted`
- * note and the `compaction` event are both appended once the whole pass is
- * over. A summarize pass over a large history takes many seconds, and during
- * it the timeline showed nothing at all — so a `/compact` (or an automatic
- * overflow compaction) looked exactly like the agent had hung.
- *
- * The fix logs a `context-compaction-started` system_note BEFORE the
- * summarizer runs, and the web UI renders it as a divider.
- *
- * These tests assert ORDER, not just presence: a start marker appended after
- * the pass would be indistinguishable from no marker at all, which is the bug
- * being fixed.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -33,7 +16,6 @@ const reply = (content: string, calls?: ReturnType<typeof tc>[]): LlmResult => (
   message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
 });
 
-/** the system prompt that identifies the summarizer's own LLM call */
 const isSummarizer = (messages: any) =>
   isSummarizerRequest(messages);
 
@@ -43,19 +25,9 @@ const noteEvents = (events: TeapotEvent[]) =>
 const notesOf = (events: TeapotEvent[], name: string) =>
   events.filter((e) => e.type === "system_note" && (e.data as any)?.event === name).map((e) => e.data as any);
 
-/**
- * Build an agent that is guaranteed to hit a compaction pass. `onSummarize` is
- * invoked at the exact moment the summarizer runs — the window in which the
- * operator is staring at a silent timeline — and may inspect the log.
- */
 function compactingAgent(
   ws: string,
   sessionDir: string,
-  /**
-   * Called once, during the flatten pass. Its return value is NOT used — the parameter
-   * is `void` so a caller can do async work (read the log mid-pass) without inventing a
-   * return value; it was typed `string[]` for a value nothing ever read.
-   */
   onSummarize?: () => Promise<void> | void,
 ) {
   const _big = "x".repeat(12_000);
@@ -66,11 +38,6 @@ function compactingAgent(
       if (onSummarize) await onSummarize();
       return reply("- summary of earlier work");
     }
-    // every round emits a large tool call, as a real session does. A ONE-round
-    // history cannot exercise the summarizer at all: the recent-keep boundary lands
-    // on the tool result, safeCut backs it up to index 1, and the summarizable
-    // prefix collapses to the opening prompt (measured) — so the cost gate
-    // correctly routes it to truncation instead.
     return reply("writing", [tc(`w${n}`, "read_file", { path: "big.txt" })]);
   };
   return new Agent({
@@ -84,7 +51,6 @@ function compactingAgent(
   } as any);
 }
 
-/** drive enough rounds, with big prompts, to make a genuinely compactable history */
 async function fill(agent: Agent, rounds = 6): Promise<void> {
   for (let i = 0; i < rounds; i++) {
     agent.enqueuePrompt(`step ${i} ${"y".repeat(4000)}`);
@@ -107,8 +73,6 @@ test("a compaction pass announces itself BEFORE it runs (#56)", async () => {
     );
     assert.ok(names.includes("context-compacted"), `expected the completion note too, saw: ${names.join(", ")}`);
 
-    // ORDER is the point: a start note written after the pass is
-    // indistinguishable from no start note at all.
     const start = notesOf(events, "context-compaction-started")[0]!;
     const done = notesOf(events, "context-compacted")[0]!;
     const startEv = events.find((e) => e.data === start)!;
@@ -122,21 +86,12 @@ test("a compaction pass announces itself BEFORE it runs (#56)", async () => {
 });
 
 test("the start note is on disk WHILE the summarizer is still running (#56)", async () => {
-  // The real regression is the SILENCE, not a missing record at the end. If
-  // the note is only written once the pass finishes, the timeline is blank for
-  // the whole summarize. Reading the log from inside the summarizer call is the
-  // only way to prove the record exists during that gap.
   await useTempDirs(["c56c-", "c56d-"], async ([ws, sessionDir]) => {
     let duringPass: string[] = [];
     let captured = false;
     const agent = compactingAgent(ws!, sessionDir!, async () => {
-      // the FIRST summarize call is the one that proves the point: later passes
-      // run after earlier ones completed, so their log already holds a completion
-      // note and would fail the "not there yet" assertion for the wrong reason
       if (captured) return;
       captured = true;
-      // read the FILE, not in-memory state — the operator only ever sees
-      // events that have been APPENDED to the log
       const text = await readFile(agent.log.filePath, "utf8");
       duringPass = text
         .split("\n")
@@ -175,7 +130,6 @@ test("the start note carries only figures known at announce time (#56)", async (
     assert.equal(typeof start.tokensBefore, "number", "reports the before-figure");
     assert.equal(start.tokensAfter, undefined, "the after-figure is unknown yet — it must not be guessed");
     assert.equal(typeof start.reason, "string", "says whether this was manual (/compact) or automatic");
-    // the completion note still carries the authoritative pair
     assert.equal(typeof done.tokensBefore, "number");
     assert.equal(typeof done.tokensAfter, "number");
     await agent.dispose();
@@ -187,7 +141,6 @@ test("a forced /compact is labelled manual, an automatic one is not (#56)", asyn
     const agent = compactingAgent(ws!, sessionDir!);
     await agent.init();
     await fill(agent);
-    // the run above compacted because it blew the budget → automatic
     const events = await readEvents(agent.log.filePath);
     const start = notesOf(events, "context-compaction-started")[0]!;
     assert.equal(start.reason, "auto", "a budget-driven pass is automatic");

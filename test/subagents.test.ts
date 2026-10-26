@@ -8,9 +8,6 @@ import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
 import { dataOf } from "./helpers/event-data.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — runs POSIX commands through the bash tool; POSIX filesystem paths.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool; POSIX filesystem paths");
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
@@ -28,7 +25,6 @@ function mkMaster(dataDir: string): Master {
   );
 }
 
-/** dispose every agent the master owns — kills pending LLM/timer handles */
 async function disposeAll(m: Master): Promise<void> {
   await Promise.allSettled([...m.agents.values()].map((a) => a.dispose()));
 }
@@ -39,18 +35,15 @@ test("spawn depth is capped by config.maxSpawnDepth", async () => {
     (m as unknown as { config: { maxSpawnDepth: number } }).config.maxSpawnDepth = 1;
 
     const parent = await m.addAgent({ id: "root", workspace: ws });
-    // depth 0 < max 1 → spawning a child is allowed
     const { id } = await (
       m as unknown as { spawnChildFor(a: unknown, o: unknown): Promise<{ id: string }> }
     ).spawnChildFor(parent, { task: "child task", context: "none" });
     assert.match(id, /^root-sub/);
 
-    // child sits at depth 1 == max → its spawn hooks must be absent entirely
     const child = m.agents.get(id)!;
     const ctx = (child as unknown as { toolCtx: { subAgents?: unknown } }).toolCtx;
     assert.equal(ctx.subAgents, undefined, "depth-capped agents must not get spawn hooks");
 
-    // stopping the parent tears down the whole subtree
     const r = await m.stopChildrenFor("root");
     assert.deepEqual(r.stopped, [id]);
     await disposeAll(m);
@@ -74,7 +67,6 @@ test("read-only personas refuse mutating tools", async () => {
       assert.equal(r.ok, false, `${tool} must be blocked`);
       assert.match(r.result, /read-only/);
     }
-    // reads still work
     const r = await executeTool("list_dir", JSON.stringify({ path: "." }), ctx);
     assert.equal(r.ok, true);
   });
@@ -96,7 +88,6 @@ test("PUT /api/config rejects malformed patches with actionable errors", async (
     const j = (await res.json()) as { error: string };
     assert.match(j.error, /provider name required|progress interval|schedule required/);
 
-    // a valid patch passes
     const ok = await app.request("/api/config", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -117,18 +108,15 @@ test("waitChildren returns as soon as ALL listed children settle — not at time
     const a = await (await spawn.spawnChildFor(parent, { task: "task a", context: "none" })).id;
     const b = await (await spawn.spawnChildFor(parent, { task: "task b", context: "none" })).id;
 
-    // both are spawned running; wait with a generous timeout
     const wait = m.waitChildren("p", undefined, 60_000);
-    await new Promise((r) => setTimeout(r, 50)); // let the waiter register
+    await new Promise((r) => setTimeout(r, 50)); 
 
-    // settle child A → must NOT resolve yet (b still runs)
     await m.agents.get(a)!.stop("test");
     let settled = false;
     void wait.then(() => { settled = true; });
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(settled, false, "must stay parked while any target is still active");
 
-    // settle the last one → resolves immediately, well before the timeout
     await m.agents.get(b)!.stop("test");
     const r = await Promise.race([
       wait,
@@ -136,7 +124,6 @@ test("waitChildren returns as soon as ALL listed children settle — not at time
     ]);
     assert.match(r.note, /all sub-agents settled/);
 
-    // once everything is settled already, a new wait returns synchronously
     const again = await m.waitChildren("p", undefined, 60_000);
     assert.match(again.note, /already settled/);
 
@@ -148,9 +135,6 @@ test("sub-agent finish forwards the summary PLUS recent conversation context", a
   await useTempDirs(["fin-root-", "fin-ws-"], async ([dataDir, ws]) => {
     const m = mkMaster(dataDir);
     const parent = await m.addAgent({ id: "p", workspace: ws });
-    // spawn the child but STOP it immediately, then install the chat mock —
-    // this avoids racing the child's own first LLM call (which would hit the
-    // fake endpoint and error out)
     let child: string;
     {
       const spawn = m as unknown as {
@@ -192,13 +176,8 @@ test("sub-agent finish forwards the summary PLUS recent conversation context", a
     cAgent.enqueuePrompt("go");
     if (cAgent.status !== "running") cAgent.start("t");
 
-    // wait for the parent to receive the forwarded report. The harness prompt
-    // is logged in the PARENT's own chat.jsonl (prompt events), which readEvents
-    // sees regardless of whether the parent ever runs a turn on it.
     const { readEvents } = await import("../src/log/events.ts");
     const pAgent = m.agents.get("p")!;
-    // generous: the child's first LLM call races the mock install and can
-    // burn llmCall's own retry ladder (5s+5s+30s) before the finish lands
     const deadline = Date.now() + 45_000;
     let reportText = "";
     let lastErr = "";
@@ -218,14 +197,12 @@ test("sub-agent finish forwards the summary PLUS recent conversation context", a
       await new Promise((r) => setTimeout(r, 50));
     }
     assert.ok(reportText, "parent must receive the finish report");
-    assert.match(reportText, /review done, see above/); // the summary…
-    assert.match(reportText, /DETAILED FINDINGS/); // …PLUS the last real turn
+    assert.match(reportText, /review done, see above/); 
+    assert.match(reportText, /DETAILED FINDINGS/); 
     assert.match(reportText, /unsalted hash/);
     await disposeAll(m);
   });
 });
-
-/* ---------- nested sub-agent messaging (#11) ---------- */
 
 test("a sub-agent can message its own child, but not a grandchild (#11)", async () => {
   await useTempDirs(["nest-root-", "nest-ws-"], async ([dataDir, ws]) => {
@@ -256,11 +233,6 @@ test("a sub-agent can message its own child, but not a grandchild (#11)", async 
 
     const msg = (m as any).messageChild.bind(m);
 
-    // direct parent → its own child: allowed
-    //
-    // #141: this asserted `pendingPrompts >= 0`, which is true of every number
-    // there is — it could not fail, and it did not check that the message
-    // arrived. Assert the delivery instead: the child's queue grows by one.
     const before = grandchild.snapshot().pendingPrompts;
     await msg(b.id, c.id, "hi from B");
     assert.equal(
@@ -269,18 +241,14 @@ test("a sub-agent can message its own child, but not a grandchild (#11)", async 
       "a parent messaging its own child must QUEUE the prompt (#11/#141)",
     );
 
-    // root → its direct child: allowed
     await msg("root", b.id, "hi from root");
 
-    // root → GRANDchild: refused. Scoping is correct (only the direct parent
-    // owns a child), but the error must name the real owner so the model can
-    // re-address the message instead of concluding the tree is broken.
     await assert.rejects(
       () => msg("root", c.id, "hi from root"),
       (err: Error) => {
         assert.match(err.message, /not your sub-agent/);
         assert.match(err.message, new RegExp(`its parent is @${b.id}`));
-        assert.match(err.message, /message @/); // tells it what to do instead
+        assert.match(err.message, /message @/); 
         return true;
       },
     );
@@ -312,13 +280,6 @@ test("messaging an unknown id explains that no such sub-agent exists (#11)", asy
   });
 });
 
-/* ---------- #42: a sub-agent's final MESSAGE must reach the parent ---------- */
-
-/**
- * Spawn a child, install a chat mock that makes it end with a plain assistant
- * message (no `finish` tool call — which is what models overwhelmingly prefer),
- * and return the parent's report once it lands.
- */
 async function runChildEndingWith(
   m: Master,
   ws: string,
@@ -330,7 +291,6 @@ async function runChildEndingWith(
     spawnChildFor(a: unknown, o: unknown): Promise<{ id: string }>;
   };
   const child = (await spawn.spawnChildFor(parent, { task: "review things", context: "none" })).id;
-  // stop it immediately so the mock is installed before its first LLM call
   await m.agents.get(child)!.stop("installing mock");
 
   const cAgent = m.agents.get(child)!;
@@ -340,8 +300,6 @@ async function runChildEndingWith(
       n++;
       return turns(n);
     };
-  // the default 15s auto-continue delay would make every test wait for the
-  // nudge; these cases turn on what happens when NO further round follows
   (cAgent as unknown as { opts: { continueDelayMs?: number } }).opts.continueDelayMs = 10;
   await cAgent.setGoal("review");
   cAgent.enqueuePrompt("go");
@@ -363,7 +321,6 @@ async function runChildEndingWith(
         break;
       }
     } catch {
-      /* parent log may not exist yet */
     }
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -393,7 +350,6 @@ test("a sub-agent's long final message is not truncated (#42)", async () => {
   await useTempDirs(["f42c-", "f42d-"], async ([dataDir, ws]) => {
     const m = mkMaster(dataDir);
     try {
-      // the conclusion lives PAST the old 1500-char clip
       const filler = "x".repeat(4000);
       const tail = "THE_ACTUAL_CONCLUSION_AT_THE_END";
       const report = await runChildEndingWith(m, ws, (n) =>
@@ -414,7 +370,6 @@ test("a sub-agent's long final message is not truncated (#42)", async () => {
 });
 
 test("a root agent is unaffected by the sub-agent harvest (#42)", async () => {
-  // the fix must NOT make every root agent emit a spurious finish report
   await useTempDirs(["f42e-", "f42f-"], async ([dataDir, ws]) => {
     const m = mkMaster(dataDir);
     try {

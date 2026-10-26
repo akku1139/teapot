@@ -1,17 +1,3 @@
-/**
- * A THEME SELECTION MUST LAND IN THE SLOT THE PAINTER READS.
- *
- * "follow the system を入れてるときにテーマ複製したりするとやっぱりちょっと変な挙動になる / わかりに
- * にくいロジックエラーで説明難しいんだけど..."
- *
- * The difficulty in describing it was that nothing failed: the control responded and the card
- * highlighted, but the value written (`teapot.theme`) was the FIXED slot while the painter was
- * reading `teapot.theme.dark` / `.light`. So the copy existed, was saved, and was never painted.
- *
- * These cases pin the decision, because three call sites share it — a card click, the editor's
- * select, and "duplicate current" — and a disagreement between them is invisible until someone
- * compares the panel against the picture.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { slotForSelection, paintedIdFor } from "../frontend/lib/theme-slots.ts";
@@ -41,8 +27,6 @@ test("following the system, a theme fills the slot for its OWN mode (#theme-slot
 });
 
 test("the SLOT and the storage KEY never disagree (#theme-slots)", () => {
-  // a mismatched pair (slot "light", key "teapot.theme.dark") would write one store and highlight
-  // the other, which is the same class of bug this module exists to prevent
   for (const auto of [false, true]) {
     for (const mode of ["dark", "light"] as const) {
       const { slot, key } = slotForSelection(auto, mode);

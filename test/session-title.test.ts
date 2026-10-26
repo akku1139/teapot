@@ -1,19 +1,3 @@
-/**
- * #155 — session titles.
- *
- * "いろんなチャットアプリが実装してる、CodexやDSHとかも実装してそう / 自動生成とかサブエージェント名
- * とかだとわかりにくい" — the sidebar rendered the raw session id
- * (`teapot-10-16854917`), so with several sessions of one agent there was no way to
- * tell them apart without opening each one.
- *
- * The title comes from the operator's OWN first message rather than a model call:
- * it is already written, costs nothing, and cannot drift (the first message of a
- * session never changes).
- *
- * Asserted on the pure rule, which is what decides every case. The WIRING — that
- * the sidebar prefers the title over the raw id — is asserted separately below,
- * because a helper nothing calls is the #75 failure this repo keeps re-learning.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sessionTitleFrom } from "../src/session-title.ts";
@@ -37,14 +21,11 @@ test("the title is the first MEANINGFUL line of the operator's prompt", () => {
 });
 
 test("a fenced block is CONTENT, not the subject (#155)", () => {
-  // measured: taking the first line inside a fence titled a session "log", which
-  // says nothing. The operator pastes a log and then writes what they want.
   assert.equal(
     sessionTitleFrom("```\nlog line one\nlog line two\n```\n\n#155 を進めて"),
     "155 を進めて",
     "the prose after the fence is the title",
   );
-  // and an UNTERMINATED fence must not fall through to its own body either
   assert.equal(sessionTitleFrom("```\nsecret\nmore"), null, "an open fence hides its body");
 });
 
@@ -58,7 +39,6 @@ test("a line with no subject is skipped for the next one (#155)", () => {
 });
 
 test("no usable text yields null rather than an empty string (#155)", () => {
-  // null lets the caller fall back to the id; "" would render a blank row
   assert.equal(sessionTitleFrom(""), null);
   assert.equal(sessionTitleFrom("   \n\n  "), null);
   assert.equal(sessionTitleFrom(undefined), null);

@@ -1,12 +1,3 @@
-/**
- * 再圧縮の recentReads 絞り込みが失敗エントリを残す。
- *
- * `restored` は「読めたものだけ」を順に積むが、`recentReads.slice(0, restored.length)`
- * で先頭 N 件を残す。中間が読めないと成功した末尾が落ち、消えたファイルが残る。
- * 以降の compaction で消えたファイルの空読みを繰り返す。
- *
- * Required: 消えたファイルは recentReads から落ち、読めたものは順序を保って残る。
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -19,7 +10,6 @@ test("recentReads keeps only the files that actually restored (order preserved)"
     mkdirSync(path.join(ws, "docs"), { recursive: true });
     writeFileSync(path.join(ws, "docs", "a.txt"), "alpha");
     writeFileSync(path.join(ws, "docs", "c.txt"), "gamma");
-    // b.txt deliberately missing
 
     const a = new Agent({
       id: "c",

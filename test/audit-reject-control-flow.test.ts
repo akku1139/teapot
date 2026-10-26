@@ -1,40 +1,3 @@
-/**
- * #128 — the completion audit's control flow.
- *
- * Two defects, both found by MEASURING rather than reading, and the second is
- * worse than the one the report described.
- *
- * ## 1. The auditor received an INVALID tool-call history
- *
- * The finish branch called `handleFinish()` — which calls the auditor with
- * `buildMessages()` — BEFORE `answerMeta(call, …)`. So at audit time the history
- * ended at an assistant message carrying `tool_calls: [finish]` with no matching
- * `tool` message. Measured, that is exactly what the auditor got:
- *
- *     system  user  assistant(tool_calls)  user(audit prompt)
- *
- * OpenAI-compatible providers require every tool_call to be answered, and a
- * strict one rejects the request. So a CHANGES-REQUIRED audit would fail with a
- * PROTOCOL error instead of returning a verdict — and #128's fail-open would then
- * mark the goal done. The bug made the whole audit unreliable exactly when it
- * mattered.
- *
- * ## 2. The reject loop was UNBOUNDED (not, as reported, "never continues")
- *
- * The report says a rejected audit never retries because the caller sets
- * `finished = true`. Measured against the real Agent, it DOES retry — because
- * `if (this.pendingPrompts.length) continue;` runs first. But nothing bounds it:
- *
- *     work -> audit -> work -> audit -> ...  =  381 audit calls in one turn
- *
- * `maxConsecutiveIdleRounds` counts IDLE rounds, and a rejection is not idle.
- * `maxTurnsPerRound` only LOGS `round-turn-cap`; it does not break, and a
- * rejection never ends the round.
- *
- * So the real cost is unbounded provider spend on a goal the auditor keeps
- * refusing. Bounded at 3 by default, and the goal is deliberately left ACTIVE —
- * marking it done would be #128's own fail-open complaint all over again.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -44,7 +7,6 @@ import { dataOf } from "./helpers/event-data.ts";
 
 type Call = "work" | "audit";
 
-/** an agent whose auditor always rejects, and which always tries to finish */
 function rejectingPair(ws: string, sd: string, cap?: number) {
   const calls: Call[] = [];
   let auditHistory: { role: string; toolCalls: boolean; toolCallId: string | null }[] | null = null;
@@ -96,17 +58,6 @@ test("the auditor gets its OWN conversation, not the worker's (#128)", async () 
     await new Promise((r) => setTimeout(r, 1200));
     try {
       const h = getAuditHistory() ?? [];
-      /**
-       * CORRECTED — this used to require the worker's `finish` tool_call to be in the auditor's
-       * history, with an answered `tool` message after it. That arrangement is what BROKE the audit:
-       * the auditor was handed the worker's whole conversation (a measured ~220k tokens) and told to
-       * switch roles, so it kept doing the work instead of judging it. Three audits in
-       * github-bug-research-1f48715f replied in prose with no verdict and the goal was abandoned.
-       *
-       * A review is not a continuation. The auditor's conversation is its own: one user turn carrying
-       * the objective, the contract and the (labelled untrusted) claim. Asserting the ABSENCE is the
-       * point — a later change that reintroduces the work log would fail here.
-       */
       assert.equal(h.length, 1, `the auditor starts from a single prepared turn: ${JSON.stringify(h)}`);
       assert.equal(h[0]?.role, "user", "and it is a user turn (#128)");
       assert.ok(
@@ -145,8 +96,6 @@ test("a rejected audit retries, and is BOUNDED (#128)", async () => {
 });
 
 test("the bound is a log note, and the goal stays ACTIVE (#128)", async () => {
-  // #128's own complaint: "could not be audited" silently became "passed".
-  // Marking a repeatedly-rejected goal DONE would be the same failure.
   await useTempDirs(["t128e-", "t128f-"], async ([ws, sd]) => {
     const { a } = rejectingPair(ws!, sd!, 1);
     await a.init();
@@ -171,7 +120,6 @@ test("the bound is a log note, and the goal stays ACTIVE (#128)", async () => {
 });
 
 test("an APPROVED audit still finishes normally (#128)", async () => {
-  // the cap must not break the happy path
   await useTempDirs(["t128g-", "t128h-"], async ([ws, sd]) => {
     const a = new Agent({
       id: "c",

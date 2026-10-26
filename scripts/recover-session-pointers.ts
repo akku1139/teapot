@@ -1,21 +1,4 @@
 #!/usr/bin/env node
-/**
- * Recover the session pointers damaged by an accidental in-place `addAgent()` run.
- *
- * WHAT WENT WRONG (so this is never repeated):
- * `Master.addAgent()` resolves a session dir AND WRITES IT BACK to config.json.
- * Running it against the operator's REAL config + data dir therefore reassigned
- * every agent to a freshly minted, EMPTY session dir, orphaning the real ones.
- * The logs were never modified — only the pointers and the manifests were.
- *
- * SIGNALS, strongest first:
- *  1. each chat.jsonl's own `agent` field — authoritative, untouched
- *  2. the directory name `<agentId>-<8 hex>` — matched signal 1 in 513/513 dirs
- *  3. mtime, when an agent has several log-bearing incarnations: the one it was
- *     LAST WORKING in is the one config named
- *
- * Dry run by default; `--apply` writes.
- */
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -38,34 +21,23 @@ function inspect(d) {
     bytes = st.size;
     mtime = st.mtimeMs;
   } catch {
-    /* no log */
   }
   if (bytes > 0) {
     try {
       const first = fs.readFileSync(log, "utf8").split("\n").find((l) => l.trim());
       if (first) logOwner = JSON.parse(first).agent ?? null;
     } catch {
-      /* unparsable head */
     }
   }
   let manifest = null;
   try {
     manifest = JSON.parse(fs.readFileSync(path.join(ROOT, d, "session.json"), "utf8")).agentId ?? null;
   } catch {
-    /* missing/unreadable */
   }
   return { bytes, mtime, logOwner, manifest };
 }
 
 const info = new Map<string, ReturnType<typeof inspect>>(dirs.map((d) => [d, inspect(d)]));
-/**
- * `info.get` with a real failure instead of `undefined`.
- *
- * Every key here comes from `dirs`, which `info` was built from, so a miss is impossible
- * by construction — but `Map.get` types as possibly-undefined and dereferencing it would
- * crash this recovery script halfway through rewriting session pointers. Throwing names
- * the directory instead.
- */
 const stat = (d: string): ReturnType<typeof inspect> => {
   const v = info.get(d);
   if (!v) throw new Error(`internal: no stats for session dir ${d}`);
@@ -126,8 +98,6 @@ if (!APPLY) {
   process.exit(problems.length ? 2 : 0);
 }
 
-// 1. every manifest whose owner label is wrong/missing, from the LOG where it
-//    exists (authoritative) and from the directory name otherwise
 let fixedManifests = 0;
 for (const d of dirs) {
   const i = stat(d);
@@ -138,8 +108,6 @@ for (const d of dirs) {
   fixedManifests++;
 }
 
-// 2. point each agent back at its real session
-// typed from the config itself, so a future field on an agent entry is visible here
 const byId = new Map<string, (typeof cfg.agents)[number]>(cfg.agents.map((a) => [a.id, a]));
 let fixedPointers = 0;
 for (const c of choices) {
@@ -148,7 +116,6 @@ for (const c of choices) {
   a.session = c.to;
   fixedPointers++;
 }
-// atomic: a half-written config is worse than none (the #144 lesson)
 const tmp = `${CFG}.recover-${process.pid}`;
 fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n");
 fs.renameSync(tmp, CFG);

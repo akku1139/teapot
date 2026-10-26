@@ -1,37 +1,9 @@
-/**
- * Agent Skills: reusable playbooks the agent can load on demand — and create
- * itself, so knowledge accumulates across sessions instead of living only in
- * chat history.
- *
- * A skill is a directory with a SKILL.md:
- *
- *   ---
- *   name: release-checklist
- *   description: Steps to cut a release safely
- *   ---
- *   (free-form instructions shown to the agent when it loads the skill)
- *
- * Roots are scanned in priority order; the first skill with a given name wins.
- * Workspace skills (<workspace>/skills) beat global ones (~config/skills), so a
- * project can override shared defaults.
- */
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { homeDir } from "../home.ts";
 
 export const SKILL_FILE = "SKILL.md";
 
-/**
- * Cheap change-detector for a set of skill roots. Returns a stable string
- * that changes whenever a root is added, removed, or modified — so callers
- * can skip a full rescan (a readdir per root plus a read of every SKILL.md)
- * on the overwhelmingly common "nothing changed" path.
- *
- * It must walk every SKILL.md the discovery walk could adopt, not just the
- * roots: writing SKILL.md does not bump the parent directory's mtime. Helper
- * scripts edited in place ride along with the next skill write (saveSkill
- * rewrites SKILL.md), rather than triggering their own rescan.
- */
 export async function skillRootsFingerprint(
   roots: { dir: string; source: string }[],
 ): Promise<string> {
@@ -42,18 +14,15 @@ export async function skillRootsFingerprint(
     try {
       st = await fs.stat(root.dir);
     } catch {
-      parts.push("-"); // root missing → no skills here (same as discoverSkills)
+      parts.push("-"); 
       continue;
     }
     parts.push(`${st.mtimeMs}:${st.size}`);
-    // same depth bound as the discovery walk, or a NESTED skill's add/edit leaves
-    // this stamp unchanged and the skill stays stale in list_skills
     await stampSkillFiles(root.dir, 0, parts);
   }
   return parts.join("|");
 }
 
-/** recursive fingerprint walk — mirrors walkSkills' depth bound */
 async function stampSkillFiles(dir: string, depth: number, parts: string[]): Promise<void> {
   if (depth > MAX_SKILL_DEPTH) return;
   let entries: import("node:fs").Dirent[];
@@ -70,7 +39,6 @@ async function stampSkillFiles(dir: string, depth: number, parts: string[]): Pro
       const s = await fs.stat(path.join(full, SKILL_FILE));
       parts.push(`${full}=${s.mtimeMs}:${s.size}`);
     } catch {
-      // not a skill dir itself — still a container to descend into
     }
     await stampSkillFiles(full, depth + 1, parts);
   }
@@ -79,10 +47,8 @@ async function stampSkillFiles(dir: string, depth: number, parts: string[]): Pro
 export interface SkillDef {
   name: string;
   description: string;
-  /** which root provided it ("workspace" | "global" | any label really) */
   source: string;
   filePath: string;
-  /** sibling files bundled with the skill (bare names, e.g. helper scripts) */
   files: string[];
 }
 
@@ -95,21 +61,6 @@ export function isValidSkillName(name: string): boolean {
   return /^[a-z0-9][a-z0-9._-]{0,63}$/.test(name);
 }
 
-/**
- * Minimal frontmatter parser for the subset we need: a leading `---` block of
- * `key: value` lines. No YAML dependency by design.
- *
- * It does understand the two YAML shapes common in REAL third-party skills
- * (#28), because without them those files are unreadable:
- *  - FOLDED/LITERAL BLOCK SCALARS (`description: >-` … or `|` …), which is how
- *    most skill authors write a long description. Reading them naively yields
- *    the literal ">-" as the description, which silently destroys the one field
- *    the model matches its task against.
- *  - QUOTED values, whose surrounding quotes are stripped so a description
- *    containing a colon survives.
- * A key with an empty value (e.g. a nested `metadata:` block) is left out rather
- * than recorded as "".
- */
 export function parseSkillMd(text: string): ParsedSkill {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return { meta: {}, body: text.trim() };
@@ -120,8 +71,6 @@ export function parseSkillMd(text: string): ParsedSkill {
     if (!kv) continue;
     const key = kv[1]!.toLowerCase();
     const raw = kv[2]!.trim();
-    // folded (>-, >, |-, |) or literal (|, |-) block scalar: the value is the
-    // following, more-indented lines
     if (/^[>|][-+]?$/.test(raw)) {
       const parts: string[] = [];
       let j = i + 1;
@@ -131,7 +80,7 @@ export function parseSkillMd(text: string): ParsedSkill {
           parts.push("");
           continue;
         }
-        if (!/^\s/.test(l)) break; // dedented → block ended
+        if (!/^\s/.test(l)) break; 
         parts.push(l.trim());
       }
       i = j - 1;
@@ -139,13 +88,12 @@ export function parseSkillMd(text: string): ParsedSkill {
       if (joined) meta[key] = joined;
       continue;
     }
-    if (raw === "") continue; // `metadata:` with a nested block below
+    if (raw === "") continue; 
     meta[key] = unquote(raw);
   }
   return { meta, body: m[2].trim() };
 }
 
-/** Strip one layer of matching quotes; a quoted value may itself contain `:`. */
 function unquote(v: string): string {
   const s = v.trim();
   if (s.length >= 2 && ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")))) {
@@ -157,48 +105,33 @@ function unquote(v: string): string {
   return s;
 }
 
-/**
- * Skill directories owned by OTHER coding harnesses (#28).
- *
- * SKILL.md is a shared convention, so these are readable as-is — the only
- * thing that ever blocked them was our frontmatter parser (folded scalars and
- * quoted values), now handled. Paths are the documented native locations,
- * plus the cross-tool directories several tools also read.
- *
- * Priority is deliberately the LOWEST of the user-supplied roots: a project
- * should never be shadowed by another tool's copy of the same skill. Missing
- * directories are skipped silently, and nothing is read unless it exists.
- */
 export function foreignSkillRoots(workspace?: string): { dir: string; source: string }[] {
-  // #110: the shared helper also covers HOMEDRIVE/HOMEPATH, which is how
-  // Windows reports a home when USERPROFILE is absent.
   const home = homeDir();
   const out: { dir: string; source: string }[] = [];
   const add = (dir: string) => {
     if (dir && !out.some((r) => r.dir === dir)) out.push({ dir, source: "foreign" });
   };
   if (workspace) {
-    // project-local locations other tools read
     for (const rel of [
-      path.join(".agents", "skills"), // cross-tool convention
+      path.join(".agents", "skills"), 
       path.join(".claude", "skills"),
       path.join(".codex", "skills"),
       path.join(".cursor", "skills"),
       path.join(".gemini", "skills"),
-      path.join(".github", "skills"), // Copilot CLI + VS Code
+      path.join(".github", "skills"), 
       path.join(".opencode", "skills"),
     ]) {
       add(path.join(workspace, rel));
     }
   }
   if (home) {
-    add(path.join(home, ".agents", "skills")); // cross-tool, personal
+    add(path.join(home, ".agents", "skills")); 
     for (const rel of [
       [".claude", "skills"],
       [".codex", "skills"],
       [".cursor", "skills"],
       [".gemini", "skills"],
-      [".copilot", "skills"], // GitHub Copilot CLI + VS Code share this
+      [".copilot", "skills"], 
       [".config", "opencode", "skills"],
     ]) {
       add(path.join(home, ...rel));
@@ -207,20 +140,10 @@ export function foreignSkillRoots(workspace?: string): { dir: string; source: st
   return out;
 }
 
-/**
- * How deep to look for nested skills (#27).
- *
- * Bounded because a skill directory also holds BUNDLED FILES (helper scripts)
- * and arbitrary payload, so an unbounded walk is not safe. Depth is not the
- * thing that makes a directory a skill — holding a SKILL.md is — so the bound
- * only limits how far we look, never what counts.
- */
 const MAX_SKILL_DEPTH = 4;
 
-/** Root dirs in priority order: [0] overrides later ones on name clash. */
 export async function discoverSkills(roots: { dir: string; source: string }[]): Promise<SkillDef[]> {
   const byName = new Map<string, SkillDef>();
-  // name -> depth, so a SHALLOWER skill beats a nested namesake (#27)
   const depthByName = new Map<string, number>();
   for (const root of roots) {
     await walkSkills(root.dir, root.source, 0, byName, depthByName);
@@ -228,12 +151,6 @@ export async function discoverSkills(roots: { dir: string; source: string }[]): 
   return [...byName.values()];
 }
 
-/**
- * Depth-first walk collecting every directory that holds a SKILL.md (#27).
- *
- * A directory without its own SKILL.md is only a container to descend into, which
- * is what keeps bundled helper directories from being reported as skills.
- */
 async function walkSkills(
   dir: string,
   source: string,
@@ -246,9 +163,8 @@ async function walkSkills(
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
-    return; // root missing → simply no skills there
+    return; 
   }
-  // a SKILL.md sitting directly in `dir` makes `dir` a skill AND a container
   const here = path.join(dir, SKILL_FILE);
   let hereText: string | null = null;
   try {
@@ -271,7 +187,6 @@ async function walkSkills(
           .map((f) => f.name)
           .sort();
       } catch {
-        /* unreadable dir → no bundled files */
       }
       byName.set(name, {
         name,
@@ -285,8 +200,6 @@ async function walkSkills(
   }
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith(".")) continue;
-    // a skill can sit at ANY depth (skills/stage1/template/SKILL.md), and
-    // "stage1" itself has no SKILL.md (#27)
     await walkSkills(path.join(dir, e.name), source, depth + 1, byName, depthByName);
   }
 }
@@ -295,7 +208,6 @@ export async function readSkillFile(def: SkillDef): Promise<string> {
   return fs.readFile(def.filePath, "utf8");
 }
 
-/** Write (or overwrite) a workspace skill; returns the file path written. */
 export async function saveSkill(
   workspaceRoot: string,
   name: string,

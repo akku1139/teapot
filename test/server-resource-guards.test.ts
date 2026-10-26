@@ -1,8 +1,3 @@
-/**
- * Two server-side resource guards found in a full-codebase review. Both are
- * "the limit exists but does not hold", which is worse than having no limit,
- * because the code reads as though it is protected.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -11,16 +6,6 @@ import { buildApp } from "../src/server/api.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 
-/**
- * Run `fn` against a Master with a real config file and a real temp workspace.
- *
- * #75: both roots come from `useTempDirs`, which removes them in a finally. A
- * bare `mkdtempSync` leaked a directory on EVERY run of this file — which is
- * how /tmp filled up. The roots must stay alive for the whole of `fn`, so this
- * is a scoped callback rather than a constructor returning paths: an earlier
- * version returned them, the `finally` deleted them, and every request then
- * failed with "directory not found".
- */
 async function withHarness(
   fn: (h: { master: Master; app: ReturnType<typeof buildApp>; ws: string }) => Promise<void> | void,
 ): Promise<void> {
@@ -40,8 +25,6 @@ async function withHarness(
   });
 }
 
-/* ---------- #71: concurrent creates must not collide ---------- */
-
 test("concurrent agent creates get distinct ids (#71)", async () => {
   await withHarness(async ({ master, app, ws }) => {
     const post = () =>
@@ -50,7 +33,6 @@ test("concurrent agent creates get distinct ids (#71)", async () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ workspace: ws, id: "same", start: false }),
       });
-    // app.request returns a Response; await the request, THEN read the body
     const responses = await Promise.all([post(), post(), post(), post(), post()]);
     const bodies = await Promise.all(responses.map((r) => r.json() as Promise<any>));
     const ids = bodies.map((b) => b.agent?.id ?? `ERR:${b.error}`);
@@ -64,8 +46,6 @@ test("concurrent agent creates get distinct ids (#71)", async () => {
 });
 
 test("the config does not accumulate duplicate entries (#71)", async () => {
-  // the data-loss part: each racing create minted its own session dir, and on
-  // restart resolveSessionDir binds to the FIRST entry — the rest are orphaned
   await withHarness(async ({ master, app, ws }) => {
     const post = () =>
       app.request("/api/agents", {
@@ -74,8 +54,6 @@ test("the config does not accumulate duplicate entries (#71)", async () => {
         body: JSON.stringify({ workspace: ws, id: "dup", start: false }),
       });
     await Promise.all([post(), post(), post()]);
-    // The FIRST create legitimately keeps the bare id "dup"; the other two must
-    // have been suffixed. What must never happen is two entries sharing one id.
     const withId = (master.config.agents ?? []).filter((a: any) => a.id === "dup");
     assert.ok(
       withId.length <= 1,
@@ -91,8 +69,6 @@ test("the config does not accumulate duplicate entries (#71)", async () => {
 });
 
 test("a failed create does not leak its reservation (#71)", async () => {
-  // a reservation that is never released would make the id permanently
-  // un-creatable, which is a worse failure than the race it prevents
   await withHarness(async ({ master, app, ws }) => {
     const bad = () =>
       app.request("/api/agents", {
@@ -102,8 +78,6 @@ test("a failed create does not leak its reservation (#71)", async () => {
       });
     const r1 = await bad();
     assert.equal(r1.status, 400, "a bad workspace must fail (#71)");
-    // now a GOOD create with the same id must still work — i.e. the reservation
-    // was released rather than stranded
     const good = await app.request("/api/agents", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -114,6 +88,4 @@ test("a failed create does not leak its reservation (#71)", async () => {
     await master.stopAllAgents?.(5000);
   });
 });
-
-/* ---------- #70: the terminal cap must actually cap ---------- */
 

@@ -26,11 +26,11 @@ export function CopyBtn(props: { text: string; label?: string; title?: string })
   const [done, setDone] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
   const copy = (e: MouseEvent) => {
-    e.preventDefault(); // <summary> buttons must not toggle the details row
+    e.preventDefault(); 
     e.stopPropagation();
     void copyText(props.text ?? "").then((result) => {
       if (result === "unsupported" || result === "failed") {
-        setFailed(true); // nothing copied — say so instead of a silent no-op
+        setFailed(true); 
         setTimeout(() => setFailed(false), 1200);
         return;
       }

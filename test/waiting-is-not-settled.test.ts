@@ -1,15 +1,3 @@
-/**
- * Does an agent that is itself WAITING (`wait_children`) read as SETTLED to its
- * ancestor?
- *
- * Reported live: a sub-agent issued `wait_children`, went `idle` for display, and
- * the grandparent's own `wait_children` resolved — so the grandparent resumed over
- * work that was still in flight two levels down. "Waiting" is not "finished", and
- * the question is whether the harness can tell the difference.
- *
- * These tests pin the distinction using only what the harness exposes today, so
- * the answers describe behaviour rather than an aspiration.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -25,7 +13,6 @@ function mkMaster(): Master {
 }
 const ws = () => mkdtempInRootSync("waitingw-");
 
-/** what parkForTool does for display: loop alive, status reads idle */
 function park(a: unknown): void {
   (a as { parkedByTool: boolean }).parkedByTool = true;
   (a as { status: string }).status = "idle";
@@ -34,12 +21,11 @@ function park(a: unknown): void {
 test("an agent parked in wait_children is BUSY, so its ancestor keeps waiting (isBusy)", async () => {
   const m = mkMaster();
   const w = ws();
-  // P -> C -> G, all persisted (a real spawn persists the child)
   const c = await m.addAgent({ id: "c", parent: "p", workspace: w, chatFn }, { persist: true });
   const g = await m.addAgent({ id: "g", parent: "c", workspace: w, chatFn }, { persist: true });
   try {
-    park(c); // C called wait_children and parked
-    park(g); // G is working (parked on ITS own tool, e.g. a bash call)
+    park(c); 
+    park(g); 
 
     let settled = false;
     const p = m.waitChildren("p", undefined, 1_200).then((r) => {
@@ -49,7 +35,7 @@ test("an agent parked in wait_children is BUSY, so its ancestor keeps waiting (i
     await new Promise((r) => setTimeout(r, 400));
     assert.equal(settled, false, "P must not settle while C is merely WAITING and G is working");
 
-    const note = await p; // let the timeout resolve it
+    const note = await p; 
     assert.match(note.note, /timeout/, `and it must time out rather than claim completion: ${note.note}`);
   } finally {
     await c.dispose();
@@ -58,7 +44,6 @@ test("an agent parked in wait_children is BUSY, so its ancestor keeps waiting (i
 });
 
 test("a waiting agent's STATUS is idle, which is why the display needs the parked flag", async () => {
-  // documents the trap: status alone cannot distinguish "waiting" from "done"
   const m = mkMaster();
   const w = ws();
   const c = await m.addAgent({ id: "c", parent: "p", workspace: w, chatFn }, { persist: true });

@@ -1,16 +1,3 @@
-/**
- * #37 — "pending messages should appear at the BOTTOM of the timeline, because
- *        they are sent to the LLM after the messages already on the timeline"
- *
- * A queued message has NOT reached the model yet — it waits behind whatever
- * the agent is doing. Its log row carries the seq it was TYPED at, so the
- * timeline showed the queued message ABOVE agent output that came after it.
- *
- * The UI already re-sequenced a DELIVERED prompt down to its delivery note for
- * exactly this reason; the undelivered echo needed the same treatment. Both
- * now live in frontend/timeline-order.ts, pure and dependency-free so they are
- * unit-testable under node --test.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -21,13 +8,8 @@ import {
 
 const row = (seq: number, id: string) => ({ seq, id, type: "message" });
 
-/* ---------- the reported case ---------- */
-
 test("a pending message sorts below everything already on the timeline (#37)", () => {
-  // agent output the operator has already seen, up to seq 30
   const visible = [row(10, "a"), row(20, "b"), row(30, "c")];
-  // the queued message was TYPED early, so its log row carries a LOW seq —
-  // exactly the situation the report describes
   const echo = { ...row(2, "queued"), type: "prompt" };
   const out = placeEchoesBelow(visible, [echo]);
   assert.equal(out.at(-1)!.id, "queued", "the pending message must be LAST (#37)");
@@ -38,8 +20,6 @@ test("a pending message sorts below everything already on the timeline (#37)", (
 });
 
 test("a message typed EARLY still sorts below a LATER agent reply (#37)", () => {
-  // the regression: the queued prompt was logged with the seq it was TYPED at
-  // (2), which is BELOW the agent's reply that came afterwards (3)
   const typedAt = row(2, "queued-typed-here");
   const agentReplyAfter = row(3, "agent-replied-after");
   const visible = [row(1, "a"), typedAt, agentReplyAfter];
@@ -50,8 +30,6 @@ test("a message typed EARLY still sorts below a LATER agent reply (#37)", () => 
     "typing position must not decide display position (#37)",
   );
 });
-
-/* ---------- multiple pending messages keep send order ---------- */
 
 test("several pending messages read top-down in send order (#37)", () => {
   const visible = [row(1, "a")];
@@ -67,7 +45,7 @@ test("several pending messages read top-down in send order (#37)", () => {
 });
 
 test("pending seqs sit strictly below the last settled row (#37)", () => {
-  const visible = [row(1, "a"), row(7, "b"), row(4, "c")]; // deliberately unsorted input
+  const visible = [row(1, "a"), row(7, "b"), row(4, "c")]; 
   const out = placeEchoesBelow(visible, [row(0, "q1"), row(0, "q2")]);
   const maxSettled = Math.max(...visible.map((e) => e.seq));
   for (const e of out.slice(visible.length)) {
@@ -75,22 +53,10 @@ test("pending seqs sit strictly below the last settled row (#37)", () => {
   }
 });
 
-/* ---------- no echoes / empty timeline ---------- */
-
 test("no pending messages still SORTS, because a delivered prompt moved (#37)", () => {
-  // This used to assert `placeEchoesBelow(visible, []) === visible` — an identity
-  // return that read like a harmless shortcut. It was the bug: a DELIVERED
-  // prompt's seq is rewritten to its DELIVERY note (resequenceToDelivery), and
-  // with no echoes to append nothing applied that new seq, so the prompt kept its
-  // original slot. A message sent while the agent worked rendered ABOVE the
-  // output that preceded its delivery. Reproduced from a real log: prompt e3228
-  // (delivery note e3234) rendered before the e3230 message.
-  //
-  // The rows are handed over in LOG order with the prompt's seq already moved
-  // DOWN to 9 (its delivery), exactly as the caller does.
   const early = row(1, "early");
   const tool = row(2, "tool");
-  const prompt = row(9, "queued"); // typed at ~0, delivered after the tool row
+  const prompt = row(9, "queued"); 
   const reply = row(10, "reply");
   const out = placeEchoesBelow([early, prompt, tool, reply], []);
   assert.deepEqual(
@@ -101,8 +67,6 @@ test("no pending messages still SORTS, because a delivered prompt moved (#37)", 
 });
 
 test("rows are not reordered when their seqs are already in order (#37)", () => {
-  // the common case must stay a no-op in EFFECT, or every render that sorts would
-  // risk shuffling equal-seq rows
   const visible = [row(1, "a"), row(2, "b")];
   assert.deepEqual(placeEchoesBelow(visible, []).map((e) => e.id), ["a", "b"]);
 });
@@ -113,11 +77,7 @@ test("a pending message on an empty timeline still lands (#37)", () => {
   assert.equal(out[0]!.id, "q");
 });
 
-/* ---------- no mutation of caller-owned rows ---------- */
-
 test("placeEchoesBelow never mutates the caller's rows (#37)", () => {
-  // App.tsx hands us rows it still owns and caches; mutating their seq in place
-  // corrupted the event cache and re-ordered the whole feed on the next pass.
   const visible = [row(1, "a")];
   const echoes = [row(1, "q")];
   const out = placeEchoesBelow(visible, echoes);
@@ -132,10 +92,7 @@ test("resequenceToDelivery never mutates its input (#37)", () => {
   assert.equal(r.seq, 2, "input row must be untouched");
 });
 
-/* ---------- delivered prompts ---------- */
-
 test("a delivered prompt moves DOWN to its delivery note (#37)", () => {
-  // typed at seq 2, but the model consumed it after the reply at seq 3
   const r = row(2, "delivered");
   const out = resequenceToDelivery(r, 5);
   assert.equal(out.seq, 5, "must sit where the model actually received it");
@@ -158,12 +115,8 @@ test("resequenceToDelivery returns the same object when nothing changes (#37)", 
   assert.equal(resequenceToDelivery(r, 1), r);
 });
 
-/* ---------- pendingFloor ---------- */
-
 test("pendingFloor is one past the last settled row (#37)", () => {
   assert.equal(pendingFloor([row(1, "a"), row(9, "b")]), 10);
   assert.equal(pendingFloor([]), 1);
 });
-
-/* ---------- App.tsx wiring ---------- */
 

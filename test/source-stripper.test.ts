@@ -1,15 +1,3 @@
-/**
- * `stripSourceComments` is the guard that stops a test asserting on a COMMENT
- * instead of on code. If the stripper itself is wrong, that guard silently stops
- * working — a test can be satisfied by prose again, or worse, see code that was
- * truncated mid-line.
- *
- * The regex-literal case was found by running the stripper across all of `src/`
- * and `frontend/`: `/^https?:\/\//` ends with an escaped slash followed by the
- * closing slash, so the source contains an adjacent `//`, and the stripper
- * swallowed the rest of the line as a comment. That is exactly the false
- * confidence the helper exists to remove, so it is pinned here.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -20,7 +8,6 @@ test("a line comment is removed, code is kept", () => {
 });
 
 test("a regex literal ending in an escaped slash is NOT read as a comment (#75)", () => {
-  // this is the exact shape in src/server/api.ts
   const src = "if (!/^https?:\\/\\//.test(baseUrl)) return c.json({ error: \"valid baseUrl required\" }, 400);";
   const out = stripSourceComments(src);
   assert.ok(
@@ -41,9 +28,6 @@ test("division and strings containing slashes are left alone (#75)", () => {
 });
 
 test("the whole production tree strips without losing code (#75)", () => {
-  // the check that FOUND the regex bug: a misread regex truncates the line, and
-  // the truncated text collapses to nearly nothing. 30% is well below the real
-  // ratios (measured 34%–70%) and still catches a file that lost its body.
   const files = [
     "src/server/api.ts",
     "src/master.ts",

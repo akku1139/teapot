@@ -1,27 +1,6 @@
-/**
- * #43 — "without a nudge to call the finish tool it just works forever on
- *         'Continue working toward the current goal. If you are blocked,
- *          explain why briefly.'"
- * #45 — "the progress request should tell it to use the progress tool … it
- *         calls the tool and then also reports in text"
- *
- * Both are harness-prompt bugs, and both are invisible in normal use: the
- * nudge only fails when the model has actually finished, and the duplicate
- * report only shows on the timeline. The TEXT asserted here is the RUNTIME
- * value — the exported constants and the string the loop actually sends — not
- * a copy of the source.
- *
- * The two assertions that read `agent.ts` as source text ("the root branch must
- * use the shared nudge", "must use PROGRESS_REQUEST") were deleted: they matched
- * a regex against the file, which pins the spelling of code that has to work at
- * runtime. `test/auto-continue-carries-goal.test.ts` drives the real loop and
- * reads what was actually injected.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AUTO_CONTINUE_NUDGE, PROGRESS_REQUEST } from "../src/agent/agent.ts";
-
-/* ---------- #43: the nudge must say how to STOP ---------- */
 
 test("the auto-continue nudge names the finish tool (#43)", () => {
   assert.match(
@@ -37,8 +16,6 @@ test("the nudge distinguishes met from blocked (#43)", () => {
 });
 
 test("the nudge warns that prose does not stop the loop (#43)", () => {
-  // THE regression: the model has no other cue that prose != stop. Without this
-  // sentence it answers in text and the loop nudges it again, forever.
   assert.match(
     AUTO_CONTINUE_NUDGE,
     /prose/i,
@@ -48,11 +25,8 @@ test("the nudge warns that prose does not stop the loop (#43)", () => {
 });
 
 test("the nudge still tells it to keep working (#43)", () => {
-  // the fix must not break the original purpose of the nudge
   assert.match(AUTO_CONTINUE_NUDGE, /Continue working toward the current goal/i);
 });
-
-/* ---------- #45: ask for the TOOL, not prose ---------- */
 
 test("the progress request asks for the report_progress TOOL (#45)", () => {
   assert.match(
@@ -85,8 +59,6 @@ test("the progress request names the tool's fields (#45)", () => {
 });
 
 test("the progress request keeps its identifying opening (#45)", () => {
-  // existing harness prompts, tests and operator habit key off this sentence —
-  // #45 changed the INSTRUCTION, not how the request is identified
   assert.match(
     PROGRESS_REQUEST,
     /Please give a brief progress report/,
@@ -94,8 +66,6 @@ test("the progress request keeps its identifying opening (#45)", () => {
   );
   assert.match(PROGRESS_REQUEST, /Keep it under 10 lines/);
 });
-
-/* ---------- the two must not contradict each other ---------- */
 
 test("the two harness nudges are distinct and both name a tool (#43/#45)", () => {
   assert.notEqual(AUTO_CONTINUE_NUDGE, PROGRESS_REQUEST);

@@ -1,19 +1,3 @@
-/**
- * #105 — "tool calls execute AFTER finish() reports completion".
- *
- * The `finish` branch in the tool-call loop ended with `continue`, which advances
- * that loop — not the turn loop. So every later call in the SAME assistant
- * message still ran. A model emitting `finish()` plus one more tool call got real
- * filesystem writes after it had reported `final: true` and the goal was already
- * `done`, so a parent was told the work was finished while the workspace was
- * still being mutated.
- *
- * Reproduced before the fix: the event order was
- *
- *     FINAL at index 8 | write_file result at index 12 | after.txt exists? true
- *
- * The fix answers whatever is still outstanding and leaves the tool loop.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -93,8 +77,6 @@ test("no tool runs after finish() reports the goal complete (#105)", async () =>
 });
 
 test("every tool_call is still answered, so the next request is valid (#105)", async () => {
-  // #76: an assistant tool_call with no tool_result makes the provider reject the
-  // next request. Ending the batch early must not reintroduce that.
   await useTempDirs(["f105c-", "f105d-"], async ([ws, sd]) => {
     const { events } = await runFinishThenTool(ws!, sd!);
     const calls = events
@@ -109,7 +91,6 @@ test("every tool_call is still answered, so the next request is valid (#105)", a
 });
 
 test("finish() alone still works normally (#105)", async () => {
-  // the fix must not break the ordinary single-call path
   await useTempDirs(["f105e-", "f105f-"], async ([ws, sd]) => {
     const a = new Agent({
       id: "t",

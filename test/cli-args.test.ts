@@ -1,17 +1,3 @@
-/**
- * The CLI argument parser.
- *
- * `index.ts` had NO test importing it — it was 48% branch covered, the second-lowest
- * in the repo. The parser decides which config file is read and which port is bound,
- * and a regression there starts the WRONG SERVER ON THE WRONG PORT with no error
- * anyone would read, so this is worth pinning.
- *
- * `parseArgs` was extracted from `main()` purely so it could be tested; the
- * behaviour is the same, except for one thing that was plainly wrong: a
- * non-numeric `--port` used to set `portOverride = NaN`, and `main` guarded the
- * apply with `!Number.isNaN` — so the flag was silently dropped two lines later,
- * with the parse result carrying a NaN nobody checked.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../src/index.ts";
@@ -29,8 +15,6 @@ test("the long and short flags both work", () => {
 
 test("--host takes the next argument verbatim", () => {
   assert.equal(parseArgs(["--host", "0.0.0.0"]).hostOverride, "0.0.0.0");
-  // NOT Number()-coerced: an address is not a number, and this flag sits next to
-  // --port, where the temptation to parse both the same way is obvious
   assert.equal(parseArgs(["--host", "localhost"]).hostOverride, "localhost");
 });
 
@@ -40,8 +24,6 @@ test("everything at once", () => {
 });
 
 test("a non-numeric --port is DROPPED, not carried as NaN (#index)", () => {
-  // it used to be set to NaN and then discarded two lines later; the parse result
-  // itself now never holds a NaN that a caller might apply blindly
   const r = parseArgs(["--port", "notanumber"]);
   assert.equal(r.portOverride, undefined, "a mistyped port must not become NaN");
   assert.ok(!Number.isNaN(r.portOverride as unknown as number));
@@ -53,12 +35,10 @@ test("--port with no value does not throw", () => {
 });
 
 test("the FIRST bare word is the config, later ones are ignored", () => {
-  // a stray positional must not silently replace the config path
   assert.equal(parseArgs(["a.json", "b.json"]).cfgArg, "a.json");
 });
 
 test("--config wins over a positional", () => {
-  // an explicit flag is a deliberate choice, so a bare word must not take precedence
   assert.equal(parseArgs(["a.json", "--config", "b.json"]).cfgArg, "b.json");
 });
 
@@ -74,20 +54,10 @@ test("an empty argv is not help and sets nothing", () => {
 });
 
 test("an unknown dashed flag is ignored, not treated as a config path", () => {
-  // `--acp` is documented in --help and handled elsewhere; it must not become the
-  // config filename, which is how a bare-word rule goes wrong
   assert.equal(parseArgs(["--acp"]).cfgArg, undefined);
 });
 
 test("--flag=value works for every flag, not just the space-separated form", () => {
-  // Reported: "--host が効いてないっぽい、0.0.0.0 にしても他デバイスからアクセスできない".
-  // `--host=0.0.0.0` — the spelling people reach for, and the one every other CLI
-  // accepts — was silently DISCARDED: only `--host 0.0.0.0` matched. The server
-  // then came up on loopback with nothing readable to say why, so the operator
-  // reasonably blamed their network. MEASURED on the built CLI:
-  //
-  //     $ teapot cfg.json --port=7842 --host=0.0.0.0
-  //     [teapot] master listening on http://127.0.0.1:7841   ← both ignored
   const r = parseArgs(["--host=0.0.0.0", "--port=8080", "--config=x.json"]);
   assert.deepEqual(
     r,

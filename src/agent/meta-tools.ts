@@ -1,23 +1,4 @@
-/**
- * The META tools: the ones the AGENT LOOP handles itself instead of dispatching to
- * `executeTool` (finish, the goal/todo/memory/feedback tools, ask_user…).
- *
- * ## Why this is a table and not two lists
- *
- * A meta tool used to be declared in TWO hand-maintained places: a 389-line block of
- * `if (call.function.name === "…")` in `runTurnsUntilIdle`, and its spec among the
- * literals in `allToolSpecs`. Nothing connected them, so the failure modes were silent:
- *
- *   - a spec with no branch → the model calls a tool that falls through to
- *     `executeTool`, which answers "unknown tool" even though the prompt advertised it;
- *   - a branch with no spec → dead code, and the model never learns the tool exists.
- *
- * Named in one place, both mistakes become a missing key rather than a runtime surprise.
- * `META_TOOL_NAMES` is derived from this table, so `allToolSpecs()` cannot advertise a
- * meta tool the loop does not handle (see `test/meta-tools.test.ts`).
- */
 
-/** one entry per meta tool: the wire spec, and the name the loop matches on */
 export interface MetaTool {
   name: string;
   spec: {
@@ -30,12 +11,6 @@ export interface MetaTool {
   };
 }
 
-/**
- * Every meta tool, in the order the model sees them.
- *
- * Adding one: add the entry here AND the matching branch in `runTurnsUntilIdle`. The test
- * asserts the two agree, so a half-done addition fails rather than shipping.
- */
 export const META_TOOLS = [
   {
     name: "finish",
@@ -342,19 +317,10 @@ export const META_TOOLS = [
   },
 ] as const satisfies readonly MetaTool[];
 
-/**
- * The union of meta tool names, DERIVED from the table.
- *
- * The handler map in `agent.ts` is typed `Record<MetaToolName, …>`, so this union is what
- * turns "advertised but not handled" into a compile error instead of a runtime
- * "unknown tool". Deriving it (rather than writing it out) means the two cannot disagree.
- */
 export type MetaToolName = (typeof META_TOOLS)[number]["name"];
 
-/** the names the tool loop must handle itself, in wire order */
 export const META_TOOL_NAMES: MetaToolName[] = META_TOOLS.map((t) => t.name);
 
-/** just the specs, for splicing into the full tool list */
 export function metaToolSpecs(): MetaTool["spec"][] {
   return META_TOOLS.map((t) => t.spec);
 }

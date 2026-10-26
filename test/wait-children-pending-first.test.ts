@@ -1,22 +1,4 @@
-﻿/**
- * #140 — "wait_children 直前の pending prompt が wait を奪う"
- *
- * `enqueuePrompt()` can only interrupt a park it SEES: it aborts `toolAbort`
- * when `parkedByTool` is already set. A prompt that is ALREADY in the queue
- * when `wait_children` runs is invisible to that path — so wait_children
- * parks over it: the agent displays idle, the prompt waits for a turn
- * boundary that will not come until a child settles, and the operator's
- * message is held hostage by the wait.
- *
- * Reproduced here with a REAL Agent and its REAL prompt queue: turn 1's chat
- * call queues a user prompt (the operator checked in right as the model
- * called wait_children), then returns the wait_children tool call.
- *
- * Required: the tool must NOT park, must NOT even start the child wait — the
- * pending prompt is consumed at the next turn boundary instead. (A prompt
- * arriving DURING the park keeps its existing wake path — covered by
- * wait-children-prompt-unblocks.test.ts.)
- */
+﻿
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -25,7 +7,6 @@ import { readEvents } from "../src/log/events.ts";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** a live child whose wait hangs until the agent's own abort signal fires */
 function hangingWait(a: Agent, mark: () => void) {
   return () => {
     mark();
@@ -54,8 +35,6 @@ test("a prompt queued BEFORE wait_children takes priority over the park (#140)",
       chatFn: async () => {
         turn++;
         if (turn === 1) {
-          // the operator's message lands in the queue in the same instant the
-          // model decides to wait on its child
           agent?.enqueuePrompt("urgent operator check-in", "user");
           return {
             message: {
@@ -101,7 +80,6 @@ test("a prompt queued BEFORE wait_children takes priority over the park (#140)",
         false,
         "the agent must not park over a pending prompt (#140)",
       );
-      // the queue is consumed and the run settles on its own — no operator wake
       await Promise.race([a.settled(), wait(3000)]);
       assert.equal(
         (a as unknown as { pendingPrompts: unknown[] }).pendingPrompts.length,
@@ -167,11 +145,10 @@ test("a prompt arriving DURING the park still wakes it (existing path, kept)", a
           waitCalled = true;
         }),
       };
-      a.enqueuePrompt("go", "user"); // drained at turn start — queue empty when the tool runs
+      a.enqueuePrompt("go", "user"); 
       a.start("t");
       await wait(400);
       assert.equal(waitCalled, true, "precondition: the park happened (no prompt was pending)");
-      // NOW the operator checks in: the existing wake path must abort the park
       a.enqueuePrompt("are you there?", "user");
       await Promise.race([a.settled(), wait(3000)]);
       assert.equal(waitCalled, true, "#140 kept: a mid-park prompt wakes the wait");

@@ -1,22 +1,3 @@
-/**
- * #28 — "make it possible to read other harnesses' skills too" (with a TODO:
- *        search GitHub and investigate each harness's skills directory)
- *
- * Research first, as the issue asked. Two findings changed the plan:
- *
- *  1. SKILL.md frontmatter is a SHARED convention, not a per-harness dialect —
- *     so no format conversion is needed. What was actually blocking third-party
- *     skills was OUR parser:
- *       - `description: >-` (a folded scalar, the most common way authors write
- *         a long description) collapsed to the literal ">-", destroying the one
- *         field the model matches its task against;
- *       - quoted values kept their quotes, so a description containing a colon
- *         stopped matching.
- *     Both are verified here against the shape used by real skills.
- *  2. The harnesses' native directories are documented, so they are simply
- *     added as extra roots — at the LOWEST priority, because a project must
- *     never be shadowed by another tool's copy of the same skill.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -24,10 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { parseSkillMd, discoverSkills, foreignSkillRoots } from "../src/agent/skills.ts";
 
-/* ---------- parser: the shapes real third-party skills use ---------- */
-
 test("a folded description scalar is read, not truncated to '>-' (#28)", () => {
-  // the exact shape used by terminalskills/skills and many others
   const p = parseSkillMd(
     `---\nname: a2a-protocol\ndescription: >-\n  Builds A2A servers and clients.\n  Use when the user wants X.\nlicense: Apache-2.0\n---\n\nbody`,
   );
@@ -70,8 +48,6 @@ test("a file with no frontmatter still yields its body (#28)", () => {
   assert.equal(p.body, "just markdown, no frontmatter");
 });
 
-/* ---------- foreign skill directories ---------- */
-
 test("the other harnesses' project directories are included (#28)", () => {
   const roots = foreignSkillRoots("/ws").map((r) => r.dir);
   for (const rel of [".claude", ".codex", ".cursor", ".gemini", ".github", ".opencode", ".agents"]) {
@@ -85,11 +61,6 @@ test("the other harnesses' project directories are included (#28)", () => {
 test("the personal directories of other harnesses are included (#28)", () => {
   const roots = foreignSkillRoots("/ws").map((r) => r.dir);
   const home = process.env.HOME ?? process.env.USERPROFILE;
-  // #75: this used to `return` silently, so with HOME unset the test reported a
-  // PASS while asserting nothing at all (verified: `env -u HOME npm test` was
-  // green). Skipping is only honest if it is visible, so it is now a real skip
-  // with a reason — and the function's behaviour with no HOME is asserted
-  // unconditionally below, because that case IS testable.
   if (!home) {
     assert.deepEqual(
       foreignSkillRoots("/ws").map((r) => r.dir).filter((d) => !d.startsWith("/ws")),
@@ -111,10 +82,6 @@ test("foreign roots never duplicate (#28)", () => {
 test("foreign roots degrade when there is no workspace or home (#28)", () => {
   const savedHome = process.env.HOME;
   const savedUser = process.env.USERPROFILE;
-  // #110: Windows ALSO reports a home as HOMEDRIVE + HOMEPATH, which is how
-  // `homeDir()` finds it when USERPROFILE is absent. Deleting only the first two
-  // left a home behind on the runner, so "no home" was never actually tested
-  // there — the test asserted a premise that did not hold.
   const savedDrive = process.env.HOMEDRIVE;
   const savedPath = process.env.HOMEPATH;
   delete process.env.HOME;
@@ -132,12 +99,8 @@ test("foreign roots degrade when there is no workspace or home (#28)", () => {
   }
 });
 
-/* ---------- end to end: a real foreign-root skill is usable ---------- */
-
 test("a skill in another harness's directory is discovered and loadable (#28)", async () => {
   await useTempDirs(["f28a-", "f28b-"], async ([ws, _s]) => {
-    // a project-local .claude/skills directory, holding a skill whose
-    // description is a folded scalar (both are what a real tool leaves behind)
     const dir = path.join(ws, ".claude", "skills", "security-review");
     await mkdir(dir, { recursive: true });
     await writeFile(
@@ -166,7 +129,6 @@ test("a workspace skill still outranks a foreign one of the same name (#28)", as
     await mkdir(own, { recursive: true });
     await writeFile(path.join(own, "SKILL.md"), "---\nname: dup\ndescription: mine\n---\nb");
 
-    // a project skill must never be shadowed by another tool's copy (#28)
     const got = await discoverSkills([
       { dir: path.join(ws, "skills"), source: "workspace" },
       ...foreignSkillRoots(ws),

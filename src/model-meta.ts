@@ -1,37 +1,13 @@
-/**
- * Provider model metadata (context window sizes) with a small TTL cache.
- * Used to auto-populate contextWindowTokens so compaction budgets derive
- * from the real window instead of the safe default.
- */
 import { providerHeaders } from "./agent/provider-headers.ts";
 
 export interface ModelMeta {
   id: string;
   contextLength?: number;
-  /** USD per token (OpenRouter-style) — powers the runtime cost estimate */
   pricing?: { prompt: number; completion: number };
-  /** what the model can accept and produce — drives the 📄🖼️→📄 badge */
   modalities?: { input: string[]; output: string[] };
-  /**
-   * Parameters the endpoint advertises for this model (OpenRouter publishes
-   * `supported_parameters`). Lets the UI show reasoning-effort controls only
-   * where they actually work — support is far from universal (#47).
-   */
   supportedParameters?: string[];
-  /**
-   * The reasoning levels THIS model accepts, when the endpoint publishes them.
-   *
-   * OpenRouter returns `reasoning.supported_efforts` per model (measured:
-   * `["max","high","low"]` for deepseek-v4.1-flash), which is a far better guide
-   * than the blanket four-level list a UI would otherwise offer: asking for a level
-   * the model does not have is a wasted turn, and offering one it does not have is a
-   * control that does nothing. Absent means the endpoint said nothing, NOT that
-   * there are none.
-   */
   supportedEfforts?: string[];
-  /** the level the model would use if none is requested (OpenRouter `default_effort`) */
   defaultEffort?: string;
-  /** reasoning cannot be turned off for this model (OpenRouter `mandatory`) */
   reasoningMandatory?: boolean;
 }
 
@@ -39,35 +15,12 @@ const cache = new Map<string, { at: number; list: ModelMeta[]; negative?: boolea
 const inFlight = new Map<string, Promise<ModelMeta[]>>();
 const TTL = 10 * 60_000;
 
-/**
- * How long a FAILED lookup is remembered.
- *
- * A failure used to be dropped on the floor (the `catch` returned `[]` without
- * caching), so a dead, unauthorised, or simply slow endpoint was re-fetched for
- * EVERY agent pointed at it. `addAgent` awaits this twice per agent and races it
- * against a 1.5 s timeout, so with 493 agents across a handful of providers the
- * same failing request — and its timeout — repeated hundreds of times. MEASURED
- * at boot: 1883 ms of the 4.6 s was idle, waiting on exactly this.
- *
- * Negative results expire much sooner than positive ones: a provider coming back
- * up should be usable within a minute, not locked out for ten.
- */
 const NEGATIVE_TTL = 30_000;
 
-/** is this cached entry still valid? (failures expire sooner) */
 function fresh(entry: { at: number; negative?: boolean }): boolean {
   return Date.now() - entry.at < (entry.negative ? NEGATIVE_TTL : TTL);
 }
 
-/**
- * The catalogue if it is ALREADY known, without starting a fetch (#143).
- *
- * Boot uses this so it never waits for metadata it can do without: the context
- * window only tunes the compaction budget, and `supportedParameters` only gates
- * the reasoning-effort controls (#47). `prefetchModelLists()` starts the real
- * lookups in parallel, so an endpoint that answers quickly is usually warm by the
- * time its first agent is created, and a slow or dead one costs no boot time.
- */
 export function peekModelList(baseUrl: string): ModelMeta[] | undefined {
   const root = baseUrl.replace(/\/+$/, "");
   const hit = cache.get(root);
@@ -76,7 +29,6 @@ export function peekModelList(baseUrl: string): ModelMeta[] | undefined {
   return hit.negative ? [] : hit.list;
 }
 
-/** Fetch GET /models from an OpenAI-compatible endpoint (cached ~10 min). */
 export async function fetchModelList(
   baseUrl: string,
   apiKey?: string,
@@ -84,9 +36,6 @@ export async function fetchModelList(
   const root = baseUrl.replace(/\/+$/, "");
   const hit = cache.get(root);
   if (hit && fresh(hit)) return hit.list;
-  // An in-flight lookup is SHARED: without this, two callers racing for the
-  // same endpoint each paid the full timeout, and `newSession` in ACP mode
-  // blocked on it before it could even reply to the editor (#15).
   const inflight = inFlight.get(root);
   if (inflight) return inflight;
   const p = (async () => {
@@ -94,10 +43,8 @@ export async function fetchModelList(
     const res = await fetch(`${root}/models`, {
       headers: {
         ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-        ...providerHeaders(baseUrl), // OpenRouter app attribution
+        ...providerHeaders(baseUrl), 
       },
-      // boot-time calls happen per agent; a slow/unroutable endpoint used to
-      // stall startup for up to 15s PER AGENT before this was tightened
       signal: AbortSignal.timeout(3_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -124,8 +71,6 @@ export async function fetchModelList(
       .map((m) => ({
         id: typeof m.id === "string" ? m.id : "",
         contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
-        // OpenRouter-style USD per token (e.g. "0.000003") — powers the
-        // runtime cost estimate. Providers without pricing stay undefined.
         pricing:
           m.pricing && (m.pricing.prompt !== undefined || m.pricing.completion !== undefined)
             ? {
@@ -133,20 +78,6 @@ export async function fetchModelList(
                 completion: Number(m.pricing.completion ?? 0),
               }
             : undefined,
-        /**
-         * `modalities` is only known when the provider PUBLISHES it — in practice OpenRouter's
-         * `architecture.input_modalities`.
-         *
-         * Every other endpoint omits the field, so this stays `undefined` and the UI must treat it as
-         * UNKNOWN rather than as "text only". Reported as "Command Code GOATのモデルカタログが
-         * input/outputのフォーマットを適切に提供していない? OpenRouterしかちゃんと対応できてない可能性は
-         * ある" — which is exactly right, and the code was right not to invent a value.
-         *
-         * The consequence to know about: without a modality list nothing can decide "this model
-         * accepts an image", so an operator's screenshot reaches the model as a FILE PATH and an agent
-         * that tries `read_file` gets bytes. The guard for that lives in `read_file` (it refuses a
-         * binary file by name instead of returning mojibake), so the failure is at least legible.
-         */
         modalities:
           Array.isArray(m.architecture?.input_modalities) && m.architecture!.input_modalities!.length
             ? {
@@ -154,14 +85,9 @@ export async function fetchModelList(
                 output: m.architecture!.output_modalities ?? ["text"],
               }
             : undefined,
-        // OpenRouter advertises per-model capabilities; other endpoints omit
-        // the field entirely, which leaves support "unknown" rather than false.
         supportedParameters: Array.isArray(m.supported_parameters)
           ? m.supported_parameters.filter((p): p is string => typeof p === "string")
           : undefined,
-        // per-model reasoning levels when published (OpenRouter): the UI offers
-        // exactly these, and the request is clamped into them — offering a level the
-        // model does not have is a control that does nothing (#150)
         supportedEfforts: Array.isArray(m.reasoning?.supported_efforts)
           ? m.reasoning!.supported_efforts!.filter((e): e is string => typeof e === "string")
           : undefined,
@@ -174,10 +100,8 @@ export async function fetchModelList(
     cache.set(root, { at: Date.now(), list });
     return list;
   } catch {
-    // Remember the FAILURE (briefly). Dropping it meant every agent on this
-    // endpoint paid the fetch — and up to the 1.5 s race timeout — again.
     cache.set(root, { at: Date.now(), list: [], negative: true });
-    return []; // unreachable provider — caller treats as "unknown"
+    return []; 
   }
   })();
   inFlight.set(root, p);
@@ -195,7 +119,6 @@ export function contextLengthFor(
   return list.find((m) => m.id === model)?.contextLength;
 }
 
-/** Reasoning-effort levels OpenRouter accepts (`reasoning_effort`). */
 export const REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
@@ -203,7 +126,6 @@ export function isReasoningEffort(v: unknown): v is ReasoningEffort {
   return typeof v === "string" && (REASONING_EFFORTS as readonly string[]).includes(v);
 }
 
-/** True when the endpoint is OpenRouter (the only one that documents effort). */
 export function isOpenRouter(baseUrl: string | undefined): boolean {
   try {
     return /(^|\.)openrouter\.ai$/i.test(new URL(String(baseUrl ?? "")).host);
@@ -212,17 +134,6 @@ export function isOpenRouter(baseUrl: string | undefined): boolean {
   }
 }
 
-/**
- * The `reasoning_effort` value to actually SEND, or undefined to omit it.
- *
- * Verified against the live OpenRouter /models endpoint (462 models): 196
- * advertise `reasoning_effort`, 331 the broader `reasoning`, and NONE a bare
- * top-level `effort`. Support is therefore far from universal, and sending the
- * parameter to a model that does not advertise it is how a request gets
- * rejected or a setting silently ignored (#47) — so it is sent only when the
- * endpoint is OpenRouter AND the model advertises it. Off by default: an absent
- * setting means "let the provider apply its own default".
- */
 export function resolveReasoningEffort(opts: {
   baseUrl?: string;
   model?: string;
@@ -232,8 +143,6 @@ export function resolveReasoningEffort(opts: {
   if (!isReasoningEffort(opts.effort)) return undefined;
   if (!isOpenRouter(opts.baseUrl)) return undefined;
   const meta = opts.list?.find((m) => m.id === opts.model);
-  // No catalogue for this endpoint: we cannot verify support, so do not send.
-  // A wrong body field is worse than an unset one.
   if (!meta?.supportedParameters) return undefined;
   if (!meta.supportedParameters.includes("reasoning_effort")) return undefined;
   return opts.effort;

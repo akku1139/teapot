@@ -1,12 +1,6 @@
-// Where does boot time go? Splits `master.start()` into the log load and
-// everything else, against a SANDBOX config (see AGENTS.md — never point this at
-// the real data dir: boot writes manifests and session pointers).
-//
-// Usage: node scripts/profile-boot.mjs /tmp/sbx/config.json
 const { loadConfig, resolveConfigPath, Master } = await import("../src/master.ts");
 const events = await import("../src/log/events.ts");
 
-// count and time every EventLog.load() — historically the largest boot cost
 const realLoad = events.EventLog.prototype.load;
 let loadMs = 0;
 let loadN = 0;

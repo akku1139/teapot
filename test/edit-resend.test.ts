@@ -1,17 +1,3 @@
-/**
- * #96 — "edit a message and press fork&resend, but the AI never starts (it does
- * not go running). Starting it from the controls does not work either."
- *
- * The button is labelled "⑂ fork & **resend**". Nothing resent.
- * `editPromptAt` rewrites history and returns; the route returns; the client
- * refreshes and re-selects. The edited prompt sits in the timeline looking sent
- * while the model has never seen it, and the only way forward is to notice that
- * and press start yourself.
- *
- * `start()` is called on the SERVER rather than the client: the route already
- * knows the edit succeeded, and a client that simply failed to call it would
- * leave the agent silently idle with no error anywhere to explain why.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -19,10 +5,6 @@ import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 
 test("after an edit the agent is startable (#96)", async () => {
-  // the second symptom from the report. editPromptAt REFUSES while the agent is
-  // running, so the edit happens from a stopped agent — and in that state the
-  // controls' start already worked. Pinned so a future change that leaves a
-  // stale "running" status after the edit cannot silently reintroduce it.
   await useTempDirs(["er1-", "er2-"], async ([ws, sd]) => {
     let n = 0;
     const agent = new Agent({
@@ -64,7 +46,6 @@ test("after an edit the agent is startable (#96)", async () => {
 });
 
 test("the edited prompt is what the agent is asked to work on (#96)", async () => {
-  // the point of "resend": the model must SEE the edit, not the original
   await useTempDirs(["er3-", "er4-"], async ([ws, sd]) => {
     const seen: string[] = [];
     let n = 0;

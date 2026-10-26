@@ -16,7 +16,6 @@ import { authorOf, fmtK, fmtTs, oneLine, rawOf, type Ev } from "../lib/timeline-
 import { formatToolOutput, outputLang } from "../lib/tool-output-lang";
 import { effectiveBashTimeout } from "../lib/bash-timeout";
 
-
 export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => void }) {
   const [val, setVal] = createSignal("");
   const submit = () => {
@@ -34,8 +33,6 @@ export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string
         value={val()}
         oninput={(e) => setVal(e.currentTarget.value)}
         onkeydown={(e: KeyboardEvent) => {
-          // same Safari IME caveat as the main composer: isComposing is
-          // already false by the time Enter's keydown arrives
           if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }
         }}
       />
@@ -46,96 +43,27 @@ export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string
 
 export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
-  // GROUPING (#75 pattern, again). `groupedWith()` is the shared rule and it
-  // ALWAYS said these two bash calls group — but ToolRow never received `prev`, so
-  // the rule never ran for tool rows and every one of them rendered a full head:
-  //
-  //     embed class="embed done" summary="⚙️ $ echo ALPHA3ms…"
-  //     embed class="embed done" summary="⚙️ $ echo BETA3ms…"     <- reported
-  //
-  // helper was right and the CALL was missing. A run of commands therefore read as
-  // a stack of unrelated blocks, which is the "timeline is cluttered" complaint.
   const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
-  // read the result prop REACTIVELY. `<For each={chatEvents()}>` builds the
-  // row while its result is still undefined, and a destructured `const res =
-  // props.res` is bound once — so the row kept rendering "running…" forever when
-  // the result arrived.
-  //
-  // `props.res` is now an ACCESSOR from the caller, not a value: `pairInfo()` re-runs on
-  // every append, so passing `pairInfo().resFor.get(id)` inline re-evaluated the prop and
-  // re-built this row's whole JSX tree — harmless for a label, fatal for a `<pre>` whose
-  // scroll offset lives on the element. MEASURED: a scrolled bash-output block lost its
-  // offset whenever an unrelated message arrived, with the row ELEMENT itself reused. An
-  // accessor makes the row's tree a one-time build that reads a fresh value on demand.
-  // narrow dependency: see the memo below
-  /**
-   * NARROW the dependency to THIS row's result.
-   *
-   * `props.res` reads `pairInfo()`, which returns a fresh `{resFor, consumed, orphanCalls}` object
-   * on every append — so a row's `res()` "changed" whenever ANY event arrived, and every row's
-   * `derived` memo re-ran. MEASURED on a 20-row timeline: 40 memo runs and 118 `HighlightedCode`
-   * constructions for 20 rows, i.e. roughly twice the work per row plus a full rebuild of every
-   * JSX subtree in the memo body (Solid runs the memo function BEFORE `equals` is consulted).
-   *
-   * This memo compares the RESULT's identity (`Ev.id`), so a row whose result did not change sees
-   * no update at all — which is what `equals` was supposed to buy, applied one level earlier where
-   * it also skips building the JSX.
-   */
   const resEv = createMemo(() => props.res?.(), undefined, {
     equals: (a, b) => a?.id === b?.id,
   });
-  /** every read below goes through the NARROW memo, never the raw prop */
   const res = () => resEv();
 
-  // STALE-RUN GUARD: if the agent is no longer running, an unpaired tool_call
-  // cannot still be in flight (its result event was missed — e.g. logged while
-  // the tab was hidden). Rendering it forever as "running…" was exactly that:
-  // switching sessions and back "fixed" it because that reloaded the log.
-  //
-  // this must be a FUNCTION, not a value. Computed once in the component
-  // body it captured `props.agentActive` as it was when the row was BUILT — i.e.
-  // `true`, because a row only exists because the agent was working — so the
-  // guard could never fire. It was written to close exactly this bug and could
-  // not, which is why the issue kept coming back.
   const staleDone = () => !props.agentActive && !res();
   const d = e.data ?? {};
   const name = String(d.name ?? "tool");
   const out = () => String(res()?.data?.result ?? "");
 
   const argStr = (k: string) => String(d.args?.[k] ?? "");
-  // best-effort "what was run" text per tool: bash→the command, others→path/args
   const cmdText = () => {
     if (name === "bash") return argStr("command");
     return argStr("path") || JSON.stringify(d.args ?? {}, null, 1);
   };
-  // effective timeout for live elapsed display — tools with defaults that the
-  // model omitted (wait_children: 5 min) still show their real cap
   const effTimeout = () => {
-    /**
-     * `bash` has a DEFAULT timeout, and the row must show it.
-     *
-     * `Number(argStr("timeout_ms")) || undefined` reported "no limit" whenever the model omitted the
-     * parameter — while the server was running the command under a real 120s cap. Reported as
-     * "タイムライン上にタイムアウト時間が表示されない", and it made the cap invisible exactly when it
-     * mattered: the model had not noticed `timeout_ms` existed, so nothing on screen suggested the
-     * command could be killed. Must match `DEFAULT_TIMEOUT_MS` in `src/agent/tools.ts` (600s max,
-     * same clamp the server applies).
-     */
     if (name === "bash") return effectiveBashTimeout(argStr("timeout_ms"));
     if (name === "wait_children") return Number(argStr("timeout_ms")) || 300_000;
     return Number(argStr("timeout_ms")) || undefined;
   };
-  /**
-   * A tool card's code surface: the SAME depth for arguments and output.
-   *
-   * ではどっちも一段深い". The cause was two different renderers: the output went through
-   * `codeBlock` (`.toolbody`, `--bg-darkest`) while the arguments were a bare `<div class="mono">`
-   * with no surface at all — so a generic tool showed the card colour for its input and the deeper
-   * surface for its result, and `bash` happened to use the deeper one for both.
-   *
-   * Every code surface in a tool card now uses `.toolbody`, so input and output read as one block
-   * with a consistent depth regardless of which tool the row is.
-   */
   const codeBlock = (text: string, max = 1500, lang?: string) => (
     <HighlightedCode text={truncate(text, max)} lang={lang} />
   );
@@ -164,15 +92,13 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         )}
         <div class="meta">
           {fmtDur(r.data?.durationMs)}
-          {/* #46: a killed shell said nothing here beyond a generic · FAILED, so
-              a TIMED OUT command still read as an ordinary completed run. */}
+          {}
           {name === "bash"
             ? outcomeMarker(shellOutcome(r.data?.ok, String(r.data?.result ?? "")))
             : r.data?.ok === false
               ? " · FAILED"
               : ""}
-          {/* copy exactly what is SHOWN: the same JSON reformatting, so the clipboard and the card
-              cannot disagree about the content */}
+          {}
           <CopyBtn text={hasAnsi(out()) ? stripAnsi(out()) : formatToolOutput(out())} />
         </div>
       </>
@@ -209,10 +135,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
     () => {
   const r = res();
   void r;
-  // per-tool summary line: [label, hint]. There is no icon: the default was "⚙️" for
-  // every tool and no case ever overrode it, so it identified nothing — the tool NAME
-  // is already in the row's author slot, and a grouped row showed no ⚙️ at all, which is
-  // the inconsistency this removes.
   let label = name;
   let hint: string | null = "";
   let body: any = argsBlock();
@@ -221,22 +143,16 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       case "bash": {
         const cmd = argStr("command");
         const isBg = d.args?.background === true;
-        // background jobs return INSTANTLY (the shell keeps running) — a plain
-        // "$ cmd · 12ms" row read as "finished immediately" and the job was
-        // forgotten. Give them their own identity + the job id for bash_output.
         const bgJob = isBg ? (String(out()).match(/job (bg\d+)/)?.[1] ?? "") : "";
         label = (isBg ? "⏳ " : "$ ") + oneLine(cmd, 96);
         const timeoutMs = argStr("timeout_ms") ? Number(argStr("timeout_ms")) : undefined;
-        // a command the harness KILLED used to render as
-        // `300ms · timeout 1s` — indistinguishable from a fast success, so the
-        // row never read as finished. Name the outcome on the summary line.
         const r = res();
         const outcome = shellOutcome(r?.data?.ok, r ? String(r.data?.result ?? "") : "");
         hint = r
           ? isBg
             ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutMs ? ` · timeout ${Math.round(timeoutMs / 1000)}s` : ""}`
             : shellHint({ outcome, durationMs: r.data?.durationMs, timeoutMs, fmtDur })
-          : null; // live elapsed renders in the summary (below)
+          : null; 
         body = (
           <>
             {isBg ? (
@@ -245,15 +161,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
                 {bgJob ? <> · kill with <b>action="kill"</b></> : null}
               </div>
             ) : null}
-            {/**
-              * The command, in FULL, with shell highlighting — it is the one tool input where the
-              * syntax carries meaning (quoting, pipes, flags), not just data.
-              *
-              * `codeBlock(cmd, 800, …)` cut it at 800 characters, so a heredoc or a long pipeline
-              * showed its first few lines and a `…`. The card is already a `<details>` the operator
-              * opened deliberately, and the same mistake in the RESULT block was fixed by rendering
-              * it whole — the arguments deserve the same answer.
-              */}
+            {}
             {cmd !== label.slice(isBg ? 2 : 2) ? (
               <HighlightedCode text={cmd} lang="shellscript" />
             ) : null}
@@ -277,9 +185,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         const content = String(d.args?.content ?? "");
         label = argStr("path") || "(no path)";
         hint = `${fmtK(content.length)} bytes`;
-        // content was rendered UNTRUNCATED — a few big write_file calls (the
-        // 100KB+ ones real sessions accumulate) made those chats take seconds
-        // to open and chew CPU on every prepend while scrolling back
         body = (
           <>
             {codeBlock(content, 1500)}
@@ -313,8 +218,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
           .map((l) => l.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)?.[1])
           .filter(Boolean) as string[];
         label = files.length ? `${files.length} file${files.length > 1 ? "s" : ""}: ${oneLine(files.join(", "), 80)}` : "patch";
-        // huge patches rendered one <div> PER LINE with no cap — multi-thousand-
-        // line patches froze the feed. Show the head; the rest is noise here.
         const MAX_PATCH_LINES = 60;
         const shown = patchLines.slice(0, MAX_PATCH_LINES);
         body = (
@@ -338,7 +241,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       }
       case "read_url": {
         let host = argStr("url");
-        try { const u = new URL(host); host = u.host + u.pathname; } catch { /* keep raw */ }
+        try { const u = new URL(host); host = u.host + u.pathname; } catch {  }
         label = oneLine(host, 70);
         hint = "web";
         body = (
@@ -357,7 +260,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         break;
       }
       case "bash_output": {
-        // reading vs killing reads differently at a glance
         const action = argStr("action") || "read";
         const jobId = argStr("job_id") || "(?)";
         label = `bash_output ${jobId}`;
@@ -367,7 +269,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       }
       case "load_skill": {
         label = `skill: ${argStr("name")}`;
-        const mdBody = out().replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ""); // strip frontmatter
+        const mdBody = out().replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ""); 
         body = res() ? (
           <>
             <div class="content" innerHTML={renderMarkdown(mdBody)} />
@@ -391,22 +293,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         break;
       }
       default: {
-        /**
-         * EVERY other tool: show the arguments AND the result.
-         *
-         * There was no `default:` branch, so any tool without an explicit case — every MCP
-         * tool, `wait_children`, `read_memory`, the meta tools, `web` — kept the initial `body`,
-         * which is the JSON of its INPUT. Reported as "bashやfile系以外のツールは入力パラメータは
-         * 表示されるのに出力がタイムラインに表示されない". The output was in the log and paired
-         * correctly; it simply had no case that rendered it.
-         *
-         * The generic view is the right fallback in shape (the input is often what you want to
-         * see first), but it must not be the WHOLE view: for a tool whose effect is its return
-         * value — `read_memory`, an MCP lookup, `wait_children` — showing only the arguments
-         * tells the operator nothing about what happened.
-         */
         label = name;
-        // the duration is the only summary fact a generic tool has; the outcome is in the body
         hint = res() ? fmtDur(res()!.data?.durationMs) : null;
         body = (
           <>
@@ -418,7 +305,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       }
     }
   } catch {
-    /* fall back to the generic view on anything unexpected */
   }
     // `key` is what the memo's `equals` compares: the RESULT's identity plus the label. Two
     // runs that would build the same body must produce the same key, or the `<pre>` inside is
@@ -427,8 +313,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
     },
     undefined,
     {
-      // compare the RESULT the memo was built from, not the returned object (which is always
-      // a fresh `{label, hint, body}` and would therefore never compare equal)
       equals: (a, b) => (a as { key?: string }).key === (b as { key?: string }).key,
     },
   );
@@ -438,15 +322,11 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       class={"embed" + (grouped ? " grouped" : "") + (res() ? (res()!.data?.ok === false ? " fail" : " done") : staleDone() ? " done" : " running")}
       title={`${name}${derived().hint ? " — " + derived().hint : ""}`}
       onToggle={(ev: ToggleEvent) => {
-        // expanding/collapsing changes the feed height; while following, the
-        // bottom line must stay pinned instead of drifting out of view
         if ((ev.target as HTMLDetailsElement).open) props.onResize?.();
       }}
     >
       <summary>
-        {/* A GROUPED row keeps its command (you still need to know what ran) but drops
-            the repeated marker, so a run of commands reads as one block instead of N
-            unrelated ones. The label already carries its own marker ("$ ", "⏳ "). */}
+        {}
         <b>{derived().label}</b>
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
@@ -457,13 +337,11 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
             : staleDone()
               ? "(result missed)"
               : name === "bash" || effTimeout()
-                ? // any tool with a timeout shows live elapsed + its cap
+                ? 
                   <BashElapsed startedAt={e.ts} inline timeoutMs={effTimeout()} /> // visible while folded
                 : "running…"}
         </span>
-        {/* dedicated copy buttons: the generic header "copy" copied "" on tool
-            rows (rawOf only knows prompts/messages) — now the command that ran
-            and its output each have their own button */}
+        {}
         <span class="toolcopy">
           <CopyBtn text={cmdText()} label="⧉ cmd" title={`copy the ${name} arguments`} />
           <Show when={res()}>
@@ -483,26 +361,12 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
 export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: () => Ev | undefined; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
   const e = props.e;
   const a = authorOf(e);
-  // Grouping is `groupedWith()` from ./row-grouping — extracted so the rule can
-  // be tested against the code that runs. It used to live inline here,
-  // and the tests re-implemented it, which is why deleting the real #49 fix left
-  // them all green.
   const grouped = () => groupedWith(props.prev?.() as RowLike | undefined, e as RowLike);
-  /**
-   * Whether the row BELOW continues this run — computed here rather than in CSS.
-   *
-   * The spacing around a run needs three facts: is this a continuation (`grouped`), does a
-   * continuation follow, and does one follow THIS row. `:has(+ .msg.grouped)` could answer
-   * the last two, but it makes the style engine run a sibling-matching pass for EVERY row on
-   * every style recalc — and this feed renders ~1,100 rows on open. The component
-   * already knows the next event, so the answer is free here and the selector disappears.
-   */
   const nextGrouped = () => {
     const n = props.next?.();
     return !!n && groupedWith(e as RowLike, n as RowLike);
   };
 
-  // non-chat-looking events become divider lines
   if (e.type === "fork") {
     const d = e.data ?? {};
     return (
@@ -512,24 +376,11 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
     );
   }
   if (e.type === "goal") {
-    // the finish→audit→continue lifecycle used to render as bare labels
-    // with an EMPTY body ("🎯 goal audit:"), hiding the verification contract
-    // and the verdict. Every branch now carries a real detail, and "done" is
-    // labelled as PENDING audit because it is logged before the audit runs.
-    //
-    // the label and this card were children of `.divider-msg`, which is
-    // `display:flex` with ::before/::after filling the slack — so the card was
-    // a FLEX SIBLING of the label and everything shared one row, with the
-    // card's left edge wherever the flex layout put it. `.goalline` stacks them
-    // instead: label on its own line, card beneath, both aligned to the same
-    // left edge as every other card in the feed.
     const line = goalLine(e.data ?? {});
     return (
       <div class={"goalline " + (line.tone === "err" ? "err" : line.tone === "warn" ? "warn" : "")}>
         <div class="goalline-label">{line.label}</div>
-        {/* an empty detail means "nothing real to show" — the label stands
-            alone rather than getting a placeholder card. `hasCard` is
-            the explicit flag, so this is never a guess from an empty string. */}
+        {}
         <Show when={line.hasCard}>
           <Card
             tone={line.tone === "ok" ? "ok" : line.tone === "warn" ? "warn" : "tool"}
@@ -648,25 +499,14 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
       class={
         "msg" +
         (grouped() ? " grouped" : "") +
-        // the row BELOW continues this run — replaces a `:has(+ .msg.grouped)` selector,
-        // which made every row pay for a sibling match on every recalc
         (nextGrouped() ? " next-grouped" : "") +
         (e.data?.pending ? " pending" : "") +
         (e.data?.cancelled ? " withdrawn" : "")
       }
       data-eid={e.id}
     >
-      {/* grouped rows keep the same geometry as the row that started the
-          run — same avatar slot, but EMPTY (no faded ghost icon): a column of
-          faint 🧩s read as separate "sub messages" instead of continuation
-          lines. Hover still shows time+branch via the title. */}
-      {/**
-       * The author's colour is a CLASS now, not a custom property.
-       *
-       * `style={{ "--author": colour }}` was still an inline style on an element created once per
-       * row (~1,100 per session) — the exact cost this file's other rules exist to avoid. The
-       * palette is a fixed set, so `toneOf()` maps it to one of five classes.
-       */}
+      {}
+      {}
       <div
         class={`avatar avghost tone-${toneOf(a.color)}` + (grouped() ? " ghosted" : "")}
         title={grouped() ? `${fmtTs(e.ts)} · ${e.branch}` : undefined}
@@ -682,12 +522,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
             <span class="ts">{e.data?.pending ? "queued…" : e.data?.cancelled ? "withdrawn" : fmtTs(e.ts)}</span>
-            {/* #32 (clutter): the branch label is constant for a whole session and
-                was repeated on EVERY row — MEASURED, all 14940 events of this
-                session carry `br0`, so ~1500 rendered rows said "br0" for no
-                information. Show it only when the session actually HAS more than
-                one branch (a fork), which is the only time it distinguishes
-                anything. It stays in the row title, and in the branch picker. */}
+            {}
             <Show when={props.showBranch}>
               <span class="ts">{e.branch}</span>
             </Show>
@@ -698,9 +533,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
                 onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onCancel!(); }}
               >✕ cancel</button>
             </Show>
-            {/* tool rows have no copyable message body — their command/output
-                buttons live inside ToolRow; rendering the header button anyway
-                produced a "copy" that silently copied the empty string */}
+            {}
             <Show when={e.type !== "tool_call"}>
               <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
             </Show>
@@ -724,8 +557,6 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
   const e = props.e;
   switch (e.type) {
     case "prompt": {
-      // image attachments render as thumbnails under the text (logged events
-      // carry data.images; optimistic echoes carry data.pending images array)
       const imgs: string[] = e.data?.images ?? [];
       return (
         <>
@@ -743,12 +574,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
         <>
           <Show when={typeof e.data.reasoning === "string" && e.data.reasoning.trim()}>
             <details class="reasoning">
-              {/**
-                * In FULL. Truncating bought nothing: the block is inside a `<details>` that starts
-                * closed, and when opened it scrolls — so the text was already gated twice, and
-                * cutting it only removed the part the operator opened it to read. Reported as
-                * "長いreasoningをturncatedするのをやめる、隠れててスクロールも効くので切り取る意味がない".
-                */}
+              {}
               <summary>💭 thinking</summary>
               <div class="mono">{String(e.data.reasoning)}</div>
             </details>
@@ -768,11 +594,6 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
       // bash row render its own icon + label.
       return <ToolRow e={e} prev={props.prev} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} />;
     case "tool_result": {
-      // a result whose call is no longer in the events window. It used to
-      // render as a bare output blob with no tool name and no command, which
-      // read as "the run never finished". Render the SAME completed tool row a
-      // paired result gets, from the result's own metadata, so it is
-      // indistinguishable from one that survived in the window.
       const out = String(e.data.result ?? "");
       const name = String(e.data.name ?? "tool");
       const ok = e.data.ok !== false;
@@ -780,16 +601,12 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
         <details class={"embed " + (ok ? "" : "fail")} open={props.orphan}>
           <summary>
             <span class="meta">
-              {/* the call is gone, so the command is too — show the tool and
-                  the outcome rather than inventing an argument that was never
-                  logged here */}
+              {}
               {name === "bash" ? `$ (bash, call evicted)` : name}
             </span>
             <CopyBtn text={out} />
           </summary>
-          {/* In FULL, like a paired result: the operator opened the card to read it, and this
-              path used to cut at 4000 chars — so an evicted call showed a truncated output while a
-              surviving one showed everything, from what looked like the same row. */}
+          {}
           <div class="mono">{out}</div>
           <div class="meta">
             {fmtDur(e.data.durationMs)}
@@ -813,7 +630,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
             <b>📌 <span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.decision ?? ""))} /></b>
             <span class="meta">decision logged</span>
           </summary>
-          {/* model-written markdown, same as progress bodies */}
+          {}
           <div class="content" innerHTML={renderMarkdownCached(String(e.data?.rationale ?? ""))} />
           <Show when={alts.length}>
             <div class="content muted">Rejected: {alts.join(" / ")}</div>
@@ -823,17 +640,11 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
     }
     case "question": {
       const opts = Array.isArray(e.data?.options) ? (e.data.options as string[]) : [];
-      // a question is ANSWERED once its tool_result exists in the log (ask_user
-      // parks the loop; the reply lands as a user prompt and the tool_result
-      // closes the call). Answered questions keep their options visible but
-      // disabled — tapping them twice used to send duplicate prompts.
       const callId = e.data?.callId ? String(e.data.callId) : "";
-      // called inside the row, so it tracks the signal reactively
       const answered = () => props.answeredIds?.().has(callId) ?? false;
       return (
         <div class={"embed question" + (answered() ? " answered" : "")}>
-          {/* questions are model-written and often carry markdown (code refs,
-              lists) — render them like progress embeds instead of dumping raw */}
+          {}
           <div>❓️ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
           <Show when={answered()}>
             <div class="meta answerdone">✓ answered — continuing below</div>
@@ -846,10 +657,6 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
                     class="qopt"
                     disabled={answered()}
                     onclick={() => {
-                      // mark it answered NOW, before the POST. The derived
-                      // set only catches up when the prompt event is logged, and
-                      // until then the buttons stayed live — so a second click
-                      // sent a duplicate prompt.
                       props.onAnswered?.(callId);
                       const actor = e.data?.actor;
                       if (actor) {
@@ -874,8 +681,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
     case "progress":
       return (
         <div class="embed progembed">
-          {/* progress bodies are model-written markdown — render them, don't
-              dump raw text (structured fields keep their labels) */}
+          {}
           <div>📈 <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.doing ?? ""))} /></div>
           <Show when={e.data.goalStatus}><div class="progrow"><b>goal</b><span>{String(e.data.goalStatus)}</span></div></Show>
           <Show when={e.data.recent}><div class="progrow"><b>recent</b><span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.recent))} /></div></Show>

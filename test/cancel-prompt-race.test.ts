@@ -1,20 +1,3 @@
-/**
- * #108 — cancelling a just-sent prompt silently fails.
- *
- * `enqueuePrompt` pushes into `pendingPrompts` inside an async `.then()` that runs
- * AFTER `ensureReady()` resolves, but `cancelPrompt` reads the array
- * SYNCHRONOUSLY. So a cancel issued before the push lands finds nothing:
- *
- *     cancelPrompt returned: null
- *     pendingPrompts now:    ["TO CANCEL"]
- *
- * The API answers 409, the UI discards the draft, and the message is DELIVERED —
- * the operator sees a withdrawn prompt that the model then acts on.
- *
- * The narrow version needs a same-tick cancel. The realistic one is far worse:
- * with the agent still restoring a 4,000-event session log, `ensureReady()` holds
- * the push for real wall-clock time and the cancel always loses.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -37,7 +20,6 @@ test("a prompt can be cancelled immediately after sending (#108)", async () => {
     const a = makeAgent(ws!, sd!);
     await a.init();
     const id = a.enqueuePrompt("TO CANCEL", "user");
-    // no await between: this is the tightest realistic window
     const got = a.cancelPrompt(id);
     const queued = (a as unknown as { pendingPrompts: { text: string }[] }).pendingPrompts.map(
       (p) => p.text,

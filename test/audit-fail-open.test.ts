@@ -1,19 +1,3 @@
-/**
- * #128 — audit failure が completion に fail-open している。
- *
- * 上流の #128 対応（reject ループの bound + 監査履歴修正）に加え、この PR は
- * **verdict にならない reply / auditor の例外**の経路を fail-closed にする:
- * 「監査できなかった」≠「監査に合格した」。goal は active のまま自己再検証を
- * 求め、連続3回で大声の note とともに停止する（上流の reject-cap と同じ哲学 —
- * done には決してしない。オペレーターが判断する）。
- *
- * Required:
- *   APPROVED          → done + final
- *   CHANGES-REQUIRED  → active + retry (既存, #89)
- *   "" / prose / throw → NOT done, NOT final, audit-failed 記録, 自己検証 retry
- *   3回連続 unavailable → goal は ACTIVE のまま、audit-unavailable-cap を記録、
- *                        リトライ停止（final は出さない — goal が active のため）
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -27,21 +11,17 @@ interface AuditRun {
   finals: number;
   auditFailed: number;
   auditFailedDetails: string[];
-  /** harness prompts asking the worker to re-verify, from the LOG — the queue drains as they run */
   retries: number;
   queued: number;
   unavailableCap: number;
 }
 
-/** drive one child: work → finish(goalComplete) → audit with `mode` */
 async function runAudit(
   ws: string,
   sd: string,
   mode: "empty" | "throw" | "capped",
 ): Promise<AuditRun> {
   let call = 0;
-  // NOTE: does NOT bump `call` — the parity of the capped mode depends on one
-  // increment per chat call (audit calls land on odd counts)
   const unusable = () => {
     if (mode === "throw") throw new Error("provider exploded");
     return { message: { role: "assistant" as const, content: "I think the work looks fine overall." } };
@@ -65,32 +45,10 @@ async function runAudit(
     workspace: ws,
     sessionDir: sd,
     llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
-    /**
-     * Classify by the REQUEST, not by a call counter.
-     *
-     * Counting calls coupled the stub to how many LLM requests one audit happens to make — and the
-     * auditor now runs a small tool loop, so an audit can be one call or several. MEASURED: the
-     * counter-based stub started answering the auditor's follow-up with another `finish` call and the
-     * whole scenario collapsed. The audit request is identifiable by its system-free single user
-     * turn containing the auditor's own instructions, which is stable by construction.
-     */
     chatFn: async (cfg: unknown, messages: { role?: string; content?: string }[]) => {
       call++;
-      /**
-       * The audit conversation is identified by its OWN instructions, wherever they sit.
-       *
-       * `messages.length === 1` was true only for the FIRST request — the auditor now runs a tool
-       * loop, so its second request carries the tool results too and the test then answered it with a
-       * `finish` call. Matching the prompt text is stable as the conversation grows.
-       */
       const askingAuditor = messages.some((m) => /completion AUDITOR/i.test(String(m.content ?? "")));
       if (askingAuditor) return unusable();
-      /**
-       * A retry prompt means the previous finish was rejected/unauditable, so the worker should try
-       * again — but a stub that ALWAYS claims completion spins against the raise-the-cap guard and
-       * trips `round-turn-cap` instead of reaching the unavailable cap. A real worker stops
-       * re-claiming once it has been told the audit itself is broken this many times.
-       */
       const retries = messages.filter(
         (m) => m.role === "user" && /completion audit could not/i.test(String(m.content ?? "")),
       ).length;
@@ -123,13 +81,6 @@ async function runAudit(
       finals: events.filter((e) => e.type === "message" && (e.data as { final?: boolean })?.final === true).length,
       auditFailed: failures.length,
       auditFailedDetails: failures.map((e) => String((e.data as { detail?: string }).detail ?? "")),
-      /**
-       * Counted from the LOG, not from `pendingPrompts`.
-       *
-       * The queue drains the moment the agent consumes the prompt, so reading it at the end measured
-       * "is a retry still waiting right now" — which is 0 whenever the agent actually acted on it.
-       * The logged prompt row is the durable record that a retry WAS issued.
-       */
       retries: events.filter(
         (e) => e.type === "prompt" && /completion audit could not/i.test(String((e.data as { text?: string })?.text ?? "")),
       ).length,
@@ -142,8 +93,6 @@ async function runAudit(
     await agent.dispose().catch(() => {});
   }
 }
-
-/* ---------- the fail-open bug ---------- */
 
 test("an empty auditor reply does NOT complete the goal (#128)", async () => {
   await useTempDirs(["afo1-", "afo2-"], async ([ws, sd]) => {
@@ -164,8 +113,6 @@ test("an auditor that THROWS is not treated as approved (#128)", async () => {
   });
 });
 
-/* ---------- the bounded fallback (upstream's philosophy: leave it ACTIVE, loudly) ---------- */
-
 test("a permanently unavailable auditor cannot trap the worker forever (#128)", async () => {
   await useTempDirs(["afo5-", "afo6-"], async ([ws, sd]) => {
     const r = await runAudit(ws!, sd!, "capped");
@@ -173,13 +120,10 @@ test("a permanently unavailable auditor cannot trap the worker forever (#128)", 
     assert.equal(r.finals, 0, "no final while the goal is active (#89: the parent is not told a lie)");
     assert.ok(r.auditFailed >= 3, "every failed attempt is on the record (#128)");
     assert.equal(r.unavailableCap, 1, "the cap is announced with a loud note the operator can see (#128)");
-    // three attempts, so two retries were issued; the third failure hits the cap and stops
     assert.equal(r.retries, 2, "retries stop at the cap — the loop does not continue (#128)");
     assert.equal(r.queued, 0, "and nothing is left waiting (#128)");
   });
 });
-
-/* ---------- the verdicts that must keep working (#89/#90) ---------- */
 
 test("an approval still completes and notifies the parent", async () => {
   await useTempDirs(["afo7-", "afo8-"], async ([ws, sd]) => {

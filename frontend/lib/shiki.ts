@@ -1,40 +1,14 @@
-/**
- * shiki syntax highlighting for the workspace file preview.
- *
- * This module is itself lazily imported by App.tsx (dynamic `import("./shiki")`
- * on the first file preview), and the highlighter inside it is fine-grained
- * (`shiki/core` + the JS regex engine): grammars are dynamic-imported per
- * language on first use. Net effect: the initial vite bundle carries none of
- * shiki — core, themes, and grammars all load on demand.
- *
- * Teapot ships 10 themes across two appearance modes (html[data-appearance]).
- * Instead of re-highlighting on every theme switch, each snippet is
- * highlighted ONCE with both palettes via shiki's dual-theme mode
- * (`themes` + `defaultColor: false`): colors come out as --shiki-light /
- * --shiki-dark CSS variables and app.css selects the active set by appearance,
- * so dark/midnight/tea/coffee/matcha/matrix/sunset share github-dark and
- * light/strawberry/ramune share github-light.
- *
- * Large files (up to the API's 100 KB truncation) are tokenized in line
- * chunks, carrying the grammar state between chunks, and each rendered chunk
- * is yielded immediately — the UI stays interactive instead of freezing on a
- * multi-second full-file tokenize. Any failure (unknown language, broken
- * grammar, …) surfaces as an exception so the caller can fall back to plain.
- */
 import { createHighlighterCore, hastToHtml } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import type { HighlighterCore } from "shiki";
 
-/** dark teapot themes → github-dark · light teapot themes → github-light */
 const THEMES = {
   light: "github-light",
   dark: "github-dark",
 } as const;
 
-/** lines tokenized per slice — small enough to keep frames responsive */
 const CHUNK_LINES = 400;
 
-/** extension → bundled shiki grammar id (kept to ids shipped in shiki/langs) */
 const EXT_LANG: Record<string, string> = {
   ts: "typescript", mts: "typescript", cts: "typescript",
   js: "javascript", mjs: "javascript", cjs: "javascript",
@@ -61,7 +35,6 @@ const EXT_LANG: Record<string, string> = {
   diff: "diff", patch: "diff", lock: "yaml",
 };
 
-/** extension-less names worth highlighting (dotfiles, makefiles, …) */
 const NAME_LANG: Record<string, string> = {
   dockerfile: "dockerfile", makefile: "makefile",
   ".gitignore": "ini", ".gitattributes": "ini", ".editorconfig": "ini",
@@ -69,7 +42,6 @@ const NAME_LANG: Record<string, string> = {
   justfile: "justfile", "cmakelists.txt": "cmake",
 };
 
-/** bundled grammar loaders, resolved against shiki's export map (lazy) */
 const LANG_IMPORTS: Record<string, () => Promise<unknown>> = {
   astro: () => import("shiki/langs/astro.mjs"),
   bat: () => import("shiki/langs/bat.mjs"),
@@ -137,7 +109,6 @@ const LANG_IMPORTS: Record<string, () => Promise<unknown>> = {
   zig: () => import("shiki/langs/zig.mjs"),
 };
 
-/** shiki core + both palettes, created once on first preview */
 let corePromise: Promise<HighlighterCore> | null = null;
 function core(): Promise<HighlighterCore> {
   corePromise ??= createHighlighterCore({
@@ -146,14 +117,11 @@ function core(): Promise<HighlighterCore> {
       import("shiki/themes/github-dark.mjs"),
     ],
     langs: [],
-    // forgiving: unsupported regexp constructs degrade to warnings instead of
-    // crashing a whole grammar
     engine: createJavaScriptRegexEngine({ forgiving: true }),
   });
   return corePromise;
 }
 
-/** single-flight grammar loading (several previews may race) */
 const langLoads = new Map<string, Promise<void>>();
 function ensureLang(hl: HighlighterCore, lang: string): Promise<void> {
   let p = langLoads.get(lang);
@@ -162,13 +130,12 @@ function ensureLang(hl: HighlighterCore, lang: string): Promise<void> {
     p = load
       ? load().then((m) => hl.loadLanguage(m as never)).then(() => undefined)
       : Promise.reject(new Error(`no grammar loader for ${lang}`));
-    p.catch(() => langLoads.delete(lang)); // allow a retry after a bad load
+    p.catch(() => langLoads.delete(lang)); 
     langLoads.set(lang, p);
   }
   return p;
 }
 
-/** map a file path to a bundled grammar id — null → caller renders plain */
 export function langForPath(path: string): string | null {
   const name = (path.split("/").pop() ?? path).toLowerCase();
   if (NAME_LANG[name]) return NAME_LANG[name];
@@ -176,12 +143,6 @@ export function langForPath(path: string): string | null {
   return EXT_LANG[ext] ?? null;
 }
 
-/**
- * Highlight a file, yielding one rendered `<pre class="shiki">…</pre>` chunk
- * at a time (already dual-theme CSS-variable encoded). Returns without
- * yielding when the path has no grammar (caller falls back to plain).
- * Throws on grammar-load or render failures (ditto).
- */
 export async function* highlightChunks(
   path: string,
   code: string,
@@ -192,16 +153,6 @@ export async function* highlightChunks(
   yield* highlightLangChunks(lang, code);
 }
 
-/**
- * Highlight by LANGUAGE NAME, for content that has no file path.
- *
- * Tool cards hold a JSON argument object and, for `bash`, a shell command — neither is a file, so
- * `langForPath` has nothing to work from. The grammar set is the same, so this reuses one
- * implementation rather than growing a second highlighter that could drift in themes or chunking.
- *
- * Yields nothing when the grammar is not bundled, or when the caller's language is unknown; the
- * caller keeps its plain rendering in that case.
- */
 export async function* highlightLangChunks(
   lang: string,
   code: string,
@@ -219,11 +170,9 @@ export async function* highlightLangChunks(
     const root = hl.codeToHast(slice, {
       lang,
       themes: THEMES,
-      defaultColor: false, // emit --shiki-light/--shiki-dark vars only
+      defaultColor: false, 
       ...(state ? { grammarState: state } : {}),
     });
-    // carry tokenization state across chunks (multi-line strings/comments,
-    // embedded languages in markdown) — both palettes' stacks are kept
     state = hl.getLastGrammarState(root) ?? undefined;
     yield hastToHtml(root);
   }

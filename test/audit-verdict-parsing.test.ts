@@ -1,36 +1,9 @@
-/**
- * #90 — an auditor reply that is not a verdict was scored as a rejection.
- *
- * `/^APPROVED\b/i.test("")` is false, so an auditor that returned nothing —
- * truncated, refused, or leaking provider tool-call markup — produced
- * `changes-required` with an EMPTY reason. The worker was then told to "address
- * these gaps" while being given none, with the fallback text being the
- * verification contract it had already read.
- *
- * Observed in `tyb2-5-sub-sound-deep-dive-4c13c187`: seven consecutive
- * reason-less rejections, 424 tool calls, 8 FINAL messages. The worker's own
- * summaries say it: *"Seven rejections with no stated gap."*
- *
- * A reason-less rejection carries no information. It is treated as NO VERDICT.
- *
- * #128 SUPERSEDES the original fail-open decision: "the audit could not run"
- * must NOT complete the goal (the old path marked `done` on an unverified
- * contract). An unusable reply now fails CLOSED — the goal stays active and
- * the worker is asked to self-verify — with a bounded streak: after 3
- * consecutive unavailable audits the retrying STOPS with a loud
- * `audit-unavailable-cap` note and the goal stays ACTIVE for the operator to
- * decide (the same philosophy as upstream's reject bound — the finish is
- * never honored, verified or not). The assertions below check exactly that
- * contract; the retry-prompt COUNT is deliberately not asserted (a stub that
- * keeps finishing re-audits, and the exact count is an artifact of the stub).
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 
-/** drive one child: work → finish(goalComplete) → audit with `reply` */
 async function auditWith(
   ws: string,
   sd: string,
@@ -97,8 +70,6 @@ async function auditWith(
   return out;
 }
 
-/* ---------- the bug ---------- */
-
 test("an empty auditor reply is NOT a rejection (#90)", async () => {
   await useTempDirs(["av1-", "av2-"], async ([ws, sd]) => {
     const r = await auditWith(ws!, sd!, "");
@@ -119,9 +90,6 @@ test("whitespace-only is not a verdict (#90)", async () => {
 });
 
 test("provider placeholder text is not a verdict (#90)", async () => {
-  // the real session recorded feedback "(tool call)" — the provider leaked its
-  // tool-call markup as plain text. Treating that as a REASON is worse than
-  // treating it as nothing, because it reads like a real critique.
   for (const junk of ["(tool call)", "(no content)", "(no output)"]) {
     await useTempDirs(["av5-", "av6-"], async ([ws, sd]) => {
       const r = await auditWith(ws!, sd!, junk);
@@ -131,8 +99,6 @@ test("provider placeholder text is not a verdict (#90)", async () => {
     });
   }
 });
-
-/* ---------- the behaviours that must survive ---------- */
 
 test("a real rejection still rejects, with its reason (#90)", async () => {
   await useTempDirs(["av7-", "av8-"], async ([ws, sd]) => {
@@ -145,8 +111,6 @@ test("a real rejection still rejects, with its reason (#90)", async () => {
 });
 
 test("an approval still completes and notifies the parent (#90)", async () => {
-  // the regression this fix could have caused: if an unusable reply failed open,
-  // a genuine approval must still work, or nothing would ever finish
   await useTempDirs(["av9-", "av10-"], async ([ws, sd]) => {
     const r = await auditWith(ws!, sd!, "APPROVED: everything checks out");
     assert.equal(r.verdict, "approved", "#90");
@@ -156,7 +120,6 @@ test("an approval still completes and notifies the parent (#90)", async () => {
 });
 
 test("a reply with text but no verdict keyword is not a verdict (#90)", async () => {
-  // e.g. the model replied with prose instead of the required one line
   await useTempDirs(["av11-", "av12-"], async ([ws, sd]) => {
     const r = await auditWith(ws!, sd!, "I think the work looks fine overall.");
     assert.equal(r.verdict, undefined, "prose is not a verdict (#90)");

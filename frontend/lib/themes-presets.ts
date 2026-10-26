@@ -2,7 +2,6 @@ export type ThemeMeta = {
   key: string;
   label: string;
   mode: "dark" | "light";
-  /** three preview dots: page bg · raised surface · accent */
   sw: [string, string, string];
 };
 

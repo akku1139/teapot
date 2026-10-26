@@ -1,29 +1,3 @@
-/**
- * #50 — "`⚠ LLM API returned no choices`" — "seems to happen in a session that
- *        resumes after a teapot restart. Details unknown."
- *
- * The message turned out to be a SYMPTOM, not the failure. The agent never
- * calls the non-streaming `chat()` directly — it calls `chatStream`, which
- * falls back to `chat()` when the stream produced nothing. So seeing "no
- * choices" proved only that the FIRST (streaming) request had already failed,
- * and the fallback then replaced its diagnosis with this one.
- *
- * The masking, concretely: when a gateway serves an SSE body to a
- * non-streaming request, the OpenAI SDK hands `chat()` a plain String, so
- * `res.choices` is undefined and every distinct failure collapses into the
- * same line — a 200 carrying an error object, an empty choices array, a
- * streaming delta, and raw SSE text. For a restored 1500-message session the
- * real error was a context-length rejection, and `isContextOverflow()` could
- * never match the replacement text, so the compact-and-retry recovery never
- * ran and the turn failed after four attempts.
- *
- * Three fixes, one per link in that chain:
- *   1. the fallback no longer fires when the stream attempt itself errored —
- *      only when the provider rejected the request (a 4xx);
- *   2. "no choices" now says WHICH shape arrived, so the log is diagnosable;
- *   3. restore re-applies pruning, so a reloaded session does not hand the
- *      provider a larger prompt than the one that just succeeded.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -35,24 +9,11 @@ import { Agent } from "../src/agent/agent.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — runs POSIX commands through the bash tool.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool");
 
 const cfg = (baseUrl: string): LlmConfig => ({ baseUrl, apiKey: "k", model: "m" } as any);
 const MSGS: ChatMessage[] = [{ role: "user", content: "hi" }];
 
-/**
- * Run `call` against a local server and report what it answered with.
- *
- * NOTE on counting: the number of HTTP requests is deliberately NOT asserted
- * anywhere in this file. The OpenAI SDK retries a 5xx internally (measured:
- * three requests for one `create()` call), so a request count measures the
- * SDK's backoff rather than our behaviour. What is under test is the request
- * SHAPE — whether a second, non-streaming request was ever issued — plus the
- * error text the caller actually receives.
- */
 async function serve(
   handler: (req: http.IncomingMessage, res: http.ServerResponse, body: string) => void,
   call: (url: string) => Promise<unknown>,
@@ -88,11 +49,7 @@ const json = (res: http.ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
-/* ---------- 1: the fallback must not swallow a real error ---------- */
-
 test("a context-length rejection is NOT replaced by 'no choices' (#50)", async () => {
-  // The exact reported failure. The gateway answers the STREAMING request with
-  // HTTP 200 and an SSE error frame, which the SDK turns into a thrown error.
   const { error, shapes } = await serve(
     (_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -112,7 +69,6 @@ test("a context-length rejection is NOT replaced by 'no choices' (#50)", async (
 });
 
 test("a 500 is not retried in another shape (#50)", async () => {
-  // A server error is the ANSWER, not evidence that streaming is unsupported.
   const { error, shapes } = await serve(
     (_req, res) => json(res, 500, { error: { message: "upstream exploded" } }),
     (url) => chatStream(cfg(url), MSGS, []),
@@ -125,9 +81,6 @@ test("a 500 is not retried in another shape (#50)", async () => {
 });
 
 test("a 400 from the stream request DOES fall back (#50)", async () => {
-  // The fallback exists for providers that reject `stream: true`. It must
-  // survive the tightening, or those providers break. A 400 is the shape a
-  // provider uses to say "I don't do that".
   const { error, shapes } = await serve(
     (req, res, body) => {
       if (JSON.parse(body || "{}").stream === true) {
@@ -157,16 +110,12 @@ test("a working stream is never re-issued (#50)", async () => {
     },
     (url) => chatStream(cfg(url), MSGS, []),
   );
-  // `?? undefined` would still be undefined; the message is only for a failure, so name
-  // the empty case explicitly rather than passing a possibly-undefined argument
   assert.equal(error, null, error ? error.message : "ok");
   assert.ok(
     !shapes.includes(false),
     `a successful stream must not be retried (#50); saw ${JSON.stringify(shapes)}`,
   );
 });
-
-/* ---------- 2: "no choices" must say WHY ---------- */
 
 test("an empty choices array is reported as such (#50)", async () => {
   const { error } = await serve(
@@ -178,8 +127,6 @@ test("an empty choices array is reported as such (#50)", async () => {
 });
 
 test("a 200 carrying an error object surfaces the provider's own message (#50)", async () => {
-  // The most valuable case: the actionable text is in the body and used to be
-  // thrown away entirely.
   const { error } = await serve(
     (_req, res) =>
       json(res, 200, {
@@ -193,9 +140,6 @@ test("a 200 carrying an error object surfaces the provider's own message (#50)",
 });
 
 test("an SSE body served to a non-streaming request is identified as text (#50)", async () => {
-  // What the SDK returns when a gateway answers the fallback with SSE: a plain
-  // String, so `.choices` is undefined. Indistinguishable from everything else
-  // unless the message says so.
   const { error } = await serve(
     (_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -216,12 +160,7 @@ test("a choice with no message field is distinguished from an empty list (#50)",
   assert.match(error?.message ?? "", /no message field/i, "a real-but-empty choice is its own case (#50)");
 });
 
-/* ---------- 3: overflow recovery must recognise the 200-with-error shape ---------- */
-
 test("a 200-with-error overflow is now recognised as context overflow (#50)", async () => {
-  // This is what makes compact-and-retry fire at all. Before, the message was
-  // the bare "no choices" and isContextOverflow() returned false, so a
-  // restored oversized session could never recover.
   const masked = new Error(
     "LLM API returned no choices: provider returned an error in a 200 response " +
       "(context_length_exceeded) — This model's maximum context length is 128000 tokens",
@@ -230,7 +169,6 @@ test("a 200-with-error overflow is now recognised as context overflow (#50)", as
 });
 
 test("an ordinary 'no choices' is still NOT an overflow (#50)", async () => {
-  // The widening must not make every malformed response trigger a compaction.
   assert.equal(isContextOverflow(new Error("LLM API returned no choices")), false);
   assert.equal(
     isContextOverflow(
@@ -241,21 +179,7 @@ test("an ordinary 'no choices' is still NOT an overflow (#50)", async () => {
   assert.equal(isContextOverflow(new Error("connection reset")), false);
 });
 
-/* ---------- 4: restore must not un-prune ---------- */
-
-
-/* ---------- 4: restore must not un-prune ---------- */
-
 test("a restored session re-applies pruning, so the prompt does not grow (#50)", async () => {
-  // maybePrune() clips oversized tool output IN PLACE; the log keeps the full
-  // result. Without re-pruning on restore, a reload handed the provider a
-  // strictly larger prompt than the one that had just succeeded.
-  //
-  // The oversized output must sit in the PRUNED region, not the protected tail:
-  // maybePrune() guards roughly the last `budget * 2` characters, so one big
-  // result at the end is never a candidate and the assertion would pass for the
-  // wrong reason. Several long results, then a short exchange, puts the earlier
-  // ones outside that guard.
   await useTempDirs(["p50a-", "p50b-"], async ([ws, sessionDir]) => {
     const bigOut = "Z".repeat(20_000);
     const _tc = (id: string, name: string, args: unknown) => ({
@@ -266,14 +190,8 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
     const reply = (content: string, calls?: any[]): LlmResult => ({
       message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
     });
-    // A tool result the agent cannot easily author itself — write it straight
-    // into the log so the oversized output is exactly the size we want on
-    // restore. The assistant turn MUST carry `toolCalls` (not just a separate
-    // `tool_call` event): that is what rebuildMessagesFrom turns into
-    // `m.tool_calls`, and maybePrune resolves a result's prunability through
-    // them. Seeding the wrong shape would silently test nothing.
     const seed = async (agent: Agent) => {
-      await agent.log.load(); // assigns seq; append() needs it
+      await agent.log.load(); 
       const s = agent.currentSession;
       const b = agent.currentBranch;
       await agent.log.append("message", s, b, { role: "user", content: "look around" });
@@ -291,7 +209,6 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
         });
       }
       await agent.log.append("message", s, b, { role: "assistant", content: "done" });
-      // a realistic context size, so maybePrune() engages on restore
       await agent.log.append("usage", s, b, { inputTokens: 9_000, outputTokens: 10 });
     };
     const size = (a: Agent) =>
@@ -302,7 +219,6 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
       sessionDir: sessionDir!,
       llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
       chatFn: async () => reply("ok"),
-      // small enough that 3 × 20KB of tool output is well past the threshold
       contextTokenBudget: 6_000,
       autoContinue: false,
     } as any;
@@ -312,7 +228,6 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
     await seed(first);
     await first.dispose();
 
-    // restore into a fresh agent over the same log
     const second = new Agent({ ...opts });
     await second.init();
     await second.load();
@@ -322,10 +237,6 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
       restoredSize > 0,
       `the restored session must have messages (#50); got ${restoredSize}`,
     );
-    // Un-pruned, this restore is 3 × 20KB ≈ 60k chars. maybePrune() guards the
-    // last `budget * 2` characters from clipping, so the final tool result is
-    // legitimately preserved — the assertion is that the EARLIER ones, which
-    // sit outside that guard, were clipped.
     assert.ok(
       restoredSize < 30_000,
       `restore must re-apply pruning: ${restoredSize} chars looks un-pruned (#50)`,
@@ -342,10 +253,6 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
 });
 
 test("restore-pruning is idempotent — reloading again never shrinks further (#50)", async () => {
-  // Pruning rewrites the IN-MEMORY messages, not the log, so each reload
-  // starts from the same full log. If restore clipped a clipped string the
-  // context would bleed away a little more on every restart, which is the
-  // opposite failure to the one #50 reports.
   await useTempDirs(["p50c-", "p50d-"], async ([ws, sessionDir]) => {
     const bigOut = "Z".repeat(20_000);
     const reply = (content: string): LlmResult => ({ message: { role: "assistant", content } });
@@ -401,10 +308,6 @@ test("restore-pruning is idempotent — reloading again never shrinks further (#
 });
 
 test("restore-pruning never clips a ONE-SHOT tool result (#50)", async () => {
-  // maybePrune() only clips tools whose output the model can re-issue. A
-  // sub-agent's report or a fetched page cannot be re-fetched, so clipping one
-  // on restore would silently destroy information the live path deliberately
-  // kept — and it would now happen silently on every restart.
   await useTempDirs(["p50e-", "p50f-"], async ([ws, sessionDir]) => {
     const bigOut = "Z".repeat(20_000);
     const reply = (content: string): LlmResult => ({ message: { role: "assistant", content } });
@@ -463,9 +366,6 @@ test("restore-pruning never clips a ONE-SHOT tool result (#50)", async () => {
 });
 
 test("a hostile or non-object body still yields a diagnosis, never a TypeError (#50)", async () => {
-  // Proxies do return `null` and bare scalars on some error paths. Reading
-  // `res.choices` unguarded threw "Cannot read properties of null", which
-  // names neither the provider nor the shape — the exact opacity #50 reports.
   for (const body of ["null", '"just a string"', "123", "[]"]) {
     const { error } = await serve(
       (_req, res) => {
@@ -483,9 +383,6 @@ test("a hostile or non-object body still yields a diagnosis, never a TypeError (
 });
 
 test("restore-pruning leaves an OLD log without a usage event alone (#50)", async () => {
-  // Migration case: logs written before usage events existed have nothing to
-  // seed lastUsage from, so the 0.6-of-budget gate cannot be met. Restore must
-  // still succeed and simply not prune — never throw, never lose messages.
   await useTempDirs(["p50g-", "p50h-"], async ([ws, sessionDir]) => {
     const bigOut = "Z".repeat(20_000);
     const reply = (content: string): LlmResult => ({ message: { role: "assistant", content } });
@@ -510,7 +407,6 @@ test("restore-pruning leaves an OLD log without a usage event alone (#50)", asyn
     });
     await a.log.append("tool_result", s, b, { callId: "c1", name: "bash", ok: true, result: bigOut });
     await a.log.append("message", s, b, { role: "assistant", content: "done" });
-    // deliberately NO usage event — a legacy log
     await a.dispose();
 
     const c = new Agent({
@@ -532,13 +428,7 @@ test("restore-pruning leaves an OLD log without a usage event alone (#50)", asyn
   });
 });
 
-/* ---------- adversarial QA follow-ups ---------- */
-
 test("a 200 stream with ZERO chunks still falls back (#50)", async () => {
-  // Regression found in review: tightening the fallback to "the provider
-  // rejected the request" deleted the safety net for a broken/flaky proxy
-  // that opens an SSE response, sends nothing, and closes cleanly. That case
-  // used to recover via the non-streaming retry and then hard-failed.
   const { error, shapes } = await serve(
     (_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -550,14 +440,10 @@ test("a 200 stream with ZERO chunks still falls back (#50)", async () => {
     shapes.includes(false),
     `an empty 200 stream must still try the non-streaming shape (#50); saw ${JSON.stringify(shapes)}`,
   );
-  // whatever the outcome, it must be a diagnosis rather than a bare TypeError
   assert.match(error?.message ?? "", /no choices|empty completion/i, `needs a diagnosis (#50): ${error?.message}`);
 });
 
 test("a transient 429 must NOT trigger the fallback (#50)", async () => {
-  // Keying on "any 4xx" would replay an identical request against a provider
-  // that just asked us to slow down, doubling the load for nothing. 400/404/
-  // 405/422/501 mean the SHAPE is unsupported; 408/425/429 do not.
   const { shapes } = await serve(
     (_req, res) => json(res, 429, { error: { message: "slow down" } }),
     (url) => chatStream(cfg(url), MSGS, []),
@@ -569,8 +455,6 @@ test("a transient 429 must NOT trigger the fallback (#50)", async () => {
 });
 
 test("an auth failure must NOT trigger the fallback (#50)", async () => {
-  // 401 is not fixed by dropping `stream`, so a fallback there replaces one
-  // honest error with the same error and a wasted round trip.
   const { error, shapes } = await serve(
     (_req, res) => json(res, 401, { error: { message: "invalid api key" } }),
     (url) => chatStream(cfg(url), MSGS, []),
@@ -583,10 +467,6 @@ test("an auth failure must NOT trigger the fallback (#50)", async () => {
 });
 
 test("the non-JSON bodies that used to throw a bare SyntaxError are diagnosed (#50)", async () => {
-  // The scenario the fix is NAMED for: a gateway serves an SSE body to a
-  // non-streaming request. Whichever layer hands the text over — the SDK
-  // returning a String or throwing during its own parse — the operator must
-  // get a diagnosis naming the shape, never "Unexpected token 'd'".
   for (const [label, ct, body] of [
     ["SSE", "text/event-stream", 'data: {"choices":[{"delta":{"content":"x"}}]}\n\ndata: [DONE]\n\n'],
     ["html", "text/html", "<html>oops</html>"],

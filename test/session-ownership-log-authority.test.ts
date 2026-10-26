@@ -1,22 +1,3 @@
-/**
- * A wrong or missing `session.json` made teapot ABANDON real history.
- *
- * Incident this comes from: an accidental in-place `addAgent()` run rewrote 813
- * manifests to the same bogus owner. Ownership is decided from the manifest, so
- * `inferSessionOwner` then rejected every directory itself — `findLatestSessionDir`
- * returned null, boot minted a fresh empty session for all 493 agents, and
- * `recordSession` wrote those new pointers into config.json. Nothing warned. The
- * real logs were left on disk, unreachable.
- *
- * The defect is not the corruption, it is the ORDER OF TRUST:
- *
- *   - the manifest is a CACHE, written by teapot itself
- *   - the log's own `agent` field is the TRUTH, written by the agent that
- *     appended it, and no other agent can have written it
- *
- * So a disagreement must be resolved in favour of the log. These tests fail on
- * the old code, where the manifest won.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -26,7 +7,6 @@ import { Master } from "../src/master.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
-/** a data dir laid out like the real one: sessions/<id>/chat.jsonl + session.json */
 function sessionDir(dataDir: string, id: string, opts: { log?: string[]; manifest?: unknown }): string {
   const dir = path.join(dataDir, "sessions", id);
   mkdirSync(dir, { recursive: true });
@@ -36,7 +16,6 @@ function sessionDir(dataDir: string, id: string, opts: { log?: string[]; manifes
   return dir;
 }
 
-/** one logged event, as EventLog writes it */
 function loggedEvent(agent: string, session: string, seq = 1): string {
   return JSON.stringify({
     v: 1,
@@ -55,7 +34,6 @@ function loggedEvent(agent: string, session: string, seq = 1): string {
 test("a WRONG manifest does not make boot abandon the session's history (#143)", async () => {
   await useTempDir("ownfix-", async (dataDir) => {
     const sid = "worker-aaaaaaaa";
-    // the log proves the owner; the manifest claims something else entirely
     sessionDir(dataDir, sid, {
       log: [loggedEvent("worker", sid)],
       manifest: { v: 1, agentId: "x" },
@@ -77,7 +55,6 @@ test("a WRONG manifest does not make boot abandon the session's history (#143)",
       sid,
       "and the config pointer must be left alone, not rewritten to a new session",
     );
-    // the manifest is repaired, so the mistake cannot cost anything again
     const repaired = JSON.parse(
       (await import("node:fs")).readFileSync(path.join(dataDir, "sessions", sid, "session.json"), "utf8"),
     );
@@ -89,7 +66,7 @@ test("a WRONG manifest does not make boot abandon the session's history (#143)",
 test("a MISSING manifest does not abandon history either (#143)", async () => {
   await useTempDir("ownfix-", async (dataDir) => {
     const sid = "worker-bbbbbbbb";
-    sessionDir(dataDir, sid, { log: [loggedEvent("worker", sid)] }); // no manifest at all
+    sessionDir(dataDir, sid, { log: [loggedEvent("worker", sid)] }); 
     const m = new Master(
       { port: 0, dataDir, llm: LLM, providers: { p: { baseUrl: "http://x", apiKey: "k", model: "m" } }, agents: [] },
       path.join(dataDir, "config.json"),
@@ -105,8 +82,6 @@ test("a MISSING manifest does not abandon history either (#143)", async () => {
 test("a genuinely foreign session is still refused (#39)", async () => {
   await useTempDir("ownfix-", async (dataDir) => {
     const sid = "someoneelse-cccccccc";
-    // BOTH the manifest and the log say this belongs to another agent — the
-    // repair must not steal it back
     sessionDir(dataDir, sid, {
       log: [loggedEvent("someoneelse", sid)],
       manifest: { v: 1, agentId: "someoneelse" },

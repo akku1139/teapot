@@ -1,22 +1,3 @@
-/**
- * #50 — "`⚠ LLM API returned no choices`" — reported as "seems to happen in a
- * session that RESUMES after a teapot restart, details unknown".
- *
- * `LLM API returned no choices` is the one error this harness raises on a
- * SUCCESSFUL HTTP 200: the endpoint answered, but `choices` was missing. A
- * gateway answers a malformed chat-completions request that way far more often
- * than with a clean 400, so the report's "after a restart" is the tell — the
- * history rebuilt from chat.jsonl is a shape no live run produces.
- *
- * The specific shape: the completion AUDIT (goal `verify:` contract) asks the
- * model for a verdict in a side conversation that is NOT part of this.messages,
- * then writes the verdict to the log as a plain assistant `message` event. The
- * live run therefore never carries that message, but restoreFromLog() replays
- * every logged `message` — so after a restart the audit verdict reappears in
- * the conversation as if the agent had said it. From there the request carries
- * an assistant turn that answers nothing and a following prompt that answers
- * nothing, which is exactly the sort of thing a gateway drops on the floor.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -47,11 +28,6 @@ function mkAgent(ws: string, sessionDir: string, chatFn: any): Agent {
   } as any);
 }
 
-/**
- * Provider-shaped request check. A real endpoint answers a malformed message
- * array with a 200 and (often) zero choices — the bug report — so the mock
- * stands in for the thing that would otherwise be invisible.
- */
 function providerReject(messages: ChatMessage[]): string | null {
   const called = new Set<string>();
   const answered = new Set<string>();
@@ -71,7 +47,6 @@ function providerReject(messages: ChatMessage[]): string | null {
 
 const AUDIT_MARK = "completion audit:";
 
-/** assistant tool_calls with no result, and tool results with no call */
 function audit(msgs: ChatMessage[]): { orphanResults: string[]; orphanCalls: string[] } {
   const called = new Set<string>();
   const answered = new Set<string>();
@@ -85,18 +60,11 @@ function audit(msgs: ChatMessage[]): { orphanResults: string[]; orphanCalls: str
   };
 }
 
-/* ---------- the bug ---------- */
-
 test("a restarted session does not replay the completion audit into the conversation (#50)", async () => {
   await useTempDirs(["a50a-", "a50b-"], async ([ws, sessionDir]) => {
     let turn = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       const _sys = String(messages[0]?.content ?? "");
-      // The auditor is a separate, tools-less call. Identify it by its PROMPT,
-      // not by the absence of tool calls: by the time the audit runs, the
-      // worker's own set_goal/finish calls are in the history, so the old
-      // "no tool calls anywhere" test never matched and the auditor fell
-      // through to a prose reply (#90).
       if (String(messages.at(-1)?.content ?? "").includes("independent completion AUDITOR")) {
         return reply("APPROVED: the work is genuinely complete");
       }
@@ -132,7 +100,6 @@ test("a restarted session does not replay the completion audit into the conversa
       "the live history must NOT carry the audit verdict (it was a side conversation)",
     );
 
-    // the restart: same session dir, fresh agent
     const second = mkAgent(ws, sessionDir, chatFn);
     await second.init();
     second.enqueuePrompt("anything else?");
@@ -186,27 +153,15 @@ test("a restarted session's next request is one a provider accepts (#50)", async
   });
 });
 
-/* ---------- the contract scenario: a REAL tool, a restart, a resumed turn --- */
-
-/**
- * The reported shape end to end, with nothing stubbed but the provider: the
- * agent runs a real tool, teapot restarts, and the operator sends another
- * message. Every request the SECOND incarnation makes — the one built from the
- * rebuilt history — is checked against a provider that rejects malformed
- * message arrays, which is what turns into a 200 with zero choices (#50).
- */
 test("a real tool call survives a restart and the resumed turn stays valid (#50)", async () => {
   await useTempDirs(["a50i-", "a50j-"], async ([ws, sessionDir]) => {
     const rejected: (string | null)[] = [];
     const sawResult: string[] = [];
     let resumed = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
-      // only judge requests that carry real conversation (not the auditor's
-      // tools-less side conversation, which is legitimately built on top)
       const last = String(messages.at(-1)?.content ?? "");
       if (!last.includes("independent completion AUDITOR")) rejected.push(providerReject(messages));
       if (last === "and now?") resumed++;
-      // the tool result is present in the request ONLY if it really executed
       const executed = messages.some(
         (m: ChatMessage) => m.role === "tool" && /note\.txt/.test(String(m.content ?? "")),
       );
@@ -225,7 +180,6 @@ test("a real tool call survives a restart and the resumed turn stays valid (#50)
     await first.dispose();
     assert.ok(sawResult.length, "the fixture must actually execute a tool (#50)");
 
-    // --- restart: brand-new Agent over the SAME session dir ---
     const second = mkAgent(ws, sessionDir, chatFn);
     await second.init();
     second.enqueuePrompt("and now?");
@@ -238,7 +192,6 @@ test("a real tool call survives a restart and the resumed turn stays valid (#50)
       [],
       `a resumed session produced a request a provider would reject (#50): ${rejected.find(Boolean)}`,
     );
-    // the restored history must still contain the tool exchange, not have lost it
     assert.ok(
       (second.conversation as ChatMessage[]).some((m) => m.role === "tool"),
       "the tool result must survive the restart — otherwise the pair is broken (#50)",
@@ -247,21 +200,6 @@ test("a real tool call survives a restart and the resumed turn stays valid (#50)
   });
 });
 
-/* ---------- the OTHER timeline-only artefact: an empty assistant turn ----- */
-
-/**
- * A kill mid-stream can leave an assistant `message` event with empty content
- * and no tool calls — the model streamed nothing before teapot died. The live
- * run never had such a turn in `messages` (the abort path pushes the partial
- * only when there IS one), but the restore replays it as a real assistant
- * utterance.
- *
- * Then sanitize() does what it must to keep providers happy: an assistant
- * message with blank content becomes the literal string "(no content)". So the
- * agent is sent a sentence it never said, attributed to itself. That is a
- * history shape no live run produces, which is the same class of thing that
- * comes back as a 200 with no choices (#50).
- */
 test("a restored session drops an empty assistant turn instead of inventing one (#50)", async () => {
   await useTempDirs(["a50k-", "a50l-"], async ([ws, sessionDir]) => {
     const sent: ChatMessage[] = [];
@@ -275,7 +213,6 @@ test("a restored session drops an empty assistant turn instead of inventing one 
     first.enqueuePrompt("hello");
     first.start("t");
     await first.settled();
-    // a turn that streamed nothing before the process died
     await first.log.append("message", first.snapshot().session, first.snapshot().branch, {
       role: "assistant",
       content: "",
@@ -294,7 +231,6 @@ test("a restored session drops an empty assistant turn instead of inventing one 
       false,
       "an empty assistant turn must not survive the restore (#50)",
     );
-    // and nothing may be sent in its place either
     assert.equal(
       sent.some((m) => m.role === "assistant" && m.content === "(no content)"),
       false,
@@ -305,9 +241,6 @@ test("a restored session drops an empty assistant turn instead of inventing one 
 });
 
 test("an empty assistant turn that DID carry tool calls is kept (#50)", async () => {
-  // The blank-content turn is only meaningless when it said nothing AT ALL.
-  // A tool-calling turn legitimately has empty content (sanitize() replaces it
-  // with "(tool call)"), and dropping it would orphan its tool results.
   await useTempDirs(["a50m-", "a50n-"], async ([ws, sessionDir]) => {
     const chatFn = async (): Promise<LlmResult> => reply("ok");
     const first = mkAgent(ws, sessionDir, chatFn);
@@ -347,21 +280,13 @@ test("an empty assistant turn that DID carry tool calls is kept (#50)", async ()
   });
 });
 
-/* ---------- the guard that keeps it out ---------- */
-
 test("an operator-facing message is skipped by the restore (#50)", async () => {
-  // Same leak, reached without the auditor: any timeline-only assistant
-  // `message` the live loop never put in `messages` must stay out of the
-  // rebuilt history. `final: true` is already skipped; this pins the sibling
-  // `operatorFacing` flag so a future "log it for the timeline" change cannot
-  // smuggle a note back into the model's context.
   await useTempDirs(["a50e-", "a50f-"], async ([ws, sessionDir]) => {
     const first = mkAgent(ws, sessionDir, async () => reply("ok"));
     await first.init();
     first.enqueuePrompt("hi");
     first.start("t");
     await first.settled();
-    // an operator-facing note written straight to the log, as the audit path does
     await first.log.append("message", first.snapshot().session, first.snapshot().branch, {
       role: "assistant",
       operatorFacing: true,
@@ -388,8 +313,6 @@ test("a provider 200 with zero choices is a retryable error, not a dead session 
     let calls = 0;
     const chatFn = async (): Promise<LlmResult> => {
       calls++;
-      // first two attempts behave like the gateway's empty 200 (as thrown by
-      // llm.ts), then the provider recovers
       if (calls <= 2) throw new Error("LLM API returned no choices");
       return reply("recovered");
     };
@@ -400,7 +323,6 @@ test("a provider 200 with zero choices is a retryable error, not a dead session 
       llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
       chatFn,
       autoContinue: false,
-      // collapse the retry ladder's first waits so the test stays quick
       retryDelayMs: 1,
     } as any);
     await agent.init();
@@ -414,20 +336,7 @@ test("a provider 200 with zero choices is a retryable error, not a dead session 
     await agent.dispose();
   });
 });
-/* ---------- contract: no restored shape may need a fabricated message ------ */
 
-/**
- * The sweep behind both #50 fixes. Every `message` event shape a log can hold is
- * replayed through a REAL restore, and each is checked for the two things that
- * turn a resumed session into a 200 with zero choices:
- *
- *   1. no assistant turn the live run never had (blank, or operator-facing), and
- *   2. no dangling tool_call/tool_result pair.
- *
- * A blank turn that DID call tools is deliberately kept — sanitize() sends it
- * as "(tool call)", which is a valid placeholder — so it is exempt from (1) and
- * judged on (2) alone.
- */
 test("no message-event shape survives a restore in an unsafe form (#50)", async () => {
   await useTempDirs(["a50o-ws-", "a50o-"], async ([workspace, base]) => {
     const cases: [string, Record<string, unknown>][] = [
@@ -468,7 +377,6 @@ test("no message-event shape survives a restore in an unsafe form (#50)", async 
       const a = audit(restored);
       assert.deepEqual(a.orphanCalls, [], `${label}: dangling tool_call (#50)`);
       assert.deepEqual(a.orphanResults, [], `${label}: dangling tool result (#50)`);
-      // only the intentional blank+tool_calls case may keep a blank turn
       const blank = restored.filter((m) => m.role === "assistant" && m.content === "");
       if (label === "blank assistant, with calls")
         assert.equal(blank.length, 1, `${label}: must be KEPT — its results depend on it (#50)`);
@@ -479,12 +387,3 @@ test("no message-event shape survives a restore in an unsafe form (#50)", async 
   });
 });
 
-/**
- * The data-loss trap in the blank-turn fix.
- *
- * An operator can send a prompt with NO TEXT and only an image attachment. That
- * is a legitimate user turn whose content is empty and whose payload lives in
- * `content_parts` — the exact "blank message" shape the assistant-turn guard
- * drops. It must never be swept up by it: dropping it would silently delete the
- * operator's attachment from every future turn of that session.
- */

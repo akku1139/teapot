@@ -1,16 +1,3 @@
-/**
- * CUSTOM THEMES ARE STORED SERVER-SIDE AND SURVIVE A RESTART.
- *
- * Reported: "カスタムテーマをlocalStorageじゃなくてサーバーで管理するようにしたい". They lived only in
- * `localStorage`, so a theme did not follow the operator to another browser or device, and clearing
- * site data lost it.
- *
- * The trap this test exists for is the one #67 documented: `saveConfig()` writes `this.raw`, a
- * hand-maintained mirror of the config, so a field present in memory and in `GET /api/config` but
- * missing from that mirror is LOST on restart while every save appears to work. Asserting on the
- * FILE is therefore the only assertion that means anything here — asserting on the in-memory config
- * passes with the bug present.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -64,7 +51,6 @@ test("PUT /api/themes writes the theme to the config FILE (#themes-server)", asy
     });
     assert.equal(res.status, 200, "the write must be accepted");
 
-    // the assertion that matters: what is on DISK
     const onDisk = JSON.parse(await readFile(configPath, "utf8")) as {
       customThemes?: { id?: string; backgroundImage?: string }[];
       themePrefs?: { fixed?: string };
@@ -82,7 +68,6 @@ test("PUT /api/themes writes the theme to the config FILE (#themes-server)", asy
     );
     assert.equal(onDisk.themePrefs?.fixed, "custom-probe", "themePrefs must persist or slots reset on restart");
 
-    // and a fresh read of the file gives the theme back: a restart in one step
     const reloaded = loadConfig(configPath);
     assert.equal(
       (reloaded.customThemes as { id?: string }[] | undefined)?.[0]?.id,

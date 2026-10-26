@@ -1,35 +1,3 @@
-/**
- * #127 — "review whether the compact handling is correct."
- *
- * The issue names one certain bug and one open question. Both are addressed, and
- * the honest scope of the second matters.
- *
- * ## 1. The certain bug: a manual compaction reads as IDLE
- *
- * `compactNow()` never touched `status`, and `isLive()` counted only `running`,
- * `parkedByTool` and queued prompts. So an idle agent compacting on demand —
- * rewriting the entire `messages` array — reported itself idle, and the UI offered
- * "start". Measured DURING the summarizer call, before the fix:
- *
- *     status = idle   live = false   ctx.compacting = "summarizing"
- *
- * `ctx.compacting` was already published, so the information existed and only the
- * live-state calculation ignored it. Starting the agent in that window would
- * rewrite the array it is about to resume into — #38's failure mode.
- *
- * ## 2. The question: the summarizer saw only the TAIL
- *
- * `summarize()` ended in a bare `.slice(-120_000)`, so anything older was neither
- * summarised nor kept — it was silently discarded.
- *
- * **Scope, stated honestly:** `maybeCompact` already limits `old` to a recent
- * window (`keepCharBudget`), so in the ordinary path the summarizer's input is
- * usually well under the cap and the slice does nothing. Measured on a 1.2M-char
- * history: summarizer input 121,099 chars — so it DOES bite once tool outputs are
- * large, which is exactly when compaction matters most. The head-and-tail split
- * removes the cliff: a summarizer that hits the cap now keeps the earliest
- * requirement instead of losing it.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -40,9 +8,6 @@ import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const _here = path.dirname(fileURLToPath(import.meta.url));
 
-/* ---------- 1. live during compaction ---------- */
-
-/** an idle agent with real logged history, held open inside the summarizer */
 async function agentCompacting() {
   const ws = mkdtempInRootSync("t127w-");
   const sd = mkdtempInRootSync("t127s-");
@@ -65,8 +30,6 @@ async function agentCompacting() {
   } as never) as Agent;
   await a.init();
   await a.setGoal("g");
-  // real turns, so restoreFromLog() has something to load — injecting `messages`
-  // directly does not survive ensureReady()
   for (let i = 0; i < 12; i++) {
     a.enqueuePrompt("Q".repeat(1500), "user");
     a.start("t");
@@ -117,15 +80,9 @@ test("it is live again once the compaction finishes (#127)", async () => {
   }
 });
 
-/* ---------- 2. the summarizer keeps both ends ---------- */
-
 test("the summarizer input is bounded by construction (#127)", () => {
-  // The security property the old head+tail window existed for: the summarizer input
-  // must FIT. It does, and for a structural reason rather than a slice — the replayed
-  // prefix is the head of the request that just SUCCEEDED, so it is strictly shorter
-  // than a request the provider already accepted, plus one short instruction.
   const lastRouted = ["system", ...Array.from({ length: 100 }, (_, i) => `m${i}`)];
-  const cut = 60; // where compaction decided to cut
+  const cut = 60; 
   const replayed = lastRouted.slice(0, 1 + cut);
   assert.ok(replayed.length < lastRouted.length, "strictly shorter than the request that succeeded");
   assert.equal(replayed[0], "system", "and it keeps the system head, so the cache aligns");

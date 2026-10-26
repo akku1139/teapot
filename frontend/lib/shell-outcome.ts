@@ -1,19 +1,4 @@
-/**
- * How a shell invocation ENDED, as shown on the timeline.
- *
- * #46: "a timed-out bash never reads as complete on the timeline."
- *
- * The bash summary line is built from the tool_result's duration and the
- * requested timeout, so a killed command reads as `300ms · timeout 1s` — exactly
- * like a fast SUCCESS. The kill has to be marked on that line.
- *
- * The three terminal shapes come straight from runShell():
- *   - `TIMEOUT after <n>ms …`        the timeout fired and the group was killed
- *   - `ABORTED (harness shutdown) …` the harness was shutting down
- *   - anything else                  a normal exit (ok, or `exit=<code>`)
- */
 
-/** Where a tool_result's text came out; null when it is not a shell result. */
 export type ShellOutcome = "timeout" | "aborted" | "exit" | "ok" | "empty";
 
 export function shellOutcome(
@@ -28,20 +13,7 @@ export function shellOutcome(
   return text.trim() ? "ok" : "empty";
 }
 
-/**
- * The marker appended to a tool row's summary line. `· FAILED` is kept for
- * non-zero exits, so the common failure path reads as it always has; only the
- * KILLED cases get their own wording.
- */
 export function outcomeMarker(outcome: ShellOutcome): string {
-  /**
-   * The marker carries its OWN leading separator, and that is deliberate.
-   *
-   * The two direct call sites in `rows.tsx` render it immediately after `{fmtDur(...)}` with nothing
-   * between them, so `" · TIMED OUT"` is what produces `5.0s · TIMED OUT`. `shellHint` joins its
-   * parts itself, so IT must not add another separator — the doubling (`· · TIMED OUT`) came from
-   * there, not from this function.
-   */
   switch (outcome) {
     case "timeout":
       return " · TIMED OUT";
@@ -54,10 +26,6 @@ export function outcomeMarker(outcome: ShellOutcome): string {
   }
 }
 
-/**
- * The full summary hint for a shell row, e.g.
- * `7.2m · timeout 3300s` or `300ms · timeout 1s · TIMED OUT`.
- */
 export function shellHint(opts: {
   outcome: ShellOutcome;
   durationMs: number | undefined;
@@ -67,10 +35,6 @@ export function shellHint(opts: {
   const parts: string[] = [];
   if (opts.outcome !== "empty") parts.push(opts.fmtDur(opts.durationMs));
   if (opts.timeoutMs) parts.push(`timeout ${Math.round(opts.timeoutMs / 1000)}s`);
-  // `outcomeMarker` supplies its own leading " · " for the direct-render sites in rows.tsx (which
-  // render it straight after a duration with nothing between). Here the parts are JOINED, so the
-  // SEPARATOR must go too — `trim()` alone leaves "· TIMED OUT" and the hint reads
-  // "5.0s · timeout 120s · · TIMED OUT".
   const marker = outcomeMarker(opts.outcome).replace(/^\s*·\s*/, "");
   if (marker) parts.push(marker);
   return parts.join(" · ");

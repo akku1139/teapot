@@ -22,12 +22,6 @@ function call(port: number, method: string, p: string, body?: unknown) {
   });
 }
 
-/**
- * `/skill` reported as "from you" — the harness instruction was attributed to the operator.
- *
- * The route hardcoded `source: "user"`, so the only party that knows an instruction came from the
- * harness (the client, which built the text) had no way to say so.
- */
 test("POST /prompt records the SOURCE the caller states (#skill)", async () => {
   const dataDir = mkdtempInRootSync("src-");
   const m = new Master(
@@ -39,29 +33,18 @@ test("POST /prompt records the SOURCE the caller states (#skill)", async () => {
   const server = serveApp(app, port, "127.0.0.1");
   try {
     await m.addAgent({ id: "a1", workspace: dataDir, session: "a1" } as never).catch(() => {});
-    // harness source
     const h = await call(port, "POST", "/api/agents/a1/prompt", {
       text: '[harness] Force-load and follow the skill "web-search" now',
       start: false,
       source: "harness",
     });
     assert.equal(h.status, 200, `prompt must be accepted: ${JSON.stringify(h.json)}`);
-    // an unknown source must fall back to the operator, not be trusted
     try {
       await call(port, "POST", "/api/agents/a1/prompt", { text: "hello", start: false, source: "root" as never });
     } catch {
-      /* the second write is independent; a failure here must not mask the first assertion */
     }
 
     const a = m.agents.get("a1")!;
-    /**
-     * Wait for BOTH rows before reading.
-     *
-     * `enqueuePrompt` appends through `ensureReady()`, so the write lands some time after the HTTP
-     * answer — on Windows that gap was long enough that the status request ran between the two
-     * appends and the assertions saw only one row (`source: undefined`). Poll for the rows the test
-     * is about instead of assuming one round trip is enough.
-     */
     const readWithRows = async () => {
       for (let i = 0; i < 40; i++) {
         const evs = await readEvents(a.log.filePath).catch(() => []);

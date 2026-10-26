@@ -1,24 +1,3 @@
-/**
- * BEHAVIOURAL tests for the API surface, replacing shape-only assertions.
- *
- * #110 shipped `test/api-malformed-json.test.ts`, which asserts that the SOURCE
- * contains `if (!body) return c.json({ error: "invalid JSON" }, 400);`. One of its
- * tests is even named "the behaviour itself" — and it never issues a request.
- *
- * That is the #75 failure mode exactly: the mechanics of the implementation are
- * verified, the rule is not. Proven by mutation, with a clean build:
- *
- *   `if (!body) return c.json({ error: "invalid JSON" }, 400)` → 200
- *     1127 pass, 0 fail        <- an unparseable body is ACCEPTED, unobserved
- *
- *   `if (!body.text?.trim() && !body.images?.length)` → unreachable
- *     1127 pass, 0 fail        <- an empty prompt is ACCEPTED, unobserved
- *
- *   `if (body.notify !== false)` → `if (true)`   (goal and todo routes)
- *     1127 pass, 0 fail        <- `notify: false` is ignored, unobserved
- *
- * Three real behaviours, no coverage. These tests make actual requests.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -28,18 +7,14 @@ import { buildApp } from "../src/server/api.ts";
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
 function mkApp(dataDir: string) {
-  // #126: NOT "/dev/null" — on Windows that resolves to D:\dev\null and is read
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   return { app: buildApp(m), master: m };
 }
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
-/** POST a body that is deliberately not JSON */
 const post = (app: ReturnType<typeof mkApp>["app"], url: string, raw: string) =>
   app.request(url, { method: "POST", headers: JSON_HEADERS, body: raw });
-
-/* ---------- malformed bodies ---------- */
 
 test("an unparseable body is a 400 with a message, not a 200 (#110)", async () => {
   await useTempDirs(["b110a-"], async ([dataDir]) => {
@@ -72,8 +47,6 @@ test("an unparseable body is rejected on every body-taking route (#110)", async 
     }
   });
 });
-
-/* ---------- field validation ---------- */
 
 test("an empty prompt is rejected (#110)", async () => {
   await useTempDirs(["b110c-", "b110x-"], async ([dataDir, ws]) => {
@@ -132,13 +105,9 @@ test("an unknown agent is a 404 naming the id (#126)", async () => {
       body: JSON.stringify({ text: "hi" }),
     });
     assert.equal(r.status, 404);
-    // #126: the message must NAME what was missing and which id — 24 routes used
-    // to answer a bare "not found"
     assert.match(String(((await r.json()) as { error: string }).error), /agent not found: nope/);
   });
 });
-
-/* ---------- notify:false, the flag nobody tested ---------- */
 
 test("a goal save with notify:false queues NO harness prompt (#123)", async () => {
   await useTempDirs(["b110g-", "b110z-"], async ([dataDir, ws]) => {
@@ -250,7 +219,7 @@ test("an EMPTY todo with notify:true queues nothing (#123)", async () => {
     await app.request("/api/agents/a1/todo", {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ text: "   " }), // notify defaults to TRUE
+      body: JSON.stringify({ text: "   " }), 
     });
     assert.deepEqual(
       prompts.filter((p) => p.includes("[harness]")),

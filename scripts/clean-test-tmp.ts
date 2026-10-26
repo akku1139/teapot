@@ -1,19 +1,4 @@
 #!/usr/bin/env node
-/**
- * Remove the shared test workspace, or report what is in it.
- *
- *   node scripts/clean-test-tmp.mjs          # report only (the safe default)
- *   node scripts/clean-test-tmp.mjs --apply  # delete it
- *
- * Every test artifact now lives under ONE directory (`<TMPDIR>/teapot-tests`, or
- * `$TEAPOT_TEST_TMP`), so cleanup no longer has to identify anything by name. That
- * matters: name-based cleanup is a guess, and guessing is how a tidying script deletes
- * somebody else's data. Measured before this: 2006 teapot fixture directories, 439 MB,
- * distinguishable from other projects' files only by walking each one's contents.
- *
- * The dry run is the default for the same reason, and it is what you want between
- * experiments — "did the run leave anything behind?"
- */
 import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,7 +8,6 @@ const override = process.env.TEAPOT_TEST_TMP;
 const root = override || DEFAULT_ROOT;
 const apply = process.argv.includes("--apply");
 
-/** total bytes under a directory */
 async function measure(dir) {
   let total = 0;
   let files = 0;
@@ -59,16 +43,6 @@ if (!apply) {
   process.exit(0);
 }
 
-// Only ever a root this project creates. TWO conditions, both required:
-//
-//   1. the path must look like one of ours ("teapot-tests", or a run directory the
-//      helpers create under it) — not just any path an env var names, because
-//      `TEAPOT_TEST_TMP=/tmp/something-important` would otherwise let the cleaner
-//      delete it;
-//   2. the directory must actually contain artifacts of ours (a `run-` child, or a
-//      prefix directory), so an empty or unrelated directory is refused too.
-//      This was measured: with only condition 1, pointing TEAPOT_TEST_TMP at a
-//      directory holding another project's data removed it.
 const looksLikeOurs =
   path.basename(root) === "teapot-tests" || entries.some((e) => e.startsWith("run-") || e.includes("-"));
 if (!override && path.resolve(root) !== path.resolve(DEFAULT_ROOT)) {

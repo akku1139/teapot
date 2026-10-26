@@ -1,28 +1,3 @@
-/**
- * #143 — no test ever opened a WebSocket to the running server.
- *
- * ## The hole this fills
- *
- * The whole product is driven by `/api/ws`: the timeline, the agent list, the
- * live bubble, the notification centre. And the suite could not tell if that
- * socket delivered **nothing at all**.
- *
- * Proven by mutation — deleting the fan-out outright:
- *
- *     bus.on("update", (raw) => { … send(ev); });   //  ← send removed
- *
- * leaves **1206 tests green**. Every event still reaches the JSONL log, every
- * REST route still works, and the UI would simply never update.
- *
- * A grep of `api.ts` cannot see whether the socket is ever written to, which is
- * the entire question — so this file uses a real server and a real WebSocket.
- *
- * ## What this does instead
- *
- * Starts a REAL server with `serveApp`, connects a REAL `WebSocket`, and asserts
- * that an event produced by a real Agent arrives on the wire — with its payload
- * intact, since #54 made that payload the timeline's data.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -34,7 +9,6 @@ import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
-/** a real HTTP+WS server, with one agent */
 async function liveServer() {
   const dataDir = mkdtempInRootSync("t143a-");
   const ws = mkdtempInRootSync("t143w-");
@@ -43,7 +17,6 @@ async function liveServer() {
   const agent = await m.addAgent({ id: "ev", workspace: ws }, { persist: false });
   const port = await freePort();
   const server = serveApp(app, port, "127.0.0.1");
-  // the listening line is printed asynchronously; poll the port instead of racing it
   const base = `ws://127.0.0.1:${port}/api/ws`;
   const stop = async () => {
     await server.close();
@@ -53,7 +26,6 @@ async function liveServer() {
   return { m, agent, port, base, stop };
 }
 
-/** connect and collect frames until `stop` says so */
 function collect(base: string, onReady: () => Promise<void>) {
   const frames: Record<string, unknown>[] = [];
   const sock = new WebSocket(base);
@@ -64,7 +36,6 @@ function collect(base: string, onReady: () => Promise<void>) {
       try {
         frames.push(JSON.parse(raw.toString()));
       } catch {
-        /* a non-JSON frame is itself worth seeing, but not fatal */
       }
     });
   });
@@ -92,7 +63,6 @@ test("the socket opens and is greeted with an authoritative snapshot (#143)", as
 });
 
 test("an event produced by an agent REACHES the socket (#143)", async () => {
-  // THE mutation this file exists for: delete `send(ev)` and this fails.
   const { base, agent, stop } = await liveServer();
   const c = collect(base, async () => {
     await agent.enqueuePrompt("hello from the test");
@@ -107,7 +77,6 @@ test("an event produced by an agent REACHES the socket (#143)", async () => {
       ev,
       `a prompt event must reach the socket (#143); got frames: ${JSON.stringify(c.frames.map((f) => f.kind))}`,
     );
-    // #54 made the payload the timeline's data, so the TEXT has to be on the wire
     assert.equal(
       ev.event?.data?.text,
       "hello from the test",
@@ -120,7 +89,6 @@ test("an event produced by an agent REACHES the socket (#143)", async () => {
 });
 
 test("a tool_call also reaches the socket (#143)", async () => {
-  // a different event type, so the previous test cannot be passing on one branch
   const { base, agent, stop } = await liveServer();
   const c = collect(base, async () => {
     await agent.enqueuePrompt("hi");
@@ -142,7 +110,6 @@ test("a tool_call also reaches the socket (#143)", async () => {
 });
 
 test("two connections each receive the stream (#143)", async () => {
-  // the fan-out is per-connection; a single-client test cannot see it collapse
   const { base, agent, stop } = await liveServer();
   const a = collect(base, async () => {});
   const b = collect(base, async () => {});
@@ -170,7 +137,7 @@ test("a closed socket stops receiving, without harming the others (#143)", async
   try {
     await Promise.all([a.done, b.done]);
     a.close();
-    await wait(200); // let the server observe the close
+    await wait(200); 
     await agent.enqueuePrompt("after one left");
     await wait(400);
     assert.ok(

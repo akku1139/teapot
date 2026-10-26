@@ -1,14 +1,3 @@
-/**
- * #39 — "create a new session in the same directory and a deleted session
- *        comes back to life, and you can no longer do anything with it"
- *
- * Sessions were discovered by scanning the sessions directory and sorting by
- * chat.jsonl mtime, and the agent config did not record which session it was
- * bound to. So on boot the master re-guessed by mtime — and a stale or deleted
- * directory whose log happened to be newer won, handing the agent a timeline
- * the operator had already moved off ("resurrected"). The UI then showed the
- * dead session while actions appended to the live one.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -17,9 +6,6 @@ import { useTempDirs } from "./helpers/tmp.ts";
 import { Master, type TeapotConfig } from "../src/master.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — POSIX filesystem paths.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("POSIX filesystem paths");
 
 function mkConfig(dataDir: string, workspaces: string[] = ["."]): TeapotConfig {
@@ -33,7 +19,6 @@ function mkConfig(dataDir: string, workspaces: string[] = ["."]): TeapotConfig {
   } as unknown as TeapotConfig;
 }
 
-/** make a session dir with a chat.jsonl of the given size, optionally aged */
 function seedSession(sessionsRoot: string, id: string, bytes: number, mtimeSec?: number): string {
   const dir = path.join(sessionsRoot, id);
   mkdirSync(dir, { recursive: true });
@@ -45,13 +30,11 @@ function seedSession(sessionsRoot: string, id: string, bytes: number, mtimeSec?:
 test("a restart reattaches to the RECORDED session, not the newest by mtime (#39)", async () => {
   await useTempDirs(["s39a-", "s39b-"], async ([dataDir, ws]) => {
     const sessionsRoot = path.join(dataDir, "sessions");
-    // proj-OLD is the session the operator used and left; proj-NEW is newer on
-    // disk but is NOT the one the agent was bound to.
     seedSession(sessionsRoot, "proj-old", 500);
     seedSession(sessionsRoot, "proj-new", 10);
 
     const cfg = mkConfig(dataDir);
-    (cfg.agents[0] as { session?: string }).session = "proj-old"; // recorded
+    (cfg.agents[0] as { session?: string }).session = "proj-old"; 
 
     const m = new Master(cfg, "/dev/null");
     const agent = await m.addAgent({ id: "proj", workspace: ws, provider: "p" }, { persist: false });
@@ -80,7 +63,6 @@ test("the recorded session id is persisted so the NEXT boot is deterministic (#3
     const bound = agent.snapshot().session;
     assert.equal(bound, "proj-s1");
 
-    // the config file on disk must now record it
     const onDisk = JSON.parse(readFileSync(configPath, "utf8")) as {
       agents: { id: string; session?: string }[];
     };
@@ -96,10 +78,9 @@ test("the recorded session id is persisted so the NEXT boot is deterministic (#3
 test("a session dir that no longer exists does not resurrect the agent (#39)", async () => {
   await useTempDirs(["s39e-", "s39f-"], async ([dataDir, ws]) => {
     const sessionsRoot = path.join(dataDir, "sessions");
-    const gone = seedSession(sessionsRoot, "proj-deleted", 900); // newest on disk
+    const gone = seedSession(sessionsRoot, "proj-deleted", 900); 
     const cfg = mkConfig(dataDir);
     (cfg.agents[0] as { session?: string }).session = "proj-deleted";
-    // the operator deleted it while the tab was open
     rmSync(gone, { recursive: true, force: true });
 
     const m = new Master(cfg, "/dev/null");
@@ -121,7 +102,7 @@ test("without a recorded session, discovery still picks a usable dir (#39)", asy
   await useTempDirs(["s39g-", "s39h-"], async ([dataDir, ws]) => {
     const sessionsRoot = path.join(dataDir, "sessions");
     seedSession(sessionsRoot, "proj-legacy", 500);
-    const cfg = mkConfig(dataDir); // no recorded session — legacy path
+    const cfg = mkConfig(dataDir); 
     const m = new Master(cfg, "/dev/null");
     const agent = await m.addAgent({ id: "proj", workspace: ws, provider: "p" }, { persist: false });
     assert.ok(

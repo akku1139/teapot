@@ -1,23 +1,3 @@
-/**
- * A `TEAPOT_DATA_DIR` override that disagrees with the config's own `dataDir`
- * must make SESSION RESOLUTION READ-ONLY (#143).
- *
- * The damage this prevents is severe and silent. Session pointers in the config
- * name directories under a specific root. Point the process at a DIFFERENT root
- * and every pointer "misses", so every agent mints a fresh session in the new
- * root — and `recordSession` writes those back into the config. If the new root
- * is a test's temp directory, it is deleted moments later, leaving a config whose
- * 493 agents point at sessions that never existed.
- *
- * That is not theoretical: `test/cli-boot-and-host.test.ts` spawned the CLI with
- * `TEAPOT_DATA_DIR=<temp>` and no `TEAPOT_CONFIG`, so running the repo's own test
- * suite orphaned the session pointers on a developer's machine. CI never noticed,
- * because CI has no config file to damage.
- *
- * The test side is fixed too (every spawn now sets TEAPOT_CONFIG). This is the
- * defence in depth: the PRODUCT must not destroy a config it is describing
- * another data dir.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -27,11 +7,8 @@ import { Master } from "../src/master.ts";
 
 const LLM = { baseUrl: "http://x", apiKey: "k", model: "m" };
 
-/** a config whose agents point at session dirs under `realRoot` */
 function writeConfig(configPath: string, realRoot: string): void {
   mkdirSync(realRoot, { recursive: true });
-  // one agent, with a real session dir containing a log whose `agent` field
-  // proves the ownership
   const sid = "worker-aaaaaaaa";
   mkdirSync(path.join(realRoot, "sessions", sid), { recursive: true });
   writeFileSync(
@@ -65,13 +42,10 @@ test("a mismatched TEAPOT_DATA_DIR does not rewrite the config's session pointer
     writeConfig(configPath, realRoot);
     const before = readFileSync(configPath, "utf8");
 
-    // exactly what the test suite used to do: override the DATA DIR only
     const prev = process.env.TEAPOT_DATA_DIR;
     process.env.TEAPOT_DATA_DIR = otherRoot;
     try {
-      // the REAL config type, so a field the Master requires cannot go missing here
       const config = JSON.parse(before) as import("../src/master.ts").TeapotConfig;
-      // the process resolves dataDir from the env override, as the CLI does
       config.dataDir = otherRoot;
       const m = new Master(config, configPath);
       for (const ac of config.agents) await m.addAgent(ac, { fresh: false });
@@ -96,13 +70,12 @@ test("a MATCHING data dir still persists session pointers normally (#143)", asyn
     const before = JSON.parse(readFileSync(configPath, "utf8")) as { agents: { session: string }[] };
 
     const prev = process.env.TEAPOT_DATA_DIR;
-    process.env.TEAPOT_DATA_DIR = root; // agrees with the file
+    process.env.TEAPOT_DATA_DIR = root; 
     try {
       const config = JSON.parse(readFileSync(configPath, "utf8"));
       const m = new Master(config, configPath);
       for (const ac of config.agents) await m.addAgent(ac, { fresh: false });
       const after = JSON.parse(readFileSync(configPath, "utf8")) as { agents: { session: string }[] };
-      // the recorded session is valid here, so it must simply be KEPT
       assert.equal(after.agents[0]!.session, before.agents[0]!.session, "a valid pointer must survive (#143)");
     } finally {
       if (prev === undefined) delete process.env.TEAPOT_DATA_DIR;

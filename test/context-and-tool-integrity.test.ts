@@ -1,9 +1,3 @@
-/**
- * #73 and #76 — the context-safety net and the tool-call protocol invariant.
- *
- * Both are "the defence exists but does not fire", which is the same shape as
- * #54 and #38: a fix that is present, correct, and inert.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -11,9 +5,6 @@ import { Agent } from "../src/agent/agent.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — runs POSIX commands through the bash tool.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool");
 
 const tc = (id: string, name: string, args: unknown) => ({
@@ -34,11 +25,8 @@ function mkAgent(ws: string, sd: string, chatFn: unknown, extra: Record<string, 
   } as any);
 }
 
-/* ---------- #73: an under-reported prompt_tokens must not disable the net ---------- */
-
 test("a provider reporting a tiny prompt size still triggers compaction (#73)", async () => {
   await useTempDirs(["p73a-", "p73b-"], async ([ws, sd]) => {
-    // ~40k characters of real conversation, but the provider claims 10 tokens.
     let n = 0;
     const big = "x".repeat(20_000);
     const agent = mkAgent(ws!, sd!, async () => {
@@ -53,7 +41,6 @@ test("a provider reporting a tiny prompt size still triggers compaction (#73)", 
     agent.start("t");
     await agent.settled();
 
-    // The agent reports 10 tokens; the LOCAL estimate is ~40k chars.
     (agent as any).lastUsage = { input: 10, output: 1 };
     const raw = (agent as any).lastUsage.input;
     const size = (agent as any).contextSizeForBudgeting();
@@ -71,7 +58,6 @@ test("a provider reporting a tiny prompt size still triggers compaction (#73)", 
 });
 
 test("a plausible provider report is still trusted (#73)", async () => {
-  // the floor is loose on purpose — it must not argue with a real measurement
   await useTempDirs(["p73c-", "p73d-"], async ([ws, sd]) => {
     const agent = mkAgent(ws!, sd!, async () => ({ message: { role: "assistant" as const, content: "ok" } }));
     await agent.init();
@@ -88,12 +74,8 @@ test("a plausible provider report is still trusted (#73)", async () => {
   });
 });
 
-/* ---------- #76: every tool_call must be answered ---------- */
-
 test("a tool_call left unanswered by an early exit is still answered (#76)", async () => {
   await useTempDirs(["p76a-", "p76b-"], async ([ws, sd]) => {
-    // Two calls in ONE assistant message; the first is stop(), which returns
-    // from the batch, so the second would never get a result.
     const agent = mkAgent(ws!, sd!, async () => ({
       message: {
         role: "assistant" as const,
@@ -106,8 +88,6 @@ test("a tool_call left unanswered by an early exit is still answered (#76)", asy
     agent.start("t");
     await agent.settled();
 
-    // Synthesise the failure the audit reproduced: an assistant turn with two
-    // calls where only one was answered.
     const orphan = await agent.answerUnansweredToolCalls({
       role: "assistant",
       content: "",
@@ -144,15 +124,11 @@ test("already-answered calls are not answered twice (#76)", async () => {
 });
 
 test("stop() then start() is not silently lost (#76)", async () => {
-  // uses only the public API — the early-return guard was the defect, so the
-  // test must not reach past it into private state to check the outcome
   await useTempDirs(["p76e-", "p76f-"], async ([ws, sd]) => {
     const agent = mkAgent(ws!, sd!, async () => ({ message: { role: "assistant" as const, content: "ok" } }));
     await agent.init();
     agent.enqueuePrompt("go", "user");
     agent.start("t");
-    // stop() only flips status via an ENQUEUED task, so status is still
-    // "running" when start() is called a moment later
     agent.stop("test");
     agent.start("restart");
     await agent.settled();

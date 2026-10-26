@@ -3,19 +3,14 @@ import { ansiRuns, hasAnsi } from "../lib/ansi";
 import { fmtDur } from "../lib/format";
 import { cacheHighlighted, highlightedHtml } from "../lib/highlight-cache";
 
-
 export function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number }) {
   const start = new Date(props.startedAt).getTime();
   const [now, setNow] = createSignal(Date.now());
   onMount(() => {
-    // 500ms tick is plenty for a seconds readout and stops with the row
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
-  // shares fmtDur() with the finished rows so a running call and its result
-  // read identically instead of flipping between two formats
   const txt = () => fmtDur(Math.max(0, now() - start));
-  // inline: compact form for the folded summary ("running… 1m 26s")
   if (props.inline) {
     return (
       <span class="bashelapsed">
@@ -32,29 +27,10 @@ export function ThinkingTimer(props: { startedAt: number }) {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
-  /**
-   * A THUNK, and the elapsed value must be computed INSIDE it.
-   *
-   * The counter froze at whatever it read on first render ("20ms", "65ms" — reported as "thinking右の
-   * 思考時間カウンタが動かない", and the random value is the giveaway: it is the moment the render
-   * happened). The original was an expression in JSX —
-   * `{fmtDur(Math.max(0, now() - props.startedAt))}` — which Solid tracks and re-evaluates on every
-   * tick. Hoisting it to `const elapsed = …` above the `return` read `now()` ONCE and handed Solid a
-   * finished string, so nothing subscribed any more. A guard added later caused that hoist; the
-   * mechanism was never the problem, the placement was.
-   *
-   * `BashElapsed` right above always did it this way (`txt()`), which is why only the thinking timer
-   * was frozen.
-   *
-   * 0 is the "not armed" sentinel, never a timestamp: `now() - 0` is elapsed since the EPOCH and the
-   * readout said "thinking 498029h 10m". The sanity check is on the RESULT rather than only on the
-   * sentinel, because a clock armed for an EARLIER stretch can survive with a stale bubble — a
-   * duration longer than any plausible thinking stretch means the timestamp is not about this block.
-   */
   const txt = () => {
     if (!props.startedAt) return null;
     const elapsed = Math.max(0, now() - props.startedAt);
-    if (elapsed > 24 * 60 * 60 * 1000) return null; // > a day cannot be one thinking stretch
+    if (elapsed > 24 * 60 * 60 * 1000) return null; 
     return fmtDur(elapsed);
   };
   return (
@@ -65,12 +41,6 @@ export function ThinkingTimer(props: { startedAt: number }) {
 }
 
 export function AnsiText(props: { text: string }) {
-  /**
-   * Only pay for the tokenizer when the text can contain escapes.
-   *
-   * Most results are plain, and `ansiRuns` walks every character; the gate keeps the common case at
-   * a single `includes`.
-   */
   const runs = createMemo(() => (hasAnsi(props.text) ? ansiRuns(props.text) : null));
   return (
     <Show
@@ -87,7 +57,6 @@ export function AnsiText(props: { text: string }) {
 }
 
 export function HighlightedCode(props: { text: string; lang?: string }) {
-  // a separator that cannot appear in a language id or in the code itself
   const key = () => (props.lang ? `${props.lang}::${props.text.length}::${props.text}` : "");
   const cached = () => (props.lang ? highlightedHtml(key()) : undefined);
   const [html, setHtml] = createSignal(cached() ?? "");
@@ -98,13 +67,6 @@ export function HighlightedCode(props: { text: string; lang?: string }) {
     if (!lang || !text.trim()) { setHtml(""); return; }
     const hit = highlightedHtml(k);
     if (hit !== undefined) { setHtml(hit); return; }
-    /**
-     * No "is my run still current" guard.
-     *
-     * The result is cached by CONTENT, so it does not matter which instance produced it or whether
-     * that instance still exists — the next mount reads it back. A guard could only throw work
-     * away, and that is how an earlier version lost the highlighting entirely.
-     */
     void (async () => {
       try {
         const { highlightLangChunks } = await import("../lib/shiki");
@@ -112,29 +74,14 @@ export function HighlightedCode(props: { text: string; lang?: string }) {
         for await (const chunk of highlightLangChunks(lang, text)) acc += chunk;
         if (!acc) return;
         cacheHighlighted(k, acc);
-        // paint only if this instance is still asking for the same content
         if (key() === k) setHtml(acc);
       } catch {
-        // give up → the plain fallback stays
       }
     })();
   });
-  /**
-   * `when={!!html()}`: a boolean, so Solid re-evaluates the CONDITION reactively.
-   *
-   * `when={html()}` also tracks, but the CHILD below is an accessor-free element — it is created
-   * once when the condition first holds. MEASURED: the effect logged `{chunks: 1, accLen: 604}`
-   * while the DOM still held the plain `<pre>` fallback, which is why "ツールカードのshiki効いてない"
-   * looked like the highlighter was failing when it had actually succeeded.
-   */
   return (
     <Show when={!!html()} fallback={<pre class="mono toolbody">{props.text}</pre>}>
-      {/**
-        * The wrapper carries BOTH classes the stylesheet keys on: `toolbody` for the shared surface
-        * and `shiki` for the dual-theme colour variables. Shiki emits its own
-        * `<pre class="shiki"><code>…</code></pre>` — markup we generate from a grammar, never from
-        * user input — so the inner `<pre>` must not paint a second surface of its own.
-        */}
+      {}
       <div class="toolbody shiki" innerHTML={html()} />
     </Show>
   );

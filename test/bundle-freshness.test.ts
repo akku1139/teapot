@@ -1,16 +1,3 @@
-/**
- * #75 — `web-bundle.test.ts` skipped silently whenever there was no built
- * bundle, and `public/` is gitignored, so a bare local `pnpm test` reported
- * green while proving nothing about current UI code. CI builds first, which hid
- * it: injecting a render `ReferenceError` into `MessageRow` left the test
- * passing, and only a rebuild made it fail.
- *
- * These tests cover the detector itself, including the comparison bug it had on
- * first write — it compared against the OLDEST input, which is always older
- * than any build done afterwards, so it never fired. That failure was silent
- * and the tests would still have passed, which is why each case below asserts
- * the DETECTED state rather than just calling the function.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, utimesSync } from "node:fs";
@@ -18,10 +5,7 @@ import path from "node:path";
 import { useTempDir } from "./helpers/tmp.ts";
 import { bundleFreshness, bundleInputs, freshnessMessage } from "./helpers/bundle-freshness.ts";
 
-/** a fake project root with a bundle and some sources */
 function project(root: string, opts: { bundle?: boolean; sourceAges: Record<string, number>; bundleAge?: number }): void {
-  // #75: the root comes from useTempDir, which removes it in a finally. A bare
-  // mkdtemp here leaked a directory on every single run.
   mkdirSync(path.join(root, "frontend"), { recursive: true });
   mkdirSync(path.join(root, "public", "assets"), { recursive: true });
   const now = Date.now();
@@ -46,7 +30,6 @@ test("no bundle is reported missing, not silently fresh (#75)", async () => {
 });
 
 test("a bundle older than its sources is STALE (#75)", async () => {
-  // the bundle was built 10 minutes ago; a source changed 1 minute ago
   await useTempDir("bf-", (root) => {
     project(root, { bundleAge: 600_000, sourceAges: { "frontend/App.tsx": 60_000 } });
     assert.equal(bundleFreshness(root).state, "stale");
@@ -54,15 +37,12 @@ test("a bundle older than its sources is STALE (#75)", async () => {
 });
 
 test("the NEWEST source is the one that decides (#75)", async () => {
-  // Regression guard. The first version compared against the OLDEST input,
-  // which is always older than any build done afterwards — so it never fired,
-  // silently. One very old source plus one newer than the bundle must be stale.
   await useTempDir("bf-", (root) => {
     project(root, {
-      bundleAge: 300_000, // built 5 min ago
+      bundleAge: 300_000, 
       sourceAges: {
-        "frontend/md.js": 86_400_000, // a day old — irrelevant
-        "frontend/App.tsx": 60_000, // newer than the bundle — this decides
+        "frontend/md.js": 86_400_000, 
+        "frontend/App.tsx": 60_000, 
       },
     });
     const f = bundleFreshness(root);
@@ -79,8 +59,6 @@ test("a bundle newer than every source is fresh (#75)", async () => {
 });
 
 test("a same-second edit does not count as stale (#75)", async () => {
-  // filesystem timestamp granularity is 1s on some systems; a source written
-  // immediately after a build is not a real staleness signal
   await useTempDir("bf-", (root) => {
     project(root, { bundleAge: 0, sourceAges: { "frontend/App.tsx": 0 } });
     assert.equal(bundleFreshness(root).state, "fresh", "coarse timestamps must not produce false alarms (#75)");
@@ -98,9 +76,6 @@ test("every bundle input is considered (#75)", async () => {
   writeFileSync(path.join(root, "index.html"), "h");
   writeFileSync(path.join(root, "vite.config.ts"), "v");
   writeFileSync(path.join(root, "frontend", "deep", "App.tsx"), "a");
-  // #110: `path.relative` returns the PLATFORM separator, so on Windows these are
-  // "frontend\\deep\\App.tsx" and every assertion below failed there while
-  // passing on Linux. Normalise to "/" before comparing.
   const inputs = bundleInputs(root).map((p) => path.relative(root, p).split(path.sep).join("/"));
   assert.ok(inputs.includes("frontend/deep/App.tsx"), "nested sources count (#75)");
   assert.ok(inputs.includes("index.html"), "index.html counts (#75)");
@@ -137,8 +112,6 @@ test("the newest bundle wins when several exist (#75)", async () => {
   const src = path.join(root, "frontend", "App.tsx");
   writeFileSync(src, "s");
   utimesSync(src, new Date(now - 300_000), new Date(now - 300_000));
-  // only the NEWEST bundle is the live one; judging by the old one would call
-  // this stale for no reason
   assert.equal(bundleFreshness(root).state, "fresh");
   });
 });

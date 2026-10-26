@@ -1,24 +1,6 @@
-/**
- * Is the built web bundle newer than the sources it was built from?
- *
- * #75: `web-bundle.test.ts` skipped whenever `public/assets` had no bundle, and
- * `public/` is gitignored — so a bare local `pnpm test` silently skipped it. CI
- * runs `pnpm build` BEFORE `pnpm test`, which hid the problem: locally the suite
- * reported all-green while proving nothing about current UI code.
- *
- * Proof: injecting a render `ReferenceError` into `MessageRow` left the test
- * passing, and only a rebuild made it fail.
- *
- * So staleness is an explicit, reported state rather than a quiet skip. This is
- * a comparison, not a dependency graph: the bundle is fresh when it is at least
- * as new as the NEWEST file under `frontend/` (plus the vite config and
- * index.html). Any source newer than the bundle means the bundle was built from
- * different code. A 1s tolerance absorbs filesystem timestamp granularity.
- */
 import fs from "node:fs";
 import path from "node:path";
 
-/** every input that can change the bundle's contents */
 export function bundleInputs(root: string): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
@@ -44,15 +26,12 @@ export function bundleInputs(root: string): string[] {
 
 export interface Freshness {
   state: "fresh" | "missing" | "stale";
-  /** the newest bundle, when there is one */
   bundle?: string;
   bundleMtime?: number;
-  /** the source that is newer than the bundle, when stale */
   newestSource?: string;
   sourceMtime?: number;
 }
 
-/** Compare the newest bundle against the newest input — any newer input means stale. */
 export function bundleFreshness(root: string): Freshness {
   const assetsDir = path.join(root, "public", "assets");
   let bundle: string | undefined;
@@ -68,15 +47,10 @@ export function bundleFreshness(root: string): Freshness {
       }
     }
   } catch {
-    /* no assets dir at all */
   }
   if (!bundle) return { state: "missing" };
 
   const inputs = bundleInputs(root);
-  // The bundle is stale if ANY input is newer than it — so compare against the
-  // NEWEST input, not the oldest. (Comparing against the oldest input is always
-  // fresh, because the oldest source predates any build done afterwards: that
-  // was the first version of this and it silently never fired.)
   let newestPath: string | undefined;
   let newestMtime = 0;
   for (const p of inputs) {
@@ -97,7 +71,6 @@ export function bundleFreshness(root: string): Freshness {
   return { state: "fresh", bundle, bundleMtime };
 }
 
-/** A message that says what to do, rather than "skipped". */
 export function freshnessMessage(f: Freshness): string {
   const rel = (p?: string) => (p ? p.replace(/^.*?(frontend|public|scripts)\//, "$1/") : "?");
   switch (f.state) {

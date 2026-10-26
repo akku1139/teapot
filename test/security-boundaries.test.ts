@@ -1,20 +1,3 @@
-/**
- * Workspace containment, from a full-codebase review.
- *
- * Two escapes, both found by probing rather than reading, and both in the
- * "defence" layer — the code whose only job is to refuse.
- *
- * #74 was reported as "create through a dangling symlink escapes the
- * workspace". **I could not reproduce it** — every variant is refused by the
- * code as shipped, and the tests below document the real invariant rather than
- * a bug. Kept here because the reasoning is easy to get wrong: `realpathSync`
- * failing does not mean "allow".
- *
- * #72 — agent ids become directory names, and every caller sanitised its own
- * except the ACP adapter, which passed the raw client string through:
- * `session/load {"sessionId":"../../escape"}` logged outside the sessions dir.
- * Fixed centrally in `addAgent` so the guarantee is structural.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { symlink, access } from "node:fs/promises";
@@ -25,28 +8,9 @@ import { executeTool, safeJoin } from "../src/agent/tools.ts";
 import { sanitizeAgentId } from "../src/master.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — POSIX filesystem paths.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("POSIX filesystem paths");
 
-/* ---------- #74: workspace containment ---------- */
-
-/*
- * The escape: `esc -> /outside` where /outside is a REAL directory.
- *
- * `safeJoin` resolved the target and swallowed the throw, treating failure as
- * "fine" — and the failure is the NORMAL case, because `realpathSync` throws
- * ENOENT for a file that does not exist yet, which is every write_file
- * creating something new. So `real` stayed as the LEXICAL path (inside the
- * workspace) and the symlink guard never ran.
- *
- * The dangling variant happened to fail later with ENOTDIR from mkdir, which is
- * luck, not a control — the escape only needs a target that exists.
- */
-
 test("a write through a symlink to a real directory outside is refused (#74)", async () => {
-  // THE reported case. 👻 ... (kept from the original: the escape, and why)
   await withPair("p74a-", "out74a-", async (ws, outside) => {
     await symlink(outside, path.join(ws, "esc"), "dir");
     const r = await executeTool(
@@ -84,7 +48,6 @@ test("a symlink to a FILE outside is refused (#74)", async () => {
 });
 
 test("a symlink to a NOT-YET-CREATED directory outside is refused (#74)", async () => {
-  // Previously allowed by safeJoin; it only failed later in mkdir, by luck.
   await twoRoots((ws, outside) => {
     symlinkSync(path.join(outside, "future"), path.join(ws, "dangling"), "dir");
     assert.throws(() => safeJoin(ws, "dangling/y.txt"), /escapes workspace via symlink/);
@@ -92,8 +55,6 @@ test("a symlink to a NOT-YET-CREATED directory outside is refused (#74)", async 
 });
 
 test("legitimate writes still work (#74)", () => {
-  // Not "refuse anything missing" — that would break every new file, which is
-  // the tool's main job. These are the cases the ENOENT path must still allow.
   assert.doesNotThrow(() => safeJoin("/ws", "new-file.txt"));
   assert.doesNotThrow(() => safeJoin("/ws", "brand/new/dir/file.txt"));
   assert.doesNotThrow(() => safeJoin("/ws", "a/b/c/deep.txt"));
@@ -106,8 +67,6 @@ test("traversal is still refused lexically (#74)", () => {
 });
 
 test("a symlink INSIDE the workspace still works (#74)", async () => {
-  // A symlink to a sibling directory within the workspace is legitimate and
-  // must not be blocked by the fix.
   await useTempDir("s-", (ws) => {
     mkdirSync(path.join(ws, "real"), { recursive: true });
     symlinkSync(path.join(ws, "real"), path.join(ws, "link"), "dir");
@@ -115,11 +74,9 @@ test("a symlink INSIDE the workspace still works (#74)", async () => {
   });
 });
 
-/** two sibling temp roots, removed in a finally (#75: a bare mkdtemp leaked) */
 async function twoRoots(fn: (ws: string, outside: string) => void | Promise<void>) {
   await useTempDirs(["s-", "s-"], (dirs) => fn(dirs[0]!, dirs[1]!));
 }
-/** named pair: a workspace and a sibling "outside" it, both cleaned up */
 async function withPair(
   a: string,
   b: string,
@@ -127,8 +84,6 @@ async function withPair(
 ): Promise<void> {
   await useTempDirs([a, b], (dirs) => fn(dirs[0]!, dirs[1]!));
 }
-
-/* ---------- #72: agent ids ---------- */
 
 test("a path-like agent id cannot escape the sessions dir (#72)", () => {
   for (const id of ["../../escape", "..", "a/b", "....//x", "/abs/path"]) {
@@ -164,7 +119,6 @@ test("a leading dot cannot create a hidden directory (#72)", () => {
 });
 
 test("the ACP adapter's raw sessionId is contained (#72)", async () => {
-  // the actual reported path: session/load with a traversal-shaped id
   const sessionsRoot = (await useTempDir("p72s-", (d) => d));
   const hostile = "../../escape";
   const safe = sanitizeAgentId(hostile);
@@ -173,6 +127,5 @@ test("the ACP adapter's raw sessionId is contained (#72)", async () => {
     dir.startsWith(sessionsRoot + path.sep),
     `the ACP sessionId must not escape the sessions root (#72): ${dir}`,
   );
-  // and the shape the adapter passes is an id, not a path
   assert.ok(!safe.includes("/") && !safe.includes(path.sep), `no separators survive (#72): ${safe}`);
 });

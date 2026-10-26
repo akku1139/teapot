@@ -1,19 +1,7 @@
-/**
- * A FAILED `/models` lookup was never remembered, so every agent pointed at a
- * dead or unauthorised endpoint paid the request again — and `addAgent` awaits
- * this TWICE per agent, racing it against a 1.5s timeout.
- *
- * That is the "boot gets slower as agents accumulate" shape: the cost scaled with
- * the number of agents on the bad endpoint, not with the number of endpoints.
- *
- * Failures are now cached briefly (30s, versus the 10min for a good list), so a
- * provider coming back up is usable within a minute rather than locked out.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fetchModelList } from "../src/model-meta.ts";
 
-/** a fetch that always fails, counting how often it was called */
 function failingFetch(counter: { n: number }): typeof fetch {
   return (async () => {
     counter.n++;
@@ -26,7 +14,6 @@ test("a failing endpoint is fetched ONCE, not once per caller (#143)", async () 
   const counter = { n: 0 };
   globalThis.fetch = failingFetch(counter);
   try {
-    // a distinct host so this does not collide with any cached entry
     const url = "http://model-meta-negcache-test.invalid/v1";
     const a = await fetchModelList(url);
     const b = await fetchModelList(url);

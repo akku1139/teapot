@@ -1,28 +1,13 @@
-// Find tests that cannot fail, or that prove nothing about production code.
-//
-// "Too many tests, yet the critical parts escape" means some of them are
-// decorative. The measurable forms of that:
-//
-//   1. NO ASSERTION — the test cannot fail, whatever the code does.
-//   2. TAUTOLOGY — `assert.ok(true)`, or a literal compared with itself.
-//   3. SELF-PROVING — the body re-implements the rule it is checking, so it
-//      passes by construction (#75's documented failure mode).
-//   4. SOURCE-SHAPE ONLY — asserts on a substring of production source, which
-//      survives the logic being deleted as long as the text remains.
-//
-// Usage: node scripts/audit-tests.mjs [--verbose]
 import fs from "node:fs";
 import path from "node:path";
 
 const dir = "test";
 const verbose = process.argv.includes("--verbose");
 
-/** assertion helpers a file defines locally (they call assert.* internally) */
 function localAssertHelpers(src: string): string[] {
   const names: string[] = [];
   for (const m of src.matchAll(/function\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{/g)) {
     const start = m.index + m[0].length;
-    // the body up to the matching brace
     let depth = 1;
     let i = start;
     while (i < src.length && depth > 0) {
@@ -36,15 +21,6 @@ function localAssertHelpers(src: string): string[] {
   return names;
 }
 
-/**
- * Blank the CONTENTS of string and regex literals, preserving length.
- *
- * Brace matching cannot be done on raw source: a regex like
- * `/\\{\\s*(?:e|res)\\.[^}]*durationMs\\s*\\}/g` contains balanced-looking braces,
- * and a template literal can hold anything. Blanking the contents (same offsets,
- * so slicing the ORIGINAL still works) makes the braces inside them invisible —
- * the same lesson as `stripSourceComments`, which read a regex as a comment.
- */
 export function blankLiterals(src) {
   let out = "";
   let i = 0;
@@ -69,7 +45,6 @@ export function blankLiterals(src) {
       continue;
     }
     if (c === "/" && src[i + 1] === "/") {
-      // a line comment can contain braces too (`// if (x) { ... }`) — blank it
       while (i < src.length && src[i] !== "\n") {
         out += " ";
         i++;
@@ -119,14 +94,10 @@ function testBlocks(src: string): { name: string; body: string; line: number }[]
   let m;
   while ((m = re.exec(src))) {
     const start = m.index;
-    // the name is the first string argument
     const head = src.slice(start, start + 400);
     const name =
       /^test\s*\(\s*["'`]([^"'`]+)["'`]/.exec(head)?.[1] ??
       (/^test\s*\(\s*`([^`]+)`/.exec(head)?.[1] || "(dynamic name)");
-    // the body starts at the '{' that opens the CALLBACK, not at the first '{'
-    // — `test(name, { skip: ... }, () => {` has an options object first, and
-    // treating that as the body made 17 well-asserted tests look empty.
     const arrow = safe.indexOf("=>", start);
     const fnKw = safe.indexOf("function", start);
     const bodyFrom = arrow !== -1 && (fnKw === -1 || arrow < fnKw + 8) ? safe.indexOf("{", arrow) : safe.indexOf("{", fnKw);
@@ -161,8 +132,6 @@ const findings: Record<"noAssert" | "tautology" | "selfProving" | "sourceOnly", 
 for (const f of files) {
   const src = fs.readFileSync(path.join(dir, f), "utf8");
   const hasProdImport = /from "\.\.\/(src|frontend)\//.test(src);
-  // a file-local helper that calls assert counts as an assertion: without this the
-  // audit flags every legitimately-written `srcHas(...)` test as unassertive
   const helpers = localAssertHelpers(src);
   const helperRe = helpers.length ? new RegExp(`\\b(${helpers.join("|")})\\s*\\(`) : null;
   for (const t of testBlocks(src)) {
@@ -173,11 +142,9 @@ for (const f of files) {
       findings.noAssert.push(where);
       continue;
     }
-    // a literal compared with an equal literal
     if (/assert\.(ok|equal|strictEqual)\(\s*(true|false|\d+|["'][^"']*["'])\s*(,\s*\2\s*)?\)/.test(t.body)) {
       findings.tautology.push(where);
     }
-    // asserts only on source text, never calling the production code
     if (!hasProdImport && /readSource|readFileSync/.test(t.body)) {
       findings.sourceOnly.push(where);
     }

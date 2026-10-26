@@ -5,18 +5,9 @@ import path from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { Master } from "../src/master.ts";
 
-/**
- * Listing archived agents counts each entry's sessions correctly.
- *
- * The reported slowness ("🗄 archive のロードが遅すぎる") was `sessionsOf()` per entry, which ran a
- * full session scan each time. The fix scans once — so what has to be true is that the COUNTS are
- * still right, which is what this drives. It replaces a test that compared the method's source text
- * and therefore passed while the count was wrong.
- */
 test("archivedAgents reports each entry's session count and parent link (#perf)", () => {
   const dir = mkdtempInRootSync("archived-agents-");
   const sessions = path.join(dir, "sessions");
-  // three sessions for `keep`, two for `shelved`; the abandoned one has no session dir at all
   for (const [session, agent] of [
     ["keep-a", "keep"],
     ["keep-b", "keep"],
@@ -37,7 +28,6 @@ test("archivedAgents reports each entry's session count and parent link (#perf)"
       agents: [
         { id: "keep", workspace: dir, provider: "p", session: "keep-a" },
         { id: "shelved", workspace: dir, provider: "p", session: "shelved-a", archived: true, archivedAt: 1000 },
-        // an archived sub-agent of `shelved`: listed as a child, not as an equal entry
         { id: "shelved-sub", workspace: dir, provider: "p", session: "gone", archived: true, parent: "shelved", archivedAt: 2000 },
         { id: "no-sessions", workspace: dir, provider: "p", archived: true, archivedAt: 3000 },
       ],
@@ -53,6 +43,5 @@ test("archivedAgents reports each entry's session count and parent link (#perf)"
   assert.equal(byId.get("shelved-sub")?.parent, "shelved", "a sub-agent names its archived parent");
   assert.equal(byId.get("shelved")?.parent, undefined, "a top-level entry has no parent");
   assert.equal(byId.get("shelved")?.subs, 1, "and the parent counts the archived child under it");
-  // newest first, which is what the panel shows
   assert.deepEqual(listed.map((a) => a.id), ["no-sessions", "shelved-sub", "shelved"], "sorted by archivedAt desc");
 });

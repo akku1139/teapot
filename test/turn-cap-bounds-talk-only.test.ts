@@ -1,25 +1,3 @@
-/**
- * #106 — `maxTurnsPerRound` cannot bound a model that only TALKS.
- *
- * The cap is evaluated once a round ENDS, and it is per-round. But a ROOT agent
- * that answers with a bare message leaves its round after ONE turn
- * (`return finished` in `runTurnsUntilIdle`), so:
- *
- *   - `stats.turns - turnsAtStart` is always 1, and
- *   - no single round ever reaches the cap.
- *
- * `finished` stays false, the goal stays active, and auto-continue starts the next
- * round — forever. Measured before the fix: `maxTurnsPerRound = 40` produced 997
- * turns and ZERO `round-turn-cap` notes.
- *
- * A tool-calling model is unaffected and does trip the cap (measured: 8 turns, 1
- * note), which is how the gap was localised to the talk-only shape.
- *
- * The fix bounds CONSECUTIVE rounds that neither call a tool nor finish, which is
- * where the real loop lives. It is a safety valve, deliberately generous: any
- * tool call resets the counter, so a long autonomous stretch that keeps acting is
- * never affected.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -27,9 +5,6 @@ import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — runs POSIX commands through the bash tool.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool");
 
 interface Ev {
@@ -37,7 +12,6 @@ interface Ev {
   data?: Record<string, unknown>;
 }
 
-/** a model that answers every turn with prose and never calls a tool */
 function talkOnly() {
   let n = 0;
   return async () => {
@@ -46,7 +20,6 @@ function talkOnly() {
   };
 }
 
-/** a model that calls a tool every turn */
 function toolSpinner() {
   let n = 0;
   return async () => {
@@ -90,9 +63,6 @@ test("a talk-only model is stopped instead of spinning forever (#106)", async ()
     const bounded = events.some(
       (e) => e.type === "system_note" && e.data?.event === "auto-continue-bounded",
     );
-    // Count real turns from the LOG, not `stats.turns`: that counter only ticks
-    // from a bus event, so for a talk-only round it reports 1 however many LLM
-    // calls actually happened — which is exactly how the original bug hid.
     const turns = events.filter(
       (e) => e.type === "message" && e.data?.role === "assistant",
     ).length;
@@ -101,13 +71,6 @@ test("a talk-only model is stopped instead of spinning forever (#106)", async ()
       bounded,
       "the idle-round valve must fire for a model that never acts (#106)",
     );
-    // #141: this was `turns <= 12` for a cap of 6 — loose enough to hide an
-    // off-by-one. Mutation-verified: changing `>` to `>=` on the valve (so it
-    // fires one round early) left the whole suite green.
-    //
-    // The valve fires when consecutiveIdleRounds EXCEEDS the cap, so a talk-only
-    // model gets exactly `cap + 1` rounds before it stops. Assert the exact number
-    // so the boundary is pinned from both sides.
     assert.equal(
       turns,
       7,
@@ -117,7 +80,6 @@ test("a talk-only model is stopped instead of spinning forever (#106)", async ()
 });
 
 test("a model that keeps calling tools is NEVER bounded by the valve (#106)", async () => {
-  // the important non-regression: real work must not be capped
   await useTempDirs(["t106c-", "t106d-"], async ([ws, sd]) => {
     const a = new Agent({
       id: "t",
@@ -148,7 +110,6 @@ test("a model that keeps calling tools is NEVER bounded by the valve (#106)", as
 });
 
 test("the per-round cap still fires for a tool-using model (#106)", async () => {
-  // the cap that already worked must keep working
   await useTempDirs(["t106e-", "t106f-"], async ([ws, sd]) => {
     const a = new Agent({
       id: "t",

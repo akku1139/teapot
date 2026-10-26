@@ -1,16 +1,3 @@
-/**
- * 「⏳ N of yours queued」バッジが id 無し harness prompt も数え、✕ cancel の
- * 対象（pendingPromptIds / pendingPromptQueue = user prompt のみ）とズレていた。
- *
- * ただし snapshot の pendingPrompts 自体は「配送カウンタ」（ハーネス含む全件）
- * として意味がある — #141 の配送テストと live 判定（isLive の queued 項）が
- * それを理由にする。壊れていたのはバッジ側: cancel できないものを「yours」と
- * して数えていた。
- *
- * Required:
- *   - snapshot.pendingPrompts は配送カウンタのまま（ハーネス含む全件）
- *   - バッジは pendingPromptIds（取消可能集合）を読む
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -30,8 +17,8 @@ test("snapshot.pendingPrompts stays the DELIVERY counter (harness included) (#14
     } as never) as Agent;
     try {
       await a.init();
-      a.enqueuePrompt("[harness] child finished: report", "harness"); // no id
-      a.enqueuePrompt("mine", "user"); // has an id
+      a.enqueuePrompt("[harness] child finished: report", "harness"); 
+      a.enqueuePrompt("mine", "user"); 
 
       const s = a.snapshot();
       const ids = (s as unknown as { pendingPromptIds?: string[] }).pendingPromptIds ?? [];

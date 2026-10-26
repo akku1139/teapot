@@ -1,22 +1,8 @@
-/**
- * Zod schema for teapot's config — the single source of truth for what a
- * valid config looks like, used to gate web-UI edits (PUT /api/config) and any
- * programmatic writes with human-readable error messages.
- *
- * Validation gates; it is not the storage format — the master persists the raw
- * user JSON so unknown fields survive round-trips.
- */
 import { z } from "zod";
 
 export const ProviderSchema = z.object({
   baseUrl: z.union([z.string().url("baseUrl must be a valid URL"), z.literal("")]).optional(),
   apiKey: z.string().optional(),
-  /**
-   * Several credentials for ONE provider, rotated round-robin (#170). Blank entries
-   * are rejected rather than silently dropped: the operator wrote them, and a key
-   * that vanishes without a word is how "I added 3 keys but it still rate-limits"
-   * happens.
-   */
   apiKeys: z
     .array(z.string().min(1, "an api key entry must not be empty"))
     .max(50, "at most 50 keys per provider")
@@ -45,45 +31,20 @@ export const TaskSchema = z.object({
   forked: z.boolean().optional(),
 });
 
-/** the patch shape accepted by PUT /api/config */
 export const ConfigPatchSchema = z.object({
   providers: z.record(z.string().min(1, "provider name required"), ProviderSchema).optional(),
   defaultProvider: z.string().optional(),
   progressIntervalMs: z.number().int().min(10_000, "progress interval must be ≥ 10s").optional(),
   progressMinChars: z.number().int().min(100).optional(),
-  // null clears a previously pinned compact budget → back to per-model derivation
   contextTokenBudget: z.number().int().min(1_000).nullable().optional(),
-  // null clears a saved window pin → back to per-model inference (same contract as contextTokenBudget)
   contextWindowTokens: z.number().int().min(1_000).nullable().optional(),
   maxSpawnDepth: z.number().int().min(0).max(8).optional(),
-  /**
-   * The shared secret protecting `/api/*` — settable from the settings panel.
-   *
-   * It used to be reachable only through `POST /api/setup`, which refuses once a config file exists.
-   * That was fine while the first-run wizard existed; the wizard is gone, so there was NO way to set
-   * a password at all. Asked as "初回起動ウィザードは前に廃止したはずだからパスワード設定できないの
-   * では?" — correct.
-   *
-   * An EMPTY STRING is meaningful and clears it (back to loopback-only trust), which is why this
-   * accepts `""` rather than requiring a minimum length. `TEAPOT_API_TOKEN` still wins over it.
-   */
   password: z.string().max(200).optional(),
-  /** #161: prune old tool output early (opt-in, for small-window models) */
   shortContext: z.boolean().optional(),
-  // soft cap on LLM turns in one round; reaching it nudges the model to wrap
-  // up (not an error) — 0 disables the cap
   maxTurnsPerRound: z.number().int().min(0).optional(),
-  // round-fatal API errors: "stop" (default) or "retry" (back off + fresh
-  // round — for unattended agents that should ride out outages)
   onError: z.enum(["stop", "retry"]).optional(),
   retryDelayMs: z.number().int().min(1_000).optional(),
   tasks: z.array(TaskSchema).optional(),
-  /**
-   * MCP servers (#67). Validated here so a bad entry fails the SAVE with a readable
-   * message instead of surfacing later as a tool that never appears: a stdio server
-   * needs a command, a network one needs a url, and the name is what namespaces every
-   * tool it exposes.
-   */
   mcpServers: z
     .array(
       z
@@ -110,7 +71,6 @@ export const ConfigPatchSchema = z.object({
 
 export type ConfigPatch = z.infer<typeof ConfigPatchSchema>;
 
-/** Format a ZodError into a compact operator-readable message. */
 export function formatZodError(error: z.ZodError): string {
   return error.issues
     .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)

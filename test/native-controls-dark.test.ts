@@ -1,18 +1,3 @@
-/**
- * #102 — three native controls stayed white in the dark themes:
- *
- *   1. an UNCHECKED checkbox
- *   2. the number input's native ▲▼ spinners
- *   3. the settings window's "+ add custom" / "+ add task" buttons
- *
- * All three are UA-painted, so they ignore the theme unless told otherwise.
- * `accent-color` (already present) colours only the CHECKED tick, which is why
- * the empty box stayed white. And there was NO rule for a bare `<button>`
- * anywhere in the sheet — only `.composer button` and `.iconbtn` — so the two
- * settings buttons rendered as unstyled white-on-white.
- *
- * Every colour must be a theme token, or the ten appearances diverge again.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -20,7 +5,6 @@ import { cssRuleBodies } from "./helpers/css.ts";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
-/** the body of the first rule whose selector list contains `selector` exactly */
 function firstRule(selector: string): string {
   for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const sel = m[1]!.replace(/\/\*[\s\S]*?\*\//g, "").trim();
@@ -29,8 +13,6 @@ function firstRule(selector: string): string {
   return "";
 }
 
-/* ---------- 1. the unchecked checkbox ---------- */
-
 test("an unchecked checkbox gets a theme background (#102)", () => {
   const rule = css.match(/input\[type="?checkbox"?\][^{]*\{([^}]*)\}/g)?.join("\n") ?? "";
   assert.match(
@@ -38,21 +20,12 @@ test("an unchecked checkbox gets a theme background (#102)", () => {
     /background-color:\s*var\(--bg-darkest\)/,
     "the EMPTY box is UA-painted unless told otherwise — accent-color does not cover it (#102)",
   );
-  // #112: `--line` is the hairline colour and measured 1.02-1.09:1 against
-  // --bg-darkest in every theme — i.e. no visible boundary at all.
-  //
-  // The border now uses `--line-strong`, a token dedicated to control BOUNDARIES: `--dim` fixed
-  // the dark themes but washed out on the light ones (2.6:1 on strawberry), which is what
-  // "ramuneは未チェックのチェックボックスの背景色が黒系で微妙" was about. The values are pinned as
-  // measured NUMBERS in theme-contrast.test.ts; here we only check the token that carries them.
   assert.match(
     rule,
     /border:\s*1px solid var\(--line-strong\)/,
     "the box border must use the control-boundary token, not the hairline (#112)",
   );
 });
-
-/* ---------- contrast, measured rather than token-matched (#112) ---------- */
 
 const hex = (h: string) => {
   const s = h.replace("#", "").length === 3 ? h.replace("#", "").split("").map((c) => c + c).join("") : h.replace("#", "");
@@ -63,13 +36,11 @@ const lum = (h: string) => {
   const [r, g, b] = hex(h).map(lin);
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 };
-/** WCAG contrast ratio */
 const contrast = (a: string, b: string) => {
   const [x, y] = [lum(a), lum(b)];
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 };
 
-/** every theme block: [name, bg-darkest, dim] — the two the checkbox uses */
 const THEMES: [string, string, string][] = [
   ["default", "#1a1c22", "#9298a5"],
   ["nord", "#0d0f18", "#8a90ad"],
@@ -78,9 +49,6 @@ const THEMES: [string, string, string][] = [
 ];
 
 test("the unchecked checkbox border is VISIBLE in every theme (#112)", () => {
-  // the operator's report was "the new colours are hard to read". Measured, the
-  // cause was --line at 1.02-1.09:1 — no boundary at all. WCAG wants 3.0:1 for
-  // a non-text UI boundary.
   for (const [name, bg, dim] of THEMES) {
     const ratio = contrast(dim, bg);
     assert.ok(
@@ -91,7 +59,6 @@ test("the unchecked checkbox border is VISIBLE in every theme (#112)", () => {
 });
 
 test("the palette values above are the ones the themes actually ship (#112)", () => {
-  // so this cannot pass against stale numbers after a palette change
   for (const [name, bg, dim] of THEMES) {
     assert.ok(css.includes(bg), `${name}: --bg-darkest ${bg} must exist (#112)`);
     assert.ok(css.includes(dim), `${name}: --dim ${dim} must exist (#112)`);
@@ -99,9 +66,6 @@ test("the palette values above are the ones the themes actually ship (#112)", ()
 });
 
 test("the NATIVE widget is kept, not reimplemented (#112)", () => {
-  // the hand-drawn "✓" replaced the platform tick with an 11px glyph that does
-  // not match the theme's type and loses forced-colours support. The reported
-  // bug was only ever an unchecked box rendering white.
   assert.doesNotMatch(
     css,
     /input\[type="checkbox"\][^{]*\{[^}]*appearance:\s*none/,
@@ -111,11 +75,8 @@ test("the NATIVE widget is kept, not reimplemented (#112)", () => {
 });
 
 test("accent-color still tints the checked state per theme (#112)", () => {
-  // with the native widget back, this is what colours the check
   assert.match(css, /input\[type="checkbox"\]\s*\{[^}]*accent-color:\s*var\(--acc\)/, "accent-color must remain (#112)");
 });
-
-/* ---------- 2. the number spinners ---------- */
 
 test("the number spinners are suppressed (#102)", () => {
   assert.match(
@@ -130,11 +91,7 @@ test("the number spinners are suppressed (#102)", () => {
   );
 });
 
-/* ---------- 3. the settings-window buttons ---------- */
-
 test("a bare <button> is styled somewhere (#102)", () => {
-  // the structural fact: before #102 the sheet had NO rule for a bare button,
-  // which is why the two settings buttons were unstyled
   const hasBare = [...css.matchAll(/(^|[},])\s*button\s*(,[^{]*)?\{/gm)].length > 0;
   const modalScoped = /\.modal[^{]*button[^{]*\{/.test(css);
   assert.ok(
@@ -147,17 +104,10 @@ test("the modal add-buttons are themed, not white (#102)", () => {
   const block = css.slice(css.indexOf(".modal > button"), css.indexOf("@media") === -1 ? css.length : 1e9);
   assert.match(block, /background:\s*var\(--bg-light\)/, "a background is required (#102)");
   assert.match(block, /color:\s*var\(--fg\)/, "and a readable text colour (#102)");
-  // #112: --dim, not --line — the hairline border measured 1.35-1.55:1 against
-  // the page, so the button's edge barely registered as a control
   assert.match(block, /border:\s*1px solid var\(--dim\)/, "and a border that reads as a control (#112)");
 });
 
 test("the modal rule cannot repaint the composer or icon buttons (#102)", () => {
-  // deliberately scoped: a global `button {}` would fight .composer button and
-  // .iconbtn, which already have their own styling
-  // 900 chars was too small — it cut the selector list off before the
-  // `:not(.iconbtn)` guard, so the check failed against correct CSS. Anchor on
-  // the end of the rule block instead of guessing a length.
   const at = css.indexOf(".modal > button");
   const block = css.slice(at, css.indexOf("}", css.indexOf("}", at) + 1) + 1);
   assert.ok(
@@ -180,17 +130,6 @@ test("no hardcoded white was introduced (#102)", () => {
   );
 });
 
-/* ---------- 4. color-scheme: the property that makes the UA paint its widgets ---------- */
-
-/**
- * #102, second pass. The operator reported the checkbox box was STILL white after the
- * first pass. The three rules above set `background-color` / `accent-color`, but neither
- * can reach the browser's own widget painting: that is what `color-scheme` controls
- * (the empty box, the number spinners, scrollbars, the select popup, autofill).
- *
- * It was declared NOWHERE in the sheet, so every native control kept the UA's light
- * palette however the surrounding colours were set.
- */
 test("the sheet declares color-scheme so UA widgets follow the theme (#102)", () => {
   const decls = css.match(/color-scheme:\s*(dark|light)/g) ?? [];
   assert.ok(
@@ -200,11 +139,6 @@ test("the sheet declares color-scheme so UA widgets follow the theme (#102)", ()
 });
 
 test("the LIGHT themes override color-scheme, or their widgets would stay dark (#102)", () => {
-  // declared IN each theme's own block, not as a separate shared rule: a theme
-  // describes itself, which is how every other variable here works — and a shared
-  // `[data-theme="light"], [data-theme="strawberry"], …` rule sitting between a
-  // selector and its own block makes any regex that reads "the block for this theme"
-  // match the WRONG one (that broke #137's tests when this was first written).
   const light = ["light", "strawberry", "ramune"];
   for (const t of light) {
     const block = new RegExp(`\\[data-theme="${t}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
@@ -217,7 +151,6 @@ test("the LIGHT themes override color-scheme, or their widgets would stay dark (
 });
 
 test("the dark themes do NOT set color-scheme: light (#102)", () => {
-  // the mirror: a dark theme declaring light would render its widgets wrong the other way
   for (const t of ["midnight", "tea", "coffee", "matcha", "matrix", "sunset"]) {
     const block = new RegExp(`\\[data-theme="${t}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
     assert.doesNotMatch(block, /color-scheme:\s*light/, `${t} is dark (#102)`);
@@ -225,8 +158,6 @@ test("the dark themes do NOT set color-scheme: light (#102)", () => {
 });
 
 test("every theme either declares color-scheme or inherits the dark default (#102)", () => {
-  // Nine `[data-theme]` blocks; `:root` is the dark default and carries no attribute, so
-  // the light three must each opt in. Derived from backgroud luminance, not guessed.
   const themes = [...new Set([...css.matchAll(/\[data-theme="([a-z]+)"\]/g)].map((m) => m[1]!))];
   assert.equal(themes.length, 9, `theme count changed — re-check which are light: ${themes.join(", ")}`);
   const light = ["light", "strawberry", "ramune"];

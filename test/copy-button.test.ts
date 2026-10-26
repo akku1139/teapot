@@ -1,45 +1,14 @@
-/**
- * #52 — "the Copy buttons on the timeline don't work", reported with:
- *
- *   TypeError: Cannot read properties of undefined (reading 'writeText')
- *
- * `navigator.clipboard` is only exposed in a SECURE context. teapot serves the
- * UI over plain `http://127.0.0.1:7788` by default, so the property is ABSENT
- * there — `navigator.clipboard.writeText(text)` threw synchronously, before any
- * promise existed, so the `.catch()` fallback written underneath it never ran.
- * Every Copy button was dead in the default setup and the execCommand path was
- * unreachable dead code.
- *
- * A second variant matters just as much: some environments (older browsers,
- * embedded webviews, happy-dom) expose a `clipboard` object whose `writeText`
- * is missing or rejects. Treating "the API exists" as "copying works" leaves
- * those silently broken too.
- *
- * The report also asks for visible feedback on success, which the button had but
- * only as a transient glyph with no pending state — worth pinning.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-/**
- * #75: this used to be a MIRROR of the shipped copy strategy, so the suite
- * exercised the mirror while the app ran something else. Deleting the entire
- * `execCommand("copy")` fallback from App.tsx left this file green 11/11 — the #52
- * fix could be half-removed invisibly.
- *
- * `copyText` now lives in `frontend/clipboard.ts` and both App.tsx and this file
- * import it, so the tests drive the code that runs.
- */
 import { copyText } from "../frontend/lib/clipboard.ts";
 import { fakeStaging } from "./helpers/staging.ts";
-
-/* ---------- the crash itself ---------- */
 
 test("copy works when navigator.clipboard is absent (plain http) (#52)", async () => {
   let exec = 0;
   const got = await copyText("hello", {
     makeTextarea: fakeStaging,
-    clipboard: undefined, // ← the reported TypeError case
+    clipboard: undefined, 
     execCommand: () => (exec++, true),
   });
   assert.equal(got, "copied", "copy must still work without the clipboard API (#52)");
@@ -58,14 +27,12 @@ test("copy works when writeText is missing from the clipboard object (#52)", asy
   let exec = 0;
   const got = await copyText("hello", {
     makeTextarea: fakeStaging,
-    clipboard: {} as never, // present but useless — happy-dom, some webviews
+    clipboard: {} as never, 
     execCommand: () => (exec++, true),
   });
   assert.equal(got, "copied", "an object without writeText must fall back (#52)");
   assert.equal(exec, 1);
 });
-
-/* ---------- the paths that should still work ---------- */
 
 test("copy uses the clipboard API when it is genuinely available (#52)", async () => {
   const written: string[] = [];
@@ -118,8 +85,6 @@ test("both paths failing reports a real failure (#52)", async () => {
   });
   assert.equal(got, "failed", "a genuine failure must be reported, not swallowed (#52)");
 });
-
-/* ---------- the legacy path must not leak DOM ---------- */
 
 test("the staging textarea is removed even when execCommand throws (#52)", async () => {
   const ta = fakeStaging();

@@ -1,34 +1,3 @@
-/**
- * #40 — "agent1 → bash (running) → agent2 (writing): agent2's message is
- * agent1's content, with the writing cursor on it."
- *
- * ## Why the earlier fixes all passed while this still reproduced
- *
- * `19b4aab` → `08eaa30` → `2e058a8` were each individually correct, because the
- * recovery mechanism they added only covered ONE case: a MISSED transition to
- * `idle`. The pruning effect depends on `agents()` alone:
- *
- *     const list = agents();
- *     setLiveByAgent((prev) => pruneDeadLiveBuffers(prev, …));
- *
- * So a session switch could never trigger it — and if the agent was ALREADY idle
- * when the switch happened, the snapshot did not change at all, so no prune was
- * even scheduled:
- *
- *     A open, buffer streaming, A settles
- *     A → B        (buffer hidden, still present)
- *     B → A        (buffer reappears WITH the cursor — never revalidated)
- *
- * The missing operation was reconciling the selected agent's buffer against the
- * timeline just loaded. `select()` cleared `events()` but never touched
- * `liveByAgent`.
- *
- * ## The paired tests
- *
- * The obvious "fix" — clear the buffer on every switch — passes the first test
- * and introduces the OPPOSITE bug. Both are asserted here, because either alone
- * is a plausible regression.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -43,33 +12,16 @@ import {
 
 const _here = path.dirname(fileURLToPath(import.meta.url));
 
-// The shape is `LiveBuf`: `text` and `reasoning` are the two streamed parts, and `at` is
-// when the stretch started. `streaming` was a field this fixture invented — nothing in
-// `live-buffer.ts` has ever read it, so the buffers these tests passed were not the ones
-// the app builds.
 const buf: LiveBuf = { text: "agent1 was here", reasoning: "", at: Date.now() };
 const logHas = [{ type: "message", data: { role: "assistant", content: "agent1 was here" } }];
 
-/* ---------- the stale case: A → B → A with A already idle ---------- */
-
 test("a stale buffer with NO log copy is KEPT for one more frame (#40, #172b)", () => {
-  // #40 asked for "an idle agent's buffer must not reappear" and the fix was
-  // `if (!isLiveStatus(status)) return null` — drop on any non-live status. That is
-  // too eager: a turn settles BEFORE its assistant event is delivered, so at that
-  // moment the log holds nothing and the bubble was destroyed with nothing to replace
-  // it. The operator saw the message blink out and come back ("writing 状態から確定
-  // イベントになる時に一瞬メッセージが消える").
-  //
-  // The bubble is only redundant when the log REALLY has its content. Holding it one
-  // extra frame is invisible; dropping it early is a visible flash.
   assert.equal(
     reconcileLiveBuffer(buf, [], "idle"),
     buf,
     "no assistant message in the log yet, so this bubble is not redundant yet",
   );
-  // once the log catches up it IS redundant, which is the property #40 wanted
   assert.equal(reconcileLiveBuffer(buf, logHas, "idle"), null, "persisted → drop (#40)");
-  // and an agent that never produced text still drops immediately
   assert.equal(
     reconcileLiveBuffer({ text: "", reasoning: "", at: Date.now() }, [], "idle"),
     null,
@@ -85,11 +37,7 @@ test("a buffer whose text is already in the log is dropped (#40)", () => {
   );
 });
 
-/* ---------- the inverse: a genuine stream must survive ---------- */
-
 test("a genuine in-flight stream SURVIVES A → B → A (#40)", () => {
-  // the opposite failure mode: clearing on every switch destroys real work the
-  // operator is briefly looking away from
   assert.equal(
     reconcileLiveBuffer(buf, [], "running"),
     buf,
@@ -98,8 +46,6 @@ test("a genuine in-flight stream SURVIVES A → B → A (#40)", () => {
 });
 
 test("a parked agent (waiting) keeps its buffer (#40)", () => {
-  // `waiting` is an ask_user pause: the turn is unfinished and its answer has not
-  // reached the log, so the bubble is the only copy
   assert.equal(reconcileLiveBuffer(buf, [], "waiting"), buf, "waiting is live (#40)");
 });
 
@@ -108,11 +54,7 @@ test("an empty but streaming buffer is kept while live (#40)", () => {
   assert.equal(reconcileLiveBuffer(fresh, [], "running"), fresh, "first chunk, nothing logged (#40)");
 });
 
-/* ---------- "live" must mean one thing ---------- */
-
 test("live means the same thing in both places (#40)", () => {
-  // pruneDeadLiveBuffers kept `running` AND `waiting`; isCoveredByLog only
-  // honoured `running`, so the two could disagree about the same buffer in one tick
   assert.equal(isLiveStatus("waiting"), true, "waiting is live (#40)");
   assert.equal(isCoveredByLog(buf, [], "waiting"), false, "and must NOT read as covered (#40)");
   assert.equal(isCoveredByLog(buf, [], "running"), false, "same for running (#40)");
@@ -131,8 +73,4 @@ test("the prune helper uses the shared predicate (#40)", () => {
   );
   assert.equal(dropped.size, 0, "and that an idle one is not (#40)");
 });
-
-/* ---------- the wiring, which was the real bug twice already ---------- */
-
-/* ---------- the WS hello snapshot was being discarded ---------- */
 

@@ -1,24 +1,3 @@
-/**
- * `.editorconfig` support (#109) — "edit_file の改行コードを .editorconfig に合わせて
- * 正規化するとか?".
- *
- * ## The precedence this pins
- *
- * The file's own content OUTRANKS configuration, which outranks the LF default.
- * #84 already re-applies an existing file's dominant EOL, because the model never
- * emits `\r` and writing its content verbatim turned a CRLF file into a whole-file
- * diff. `.editorconfig` therefore only supplies an answer where the file could not:
- *
- *   - a NEW file (nothing to detect), and
- *   - a MIXED-EOL file (`detectEol` returns null on purpose).
- *
- * The alternative — letting config win — means a `end_of_line = crlf` in a repo whose
- * files are all LF silently converts every file the agent touches. That is the
- * "startled the operator with a whole-file diff" failure in a new costume.
- *
- * Driven through `executeTool`, i.e. the real path, because a helper that nothing
- * calls is this repo's recurring defect (#75).
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -47,8 +26,6 @@ test("a NEW file takes its line ending from .editorconfig (#109)", async () => {
 });
 
 test("an EXISTING file's own ending OUTRANKS .editorconfig (#109/#84)", async () => {
-  // the repo declares crlf, but this file is LF. Converting it would be a
-  // whole-file diff for what the model believed was an ordinary write.
   const ws = mkdtempInRootSync("ec-exist-");
   fs.writeFileSync(path.join(ws, ".editorconfig"), "root = true\n\n[*]\nend_of_line = crlf\n");
   fs.writeFileSync(path.join(ws, "lf.txt"), "x\ny\n");
@@ -113,26 +90,19 @@ test("no .editorconfig leaves the LF default untouched (#109)", async () => {
 test("the config reader reports nothing rather than guessing (#109)", () => {
   const ws = mkdtempInRootSync("ec-read-");
   assert.deepEqual(editorConfigFor(path.join(ws, "x.txt")), { eol: null }, "no file -> no opinion");
-  // a property outside any section applies to nothing
   fs.writeFileSync(path.join(ws, ".editorconfig"), "end_of_line = crlf\n");
   assert.deepEqual(editorConfigFor(path.join(ws, "x.txt")), { eol: null });
-  // an unsupported value is ignored, not coerced
   fs.writeFileSync(path.join(ws, ".editorconfig"), "[*]\nend_of_line = wat\n");
   assert.deepEqual(editorConfigFor(path.join(ws, "x.txt")), { eol: null });
 });
 
 test("editorconfig globs match the way the format documents (#109)", () => {
-  // a section with no `/` matches the BASENAME at any depth — the format's special
-  // case, and why `[*.md]` at a repo root reaches `docs/x.md`
   assert.equal(sectionMatches("*.md", "docs/x.md"), true);
   assert.equal(sectionMatches("*.md", "x.txt"), false);
-  // a single star never crosses a separator
   assert.equal(sectionMatches("src/*.ts", "src/a.ts"), true);
   assert.equal(sectionMatches("src/*.ts", "src/sub/a.ts"), false);
-  // a double star does
   assert.equal(sectionMatches("src/**.ts", "src/sub/a.ts"), true);
   assert.equal(sectionMatches("**/*.ts", "a.ts"), true, "**/ must also match zero segments");
-  // brace alternation and character classes
   assert.equal(sectionMatches("**.{js,ts}", "x/y/a.ts"), true);
   assert.equal(sectionMatches("**.{js,ts}", "x/y/a.py"), false);
   assert.equal(sectionMatches("lib/[ab].js", "lib/a.js"), true);

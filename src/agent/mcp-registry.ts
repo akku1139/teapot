@@ -1,29 +1,5 @@
-/**
- * The MCP server registry: connections, tool discovery, dispatch, and the OAuth
- * flow's plumbing.
- *
- * Why a registry instead of connecting per agent: several agents usually want the same
- * server, and a stdio server is a PROCESS. The pool keys by server name, so N agents share
- * one connection — and a `tools/call` is still per-agent, because the arguments are.
- *
- * Naming. Two servers may both expose `search`, and a server may expose a name that
- * collides with a built-in tool (`bash`, `read_file`). Every MCP tool is therefore exposed
- * as `mcp__<server>__<tool>`, which cannot collide with a built-in (those have no `__`)
- * and tells the model where a result came from.
- *
- * OAuth lives here because it is per SERVER (one grant, shared by every agent) while the
- * protocol itself belongs to the SDK — see `mcp-oauth-manager.ts` for the provider.
- */
 
 import type { McpAuth, McpConnection, McpServerConfig, McpTool } from "./mcp.ts";
-/**
- * `connectMcp` is imported LAZILY, and only as a value.
- *
- * A static import here pulls `mcp.ts`, which lazily loads `@modelcontextprotocol/client` — but a
- * static EDGE from this module means the bundler/runtime must resolve the whole file graph at load.
- * MEASURED: this module alone cost +48.7MB RSS. The registry is constructed at boot on every
- * machine, while a connection is only attempted when a server is actually configured.
- */
 const connectMcp = async (...args: Parameters<typeof import("./mcp.ts").connectMcp>) =>
   (await import("./mcp.ts")).connectMcp(...args);
 import {
@@ -34,19 +10,13 @@ import {
   type OAuthStatus,
 } from "./mcp-oauth-manager.ts";
 
-/** the prefix a model-visible MCP tool name carries */
 export const MCP_PREFIX = "mcp__";
 
-/** `mcp__server__tool` — the flat name handed to the LLM */
 export function flattenToolName(server: string, tool: string): string {
-  // `__` is the separator, so a server or tool name containing it would be ambiguous.
-  // Collapse runs rather than rejecting: a server called "my__server" is unusual but not
-  // worth failing over, and the mapping stays stable.
   const s = server.replace(/__/g, "_");
   return `${MCP_PREFIX}${s}__${tool}`;
 }
 
-/** pull the parts back out of a flat name, or null when it is not an MCP tool */
 export function splitToolName(flat: string): { server: string; tool: string } | null {
   if (!flat.startsWith(MCP_PREFIX)) return null;
   const rest = flat.slice(MCP_PREFIX.length);
@@ -62,11 +32,9 @@ export interface McpServerState {
   status: "disconnected" | "connecting" | "connected" | "error" | "disabled" | "authorizing";
   lastError?: string;
   lastChecked?: number;
-  /** a 401 challenge said this server wants OAuth */
   oauthRequired?: boolean;
 }
 
-/** one in-flight authorization: the listener and the server it belongs to */
 interface PendingFlow {
   server: string;
   redirectUrl: string;
@@ -80,15 +48,10 @@ export class McpRegistry {
   private store: McpAuthStore | null = null;
   private flows = new Map<string, PendingFlow>();
 
-  /**
-   * Point the registry at its grant store. Called once at boot; until then OAuth is
-   * inert (no grant is read from an assumed location).
-   */
   init(dataDir: string): void {
     this.store = new McpAuthStore(dataDir);
   }
 
-  /** replace the configured server list (on boot and after a settings save) */
   apply(configs: McpServerConfig[]): void {
     const wanted = new Set(configs.map((c) => c.name));
     for (const [name, st] of this.servers) {
@@ -99,7 +62,6 @@ export class McpRegistry {
     }
     for (const cfg of configs) {
       const prev = this.servers.get(cfg.name);
-      // a config EDIT means the old connection is pointing at the wrong thing
       const changed = Boolean(prev) && JSON.stringify(prev!.config) !== JSON.stringify(cfg);
       if (changed) void prev!.connection?.close();
       const reuse = prev && !changed;
@@ -122,21 +84,13 @@ export class McpRegistry {
     return [...this.servers.values()];
   }
 
-  /** the state of ONE server, or undefined when it is not configured */
   state(name: string): McpServerState | undefined {
     return this.servers.get(name);
   }
 
-  /**
-   * Record an out-of-band successful connection for a SAVED server.
-   *
-   * `/api/mcp/test` opens a throwaway connection (it must not disturb the live one) but the result is
-   * real evidence about the same config, so the row's badge has to reflect it. Without this a server
-   * that failed at boot stayed `● error` after a test successfully listed its tools.
-   */
   recordSuccess(name: string, tools: McpServerState["tools"]): void {
     const st = this.servers.get(name);
-    if (!st) return; // testing an unsaved edit must not invent an entry
+    if (!st) return; 
     st.status = "connected";
     st.tools = tools;
     st.lastError = undefined;
@@ -144,32 +98,15 @@ export class McpRegistry {
     st.oauthRequired = false;
   }
 
-  /** the OAuth state of one server, for the settings panel */
   oauthStatus(name: string): OAuthStatus {
     return this.auths.get(name)?.status() ?? { pending: false, authorized: false, expiresAt: null, hasRefreshToken: false, flow: { phase: "idle" } };
   }
 
-  /**
-   * The provider for one server, created on demand.
-   *
-   * The redirect URL here is used for CLIENT REGISTRATION, not just for the authorization request:
-   * `clientMetadata.redirect_uris` is what gets registered on the first connect. A portless
-   * placeholder therefore registers a redirect URI the real flow can never match — MEASURED, that
-   * is exactly what happened (stored `redirect_uris: ["http://127.0.0.1/callback"]`), and it is why
-   * a completed Notion authorization left no access token.
-   *
-   * `ServerAuth.clientInformation()` now refuses a registration whose URI differs from the current
-   * one, so a stale record is re-made instead of reused. This value still cannot carry the real
-   * port — none is known until `startOAuth` opens one — but it is now harmless, and keeping a
-   * long-lived provider bound to a port that is not listening would be worse.
-   */
   private async authFor(name: string): Promise<ServerAuth | undefined> {
     if (!this.store) return undefined;
     const existing = this.auths.get(name);
     if (existing) return existing;
     const stored = await this.store.get(name);
-    // a flow needs a redirect; the SDK only reads it during authorize, and
-    // `startOAuth` replaces the instance with one carrying the real port
     const auth = new ServerAuth(name, "http://127.0.0.1/callback", (server, data) =>
       this.store!.set(server, data),
     );
@@ -178,18 +115,6 @@ export class McpRegistry {
     return auth;
   }
 
-  /**
-   * Try a configuration WITHOUT disturbing the saved connection, using the SAVED credentials.
-   *
-   * `test` used `connectMcp(cfg)` with no auth provider "on purpose", so an authorized server
-   * answered 401 and the row said "needs a grant (🔑 authorize)" while the same server was
-   * `● connected` with 65 tools two lines above — reported as "Notionは 🔑 authorized なのに
-   * Error POSTing to endpoint · needs a grant". A test that ignores the token it is testing cannot
-   * answer the question the button asks.
-   *
-   * The connection is throwaway (closed by the caller) and the registry entry is only touched on
-   * success, so a test against an unsaved edit cannot invent or corrupt an entry.
-   */
   async testConfig(cfg: McpServerConfig): Promise<{ tools: McpTool[] }> {
     const auth = await this.authFor(cfg.name);
     const authArg: McpAuth | undefined = auth ? { provider: auth } : undefined;
@@ -201,7 +126,6 @@ export class McpRegistry {
     }
   }
 
-  /** connect one server (idempotent) and discover its tools */
   async connect(name: string): Promise<McpServerState> {
     const st = this.servers.get(name);
     if (!st) throw new Error(`no such MCP server: ${name}`);
@@ -210,19 +134,6 @@ export class McpRegistry {
       return st;
     }
     if (st.status === "connected" && st.connection) {
-      /**
-       * A cached connection is not proof the server is still there.
-       *
-       * This used to return immediately, so a server that restarted kept `status: "connected"` with
-       * its OLD tool list while the transport underneath was dead. The UI's `test` button opened a
-       * FRESH connection (`testConfig`), so it reported success and the tools appeared — and the
-       * agent, going through this cached path, could not call any of them. Reported as "test をすると
-       * 接続に成功するのに、エージェントからは呼べない".
-       *
-       * A cheap liveness probe settles it: a server that answers is reused, one that does not is
-       * dropped so the reconnect below builds a new transport. `tools()` is the cheapest call that
-       * exercises the transport for real (unlike reading the cached list).
-       */
       try {
         st.tools = await st.connection.tools();
         st.lastChecked = Date.now();
@@ -251,11 +162,6 @@ export class McpRegistry {
       st.lastChecked = Date.now();
       st.connection = undefined;
       st.tools = [];
-      // The SDK reports a missing grant as an UnauthorizedError (or an HTTP 401); both
-      // mean "authorize", which is a different situation from "broken".
-      // The SDK reports a missing grant as an HTTP error carrying the STATUS. Reading
-      // `status` is reliable; matching the message text is not, because the SDK's message
-      // is just "Error POSTing to endpoint: <body>" and a server may send an empty body —
       const status = (err as { status?: unknown }).status;
       const msg = (err as Error).message ?? "";
       const needsAuth =
@@ -270,34 +176,28 @@ export class McpRegistry {
     }
   }
 
-  /** connect every enabled server; failures are recorded, never thrown */
   async connectAll(): Promise<void> {
     await Promise.all(
       [...this.servers.keys()].map(async (n) => {
         try {
           await this.connect(n);
         } catch {
-          /* recorded in the state; one dead server must not stop the others */
         }
       }),
     );
   }
 
-  /** every tool from every CONNECTED server, flattened */
   allTools(): McpTool[] {
     return [...this.servers.values()]
       .filter((s) => s.status === "connected")
       .flatMap((s) => s.tools);
   }
 
-  /** dispatch a flattened name; returns null when it is not an MCP tool */
   async call(flatName: string, args: unknown): Promise<{ ok: boolean; text: string } | null> {
     const parts = splitToolName(flatName);
     if (!parts) return null;
     const st = this.servers.get(parts.server);
     if (!st) return { ok: false, text: `no such MCP server: ${parts.server}` };
-    // a call for a configured-but-unconnected server connects on demand: adding one
-    // mid-session must not need a restart
     if (st.status !== "connected" || !st.connection) {
       try {
         await this.connect(parts.server);
@@ -309,14 +209,6 @@ export class McpRegistry {
       const r = await this.servers.get(parts.server)!.connection!.call(parts.tool, args);
       return { ok: r.ok, text: r.text };
     } catch (err) {
-      /**
-       * A failed call means the transport is suspect, not just this one call.
-       *
-       * Leaving `status: "connected"` made the next attempt reuse the same dead connection, so one
-       * server restart broke every subsequent call until the process restarted. Dropping the
-       * connection here lets `connect()` rebuild it on the next attempt — and the tools list is
-       * cleared with it, because a stale list is what let the UI show tools that could not be called.
-       */
       const st = this.servers.get(parts.server);
       if (st) {
         st.connection = undefined;
@@ -329,24 +221,8 @@ export class McpRegistry {
     }
   }
 
-  /**
-   * Start an OAuth flow.
-   *
-   * Opens the loopback listener, points the provider at it, and makes a connect attempt
-   * so the SDK performs discovery and produces the authorization URL. The returned URL is
-   * what the UI opens; the promise behind it settles when the browser comes back.
-   */
-  /**
-   * Register a server that is not in the saved config yet, so a flow can run against it.
-   *
-   * The settings panel lets the operator authorize a server before saving it — the alternative was
-   * save → the dialog closes → reopen → authorize → save again. The grant lives in the OAuth store
-   * keyed by NAME, so nothing here needs to reach `config.mcpServers`; a later `apply()` with the
-   * saved list replaces this entry.
-   */
   registerUnsaved(cfg: McpServerConfig): void {
     const existing = this.servers.get(cfg.name);
-    // never clobber a live connection with a draft
     if (existing?.connection) return;
     if (existing) existing.config = cfg;
     else this.servers.set(cfg.name, { config: cfg, status: "disconnected", tools: [] } as never);
@@ -360,7 +236,6 @@ export class McpRegistry {
     if (existing) await this.finishFlow(name, existing);
 
     const loop = await listenForCallback();
-    // a provider bound to THIS listener's port
     const auth = new ServerAuth(name, loop.redirectUrl, (server, data) => this.store!.set(server, data));
     if (this.store) await auth.hydrate(await this.store.get(name));
     this.auths.set(name, auth);
@@ -373,26 +248,10 @@ export class McpRegistry {
     };
     this.flows.set(name, pending);
 
-    // A connect attempt is what drives the SDK: it discovers the authorization server,
-    // registers a client if needed, and calls redirectToAuthorization before throwing.
     st.oauthRequired = true;
-    /**
-     * KEEP the connection from the 401, not just its side effects.
-     *
-     * `connectMcp` throws on the 401 that starts the flow, but the transport inside it is the ONE
-     * that will redeem the code — a transport cannot be re-started ("already started"), so building
-     * a second one here and calling `finishAuth` on it is not equivalent. MEASURED: calling
-     * `connectMcp` again in the callback handler produced another Unauthorized (no token yet) and
-     * the exchange never ran, which is why BOTH Notion and Canva reported
-     * `UnauthorizedError: Unauthorized`.
-     *
-     * `pendingConn` holds the instance whose provider already did discovery; the callback leg
-     * finishes the exchange on it and gets a fresh, usable connection back.
-     */
     let pendingConn: McpConnection | null = null;
     try {
       const conn = await connectMcp(st.config, { provider: auth });
-      // already authorized (a stored refresh token was good): no flow needed
       st.connection = conn;
       st.tools = await conn.tools();
       st.status = "connected";
@@ -400,10 +259,6 @@ export class McpRegistry {
       await this.finishFlow(name, pending);
       return { url: "" };
     } catch (err) {
-      /**
-       * The failed attempt still produced a connection object with a live provider. `connectMcp`
-       * only closes the client when NO provider was supplied, precisely so this path can continue.
-       */
       pendingConn = (err as { connection?: McpConnection }).connection ?? null;
       const url = auth.pendingUrl();
       if (!url) {
@@ -413,43 +268,11 @@ export class McpRegistry {
         throw new Error(`could not start the authorization flow: ${message}`);
       }
       st.status = "authorizing";
-      // complete in the background once the browser arrives
       void (async () => {
         try {
           const { code, iss } = await loop.wait(FLOW_TIMEOUT_MS);
-          /**
-           * THE CONNECTION FROM THE 401, not a new one.
-           *
-           * This used to call `connectMcp` again, which — with no token yet — 401s a SECOND time.
-           * `finishAuth` therefore never ran, and both Notion and Canva surfaced
-           * `UnauthorizedError: Unauthorized` after a completed browser authorization. The
-           * exchange could only ever happen on the transport that started the flow.
-           */
           const conn = pendingConn;
           if (!conn) throw new Error("the authorization flow lost its connection");
-          /**
-           * Supply `iss` from OUR discovery record when the callback omitted it.
-           *
-           * RFC 9207 §2 says a server that advertises
-           * `authorization_response_iss_parameter_supported: true` MUST include `iss` in the
-           * response, and §2.4 says clients MUST reject a response without it. Notion advertises
-           * `true` and then sends only `code` and `state`, so a strictly-conforming client discards
-           * every completed authorization — which is "Notionがコールバック踏んだのに Unauthorized".
-           *
-           * §2.4 also allows the opposite: "clients ... MAY accept authorization responses that do
-           * not contain the iss parameter ... Local policy or configuration can determine whether to
-           * accept such responses". We accept them, using the issuer we recorded BEFORE sending the
-           * browser out, because that is the value the mix-up check needs.
-           *
-           *   no iss      -> IssuerMismatchError "received undefined"   (the reported failure)
-           *   correct iss -> the token endpoint is reached (invalid_grant for a dummy code)
-           *   wrong iss   -> IssuerMismatchError "received https://evil.example"
-           * so the check is not disabled — a genuinely mismatched issuer is still rejected.
-           */
-          /**
-           * `finishAuth` returns a NEW connection: the instance that redeemed the code cannot serve
-           * requests (a transport is one-shot), so storing `conn` here would leave a dead handle.
-           */
           const live = await conn.finishAuth(code, iss ?? auth.expectedIssuer());
           await conn.close().catch(() => {});
           st.connection = live;
@@ -459,15 +282,6 @@ export class McpRegistry {
           st.lastError = undefined;
           await this.finishFlow(name, pending);
         } catch (e) {
-          /**
-           * Report the CAUSE, not just the message.
-           *
-           * `UnauthorizedError` defaults its message to the bare string "Unauthorized" when the SDK
-           * constructs it without one (measured in the SDK source: `super(message ?? "Unauthorized")`).
-           * That is what the panel was showing, and it says nothing about which step failed — the
-           * exchange, the reconnect after it, or the original 401. The class name and any `cause`
-           * are the difference between "try again" and a diagnosis.
-           */
           const err = e as Error & { cause?: unknown };
           const name = err.constructor?.name ?? "Error";
           const cause = err.cause instanceof Error ? err.cause.message : String(err.cause ?? "");
@@ -485,13 +299,11 @@ export class McpRegistry {
     }
   }
 
-  /** close a flow's listener and record its outcome */
   private async finishFlow(name: string, f: PendingFlow): Promise<void> {
     if (this.flows.get(name) === f) this.flows.delete(name);
     await f.close().catch(() => {});
   }
 
-  /** forget a grant (disconnect) */
   async disconnect(name: string): Promise<void> {
     const auth = this.auths.get(name);
     if (auth) await auth.clear();
@@ -516,5 +328,4 @@ export class McpRegistry {
   }
 }
 
-/** process-wide registry: one connection per server, shared by every agent */
 export const mcp = new McpRegistry();

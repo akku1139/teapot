@@ -8,14 +8,10 @@ import { highlightChunks } from "../lib/shiki";
 import { ficon, fileUiFor, mediaKindOf, type FileUiState, type TreeNode } from "../lib/file-tree";
 import { fmtK } from "../lib/timeline-row";
 
-
 export function FilesPanel(props: { agentId: string; workspace: string }) {
   const ui = fileUiFor(props.agentId);
-  // path → lazily fetched child listing ("" = workspace root)
   const [kids, setKids] = createSignal<Map<string, TreeNode[]>>(new Map());
   const [expanded, setExpandedRaw] = createSignal<Set<string>>(ui.expanded);
-  // every preview/media/mode write mirrors into `ui` so a remount of this
-  // panel (parent re-render churn) restores the open popup instead of losing it
   const [preview, setPreviewRaw] = createSignal(ui.preview);
   const setPreview = (v: FileUiState["preview"]) => { ui.preview = v; setPreviewRaw(v); };
   const setExpanded = (v: Set<string>) => { ui.expanded = v; setExpandedRaw(v); };
@@ -24,7 +20,6 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
   const [viewMode, setViewModeRaw] = createSignal(ui.viewMode);
   const setViewMode = (v: FileUiState["viewMode"]) => { ui.viewMode = v; setViewModeRaw(v); };
   const [err, setErr] = createSignal("");
-  // gitignored files: "dim" (default) | "hide" | "show"
   const [ignoreMode, setIgnoreMode] = createSignal(
     localStorage.getItem("teapot.ignoreMode") ?? "dim",
   );
@@ -34,29 +29,17 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     setIgnoreMode(next);
     localStorage.setItem("teapot.ignoreMode", next);
   };
-  /** filter helper per current mode */
-  // "hide" removes ignored entries entirely — INCLUDING ignored directories
-  // (node_modules/, dist/…). The old `!n.dir` exception kept ignored dirs
-  // visible, which read as the toggle being broken. Expanding a hidden dir is
-  // still possible via 🙈→👁 if ever needed.
   const ignoreFilter = (n: TreeNode) => (ignoreMode() === "hide" ? !n.ignored : true);
-  // show dotfiles — also persisted; toggling refetches the open dirs
   const [showHidden, setShowHidden] = createSignal(
     localStorage.getItem("teapot.showHidden") === "1",
   );
   const toggleHidden = () => {
     const next = !showHidden();
-    // Fetch FIRST with the new flag, then flip the signal and patch the map
-    // in place — flipping before the fetch landed left the tree showing its
-    // old rows under a new filter (or nothing at all while in flight), which
-    // collapsed .filebox and visibly reflowed the whole right panel.
     const targets = ["", ...expanded()];
     void Promise.all(targets.map(async (p) => ({ p, rows: await fetchDirWith(p, next) })))
       .then((results) => {
         setShowHidden(next);
         localStorage.setItem("teapot.showHidden", next ? "1" : "0");
-        // merge (not replace): unchanged rows keep their object identity, so
-        // the toggle no longer rebuilds every visible row
         for (const { p, rows } of results) if (rows) mergeKids(p, rows);
       });
   };
@@ -74,7 +57,6 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     return fetchDirWith(path, showHidden());
   }
 
-  /** same, but with an explicit dotfiles flag (used by the toggle's pre-fetch) */
   async function fetchDirWith(path: string, hidden: boolean): Promise<TreeNode[] | null> {
     try {
       const qs = new URLSearchParams();
@@ -90,37 +72,18 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     }
   }
 
-  // reset & load the root whenever a DIFFERENT agent is selected. The guard
-  // matters: agent snapshots update on every poll/event burst, and without it
-  // each update cleared + re-fetched the whole tree (visible flicker and a
-  // pointless /tree request per snapshot).
-  // Merge fetched rows into the cache WITHOUT replacing row objects that are
-  // unchanged (same path+dir+size). Solid's <For> diffs by reference: handing
-  // it brand-new TreeNode objects on every refresh tore down and rebuilt the
-  // whole visible list — the "tree flickers on refresh" bug.
   const mergeKids = (path: string, rows: TreeNode[]) =>
     setKids((prev) => {
       const old = prev.get(path);
       if (!old) return new Map(prev).set(path, rows);
-      /**
-       * Order comes from the FRESH response, identity from the previous row.
-       *
-       * This walked `old` and looked each entry up in `rows`, so the cached ORDER was preserved and
-       * the server's sort never took effect on a refresh — reloading a directory left it in whatever
-       * order it had first been read (reported: "リロードを重ねた結果…ディレクトリ先、アルファベット順
-       * オーダーになってない"). The reference-preserving trick below is about avoiding remounts, not
-       * about ordering: map over `rows` and reuse the previous object when it is equivalent.
-       */
       const byPath = new Map(old.map((o) => [o.path, o]));
       const merged = rows.map((fresh) => {
         const o = byPath.get(fresh.path);
-        // keep the previous object when nothing changed → no remount
         return o && o.dir === fresh.dir && o.size === fresh.size &&
                o.ignored === fresh.ignored && o.name === fresh.name
           ? o
           : fresh;
       });
-      // drop entries that vanished from disk — but never the one being previewed
       const kept = merged.filter((m) => rows.some((r) => r.path === m.path) || ui.preview?.path === m.path);
       const next = new Map(prev);
       next.set(path, kept);
@@ -130,10 +93,8 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
   let kidsFor = "";
   createEffect(() => {
     const id = props.agentId;
-    if (id === kidsFor) return; // same agent — keep the loaded tree as-is
+    if (id === kidsFor) return; 
     kidsFor = id;
-    // a REAL agent switch starts a fresh view; a mere panel remount keeps
-    // everything (state lives in `ui`, see fileUiFor above)
     setExpanded(new Set<string>());
     setPreview(null);
     setMedia(null);
@@ -160,7 +121,6 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
 
   const [hlHtml, setHlHtml] = createSignal("");
   const [hlPending, setHlPending] = createSignal(false);
-  // editBuf stays local — it is transient typing state tied to one popup
   const [editBuf, setEditBuf] = createSignal("");
   const [saving, setSaving] = createSignal(false);
   const isMd = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
@@ -176,7 +136,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
         setHlHtml((prev) => prev + chunk);
       }
     } catch {
-      if (hlRun === run) setHlHtml(""); // give up → plain fallback
+      if (hlRun === run) setHlHtml(""); 
     } finally {
       if (hlRun === run) setHlPending(false);
     }
@@ -187,7 +147,6 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     node: TreeNode,
     mode: "code" | "edit" | "md",
   ) => {
-    // media files stream from the raw endpoint instead of text preview
     const mk = mediaKindOf(node.path);
     if (mk) {
       setPreview({ path: node.path, content: "", binary: true });
@@ -211,7 +170,6 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     }
   };
 
-  /** PUT the edited buffer back; on conflict offer to load the disk version */
   const saveFile = async () => {
     const pv = preview();
     if (!pv || saving()) return;
@@ -222,7 +180,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: editBuf(), baseContent: pv.content }),
       });
-      setPreview({ ...pv, content: editBuf() }); // new baseline for future conflicts
+      setPreview({ ...pv, content: editBuf() }); 
       flashHint(`saved ${pv.path}`);
     } catch (ex) {
       const raw = (ex as { payload?: unknown }).payload;
@@ -231,7 +189,6 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
           ? (raw as { current?: string })
           : null;
       if (conflict?.current !== undefined) {
-        // offer the fresh disk content instead of throwing away the save
         const take = confirm(
           "This file changed on disk since you opened it.\n" +
             "OK = load the disk version into the editor (your edits are discarded)\n" +
@@ -388,7 +345,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
                 </>
               }
             >
-              {/* media preview: stream raw bytes with native controls */}
+              {}
               <div class="mediapreview">
                 <Show when={media()!.kind === "image"} fallback={
                   <Show when={media()!.kind === "video"} fallback={

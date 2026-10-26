@@ -10,9 +10,6 @@ import { bus } from "../src/bus.ts";
 import type { ChatFn, LlmConfig, LlmResult } from "../src/agent/llm.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — POSIX filesystem paths.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("POSIX filesystem paths");
 
 const LLM: LlmConfig = { baseUrl: "http://mock", apiKey: "k", model: "m" };
@@ -47,8 +44,6 @@ async function mkAgent(
   return { agent, ws, sess };
 }
 
-/* ---------- goal lives beside the log, not in the workspace ---------- */
-
 test("setGoal writes sessionDir/goal.md and never touches the workspace", async () => {
   await useTempDirs(["sto-ws-", "sto-sess-"], async ([ws, sess]) => {
     const { agent } = await mkAgent(ws, sess);
@@ -67,12 +62,10 @@ test("legacy workspace GOAL.md is migrated into the session dir", async () => {
 
     assert.equal(agent.goal.status, "done");
     assert.match(await readFile(path.join(sess, "goal.md"), "utf8"), /Build X/);
-    assert.ok(!existsSync(path.join(ws, "GOAL.md"))); // moved, not copied
+    assert.ok(!existsSync(path.join(ws, "GOAL.md"))); 
     await agent.dispose();
   });
 });
-
-/* ---------- static system prompt (cache-friendly) ---------- */
 
 test("system prompt stays byte-identical across turns even if AGENTS.md appears", async () => {
   const seen: string[] = [];
@@ -88,12 +81,11 @@ test("system prompt stays byte-identical across turns even if AGENTS.md appears"
     await agent.settled();
     assert.ok(!seen[0].includes("CONVENTION_MARKER"));
 
-    // project knowledge appearing mid-session must NOT change the prompt
     await writeFile(path.join(ws, "AGENTS.md"), "# Conventions\nCONVENTION_MARKER keep tests fast\n");
     agent.enqueuePrompt("again");
     agent.start("t2");
     await agent.settled();
-    assert.equal(seen.at(-1), seen[0]); // identical bytes → prefix cache stays hot
+    assert.equal(seen.at(-1), seen[0]); 
     await agent.dispose();
   });
 });
@@ -114,11 +106,7 @@ test("AGENTS.md is embedded in the prompt and never ALSO told to be read (#13)",
 
     const sys = seen[0];
     assert.ok(sys, "a system prompt was sent");
-    // (a) the file's content really is embedded…
     assert.match(sys, /CONVENTION_MARKER/);
-    // (b) …so the prompt must NOT also tell the agent to go read it. The
-    // old wording ("read it with read_file at session start") made every
-    // session re-read a file it already had verbatim in its context.
     assert.doesNotMatch(sys, /read it with read_file/);
     assert.doesNotMatch(sys, /AGENTS\.md[^\n]*read[^\n]*read_file/i);
     assert.doesNotMatch(sys, /read_file[^\n]*AGENTS\.md/i);
@@ -128,8 +116,6 @@ test("AGENTS.md is embedded in the prompt and never ALSO told to be read (#13)",
 
 test("system prompt no longer claims session state is never injected (#13)", async () => {
   await useTempDirs(["ag2-ws-", "ag2-sess-"], async ([ws, sess]) => {
-    // no AGENTS.md here — the blanket claim was wrong either way, and it
-    // contradicted the embedding that happens whenever one IS present.
     const { agent } = await mkAgent(ws, sess, {
       chatFn: mkMock(() => reply("ok")),
       autoContinue: false,
@@ -143,8 +129,6 @@ test("system prompt no longer claims session state is never injected (#13)", asy
     await agent.dispose();
   });
 });
-
-/* ---------- on-demand state tools ---------- */
 
 test("get_goal / read_memory return harness-managed state on demand", async () => {
   const toolResults: string[] = [];
@@ -172,10 +156,6 @@ test("get_goal / read_memory return harness-managed state on demand", async () =
     await agent.dispose();
   });
 });
-
-/* ---------- meta tools write harness-managed files ---------- */
-
-/* ---------- meta tools write harness-managed files ---------- */
 
 test("set_goal tool updates goal.md and the snapshot", async () => {
   const mock = mkMock((n) =>
@@ -222,13 +202,11 @@ test("set_memory tool writes memory.md; read_memory fetches it back", async () =
 test("a declared context window implies its own compaction budget", async () => {
   await useTempDirs(["sto-ws-1", "sto-sess-1", "sto-ws-2", "sto-sess-2", "sto-ws-3", "sto-sess-3"], async (ds) => {
     const [w1, s1, w2, s2, w3, s3] = ds;
-    const { agent } = await mkAgent(w1!, s1!, { contextWindowTokens: 1_000_000 }); // no explicit budget
-    assert.equal(agent.snapshot().ctx!.compactAt, 750_000); // ~75% of the window
+    const { agent } = await mkAgent(w1!, s1!, { contextWindowTokens: 1_000_000 }); 
+    assert.equal(agent.snapshot().ctx!.compactAt, 750_000); 
     assert.equal(agent.snapshot().ctx!.window, 1_000_000);
-    // explicit budget still wins over derivation
     const { agent: b } = await mkAgent(w2!, s2!, { contextWindowTokens: 1_000_000, contextTokenBudget: 10_000 });
     assert.equal(b.snapshot().ctx!.compactAt, 10_000);
-    // unknown window keeps the safe default
     const { agent: c } = await mkAgent(w3!, s3!);
     assert.equal(c.snapshot().ctx!.compactAt, 96_000);
     await agent.dispose();
@@ -247,16 +225,12 @@ test("token estimate counts CJK near 1 token/char, ASCII ~4 chars/token", async 
     (agent as unknown as { messages: unknown[] }).messages.length = 0;
     (agent as unknown as { messages: unknown[] }).messages.push({ role: "user", content: "a".repeat(400) });
     const en = est();
-    // both should land near ~100 tokens (+ small per-message overhead)
     assert.ok(jp >= 100 && jp <= 160, `jp=${jp}`);
     assert.ok(en >= 100 && en <= 160, `en=${en}`);
-    // and the old flat /4 would have scored the Japanese text ~25 — no more
     assert.ok(jp > 60, `CJK must not be divided by four: jp=${jp}`);
     await agent.dispose();
   });
 });
-
-/* ---------- prefix-cache safety across restarts ---------- */
 
 test("session restore reproduces byte-identical request payloads", async () => {
   const LLM2: LlmConfig = { baseUrl: "http://mock", apiKey: "k", model: "m" };
@@ -271,8 +245,6 @@ test("session restore reproduces byte-identical request payloads", async () => {
 
   const livePayloads: string[] = [];
   let n = 0;
-  // deliberately emit tool args with SPACES — the raw string must survive the
-  // log round-trip instead of being re-canonicalized by JSON.stringify
   const RAW_ARGS = '{ "path": "a.txt", "content": "hi", "limit": 5 }';
   const chatA: ChatFn = async (_c, _m, _t) => {
     const i = n++;
@@ -305,7 +277,6 @@ test("session restore reproduces byte-identical request payloads", async () => {
     );
     await a.dispose();
 
-    // restart on the same session dir; capture the very first request payload
     const restoredPayloads: string[] = [];
     const chatB: ChatFn = async (_c, messages) => {
       restoredPayloads.push(JSON.stringify(messages));
@@ -318,9 +289,7 @@ test("session restore reproduces byte-identical request payloads", async () => {
     const afterBytes = JSON.stringify(
       (b as unknown as { buildMessages(): unknown }).buildMessages(),
     );
-    assert.equal(afterBytes, beforeBytes); // prefix cache survives the restart
-    // and the next real request starts from that exact same prefix (+ the
-    // newly queued "continue" user message at the tail)
+    assert.equal(afterBytes, beforeBytes); 
     const continued = beforeBytes.replace(
       /\]$/,
       ',{"role":"user","content":"continue"}]',
@@ -332,8 +301,6 @@ test("session restore reproduces byte-identical request payloads", async () => {
     await b.dispose();
   });
 });
-
-/* ---------- feedback rules ---------- */
 
 test("add_feedback dedupes with count escalation; get_feedback reads it", async () => {
   const toolResults: string[] = [];
@@ -360,8 +327,6 @@ test("add_feedback dedupes with count escalation; get_feedback reads it", async 
     await agent.dispose();
   });
 });
-
-/* ---------- decision log ---------- */
 
 test("record_decision persists rationale; get_decisions reads it back", async () => {
   const toolResults: string[] = [];
@@ -391,13 +356,12 @@ test("record_decision persists rationale; get_decisions reads it back", async ()
 
     assert.match(toolResults[0]!, /decision recorded/);
     assert.match(toolResults[1]!, /use pnpm workspaces/);
-    assert.match(toolResults[1]!, /faster installs/); // rationale survives
+    assert.match(toolResults[1]!, /faster installs/); 
     const decPath = path.join(agent.snapshot().sessionDir, "decisions.md");
     const md = await readFile(decPath, "utf8");
     assert.match(md, /use pnpm workspaces/);
     assert.match(md, /Why: faster installs/);
-    assert.match(md, /npm/); // alternatives logged
-    // missing rationale is refused
+    assert.match(md, /npm/); 
     await useTempDirs(["sto-ws-", "sto-sess-"], async ([bws, bsess]) => {
       const bad = await mkAgent(bws!, bsess!, { chatFn: mkMock(() => reply("x")), autoContinue: false });
       void bad;
@@ -406,8 +370,6 @@ test("record_decision persists rationale; get_decisions reads it back", async ()
     await agent.dispose();
   });
 });
-
-/* ---------- master: per-incarnation session dirs ---------- */
 
 function mkMaster(dataDir: string): Master {
   return new Master(
@@ -429,7 +391,7 @@ test("every appended event is broadcast on the bus (web UI freshness)", async ()
     const handler = (ev: unknown) => seen.push(ev as { kind: string; event?: { type: string } });
     bus.on("update", handler);
     try {
-      await a.enqueuePrompt("hello"); // resolves its log append before emitting
+      await a.enqueuePrompt("hello"); 
       await new Promise((r) => setTimeout(r, 30));
       assert.ok(
         seen.some((s) => s.kind === "event" && s.event?.type === "prompt"),
@@ -450,43 +412,35 @@ test("fresh incarnation gets a clean session dir; restart reuses the latest", as
     const a = await m.addAgent({ id: "s", workspace: ws, provider: "p" }, { fresh: true });
     const dirA = a.snapshot().sessionDir;
     assert.match(path.basename(dirA), /^s-[0-9a-f]{8}$/);
-    await a.setGoal("incarnation #1"); // leaves state in dirA only
+    await a.setGoal("incarnation #1"); 
     assert.ok(existsSync(path.join(dirA, "goal.md")));
 
-    await m.removeAgent("s"); // history kept on disk
+    await m.removeAgent("s"); 
     const b = await m.addAgent({ id: "s", workspace: ws, provider: "p" }, { fresh: true });
     const dirB = b.snapshot().sessionDir;
-    assert.notEqual(dirB, dirA); // no inheritance across incarnations
-    assert.equal(b.conversation.length, 0); // blank slate
-    assert.equal(b.goal.text, ""); // and no inherited goal
+    assert.notEqual(dirB, dirA); 
+    assert.equal(b.conversation.length, 0); 
+    assert.equal(b.goal.text, ""); 
     await b.setGoal("incarnation #2");
 
     await b.dispose();
     await m.removeAgent("s");
-    // restart (non-fresh) picks up the newest session of that agent id
     const c = await m.addAgent({ id: "s", workspace: ws, provider: "p" });
     assert.equal(c.snapshot().sessionDir, dirB);
-    assert.equal(c.goal.text, "incarnation #2"); // continuity within one incarnation
+    assert.equal(c.goal.text, "incarnation #2"); 
     await c.dispose();
   });
 });
 
 test("prefix-collision: agent teapot must NOT inherit agent teapot-3's session", async () => {
-  // regression: findLatestSessionDir matched "<id>-<suffix>" by PREFIX, so
-  // agent "teapot" also matched "teapot-3-<hash>" and — newest-wins —
-  // attached itself to agent teapot-3's LIVE timeline (two agents writing
-  // one chat.jsonl, each UI tab showing the other's messages).
   await useTempDirs(["sess-root-", "sess-ws-", "sess-ws2-"], async ([dataDir, ws, ws2]) => {
     const m = mkMaster(dataDir);
 
-    // agent "teapot-3" exists first and owns a used session dir
     const t3 = await m.addAgent({ id: "teapot-3", workspace: ws, provider: "p" });
     const dirT3 = t3.snapshot().sessionDir;
     assert.match(path.basename(dirT3), /^teapot-3-[0-9a-f]{8}$/);
-    await t3.setGoal("t3 history"); // make the log non-empty
+    await t3.setGoal("t3 history"); 
 
-    // agent "teapot" starts LATER — its exact dir doesn't exist, and every
-    // "teapot-*" candidate belongs to teapot-3 → it must get a FRESH dir
     const tp = await m.addAgent({ id: "teapot", workspace: ws2, provider: "p" });
     const dirTp = tp.snapshot().sessionDir;
     assert.notEqual(
@@ -495,7 +449,6 @@ test("prefix-collision: agent teapot must NOT inherit agent teapot-3's session",
       "teapot must not attach to teapot-3's live session",
     );
     assert.ok(!path.basename(dirTp).startsWith("teapot-3-"));
-    // and the two agents keep separate logs even after both are touched
     await tp.setGoal("tp history");
     assert.equal(tp.snapshot().session, path.basename(dirTp));
     assert.equal(t3.snapshot().session, path.basename(dirT3));
@@ -504,19 +457,13 @@ test("prefix-collision: agent teapot must NOT inherit agent teapot-3's session",
 });
 
 test("sibling-prefix ids: sub-review-kernel keeps its OWN history (no empty-session churn)", async () => {
-  // regression: belongsToOther used a naive prefix test, so agent
-  // "prismrv-root-sub-review-kernel"'s own session dirs matched sibling
-  // "prismrv-root-sub-review" + "-" and were excluded — every restart found
-  // no candidate, generated a FRESH dir, and the timeline read as zero.
   await useTempDirs(["sib-root-", "sib-ws-", "sib-ws2-"], async ([dataDir, ws, ws2]) => {
     const m = mkMaster(dataDir);
 
     const review = await m.addAgent({ id: "prismrv-root-sub-review", workspace: ws, provider: "p" });
-    await review.setGoal("review history"); // non-empty log → reusable session
+    await review.setGoal("review history"); 
     const dirReview = review.snapshot().sessionDir;
 
-    // kernel id STARTS WITH review id + "-": the old code claimed kernel's
-    // dirs for review; now both must keep separate, persistent sessions
     const kernel = await m.addAgent({ id: "prismrv-root-sub-review-kernel", workspace: ws2, provider: "p" });
     const dirKernel1 = kernel.snapshot().sessionDir;
     assert.match(path.basename(dirKernel1), /^prismrv-root-sub-review-kernel-[0-9a-f]{8}$/);
@@ -525,14 +472,11 @@ test("sibling-prefix ids: sub-review-kernel keeps its OWN history (no empty-sess
 
     await disposeAll(m);
 
-    // RESTART: kernel must reattach to ITS OWN session (history intact),
-    // not spawn yet another empty incarnation
     const m2 = mkMaster(dataDir);
     const kernel2 = await m2.addAgent({ id: "prismrv-root-sub-review-kernel", workspace: ws2, provider: "p" });
     assert.equal(kernel2.snapshot().sessionDir, dirKernel1);
-    assert.equal(kernel2.goal.text, "kernel history"); // continuity, NOT a blank slate
+    assert.equal(kernel2.goal.text, "kernel history"); 
 
-    // and review must not have been disturbed either
     const review2 = await m2.addAgent({ id: "prismrv-root-sub-review", workspace: ws, provider: "p" });
     assert.equal(review2.snapshot().sessionDir, dirReview);
     assert.equal(review2.goal.text, "review history");
@@ -541,25 +485,19 @@ test("sibling-prefix ids: sub-review-kernel keeps its OWN history (no empty-sess
 });
 
 test("manifest ownership: an impostor manifest on the bare-name dir cannot hijack a restart", async () => {
-  // session.json records the owning agentId at creation time — a dir whose
-  // manifest names ANOTHER owner must never be adopted, even when its name
-  // matches <agentId> exactly and its chat.jsonl is non-empty
   await useTempDirs(["man-root-", "man-ws-"], async ([dataDir, ws]) => {
     const m = mkMaster(dataDir);
     const a = await m.addAgent({ id: "worker", workspace: ws, provider: "p" }, { fresh: true });
     await a.setGoal("first incarnation");
     const ownDir = a.snapshot().sessionDir;
     await disposeAll(m);
-    await m.removeAgent("worker"); // forget the id, keep the logs
+    await m.removeAgent("worker"); 
 
-    // impostor dir: bare name + non-empty log + manifest owned by someone else
     const impostor = path.join(m.sessionsRoot(), "worker");
     mkdirSync(impostor, { recursive: true });
     writeFileSync(path.join(impostor, "chat.jsonl"), '{"v":1,"id":"e1","seq":1,"ts":"t","agent":"x","session":"worker","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"not yours"}}\n');
     writeFileSync(path.join(impostor, "session.json"), JSON.stringify({ v: 1, agentId: "impostor" }));
 
-    // restart: the guarded selfDir check must skip the impostor and find the
-    // manifest-backed original incarnation instead
     const b = await m.addAgent({ id: "worker", workspace: ws, provider: "p" });
     assert.notEqual(b.snapshot().sessionDir, impostor);
     assert.equal(b.snapshot().sessionDir, ownDir);
@@ -573,16 +511,15 @@ test("legacy flat <id>.jsonl is migrated into sessions/<id>/chat.jsonl", async (
     await mkdir(path.dirname(path.join(dataDir, "s.jsonl")), { recursive: true });
     await writeFile(path.join(dataDir, "s.jsonl"), '{"v":1,"id":"e1","seq":1,"ts":"2026-01-01T00:00:00Z","agent":"s","session":"s","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"old"}}\n');
     const m = mkMaster(dataDir);
-    // the flat-layout move is a BOOT migration now (src/migrations/), not something addAgent does
     await m.start();
 
-    const a = await m.addAgent({ id: "s", workspace: ws, provider: "p" }); // restart semantics
+    const a = await m.addAgent({ id: "s", workspace: ws, provider: "p" }); 
     const dir = a.snapshot().sessionDir;
     assert.equal(path.basename(dir), "s");
     assert.ok(existsSync(path.join(dir, "chat.jsonl")));
-    await a.load(); // lazy: history is rebuilt on first interaction
+    await a.load(); 
     assert.ok(a.conversation.length === 1 && a.conversation[0].content === "old");
-    assert.ok(!existsSync(path.join(dataDir, "s.jsonl"))); // moved
+    assert.ok(!existsSync(path.join(dataDir, "s.jsonl"))); 
     await a.dispose();
   });
 });

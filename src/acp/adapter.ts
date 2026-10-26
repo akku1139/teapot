@@ -1,25 +1,3 @@
-/**
- * ACP (Agent Client Protocol) adapter (#15).
- *
- * Speaks JSON-RPC 2.0 over stdio so an editor (Zed's custom agents, and others)
- * can drive a teapot agent as a subprocess. The whole point is that this is a
- * THIN adapter: the existing Master/Agent already expose what ACP needs
- * (enqueuePrompt, start, stop, settled, and a JSONL event log), so the agent
- * loop itself is untouched.
- *
- * Scope — the BASELINE methods only:
- *   initialize, authenticate, session/new, session/load, session/prompt,
- *   session/cancel, and session/update notifications.
- *
- * Terminal and filesystem methods are NOT implemented and NOT advertised as
- * capabilities. A client only calls what initialize advertises, so claiming a
- * half-correct terminal would be worse than omitting it.
- *
- * Protocol notes taken from agentclientprotocol.com:
- *   - JSON-RPC 2.0; notifications get no response (success OR error).
- *   - all file paths MUST be absolute; line numbers are 1-based.
- *   - prompt is a multi-turn request whose result carries a stopReason.
- */
 import type { Master } from "../master.ts";
 import type { Agent } from "../agent/agent.ts";
 import { readEvents } from "../log/events.ts";
@@ -27,13 +5,6 @@ import path from "node:path";
 
 export const ACP_PROTOCOL_VERSION = 1;
 
-/**
- * How often a running turn is drained for new events.
- *
- * ACP has no push channel, so the turn is streamed by polling the agent's own
- * log. 150ms is well under the ~60ms render tick a human notices, and the read is
- * a tail of a file this process is already appending to.
- */
 const STREAM_POLL_MS = 150;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -54,7 +25,6 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-/** JSON-RPC error codes we use (the standard set plus JSON-RPC's own). */
 const PARSE_ERROR = -32700;
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
@@ -62,10 +32,8 @@ const INTERNAL_ERROR = -32603;
 
 export interface AcpAdapterOptions {
   master: Master;
-  /** defaults to process.stdin/stdout */
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
-  /** workspace for sessions created without an explicit cwd */
   defaultCwd?: string;
 }
 
@@ -75,16 +43,6 @@ interface Session {
   agent: Agent;
 }
 
-/* ---------- streaming: log events → session/update notifications ---------- */
-
-/**
- * ACP `ToolCall.kind` for a teapot tool name.
- *
- * The schema's own enum (verified against schema/v1/schema.json):
- * read, edit, delete, move, search, execute, fetch, think, switch_mode, other,
- * description. Editors use this to pick an icon and to decide whether the call
- * mutates anything, so mapping our tools onto it is worth doing properly.
- */
 const TOOL_KINDS: Record<string, string> = {
   read_file: "read",
   list_dir: "read",
@@ -102,7 +60,6 @@ const TOOL_KINDS: Record<string, string> = {
   get_memory: "read",
 };
 
-/** Filesystem tools whose `path` argument is worth surfacing as a location. */
 const LOCATED_TOOLS = new Set([
   "read_file",
   "edit_file",
@@ -112,7 +69,6 @@ const LOCATED_TOOLS = new Set([
   "list_dir",
 ]);
 
-/** a one-line title for a tool call, the way an editor shows it in a list */
 function toolTitle(name: string, args: Record<string, unknown>): string {
   const first = (k: string) => {
     const v = args[k];
@@ -123,7 +79,6 @@ function toolTitle(name: string, args: Record<string, unknown>): string {
   return first("path") ?? name;
 }
 
-/** Absolute path for a tool's location, so an editor can open the file. */
 function toolLocation(
   name: string,
   args: Record<string, unknown>,
@@ -137,12 +92,6 @@ function toolLocation(
   return [{ path: abs, ...(Number.isFinite(line) && line > 0 ? { line } : {}) }];
 }
 
-/**
- * Turn one logged event into the session/update payload for it, or null when the
- * event has no ACP equivalent (and must therefore NOT be invented into one).
- *
- * Exported so the mapping is testable without a transport.
- */
 export function updateForEvent(
   e: { type: string; data: unknown },
   opts: { workspace: string },
@@ -150,9 +99,6 @@ export function updateForEvent(
   const d = (e.data ?? {}) as Record<string, any>;
   switch (e.type) {
     case "message": {
-      // The completion AUDIT's verdict and the operator-facing summary are
-      // timeline content, not something the agent said to the model; an editor
-      // must not be shown an agent speaking a harness message.
       if (d.final === true || d.operatorFacing === true) return null;
       const text = String(d.content ?? "");
       if (!text.trim()) return null;
@@ -190,9 +136,6 @@ export function updateForEvent(
       };
     }
     default:
-      // state transitions, goals, todos, compactions, notes: all internal. The
-      // schema HAS update kinds for some of this (plan, usage_update), but
-      // emitting them with guessed payloads would be worse than silence.
       return null;
   }
 }
@@ -203,9 +146,7 @@ export class AcpAdapter {
   private readonly output: NodeJS.WritableStream;
   private readonly defaultCwd: string;
   private readonly sessions = new Map<string, Session>();
-  /** id -> notification params, so a prompt turn can stream updates */
   private readonly turnUpdates = new Map<JsonRpcId, { sessionId: string }>();
-  /** sessions cancelled during the CURRENT turn, cleared when it starts (#15) */
   private readonly cancelled = new Set<string>();
   private buffer = "";
   private nextSession = 1;
@@ -218,7 +159,6 @@ export class AcpAdapter {
     this.defaultCwd = opts.defaultCwd ?? process.cwd();
   }
 
-  /** Attach to the stream. Resolves when stdin ends. */
   listen(): Promise<void> {
     return new Promise((resolve) => {
       this.input.on("data", (chunk: Buffer | string) => this.onData(String(chunk)));
@@ -229,11 +169,8 @@ export class AcpAdapter {
     });
   }
 
-  /* ---------- transport ---------- */
-
   private onData(chunk: string): void {
     this.buffer += chunk;
-    // NDJSON: one JSON object per line
     let nl: number;
     while ((nl = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, nl).trim();
@@ -247,7 +184,6 @@ export class AcpAdapter {
     try {
       msg = JSON.parse(line) as JsonRpcRequest;
     } catch {
-      // a parse error has no id to answer
       this.send({ jsonrpc: "2.0", id: null, error: { code: PARSE_ERROR, message: "invalid JSON" } });
       return;
     }
@@ -270,8 +206,6 @@ export class AcpAdapter {
     this.send({ jsonrpc: "2.0", id, error: { code, message } });
   }
 
-  /* ---------- dispatch ---------- */
-
   private async dispatch(msg: JsonRpcRequest): Promise<void> {
     const { method, id, params } = msg;
     const isNotification = id === undefined || id === null;
@@ -292,12 +226,11 @@ export class AcpAdapter {
           if (!isNotification) return this.ok(id ?? null, {});
           return;
         default:
-          // notifications for unknown methods get NO response at all
           if (isNotification) return;
           return this.fail(id ?? null, METHOD_NOT_FOUND, `unknown method: ${method}`);
       }
     } catch (err) {
-      if (isNotification) return; // never answer a notification
+      if (isNotification) return; 
       return this.fail(id ?? null, INTERNAL_ERROR, (err as Error).message);
     }
   }
@@ -306,14 +239,10 @@ export class AcpAdapter {
     this.initialized = true;
     return {
       protocolVersion: ACP_PROTOCOL_VERSION,
-      // Only capabilities we actually implement: a client calls what we
-      // advertise, so a partial implementation would be worse than omission.
       agentCapabilities: { loadSession: true, promptCapabilities: { image: false, audio: false } },
       authMethods: [],
     };
   }
-
-  /* ---------- sessions ---------- */
 
   private async newSession(params: unknown): Promise<unknown> {
     const p = (params ?? {}) as { cwd?: string; mcpServers?: unknown };
@@ -331,9 +260,8 @@ export class AcpAdapter {
     const p = (params ?? {}) as { sessionId?: string; cwd?: string; mcpServers?: unknown };
     const id = String(p.sessionId ?? "");
     const existing = this.sessions.get(id);
-    if (existing) return null; // already live
+    if (existing) return null; 
     const cwd = p.cwd ? path.resolve(String(p.cwd)) : this.defaultCwd;
-    // resuming means the agent's own log is restored, not a fresh session
     const agent = await this.master.addAgent(
       { id, workspace: cwd } as never,
       { persist: false, fresh: false },
@@ -346,13 +274,9 @@ export class AcpAdapter {
     const p = (params ?? {}) as { sessionId?: string };
     const s = p.sessionId ? this.sessions.get(String(p.sessionId)) : undefined;
     if (!s) return;
-    // The Agent's own "stopped" flag is private, and this adapter is the
-    // component that answered the cancel notification anyway.
     this.cancelled.add(s.id);
     s.agent.stop("cancelled via ACP");
   }
-
-  /* ---------- prompt turn ---------- */
 
   private async prompt(id: JsonRpcId, params: unknown): Promise<void> {
     const p = (params ?? {}) as { sessionId?: string; prompt?: { text?: string }[] };
@@ -365,19 +289,15 @@ export class AcpAdapter {
     if (!text) return this.fail(id, INVALID_PARAMS, "prompt must contain text");
 
     this.turnUpdates.set(id, { sessionId: s.id });
-    this.cancelled.delete(s.id); // a cancel is per-turn, not per-session
-    // Without streaming, the client sees NOTHING until the whole turn finishes.
+    this.cancelled.delete(s.id); 
     const abort = new AbortController();
     const stream = this.streamTurn(s.id, abort.signal).catch(() => {});
     try {
       s.agent.enqueuePrompt(text, "user");
       if (s.agent.status !== "running") s.agent.start("acp prompt");
       await s.agent.settled();
-      // One last drain, or the final tool result and closing message can be
-      // missed: `settled()` resolves the moment the agent stops, and the last
-      // append may not have landed yet.
       abort.abort();
-      await stream; // resolves after its own final drain
+      await stream; 
       return this.ok(id, { stopReason: this.cancelled.has(s.id) ? "cancelled" : "end_turn" });
     } catch (err) {
       return this.fail(id, INTERNAL_ERROR, (err as Error).message);
@@ -387,7 +307,6 @@ export class AcpAdapter {
     }
   }
 
-  /** drain a session's log tail into session/update notifications */
   async drainOnce(sessionId: string, afterSeq = 0): Promise<number> {
     const s = this.sessions.get(sessionId);
     if (!s) return afterSeq;
@@ -395,28 +314,13 @@ export class AcpAdapter {
     for (const e of events) {
       if (e.seq <= afterSeq) continue;
       const update = updateForEvent(e, { workspace: s.cwd });
-      // null means "no ACP equivalent" — state flips, goals, notes
       if (update) this.notify("session/update", { sessionId, update });
     }
-    // Advance past EVERY event read, emitted or not, so nothing is reconsidered
-    // on the next poll.
     return events.reduce((m, e) => Math.max(m, e.seq), afterSeq);
   }
 
-  /**
-   * Poll one session until it settles, streaming each batch as it appears.
-   *
-   * The JSONL log rather than the bus is deliberate: a bus listener attached at
-   * the wrong moment can miss the start of a reply, and after a crash mid-turn
-   * the file is the one complete account of what happened. It also means a
-   * resumed session replays exactly the same updates.
-   */
   private async streamTurn(sessionId: string, signal: AbortSignal): Promise<void> {
-    // Everything before this prompt belongs to earlier turns.
     let cursor = await this.logTail(sessionId);
-    // The drain happens BEFORE the abort check: a turn can finish inside one poll
-    // interval, so a loop that slept and then bailed on `signal.aborted` would
-    // exit having drained NOTHING and the editor would receive silence.
     for (;;) {
       cursor = await this.drainOnce(sessionId, cursor);
       if (signal.aborted) return;
@@ -424,7 +328,6 @@ export class AcpAdapter {
     }
   }
 
-  /** highest seq currently in a session's log, or 0 */
   private async logTail(sessionId: string): Promise<number> {
     const s = this.sessions.get(sessionId);
     if (!s) return 0;

@@ -1,31 +1,12 @@
-/**
- * #53 — "on a narrow screen the right panel leaves a shadow behind even after
- * it is closed — it gets in the way".
- *
- * The drawer is hidden by SLIDING it off-screen (`transform: translateX(100%)`),
- * not by removing it, so it stays in the DOM and still paints. The one part of
- * a fixed, full-height panel that lands inside the viewport while it is
- * translated out of it is its own `box-shadow` — hence a dark sliver clinging
- * to the right edge of the screen after the panel is closed.
- *
- * The fix gates the shadow on the open state. The `transition` carries
- * box-shadow too, so the shadow fades in with the panel rather than snapping.
- *
- * smoke-web.mjs proves this against the real stylesheet at narrow width; this
- * file pins the rule itself so it is still covered when only the wide width
- * runs (where the drawer is a static column and must keep its normal chrome).
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
-/** the @media (max-width: 1100px) block that turns the bar into a drawer */
 function narrowBlock(): string {
   const start = css.indexOf("@media (max-width: 1100px)");
   assert.ok(start !== -1, "the narrow-screen media query must exist (#53)");
-  // walk braces to find the block's real end
   let depth = 0;
   for (let i = css.indexOf("{", start); i < css.length; i++) {
     if (css[i] === "{") depth++;
@@ -34,11 +15,6 @@ function narrowBlock(): string {
   throw new Error("unterminated media query (#53)");
 }
 
-/**
- * The narrow block contains SEVERAL `.rightbar` rules (a `display:block`
- * override, the drawer itself). Pick the one that actually positions the
- * drawer — matching the first would silently assert against the wrong rule.
- */
 function drawerRule(): string {
   const all = [...narrowBlock().matchAll(/\.rightbar\s*\{[^}]*\}/g)].map((m) => m[0]);
   const drawer = all.find((r) => /position:\s*fixed/.test(r));
@@ -81,8 +57,6 @@ test("the shadow fades in with the panel rather than snapping (#53)", () => {
 });
 
 test("the wide-screen column keeps its own border, not a floating shadow (#53)", () => {
-  // at wide the bar is a static grid column: it must not gain the drawer's
-  // fixed shadow, which would be the same "shadow with nothing to close" bug
   const base = css.match(/^\.rightbar\s*\{[^}]*\}/m)?.[0] ?? "";
   assert.match(base, /\.rightbar\s*\{/, "the base .rightbar rule must exist (#53)");
   assert.doesNotMatch(

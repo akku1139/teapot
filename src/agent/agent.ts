@@ -1,11 +1,3 @@
-/**
- * Agent: an event-driven loop over one workspace.
- *
- * CPU discipline: the agent only consumes CPU while waiting on LLM/tool I/O
- * promises; when idle it holds zero timers and zero polling loops. All
- * periodic behaviour (progress reports, scheduled tasks) is driven by the
- * master's single low-frequency scheduler tick or by turn boundaries.
- */
 import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
@@ -21,44 +13,13 @@ import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skill
 import { extractRules, enforceRules, type Rule, RULES_HEADING } from "./compact-rules.ts";
 import { bus, type BusEvent } from "../bus.ts";
 
-/**
- * Harness nudges, named and exported so they can be asserted on directly.
- *
- * Both were fixed for a reason invisible in the prose:
- *
- *  - AUTO_CONTINUE_NUDGE used to say only "continue working". The model
- *    was never told HOW TO STOP, so it worked forever: it replied in prose, the
- *    loop saw an active goal and no finish(), and nudged again. The sub-agent
- *    variant already named finish() — the ROOT one did not.
- *  - PROGRESS_REQUEST used to DESCRIBE the report instead of asking for
- *    the tool, so the model answered in prose, then — not knowing that had
- *    satisfied the request — sent a voluntary report_progress right after, and
- *    every requested report appeared TWICE on the timeline.
- */
 export const AUTO_CONTINUE_NUDGE =
-  // the prefix marks this as harness text, not something the operator typed.
-  // Unprefixed, the model read it as a request to reply — and prose ends the round
-  // without finishing, which starts the next one.
   "[harness] " +
   "Continue working toward the current goal. If you are blocked, explain why briefly. " +
-  // name the tool explicitly, the way the sub-agent nudge already does
   "When the goal is genuinely met — or truly blocked — call finish() " +
   "(finish(goalComplete=true) when met, finish(goalComplete=false) when blocked) " +
   "instead of replying in prose; prose here does not stop the loop.";
 
-/**
- * The auto-continue nudge with the CURRENT GOAL restated.
- *
- * the nudge said "the current goal" and never said what it was. The sub-agent
- * variant has always included its task text for exactly this reason — a forked
- * child otherwise drifts back into the inherited conversation and keeps going
- * forever — but the ROOT nudge had no such reminder, so a root agent that
- * had lost the thread had nothing to re-anchor on and simply continued until the
- * `maxConsecutiveIdleRounds` valve tripped.
- *
- * The goal is clipped like the sub-agent's: a 20k-character goal would otherwise
- * re-enter the context on EVERY round.
- */
 export function autoContinueNudge(goalText: string): string {
   const goal = goalText.trim();
   if (!goal) return AUTO_CONTINUE_NUDGE;
@@ -66,49 +27,24 @@ export function autoContinueNudge(goalText: string): string {
 }
 
 export const PROGRESS_REQUEST =
-  // The leading sentence is kept VERBATIM: it is what existing harness prompts,
-  // tests and any operator muscle-memory key off. #45 changed the INSTRUCTION
-  // (call the tool, don't answer in prose), not the identification of the request.
   "[harness] Please give a brief progress report now: what you are doing, goal progress, " +
   "what you recently tried, any problems, and your next step. Keep it under 10 lines. " +
-  // ask for the TOOL, not prose — a prose answer left the model unsure whether it
-  // had satisfied the request, so it sent a voluntary report_progress right after
-  // and every requested report appeared TWICE on the timeline
   "Record it with the report_progress TOOL (doing, goalStatus, recent, problems, next) — " +
   "call that tool; do NOT answer in prose, which would just duplicate this request.";
 
-/**
- * `waiting` and `needs_operator` are DIFFERENT STATES, not one state with a flag.
- *
- * Both mean "alive and not working", but they call for opposite responses: `waiting` resumes on
- * its own (a parked `wait_children`, a running background job) and nothing is required of the
- * operator, while `needs_operator` is an `ask_user` question and the loop will not move until a
- * human answers.
- *
- * They were one `waiting` status plus a `waitingFor` field. That is the same fact stored twice:
- * every consumer had to remember to consult the second field, and any that forgot treated "needs
- * you" as "leave it alone". Making them sibling states means the type system enforces the
- * distinction wherever a status is branched on.
- */
 export type AgentStatus =
   | "idle"
   | "running"
   | "stopped"
   | "error"
-  /** alive, waiting on its own work — resumes without the operator */
   | "waiting"
-  /** alive, parked on an `ask_user` question — needs the operator to reply */
   | "needs_operator";
 
 export interface GoalState {
   text: string;
   status: "active" | "done" | "paused";
   updatedAt: string;
-  /** pi-goal-x-style verification contract: plain-text completion requirements
-   * the agent must satisfy (e.g. "npm test passes with zero failures") before
-   * finish(goalComplete=true) is honored. Empty/absent = no audit. */
   verify?: string;
-  /** outcome of the last completion audit */
   audit?: {
     verdict: "approved" | "changes-required";
     feedback: string;
@@ -129,228 +65,56 @@ export interface AgentOptions {
   id: string;
   workspace: string;
   llm: LlmConfig;
-  /** per-session storage directory (chat.jsonl / goal.md / memory.md) */
   sessionDir: string;
-  /** ms of activity after which the harness asks for a progress report */
   progressIntervalMs?: number;
-  /**
-   * Progress prompts fire only when BOTH gates pass: the interval above has
-   * elapsed AND enough real model output happened since the last report.
-   * This stops the harness from burning a turn asking for progress while the
-   * provider is stalling (retries produce wall-clock time but no output).
-   */
   progressMinChars?: number;
-  /** escape hatch: even near-silent tool-grinding rounds get asked eventually */
   progressMaxQuietTurns?: number;
-  /** continue automatically toward the goal without human input */
   autoContinue?: boolean;
-  /** pause between auto-continue rounds */
   continueDelayMs?: number;
-  /** automatically compact when context exceeds budget (default true) */
   autoCompact?: boolean;
-  /**
-   * Short-context mode: prune old tool output EARLY, at a share of the budget
-   * well below 1, and keep a smaller protected tail.
-   *
-   * Why opt-in rather than default: pruning is destructive (a clipped tool result
-   * leaves the model's context — the log keeps it, but the model must re-issue the
-   * call), so on a large window the default "only when the next request would not fit"
-   * is right. On a 32k–262k model the arithmetic changes: the same verbatim tail is a
-   * much larger share of the window, so waiting until overflow means ONE huge cut
-   * instead of many small ones, and the summarize path fires while a usable amount of
-   * the window is still free.
-   */
   shortContext?: boolean;
-  /** reasoning effort for models that support it (#47) */
   reasoningEffort?: string;
-  /** the endpoint catalogue's per-model capabilities; gates the effort field */
   supportedParameters?: string[];
-  /** the levels this model accepts, when the endpoint publishes them (#150) */
   supportedEfforts?: string[];
   maxConsecutiveToolErrors?: number;
-  /** estimated-token budget; older history is compacted when exceeded */
   contextTokenBudget?: number;
-  /** the model's real context window — powers the % gauge in the web UI */
   contextWindowTokens?: number;
-  /** rebuild conversation from the JSONL log on init (default true) */
   restoreSession?: boolean;
-  /**
-   * Fired once, after the first USER prompt of a session is logged.
-   *
-   * The host uses it to derive and STORE a session title. Doing it here rather than during a list
-   * keeps the cost per session instead of per `/api/sessions`, and it is the moment the title
-   * becomes derivable at all.
-   */
   onFirstUserPrompt?: (sessionId: string) => void;
-  /** provider name this agent was created with (for the UI's model switcher) */
   provider?: string;
-  /** shared skill dir (defaults to none; workspace skills always enabled) */
   globalSkillsDir?: string;
-  /**
-   * Skill roots contributed by Agent Plugins. Ranked with the global dir —
-   * below the workspace (a project must win on a name clash) and above the bundled
-   * skills (an operator-installed plugin is more specific than what ships with teapot).
-   */
   pluginSkillRoots?: { dir: string; source: string }[];
-  /** package-shipped skills (lowest priority root; auto-resolved by master) */
   bundledSkillsDir?: string;
-  /** depth in the sub-agent spawn tree (0 = top level); enforced by the master */
   spawnDepth?: number;
-  /** restrict this agent to read-only tools (sub-agent personas) */
   readOnlyTools?: boolean;
-  /**
-   * Soft cap on LLM turns in ONE round. Reaching it is not an error: the
-   * harness nudges the model to report progress and wrap up, then a fresh
-   * round begins. 0 disables the cap entirely.
-   */
   maxTurnsPerRound?: number;
-  /**
-   * Safety valve for CONSECUTIVE rounds that neither call a tool nor finish
-   *. `maxTurnsPerRound` cannot catch this: a root agent that ends on a
-   * bare message leaves its round after ONE turn, so the per-round cap is never
-   * reached and auto-continue spins forever. Any tool call resets the counter.
-   * 0 disables.
-   */
   maxConsecutiveIdleRounds?: number;
-  /**
-   * Consecutive completion audits that may REJECT before the loop gives up.
-   * Defaults to 3. Reaching it leaves the goal ACTIVE and logs `audit-retry-cap`.
-   */
   maxAuditRejects?: number;
-  /**
-   * Retry policy for round-fatal API errors (rate limits, 5xx, provider
-   * hiccups). "stop" (default) ends the loop with status=error. "retry"
-   * keeps the goal alive: wait retryDelayMs, then start a fresh round —
-   * for long-running unattended agents that should ride out outages.
-   */
   onError?: "stop" | "retry";
-  /** backoff between error retries (ms); doubles each attempt, capped at 10 min */
   retryDelayMs?: number;
-  /**
-   * Backoff staircase for the INNER per-call retry (`llmCall`): the waits before
-   * attempt 2, 3, 4. Defaults to the measured-in-production `[5s, 5s, 30s]`.
-   *
-   * Injectable because it is otherwise unmeasurable: a test that exercises the
-   * retry path had to wait out the staircase FOR REAL, so a handful of files cost
-   * 10-17 s each and the suite's wall clock was dominated by sleeping rather than
-   * by testing. That also made such tests load-sensitive — the #136 flake was a
-   * fixed wait whose owner declared the timing was not what was under test.
-   *
-   * Production never sets this; the delays stay exactly as tuned.
-   */
   llmRetryWaitsMs?: number[];
-  /** set when spawned by another agent (sub-agent lineage) */
   parent?: string;
-  /** injectable LLM call for tests (defaults to the real one) */
   chatFn?: ChatFn;
 }
 
-/**
- * Recent context kept VERBATIM through a compaction, in tokens.
- *
- * Pi defaults `keepRecentTokens` to 20000 and opencode to `keep: 15000` for the
- * same reason: the newest exchanges are what the model needs to continue
- * accurately, and a verbatim copy beats a summary of them.
- */
 const KEEP_RECENT_TOKENS = 15_000;
 
-/**
- * When pruning old tool output becomes worthwhile, as a share of the budget.
- *
- * Just under 1: pruning is DESTRUCTIVE (a clipped tool result leaves the model's
- * context entirely — the log keeps it, but the model cannot see it without re-issuing
- * the call), so it must only spend that information when the next request would
- * otherwise not fit. The old value was 0.6 of a budget that is itself 75% of the
- * window, i.e. history was being clipped at 45% of the real window with a quarter of
- * the window still free — which is what the operator noticed ("25%余ってる").
- *
- * A share rather than an absolute count, so it tracks whatever window the session is
- * configured for.
- */
 const PRUNE_AT_SHARE = 0.95;
 
-/**
- * Short-context mode: the same knobs, retuned for a window where the default
- * tail is a large share of everything.
- *
- * 262k window (fine) but 47% of a 32k one — so on a small model the verbatim tail
- * alone nearly fills the budget and the first prune does almost nothing useful.
- * The mode therefore (a) prunes at 0.6 of the budget instead of 0.95, (b) keeps a
- * QUARTER of the budget verbatim instead of a fixed 15k, and (c) clips tool results
- * down to 200 chars instead of 400, because on a small window the head of an output
- * is most of what fits.
- *
- * Opt-in by design: on a large window this throws away real information early.
- */
 const SHORT_PRUNE_AT_SHARE = 0.6;
 const SHORT_PRUNE_KEEP_CHARS = 200;
 
-/**
- * The summarize call is skipped when the summarizable prefix is a small share of
- * the budget, because the call cannot reuse any prefix cache (its system prompt is
- * its instructions) and so re-bills the whole history uncached. Below this share,
- * dropping the prefix outright reclaims the budget for free and the model can
- * recover the details by re-reading the goal or the files.
- *
- * A SHARE rather than an absolute token count: what counts as "a lot to lose"
- * scales with the window a session is configured for. An absolute constant
- * calibrated for the 96k default would disable summarization entirely for a
- * session with a small budget (measured: a 200-token budget with a 654-token
- * history is over every bar, yet its prefix is a few hundred tokens).
- *
- * Manual compaction and overflow recovery bypass this — those are not cost
- * decisions.
- */
 const SUMMARIZE_MIN_SHARE = 0.02;
 
-/** the absolute floor for the bar above (see the note where it is applied) */
 const SUMMARIZE_MIN_TOKENS = 2_000;
 
-/**
- * Bounded retries when the summarizer's own request is over the window, and how much
- * of the shadowed region to shed each time. ZCode handles the same case with a bounded
- * `prompt-too-long` retry ("compact 请求自身超窗时丢旧 API round 重试"): unbounded would
- * burn tokens against a provider that refuses every size.
- */
 const SUMMARIZE_OVERFLOW_RETRIES = 3;
 const SUMMARIZE_SHRINK = 0.6;
 
-/**
- * Consecutive AUTO compaction failures before auto-compaction stops trying (ZCode:
- * `max auto failures: 3`). The failure is usually environmental — an unavailable
- * model, a provider outage — so retrying it every turn re-burns the provider for a
- * pass that cannot succeed. A success resets the count, so one bad stretch does not
- * disable compaction for the session.
- */
 const MAX_AUTO_COMPACT_FAILURES = 3;
 
-/**
- * How much of the budget to KEEP on each successive overflow recovery.
- *
- * An overflow means the estimate was too low, so a single fixed cut can still
- * leave the request too large — and the old code turned that second failure into a
- * hard error. opencode uses the same shape (`SHRINK_STEPS [0.7, 0.5, 0.35]`): each
- * retry keeps less, so the request shrinks even when the first attempt did not
- * shrink it enough. The last entry repeats for any further attempt.
- */
 const OVERFLOW_SHRINK_STEPS = [0.5, 0.35, 0.2] as const;
 
-/**
- * The compaction directive, delivered as the FINAL user message after the replayed
- * conversation rather than as a distinct summarizer `system` prompt.
- *
- * This position is the whole point: the request is then a genuine prefix-EXTENSION
- * of the last routed request, so the provider's KV cache is reused instead of being
- * discarded at the first token. Measured before the change — a bespoke summarizer
- * system prompt shares nothing with the conversation, and the entire history is
- * re-prefilled at full price exactly when the conversation is largest. DeepSeek
- * Harness reaches the same conclusion in its `compaction-summary-prefix-cache-reuse`
- * note.
- *
- * It opens with the sentence tests use to RECOGNISE a summarizer call; keeping that
- * stable matters (an earlier version reworded it and silently made every update pass
- * look like an ordinary turn).
- */
 const COMPACT_INSTRUCTION = [
   "You compress a coding agent's conversation into dense notes for it to continue working.",
   "Condense the conversation ABOVE into a structured checkpoint so another model can",
@@ -364,23 +128,11 @@ const COMPACT_INSTRUCTION = [
   "## Files and code sections",
   "## Errors and fixes",
   "## Problem solving",
-  "## All user messages", // verbatim-ish: intent survives repeated compaction
+  "## All user messages", 
   "## Pending tasks",
   "## Current work",
   "## Next step",
   "## Durable lessons",
-  /**
-   * Hard constraints, as their own section with a fixed shape.
-   *
-   * "must/must-not" rules are the one thing a summary cannot recover from losing: everything else
-   * can be re-derived by reading the code again, but a constraint the operator stated once and
-   * never repeated is simply gone. Reported as "compact時にルール(must/must notが中心だけど、should
-   * レベルのものも)が確実に引き継げる機構があると良いねって思った".
-   *
-   * So they get a dedicated heading with a MACHINE-CHECKABLE shape (one `MUST`/`MUST NOT`/`SHOULD`
-   * keyword per line, see `RULES_SECTION` + `extractRules`): the summarizer cannot merge them into
-   * prose, and `enforceRules` re-inserts any that went missing instead of trusting it did not.
-   */
   "## Hard constraints",
   "",
   "Rules: be terse bullet points, no prose flourishes. Quote file paths and key numbers exactly.",
@@ -391,7 +143,6 @@ const COMPACT_INSTRUCTION = [
   "The <analysis> block is discarded before your notes are stored, so think freely there.",
 ].join("\n");
 
-/** Appended to COMPACT_INSTRUCTION when notes from an earlier pass are present. */
 const UPDATE_INSTRUCTION = [
   "",
   "The notes you produced last time are above, framed as a checkpoint. This is an",
@@ -401,23 +152,11 @@ const UPDATE_INSTRUCTION = [
   "stays, an answered one goes. Return the FULL updated notes under the same headings.",
 ].join("\n");
 
-/** framing around the prior notes when an update pass carries them forward */
 const SUMMARY_OPEN = "<conversation_checkpoint>\n";
 const SUMMARY_CLOSE = "\n</conversation_checkpoint>";
 
-/**
- * What the completion auditor may use. Read-only by construction — it inspects artifacts to check a
- * claim, and must not be able to change what it is judging.
- */
 const AUDIT_READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "bash"]);
 
-/**
- * SYSTEM_TEMPLATE must stay byte-identical across every request of a session:
- * provider prefix caches key on it, so changing it (or injecting per-turn
- * state) re-prices the whole context. That is why session state lives behind
- * meta tools instead. The cache rationale itself stays HERE in a comment —
- * the model does not need our cost-engineering notes every turn.
- */
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
 Most session state is not injected into prompts — fetch it with tools instead:
@@ -507,35 +246,8 @@ Most session state is not injected into prompts — fetch it with tools instead:
   If nothing is relevant, carry on — do not keep searching, and do not read the
   whole file "just in case". An unread note is an unwritten note.`;
 
-/**
- * A message whose ENTIRE text is parenthesised is an acknowledgement, not work.
- *
- * the first version of this listed three literals — `(tool call)`,
- * `(no content)`, `(no output)` — and caught 2 of the 10 forms actually reaching
- * a parent. Measured across every session log, the rest are harness
- * acknowledgements written by `answerMeta` and the meta-tool handlers:
- *
- *     (goal complete)  (round ended)  (tool try)  (no sub-agents)
- *     (tool_call)      (nothing running to stop)  (no result recorded)
- *     (todo.md is empty …)  (decisions.md is empty …)
- *
- * So it matches the SHAPE — a whole line wrapped in parentheses — rather than an
- * enumeration that is stale the moment another ack is added.
- *
- * The trade: a genuine message that happens to be entirely parenthesised would
- * also be dropped. That is vanishingly rare in this feed, and the alternative —
- * an enumeration — was measured to be wrong 80% of the time. If it ever matters,
- * the ack should be marked structurally rather than by its punctuation.
- */export const PLACEHOLDER_TEXT = /^\(.*\)$/;
+export const PLACEHOLDER_TEXT = /^\(.*\)$/;
 
-/**
- * Harness acknowledgements — meta-lines about the run itself rather than the
- * work ("decision recorded to decisions.md", "progress recorded", …).
- *
- * these are addressed to the OPERATOR, not to whoever reads the next
- * agent's report, and they consumed slots in a six-deep window that the parent
- * reads as its only account of the work.
- */
 export const HARNESS_ACK =
   /^(decision recorded|progress recorded|goal saved|feedback saved|memory saved|todo saved|no skills yet|skills created|read_memory|memory|\(tool call\)|\(no content\)|\(no output\)|true|false|null|none)\b/i;
 
@@ -550,9 +262,7 @@ export class Agent {
   currentBranch = "br0";
   goal: GoalState = { text: "", status: "active", updatedAt: new Date().toISOString() };
   latestProgress: ProgressReport | null = null;
-  /** operator-maintained task list (todo.md) — humans edit, agent reads */
   todo = "";
-  /** set once the conversation has been restored (lazy: on first interaction) */
   private readyPromise: Promise<void> | null = null;
   stats = {
     turns: 0,
@@ -562,177 +272,55 @@ export class Agent {
     outputTokens: 0,
     compactions: 0,
     startedAt: null as string | null,
-    /** running cost estimate in USD (pricing known only) */
     costUsd: 0 as number | undefined,
   };
 
-  /**
-   * Everything has a default EXCEPT `supportedParameters`, which must stay optional:
-   * `undefined` means "the endpoint published no capability list", and that is a
-   * different answer from an empty list ("published, and excludes it") — #150 turns
-   * on that distinction.
-   */
   private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs">> &
     Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
-  /**
-   * The conversation this agent holds, for INSPECTION.
-   *
-   * Tests need to assert what the agent will actually send (compaction, tool pairing,
-   * restoration), and reaching into a private field meant every assertion had to launder
-   * the type through `as unknown as { messages: … }` — thirty of them, each of which would
-   * keep compiling after the shape changed. A read-only view makes the intent explicit and
-   * lets the type checker do its job. There is no setter: mutation belongs to the class.
-   */
   get conversation(): readonly ChatMessage[] {
     return this.messages;
   }
 
-  /**
-   * The live array, for SEEDING a scenario in a test.
-   *
-   * Separate from `conversation` on purpose: reading and appending are different
-   * intents, and a test that plants 4000-character turns to reach a compaction threshold
-   * should look like what it is. Production code never calls this — history is appended
-   * by the turn loop.
-   */
   get conversationForTest(): ChatMessage[] {
     return this.messages;
   }
 
-  /**
-   * The endpoint this agent resolved, for INSPECTION.
-   *
-   * Tests assert that a per-agent override, a provider preset and the default all land on
-   * the same baseUrl/key/model — reaching into `opts` to do it meant the assertions had to
-   * defeat `private` and would have kept compiling after the shape changed.
-   */
   get llmConfig(): Readonly<LlmConfig> {
     return this.opts.llm;
   }
 
-  /** the provider this agent resolved, for inspection (which preset won, and why) */
   get providerName(): string {
     return this.opts.provider;
   }
-  /**
-   * User prompts waiting for the next turn boundary. Deliberately NOT queued
-   * on runChain: that chain holds the long-running loop, so queueing behind
-   * it would delay both the log entry (UI) and delivery until the round —
-   * sometimes the whole goal — finished.
-   */
   private pendingPrompts: { source: string; text: string; images?: { url: string; name?: string }[]; id?: string }[] = [];
   private stopRequested = false;
-  /**
-   * "Finish the round you are in, then stop" — a LIVE UPDATE stop.
-   *
-   * `stop()` aborts the in-flight LLM call and the running tool, which is right for an operator
-   * pressing ■ (they want it to stop NOW). It is wrong for a live update: aborting mid-tool leaves
-   * a half-written file and a call that never got its result, and the session then resumes from a
-   * state that never existed.
-   *
-   * Asked for as "動作中のエージェントループを適切なタイミング(ツール実行完了や生成終了などで1ターンが
-   * 終わる)で停止する". The loop already checks `stopRequested` at the TOP of each round, so this flag
-   * only has to make the loop notice at that boundary instead of being yanked out of it.
-   */
   private windDownRequested = false;
   private wake: (() => void) | null = null;
-  /** set while a long-parking tool (wait_children) holds the run chain */
   private parkedByTool = false;
-  /** status before parking, restored on unpark */
   private preParkedStatus: { status: AgentStatus; reason: string } | null = null;
   private abort: AbortController | null = null;
-  /** aborted only by dispose(): kills in-flight subprocess groups instantly */
   private toolAbort = new AbortController();
   private runChain: Promise<void> = Promise.resolve();
-  /** whether contextTokenBudget came from config (manual) or was derived */
   private manualCompactBudget = false;
-  /** workspace dir absent at boot — session runs "as ghost" until created */
   private workspaceMissing = false;
   private lastProgressAt = Date.now();
-  /** the provider's own prompt_tokens from the last completed turn */
   private lastUsage?: { input: number; output: number; cached?: number };
-  /** USD per token for the CURRENT model (from provider /models metadata);
-      undefined = pricing unknown → cost estimate stays 0 and hidden */
   modelPricing?: { prompt: number; completion: number };
-  /** messages.length right after the last successful compaction */
   private compactedAtLen = 0;
-  /**
-   * A sub-agent's latest bare text turn, held back until the round ends.
-   * Models usually end a sub-agent task with a plain message instead of calling
-   * finish(); only finish() forwards a report to the parent, so without this the
-   * parent got nothing. Held (not sent immediately) so a mid-task
-   * narration never pre-empts a real finish() summary.
-   */
   private pendingSubReport = "";
-  /** live compaction phase for UI progress ("summarizing"/"harvesting") */
   private compactPhase = "";
-  /** set by ask_user: the loop is parked until the operator replies */
   private awaitingUser = false;
-  /** real assistant output since the last progress report (chars / turns) */
   private activityChars = 0;
   private turnsSinceProgress = 0;
   private consecutiveToolErrors = 0;
-  /** consecutive round-fatal API errors (drives the retry backoff) */
   private consecutiveApiErrors = 0;
-  /**
-   * True while the round-level retry backoff is sleeping.
-   *
-   * Separate from `status`, which must keep reading "error" so the operator sees WHAT
-   * failed while the retry is pending — but an agent waiting to retry is stoppable
-   * work in flight, so `isLive()` has to say so or the UI offers "start" and no stop.
-   */
   private retrySleeping = false;
-  /**
-   * Consecutive auto-continued rounds that did no work.
-   *
-   * Reset by any tool call, any finish, a stop, or fresh operator input — only a
-   * round that produced neither a tool call nor a finish increments it.
-   */
   private consecutiveIdleRounds = 0;
-  /**
-   * Consecutive completion audits that REJECTED, #128.
-   *
-   * again, is rejected again… ran 381 audit calls in one turn. Nothing bounded it:
-   *
-   *  - `maxConsecutiveIdleRounds` counts IDLE rounds, and a rejected audit is not
-   *    idle — the agent is actively working
-   *  - `maxTurnsPerRound` only LOGS `round-turn-cap`; it does not break, and it is
-   *    evaluated per round, while a reject never ends the round
-   *
-   * So the agent can spend unbounded provider spend re-finishing. When the cap is
-   * hit the goal is marked as needing attention rather than left looping: silently
-   * marking it done would be #128's fail-open problem all over again, and silently
-   * stopping would strand the operator with no signal.
-   */
   private consecutiveAuditRejects = 0;
-  /**
-   * consecutive completion audits that produced NO verdict (empty /
-   * prose / provider throw). Fail-CLOSED — the goal stays active and the
-   * worker self-verifies again — but bounded: after 3 the retrying stops with
-   * a loud note (the same philosophy as the reject bound above), so a
-   * permanently broken auditor cannot trap the worker either. Reset by any
-   * real verdict and by setGoal.
-   */
   private auditUnavailableStreak = 0;
-  /**
-   * #91/#94: audit lineage for the FINAL event. `auditAttempts` counts every
-   * audit run (incremented at audit-started); `lastRejectedAudit` remembers
-   * the most recent CHANGES-REQUIRED verdict so the approving final can carry
-   * what the first attempt was told; `lastAuditOutcome` is the metadata the
-   * NEXT final event spreads in (then cleared — a later, unaudited finish
-   * must not inherit it).
-   */
   private auditAttempts = 0;
   private lastRejectedAudit: { feedback: string; attempt: number } | null = null;
-  /**
-   * What the agent had done BEFORE an audit rejected its first finish.
-   *
-   * Captured at rejection time because that is the last moment the pre-rejection work is still
-   * the bulk of the history. The eventual approved final would otherwise report only the retry,
-   * which is a narrow fix-up — the parent would be judging hours of work from its last few
-   * minutes.
-   */
   private preRejectionTurns: string[] = [];
   private lastAuditOutcome: {
     audited: boolean;
@@ -749,20 +337,11 @@ export class Agent {
       autoContinue: true,
       continueDelayMs: 15_000,
       autoCompact: true,
-      // no effort and no catalogue entry means "provider default" — the
-      // effort field is then never sent, which is the safe default
       reasoningEffort: "",
-      // undefined, NOT []: "the endpoint published no capability list" and "the
-      // endpoint published a list that excludes this parameter" are different
-      // answers, and only the second is a definite no. An empty array here
-      // would make every silent endpoint look like an explicit refusal — measured:
-      // commandcode and google publish no list at all, so `[]` hid the very control
-      // #150 was about.
       supportedParameters: undefined as string[] | undefined,
       maxConsecutiveToolErrors: 5,
       maxTurnsPerRound: 200,
-      maxAuditRejects: 3, // #128: bound the reject loop
-      // generous: only a model that never acts and never finishes reaches it
+      maxAuditRejects: 3, 
       maxConsecutiveIdleRounds: 50,
       onError: "stop",
       retryDelayMs: 60_000,
@@ -780,12 +359,7 @@ export class Agent {
       provider: "",
       ...opts,
     };
-    // remember WHERE the budget came from: config = manual, anything else is
-    // derived from a known context window (or stays at the default)
     this.manualCompactBudget = opts.contextTokenBudget !== undefined;
-    // a declared window implies its own budget: compact at ~75% of the
-    // model's real context unless the config set an explicit one (the 96k
-    // default only makes sense for unknown-window models)
     if (this.opts.contextWindowTokens && !opts.contextTokenBudget) {
       this.opts.contextTokenBudget = Math.round(this.opts.contextWindowTokens * 0.75);
     }
@@ -794,22 +368,12 @@ export class Agent {
       { dir: path.join(opts.workspace, "skills"), source: "workspace" },
       ...(opts.globalSkillsDir ? [{ dir: opts.globalSkillsDir, source: "global" }] : []),
       ...(opts.pluginSkillRoots ?? []),
-      // OTHER HARNESSES' skill directories. The SKILL.md format is shared,
-      // so these are readable as-is — verified against real third-party skills
-      // (terminalskills/skills, trailofbits/skills, …). They sit below the
-      // workspace and teapot's own global dir so a project always wins, and
-      // missing directories are skipped silently. Paths are the documented
-      // native locations plus the cross-tool ones several tools also read.
       ...foreignSkillRoots(opts.workspace),
-      // shipped-with-package skills: lowest priority, always discoverable
       ...(opts.bundledSkillsDir ? [{ dir: opts.bundledSkillsDir, source: "bundled" }] : []),
     ];
     this.toolCtx = {
       cwd: opts.workspace,
-      // so a background job records WHICH agent started it: sibling agents share a workspace,
-      // and `isLive()` must not count their jobs as this one's work in flight
       agentId: opts.id,
-      // the job RECORD lives beside the session, not in a global dir: it is this agent's history
       stateDir: opts.sessionDir,
       defaultTimeoutMs: 120_000,
       maxOutputBytes: 60_000,
@@ -818,86 +382,32 @@ export class Agent {
       readOnly: this.opts.readOnlyTools,
       onIdlePark: (reason) => this.parkForTool(reason),
       onIdleUnpark: () => this.unparkFromTool(),
-      // the park must not strand an already-queued prompt
       hasPendingPrompts: () => this.pendingPrompts.length > 0,
       onBackgroundExit: (info) => void this.onBackgroundJobExit(info),
       onFileRead: (p) => this.trackFileRead(p),
     };
-    // the session id IS the directory name — one directory per incarnation
     this.mainSession = path.basename(opts.sessionDir);
     this.currentSession = this.mainSession;
   }
 
   private skillRoots: { dir: string; source: string }[];
   private skillsCache: SkillDef[] = [];
-  /** fingerprint of the roots that produced skillsCache ("" = not scanned yet) */
   private skillsStamp = "";
-  /**
-   * The notes the LAST compaction produced, if any.
-   *
-   * Compaction UPDATES these rather than re-deriving notes from scratch: a fresh
-   * summary each pass loses whatever the previous one distilled (every
-   * implementation surveyed — opencode, Kilo, Pi — updates for this reason).
-   * Recovered from the log so the continuity survives a restart.
-   */
   private lastCompactSummary?: string;
-  /**
-   * The accumulated hard rules, kept INDEPENDENTLY of the summary.
-   *
-   * Codex's `retained_instructions.rs` states the property that matters: retained instructions are
-   * selected "independently of compaction", with the host owning storage and lifecycle, so
-   * "restrictions are never truncated into partial permissions".
-   *
-   * The first version of this re-derived the rules from `lastCompactSummary` on each pass, which
-   * fails in exactly the case the mechanism exists for: a pass that drops every rule leaves
-   * nothing to re-insert. Keeping the set here (and re-seeding it from the log on restart) makes
-   * it survive any single pass, and lets a pass add to it without ever removing from it.
-   */
   private compactRules: Rule[] = [];
-  /**
-   * A short human title for this session, derived from the operator's first
-   * prompt. Undefined until the log is read (or when there is no usable prompt).
-   *
-   * A MANUAL rename sets it too, and that must survive: the derivation above only fills it when it
-   * is still undefined, so an operator's name is never overwritten by the next restore. Without this
-   * path the header kept showing the old label after a rename — the value lives in `config.json`
-   * (`AgentConfig.sessionTitle`), and nothing wrote it into the live agent.
-   */
   setSessionTitle(title: string | undefined): void {
     this.sessionTitle = title?.trim() || undefined;
   }
   private sessionTitle?: string;
-  /** overflow recoveries used in the current turn; reset when a turn succeeds */
   private overflowRecoveries = 0;
-  /**
-   * Consecutive auto-compaction failures; at MAX_AUTO_COMPACT_FAILURES auto passes are
-   * skipped until one succeeds (ZCode's circuit breaker). Manual and overflow recovery
-   * are exempt — those are not "keep trying", they are "the operator/provider asked".
-   */
   private consecutiveCompactFailures = 0;
 
-  /**
-   * A bounded DIGEST of memory.md: every heading, plus its first line.
-   *
-   * Memory notes are worth this much because they are what a later session reads instead of
-   * re-learning the workspace: they are genuinely long — 2.6KB is the median, and the largest hold
-   * full project briefs. A model that never sees them cannot decide to consult them: that is the
-   * whole finding of #48 (182 writes, 13 reads after a write). A model that sees the WHOLE file
-   * pays for it on every request and breaks the prefix cache.
-   *
-   * Codex solves this with a `MEMORY_SUMMARY` in the prompt plus a searchable registry on disk.
-   * This is the same shape: the digest says what memory HOLDS, `read_memory(query)` fetches the
-   * part that matters.
-   *
-   * The budget is deliberately small. This is an index, and an index that costs as much as the
-   * content has no reason to be an index.
-   */
   private memoryDigestText(): string {
     let text: string;
     try {
       text = readFileSync(this.memoryFile, "utf8");
     } catch {
-      return ""; // no notes yet
+      return ""; 
     }
     if (!text.trim()) return "";
     const MAX_CHARS = 1_400;
@@ -907,17 +417,10 @@ export class Agent {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!.trim();
       if (!line) continue;
-      // provenance markers are bookkeeping, not content
-      // bookkeeping, not content: an old-style provenance comment, or a `_from:_` line — the
-      // latter is reachable through read_memory(query), where it is useful, but in a DIGEST it
-      // would be noise under every heading
       if (/^<!--/.test(line) || /^_from:/.test(line)) continue;
       const isHeading = /^#{1,6}\s/.test(line);
       const isBullet = /^[-*]\s/.test(line);
-      // headings and the FIRST line under one: enough to recognise a topic without
-      // reproducing the note. A bullet is included only as a one-line sample.
       if (!isHeading && !isBullet) {
-        // a continuation of the previous line — skip, the heading already names the topic
         if (!out.length) out.push(line.slice(0, 100));
         continue;
       }
@@ -944,21 +447,13 @@ export class Agent {
   private async refreshSkills(): Promise<void> {
     try {
       const stamp = await skillRootsFingerprint(this.skillRoots);
-      if (stamp === this.skillsStamp) return; // unchanged → reuse the cache
+      if (stamp === this.skillsStamp) return; 
       this.skillsCache = await currentSkills(this.toolCtx);
       this.skillsStamp = stamp;
     } catch {
-      /* keep previous cache */
     }
   }
 
-  /**
-   * Request config for a call made in THIS conversation: the session id rides
-   * along so OpenCode's endpoints can route and prompt-cache the turn (without
-   * it they answer 400 — see providerHeaders()). Read from `currentSession`
-   * rather than copied onto opts.llm, because a fork/incarnation switch moves
-   * the agent to a new conversation while the endpoint settings stay put.
-   */
   private requestConfig(extra: Partial<LlmConfig> = {}): LlmConfig {
     return { ...this.opts.llm, sessionId: this.currentSession, ...extra };
   }
@@ -969,9 +464,6 @@ export class Agent {
     onDelta?: (snap: { text: string; reasoning: string }) => void,
   ) {
     const fn = this.opts.chatFn ?? chatStream;
-    // carry the effort setting + the model's advertised capabilities into
-    // the request config. chat() applies effortForRequest(), which sends the
-    // field ONLY for OpenRouter endpoints whose catalogue lists support.
     return fn(
       this.requestConfig({
         ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
@@ -986,33 +478,23 @@ export class Agent {
     );
   }
 
-  /** expose id for metrics */
   opts_id(): string {
     return this.opts.id;
   }
 
-  /** snapshot of the current conversation for fork-by-reference spawning */
   exportMessages(): ChatMessage[] {
     return [...this.messages];
   }
 
-  /** seed a conversation (fork-by-reference sub-agents) — replaces history */
   importMessages(msgs: ChatMessage[]): void {
     this.messages = msgs;
     this.compactedAtLen = 0;
   }
 
-  /**
-   * Attach USD-per-token pricing for the CURRENT model (provider /models
-   * metadata). Late resolution is normal: the metadata lookup races boot.
-   * Recomputes the session cost from the log so a restart with pricing now
-   * known still shows the full number instead of starting from zero.
-   */
   async setModelPricing(p?: { prompt: number; completion: number }): Promise<void> {
     const wasUndefined = !this.modelPricing;
     this.modelPricing = p;
-    if (!p || !wasUndefined) return; // already priced, or nothing to price
-    // recompute from the usage events (cheap: file is mtime-cached)
+    if (!p || !wasUndefined) return; 
     try {
       const events = await readEvents(this.log.filePath);
       let cost = 0;
@@ -1025,7 +507,6 @@ export class Agent {
       }
       this.stats.costUsd = cost;
     } catch {
-      /* no log yet — live accumulation takes over */
     }
   }
 
@@ -1033,24 +514,12 @@ export class Agent {
     return this.opts.workspace;
   }
 
-  /**
-   * True while the workspace directory does not exist on disk.
-   *
-   * Re-checked here rather than trusting the flag set at `init()`: the directory can come BACK
-   * (the operator recreates it, another agent in the same project makes it, a new session is
-   * created in it), and a boot-time snapshot then leaves every older session flagged 👻 forever.
-   * That is the reported symptom: a recreated directory shows its session count, but the sidebar
-   * lists only the session that was just created, because all the older ones still say "ghost".
-   */
   get isGhost(): boolean {
     const exists = existsSync(this.workspace);
-    // only ever CLEAR from here: a sync getter must not claim a directory exists when it does
-    // not, but it can safely notice that it does again
     if (exists) this.workspaceMissing = false;
     return this.workspaceMissing;
   }
 
-  /** Create the workspace on demand — before any tool touches the fs. */
   private async ensureWorkspace(): Promise<void> {
     if (!this.workspaceMissing) return;
     await fs.mkdir(this.opts.workspace, { recursive: true });
@@ -1058,67 +527,19 @@ export class Agent {
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
   }
 
-
-  /** true when the operator pinned contextTokenBudget in the config */
   get compactBudgetIsManual(): boolean {
     return this.manualCompactBudget;
   }
 
-  /**
-   * The context size the prune/compact gates act on.
-   *
-   * `lastUsage.input` is the provider's own count, but a proxy or shim that under-reports it would
-   * make BOTH gates believe the context is nearly empty, switching off the defence entirely. So it
-   * is floored at HALF the local estimate: a provider within 2x of our tokenizer is legitimate, a
-   * provider reporting ~10 tokens for a large prompt is not.
-   */
   private contextSizeForBudgeting(): number {
     const estimated = this.estimateTokens();
     const reported = this.lastUsage?.input;
     if (reported === undefined) return estimated;
-    // a provider reporting nothing at all is a different bug; treat it as unknown
     if (!Number.isFinite(reported) || reported <= 0) return estimated;
     return Math.max(reported, Math.floor(estimated / 2));
   }
 
-  /**
-   * Is this agent doing work that `stop()` would actually stop?
-   *
-   * `status` cannot answer this on its own. Three states count as live:
-   *   - `running`: the obvious one;
-   *   - a PARKED TOOL: `parkForTool()` flips the visible status to "idle" so a
-   *     multi-minute `wait_children` doesn't look like a running spinner, but
-   *     the loop is very much alive inside the tool;
-   *   - QUEUED PROMPTS: prompts handed to a stopped agent are accepted and held,
-   *     and a later `start()` will consume them.
-   *
-   * Anything keying "should this button stop or start?" off `status` alone
-   * therefore offers **start** on a working agent, and the user cannot stop it
-   * — the same trap #38 documented for editing history.
-   */
   isLive(): boolean {
-    // a MANUAL compaction on an idle agent was rewriting `messages` — a
-    // large, non-cancellable operation — while `isLive()` reported false, so the
-    // UI offered "start".
-    //
-    // and the reverse — after a STOP with prompts still queued, `live` stayed
-    // true forever, so the controls kept offering "stop" for an agent that was
-    // already stopped, and no amount of reloading helped. Measured:
-    //
-    //   after stop : status = stopped   live = true   pendingPrompts = 1
-    //
-    // A queued prompt is not work in progress: it is waiting for the operator to
-    // press start. #9 settled that a stop must neither deliver nor silently
-    // DISCARD those prompts, so they are kept — but keeping them must not make the
-    // agent read as running. A stop outranks them.
-    //
-    // and one more, from the same family. The round-level retry backoff sets
-    // status "error" while it sleeps ("… — retrying in 60s"), and `error` is not a
-    // live status — so the UI offered "▶ start" for an agent that was waiting to
-    // retry, and there was NO stop control at all. The operator pressed what was
-    // there and nothing stopped, because nothing could. A scheduled retry is work
-    // in flight, so it counts as live; the dedicated flag keeps that independent of
-    // the display status, which still has to read "error".
     if (this.stopRequested) return false;
     return (
       this.status === "running" ||
@@ -1126,55 +547,16 @@ export class Agent {
       this.pendingPrompts.length > 0 ||
       this.compactPhase !== "" ||
       this.retrySleeping ||
-      // a BACKGROUND job is work in flight, and `stop()` now ends it. The
-      // round that started it deliberately ended (the loop breaks rather than
-      // nagging — see hasRunningBgShells in loop()), so the status reads "idle"
-      // while a dev server / watcher / long build is still running. Without this
-      // the UI offered "▶ start" and there was no stop control for the one thing
-      // the operator most needs to stop. Note this is checked AFTER stopRequested:
-      // once stopped, the jobs are already dead, so `live` must go false or the
-      // button would offer stop forever.
-      // OWNER-SCOPED, not directory-scoped. Sub-agents inherit their parent's workspace, so
-      // asking "does this DIRECTORY have background shells?" made every stopped sibling of a
-      // busy agent report `live: true`. MEASURED: four STOPPED sub-agents in one workspace
-      // showed `· ▶4` in the sidebar because the parent had background jobs, and their stop
-      // buttons offered to stop work that was already gone.
-      //
-      // `hasRunningBgShells(cwd)` is still the right question where the caller wants the
-      // DIRECTORY (parking a round, killing a workspace's jobs) — just not for `isLive()`.
       hasRunningBgShellsFor(this.toolCtx.cwd, this.opts.id) ||
-      // ask_user: the loop is parked on the operator's answer — stoppable work
-      // in flight, not idleness. Without this the UI offered "start", and
-      // pressing it cleared awaitingUser, silently discarding the open question
-      // while master.waitChildren's own active() kept counting the same child
-      // as working (three definitions of "alive" disagreeing about one state).
       this.awaitingUser ||
-      // `needs_operator` IS that state now, named. Leaving the check on the flag alone would let
-      // the status and `live` disagree — #59's exact class of bug — and it is why a
-      // `needs_operator` snapshot reported `live: false` until this was added.
       this.status === "needs_operator"
     );
   }
 
-  /**
-   * The text of every prompt still waiting for a turn boundary.
-   *
-   * Read-only view for callers that need to know WHAT is queued, not just how
-   * many — a delivery assertion has to see the text, or "the message arrived"
-   * degrades into "something is queued".
-   */
   pendingPromptTexts(): string[] {
     return this.pendingPrompts.map((p) => p.text);
   }
 
-  /**
-   * Is this agent doing in-flight work that a WAITER (wait_children) should
-   * hold for? Deliberately narrower than isLive(): queued prompts are DORMANT
-   * work (a stopped/idle child touches them only after it is started), so
-   * they must not keep a parent parked on a child that is visibly idle —
-   * that wait would hang. isLive() answers "stop vs start" (#59/#133); this
-   * answers "is work in flight".
-   */
   isBusy(): boolean {
     if (this.stopRequested) return false;
     return (
@@ -1186,20 +568,11 @@ export class Agent {
     );
   }
 
-  /** recently read workspace files (most recent first) — post-compact restore */
   private recentReads: string[] = [];
   private trackFileRead(p: string): void {
     this.recentReads = [p, ...this.recentReads.filter((x) => x !== p)].slice(0, 5);
   }
 
-  /**
-   * A background shell (bash background=true) finished. Two channels:
-   * 1. a system_note row in the timeline — the operator sees the outcome
-   *    without opening anything;
-   * 2. a queued harness prompt, delivered at the next turn boundary — the
-   *    agent learns exit code + output tail WITHOUT having to poll
-   *    bash_output blindly. Failed jobs say so loudly so the model reacts.
-   */
   private onBackgroundJobExit(info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }): void {
     const ok = info.code === 0;
     const one = info.cmd.replace(/\s+/g, " ").slice(0, 80);
@@ -1211,31 +584,15 @@ export class Agent {
       cmd: one,
       failed: !ok,
     });
-    // queue the report for the next turn boundary (agent-visible channel)
     this.onBackgroundJobExitQueued(info);
   }
 
   private parkForTool(reason: string): boolean {
-    if (this.parkedByTool) return true; // already parked: the tool may proceed
+    if (this.parkedByTool) return true; 
     if (this.status !== "running") return false;
-    // a prompt queued BEFORE the park would be stranded by it — the
-    // enqueue-time wake only handles prompts arriving DURING the park. Refuse,
-    // so the tool stands down and the next turn boundary consumes the queue.
     if (this.pendingPrompts.length > 0) return false;
     this.parkedByTool = true;
     this.preParkedStatus = { status: this.status, reason: this.statusReason };
-    /**
-     * `waiting`, NOT `idle`.
-     *
-     * A parked loop is alive and will resume by itself, so showing "idle" contradicted the
-     * stop button beside it: the badge read idle while the header offered ■ stop, and the
-     * operator reasonably concluded the UI was broken. `live` was already true for exactly this
-     * reason (a parked tool counts as work in flight), so only the DISPLAYED status was wrong.
-     *
-     * The two park reasons are named separately because they mean different things to the
-     * operator: a `wait_children` park resumes when a sub-agent settles, and a background-shell
-     * park resumes when a `wait_children`/round-end wakes it.
-     */
     this.status = "waiting";
     this.statusReason = `${reason} — send a message to take over; resumes by itself`;
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
@@ -1248,18 +605,15 @@ export class Agent {
     const prev = this.preParkedStatus;
     this.preParkedStatus = null;
     if (!this.stopRequested) {
-      // restore the pre-park display state (running again)
       this.status = prev?.status ?? "running";
       bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
     }
   }
 
-  /** current LLM settings (read-only view) */
   get llm(): LlmConfig {
     return this.opts.llm;
   }
 
-  /** Swap LLM settings mid-flight; the next turn picks them up. */
   setLlmConfig(llm: LlmConfig): void {
     this.opts.llm = llm;
   }
@@ -1267,41 +621,14 @@ export class Agent {
   async init(): Promise<void> {
     await this.log.load();
     await this.migrateMemoryToAgentScope();
-    // NOTE: the workspace is NOT created here. Boot-time mkdir resurrected
-    // deleted project directories on every restart, which operators hated.
-    // It is created lazily in ensureWorkspace() when the agent first needs
-    // to touch the filesystem. Until then a missing workspace marks the
-    // session as "ghost" (visible-but-flagged in the UI).
     this.workspaceMissing = !(await fs
       .stat(this.workspace)
       .then(() => true)
       .catch(() => false));
-    // goal lives next to the session log (dataDir), NOT in the workspace —
-    // migrate a legacy workspace GOAL.md once, then never touch the workspace
     await this.migrateGoalFromWorkspace();
     const stored = await this.readGoalStore();
     this.goal = stored ?? { text: "", status: "active", updatedAt: new Date().toISOString() };
-    // operator-maintained task list lives beside goal.md
     this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");
-    // NO skill scan here. It was the single largest boot cost — 493 agents
-    // each walking their roots (readdir + stat, recursively) measured 2120 ms of
-    // a 4.7 s boot. Every one of those walks was redundant:
-    //
-    //   - the turn loop calls `refreshSkills()` at the TOP of every turn, before
-    //     the system prompt (which embeds the catalogue) is built, so the scan is
-    //     always current before any LLM request
-    //   - the `list_skills` tool calls it itself before reading the cache
-    //   - `/api/agents/:id/skills` (what the panel uses) does its own fresh
-    //     `currentSkills()` walk and never reads this cache
-    //
-    // Caching the walk was the other option and was WORSE: the fingerprint exists
-    // to notice a NESTED skill's add/edit, which does not change its root's mtime,
-    // so any TTL/mtime key reintroduces the staleness the walk was written to fix
-    // (the skills-fingerprint tests pin exactly that). Skipping boot's copy costs
-    // no freshness at all.
-    //
-    // The conversation is likewise not restored here: boot cost stays O(agents),
-    // not O(history). Both are rebuilt lazily by ensureReady()/the turn loop.
     if (this.opts.restoreSession) {
       this.status = "stopped";
       this.statusReason = "session not loaded — select it or send a prompt";
@@ -1309,12 +636,6 @@ export class Agent {
     }
   }
 
-  /**
-   * Resolve the session/workspace this agent operates on.
-   *
-   * Public because `load()` is a thin wrapper over it and a test that reproduces a
-   * restart needs the same step WITHOUT the reload side effects.
-   */
   ensureReady(): Promise<void> {
     if (!this.readyPromise) {
       this.readyPromise = (async () => {
@@ -1327,19 +648,10 @@ export class Agent {
     return this.readyPromise;
   }
 
-  /** Explicit load (e.g. the user clicked the agent in the UI): stopped → idle. */
   async load(): Promise<void> {
     await this.ensureReady();
   }
 
-  /**
-   * Answer tool_calls in a RESTORED history that have no tool_result.
-   *
-   * The ordinary backstop (`answerUnansweredToolCalls`) works on an assistant
-   * turn inside a live loop. After a restart there is no loop: the call is in
-   * the log, the process that was running it is gone, and nothing else will ever
-   * write its result.
-   */
   private async answerUnansweredRestoredCalls(): Promise<void> {
     const seen = new Set<string>();
     for (const ev of await readEvents(this.log.filePath)) {
@@ -1367,44 +679,16 @@ export class Agent {
       });
   }
 
-  /** harness-managed files inside the session directory */
   private get goalFile(): string {
     return path.join(this.opts.sessionDir, "goal.md");
   }
 
-  /**
-   * Durable notes — AGENT-scoped, not session-scoped.
-   *
-   * silently orphaned everything it had learned. Across this machine, 66 agents had more
-   * than one session (median 6 each) and only 5 of them had notes in any session at all —
-   * the notes were written, then abandoned when the next session was minted. A "durable
-   * note" that dies with the timeline is not durable.
-   *
-   * The file lives next to the agent's session DIRECTORY (`sessions/<agent>/memory.md`),
-   * a level above the per-session dirs, so every session of that agent sees the same
-   * notes. A session's own `memory.md` from an older build is migrated on first read.
-   */
   private get memoryFile(): string {
     const perSession = path.join(this.opts.sessionDir, "memory.md");
     const parent = path.dirname(this.opts.sessionDir);
-    /**
-     * Agent-scoped when the session dir sits inside a `sessions/` ROOT, session-scoped otherwise.
-     *
-     * The previous test was `/-[0-9a-f]{6,}$/` against the basename — "looks like
-     * `<agent>-<hex>`". MEASURED: `mkdtemp` suffixes are 6 alphanumerics, so ~0.2% of them are
-     * all-hex and match. That made the memory file's LOCATION depend on a random temp name, which
-     * is why a test asserting `read_memory(query)` failed in CI and passed locally: the fixture
-     * `mems-AbCdEf` resolved to the agent-wide file, and a sibling test's notes were then in
-     * scope.
-     *
-     * The structural fact is reliable: `Master.resolveSessionDir` always mints session dirs
-     * inside its `sessions/` root, so a parent named `sessions` means "one level down from the
-     * agent". A bare temp dir has no such parent and stays session-scoped.
-     */
     return path.basename(parent) === "sessions" ? path.join(parent, "memory.md") : perSession;
   }
 
-  /** the pre-migration location, read once so notes are not lost on upgrade */
   private get legacyMemoryFile(): string {
     return path.join(this.opts.sessionDir, "memory.md");
   }
@@ -1430,14 +714,13 @@ export class Agent {
     return raw === null ? null : this.parseGoalFile(raw);
   }
 
-  /** One-time import of a pre-0.6.0 workspace GOAL.md; content is preserved. */
   private async migrateGoalFromWorkspace(): Promise<void> {
     const legacy = path.join(this.workspace, "GOAL.md");
     let wsText: string;
     try {
       wsText = await fs.readFile(legacy, "utf8");
     } catch {
-      return; // nothing to migrate
+      return; 
     }
     const existing = await this.readGoalStoreRaw();
     if (existing === null) await fs.writeFile(this.goalFile, wsText, "utf8");
@@ -1449,14 +732,6 @@ export class Agent {
     });
   }
 
-  /**
-   * Move notes from the per-session file into the agent-wide one — once.
-   *
-   * Older builds wrote memory.md inside the session dir. Those notes are real knowledge and
-   * must not be abandoned by the upgrade that makes them durable, so the session's file is
-   * APPENDED to the agent-wide one (never replacing it: the agent-wide file may already hold
-   * notes from other sessions) and then removed so a later session does not re-import it.
-   */
   private async migrateMemoryToAgentScope(): Promise<void> {
     const from = this.legacyMemoryFile;
     const to = this.memoryFile;
@@ -1465,7 +740,7 @@ export class Agent {
     try {
       legacy = (await fs.readFile(from, "utf8")).trim();
     } catch {
-      return; // nothing to migrate
+      return; 
     }
     if (!legacy) {
       await fs.rm(from, { force: true }).catch(() => {});
@@ -1480,16 +755,9 @@ export class Agent {
       await fs.rm(from, { force: true });
       console.log(`[teapot] memory: migrated ${legacy.length} bytes to ${path.basename(to)} (agent scope)`);
     } catch {
-      /* keep the session copy if the agent-wide write failed — losing notes is worse */
     }
   }
 
-  /**
-   * Resolve a leading sub_fork header: load the parent session's file (and
-   * recurse if THAT one is itself a sub_fork), take its lineage up to the
-   * recorded event, and return it prepended to our own events. Never copies
-   * bytes into our log — the prefix lives in the parent's file. Cycle-safe.
-   */
   private async spliceSubForkPrefix(
     own: TeapotEvent[],
     baseDir = path.dirname(this.log.filePath),
@@ -1503,7 +771,6 @@ export class Agent {
     let parentEvents = await readEvents(path.join(parentDir, "chat.jsonl")).catch(
       () => [] as TeapotEvent[],
     );
-    // grandchild chains: the parent file may itself open with a sub_fork
     if (parentEvents.some((e) => e.type === "sub_fork")) {
       parentEvents = await this.spliceSubForkPrefix(parentEvents, parentDir);
     }
@@ -1512,7 +779,6 @@ export class Agent {
       return own;
     }
 
-    // lineage of the parent up to (and including) the recorded fork point
     const byId = new Map(parentEvents.map((e) => [e.id, e]));
     const tip = byId.get(d.upToEvent);
     if (!tip) {
@@ -1521,7 +787,7 @@ export class Agent {
     }
     const prefix: TeapotEvent[] = [];
     for (let cur: TeapotEvent | undefined = tip; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) {
-      if (prefix.some((p) => p.id === cur!.id)) break; // cycle guard
+      if (prefix.some((p) => p.id === cur!.id)) break; 
       prefix.push(cur);
     }
     prefix.reverse();
@@ -1529,38 +795,16 @@ export class Agent {
     return [...prefix, ...own.filter((e) => e !== header)];
   }
 
-  /**
-   * Restore the conversation from the JSONL log exactly once, on demand.
-   * Everything that touches history (prompts, start, fork, UI selection)
-   * funnels through here; boot stays cheap no matter how many sessions exist.
-   *
-   * Strategy: find the most recent event overall (its branch is where the
-   * agent was), walk the `parent` chain backwards (crossing fork points),
-   * then replay events forward into ChatMessages. Meta-tool calls
-   * (finish / report_progress) never produced logged tool results, so we
-   * synthesize their responses to keep the message sequence valid.
-   */
   private async restoreFromLog(): Promise<void> {
     const own = await readEvents(this.log.filePath);
     if (own.length === 0) return;
-    // a sub_fork header points at the session this agent branched from —
-    // splice that prefix in from the parent's file (recursively, cycle-safe)
-    // instead of ever copying parent history into our own log
     const events = await this.spliceSubForkPrefix(own);
     const lineage = lineageOf(events);
     if (!lineage.length) return;
     const last = lineage[lineage.length - 1];
     const msgs = rebuildMessagesFrom(lineage);
 
-    // Rebuild lifetime stats from the log: turns/tools/tokens/compactions are
-    // SESSION totals, so a reload must not reset them to zero. Counted over
-    // the whole file (not just the current branch) to match what the runtime
-    // panel showed before the restart.
     for (const e of own) {
-      // the title comes from the FIRST user prompt, which never changes, so
-      // deriving it here is free — this loop already walks the whole log at
-      // restore. Only the first one is taken; later prompts are a different
-      // subject and would make the sidebar label churn under the reader.
       if (this.sessionTitle === undefined && e.type === "prompt" && (e.data as { source?: string })?.source === "user") {
         this.sessionTitle = sessionTitleFrom((e.data as { text?: string })?.text) ?? undefined;
       }
@@ -1574,21 +818,9 @@ export class Agent {
         this.stats.inputTokens += u.inputTokens ?? 0;
         this.stats.outputTokens += u.outputTokens ?? 0;
         this.stats.cachedInputTokens += u.cachedInputTokens ?? 0;
-        // NO cost accumulation here: setModelPricing() rebuilds costUsd from
-        // this same log with a REPLACE — whichever runs first, adding on top
-        // of a rebuilt number counted every usage event twice (a restart plus
-        // the first interaction showed ~2x). The recompute is authoritative.
       } else if (e.type === "system_note") {
         const d = e.data as { event?: string; rules?: unknown };
         if (d.event === "context-compacted") this.stats.compactions++;
-        /**
-         * Re-seed the durable rule set so it survives a restart.
-         *
-         * The newest `compaction-rules` note is the accumulated set; without this a reload starts
-         * empty and the first compaction after it has nothing to enforce — the failure the whole
-         * mechanism exists to prevent. Seeded through `extractRules` rather than trusting the
-         * stored shape, so the note is the same one a human can read in the log.
-         */
         if (d.event === "compaction-rules" && Array.isArray(d.rules)) {
           const seeded = d.rules
             .map((line) => extractRules(`${RULES_HEADING}\n- ${String(line)}`)[0])
@@ -1596,15 +828,10 @@ export class Agent {
           if (seeded.length) this.compactRules = seeded;
         }
       } else if (e.type === "compaction") {
-        // keep the NEWEST notes: they are what the next compaction updates, and
-        // without this a restart would silently fall back to re-summarizing
         const d = e.data as { summary?: unknown };
         if (typeof d.summary === "string" && d.summary) this.lastCompactSummary = d.summary;
       }
     }
-    // newest usage event seeds the context gauge right after reload —
-    // inputTokens from the LAST turn is the live context size, and cached
-    // must ride along or the "⚡️ N% cached" pill disappears after a restart
     for (let i = own.length - 1; i >= 0; i--) {
       if (own[i]!.type === "usage") {
         const u = own[i]!.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
@@ -1622,36 +849,8 @@ export class Agent {
     if (msgs.length > 0) {
       this.messages = msgs;
       this.currentBranch = last.branch;
-      // re-apply pruning to the restored history. `maybePrune` clips
-      // oversized tool output IN PLACE, so a live session keeps its clipped
-      // text while the log still holds the full result — a restart therefore
-      // handed the provider a strictly LARGER prompt than the one that had just
-      // succeeded, which is a size regression that only shows up after a
-      // reload. It is a size fix, not a semantic one: the model has already
-      // seen and acted on that output, and the pruned form keeps the head plus
-      // a marker, exactly as it did live.
-      //
-      // FORCED: this reproduces what the live session had already done, so it must
-      // not consult the "is there room" bar — a restored context that happens to sit
-      // below it still has to match the prompt the provider last accepted.
       await this.maybePrune(true);
 
-      // answer tool_calls the log says are still open.
-      //
-      // The restore path rebuilds `msgs` straight from the log, so a call whose
-      // process died mid-command comes back as an assistant turn with
-      // `tool_calls` and NO matching `tool_result`. Nothing ever answers it —
-      // not `stop()` (there is no turn to stop) and not `dispose()` (the process
-      // is already gone). The row then renders as still running for good.
-      //
-      // every one a `bash`, each followed immediately by
-      // `session-restored` / `idle->stopped disposed`. The shape is a restart
-      // (or a crash) landing while a long command was in flight, which is
-      // precisely when a human is most likely to notice "it never finished".
-      //
-      // So close them ON RESTORE, before the restored history is used. This is
-      // the same backstop as the mid-turn paths, reached from the one place
-      // those could not: after the process is gone.
       await this.answerUnansweredRestoredCalls();
 
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -1662,11 +861,6 @@ export class Agent {
     }
   }
 
-  /**
-   * Force a compaction pass (manual /compact). Serialized on the run chain so
-   * it lands at a safe point relative to a running loop; reports whether
-   * anything was actually compacted.
-   */
   async compactNow(): Promise<{ ran: boolean }> {
     const ran = await this.enqueue(async () => {
       await this.ensureReady();
@@ -1677,23 +871,11 @@ export class Agent {
     return { ran };
   }
 
-  /**
-   * Edit a previously-sent prompt: fork the conversation at that point,
-   * replace its text, and optionally fold everything that happened after it
-   * into a summary note on the new branch (ChatGPT-edit style). The agent
-   * must not be running — editing under a live loop would race its history.
-   */
   async editPromptAt(
     eventId: string,
     text: string,
     tail: "discard" | "summarize",
   ): Promise<{ droppedEvents: number; branch: string }> {
-    // "running" is not the only live state: parkForTool() rewrites the status to
-    // "idle" while the loop is still very much alive inside a parked tool
-    // (wait_children does this), and queued prompts have not been consumed yet.
-    // Editing underneath either of those replaces the very `messages` array the
-    // agent is about to resume into, so its old-branch work kept running
-    // against the new branch.
     if (this.status === "running" || this.parkedByTool || this.pendingPrompts.length)
       throw new Error("agent is running — stop it before editing history");
     const all = await readEvents(this.log.filePath);
@@ -1706,7 +888,7 @@ export class Agent {
     if (tIdx === -1) throw new Error("prompt is not on this agent's current lineage");
 
     const kept = lineage.slice(0, tIdx);
-    const dropped = lineage.slice(tIdx); // includes the original prompt itself
+    const dropped = lineage.slice(tIdx); 
 
     const msgs = rebuildMessagesFrom(kept);
     if (tail === "summarize" && dropped.length > 0) {
@@ -1724,22 +906,12 @@ export class Agent {
           }
         }
       } catch {
-        // summarization is best-effort; the fork proceeds without notes
       }
     }
     msgs.push({ role: "user", content: text });
 
     const newBranch = `br${this.branchCount()}${Date.now().toString(36).slice(-4)}`;
-    // Quiesce BEFORE rewriting history: an in-flight LLM call, a parked tool or
-    // a queued prompt would otherwise resume into the NEW messages array and
-    // keep running the old branch's work here. Mirrors stop(), which is
-    // the only other place that cancels this state.
     await this.quiesceForHistoryEdit();
-    // The fork event must be appended while currentBranch is still the OLD
-    // one. EventLog links parents PER BRANCH (lastByBranch), so appending it
-    // under the new branch gave it parent:null — severing the chain, and
-    // lineageOf() then returned only the post-fork events, so a restart rebuilt
-    // the history with none of the pre-edit context.
     await this.log.append("fork", this.currentSession, this.currentBranch, {
       fromSession: this.currentSession,
       fromBranch: this.currentBranch,
@@ -1749,17 +921,6 @@ export class Agent {
       droppedEvents: dropped.length,
       tailMode: tail,
     });
-    // Seed the new branch's parent link so its first event chains across
-    // instead of starting a disconnected parent:null history.
-    //
-    // seed from the CUT POINT, not from this branch's tip. The fork event
-    // records where the edit was made (`fromEvent` = the last KEPT event), but
-    // `lastEventId(currentBranch)` is the newest event on the branch — which is
-    // one of the events this edit just DISCARDED. Seeding from the tip chained
-    // the new branch to the discarded tail, so lineageOf() walked straight back
-    // through it and a restart resurrected every dropped turn.
-    //
-    // The cut point is the right parent: it is the last event that survives.
     const cutPoint = kept.at(-1)?.id ?? null;
     this.log.seedBranch(newBranch, cutPoint);
     this.currentBranch = newBranch;
@@ -1769,52 +930,37 @@ export class Agent {
     return { droppedEvents: dropped.length, branch: newBranch };
   }
 
-  /**
-   * Cancel everything that could resume against the history we are about to
-   * replace, then wait for the loop to actually stop.
-   *
-   * An edit rewinds the conversation, so any work still in flight belongs to
-   * the branch being discarded: an LLM call whose result would append to the
-   * new messages, a parked tool, and queued prompts that were never delivered
-   *. stopRequested is set and cleared around the wait so the agent is
-   * usable again once the edit lands.
-   */
   private async quiesceForHistoryEdit(): Promise<void> {
     if (!this.stopRequested) {
       this.stopRequested = true;
-      this.abort?.abort(); // interrupt an in-flight LLM call
-      this.toolAbort.abort(); // kill subprocesses / interrupt a parked tool
-      this.wake?.(); // release wait_children
+      this.abort?.abort(); 
+      this.toolAbort.abort(); 
+      this.wake?.(); 
       try {
         await this.settled();
       } catch {
-        /* the loop is being abandoned; its errors are not ours to report */
       }
       this.parkedByTool = false;
-      this.pendingPrompts = []; // undelivered prompts belong to the old branch
+      this.pendingPrompts = []; 
       this.stopRequested = false;
-      // a fresh signal: toolCtx holds a copy of the reference, so republish
       if (this.toolAbort.signal.aborted) {
         this.toolAbort = new AbortController();
         (this.toolCtx as { signal: AbortSignal }).signal = this.toolAbort.signal;
       }
-      this.bgExits = []; // old-branch job exits must not be folded in
+      this.bgExits = []; 
     }
   }
 
   private parseGoalFile(text: string): GoalState {
-    // humans and agents may append their own status lines — latest wins
     const all = [...text.matchAll(/status:\s*(\w+)/gi)];
     const last = all[all.length - 1]?.[1];
     const status = last === "done" ? "done" : last === "paused" ? "paused" : "active";
-    // keep bookkeeping lines out of the injected goal text
     let body = text.trim();
     for (let i = 0; i < 4; i++) {
       const stripped = body.replace(/\n+(?:status|updated):[^\n]*$/i, "").trimEnd();
       if (stripped === body) break;
       body = stripped;
     }
-    // verification contract (pi-goal-x style): a `verify:` block at the tail
     let verify = "";
     const vm = body.match(/\nverify:\s*\n([\s\S]+)$/i) ?? body.match(/^verify:\s*(.+)$/im);
     if (vm) {
@@ -1827,7 +973,6 @@ export class Agent {
   }
 
   private async writeGoalFile(): Promise<void> {
-    // don't let previously-appended bookkeeping lines accumulate in the body
     let body = this.goal.text.trimEnd();
     for (let i = 0; i < 4; i++) {
       const stripped = body.replace(/\n+(?:status|updated):[^\n]*$/i, "").trimEnd();
@@ -1844,9 +989,6 @@ export class Agent {
 
   async setGoal(text: string): Promise<void> {
     this.goal = { text, status: "active", updatedAt: new Date().toISOString() };
-    // a new goal is a new audit contract: the previous goal's rejection must
-    // not ride along as the new goal's "previous" lineage, and the attempt
-    // counters restart from zero (theirs counts rejects of THIS goal)
     this.consecutiveAuditRejects = 0;
     this.auditUnavailableStreak = 0;
     this.lastRejectedAudit = null;
@@ -1856,30 +998,12 @@ export class Agent {
     await this.log.append("goal", this.currentSession, this.currentBranch, { event: "set", text });
   }
 
-  /** Persist the operator-maintained task list (todo.md). */
   async setTodo(text: string, by = "human"): Promise<void> {
     this.todo = text;
     await fs.writeFile(this.todoFile, text, "utf8");
     await this.log.append("todo", this.currentSession, this.currentBranch, { event: "set", by });
   }
 
-  /**
-   * Apply surgical changes to todo.md.
-   *
-   * Each entry names an item by its exact (normalised) text and says what to do with it:
-   *   - `done` / `reopen` / `remove` act on an EXISTING checkbox line;
-   *   - `add` appends a new unchecked line, even when nothing matches.
-   *
-   * `action` is optional and defaults to `done`, so every existing caller and every model
-   * that only sends `{item, done}` keeps working.
-   *
-   * Why not whole-list replacement, which Codex (`update_plan`) and DeepSeek Harness
-   * (`todo/write`) both use: `todo.md` is a file the OPERATOR also edits, and it holds
-   * headings, notes and prose — not only checkboxes. A model re-emitting "the list" would
-   * silently drop anything it did not repeat, which is exactly the data loss `set_memory`
-   * caused before `#48` (measured: 1028 → 83 bytes). The `content` argument still exists
-   * for a deliberate restructure.
-   */
   async updateTodoItems(
     updates: { item: string; done?: boolean; action?: "done" | "reopen" | "add" | "remove" }[],
     by = "agent",
@@ -1893,7 +1017,6 @@ export class Agent {
     for (const u of updates) {
       const action = u.action ?? (u.done === false ? "reopen" : "done");
       const target = norm(u.item);
-      // find the LAST matching checkbox line (later duplicates win)
       let idx = -1;
       for (let i = lines.length - 1; i >= 0; i--) {
         const m = lines[i]!.match(/^(\s*[-*+] \[)([ xX])(\].*)$/);
@@ -1904,9 +1027,6 @@ export class Agent {
         }
       }
       if (action === "add") {
-        // An ADD repeats: the caller may add several items with the same wording, and
-        // refusing because one already exists would make "add" unpredictable. But adding
-        // the SAME text twice in one call is a mistake, so collapse it.
         if (idx !== -1) {
           unmatched.push(`${u.item} (already present — not added twice)`);
           continue;
@@ -1929,7 +1049,6 @@ export class Agent {
       matched++;
     }
     if (matched > 0 || added > 0 || removed > 0) {
-      // trailing blank lines from a removal are tidied so the file does not grow a gap
       while (lines.length > 1 && lines[lines.length - 1]!.trim() === "" && lines[lines.length - 2]!.trim() === "")
         lines.pop();
       this.todo = lines.join("\n");
@@ -1955,14 +1074,6 @@ export class Agent {
     return parts.join(". ");
   }
 
-  /**
-   * `by` records WHY the status changed, because "active" alone is ambiguous.
-   *
-   * Two very different things produce it: the operator resuming a paused goal, and the auditor
-   * rejecting a `finish(goalComplete=true)`. The timeline rendered the second wording for both, so
-   * pressing ▶ working on a paused goal said "the audit rejected the finish" — reported as
-   * "pausedからの移動はrejectじゃないのでは?".
-   */
   async setGoalStatus(
     status: GoalState["status"],
     by: "operator" | "auditor" | "agent" = "operator",
@@ -1976,7 +1087,6 @@ export class Agent {
     });
   }
 
-  /** Set the goal's verification contract (completion requirements). */
   async setGoalVerify(verify: string): Promise<void> {
     this.goal = { ...this.goal, verify: verify.slice(0, 4000), updatedAt: new Date().toISOString() };
     await this.writeGoalFile();
@@ -1986,7 +1096,6 @@ export class Agent {
     });
   }
 
-  /** Record a verification-contract audit outcome (pi-goal-x style review). */
   async setGoalAudit(verdict: "approved" | "changes-required", feedback: string): Promise<void> {
     this.goal = {
       ...this.goal,
@@ -1994,14 +1103,6 @@ export class Agent {
       audit: { verdict, feedback: feedback.slice(0, 4000), at: new Date().toISOString() },
     };
     if (verdict === "approved") this.goal.status = "done";
-    /**
-     * A rejection REOPENS the goal, and that is logged as its own status event.
-     *
-     * It used to flip `status` to "active" with no event at all, so the timeline only ever saw a
-     * bare "active" and could not tell this apart from an operator resuming a paused goal — which
-     * is why the `by` field exists. Logged here rather than through `setGoalStatus` because the
-     * audit entry below must be written in the same order the state changed.
-     */
     const reopened = verdict !== "approved" && this.goal.status === "done";
     if (reopened) {
       this.goal.status = "active";
@@ -2022,54 +1123,16 @@ export class Agent {
   snapshot() {
     return {
       id: this.opts.id,
-      /**
-       * The DISPLAYED status, which must never contradict `live`.
-       *
-       * idle なのにコントロールは stop ボタンが表示されてて微妙" — and the same for
-       * `wait_children`. `live` was already true for both (a parked tool and a running
-       * background shell are work in flight, and stop() ends them), so only the badge was
-       * wrong: it said idle while the header offered ■ stop.
-       *
-       * Rather than patch each site, the contradiction is fixed HERE: if there is work in
-       * flight that stop would stop, the status says "waiting", never "idle". Callers that
-       * need the raw state for logic use `live`, which is unchanged.
-       */
       status: this.status === "idle" && this.isLive() ? "waiting" : this.status,
       statusReason: this.statusReason,
-      /**
-       * Is there work in flight that `stop` would actually stop?
-       *
-       * `status` alone is not enough to answer that, and the UI needs it: a
-       * parked tool (`wait_children`) rewrites the status to "idle" while the
-       * loop is very much alive, so a client keying "stop vs start" off
-       * `status === "running"` offered **start** on a running agent and the
-       * user could not stop it. This is the same "running is not the
-       * only live state" fact #38 had to be taught about editing.
-       */
       live: this.isLive(),
       workspace: this.workspace,
-      // through the getter, so a workspace that came back stops being reported as 👻
       workspaceMissing: this.isGhost,
       session: this.currentSession,
-      // a human label for this session, so the sidebar does not ask the
-      // operator to read `teapot-10-16854917`. Absent when the first prompt had
-      // no usable line — the UI then falls back to the id.
       ...(this.sessionTitle ? { sessionTitle: this.sessionTitle } : {}),
       branch: this.currentBranch,
       goal: {
         status: this.goal.status,
-        /**
-         * The goal is sent WHOLE.
-         *
-         * This used to be `slice(0, 400)`, which reads as a sane payload cap and behaves as a
-         * silent data loss: the right panel's goal card is the only place the operator sees the
-         * text they wrote, so a long goal stopped mid-sentence. Reported as "goalに設定されている
-         * 文字列が長いとフロントエンドのgoal欄で後半が切られる? 全部表示されてほしい".
-         *
-         * payload argument does not survive the numbers either — this rides one `/api/agents`
-         * response that is already carrying every agent's stats, and a goal is a few KB at worst.
-         * `verify` keeps its own cap below, where the auditor writes it.
-         */
         text: this.goal.text,
         ...(this.goal.verify ? { verify: this.goal.verify.slice(0, 1000) } : {}),
         ...(this.goal.audit ? { audit: this.goal.audit } : {}),
@@ -2078,51 +1141,19 @@ export class Agent {
       stats: { ...this.stats, costUsd: this.modelPricing ? this.stats.costUsd : undefined },
       model: this.opts.llm.model,
       provider: this.opts.provider,
-      // #47/#150: the effort in force, and whether this model can take one at all
       ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
       effortSupported: effortChoosable(this.opts.supportedParameters),
-      // the levels to OFFER, when the endpoint publishes them: a model with
-      // ["max","high","low"] must not be shown minimal/medium, which would either be
-      // refused or silently clamped
       ...(this.opts.supportedEfforts?.length ? { effortOptions: this.opts.supportedEfforts } : {}),
       sessionDir: this.opts.sessionDir,
       ctx: {
         usedTokens: this.lastUsage?.input ?? this.estimateTokens(),
         compactAt: this.opts.contextTokenBudget,
-        // false when the budget was derived (75% of a known window) instead of
-        // being pinned in config — lets the UI say "75% of window" rather than
-        // mislabeling every inferred-window model "manual override"
         compactAtIsManual: this.compactBudgetIsManual,
         window: this.opts.contextWindowTokens || 0,
-        // live compaction phase ("summarizing"/"harvesting"/"done") — lets any
-        // client show progress even if it missed the bus event
         ...(this.compactPhase ? { compacting: this.compactPhase } : {}),
       },
       pendingPrompts: this.pendingPrompts.length,
-      // the IDS as well as the count. The web UI reconciles its local echo
-      // list against the live queue, and it was doing that by POSITION
-      // (slice(0, queued)) because only a count was published — so whenever the
-      // count dipped below the true queue length (a mid-queue cancellation, or a
-      // momentary gap), the NEWEST still-queued echoes were dropped and their
-      // undelivered log rows reappeared as settled "sent" rows. Identity needs
-      // the ids to travel; the count alone cannot express "these two".
-      //
-      // Bounded like the rest of the snapshot, and ids are opaque, so this
-      // cannot carry prompt text.
       pendingPromptIds: this.pendingPrompts.map((p) => p.id).filter((x): x is string => !!x).slice(0, 64),
-      // the QUEUE itself, not just its ids. The UI's echo rows are
-      // memory-only (like liveByAgent and timelineCache), so after a reload the
-      // queue survives on the server while the UI has nothing to render — the
-      // queued message then appears only as its log row, i.e. already sent.
-      //
-      // Ids alone cannot fix that: they identify a prompt, they do not carry its
-      // text, so the UI cannot rebuild an echo from them. This is the queue the
-      // operator is looking at, already on screen in the ⏳ badge, so shipping it
-      // is not new exposure — it is the same data in a shape the timeline can
-      // use.
-      //
-      // `at` is the enqueue time so the echo keeps a stable position and id
-      // across rebuilds; `sent` mirrors the echo flag the UI already tracks.
       pendingPromptQueue: this.pendingPrompts
         .filter((p) => !!p.id)
         .slice(0, 64)
@@ -2133,7 +1164,7 @@ export class Agent {
           at: Date.now() - (this.pendingPrompts.length - i),
           ...(p.images?.length ? { images: p.images.slice(0, 8) } : {}),
         })),
-      todo: this.todo.slice(0, 32_000), // match set_todo's cap — no silent truncation
+      todo: this.todo.slice(0, 32_000), 
       parent: this.opts.parent,
       awaiting: this.awaitingUser,
       autoContinue: this.opts.autoContinue,
@@ -2141,57 +1172,25 @@ export class Agent {
     };
   }
 
-  /**
-   * Queue a user prompt. Returns immediately: the event is logged right away
-   * (so every connected UI sees it instantly) and the text is handed to the
-   * model at the next turn boundary — never mid-turn, and never blocked by
-   * the running loop. The very first prompt on a fresh boot also triggers the
-   * lazy session restore (before the mailbox is filled, so no duplicates).
-   */
   enqueuePrompt(
     text: string,
     source = "user",
     images?: { url: string; name?: string }[],
   ): string {
-    // a prompt during a tool park (wait_children) takes over instantly:
-    // unpark fixes the DISPLAY, aborting the park signal actually ends the
-    // wait — the run chain resumes with this prompt drained at the boundary
     if (this.parkedByTool) {
       this.toolAbort.abort();
-      // the abort signal is one-shot — rearm it AND republish on toolCtx
-      // (toolCtx holds a COPY of the signal reference, so replacing only
-      // this.toolAbort left the park listening to the dead controller)
       this.toolAbort = new AbortController();
       (this.toolCtx as { signal: AbortSignal }).signal = this.toolAbort.signal;
     }
     this.unparkFromTool();
     this.wake?.();
-    // a user message means the operator JUST checked in — they obviously know
-    // the state, so don't nag with a progress report right after
     if (source === "user") {
       this.lastProgressAt = Date.now();
       this.activityChars = 0;
       this.turnsSinceProgress = 0;
     }
-    // stable id shared by the log event and the UI's pending echo — the UI
-    // flips its echo to "sent" when prompt-delivered carries this id back
     const promptId =
       source === "user" ? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` : "";
-    // the queue entry is registered SYNCHRONOUSLY, before the async work.
-    //
-    // It used to be pushed inside the `.then()`, so it only existed once
-    // `ensureReady()` resolved — while `cancelPrompt` reads the array
-    // synchronously. A cancel issued in that window found nothing, returned null,
-    // got a 409, and the UI discarded the draft: the operator saw a withdrawn
-    // prompt that the model then received and acted on.
-    //
-    // The wide case is worse than the same-tick one: an agent still restoring a
-    // 4,000-event session log holds that promise for real wall-clock time, so the
-    // cancel essentially always loses.
-    //
-    // Registering first is safe because the queue is drained only at a turn
-    // boundary (`drainPendingPrompts`), which cannot run inside this
-    // synchronous stretch. The log append still happens in order, after.
     const entry = { source, text, images, ...(promptId ? { id: promptId } : {}) };
     this.pendingPrompts.push(entry);
     void this.ensureReady()
@@ -2204,7 +1203,6 @@ export class Agent {
         }),
       )
       .then(() => {
-        // a session's label comes from its FIRST user prompt; the host stores it once
         if (source === "user") this.opts.onFirstUserPrompt?.(this.currentSession);
       })
       .then(() =>
@@ -2214,13 +1212,9 @@ export class Agent {
     return promptId;
   }
 
-  /**
-   * Withdraw a still-pending user prompt (before it reaches an LLM call).
-   * Returns the text so the UI can put it back into the composer draft.
-   */
   cancelPrompt(promptId: string): string | null {
     const i = this.pendingPrompts.findIndex((p) => p.id === promptId);
-    if (i === -1) return null; // already delivered or unknown
+    if (i === -1) return null; 
     const [p] = this.pendingPrompts.splice(i, 1);
     void this.log
       .append("system_note", this.currentSession, this.currentBranch, {
@@ -2235,17 +1229,9 @@ export class Agent {
     return p.text;
   }
 
-  /**
-   * Hand queued user prompts to the model at a turn boundary. Each consumed
-   * prompt is logged as a system_note (prompt-delivered) so the UI can flip
-   * its pending echo to "sent" at exactly the moment the text enters an LLM
-   * call payload — not merely when it was logged.
-   */
   private drainPendingPrompts(): void {
     this.drainBackgroundExits();
     for (const p of this.pendingPrompts.splice(0)) {
-      // multimodal: images ride as OpenAI content parts (text first, then
-      // images); plain prompts keep the string form for cache friendliness
       if (p.images?.length) {
         this.messages.push({
           role: "user",
@@ -2260,39 +1246,20 @@ export class Agent {
       }
       if (p.source === "user") {
         const id = p.id ?? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-        // queued here, MARKED at the request boundary instead — see
-        // markDeliveredPrompts(). Text is kept so the marker can carry the same
-        // preview the UI shows.
         this.undeliveredPrompts.push({ id, preview: p.text.slice(0, 80) });
       }
     }
   }
 
-  /** ids of user prompts that have entered an LLM call payload (recent first-capped) */
   private deliveredPrompts: string[] = [];
-  /**
-   * User prompts consumed from the queue but not yet MARKED as delivered.
-   *
-   * They are drained at a turn boundary, but the `prompt-delivered` marker must
-   * wait until the request that carries them actually starts — which is later,
-   * and after `maybeCompact()`, which can itself call the LLM.
-   */
   private undeliveredPrompts: { id: string; preview: string }[] = [];
 
-  /**
-   * Log `prompt-delivered` for every prompt whose outbound request is starting.
-   *
-   * the marker's meaning is "the request carrying this prompt has begun".
-   * It used to fire in drainPendingPrompts, i.e. before the request, so the
-   * timeline reordered by a moment the API never saw.
-   */
   private async markDeliveredPrompts(): Promise<void> {
     if (this.undeliveredPrompts.length === 0) return;
     const pending = this.undeliveredPrompts;
     this.undeliveredPrompts = [];
     for (const { id, preview } of pending) {
       this.deliveredPrompts.push(id);
-      // cap: the UI only needs recent confirmations
       if (this.deliveredPrompts.length > 64) this.deliveredPrompts.shift();
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "prompt-delivered",
@@ -2303,39 +1270,21 @@ export class Agent {
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
   }
 
-  /**
-   * Background jobs that exited since the last LLM call. Their outcomes are
-   * folded into ONE harness message at the turn boundary — the agent learns
-   * exit codes and output tails without polling bash_output.
-   */
   private bgExits: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }[] = [];
 
   private onBackgroundJobExitQueued(info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }): void {
     this.bgExits.push(info);
-    if (this.bgExits.length > 32) this.bgExits.shift(); // cap runaway spam
+    if (this.bgExits.length > 32) this.bgExits.shift(); 
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
-    // the round ended BECAUSE this job was running (auto-continue is
-    // suppressed while bg jobs are alive) — its exit IS the wake-up call.
-    // Without this the report would sit unread until the operator poked
-    // the agent. Stopped agents stay stopped (a deliberate human stop).
-    //
-    // Checking status once is NOT enough: the exit can land in the window
-    // between the loop's hasRunningBgShells() check (which breaks the round
-    // out) and the loop actually flipping to idle. The callback then sees
-    // "running", skips start(), and the agent goes idle with the report
-    // unread — wedged until a human pokes it. So remember that the loop was
-    // still winding down, and re-check once it has settled.
     const windingDown = this.status === "running";
     if (!this.stopRequested && (this.status === "idle" || windingDown)) {
-      // park the decision until the in-flight round has actually settled
       void this.enqueue(async () => {
-        if (this.stopRequested) return; // a stop raced us — respect it
+        if (this.stopRequested) return; 
         if (this.status === "idle") this.start(`background job ${info.id} finished`);
       });
     }
   }
 
-  /** fold queued background-exit reports into the next LLM call (once each) */
   private drainBackgroundExits(): void {
     if (!this.bgExits.length) return;
     const exits = this.bgExits.splice(0);
@@ -2354,7 +1303,6 @@ export class Agent {
     void this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text }).catch(() => {});
   }
 
-  /** Resolves when all queued work (including a running loop) has settled. */
   settled(): Promise<void> {
     return this.runChain.catch(() => {});
   }
@@ -2368,28 +1316,14 @@ export class Agent {
     return p;
   }
 
-  /** Start (or resume) autonomous operation toward the goal. */
   start(reason = "start"): void {
-    // a stop() immediately followed by start() USED TO BE SILENTLY LOST.
-    //
-    // `stop()` only flips the status via an ENQUEUED task, so between the two
-    // calls the status is still "running" and the guard below returned early —
-    // before `stopRequested = false` could run. The stop then landed, the loop
-    // exited, and the agent ended "stopped" with the restart discarded. The same
-    // window made a stop+restart abort the new round's first tool.
-    //
-    // So a pending stop is not a reason to refuse a start. The loop's own
-    // guards (`stopRequested` re-checked after every await) keep the old turn
-    // from running on, and enqueue() serialises the two tasks, so the restart
-    // is ordered after the stop rather than racing it.
     const pendingStop = this.stopRequested;
     if (this.status === "running" && !pendingStop) return;
     this.stopRequested = false;
-    // claim the status against any stop write still queued behind us
     this.stopSeq++;
-    this.awaitingUser = false; // a fresh start answers/resumes past any ask_user
+    this.awaitingUser = false; 
     void this.enqueue(async () => {
-      await this.ensureReady(); // lazy restore before the loop touches history
+      await this.ensureReady(); 
       this.setStatus("running", reason);
       this.stats.startedAt ??= new Date().toISOString();
     });
@@ -2398,97 +1332,33 @@ export class Agent {
 
   stop(reason = "stopped by user"): void {
     this.stopRequested = true;
-    this.parkedByTool = false; // the park display must not outlive a stop
-    // interrupt an in-flight LLM call AND any parked tool (wait_children):
-    // without aborting toolCtx.signal the park ran to its full timeout
+    this.parkedByTool = false; 
     this.abort?.abort();
     this.toolAbort.abort();
-    // and the BACKGROUND shells, which neither signal above reaches. A job
-    // spawned with `background: true` is `detached` and its spawning tool returned
-    // long ago, so `toolAbort` has nothing on the stack to abort: the agent parked
-    // in its "wait for the job" idle state, the job kept running, and `stop()` —
-    // the control the operator pressed for exactly this — ended nothing. MEASURED:
-    // `sleep 300` outlived both stop() and dispose().
     killBgShells(this.toolCtx.cwd);
     this.wake?.();
-    // the status write is DEFERRED onto the run chain, so it can land
-    // AFTER a start() that followed it. Observed: `idle -> stopped -> running ->
-    // running -> idle`. The agent did resume — but it flashed "stopped" on the
-    // way, and finished idle rather than running, so from the UI the operator's
-    // ▶ start looked like it had done nothing.
-    //
-    // `start()` clears stopRequested synchronously, which is what makes this
-    // detectable: by the time this task runs, a start has already claimed the
-    // agent and the stop no longer owns the status.
-    //
-    // So record WHEN the stop was requested, and let a start that came after it
-    // win. A stop issued while the agent is genuinely still running behaves
-    // exactly as before.
     const stopSeq = ++this.stopSeq;
     void this.enqueue(() => {
-      // Only a start() that arrived AFTER this stop may claim the status. The
-      // seq check alone does that — no status test, because a genuinely running
-      // agent must still be reported "stopped".
       if (this.stopSeq !== stopSeq) return Promise.resolve();
       this.setStatus("stopped", reason);
       return Promise.resolve();
     });
   }
 
-  /** monotonic counter: a start() bumps it, so a pending stop status write loses */
   private stopSeq = 0;
-  /** #95: set when this round already injected a harness progress request */
   private progressRequestedThisRound = false;
-  /**
-   * The turn number at which an auto-continue nudge was injected.
-   *
-   * `progressRequestedThisRound` covers ONE direction (progress asked first, nudge stands down). The
-   * reverse was unguarded: the nudge is appended at the END of a round, and the NEXT round's first
-   * turn calls `maybeRequestProgress()` — so one boundary carried "Continue working toward the
-   * current goal" and then "Please give a brief progress report now", 2ms apart. MEASURED: 21
-   * occurrences after the #95 fix, e.g. teapot-6-cca1d159 at 14:00:50 — the #182 report.
-   *
-   * A TURN NUMBER, not a boolean, because the nudge recurs every round in an auto-continue loop: a
-   * flag set at the end of one round would suppress the report at every later boundary and progress
-   * reports would stop for the whole session (MEASURED as three broken progress tests).
-   */
   private nudgedAtTurn = -1;
 
-  /**
-   * CONTROL PLANE: fired on every status change, immediately, independent of the
-   * log.
-   *
-   * `wait_children` wakeups used to ride `EventLog.onEvent`, so a status
-   * change reached the parent only AFTER the write completed. After the
-   * write-before-notify fix that meant a FAILED or slow write left a parked parent
-   * waiting forever — persistence latency became control flow. Measured with every
-   * write failing: `onEvent fired: 0`, so no wakeup at all.
-   *
-   * Control flow must not depend on durability, so this is separate from the
-   * event pipeline. The log's `onEvent` now means "persisted, tell the world";
-   * this means "my state changed, react now".
-   */
   onControlStatusChange: ((agentId: string, status: AgentStatus) => void) | null = null;
 
   private setStatus(s: AgentStatus, reason = ""): void {
-    // Update the field FIRST. The control-plane hook fires synchronously below
-    // (see onControlStatusChange), and it is what wakes parked wait_children
-    // callers — those
-    // re-check agent.status at that instant. Updating after the append made
-    // every waiter observe the OLD status ("running"), conclude "someone is
-    // still working", and stay parked until timeout even though the child had
-    // just settled.
     const prev = this.status;
     this.status = s;
     this.statusReason = reason;
     if (prev !== s) {
-      // control plane FIRST, and not via the log. A parent's wait_children
-      // must wake on the status change itself, not on the durability of the write
-      // that records it.
       try {
         this.onControlStatusChange?.(this.opts.id, s);
       } catch {
-        /* a control-plane listener must never break a status change */
       }
       void this.log.append("state", this.currentSession, this.currentBranch, {
         from: prev,
@@ -2499,41 +1369,17 @@ export class Agent {
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
   }
 
-  /** Main auto-run loop: turn -> tools -> turn ... -> done/idle/stop. */
   private async loop(): Promise<void> {
-    /**
-     * The ROUND BOUNDARY is where a live update stops this loop.
-     *
-     * `windDownRequested` is set by `windDownForUpdate()`; reaching here means the previous round
-     * ran to completion (its tool returned, its generation finished), which is exactly the "1ターン
-     * が終わる" moment the operator asked for. Nothing is aborted, so the log ends on a complete
-     * round and the next process resumes from a real state.
-     */
     while (!this.stopRequested && !this.windDownRequested) {
       try {
-        // stop() aborted the tool signal and nothing re-armed it (only the
-        // parkedByTool path ever did), so EVERY tool after a stop returned
-        // "aborted (harness shutdown)" until process restart. A new round is
-        // new work: give it a live signal (re-arm AND republish — toolCtx
-        // holds a copy of the reference).
         if (this.toolAbort.signal.aborted) {
           this.toolAbort = new AbortController();
           (this.toolCtx as { signal: AbortSignal }).signal = this.toolAbort.signal;
         }
-        // failures from the previous round must not poison this one — the
-        // counter only ever reset on success, so a tripped limit re-tripped
-        // on the first failure after restart ("6 consecutive" right after start)
         this.consecutiveToolErrors = 0;
-        // a round that got as far as an LLM call means the API is reachable
-        // again — reset the error-retry backoff to its base delay
         this.consecutiveApiErrors = 0;
         const turnsAtStart = this.stats.turns;
         let finished = await this.runTurnsUntilIdle();
-        // Round ended on the per-round turn cap. NO model-facing nudge: telling
-        // the model "the round ended, consider finish()" invited premature
-        // finishes that conflicted with the goal. The cap is harness-side only
-        // (logged for observability); continuation goes through the normal
-        // auto-continue path below.
         const cap = Math.max(0, this.opts.maxTurnsPerRound ?? 200);
         if (!finished && cap > 0 && this.stats.turns - turnsAtStart >= cap && !this.stopRequested) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -2542,22 +1388,6 @@ export class Agent {
           });
         }
         if (this.stopRequested) break;
-        // fresh user input arrived while we were finishing up — another round now
-        // bound consecutive audit rejections.
-        //
-        // A rejected audit queues a retry prompt, so the round CONTINUES — and
-        // neither existing valve applies: maxConsecutiveIdleRounds counts IDLE
-        // rounds (a rejection is not idle), and maxTurnsPerRound only logs. Measured
-        // before this cap: 381 audit calls in a single turn.
-        //
-        // Deliberately NOT "mark the goal done": #128's whole complaint is that
-        // "could not be audited" silently became "passed". The goal is left ACTIVE
-        // and a loud note is logged, so the operator sees the loop and decides.
-        // `>=` (not `>`): the JSDoc says REACHING 3 stops — `>` allowed a 4th
-        // audit before breaking (off-by-one). The retry prompt is no longer
-        // queued AT the cap (see handleFinish), so the break strands nothing.
-        // The counter resets so ONE capped stretch doesn't brick every future
-        // round-end until setGoal — a fixed model gets a fresh count.
         if (this.consecutiveAuditRejects >= (this.opts.maxAuditRejects ?? 3)) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "audit-retry-cap",
@@ -2568,12 +1398,6 @@ export class Agent {
           break;
         }
         if (this.pendingPrompts.length) continue;
-        // A round that parked its work on a background bash (dev server,
-        // watcher, long build) ENDED ON PURPOSE — the job's exit notification
-        // is the wake-up. Nagging with "continue working" here just made the
-        // agent spin up duplicate work while it meant to wait. Checked BEFORE
-        // the finished/goal gates: a finish(goalComplete=false) round that
-        // leaves a bg job running is exactly the "wait for it" pattern.
         if (hasRunningBgShells(this.toolCtx.cwd)) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "auto-continue-suppressed",
@@ -2581,10 +1405,6 @@ export class Agent {
           });
           break;
         }
-        // A SUB-AGENT that ended its round on a bare message (no finish call)
-        // still owes the parent a report — nothing else will carry it.
-        // Emitted HERE, after the loop, so a real finish() on a later turn
-        // always wins and this never pre-empts a better summary.
         if (this.pendingSubReport) {
           const report = this.pendingSubReport;
           this.pendingSubReport = "";
@@ -2592,14 +1412,10 @@ export class Agent {
             await this.handleFinish(
               JSON.stringify({ goalComplete: true, summary: report }),
             );
-            finished = true; // it IS finished now — don't auto-nudge a reporter
+            finished = true; 
           }
         }
-        // a round that did real work resets the idle counter. `finished`
-        // covers the finish() paths; a round that ran tool calls is caught by the
-        // turn counter below, which is checked before this point.
         if (finished) this.consecutiveIdleRounds = 0;
-        // auto-continue only makes sense with an active goal to continue toward
         if (
           finished ||
           !this.opts.autoContinue ||
@@ -2607,14 +1423,6 @@ export class Agent {
           !this.goal.text.trim()
         )
           break;
-        // auto-continue: wait quietly, then nudge with a fresh round. Sub-agents get a
-        // SCOPE-ANCHORED nudge — a generic "continue toward the goal" made a forked sub-agent drift
-        // into one of the parent's older tasks.
-        //
-        // Bound CONSECUTIVE rounds that produced neither a finish() nor a tool call. Any tool call
-        // resets it (that is real work, not stalling), as does a stop or a fresh prompt. This is a
-        // safety valve, not a policy: a talk-only root agent ends every round after one turn, so no
-        // per-round cap can ever see it, and `finished` stays false forever.
         if (++this.consecutiveIdleRounds > this.opts.maxConsecutiveIdleRounds) {
           this.consecutiveIdleRounds = 0;
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -2628,36 +1436,15 @@ export class Agent {
         }
         await this.sleepInterruptible(this.opts.continueDelayMs);
         if (this.stopRequested) break;
-        // do NOT pair this with a progress request.
-        //
-        // Both fire at the turn boundary and both inject a user message, so the model received two
-        // harness instructions back to back — "Continue working toward the current goal"
-        // immediately followed by "Please give a brief progress report now", which reads as the
-        // harness talking to itself.
-        //
-        // `maybeRequestProgress` runs its OWN `llmCall` at the top of the turn, so the assistant
-        // message it produces is a progress REPORT, not a continuation. The round then ended,
-        // this branch saw the flag, logged `auto-continue-suppressed`, and BROKE — leaving the
-        // agent idle with the work unfinished. The operator asked "何故 auto-continue が効いてない?"
-        // and the log shows exactly one such note, at the very end.
-        //
-        // The suppression is still right (one instruction per boundary); breaking is not. What is
-        // already in flight IS the continuation, so there is nothing left to add — but the loop
-        // must keep going, or a progress request silently ends the session's work.
         if (this.progressRequestedThisRound) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "auto-continue-suppressed",
             detail: "a progress report was already requested this round (#95) — the round that carried it already continues the work, so no nudge is added and the loop goes on",
           });
-          // consume the flag: it authorised skipping THIS boundary's nudge, not every later one
           this.progressRequestedThisRound = false;
           continue;
         }
         const isSub = !!this.opts.parent;
-        // the ROOT nudge now restates the goal too, exactly as the sub-agent
-        // one always has. Both branches need it — a child drifts back into the
-        // inherited conversation, a root agent loses the thread, and in both cases
-        // "continue toward the current goal" is unactionable without the goal text.
         const nudge = isSub
           ? `[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
           : autoContinueNudge(this.goal.text);
@@ -2666,19 +1453,12 @@ export class Agent {
           text: nudge,
         });
         this.messages.push({ role: "user", content: nudge });
-        // the nudge is consumed by the NEXT turn, which is the one that must not also ask for a report
         this.nudgedAtTurn = this.stats.turns + 1;
       } catch (err) {
         const name = (err as Error).name;
-        // a stop (user abort or pre-call guard) is control flow, not a failure
         if (this.stopRequested || name === "AbortError" || name === "StopRequested" || name === "WaitForUser") break;
         const msg = (err as Error).message ?? String(err);
         await this.log.append("error", this.currentSession, this.currentBranch, { message: msg });
-        // onError:"retry" keeps an unattended agent alive across failures —
-        // BOTH provider outages (API errors) and runaway trips (a tool that
-        // keeps failing). Back off, then start a fresh round; the delay
-        // doubles per consecutive failure so a hard failure doesn't spin,
-        // and any stop/prompt still interrupts the sleep instantly.
         const isRunaway = /runaway detection/.test(msg);
         if (this.opts.onError === "retry" && !this.awaitingUser && !this.pendingPrompts.length) {
           this.consecutiveApiErrors++;
@@ -2693,10 +1473,6 @@ export class Agent {
             kind: isRunaway ? "runaway" : "api",
           });
           this.setStatus("error", `${msg.slice(0, 220)} — retrying in ${Math.round(wait / 1000)}s`);
-          // while this sleeps the agent is NOT idle — it is going to try again,
-          // and the operator must be able to stop it. Without the flag `isLive()` read
-          // false (status is "error"), so the UI showed "▶ start" and offered no stop
-          // at all while a 5s/5s/30s…30min staircase ran.
           this.retrySleeping = true;
           try {
             await this.sleepInterruptible(wait);
@@ -2704,35 +1480,21 @@ export class Agent {
             this.retrySleeping = false;
           }
           if (this.stopRequested) break;
-          // the NEXT round is live work again — leaving "error" set made
-          // isLive() false (error is not a live status) while the loop was
-          // actually running, so the UI offered "start" on a working agent
           this.setStatus("running", "retrying");
-          continue; // fresh round; the loop re-arms the tool signal itself
+          continue; 
         }
         this.setStatus("error", msg.slice(0, 300));
         return;
       }
     }
-    // waiting on an ask_user answer is a status of its own — not idle (which
-    // would let auto-continue nag) and not stopped
     if (!this.stopRequested && !this.awaitingUser) this.setStatus("idle", "round complete");
   }
-  /**
-   * One LLM call with a fresh abort controller so stop() can interrupt it
-   * immediately, plus loop-level retries for provider flakiness (the SDK
-   * already backsoff 429/5xx; this covers exhausted rate limits and 400s).
-   * When onDelta is given, cumulative stream snapshots are forwarded to the
-   * UI via the bus (reset to empty at the start of every attempt).
-   */
   private async llmCall(
     messages: ChatMessage[],
     tools: ReturnType<typeof toolSpecs>,
     onDelta?: (snap: { text: string; reasoning: string }) => void,
   ) {
     const maxAttempts = 4;
-    // fail fast, escalate late: most provider hiccups recover in seconds;
-    // only sustained failure earns a long cooldown (operator request)
     const waits = this.opts.llmRetryWaitsMs ?? [5_000, 5_000, 30_000];
     for (let attempt = 1; ; attempt++) {
       if (this.stopRequested) throw Object.assign(new Error("stopped"), { name: "StopRequested" });
@@ -2741,19 +1503,10 @@ export class Agent {
         bus.emit("update", {
           kind: "llm-delta",
           agentId: this.opts.id,
-          // the bubble is session-scoped, so the stream must say which session
           sessionId: this.currentSession,
           text: "",
           reasoning: "",
         } satisfies BusEvent);
-      // `prompt-delivered` means "the outbound request CARRYING this prompt
-      // has started" — which is why it is emitted here and not in
-      // drainPendingPrompts. That runs BEFORE maybeCompact, which can itself make
-      // an LLM call, so the marker preceded the request and the timeline claimed a
-      // delivery order the API never saw.
-      //
-      // Once per request, not per attempt: a retry sends the same payload, so
-      // re-emitting would move the marker past later events on each try.
       if (attempt === 1) await this.markDeliveredPrompts();
       try {
         return await this.callLlm(messages, tools, onDelta);
@@ -2761,11 +1514,6 @@ export class Agent {
         this.abort = null;
         const name = (err as Error).name;
         if (name === "StopRequested" || name === "AbortError" || this.stopRequested) throw err;
-        // a context-overflow error is the caller's to handle, not ours to
-        // retry. Retrying the SAME oversized request four times with 5s/5s/30s
-        // waits cannot succeed, and it delays the compact-and-retry that would
-        // — so the overflow path never even ran. This is the same
-        // "present, correct, and inert" shape as #54.
         if (isContextOverflow(err)) throw err;
         if (attempt >= maxAttempts) throw err;
         const waitMs = waits[Math.min(attempt - 1, waits.length - 1)]!;
@@ -2780,55 +1528,14 @@ export class Agent {
     }
   }
 
-  /**
-   * One "round": alternate LLM turns and tool executions until the model
-   * produces a final answer without tool calls. Returns true if the agent
-   * called finish().
-   */
-
-  /**
-   * The meta-tool handlers, keyed by the table's own name union.
-   *
-   * `Record<MetaToolName, …>` is the whole point: because `MetaToolName` is derived from
-   * `META_TOOLS`, advertising a tool without handling it here is a TYPE ERROR rather than a
-   * runtime "unknown tool". That failure used to be silent — the call fell through to
-   * `executeTool`, which answered "unknown tool" for a tool the request had just described.
-   *
-   * Each handler mutates session state and answers its own `tool_call`. The return value is
-   * the only control flow the old if-chain had:
-   *   - `"next"` — the `continue` it replaced: this call is done, move to the next one in
-   *     the assistant batch;
-   *   - `"end"`  — the `return true` it replaced (`finish` only): end the whole batch, so a
-   *     model that emits finish() plus another call cannot keep mutating the workspace
-   *     after reporting completion.
-   */
   private metaHandlers: Record<
     MetaToolName,
     (call: { id: string; function: { name: string; arguments: string } }, m: ChatMessage) => Promise<"next" | "end">
   > = {
     finish: async (call, m) => {
-      this.pendingSubReport = ""; // the real summary supersedes it
-      // answer the tool_call BEFORE the audit runs.
-      //
-      // handleFinish() calls the auditor with `buildMessages()`, and at that
-      // moment the history ended at an assistant message carrying
-      // `tool_calls: [finish]` with NO matching `tool` message. Measured, the
-      // auditor received exactly that:
-      //
-      //     assistant(tool_calls=[finish])
-      //     user(audit prompt)          <-- no tool(tool_call_id=…)
-      //
-      // OpenAI-compatible providers require every tool_call to be answered,
-      // and a strict one rejects the request outright — so a CHANGES-REQUIRED
-      // audit would fail with a protocol error rather than a verdict, and
-      // #128's fail-open would then mark the goal done.
-      //
-      // Answering first also makes the log honest: the call really was
-      // completed, it simply did not end the round.
+      this.pendingSubReport = ""; 
       await this.answerMeta(call, "(completion submitted for audit)");
       await this.handleFinish(call.function.arguments);
-      // surface still-running children so the operator knows work may
-      // continue after this agent goes idle
       try {
         const running = (this.toolCtx.subAgents?.list?.() ?? []).filter((k) => k.status === "running");
         if (running.length)
@@ -2836,23 +1543,11 @@ export class Agent {
             event: "subs-still-running",
             detail: running.map((k) => `${k.id} (${k.status})`).join(", "),
           });
-      } catch { /* best-effort notice */ }
-      // answer the tool_call so a follow-up round stays API-valid
+      } catch {  }
       await this.answerMeta(
         call,
         this.goal.status === "done" ? "(goal complete)" : "(round ended)",
       );
-      // the caller marks the round finished when this returns "end"
-      // `continue` advanced the TOOL-CALL loop, so every later call in
-      // this same assistant message still executed — a model emitting
-      // finish() plus one more call got real filesystem writes AFTER it had
-      // reported `final: true` and the goal was already done. The parent was
-      // told the work finished while the workspace was still being mutated.
-      //
-      // So finish ends the BATCH: answer anything still outstanding (so no
-      // tool_call is left unpaired — the provider rejects the next request
-      // otherwise, #76) and leave the tool loop. The outer loop then returns
-      // on `finished`.
       await this.answerUnansweredToolCalls(m);
       return "end";
     },
@@ -2865,8 +1560,6 @@ export class Agent {
       const a = safeParse(call.function.arguments);
       const text = String(a.text ?? "").trim();
       if (text) await this.setGoal(text);
-      // pi-goal-x-style verification contract: plain-text completion
-      // requirements audited before finish(goalComplete=true) is honored
       if (typeof a.verify === "string" && a.verify.trim())
         await this.setGoalVerify(a.verify.trim().slice(0, 4000));
       await this.answerMeta(
@@ -2894,8 +1587,6 @@ export class Agent {
     ask_user: async (call, m) => {
       const a = safeParse(call.function.arguments);
       const question = String(a.question ?? "").slice(0, 2000);
-      // models sometimes pass objects ({label}, {option}, {value}) —
-      // extract the label instead of rendering "[object Object]" buttons
       const options = Array.isArray(a.options)
         ? a.options
             .slice(0, 6)
@@ -2910,8 +1601,6 @@ export class Agent {
             })
             .filter((o: string) => o.trim())
         : [];
-      // the callId lets the UI tell "still open" from "already answered"
-      // (a settled tool_result for this id exists) and disable re-answering
       await this.log.append("question", this.currentSession, this.currentBranch, {
         question,
         options,
@@ -2924,13 +1613,6 @@ export class Agent {
       );
       this.awaitingUser = true;
       this.setStatus("needs_operator", question.slice(0, 80));
-      // control flow: park the loop; the operator's next prompt resumes it
-      //
-      // answer the rest of this assistant batch BEFORE parking. The
-      // throw leaves the whole tool loop, so any EARLIER call in the same
-      // message that was logged but not yet run kept no tool_result — the
-      // comment on the backstop below says as much, and it is exactly the
-      // path that bites in practice because ask_user is common.
       await this.answerUnansweredToolCalls(m);
       throw Object.assign(new Error("waiting for user"), { name: "WaitForUser" });
     },
@@ -2943,9 +1625,6 @@ export class Agent {
     },
     set_todo: async (call, m) => {
       const a = safeParse(call.function.arguments);
-      // Surgical item changes — no full rewrite, so the operator's own headings and
-      // notes in todo.md survive. `action` decides what to do; `done` is kept as
-      // shorthand so a model that only sends {item, done} still works.
       const ACTIONS = new Set(["done", "reopen", "add", "remove"] as const);
       const updates = Array.isArray(a.updates)
         ? a.updates
@@ -2997,7 +1676,6 @@ export class Agent {
         this.messages.push({ role: "tool", tool_call_id: call.id, content: "rule required" });
         return "next";
       }
-      // repeated corrections gain weight: [xN] tag counts occurrences
       const existing = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
       const lines = existing.split("\n");
       const idx = lines.findIndex((l) => l.includes(rule.slice(0, 60)));
@@ -3063,19 +1741,6 @@ export class Agent {
         await this.answerMeta(call, "(memory.md is empty — nothing noted yet)");
         return "next";
       }
-      // `query` searches instead of dumping the whole file.
-      //
-      // This is the one idea worth taking from the ecosystem. MCP's reference memory
-      // server (the de-facto standard, used by Claude and offered by DSH as a
-      // reference) exposes `search` alongside `read`, and its search is deliberately
-      // a case-insensitive substring match — no embeddings, no model, no provider
-      // dependency. DSH's guidance to the model is the same shape: "when historical
-      // information may be relevant, search memory and use relevant results".
-      //
-      // `read_memory` only 97 times across every session, and only 13 of those reads
-      // came after a write. Dumping a growing file gives the model no way to ask a
-      // QUESTION, so a big file is all-or-nothing — either burn the whole thing into
-      // the context or do not look at all.
       if (!query) {
         await this.answerMeta(call, mem.trim());
         return "next";
@@ -3083,15 +1748,6 @@ export class Agent {
       const needle = query.toLowerCase();
       const lines = mem.split(/\r?\n/);
       const hits = lines.filter((line) => line.toLowerCase().includes(needle));
-      /**
-       * Give each hit its CONTEXT, not just the bare line.
-       *
-       * A matching line on its own is often meaningless — "the cache lies" says nothing
-       * without the heading it sits under. And a note needs to be dateable to be usable: a
-       * lesson harvested from a compaction three weeks ago should not read with the same
-       * authority as one from today. So each hit is reported with its nearest preceding
-       * heading and any `_from:_` provenance line.
-       */
       const headingAt = (idx: number): string => {
         for (let i = idx; i >= 0; i--) {
           const l = lines[i]!.trim();
@@ -3100,7 +1756,6 @@ export class Agent {
         return "";
       };
       const provenanceAt = (idx: number): string => {
-        // the `_from:_` line lives within a few lines above its lesson block
         for (let i = idx; i >= Math.max(0, idx - 6); i--) {
           const l = lines[i]!.trim();
           if (/^_from:/.test(l)) return l.replace(/^_|_$/g, "");
@@ -3135,9 +1790,6 @@ export class Agent {
       const a = safeParse(call.function.arguments);
       const content = String(a.content ?? "").slice(0, 32_000);
       await fs.writeFile(this.memoryFile, content, "utf8");
-      // this used to say "injected into future prompts", which was false —
-      // memory.md is never injected. The model then behaved as if it already held
-      // its notes. Say what actually happened, and what the model must do instead.
       await this.answerMeta(
         call,
         `memory.md REPLACED (${content.length} bytes). It is not in your prompt — call read_memory when you need it.`,
@@ -3151,14 +1803,6 @@ export class Agent {
         await this.answerMeta(call, "forget_memory needs a `query` — nothing removed");
         return "next";
       }
-      // notes must be REMOVABLE, not only appendable.
-      //
-      // MCP's reference memory makes observations "added or removed
-      // independently" for exactly this reason: an append-only store accumulates
-      // stale facts ("the build takes 4 minutes" stays long after it takes 40
-      // seconds), and a memory that is confidently wrong is worse than one that is
-      // silent. Without a delete, the only way to correct a file was `set_memory`
-      // with the whole content re-typed — which is how 1028 bytes became 83.
       const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
       if (!prev.trim()) {
         await this.answerMeta(call, "(memory.md is empty — nothing to forget)");
@@ -3178,8 +1822,6 @@ export class Agent {
         );
         return "next";
       }
-      // collapse the blank runs a deletion leaves behind, so the file does not
-      // grow holes
       const next = kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
       await fs.writeFile(this.memoryFile, next, "utf8");
       await this.answerMeta(
@@ -3196,11 +1838,6 @@ export class Agent {
         await this.answerMeta(call, "add_memory needs non-empty `text` — nothing appended");
         return "next";
       }
-      // APPEND rather than replace. `set_memory` overwrites the whole file,
-      // so a model that had not just read it silently ERASED everything it did not
-      // re-send — MEASURED on a real session: 21 writes, with the content dropping
-      // from 1028 to 83 bytes. Appending is the operation "remember this" actually
-      // wants, and it cannot lose what is already there.
       const prev = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
       const sep = prev && !prev.endsWith("\n") ? "\n" : "";
       const next = `${prev}${sep}${text}\n`;
@@ -3215,25 +1852,13 @@ export class Agent {
 
   private async runTurnsUntilIdle(): Promise<boolean> {
     let finished = false;
-    // maxTurnsPerRound is a SOFT cap (0 disables): reaching it nudges the
-    // model to wrap up instead of hard-failing the round — long autonomous
-    // stretches are normal here, and a throw used to leave status=error with
-    // no auto-recovery even though autoContinue would happily keep going.
     const cap = Math.max(0, this.opts.maxTurnsPerRound ?? 200);
     for (let guard = 0; cap === 0 || guard < cap; guard++) {
       if (this.stopRequested) return finished;
-      // deliver prompts queued while the previous turn was running
       this.drainPendingPrompts();
-      // skills may have been created last turn — refresh the prompt listing
       await this.refreshSkills();
-      // periodic progress report at turn boundary (no mid-turn interruption)
-      // the flag is per-TURN, not per-round. `maybeRequestProgress` sits
-      // inside the turn loop and auto-continue is checked after the round
-      // ends, so the flag has to mean "this boundary already carried an
-      // instruction" — reset here, set below if the request fires.
       this.progressRequestedThisRound = false;
       await this.maybeRequestProgress();
-      // keep the context window bounded before spending tokens on a turn
       await this.maybeCompact();
 
       await this.log.append("state", this.currentSession, this.currentBranch, {
@@ -3242,21 +1867,18 @@ export class Agent {
         detail: "llm turn start",
         turn: ++this.stats.turns,
       });
-      // stream the assistant reply live to connected clients
       let res;
       try {
         res = await this.llmCall(this.buildMessages(), allToolSpecs(), (s) => {
           bus.emit("update", {
             kind: "llm-delta",
             agentId: this.opts.id,
-            sessionId: this.currentSession, // #146
+            sessionId: this.currentSession, 
             text: s.text,
             reasoning: s.reasoning,
           } satisfies BusEvent);
         });
       } catch (err) {
-        // user stop mid-stream: persist the partial output so the timeline
-        // keeps what was already visible (otherwise it silently vanishes)
         const partial = (err as { partial?: { text?: string; reasoning?: string } }).partial;
         if (this.stopRequested && partial && (partial.text || partial.reasoning)) {
           await this.log.append("message", this.currentSession, this.currentBranch, {
@@ -3267,19 +1889,11 @@ export class Agent {
           });
           this.messages.push({ role: "assistant", content: partial.text ?? "" });
         } else if (this.stopRequested) {
-          // nothing had streamed — leave an explicit marker so the log shows
-          // why this prompt has no reply
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "turn-interrupted",
             detail: "stopped before any output arrived",
           });
         }
-        // Provider context overflow → compact and retry (OpenCode-style recovery).
-        // Even with autoCompact off, an actual overflow is proof the estimate
-        // missed. Staged rather than single-shot (opencode: SHRINK_STEPS
-        // [0.7, 0.5, 0.35]): one fixed cut can still be too shallow, and the old
-        // code returned the second overflow as a hard error even though cutting
-        // deeper would have worked.
         if (isContextOverflow(err) && !this.stopRequested) {
           const attempt = (this.overflowRecoveries += 1);
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -3288,7 +1902,6 @@ export class Agent {
             detail: String((err as Error).message).slice(0, 200),
           });
           const before = this.stats.compactions;
-          // each retry cuts deeper: 1x, then the staged fractions of the budget
           const shrink = OVERFLOW_SHRINK_STEPS[Math.min(attempt - 1, OVERFLOW_SHRINK_STEPS.length - 1)]!;
           await this.maybeCompact(true, shrink);
           if (this.stats.compactions > before) {
@@ -3296,23 +1909,10 @@ export class Agent {
               event: "overflow-recovered",
               attempt,
             });
-            guard--; // the retry does not count against this round's cap
+            guard--; 
             continue;
           }
         }
-        /**
-         * A STRUCTURAL cap is not an overflow, and no retry or compaction can clear it.
-         *
-         * Command Code's gateway refuses a body whose JSON node count exceeds its limit while the
-         * session is nowhere near its token window — measured upstream at 22.6% of a 1M-token model
-         * with 1,436 messages and 61 image parts. `isContextOverflow` correctly declines to claim
-         * it, so without this branch the loop would exhaust its retries and surface the raw 400 with
-         * no advice.
-         *
-         * Compacting anyway would be worse than useless: it costs a full-price summarisation pass
-         * and the same structure is refused again. The honest answer is fewer messages, fewer tool
-         * calls, fewer images — or a new session.
-         */
         const nodeCap = isRequestNodeLimit(err);
         if (nodeCap.hit && !this.stopRequested) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -3332,8 +1932,6 @@ export class Agent {
         }
         throw err;
       }
-      // a request the provider accepted: the current depth is enough, so the next
-      // overflow starts its staircase over rather than cutting from the deepest step
       this.overflowRecoveries = 0;
       if (res.usage) {
         const inTok = res.usage.inputTokens ?? 0;
@@ -3341,10 +1939,6 @@ export class Agent {
         this.stats.inputTokens += inTok;
         this.stats.cachedInputTokens += cached;
         this.stats.outputTokens += res.usage.outputTokens ?? 0;
-        // cost estimate: uncached input at prompt rate, cache hits usually
-        // bill at a fraction (OpenRouter reports the blended prompt price, so
-        // cached tokens are charged separately at ~10% — a common provider
-        // convention; without per-provider detail this is the honest guess)
         if (this.modelPricing) {
           const p = this.modelPricing;
           const uncached = Math.max(0, inTok - cached);
@@ -3361,9 +1955,6 @@ export class Agent {
       }
 
       const m = res.message;
-      // sanitize() fills empty content with "(tool call)" for providers that
-      // reject blank content — that placeholder is request-only and must NOT
-      // reach the timeline as if the agent had said something
       const isPlaceholder = m.content === "(tool call)" || m.content === "(no content)";
       await this.log.append("message", this.currentSession, this.currentBranch, {
         role: "assistant",
@@ -3375,42 +1966,9 @@ export class Agent {
       this.turnsSinceProgress++;
       this.activityChars += m.content?.length ?? 0;
 
-      // A round that ends with a plain assistant message and NO tool calls is
-      // the end of the agent's work. For a ROOT agent that is just "done" — but
-      // for a SUB-AGENT it means the work is over and the parent is waiting.
-      //
-      // Models overwhelmingly prefer writing their report as the final message
-      // over calling finish(), and only handleFinish() emits the `final: true`
-      // event that onChildEvent() forwards to the parent. So that habit silently
-      // cost the parent the ENTIRE result — the report existed only in the
-      // child's own log, which the parent's model context never replays.
-      // Harvest it here so both paths share one code path.
       if (!m.tool_calls?.length) {
-        // A turn with no tool calls and real text is how models overwhelmingly
-        // signal "I'm done" — far more often than by calling finish(), which
-        // the spawn directive asks for but they routinely ignore.
-        //
-        // Two things were wrong:
-        //  1. only handleFinish() emits the `final: true` event that
-        //     onChildEvent() forwards to the parent, so a sub-agent that ended
-        //     with a plain message sent the parent NOTHING — the report lived
-        //     only in the child's log, which the parent's context never
-        //     replays;
-        //  2. the round then returned "not finished" with an active goal, so
-        //     auto-continue re-nudged and the child looped forever (measured:
-        //     257 consecutive turns) re-reporting the same text.
-        //
-        // A bare message might be a mid-task narration though — sub-agents
-        // often say "here's what I found so far…" and call finish() later with
-        // a better summary. So do NOT report yet: remember it and give the child
-        // ONE more turn to call finish() properly. The harness nudge makes that
-        // turn explicit, so a child that just wanted to narrate ends here (and
-        // its held report is forwarded by the loop's end-of-round path), while
-        // a child that has a real summary delivers it instead. A real finish()
-        // clears the held note, so it is forwarded exactly once.
         if (this.opts.parent) {
           if (this.pendingSubReport) {
-            // already offered a turn after a bare message — take the held report
             this.messages.push({
               role: "user",
               content:
@@ -3424,27 +1982,16 @@ export class Agent {
                 "[harness] If you are done, call finish() with a summary for your parent so it receives your report. Otherwise continue the task.",
             });
           }
-          continue; // one more turn before we treat the message as final
+          continue; 
         }
         return finished;
       }
 
       for (const call of m.tool_calls) {
         if (this.stopRequested) {
-          // this returned straight out of the turn, SKIPPING the
-          // answerUnansweredToolCalls backstop below — so every remaining
-          // tool_call in this assistant message stayed logged with NO
-          // tool_result anywhere, and its row rendered as "waiting for
-          // output…" for the rest of the session.
           await this.answerUnansweredToolCalls(m);
           return finished;
         }
-        // Meta tools dispatch through ONE table (src/agent/meta-tools.ts + metaHandlers
-        // above), so a tool the prompt advertises but the loop does not handle is a
-        // COMPILE error rather than a runtime "unknown tool". The two return kinds are the
-        // two the old if-chain had: "next" is the `continue` it replaced, "end" is
-        // finish() ending the whole batch. Anything not in the table is a real tool
-        // and falls through to executeTool below.
         const meta = this.metaHandlers[call.function.name as MetaToolName];
         if (meta) {
           if ((await meta(call, m)) === "end") {
@@ -3458,19 +2005,9 @@ export class Agent {
           callId: call.id,
           name: call.function.name,
           args: safeParse(call.function.arguments),
-          argsRaw: call.function.arguments, // byte-exact for cache-safe restore
+          argsRaw: call.function.arguments, 
         });
         const t0 = Date.now();
-        // first filesystem touch creates a missing workspace (never at boot)
-        // this is awaited BETWEEN the tool_call append above and the
-        // tool_result append below, and `fs.mkdir` has no catch — so a failure
-        // propagated out of the whole loop, leaving the call logged with no
-        // result ANYWHERE, and its row read "waiting for output…" for good.
-        //
-        // The loop's own backstop could not save it: it sits at the bottom of
-        // the same loop, which a throw skips. So the tool_result is written in a
-        // `finally` — the call is answered whatever happens.
-        // the type is inferred from executeTool, so this cannot drift from it
         let result: Awaited<ReturnType<typeof executeTool>>;
         try {
           await this.ensureWorkspace();
@@ -3479,20 +2016,7 @@ export class Agent {
           result = { ok: false, result: `tool could not run: ${(err as Error).message}` };
         }
         this.stats.toolCalls++;
-        // a tool call is real work, so it clears the idle-round counter.
         this.consecutiveIdleRounds = 0;
-        // ONE clip, applied to BOTH the log and the live message.
-        //
-        // The log stored `result.slice(0, 8000)` while `messages` kept the full
-        // text, and a restore rebuilds `messages` from the log — so a model
-        // resuming work saw a different (and much smaller) tool result than it
-        // had just seen live. Measured: 8000 bytes logged, 436 after restart.
-        //
-        // The 8000-byte log clip is deliberate — it bounds the log file — so the
-        // fix is not to log everything. It is to clip the live message the SAME
-        // way, so the two views agree and a restart is not a silent downgrade.
-        // Restore is byte-exact everywhere else (`answerMeta` preserves its exact
-        // content); this was the one place the replay diverged.
         const capped = result.result.slice(0, 8000);
         await this.log.append("tool_result", this.currentSession, this.currentBranch, {
           callId: call.id,
@@ -3504,9 +2028,6 @@ export class Agent {
         this.messages.push({ role: "tool", tool_call_id: call.id, content: capped });
         this.consecutiveToolErrors = result.ok ? 0 : this.consecutiveToolErrors + 1;
         if (this.consecutiveToolErrors >= this.opts.maxConsecutiveToolErrors) {
-          // structured, greppable AND visible: the note carries what failed so
-          // the operator (and the UI) can show "WHICH tool, with what error"
-          // instead of a bare counter
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "runaway-detected",
             failures: this.consecutiveToolErrors,
@@ -3520,38 +2041,12 @@ export class Agent {
           );
         }
       }
-      // every tool_call an assistant message issued must have a matching
-      // tool result, or the provider REJECTS the next request — which is the
-      // "`200 with no choices`" shape #50 traced to a malformed history.
-      //
-      // Two exits could leave some unanswered: `stopRequested` returns early
-      // mid-batch, and a handler that throws (ask_user parking the loop is the
-      // one that bites in practice) propagates out of the whole loop. Restore
-      // has a hole-filler for exactly this; the LIVE array did not, so a session
-      // that hit it produced an invalid next request and then failed with
-      // something that looked like a provider fault.
-      //
-      // So the invariant is enforced here rather than at each exit: whatever
-      // happened, answer what is still outstanding before moving on.
       await this.answerUnansweredToolCalls(m);
       if (finished) return true;
     }
-    // cap reached — loop() logs the note, asks for a progress report and
-    // nudges the model; this round simply ends (no hard error)
     return finished;
   }
 
-  /**
-   * Append a tool result for every tool_call in `m` that has not been answered.
-   *
-   * Scans the tail of `messages` for `tool_call_id`s, so it is correct whichever
-   * path left the batch unfinished — a stop, a throw, or a normal completion
-   * where a handler returned early. Answered calls are left alone.
-   *
-   * PUBLIC so a test can reproduce "the batch was left half-answered" directly. That
-   * state is what the provider rejects the next request over, and reaching it through a
-   * whole turn would make the assertion depend on everything else in the loop.
-   */
   async answerUnansweredToolCalls(m: ChatMessage): Promise<void> {
     const calls = m.tool_calls ?? [];
     if (!calls.length) return;
@@ -3575,84 +2070,44 @@ export class Agent {
   }
 
   private buildMessages(): ChatMessage[] {
-    // deliberately static: [system] + append-only history keeps prefix caches hot.
-    // The workspace context block (AGENTS.md + ls snapshot) is appended to the
-    // system message ONCE per session — changing it mid-session would re-price
-    // the whole prefix cache, so it is captured at first use and frozen.
     const sys = this.systemPrompt();
     const hasSystem = this.messages[0]?.role === "system";
     const head: ChatMessage[] = [{ role: "system", content: sys }];
-    // NOTE: tool-call pairing is guaranteed one layer down, in `sanitize()`,
-    // because EVERY request path passes through there (turns, the summarizer, the ACP
-    // adapter) while this builds only an Agent's own turn. A violated pairing is refused
-    // with a bare "invalid request error", which is not recognisable as an overflow and
-    // so burns the whole retry staircase before failing with nothing to act on.
     return hasSystem ? [...head, ...this.messages.slice(1)] : [...head, ...this.messages];
   }
 
-  /**
-   * Re-read AGENTS.md and adopt it if it changed. Returns the new text when it
-   * did, or null when there is nothing to do.
-   *
-   * Called on compaction (#64 follow-up) and nowhere else. The one-shot capture
-   * in systemPrompt() exists to keep the system prompt byte-identical for the
-   * session so the provider's prefix cache survives; this is the single point
-   * where breaking that identity is free, because compaction has just rewritten
-   * the history underneath it.
-   *
-   * Failure is deliberately non-destructive: a read error, or a file that
-   * vanished, leaves the previous content in place. Dropping the instructions
-   * because of a transient error would be far worse than running one compaction
-   * on slightly stale rules.
-   */
   private reloadAgentsMd(): string | null {
-    if (!this.agentsMdLoaded) return null; // nothing captured yet; nothing to update
+    if (!this.agentsMdLoaded) return null; 
     let fresh: string;
     try {
       const p = path.join(this.opts.workspace, "AGENTS.md");
-      if (!existsSync(p)) return null; // deleted → keep the last known rules
+      if (!existsSync(p)) return null; 
       fresh = readFileSync(p, "utf8").slice(0, 12_000);
     } catch {
-      return null; // unreadable → keep what we have
+      return null; 
     }
     if (fresh === this.agentsMd) return null;
     this.agentsMd = fresh;
     return fresh;
   }
 
-  /** AGENTS.md content cached for the session (empty string = none/read-failed) */
   private agentsMd = "";
-  /** captured once, with the rest of the session-frozen context */
   private agentsMdLoaded = false;
-  /** one-time workspace listing injected with the system prompt */
   private wsSnapshot = "";
-  /**
-   * one-time catalogue of available skills, injected with the system prompt
-   *. Built once alongside wsSnapshot so the prompt stays byte-identical
-   * for the session and the provider prefix cache survives.
-   */
   private skillCatalogue = "";
-  /** the compact digest of memory.md put into the frozen prompt (Codex's MEMORY_SUMMARY) */
   private memoryDigest = "";
 
   private systemPrompt(): string {
     if (!this.agentsMdLoaded) {
       this.agentsMdLoaded = true;
-      // AGENTS.md + workspace listing are captured ONCE and PERSISTED to the
-      // session dir, so a restart re-issues the identical system prompt (the
-      // prefix cache survives; the snapshot is a session artifact, not live
-      // truth — list_dir shows current state).
       const snapPath = path.join(this.opts.sessionDir, "workspace-snapshot.txt");
       try {
-        // a previous incarnation already froze a snapshot → reuse it verbatim.
-        // The sentinel covers EMPTY workspaces too ("" would look like "no
-        // file" and make the restart re-list, breaking prefix-cache identity).
         this.wsSnapshot = readFileSync(snapPath, "utf8");
       } catch {
         this.wsSnapshot = "";
       }
       if (this.wsSnapshot === "" && existsSync(snapPath)) {
-        this.wsSnapshot = "(empty workspace)"; // the file exists but was empty
+        this.wsSnapshot = "(empty workspace)"; 
       }
       if (!this.wsSnapshot) {
         try {
@@ -3672,7 +2127,6 @@ export class Agent {
               try {
                 size = `${(statSync(path.join(this.opts.workspace, e.name)).size / 1024).toFixed(1)}K`;
               } catch {
-                /* vanished */
               }
             }
             lines.push(e.isDirectory() ? `${e.name}/` : `${e.name} (${size})`);
@@ -3682,7 +2136,6 @@ export class Agent {
           try {
             void fs.writeFile(snapPath, this.wsSnapshot, "utf8");
           } catch {
-            /* best-effort persistence */
           }
         } catch {
           this.wsSnapshot = "(workspace not readable)";
@@ -3696,8 +2149,6 @@ export class Agent {
           this.agentsMd = "";
         }
       }
-      // capture the skill catalogue in the SAME one-shot block, so the
-      // system prompt stays byte-identical for the session (prefix cache).
       this.skillCatalogue = this.skillCatalogueText();
       this.memoryDigest = this.memoryDigestText();
     }
@@ -3708,15 +2159,6 @@ export class Agent {
     if (this.wsSnapshot) {
       sys += `\n\n## Workspace snapshot (top level)\n${this.wsSnapshot}\nUse list_dir/read_file for anything deeper — do NOT list again what is already here.`;
     }
-    // the catalogue of AVAILABLE SKILLS. The prompt previously named the
-    // skill TOOLS but never the skills themselves, so the only way to discover
-    // one was to spend a tool call on list_skills() — and a model that does not
-    // know a skill exists will never think to look.
-    //
-    // Appended ONCE, in the same one-shot block as AGENTS.md and the workspace
-    // snapshot, so SYSTEM_TEMPLATE stays byte-identical for the session and the
-    // provider prefix cache survives (#14's constraint). list_skills() remains
-    // for the full detail (a skill saved mid-session shows up there).
     if (this.skillCatalogue) {
       sys +=
         `\n\n## Skills available in this workspace\n${this.skillCatalogue}\n` +
@@ -3724,19 +2166,6 @@ export class Agent {
         `pass what you want done so the instructions arrive with the playbook. ` +
         `list_skills() shows the full detail.`;
     }
-    /**
-     * A DIGEST of the durable notes — Codex's `MEMORY_SUMMARY`, not the notes themselves.
-     *
-     * The full file cannot go here (it is unbounded, and re-injecting it every turn is the
-     * prefix-cache break that made takos' design a bad fit). But leaving the notes entirely
-     * behind a tool call was measured to fail the other way: the model never learned they
-     * existed, so it never asked. Codex resolves exactly this by injecting a compact summary
-     * and telling the model to search the rest — the summary names WHAT is in memory, the tool
-     * fetches the detail.
-     *
-     * Captured in the same one-shot block as AGENTS.md and the skills catalogue, so the prompt
-     * stays byte-identical for the session.
-     */
     if (this.memoryDigest) {
       sys +=
         `\n\n## Your durable notes (memory.md — a DIGEST, not the whole file)\n${this.memoryDigest}\n` +
@@ -3748,31 +2177,13 @@ export class Agent {
     return sys;
   }
 
-  /**
-   * The last few conversation turns, for a parent's `final` report.
-   *
-   * Captured BEFORE the final marker is written so the parent gets real
-   * substance (findings, file paths, numbers), not just whatever the model
-   * typed into the finish() summary argument.
-   *
-   * Extracted as its own method because a REJECTED completion audit also needs
-   * it — the retry prompt should carry the same context an approved one
-   * would — while emitting no `final: true`.
-   */
-  /**
-   * A COMPACT account of what the worker actually did, for the auditor.
-   *
-   * Not the conversation: see the note at the audit call. This is the last few assistant turns plus
-   * the tools they ran, which is what a reviewer needs to see whether the claimed work happened —
-   * and it stays small enough that the auditor can still answer the question it was asked.
-   */
   private auditEvidence(summary: unknown): string {
     const lines: string[] = [];
     for (let i = this.messages.length - 1; i >= 0 && lines.length < 24; i--) {
       const m = this.messages[i]!;
       const text = String(m.content ?? "").trim();
       if (!text) continue;
-      if (m.role === "user") break; // stop at the request that started this round
+      if (m.role === "user") break; 
       const who = m.role === "assistant" ? "worker" : m.role;
       lines.push(`${who}: ${text.replace(/\s+/g, " ").slice(0, 400)}`);
     }
@@ -3785,57 +2196,20 @@ export class Agent {
     const recent: string[] = [];
     for (let i = this.messages.length - 1; i >= 0 && recent.length < 6; i--) {
       const m = this.messages[i]!;
-      if (m.role === "user") continue; // prompts/noise — keep agent output only
+      if (m.role === "user") continue; 
       const text = String(m.content ?? "").trim();
-      // a message whose text is a PLACEHOLDER carries no information.
-      //
-      // `llm.ts` rewrites any assistant/tool message that has no usable text to
-      // the literal "(tool call)" or "(no content)". Those are display
-      // artifacts, and the parent's report was landing them verbatim — in the
-      // real log, TWO of the six entries in an accepted report were literally
-      // "[assistant] (tool call)", so half of what the parent was told about the
-      // work was a placeholder.
-      //
-      // A tool CALL is real work, but it is represented in the tool RESULT that
-      // follows, so dropping the placeholder loses nothing.
       if (!text || PLACEHOLDER_TEXT.test(text)) continue;
-      // a window this small must not be spent on BOOKKEEPING. The real log
-      // showed a 6-slot window where two 23-char "(tool call)" placeholders and a
-      // 40-char "decision recorded to decisions.md" took half the slots, pushing
-      // out the reasoning a parent would need to judge the work. Harness
-      // acknowledgements carry no findings, so they cost a slot for nothing.
       if (HARNESS_ACK.test(text)) continue;
       const who = m.role === "tool" ? "tool" : m.role;
       let line = `[${who}] ${text}`;
       if (m.role === "tool") {
-        // tool results are prefixed "(failed)" by the logger when they fail —
-        // the raw content is what matters here, and cap hard: these can be huge
         line = `[${who}] ${(m.content ?? "").trim().slice(0, 1200)}`;
       }
-      // A generous cap, but not unbounded: one runaway turn must not blow up
-      // the parent's context. The old 1500 char clip cut findings in half —
-      // a review's conclusions routinely live past that mark — and this
-      // text is bounded by 6 turns, so the worst case is ~120k chars.
       recent.unshift(line.slice(0, 20_000));
     }
     return recent;
   }
 
-  /**
-   * Run the completion auditor, streaming its steps into the timeline.
-   *
-   * The auditor is a real review, not a single question: pi-goal-x gives it read-only tools so it
-   * can inspect the artifacts instead of trusting the worker's summary, and it reports its progress
-   * as it goes. Both matter here:
-   *
-   *   - WITHOUT the tools the auditor could only re-read the claim it was asked to check, which is
-   *     how three audits in github-bug-research-1f48715f replied in prose and produced no verdict;
-   *   - WITHOUT the progress rows the timeline showed `audit-started` and then nothing until the
-   *     verdict, so an audit that produced no verdict was indistinguishable from one that never ran.
-   *
-   * Bounded by `AUDIT_MAX_STEPS`: an auditor that keeps reading is doing work the operator cannot
-   * see the end of, and the worker is blocked while it runs.
-   */
   private async runAuditor(first: ChatMessage[]): Promise<string> {
     const AUDIT_MAX_STEPS = 12;
     const step = (data: Record<string, unknown>) =>
@@ -3877,7 +2251,6 @@ export class Agent {
         });
       }
     }
-    // out of steps: ask once for the verdict alone, with no tools to reach for
     const final = await this.callLlm(
       [...messages, { role: "user", content: "Stop investigating. Reply with the verdict line only." }],
       [],
@@ -3889,73 +2262,30 @@ export class Agent {
     const args = safeParse(argsJson);
     if (args.goalComplete === true && this.goal.status !== "done") {
       if (this.goal.verify?.trim()) {
-        // pi-goal-x-style INDEPENDENT COMPLETION REVIEW: a separate LLM call
-        // checks the verification contract against the conversation + summary
-        // before "done" is honored. changes-required reopens the goal and
-        // queues the auditor's feedback as the next user prompt.
         await this.log.append("goal", this.currentSession, this.currentBranch, {
           event: "audit-started",
           verify: this.goal.verify.slice(0, 2000),
         });
-        // number the attempts — the final carries the attempt that approved it
         this.auditAttempts++;
         try {
-          /**
-           * The auditor runs in its OWN conversation.
-           *
-           * It used to be `buildMessages()` + one more user turn — the worker's entire conversation,
-           * handed to a model that was then told "you are an auditor, not the worker". MEASURED in
-           * github-bug-research-1f48715f: with ~220k tokens of work log in front of it, the auditor
-           * replied by CONTINUING the work (prose, no verdict) on all three attempts, and the goal
-           * was abandoned with the audit never actually running.
-           *
-           * A review is not a continuation. The auditor gets the objective, the contract and the
-           * worker's claim — everything it needs to judge — and nothing to continue.
-           */
           const evidence = this.auditEvidence(args.summary);
           const auditMessages: ChatMessage[] = [
             { role: "user", content: auditPrompt({ goal: this.goal.text, verify: this.goal.verify, summary: String(args.summary ?? ""), evidence }) },
           ];
           const text = await this.runAuditor(auditMessages);
-          /**
-           * The verdict is the reply's LAST line — see `parseAuditVerdict`. Anything else is NO
-           * VERDICT, never a rejection: a reason-less "fix these gaps" carries no information and
-           * only teaches everyone that the audit is noise.
-           */
           const verdict = parseAuditVerdict(text);
           if (verdict.kind === "none") {
-            // an unusable reply is NOT an approval. The old path failed
-            // OPEN — recorded the failure and marked the goal done anyway —
-            // so a verification contract was "satisfied" that nobody verified.
-            // Fail CLOSED instead: the goal stays active and the worker is
-            // asked to self-verify, with a bounded streak (see the field).
             this.auditUnavailableStreak++;
             await this.log.append("system_note", this.currentSession, this.currentBranch, {
               event: "audit-failed",
               detail: verdict.detail,
               attempt: this.auditUnavailableStreak,
             });
-            /**
-             * A no-verdict reply gets a bounded number of retries, then the operator decides.
-             *
-             * MEASURED in github-bug-research-1f48715f: three audits in six minutes all failed the
-             * same way, and the retry prompt told the worker to "re-check the contract yourself, then
-             * finish again" — which cannot help, because the worker's re-verification was never what
-             * the auditor was missing. It re-ran the SAME call against the SAME model with the SAME
-             * reply shape, so the loop cost three rounds and ended at the cap anyway.
-             *
-             * The retry is worth keeping for the transient case (a provider hiccup, a truncated
-             * reply), and the prompt now asks for the thing that actually helps — a concise statement
-             * of what was verified. Three attempts, then a loud note.
-             */
             if (this.auditUnavailableStreak < 3) {
               this.queueAuditUnavailableRetry();
               await this.captureRecentTurns();
               return;
             }
-            // bounded fallback, same philosophy as the reject bound in the
-            // loop: the goal is left ACTIVE and a loud note stops the loop —
-            // the operator sees it and decides. Never "honored as done".
             await this.log.append("system_note", this.currentSession, this.currentBranch, {
               event: "audit-unavailable-cap",
               attempts: this.auditUnavailableStreak,
@@ -3965,23 +2295,11 @@ export class Agent {
             return;
           }
           const approved = verdict.kind === "approved";
-          // the parser already separated marker from reason
           const feedback = verdict.reason;
-          // storing the literal "(no detail)" made the UI draw a card
-          // whose whole content was the absence of a reason, and that same
-          // string landed in goal.md for the right panel. An empty string is
-          // the honest value: the auditor returned a verdict and no reason,
-          // which every consumer can already render as "label only".
           await this.setGoalAudit(approved ? "approved" : "changes-required", feedback);
-          // a real verdict lands: the no-verdict streak restarts either way —
-          // the streak's own JSDoc promises "reset by any real verdict", and
-          // without this a flaky auditor (2 unusable, then a real verdict,
-          // then 1 unusable) hit the cap far too early
           this.auditUnavailableStreak = 0;
           if (approved) {
             this.consecutiveAuditRejects = 0;
-            // #91/#94: the final will carry WHAT was approved, on WHICH attempt,
-            // and what the previous attempt was told (if it was rejected first)
             this.lastAuditOutcome = {
               audited: true,
               verdict: "approved",
@@ -3991,25 +2309,11 @@ export class Agent {
                 : {}),
             };
           } else {
-            // the rejection survives in memory so the eventual approved
-            // final can name what the first attempt was told
             this.lastRejectedAudit = { feedback, attempt: this.auditAttempts };
-            /**
-             * …AND capture the work that was just rejected, once. This runs before the retry
-             * prompt is queued, so the history still holds the original task; capturing later
-             * (at the approved finish) would read only the fix-up.
-             */
             if (!this.preRejectionTurns.length) {
               this.preRejectionTurns = await this.captureRecentTurns();
             }
           }
-          // `operatorFacing: true` — the verdict is written for the TIMELINE
-          // only. The audit ran in its own side conversation (a tools-less call
-          // over buildMessages() + an audit prompt), so it was never in
-          // `this.messages` and must not come back through a restore: doing so
-          // injected an assistant turn that answers nothing into the model's
-          // context, which providers answer with a 200 and no choices.
-          // The rejection feedback reaches the agent as a real prompt below.
           await this.log.append("message", this.currentSession, this.currentBranch, {
             role: "assistant",
             operatorFacing: true,
@@ -4019,24 +2323,11 @@ export class Agent {
           });
           if (!approved) {
             this.consecutiveAuditRejects++;
-            // the rejection survives in memory so the eventual approved
-            // final can name what the first attempt was told
             this.lastRejectedAudit = { feedback, attempt: this.auditAttempts };
-            // hand the gaps back to the worker as its next instruction.
-            // with the "(no detail)" placeholder gone, an empty verdict
-            // would leave this prompt saying "address these gaps" and then
-            // naming none — so restate the contract as the thing to re-check.
             const gaps = feedback.trim()
               ? feedback.slice(0, 2000)
               : `The auditor returned no specific gaps. Re-read the verification contract above and re-run it yourself, item by item, before finishing again:\n\n${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
             const retryText = `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`;
-            // counted above (consecutiveAuditRejects++ at the verdict) so
-            // a model that cannot satisfy the auditor cannot loop forever — the
-            // retry prompt is queued only while the bound is NOT yet reached,
-            // so the loop's cap break strands nothing (a prompt queued AT the
-            // cap would live on as an invisible no-id entry: no badge, no log
-            // row, but isLive() true). Log the row too: a push-only prompt is
-            // invisible on the timeline and lost to a restart otherwise.
             if (this.consecutiveAuditRejects < (this.opts.maxAuditRejects ?? 3)) {
               this.pendingPrompts.push({ source: "harness", text: retryText });
               await this.log.append("prompt", this.currentSession, this.currentBranch, {
@@ -4044,24 +2335,10 @@ export class Agent {
                 text: retryText,
               });
             }
-            // RETURN before the final message is written.
-            //
-            // Falling through emitted `final: true` while the goal was still
-            // active — and that is the event onChildEvent forwards to the
-            // parent. So a REJECTED completion told the parent the work was
-            // DONE, and the child then sat retrying against a parent that had
-            // already moved on and stopped listening.
-            //
-            // The goal stays active and the retry prompt is queued above, so
-            // the loop simply continues; the parent's notification is deferred
-            // until a finish that actually survives the audit.
             await this.captureRecentTurns();
             return;
           }
         } catch (err) {
-          // an auditor that THROWS is not an approval either. Same
-          // fail-closed treatment as a no-verdict reply: active goal, bounded
-          // self-verify retries, then a loud stop for the operator.
           this.auditUnavailableStreak++;
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "audit-failed",
@@ -4088,15 +2365,6 @@ export class Agent {
     await this.appendFinalMessage(args);
   }
 
-  /**
-   * The retry prompt for an audit that could not produce a verdict.
-   *
-   * It asks the worker to make the NEXT audit easier to answer, which is the only thing within its
-   * power: a no-verdict reply means the auditor could not judge from what it was given, so a
-   * concise statement of what was verified is the actual fix. It does NOT claim the work is
-   * unverified-and-must-be-redone; the work may be fine and the auditor simply failed, and telling
-   * the worker to redo it produced the repeat loop measured in github-bug-research-1f48715f.
-   */
   private queueAuditUnavailableRetry(): void {
     const text =
       `[harness] The completion audit could not produce a verdict — that is a problem with the ` +
@@ -4104,29 +2372,13 @@ export class Agent {
       `you verified for each item of the contract, so the auditor has something to judge.\n\n` +
       `${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
     this.pendingPrompts.push({ source: "harness", text });
-    // log the row: a push-only prompt is invisible on the timeline and lost to
-    // a restart (rebuildMessagesFrom replays prompt rows) — same as enqueuePrompt
     void this.log
       .append("prompt", this.currentSession, this.currentBranch, { source: "harness", text })
       .catch(() => {});
   }
 
-  /** The `final: true` event — the parent's notification (#89: never before the goal settles). */
   private async appendFinalMessage(args: { summary?: unknown }): Promise<void> {
     const recent = await this.captureRecentTurns();
-    /**
-     * an APPROVED finish after a REJECTION must describe the WHOLE task.
-     *
-     * `captureRecentTurns()` reads the last six meaningful messages, which after a
-     * changes-required verdict is exactly the RETRY — so the parent was told about the last few
-     * minutes of work and nothing about the hours that came before it. The rejection branch
-     * already queues the auditor's feedback as the retry prompt, so the retry is a narrow fix-up;
-     * reporting only that makes the work look trivial and the parent has no basis to judge it.
-     *
-     * The pre-rejection activity is captured when the reject arrives (`preRejectionTurns`) and is
-     * prepended here, clearly labelled, so the parent reads "this is what was done, and this is
-     * what the audit then required". Bounded to the same six entries so the report stays a report.
-     */
     const before = this.preRejectionTurns;
     this.preRejectionTurns = [];
     const combined = before.length
@@ -4137,9 +2389,6 @@ export class Agent {
           ...recent,
         ]
       : recent;
-    // #91/#94: the final says how it relates to the audit — approved on which
-    // attempt, what the previous attempt was told. Cleared on emit: a later
-    // unaudited finish must not inherit stale lineage.
     const outcome = this.lastAuditOutcome;
     this.lastAuditOutcome = null;
     await this.log.append("message", this.currentSession, this.currentBranch, {
@@ -4168,36 +2417,20 @@ export class Agent {
     const activityOk =
       this.activityChars >= this.opts.progressMinChars ||
       this.turnsSinceProgress >= this.opts.progressMaxQuietTurns;
-    if (!elapsedOk || !activityOk) return; // stalling provider → don't waste a turn asking
-    /**
-     * ONE harness instruction per boundary, in EITHER order.
-     *
-     * This is the mirror of the `progressRequestedThisRound` check in the auto-continue branch. A
-     * nudge injected at the end of a round is consumed by the NEXT round's first turn, which is
-     * where this runs — so without this the model receives both, back to back.
-     */
+    if (!elapsedOk || !activityOk) return; 
     if (this.nudgedAtTurn === this.stats.turns) return;
-    // remember that this boundary already carries an instruction, so the
-    // auto-continue nudge can stand down instead of pairing with it.
     this.progressRequestedThisRound = true;
     this.lastProgressAt = Date.now();
     this.activityChars = 0;
     this.turnsSinceProgress = 0;
     const request = PROGRESS_REQUEST;
-    // log both sides so a session restore replays this exchange faithfully
     await this.log.append("prompt", this.currentSession, this.currentBranch, {
       source: "harness",
       text: request,
     });
     this.messages.push({ role: "user", content: request });
-    // Give the model the report_progress TOOL here. The old no-tools call
-    // made the model answer in plain text while its own mental "did I report?"
-    // ledger stayed unsolved — it then re-sent a voluntary report_progress
-    // right after, and the timeline showed every requested report TWICE.
     const res = await this.llmCall(this.buildMessages(), allToolSpecs());
     const calls = res.message.tool_calls ?? [];
-    // the assistant turn MUST enter history before its tool answers, or the
-    // sequence [user, tool] is invalid and every later request 400s
     this.messages.push(res.message);
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
@@ -4211,27 +2444,9 @@ export class Agent {
       if (call.function.name === "report_progress") {
         await this.recordProgress(call.function.arguments);
       }
-      /**
-       * EVERY tool call needs a `tool` message, but only `report_progress` was a report.
-       *
-       * This loop used to answer `"progress recorded"` to whatever the model called, so a `bash`
-       * invocation came back with the text "progress recorded" and `durationMs: 0` — it never ran.
-       * call, `bash <npm view polling loop>`, and its result was `"progress recorded"`, while the
-       * very next `progress` row read "(no report produced)". The command's real output appeared
-       * only on the NEXT turn, which is what made it look like a stray duplicate.
-       *
-       * The model did nothing wrong: it was asked for a progress report and chose to run its work
-       * instead. Answering that call with the report text both lies to the model (the tool result
-       * is its only view of what happened) and drops the command's output.
-       *
-       * A non-report call is answered with a plain acknowledgement — it is NOT executed here,
-       * because this path has no tool context and must not run side effects a second time. The
-       * round then continues and the model sees that it still owes a report.
-       */
       const isReport = call.function.name === "report_progress";
       const answer = isReport ? "progress recorded" : "not run — this turn was a progress request";
       this.messages.push({ role: "tool", tool_call_id: call.id, content: answer });
-      // log both sides so restores replay the exact exchange (meta-style)
       await this.log.append("tool_call", this.currentSession, this.currentBranch, {
         callId: call.id,
         name: call.function.name,
@@ -4241,27 +2456,16 @@ export class Agent {
       await this.log.append("tool_result", this.currentSession, this.currentBranch, {
         callId: call.id,
         name: call.function.name,
-        // a not-run answer is not a FAILURE, so `ok` stays true — the row must not read as an error
         ok: true,
         durationMs: 0,
         result: answer,
       });
      }
     if (!reported && !(res.message.content ?? "").trim()) {
-      // degenerate: neither a tool call nor prose — record a stub so the
-      // operator sees SOMETHING at the requested moment
       await this.recordProgress(JSON.stringify({ freeform: "(no report produced)" }));
     }
   }
 
-  /* ---------- context compaction ---------- */
-
-  /**
-   * Rough token estimate good enough to trigger compaction before overflow.
-   * ASCII runs ≈ 4 chars/token; CJK (kana/kanji/hanja and friends) ≈ 1
-   * token/char — the old flat /4 underestimated Japanese sessions ~4x.
-   * Adds a small per-message overhead for role/framing tokens.
-   */
   private estimateTokens(msgs: ChatMessage[] = this.messages): number {
     let ascii = 0;
     let wide = 0;
@@ -4281,12 +2485,6 @@ export class Agent {
     return Math.ceil(ascii / 4 + wide * 1.2 + msgs.length * 8);
   }
 
-  /**
-   * Latest index whose message may START the kept tail of a compacted
-   * history. Anything except a dangling tool result is safe: a kept
-   * assistant-with-tool_calls always has its tool responses after it (they
-   * are never cut apart — we only remove a prefix).
-   */
   private safeCut(maxCut: number): number {
     for (let i = Math.min(maxCut, this.messages.length - 1); i >= 1; i--) {
       if (this.messages[i]!.role !== "tool") return i;
@@ -4294,25 +2492,13 @@ export class Agent {
     return -1;
   }
 
-  /**
-   * Answer a meta tool call (finish / get_goal / ask_user / …): into the
-   * in-memory history AND the log as a regular tool_result, so session
-   * restores replay the exact same bytes and provider prefix caches stay
-   * warm across restarts.
-   */
   private async answerMeta(
     call: { id: string; function: { name: string; arguments?: string } },
     content: string,
   ): Promise<void> {
-    // one tool_call gets ONE answer: the finish path answers before the audit
-    // AND at round end — a second answerMeta for the same id would push
-    // a duplicate `tool` message AND a duplicate log row, and strict
-    // OpenAI-compatible providers reject two responses for one call with a 400.
     if (this.messages.some((m) => m.role === "tool" && m.tool_call_id === call.id)) return;
     const raw = call.function.arguments ?? "{}";
     this.messages.push({ role: "tool", tool_call_id: call.id, content });
-    // log the call AND its answer so restores replay byte-exact sequences
-    // (meta calls previously went unlogged and restored as bare "{}" args)
     await this.log.append("tool_call", this.currentSession, this.currentBranch, {
       callId: call.id,
       name: call.function.name,
@@ -4328,27 +2514,12 @@ export class Agent {
     });
   }
 
-  /**
-   * Stage 1 of context management: clip OLD oversized tool outputs before paying for a full
-   * summarise. They are the usual bulk and their details rarely matter once executed; the recent
-   * window is protected so current work keeps its footing.
-   *
-   * It runs as a PRE-STEP of `maybeCompact()`, only once that pass has decided the context is
-   * actually over budget. Clipping is more destructive than summarising — the model cannot see a
-   * clipped result again without re-issuing the call — so doing it while room is still free trades
-   * real information for nothing.
-   */
   private async maybePrune(force = false): Promise<number> {
-    const est = this.contextSizeForBudgeting(); // floored — see #73
+    const est = this.contextSizeForBudgeting(); 
     const budget = this.opts.contextTokenBudget;
     if (!budget) return 0;
-    // Below the bar there is enough room for the next request, so clipping now would
-    // spend information to buy space that is already free.
     const pruneShare = this.opts.shortContext ? SHORT_PRUNE_AT_SHARE : PRUNE_AT_SHARE;
     if (!force && est < budget * pruneShare) return 0;
-    // protect the recent tail (~half the budget in chars) from any pruning. Short mode
-    // protects a THIRD of it: a 2x-budget tail on a small window is most of the window,
-    // so pruning would find nothing to do exactly when it is needed.
     const protectChars = this.opts.shortContext ? Math.floor(budget * 1.2) : budget * 2;
     let seen = 0;
     let boundary = this.messages.length;
@@ -4358,19 +2529,12 @@ export class Agent {
       if (seen >= protectChars) break;
     }
     const PRUNE_MIN = 3_000;
-    // Tool-kind aware pruning (Claude Code MicroCompact style): high-volume,
-    // REPRODUCIBLE results (file reads, shell, grep) are safe to clip because
-    // the model can re-issue them; one-shot results (spawned agent reports,
-    // web fetches) are kept — re-fetching is impossible or expensive.
     const PRUNABLE_TOOLS = new Set([
       "bash", "read_file", "list_dir", "grep", "glob", "write_file", "edit_file", "apply_patch",
       "bash_output",
     ]);
     let saved = 0;
     let count = 0;
-    // callId → tool name, from the assistant turn that issued each call
-    // (a tool result's PREVIOUS message is not reliably its caller when
-    // parallel calls interleave)
     const callerTool = new Map<string, string>();
     for (const m of this.messages) {
       for (const t of m.tool_calls ?? []) callerTool.set(t.id, t.function.name);
@@ -4392,10 +2556,6 @@ export class Agent {
       }
     }
     if (count > 0)
-      // AWAITED, not fire-and-forget: the caller decides what to do next based on the
-      // count, and a compaction pass that reports its outcome must have its reasons on
-      // disk first — a `void` append could land after the pass returned, so the log
-      // read the order "compacted" → "pruned".
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-pruned",
         outputs: count,
@@ -4404,34 +2564,12 @@ export class Agent {
     return count;
   }
 
-  /**
-   * Compact history when the real prompt size exceeds the budget.
-   *
-   * @param keepFraction share of the budget to keep verbatim; the overflow path
-   *                     lowers it on each retry so a too-shallow cut is not fatal
-   */
   private async maybeCompact(force = false, keepFraction?: number): Promise<void> {
-    // prefer the provider's own count from the last response — it is exactly
-    // what would overflow the window; the char heuristic is only a fallback
-    // for providers that omit usage
-    const before = this.contextSizeForBudgeting(); // floored — see #73
-    // SHORT-CONTEXT MODE prunes INSIDE the budget, so it must run before the
-    // "are we over budget" return below — otherwise its lower threshold is unreachable
-    // and the mode does nothing at all. This is the one path where pruning deliberately
-    // spends information early, and it only exists because the operator asked for it.
+    const before = this.contextSizeForBudgeting(); 
     if (this.opts.shortContext) await this.maybePrune();
     if (!force && before < this.opts.contextTokenBudget) return;
     if (!force && this.opts.autoCompact === false) return;
-    // stage 1: clip oversized old tool outputs before considering a summarize.
-    // ONLY reached once this pass is actually over budget — pruning is destructive,
-    // so it must not run on a context that still has room (see maybePrune()).
     const pruned = await this.maybePrune(true);
-    // If clipping alone brought the request back under budget, STOP: that is the
-    // cheapest possible compaction (no LLM call, no history rewritten, the tool
-    // results are re-issuable) and everything below would discard context the model
-    // can still use. This is the ordering the operator asked for — "どうしても足りなかったら
-    // 過去履歴落とす程度でいい" — and it is what Anthropic calls the lightest form of
-    // compaction. A manual `/compact` still means "summarize", so it is exempt.
     if (pruned > 0 && !force && this.contextSizeForBudgeting() < this.opts.contextTokenBudget) {
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-pruned-enough",
@@ -4442,54 +2580,23 @@ export class Agent {
       this.compactedAtLen = this.messages.length;
       return;
     }
-    // CIRCUIT BREAKER (ZCode: `max auto failures: 3`). A compaction that keeps
-    // failing would otherwise retry on EVERY turn, re-burning the provider for a pass
-    // that cannot succeed — and the failure is usually environmental (an unavailable
-    // model, a provider outage), so retrying it eagerly achieves nothing. Auto
-    // attempts only: a manual `/compact` is the operator asking, and an overflow
-    // recovery is the provider having just refused, so both must still try.
     if (!force && this.consecutiveCompactFailures >= MAX_AUTO_COMPACT_FAILURES) return;
-    // a forced pass on an already-tiny history would just summarize the
-    // summary — report ran=false instead
     if (force && this.messages.length <= this.compactedAtLen) return;
-    this.lastUsage = undefined; // stale after compaction — re-armed next turn
+    this.lastUsage = undefined; 
 
-    // keep roughly the most recent quarter of the budget as live context
-    // Keep the most recent stretch VERBATIM, as every implementation surveyed
-    // does (Pi: keepRecentTokens 20000, opencode: keep 15000). Recency is what the
-    // model needs to continue accurately, and verbatim beats a summary of it.
-    //
-    // Size: a quarter of the budget, but never less than KEEP_RECENT_TOKENS — a
-    // small budget would otherwise keep so little that the model loses the turn it
-    // is in the middle of. Measured in TOKENS rather than characters, so the choice
-    // matches the published defaults instead of depending on the char heuristic.
     const keepTokens = keepFraction !== undefined
-      // an explicit retry (overflow recovery): shrink toward a share of the budget
       ? Math.max(1, Math.floor(this.opts.contextTokenBudget * keepFraction))
-      // otherwise keep the newest stretch verbatim, but never more than a quarter
-      // of the budget — a fixed floor GREATER than the budget would keep everything
-      // and compaction would never fire at all (measured: a 500-token budget kept
-      // a 7.5k-token history intact)
-      // already scaled: on a small budget a quarter is below the 15k default, so a
-      // 32k-window session keeps ~6k rather than 15k. Short mode does NOT need to
-      // change this — checked while implementing #161 rather than assumed.
       : Math.min(KEEP_RECENT_TOKENS, Math.max(1, Math.floor(this.opts.contextTokenBudget / 4)));
     let cut = -1;
     for (let i = this.messages.length - 1; i >= 1; i--) {
-      // token-aware boundary, using the SAME estimate the budget uses — a raw char
-      // ratio would disagree with it for wide (CJK) text and per-message overhead
       if (this.estimateTokens(this.messages.slice(i)) > keepTokens) break;
       cut = i;
     }
     cut = this.safeCut(cut);
-    if (cut <= 0) return; // nothing safely compactable (phase never armed yet)
+    if (cut <= 0) return; 
 
     let old = this.messages.slice(0, cut);
     const oldCount = old.length;
-    // The prefix's share of the size the budget check ACTED on (which floors our
-    // estimate against the provider's reported prompt_tokens). Scaling by character
-    // share rather than message count: messages vary hugely in size, and the point
-    // is to avoid treating an unmeasurably large context as small.
     const totalChars = this.messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
     const oldChars = old.reduce((n, m) => n + (m.content?.length ?? 0), 0);
     const oldShareOfBefore = totalChars > 0 ? Math.round((before * oldChars) / totalChars) : 0;
@@ -4497,56 +2604,10 @@ export class Agent {
     let mode: "summarize" | "truncate" = "summarize";
     let summarizedCount = oldCount;
     let droppedCount = 0;
-    // COST GATE. The criterion is the ABSOLUTE amount of context the cut would
-    // discard, not how far over the budget we are: a ratio test gets it backwards,
-    // since a small window overflowing slightly is exactly the case where a
-    // summary buys almost nothing (there is little knowledge to lose), while a large
-    // window overflowing slightly still has a lot to lose.
-    //
-    // Since the summarizer now REPLAYS the conversation prefix, the call reuses the
-    // provider's KV cache, so it is far cheaper than it used to be — but it is not
-    // free (the shadowed region is re-read, and the summary itself is generated), so
-    // a shallow cut is still better served by the free drop.
-    //
-    // MANUAL is exempt: an explicit /compact is a user command, not a cost decision,
-    // and opencode draws the line in the same place ("only the user compacts when
-    // automatic compaction is off"). An overflow recovery is exempt too — the
-    // provider just told us the prompt was too big, so the question is not whether
-    // the saving is worth a call.
-    //
-    // Use BOTH sizes. `oldTokens` is our estimate of the prefix being summarized;
-    // `before` is the size the budget check acted on, which already floors that
-    // estimate against the provider's REPORTED prompt_tokens. Gating on the local
-    // estimate alone would silently truncate a context the provider says is large
-    // but we cannot measure (caught by a test: provider reports 5000 tokens for a
-    // 300-token local estimate). The provider tokenizes for real; our count is a
-    // guess, so the larger of the two is the honest figure.
     const oldTokens = Math.max(this.estimateTokens(old), oldShareOfBefore);
-    // The bar is a SHARE of the budget with an absolute floor, so it scales with a
-    // realistic window while never sitting above a small session's entire history
-    // (measured: a budget of 200 made a pure-share bar 10 tokens, while the whole
-    // summarizable prefix in that fixture was an 8-token prompt — summarization
-    // would have been silently disabled).
-    //
-    // Below the bar the prefix is a turn or two, and dropping it costs the model
-    // nothing it cannot recover by re-reading the goal or the files; a full-history
-    // LLM call to preserve that is not worth its price.
     const summarizeBar = Math.max(SUMMARIZE_MIN_TOKENS, this.opts.contextTokenBudget * SUMMARIZE_MIN_SHARE);
     const worthSummarizing = force || oldTokens >= summarizeBar;
-    // UPDATE mode: carry the previous notes forward instead of re-deriving them.
-    // Every implementation surveyed (opencode, Kilo, Pi) updates rather than
-    // re-summarizes, because a fresh summary each time loses whatever the previous
-    // pass had already distilled. Recovered from the LAST compaction event, so it
-    // survives a restart.
     const previousSummary = this.lastCompactSummary;
-    // progress is visible: announce the phase up front, then stream the
-    // summarizer's output as it generates (a long summarize used to look like
-    // the agent silently hung — hundreds of thousands of tokens take a while)
-    // the STATE must be established BEFORE the first notification — the
-    // emit used to precede `compactPhase` by an async log write, so the first
-    // progress event observed a snapshot with `compactPhase` still unset:
-    // "idle, not compacting, but a summarizing banner" from three paths at
-    // once. Sync set → emit → log keeps every path consistent.
     this.compactPhase = "summarizing";
     bus.emit("update", {
       kind: "compaction-progress",
@@ -4554,45 +2615,17 @@ export class Agent {
       phase: "summarizing",
       summarized: oldCount,
     } satisfies BusEvent);
-    // Everything below may throw — EventLog appends reject on stream errors,
-    // and disk-full is exactly when they will. The phase MUST not survive a
-    // failed compaction: isLive() keys off it, so a leaked "summarizing"
-    // pinned live=true forever (stop offered, never worked).
     try {
-      // the START belongs on the timeline too. Only the right panel showed
-      // compaction, and it reports the *outcome*; a long summarize (hundreds of
-      // thousands of tokens) looks exactly like a hung agent on the timeline,
-      // because the first `context-compacted` event is only appended once the
-      // whole pass is over. Log the announcement as a visible system_note so
-      // the operator sees WHERE the conversation was rewritten, even if the
-      // pass later fails — `before`/`oldCount` are known at this point, and the
-      // completion divider still carries the authoritative after-figures.
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-compaction-started",
         tokensBefore: before,
         messages: oldCount,
         reason: force ? "manual" : "auto",
-        worthSummarizing, // makes the cost decision auditable
+        worthSummarizing, 
         updating: Boolean(previousSummary),
       });
       try {
         if (worthSummarizing) {
-          // OVERFLOW RETRY on the summarizer itself. The replayed prefix is the head
-          // of a request that has already succeeded, so it normally fits — but the
-          // cut can land such that the shadowed region is nearly the whole history
-          // (measured: with a recent-keep target smaller than one message, cut lands
-          // at the far end and `old` is everything). When the conversation was over
-          // its window to begin with — the overflow-recovery case — the auxiliary
-          // request can then be over it too, and there is no truncation to save it
-          // any more.
-          //
-          // The fix keeps the property the replay exists for: REDUCE THE CUT, which
-          // sends FEWER LEADING messages, so the request stays a cacheable prefix of
-          // the routed request while shrinking. (Dropping the middle would break
-          // alignment; dropping the tail would discard the newest context.) ZCode
-          // handles the same case with a bounded `prompt-too-long` retry, and this is
-          // bounded for the same reason: an unbounded loop here would burn tokens
-          // against a provider that will refuse every size.
           for (let attempt = 0; attempt <= SUMMARIZE_OVERFLOW_RETRIES; attempt++) {
             try {
               summary = await this.summarize(
@@ -4601,7 +2634,6 @@ export class Agent {
                   bus.emit("update", {
                     kind: "llm-delta",
                     agentId: this.opts.id,
-                    // the bubble is session-scoped, so the stream must say which session
                     sessionId: this.currentSession,
                     text: `[compact] ${text}`,
                     reasoning: "",
@@ -4609,33 +2641,12 @@ export class Agent {
                 },
                 previousSummary,
               );
-              /**
-               * Rules a pass dropped are put BACK.
-               *
-               * The summarizer is asked for one keyword per line, but it is still generated text:
-               * a pass can merge three constraints into a sentence, or simply not mention one.
-               * Facts survive that (the code can be re-read); a rule cannot — "never install this
-               * into Wine" was stated once and is nowhere else. Reported as "compact時にルール
-               * (must/must notが中心だけど、shouldレベルのものも)が確実に引き継げる機構があると良いね".
-               *
-               * So the rules known BEFORE this pass are compared against the ones it produced, and
-               * any missing are appended. A pass may add and reword freely; it cannot lose one.
-               */
               {
-                /**
-                 * Seed from the previous summary ONCE, for a session that compacted before this
-                 * mechanism existed — after that the stored set is the authority.
-                 *
-                 * The set lives in `this.compactRules`, not in the previous summary: a pass that
-                 * dropped every rule would otherwise leave nothing to restore from, which is the
-                 * exact failure this exists to prevent.
-                 */
                 if (!this.compactRules.length && previousSummary) {
                   this.compactRules = extractRules(previousSummary);
                 }
                 const enforced = enforceRules(summary, this.compactRules);
                 summary = enforced.summary;
-                // a pass may ADD rules (the operator said something new); it may never remove one
                 this.compactRules = extractRules(summary);
                 if (enforced.restored.length) {
                   await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -4655,7 +2666,7 @@ export class Agent {
               const shrinkable = isContextOverflow(e) && attempt < SUMMARIZE_OVERFLOW_RETRIES;
               if (!shrinkable) throw e;
               const smaller = this.safeCut(Math.max(1, Math.floor(old.length * SUMMARIZE_SHRINK)));
-              if (smaller <= 0 || smaller >= old.length) throw e; // cannot shrink further
+              if (smaller <= 0 || smaller >= old.length) throw e; 
               await this.log.append("system_note", this.currentSession, this.currentBranch, {
                 event: "compaction-summarize-overflow",
                 attempt: attempt + 1,
@@ -4667,8 +2678,6 @@ export class Agent {
             }
           }
         } else {
-          // shallow saving: truncation reclaims the budget for free, so skip the
-          // one full-history LLM call the summary would cost
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "context-compaction-skipped-summarize",
             reason: "shallow: truncation reclaims the budget without a full-history LLM call",
@@ -4678,46 +2687,25 @@ export class Agent {
         }
         this.compactPhase = "harvesting";
         bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "harvesting" } satisfies BusEvent);
-        if (summary) await this.harvestLessons(summary); // durable knowledge → memory.md
+        if (summary) await this.harvestLessons(summary); 
       } catch (err) {
         await this.log.append("error", this.currentSession, this.currentBranch, {
           message: `compaction summarize failed, falling back to truncation: ${(err as Error).message}`,
         });
-        // ZCode's circuit breaker counts the failure and never fails the turn for it
-        // ("Auto compact 失败不应让当前用户 turn 失败"): the pass still falls back to a
-        // truncation below, so work continues, and after MAX_AUTO_COMPACT_FAILURES
-        // consecutive auto failures the retry stops burning the provider.
         this.consecutiveCompactFailures += 1;
       }
       if (!summary) {
-        // fallback: drop the oldest half without LLM help so work can continue
         mode = "truncate";
         summarizedCount = 0;
-        // Cut at a safe boundary, but never at index 0 — that would drop the
-        // ENTIRE history (including the prompt just delivered) and leave the agent
-        // with nothing. On a short history floor(oldCount/2) can round to 0, and
-        // the old code then bailed out silently: compaction "ran", reported
-        // nothing, and the context stayed over budget, so the very next provider
-        // call overflowed — the "unstable after compact" report. Always drop
-        // at least one message, and say so.
         const halfCut = this.safeCut(Math.max(1, Math.floor(oldCount / 2)));
         if (halfCut <= 0) {
-          // nothing in the prefix is safe to drop (e.g. it is all tool results).
-          // Report it instead of pretending compaction happened.
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "context-compaction-skipped",
             reason: "summarize failed and no safe prefix to truncate",
           });
-          return; // the finally clears the phase and tells the UI it ended
+          return; 
         }
         droppedCount = halfCut;
-        // Tell the model its history was cut. Dropping a prefix SILENTLY is the
-        // one failure it cannot detect or work around: it would see a conversation
-        // that simply starts mid-way and could not distinguish "I forgot this" from
-        // "this never happened", then confidently act on a gap. Truncation is now
-        // the COMMON path (the cost gate keeps the summarize call for deep cuts
-        // only), which makes this the difference between a known gap and a wrong
-        // belief. The dropped text stays in the log — nothing durable is lost.
         this.messages = [
           {
             role: "user",
@@ -4744,27 +2732,9 @@ export class Agent {
       }
       const after = this.estimateTokens();
       this.stats.compactions++;
-      // A pass that got here reclaimed the budget, so autos may try again — ZCode
-      // resets its count on success for the same reason. But NOT when the summary
-      // failed: the truncate fallback still lands here, and resetting on it made the
-      // breaker unreachable (measured: 217 consecutive summarize failures, counter
-      // stuck at 0, so the provider was re-burned on every turn).
       if (mode === "summarize") this.consecutiveCompactFailures = 0;
       this.compactedAtLen = this.messages.length;
-      // Post-compact file restore (Claude Code style): re-attach the most
-      // recently read files so the model doesn't burn its first turns re-reading
-      // exactly what it had in context a moment ago. Budget: 3 files × 400 lines.
       if (mode === "summarize") {
-        // the durable notes go back in HERE, and only here.
-        //
-        // `read_memory` AFTER writing only 13 times — the notes were written and
-        // never consulted, so the whole system was decoration. The prompt made it
-        // worse by claiming memory.md was injected when it never was.
-        //
-        // Compaction is the one moment where re-attaching is free and obviously
-        // right: the history that held the notes has just been summarised away, and
-        // the prompt has to move anyway. Everywhere else they stay behind
-        // `read_memory()` so the prefix cache is never disturbed.
         try {
           const notes = (await fs.readFile(this.memoryFile, "utf8")).trim();
           if (notes) {
@@ -4776,7 +2746,6 @@ export class Agent {
             });
           }
         } catch {
-          /* no notes yet — nothing to re-attach */
         }
       }
       if (this.recentReads.length && mode === "summarize") {
@@ -4790,7 +2759,6 @@ export class Agent {
             restored.push(`--- ${rel}${text.length > head.length ? " (first 400 lines)" : ""} ---\n${head}`);
             restoredPaths.add(rel);
           } catch {
-            /* file vanished since the read — skip */
           }
         }
         if (restored.length) {
@@ -4800,30 +2768,9 @@ export class Agent {
               `[harness] These files were recently read and are re-attached for continuity ` +
               `(they may have changed — re-read if precision matters):\n\n${restored.join("\n\n")}`,
           });
-          // keep exactly what restored, in order — slicing by COUNT kept a
-          // vanished middle entry while dropping the surviving tail
           this.recentReads = this.recentReads.filter((rel) => restoredPaths.has(rel));
         }
       }
-      // #64 follow-up: compaction is the ONE point in a session where re-reading
-      // AGENTS.md is both safe and expected.
-      //
-      // It is expected because compaction exists precisely to summarise work
-      // against the CURRENT instructions: an agent that spent an hour under one
-      // set of project rules, then compacted, would otherwise carry the old rules
-      // over the summary and never see the edit.
-      //
-      // It is safe because the prefix-cache concern that motivates freezing the
-      // prompt does not apply here. That concern is about a prompt changing
-      // mid-turn, re-pricing the whole prefix on every call. A compaction
-      // ALREADY rewrote the history the prompt sits on top of, so the cache is
-      // being re-priced regardless — one more changed block costs nothing extra.
-      //
-      // Only AGENTS.md is re-read, deliberately. The workspace listing and the
-      // skills catalogue stay frozen: both are a snapshot of the workspace as it
-      // was, and re-listing mid-session would contradict the instruction to
-      // "not list again what is already here". AGENTS.md is different — it is
-      // instructions, not a listing, and a stale copy is actively misleading.
       const refreshed = this.reloadAgentsMd();
       if (refreshed) {
         await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -4832,8 +2779,6 @@ export class Agent {
         });
       }
 
-      // the operator can inspect WHAT was remembered — a dedicated typed event
-      // (not an agent message) keeps it out of the model's own voice
       await this.log.append("compaction", this.currentSession, this.currentBranch, {
         tokensBefore: before,
         tokensAfter: after,
@@ -4842,7 +2787,6 @@ export class Agent {
         mode,
         ...(summary ? { summary: String(summary).slice(0, 20_000) } : {}),
       });
-      // remember the notes for the NEXT compaction to update (and for a restore)
       if (summary) this.lastCompactSummary = summary;
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-compacted",
@@ -4854,72 +2798,19 @@ export class Agent {
       });
     } finally {
       this.compactPhase = "";
-      // the end signal lives in the FINALLY: a compaction that dies mid-flight
-      // (a log write rejecting on disk-full) used to leave the phase cleared
-      // server-side while the UI banner stayed "summarizing" forever — the
-      // client never got the done event. Emitting here covers every exit.
       bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
     }
   }
 
-  /**
-   * Summarize `old` into continuation notes.
-   *
-   * PREFIX-CACHE SHAPE (measured): the summarizer request is built as the
-   * conversation's OWN prefix — the session's system prompt, the same tool schemas,
-   * and the messages being shadowed — with the compaction instruction appended as a
-   * trailing `user` message. That makes the auxiliary call a genuine prefix-EXTENSION
-   * of the last routed request, so the provider reuses the KV cache instead of
-   * invalidating it at the first token.
-   *
-   * The alternative (a bespoke summarizer `system` prompt + a flattened transcript)
-   * was measured to share NOTHING with the conversation request: a provider caches on
-   * the leading token sequence, so a different first message discards the whole
-   * prefix and the entire history is re-prefilled at full price — exactly when the
-   * conversation is largest. DeepSeek Harness documents the same finding and the same
-   * fix ("the summarization directive moves from the front of the request to the end
-   * of the conversation"); the reasoning is reproduced here because it is not
-   * obvious, and the previous version of this function did the expensive thing.
-   *
-   * `tools` ride along even though the summarizer never calls one: they are part of
-   * the cached token sequence, so omitting them would misalign everything after them.
-   */
   private async summarize(
     old: ChatMessage[],
     onDelta?: (text: string) => void,
     previousSummary?: string,
   ): Promise<string> {
     const fn = this.opts.chatFn ?? chat;
-    // the conversation's own head: system prompt + the shadowed region, in order.
-    // `buildMessages()` supplies the live system prompt, so the replayed prefix is
-    // byte-identical to what the last routed request carried.
     const prefix = this.buildMessages().slice(0, 1 + old.length);
-    // #127 kept the head: dropping the OLDEST text silently discarded the original
-    // request, which sits at the front of the history and is the one thing compaction
-    // cannot recover from. Replaying the prefix VERBATIM (rather than a flattened,
-    // head+tail-elided transcript) keeps that property AND the cache: the model sees
-    // the real messages, in their real order.
-    //
-    // The older head+tail truncation guarded against a summarizer input larger than
-    // the model accepts; that is now handled by what gets shadowed instead — the
-    // region is what the conversation itself just carried, so it already fits the
-    // window that request fitted.
     const instruction = COMPACT_INSTRUCTION + (previousSummary ? UPDATE_INSTRUCTION : "");
-    // Structured sections (Claude Code style): fixed headings survive MULTIPLE
-    // successive compactions far better than free-form prose — each pass knows
-    // where "pending tasks" vs "user messages" live, so nothing silently
-    // merges away. The <analysis> scratchpad gives the model a thinking space;
-    // it is stripped from the stored summary (formatCompactSummary).
-    //
-    // `tools` are forwarded even though the summarizer never calls one: they are
-    // part of the cached token sequence, so dropping them (or sending a different
-    // set) misaligns everything after them and costs the cache the whole point of
-    // this shape. MEASURED while writing this: `toolSpecs()` returns 15 and the
-    // conversation sends `allToolSpecs()`'s 29, so the obvious call was wrong — the
-    // exact array the main loop uses is what must ride along.
     const res = await fn(
-      // one-off prompt: ask the provider not to retain it — but it is still the
-      // SAME conversation, so it carries the same session id
       this.requestConfig({ oneOff: true }),
       [
         ...prefix,
@@ -4929,22 +2820,11 @@ export class Agent {
         },
       ],
       allToolSpecs(),
-      undefined, // never abortable by stop(): losing the summary would lose history
+      undefined, 
       onDelta
         ? (s: { text: string; reasoning: string }) => onDelta(s.text)
         : undefined,
     );
-    // Record what the summarizer itself cost, especially `cachedInputTokens`.
-    //
-    // This is the ONLY way to observe the property the whole replay-the-prefix shape
-    // exists for: the summarizer is supposed to be served from the provider's KV
-    // cache because its input is a byte-identical prefix of the request the
-    // conversation just made. Without this line the claim was UNVERIFIABLE — a
-    // compaction event reported tokensBefore/tokensAfter (the CONVERSATION's size)
-    // and nothing at all about the call that produced the summary, so a shape that
-    // silently stopped sharing the prefix would look identical in the log.
-    //
-    // usage events, none of them the summarizer's.
     if (res.usage) {
       const u = res.usage;
       this.stats.inputTokens += u.inputTokens ?? 0;
@@ -4952,42 +2832,21 @@ export class Agent {
       this.stats.cachedInputTokens += u.cachedInputTokens ?? 0;
       await this.log.append("usage", this.currentSession, this.currentBranch, {
         ...u,
-        // distinguishes it from a conversation turn when reading the log back
         kind: "summarize",
       });
     }
     return this.formatCompactSummary(res.message.content ?? "");
   }
 
-  /** strip the <analysis> scratchpad — it improves thinking but must not
-      consume post-compact context tokens */
   private formatCompactSummary(raw: string): string {
     const m = raw.match(/<analysis>[\s\S]*?<\/analysis>\s*/);
     return m ? raw.slice(m[0].length).trim() : raw.trim();
   }
 
-  /**
-   * Extract the "## Durable lessons" block from a compaction summary and
-   * append it to memory.md — knowledge survives compaction automatically
-   * (inspired by hook-driven CLAUDE.md growers; zero extra LLM calls).
-   */
   private async harvestLessons(summary: string): Promise<void> {
     const m = summary.match(/##\s*Durable lessons?\s*\n([\s\S]*?)(?=\n##\s|$)/i);
     const lessons = m?.[1]?.trim();
     if (!lessons) return;
-    /**
-     * PROVENANCE, in a form the model can READ.
-     *
-     * The stamp used to be an HTML comment. It recorded exactly the right thing — which
-     * session and which compaction a note came from — and nothing ever read it back: a
-     * `read_memory(query)` returned the lesson with no way to tell whether it was observed
-     * today or inherited from a compaction three weeks ago. A note you cannot date is a note
-     * you cannot safely act on.
-     *
-     * It is now a visible `_from:_` line, which survives search, survives the digest (it is
-     * indented under the heading and skipped as a continuation), and answers "where did this
-     * come from?" in the reply itself.
-     */
     const session = path.basename(this.opts.sessionDir);
     const stamped =
       `\n## lessons from compaction ${new Date().toISOString().slice(0, 16).replace("T", " ")}\n` +
@@ -5005,7 +2864,6 @@ export class Agent {
       next: str(a.next) || undefined,
       ts: new Date().toISOString(),
     };
-    // a report (voluntary or requested) restarts the progress gates
     this.lastProgressAt = Date.now();
     this.activityChars = 0;
     this.turnsSinceProgress = 0;
@@ -5015,26 +2873,6 @@ export class Agent {
 
   private sleepInterruptible(ms: number): Promise<void> {
     return new Promise((resolve) => {
-      // #158-follow-up: a STOP that arrived before this sleep armed must end it.
-      //
-      // `stop()` releases the sleep through `this.wake`, which is a SINGLE slot
-      // created when the sleep starts. So a stop issued during the `await` BEFORE
-      // the sleep — the `log.append` of the retry note, which is a real disk write —
-      // found `wake === null`, did nothing, and the sleep it was meant to cancel
-      // then began on its own and ran to completion.
-      //
-      //
-      //     PRE : status=running  live=true      (the stop lands here)
-      //     POST: TIMEOUT after 6000ms           status=error  live=false
-      //
-      // — the operator's stop was swallowed and the agent sat in a 60s backoff,
-      // which is the reported "LLM APIエラーリトライ中はstopが効かなかった".
-      //
-      // `stopRequested` is exactly the flag that means "do not continue", and it is
-      // set SYNCHRONOUSLY by stop(), so testing it here closes the window without
-      // caring how long the preceding await took. Every dialog through this helper
-      // (the round backoff, the inner 5s/5s/30s staircase, the auto-continue delay)
-      // inherits the fix.
       if (this.stopRequested) return resolve();
       const timer = setTimeout(() => {
         this.wake = null;
@@ -5050,64 +2888,22 @@ export class Agent {
 
   async dispose(): Promise<void> {
     this.stop("disposed");
-    // kill any in-flight subprocess group NOW so shutdown never waits out a
-    // long-running command (up to 10 min otherwise)
     this.toolAbort.abort();
     await this.runChain.catch(() => {});
     await this.log.close();
   }
 
-  /**
-   * Stop at the NEXT TURN BOUNDARY, without aborting anything.
-   *
-   * This is the live-update stop. `dispose()`/`stop()` abort the in-flight LLM call and kill the
-   * running tool, which is right for ■ but wrong for an update: a tool cut off mid-write leaves a
-   * half-written file, and a call whose result never arrives means the session resumes from a state
-   * that never existed.
-   *
-   * Asked for as "動作中のエージェントループを適切なタイミング(ツール実行完了や生成終了などで1ターン
-   * が終わる)で停止する". `loop()` checks `windDownRequested` at the top of each round, so setting the
-   * flag is enough for a busy agent — the round in flight finishes normally.
-   *
-   * A PARKED agent is the case the flag alone cannot reach: `wait_children` and a background-shell
-   * wait sit in `await` with no round to finish, so they would hold the update until the timeout.
-   * Those are released by waking them (the wait resolves, the loop comes round, and the flag is
-   * seen at the top); nothing is killed, so the child/job keeps existing and the resumed session
-   * can still reach it.
-   *
-   * `idle` agents are already at a boundary — their `windDownRequested` is simply set, so a prompt
-   * arriving between now and the exec does not start a round that would be cut off.
-   */
   async windDownForUpdate(timeoutMs: number): Promise<void> {
     this.windDownRequested = true;
-    // release a parked wait (wait_children / bg-shell) so the loop can come round to the check
     this.wake?.();
     if (this.status === "idle") {
       this.status = "idle";
       this.statusReason = "paused for a live update";
       return;
     }
-    /**
-     * Wait for the round to end, bounded.
-     *
-     * `settled()` resolves when the run chain drains, which is "the turn finished" — but a
-     * BACKGROUND SHELL is not on that chain. The round deliberately ends while a dev server,
-     * watcher or long build keeps running (`hasRunningBgShells` breaks the loop instead of nagging),
-     * so `settled()` is already resolved and this used to return immediately.
-     *
-     * MEASURED: an update then reached `dispose()`, which calls `killBgShells` — a live update killed
-     * every background job on the machine, with no wait and no notice. A background job is work in
-     * flight, which is the whole reason `isLive()` counts it, so it must be waited for here too.
-     *
-     * The timeout exists only for a wedged agent (an LLM call that never returns, or a job that will
-     * never exit); the caller reports which agents hit it rather than leaving them silently
-     * half-stopped.
-     */
     let timer: ReturnType<typeof setTimeout> | undefined;
     const done = async () => {
       await this.settled();
-      // wait out any background job this agent owns, polling the same owner-scoped question
-      // `isLive()` uses — a sibling's job in the shared workspace is not this agent's work
       while (hasRunningBgShellsFor(this.toolCtx.cwd, this.opts.id)) {
         if (this.stopRequested) break;
         await this.sleepInterruptible(500);
@@ -5130,40 +2926,23 @@ export class Agent {
     }
   }
 
-  /** true once `windDownForUpdate()` has been asked and the round has ended */
   get windingDownForUpdate(): boolean {
     return this.windDownRequested;
   }
 
-  /* ---------- fork / branch management (session layer) ---------- */
-
-  /**
-   * Fork the conversation: copy the message history into a fresh branch of the
-   * SAME log file, recording lineage so reconstruction stays possible.
-   */
   async fork(fromEventId?: string | null): Promise<{ session: string; branch: string }> {
     const newBranch = `br${this.branchCount()}${Date.now().toString(36).slice(-4)}`;
     const parentBranch = this.currentBranch;
-    // Where the fork leaves the source branch. Recorded on the event AND used
-    // to seed the new branch, so the two can never disagree.
     const fromEvent = fromEventId ?? this.log.lastEventId(parentBranch);
-    // the fork event must be appended under the SOURCE branch. Appending it
-    // under the new one gave it parent:null (nothing had been written to that
-    // branch yet), so lineageOf() walked an empty chain and a restart rebuilt
-    // the fork with NO history at all — the same class of bug editPromptAt had,
-    // fixed on one path only. editPromptAt already appends under the old
-    // branch for exactly this reason.
     await this.log.append("fork", this.currentSession, parentBranch, {
       fromSession: this.currentSession,
       fromBranch: parentBranch,
       fromEvent,
       newBranch,
     });
-    // Seed the new branch's parent to the point it leaves the source, so its
-    // first event chains across instead of starting at parent:null.
     this.log.seedBranch(newBranch, fromEvent);
     this.currentBranch = newBranch;
-    this.messages = [...this.messages]; // independent history copy
+    this.messages = [...this.messages]; 
     return { session: this.currentSession, branch: newBranch };
   }
 
@@ -5177,28 +2956,10 @@ export class Agent {
   }
 }
 
-/**
- * workspace tools + agent-meta tools + every tool from every CONNECTED MCP server.
- *
- * The MCP tools are appended LAST and their names are namespaced (`mcp__server__tool`),
- * so adding one can never shadow a built-in — a server exposing `bash` must not be able
- * to take over the shell. `mcpSpecs()` is empty when nothing is configured, which is
- * the common case, so the cost of the feature is one empty spread.
- */
 function allToolSpecs(): ReturnType<typeof toolSpecs> {
-  // meta tools come from ONE table (src/agent/meta-tools.ts) so a declared tool always has
-  // a handler; see the note there for the two silent failure modes this removes.
   return [...toolSpecs(), ...metaToolSpecs(), ...mcpSpecs()];
 }
 
-/**
- * MCP tools as function specs, flattened and namespaced.
- *
- * Descriptions are prefixed with their origin so the model can reason about which
- * server a result came from — with three servers exposing `search`, a bare description
- * gives it nothing to choose with. The server's own JSON Schema is forwarded as-is:
- * rewriting it would drop constraints the server enforces.
- */
 function mcpSpecs(): ReturnType<typeof toolSpecs> {
   return mcp.allTools().map((t) => ({
     type: "function" as const,
@@ -5209,7 +2970,6 @@ function mcpSpecs(): ReturnType<typeof toolSpecs> {
     },
   }));
 }
-
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
@@ -5222,7 +2982,6 @@ function safeParse(json: string): Record<string, unknown> {
   }
 }
 
-/** Walk parent links backwards from the newest event, then flip forward. */
 function lineageOf(events: TeapotEvent[]): TeapotEvent[] {
   if (events.length === 0) return [];
   const byId = new Map(events.map((e) => [e.id, e]));
@@ -5235,16 +2994,10 @@ function lineageOf(events: TeapotEvent[]): TeapotEvent[] {
     lineage.push(cur);
   }
   lineage.reverse();
-  // the trailing fork event itself is bookkeeping, not conversation
   while (lineage.length && lineage[0].type === "fork") lineage.shift();
   return lineage;
 }
 
-/**
- * Replay ordered events into ChatMessages (shared by session restore and
- * prompt-edit forks). Prompts logged inside an open tool batch are buffered
- * until it closes, so user messages never split a tool_call/tool_result pair.
- */
 function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   const META_TOOLS = new Set([
@@ -5252,20 +3005,16 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
     "read_memory", "set_memory", "add_memory", "forget_memory", "list_skills", "get_todo", "set_todo",
     "get_feedback", "add_feedback", "record_decision", "get_decisions",
   ]);
-  const openCalls = new Map<string, string>(); // real tool_call id -> name
-  // callId -> the tool_call entry on its assistant message (fast arg enrichment)
+  const openCalls = new Map<string, string>(); 
   const assistantCalls = new Map<string, { function: { name: string; arguments: string } }>();
   const rememberAssistantCalls = (m: ChatMessage) => {
     if (Array.isArray(m.tool_calls))
       for (const t of m.tool_calls) assistantCalls.set(t.id, t as never);
   };
-  // meta answers are now logged as regular tool_results; the legacy progress
-  // synthesizer below must not duplicate them
   const loggedResults = new Set(
     list.filter((e) => e.type === "tool_result").map((e) => String((e.data as Record<string, unknown>).callId ?? "")),
   );
   const bufferedUsers: string[] = [];
-  // image attachments paired with buffered prompts (multimodal replay)
   const bufferedParts: { url: string }[][] = [];
   const flushUsers = () => {
     if (openCalls.size === 0) {
@@ -5291,8 +3040,6 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
   for (const e of list) {
     const d = e.data as Record<string, unknown>;
     if (e.type === "prompt" && typeof d.text === "string") {
-      // restore image attachments so replays stay byte-identical with the
-      // original request (prefix caches stay warm across restarts)
       const text: string = d.text;
       const imgs = Array.isArray(d.images) ? (d.images as { url: string }[]) : [];
       const mk = (): ChatMessage =>
@@ -5309,23 +3056,10 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       if (openCalls.size > 0) bufferedUsers.push(text), bufferedParts.push(imgs);
       else msgs.push(mk());
     } else if (e.type === "message") {
-      // Operator-facing rows are TIMELINE content, not conversation: the live
-      // loop never put them in `messages`, so a restore must not either.
-      // `final` is the finish() summary; `operatorFacing` covers harness notes
-      // such as the completion audit verdict. Replaying either produced a
-      // history shape no live run emits, and a provider given that answers
-      // 200 with zero choices.
       if (d.final === true || d.operatorFacing === true) continue;
       const role = d.role === "assistant" ? "assistant" : "user";
       const content = typeof d.content === "string" ? d.content : "";
       const hasCalls = Array.isArray(d.toolCalls) && d.toolCalls.length > 0;
-      // A blank assistant turn that issued NO tool calls is an artefact of a
-      // kill mid-stream: the model streamed nothing, so the live run never had
-      // this turn, yet the restore replays it as a real utterance. sanitize()
-      // then rewrites blank assistant content to the literal "(no content)",
-      // so the agent is told it previously said a sentence it never said — a
-      // history shape no live run produces. A blank turn that DID call
-      // tools is legitimate and must stay, or its results are orphaned.
       if (role === "assistant" && !content && !hasCalls) continue;
       const m: ChatMessage = { role, content };
       if (hasCalls) {
@@ -5334,19 +3068,12 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
           type: "function" as const,
           function: { name: c.name, arguments: "{}" },
         }));
-        // meta tools are answered inline by the harness (no logged result);
-        // the hole-filling pass below synthesizes theirs where they belong
         for (const t of m.tool_calls)
           if (!META_TOOLS.has(t.function.name)) openCalls.set(t.id, t.function.name);
       }
       rememberAssistantCalls(m);
       msgs.push(m);
       } else if (e.type === "tool_call") {
-        // enrich the preceding assistant tool_calls with real arguments —
-        // prefer the provider's raw string so restored requests stay
-        // byte-identical (prefix caches stay warm across restarts).
-        // Indexed by call id: the old [...msgs].reverse().find() scanned the
-        // whole message list per call — O(n²) on multi-thousand-event logs.
         let tc = assistantCalls.get(String(d.callId ?? ""));
         if (!tc) {
           const prev = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.some((t) => t.id === d.callId));
@@ -5365,31 +3092,11 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       openCalls.delete(String(d.callId ?? ""));
       flushUsers();
     } else if (e.type === "compaction") {
-      // A compaction REPLACED everything before this point with a summary.
-      // Replaying the raw prefix as well resurrected the full pre-compact
-      // history after every restart/fork (one live session came back at
-      // ~580k tokens after a 580k→207k compaction): the model re-read weeks
-      // of settled work it was told had been summarized, and its behavior
-      // fell apart. Mirror the runtime transform instead — the summary note
-      // becomes the history's head. Compactions only run at turn boundaries
-      // (serialized on the run chain), so no tool batch can be split here.
       if (d.mode === "truncate") {
-        // `dropped` IS the number of leading messages the live pass removed
         msgs.splice(0, Math.min(msgs.length, Number(d.dropped ?? 0)));
       } else {
         const sum = typeof d.summary === "string" ? d.summary.trim() : "";
         const summarized = Math.min(msgs.length, Number(d.summarized ?? 0) || msgs.length);
-        // A `summarize` boundary with no summary text is a HALF-WRITTEN record, and
-        // acting on it would delete history to replace it with nothing — the worst
-        // failure compaction can have, because the discarded prefix holds the original
-        // request and the summary is supposed to be its only record.
-        //
-        // So a damaged/absent summary falls back CONSERVATIVELY: the compaction is not
-        // applied at all, the full history stays, and the operator sees why. (ZCode
-        // draws the same line for a damaged preserved segment — "返回保守 fallback，并产生
-        // 结构化 warning" — and refuses to write a half boundary in the first place.)
-        // Reaching this state needs a hand-edited or truncated log, since the live path
-        // only writes `mode: "summarize"` when it has a summary.
         if (!sum) {
           console.warn(
             `[teapot] compaction at seq ${e.seq} has no summary text — keeping the full history rather than discarding it`,
@@ -5410,8 +3117,6 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
         }
       }
     } else if (e.type === "progress") {
-      // progress events may follow an assistant report_progress call that
-      // has no logged tool result — patch it in when present
       const lastAssistant = [...msgs].reverse().find((x) => x.role === "assistant" && x.tool_calls?.length);
       if (lastAssistant?.tool_calls?.some((t) => t.function.name === "report_progress")) {
         for (const t of lastAssistant.tool_calls!) {
@@ -5425,8 +3130,6 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
     }
   }
 
-  // every assistant tool_call must be answered by a tool message, or the
-  // API rejects the sequence — close any holes left by meta tools (finish)
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i]!;
     if (m.role === "assistant" && m.tool_calls?.length) {
@@ -5442,7 +3145,6 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
       }
     }
   }
-  // prompts that were still waiting on a hole-filled tail land here
   {
     const texts = bufferedUsers.splice(0);
     const parts = bufferedParts.splice(0);

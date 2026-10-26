@@ -1,22 +1,6 @@
-// Which production code has NO test that exercises it?
-//
-// The complaint this answers: "too many tests, yet the critical parts escape".
-// Test COUNT says nothing about that — what matters is whether the code a bug
-// would live in is reachable from any test at all.
-//
-// Two measures, both static and cheap:
-//
-//   1. module reachability — does ANY test import this file (directly or through
-//      another module it imports)? A file nothing loads is untested by
-//      construction.
-//   2. exported symbols that no test file mentions — narrower, and useful when a
-//      module is imported for one function while the rest rides along untested.
-//
-// Usage: node scripts/audit-test-reachability.mjs
 import fs from "node:fs";
 import path from "node:path";
 
-/** every .ts/.tsx under a dir, excluding build output */
 function walk(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
@@ -33,13 +17,9 @@ const tests = fs.readdirSync("test").filter((f) => f.endsWith(".test.ts")).map((
 const helpers = fs.existsSync("test/helpers") ? walk("test/helpers") : [];
 const testSrc = [...tests, ...helpers].map((f) => fs.readFileSync(f, "utf8")).join("\n");
 
-/** normalise an import specifier to a repo-relative path */
 function resolveImport(fromFile, spec) {
   if (!spec.startsWith(".")) return null;
   const base = path.join(path.dirname(fromFile), spec).replace(/\\/g, "/");
-  // the repo imports WITH the extension (`from "../src/master.ts"`), so an
-  // appended one would look for `master.ts.ts` and find nothing — which reported
-  // every module as unreachable.
   const cands = /\.(ts|tsx|js|mjs)$/.test(base)
     ? [base]
     : [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`];
@@ -47,7 +27,6 @@ function resolveImport(fromFile, spec) {
   return null;
 }
 
-/** modules reachable from the test files, following imports */
 const reachable = new Set<string>();
 const queue: [string, string][] = [];
 for (const t of tests) {
@@ -69,7 +48,6 @@ console.log("=== production modules NO test reaches (directly or transitively) =
 let unreachable = 0;
 for (const f of prod) {
   if (reachable.has(f)) continue;
-  // the CLI entry and types-only modules are expected here
   unreachable++;
   const lines = fs.readFileSync(f, "utf8").split("\n").length;
   console.log(`  ${f.padEnd(34)} ${String(lines).padStart(5)} lines`);

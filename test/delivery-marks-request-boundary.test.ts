@@ -1,32 +1,3 @@
-/**
- * #37 — the timeline must show events in the order requests were actually SENT
- * to the LLM API.
- *
- * ## What was wrong
- *
- * `prompt-delivered` was logged in `drainPendingPrompts`, which runs at a turn
- * boundary BEFORE `refreshSkills`, `maybeRequestProgress` and `maybeCompact`. So
- * the marker did not mean "the request carrying this prompt has started" — it
- * meant "the prompt moved from the queue into `this.messages`", which is earlier.
- *
- * Measured before the fix:
- *
- *     LLM CALL #1
- *       seq=5  prompt-delivered("first prompt")
- *       seq=6  llm turn start
- *
- * The UI reorders by this marker (`resequenceToDelivery`), so the SEMANTICS were
- * the bug — not `timeline-order.ts`, which was working correctly on a marker that
- * was recorded too early.
- *
- * Worse, `maybeCompact()` can itself make an LLM call, so the marker could claim
- * a delivery order the API never saw.
- *
- * ## The fix
- *
- * Drained prompts are queued, and the marker is emitted from inside `llmCall`
- * immediately before the outbound request. The UI needs no change.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -39,7 +10,6 @@ interface Ev {
   data?: Record<string, unknown>;
 }
 
-/** drive the agent and return its events plus the observed LLM calls */
 async function drive(
   ws: string,
   sd: string,
@@ -54,7 +24,6 @@ async function drive(
     contextTokenBudget: opts.budget,
     chatFn: async () => {
       calls++;
-      // the second call in the compaction fixture is the summariser
       return calls > 1 && opts.budget
         ? { message: { role: "assistant" as const, content: "SUMMARY" } }
         : { message: { role: "assistant" as const, content: "ok" } };
@@ -94,9 +63,6 @@ test("prompt-delivered is recorded when the request starts, not when queued (#37
 });
 
 test("a compaction request precedes the marker (#37)", async () => {
-  // maybeCompact() makes its OWN LLM call. The marker must not claim delivery
-  // before the summariser has run, or the timeline shows an order the API
-  // never saw.
   await useTempDirs(["t37c-", "t37d-"], async ([ws, sd]) => {
     const { events, calls } = await drive(ws!, sd!, { budget: 400, prefill: true });
     assert.ok(calls > 1, `precondition: compaction must run (#37); calls=${calls}`);
@@ -108,9 +74,6 @@ test("a compaction request precedes the marker (#37)", async () => {
 });
 
 test("a retry does not move the marker (#37)", async () => {
-  // the marker is emitted once per REQUEST, not per attempt: a retry resends the
-  // same payload, so re-emitting would push the marker past later events on
-  // every try
   await useTempDirs(["t37e-", "t37f-"], async ([ws, sd]) => {
     let calls = 0;
     const a = new Agent({
@@ -120,13 +83,10 @@ test("a retry does not move the marker (#37)", async () => {
       llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
       chatFn: async () => {
         calls++;
-        // fail the first attempt so the retry path runs
         if (calls === 1) throw Object.assign(new Error("boom"), { name: "ProviderError" });
         return { message: { role: "assistant" as const, content: "ok" } };
       },
       autoContinue: false,
-      // the built-in backoff is 5s/5s/30s and is NOT configurable, so the test
-      // must outlast it — a shorter wait asserted nothing about the retry path
     } as never) as Agent;
     await a.init();
     await a.setGoal("g");

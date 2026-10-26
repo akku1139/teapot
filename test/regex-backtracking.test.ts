@@ -1,28 +1,8 @@
-/**
- * #93 — a model-supplied regex could hang the agent.
- *
- * `(a+)+b` against 28 characters of "a" took **3.8 seconds**, roughly doubling
- * per character added; a 40-character line would run for days. There is no
- * timeout on that path — `ctx.defaultTimeoutMs` guards `bash` only, so the scan
- * is a synchronous `re.test(line)` with nothing able to interrupt it. The agent
- * process blocks and takes the UI and every other agent with it.
- *
- * A model is poorly placed to reason about backtracking cost and nothing tells it
- * not to try, so the PATTERN is rejected rather than the runtime bounded: a
- * synchronous regex cannot be abandoned once `test` starts, so the only reliable
- * protection is never to compile one.
- *
- * The over-rejection matters as much as the rejection. An earlier version
- * refused ANY quantified alternation, which killed `(foo|bar)+baz` — an ordinary
- * pattern. It now fires only on identical branches, which is the shape that
- * actually explodes.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { executeTool } from "../src/agent/tools.ts";
 
-/** run the real tool so this is behavioural, not a regex-over-source check */
 async function grep(ws: string, pattern: string): Promise<{ ok: boolean; result: string }> {
   const r = await executeTool(
     "read_file",
@@ -32,13 +12,10 @@ async function grep(ws: string, pattern: string): Promise<{ ok: boolean; result:
   return { ok: r.ok, result: String(r.result ?? "") };
 }
 
-/** a file with enough `a` for the payload to matter, and real text too */
 async function fixture(ws: string, body = "a".repeat(200) + "\nfoo bar\n") {
   const { writeFile } = await import("node:fs/promises");
   await writeFile(`${ws}/f.txt`, body, "utf8");
 }
-
-/* ---------- the payloads that hung ---------- */
 
 test("(a+)+b is refused, and instantly (#93)", async () => {
   await useTempDirs(["bt1-", "bt2-"], async ([ws, _sd]) => {
@@ -61,8 +38,6 @@ test("the other catastrophic shapes are refused (#93)", async () => {
   });
 });
 
-/* ---------- and it must not over-reject ---------- */
-
 test("ordinary quantifiers still work (#93)", async () => {
   await useTempDirs(["bt5-", "bt6-"], async ([ws, _sd]) => {
     await fixture(ws!);
@@ -74,8 +49,6 @@ test("ordinary quantifiers still work (#93)", async () => {
 });
 
 test("a quantified alternation with DISTINCT branches still works (#93)", async () => {
-  // the over-rejection this file exists to prevent: (foo|bar)+ cannot backtrack
-  // because the branches cannot both match the same text
   await useTempDirs(["bt7-", "bt8-"], async ([ws, _sd]) => {
     await fixture(ws!);
     for (const p of ["(foo|bar)+baz", "(cat|dog)s?", "^(foo|bar)$"]) {
@@ -93,8 +66,6 @@ test("the message names the cost, so the model can adapt (#93)", async () => {
     assert.match(r.result, /literal|literal search|simplify/i, "and suggest an alternative (#93)");
   });
 });
-
-/* ---------- bounds ---------- */
 
 test("an absurdly long pattern is refused (#93)", async () => {
   await useTempDirs(["bt11-", "bt12-"], async ([ws, _sd]) => {

@@ -1,58 +1,17 @@
-/**
- * Agent Plugins (#162): read a `plugin.json` package and turn it into things teapot
- * already understands.
- *
- * The format (https://agent-plugins.org, spec 1.1.0) is deliberately tiny, and the
- * whole point of adopting it is that it needs almost no new machinery here:
- *
- *   my-plugin/
- *   ├── plugin.json     manifest: `$schema` + `name` are the only required fields
- *   ├── skills/<name>/SKILL.md   → a skill ROOT (teapot already scans for SKILL.md)
- *   ├── mcp.json        → `mcpServers`, the same shape as teapot's own MCP config
- *   └── com.example.client/…     → client extensions, which we do not implement
- *
- * So a plugin is loaded by VALIDATING it and then extracting those two components. No
- * plugin runtime, no per-plugin process for skills.
- *
- * What is validated, and why each rule exists:
- *   - `plugin.json` must exist, be an object, and carry `$schema` and `name`. The spec
- *     requires both; a manifest without them is not a plugin, and guessing is worse
- *     than saying so.
- *   - `name` must match the spec's pattern (lowercase, no `--`, no `..`). The pattern is
- *     not cosmetic: the name is used in paths and in tool namespaces, so `..` in a name
- *     is a traversal primitive.
- *   - **containment**: `plugin.json`, `skills/`, and every discovered `SKILL.md` must
- *     resolve INSIDE the plugin root after following symlinks. The spec makes this a
- *     MUST, and it is the one rule with a real security consequence: a plugin shipped
- *     as an archive can contain a symlink pointing at `~/.ssh`.
- *   - a `cwd`/`command` in `mcp.json` that escapes the root invalidates that SERVER,
- *     not the whole plugin — the spec draws exactly that boundary (§4.1).
- *
- * `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` are expanded in `args`, `env` and `cwd` of a
- * stdio server, as the spec requires. `PLUGIN_DATA` is a client-managed per-plugin
- * directory, so each plugin gets a stable writable location that survives an upgrade.
- */
 import { readFile, readdir, realpath, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { McpServerConfig } from "./mcp.ts";
 
-/** the spec's name pattern, verbatim from plugin.schema.json */
 const NAME_RE = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 
-/** A plugin that passed validation, reduced to what teapot consumes. */
 export interface LoadedPlugin {
   name: string;
   version?: string;
   description?: string;
-  /** absolute, symlink-resolved plugin root */
   root: string;
-  /** absolute path to a `skills/` directory, when the plugin has one */
   skillsDir?: string;
-  /** skill names discovered under `skills/` */
   skills: string[];
-  /** MCP servers from `mcp.json`, with placeholders expanded and cwd contained */
   mcpServers: McpServerConfig[];
-  /** non-fatal problems (a single bad server, a skipped skill) */
   warnings: string[];
 }
 
@@ -63,20 +22,11 @@ export class PluginError extends Error {
   }
 }
 
-/** true when `child` is `parent` or inside it (both already resolved) */
 function within(parent: string, child: string): boolean {
   const rel = path.relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-/**
- * Resolve a path and prove it stays inside `root`.
- *
- * `realpath` FIRST, because a symlink is exactly how an archive escapes its own root —
- * checking the literal path would let `skills/evil -> /etc` through. A path that does
- * not exist cannot escape, so ENOENT returns the lexical join and lets the caller's own
- * existence checks report it.
- */
 async function resolveInside(root: string, p: string): Promise<string | null> {
   const abs = path.resolve(root, p);
   try {
@@ -87,17 +37,10 @@ async function resolveInside(root: string, p: string): Promise<string | null> {
   }
 }
 
-/** expand `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` (the only two the spec defines) */
 function expand(s: string, root: string, data: string): string {
   return s.split("${PLUGIN_ROOT}").join(root).split("${PLUGIN_DATA}").join(data);
 }
 
-/**
- * Load and validate one plugin directory.
- *
- * @param dir    the plugin root
- * @param dataDir the client-managed `PLUGIN_DATA` directory for this plugin
- */
 export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPlugin> {
   let root: string;
   try {
@@ -108,7 +51,6 @@ export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPl
   const st = await stat(root).catch(() => null);
   if (!st?.isDirectory()) throw new PluginError(`not a directory: ${dir}`);
 
-  // ---- manifest ----
   const manifestPath = await resolveInside(root, "plugin.json");
   if (!manifestPath) throw new PluginError("plugin.json resolves outside the plugin root");
   let raw: string;
@@ -125,8 +67,6 @@ export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPl
   }
   if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest))
     throw new PluginError("plugin.json must be a JSON object");
-  // the spec makes BOTH required; without $schema we cannot know which version's rules
-  // to apply, and silently assuming 1.1.0 is how a v2 plugin gets half-loaded
   if (typeof manifest.$schema !== "string")
     throw new PluginError("plugin.json is missing $schema (an Agent Plugins manifest requires it)");
   if (typeof manifest.name !== "string" || !manifest.name)
@@ -147,11 +87,6 @@ export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPl
   if (typeof manifest.version === "string") out.version = manifest.version;
   if (typeof manifest.description === "string") out.description = manifest.description;
 
-  // ---- skills/ ----
-  //
-  // An immediate child directory containing a regular `SKILL.md` is one skill. The
-  // spec says MUST NOT recurse deeper, and that is also what keeps a plugin from
-  // silently pulling in a skill buried in `scripts/vendor/…`.
   const skillsDir = await resolveInside(root, "skills");
   if (!skillsDir) {
     out.warnings.push("skills/ resolves outside the plugin root — ignored");
@@ -167,7 +102,6 @@ export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPl
       const sm = path.join(skillDir, "SKILL.md");
       const sst = await stat(sm).catch(() => null);
       if (!sst?.isFile()) continue;
-      // the SKILL.md itself must also be contained (a symlinked one could point anywhere)
       const real = await realpath(sm).catch(() => null);
       if (!real || !within(root, real)) {
         out.warnings.push(`skill "${entry.name}": SKILL.md escapes the plugin root — skipped`);
@@ -177,7 +111,6 @@ export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPl
     }
   }
 
-  // ---- mcp.json ----
   const mcpPath = await resolveInside(root, "mcp.json");
   if (mcpPath && (await stat(mcpPath).catch(() => null))?.isFile()) {
     let cfg: Record<string, unknown>;
@@ -202,14 +135,6 @@ export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPl
   return out;
 }
 
-/**
- * Turn one `mcp.json` server entry into teapot's `McpServerConfig`.
- *
- * Returns a STRING when the entry is invalid, because the spec's failure boundary is
- * per-server: one bad entry must not reject the plugin. The name is prefixed with the
- * plugin name so two plugins can each ship a server called `db` without colliding in
- * the shared registry.
- */
 async function pluginServer(
   name: string,
   raw: unknown,
@@ -224,7 +149,6 @@ async function pluginServer(
     if (typeof s.command !== "string" || !s.command)
       return `mcp server "${name}": stdio requires a command`;
     const command = expand(s.command, root, dataDir);
-    // a plugin-relative command must START with ./ (spec §4.1.4) and stay inside
     let resolvedCmd = command;
     if (command.startsWith("./")) {
       const abs = await resolveInside(root, command);
@@ -236,7 +160,6 @@ async function pluginServer(
         return `mcp server "${name}": command escapes the plugin root`;
       resolvedCmd = abs;
     }
-    // cwd: "./x", "${PLUGIN_ROOT}/x" or "${PLUGIN_DATA}/x" — anything else is invalid
     let cwd: string | undefined;
     if (s.cwd !== undefined) {
       if (typeof s.cwd !== "string") return `mcp server "${name}": cwd must be a string`;
@@ -248,14 +171,12 @@ async function pluginServer(
       const abs = path.resolve(expanded);
       if (!within(base, abs))
         return `mcp server "${name}": cwd escapes its root`;
-      // PLUGIN_DATA may not exist yet; the spec says the client manages it
       if (rootedInData) await mkdir(base, { recursive: true }).catch(() => {});
       cwd = abs;
     }
     const env: Record<string, string> = {};
     if (s.env && typeof s.env === "object" && !Array.isArray(s.env)) {
       for (const [k, v] of Object.entries(s.env as Record<string, unknown>)) {
-        // the spec forbids these two in env: the client owns them
         if (k === "PLUGIN_ROOT" || k === "PLUGIN_DATA")
           return `mcp server "${name}": env may not set ${k}`;
         if (typeof v === "string") env[k] = expand(v, root, dataDir);
@@ -292,13 +213,6 @@ async function pluginServer(
   return `mcp server "${name}": unknown type ${JSON.stringify(type)} (expected stdio, streamable-http or sse)`;
 }
 
-/**
- * Load every plugin under a directory of plugins.
- *
- * A broken plugin is reported and skipped rather than failing the whole collection —
- * the operator installed it to get something else working, and a plugin is
- * third-party code.
- */
 export async function loadPlugins(
   dir: string,
   dataRoot: string,
@@ -312,7 +226,7 @@ export async function loadPlugins(
       .map((e) => e.name)
       .sort();
   } catch {
-    return { plugins, errors }; // no plugin dir is the normal case
+    return { plugins, errors }; 
   }
   for (const name of entries) {
     const p = path.join(dir, name);

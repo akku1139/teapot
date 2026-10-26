@@ -1,41 +1,9 @@
-/**
- * #124 — "the Tasks markdown view and the edit view have different default
- * heights. It is hard to read as a result."
- *
- * `TodoEditor` renders one of two things behind the same toggle:
- *
- *   view   -> `<div class="content mdpreview" style="max-height:40vh;…">`
- *   edit   -> `<textarea class="mono" rows={5} style="…">`
- *
- * So the two defaults were unrelated: a viewport-relative cap on one side, five
- * intrinsic rows on the other. On a tall window the preview started far larger
- * than the editor it replaced, and toggling between them resized the panel — the
- * jump read as a layout fault rather than a view change.
- *
- * ## The fix, and why it is a class
- *
- * Both take their box from `.todopane` / `.todopane-edit`, which share one
- * height block. A class rather than two matching inline styles, because two
- * inline styles are exactly what drifted.
- *
- * The editor's styling moved from its inline `style` attribute into the sheet,
- * so this also asserts nothing was lost in the move — the earlier version of this
- * change silently dropped `width`, `background`, `border`, `color` and `resize`.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 
-/**
- * The declarations that apply to `selector`.
- *
- * The shared height block is written as a two-selector rule
- * (`.todopane,\n.todopane-edit { … }`), so a lookup for `.todopane-edit {`
- * alone finds nothing. Walk BACK from the selector to the rule's opening brace
- * and take everything up to its close, which covers both shapes.
- */
 function rule(selector: string): string {
   const at = css.indexOf(selector);
   if (at === -1) return "";
@@ -44,7 +12,6 @@ function rule(selector: string): string {
   return css.slice(open + 1, close);
 }
 
-/** every declaration block that mentions the selector, concatenated */
 function allRules(selector: string): string {
   const out: string[] = [];
   let from = 0;
@@ -83,9 +50,6 @@ test("the two heights are identical, so toggling cannot jump (#124)", () => {
 });
 
 test("the editor keeps the styling its inline style used to carry (#124)", () => {
-  // the move to the sheet must not drop anything — an earlier version of this
-  // change lost width, background, border, color and resize, which the build
-  // and the smoke test both reported as green
   const body = allRules(".todopane-edit");
   for (const [prop, why] of [
     ["width:\\s*100%", "fill the panel"],

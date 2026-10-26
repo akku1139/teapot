@@ -1,23 +1,3 @@
-/**
- * #54 — "during streaming, a bash row sometimes never gets marked complete."
- *
- * Two earlier fixes closed two causes: a reconnect that stranded the result, and
- * three mid-turn paths that skipped the backstop. Neither was this one.
- *
- * The third cause is a RESTART. The restore path rebuilds the conversation
- * straight from the log, so a call whose process died mid-command comes back as
- * an assistant turn with `tool_calls` and no `tool_result` — and nothing will
- * ever write one: `stop()` has no turn to stop, and `dispose()` already ran in a
- * process that no longer exists. The row then reads as still running for good.
- *
- * Measured across every session log: 43,483 tool_calls, 4 unanswered — every one
- * a `bash`, each followed immediately by `session-restored` /
- * `idle->stopped disposed`. A restart or crash landing while a long command was
- * in flight is exactly when a human notices "it never finished".
- *
- * So the restore path closes what the log says is still open, before the
- * restored history is used.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -25,12 +5,8 @@ import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — runs POSIX commands through the bash tool.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool");
 
-/** process 1 issues a tool call and dies; process 2 restores the same session */
 async function restart(
   ws: string,
   sd: string,
@@ -48,7 +24,6 @@ async function restart(
   first.enqueuePrompt("go", "user");
   first.start("t");
   await new Promise((r) => setTimeout(r, 200));
-  // simulate the process DYING: the log is closed with no dispose and no result
   await (first as unknown as { log: { close(): Promise<void> } }).log.close();
 
   const second = new Agent({
@@ -95,8 +70,6 @@ test("a restart closes a tool call the log left open (#54)", async () => {
 });
 
 test("the closing result says the agent restarted (#54)", async () => {
-  // "not completed" is materially different from a real failure: the operator
-  // must be able to tell a killed command from one that errored
   await useTempDirs(["rc3-", "rc4-"], async ([ws, sd]) => {
     const first = new Agent({
       id: "t",
@@ -136,9 +109,6 @@ test("the closing result says the agent restarted (#54)", async () => {
 });
 
 test("a call that ALREADY has a result is left alone (#54)", async () => {
-  // the fix must not touch completed calls — a spurious second result would
-  // corrupt the pairing. The first agent here COMPLETES its call, so the
-  // restore must find nothing to close.
   await useTempDirs(["rc5-", "rc6-"], async ([ws, sd]) => {
     let turn = 0;
     const first = new Agent({

@@ -1,23 +1,4 @@
 #!/usr/bin/env node
-/**
- * Run the subset of the test suite that is meaningful on this platform.
- *
- * #110 (item 4): the Windows CI job needs a way to run "the tests that can
- * actually pass here". Two obvious approaches, and why this is not either:
- *
- *   - glob a filename pattern (`*-posix.test.ts`) — a test becomes
- *     Windows-invisible by RENAMING it, silently. That is how a real Windows
- *     failure hides.
- *   - maintain a hand-written allowlist — it rots, and a new POSIX-only test is
- *     silently run on Windows until someone notices it fail.
- *
- * So the classification is IN THE FILE. A test that cannot pass on Windows
- * imports `markPosixOnly` from this helper and calls it; the runner then skips
- * it, loudly. Anything unlisted is RUN — so the default is "tested", and opting
- * out is explicit and greppable.
- *
- * Usage:  node scripts/run-portable-tests.mjs [--list]
- */
 import { readdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -27,22 +8,12 @@ import { stripSourceComments } from "../test/helpers/source.ts";
 const MARKER = "markPosixOnly";
 
 function testDir() {
-  // scripts/ -> repo root
   return path.resolve(import.meta.dirname, "..", "test");
 }
 
 function isPosixOnly(file) {
   try {
     const src = readFileSync(path.join(testDir(), file), "utf8");
-    /**
-     * Match the CALL, not the word.
-     *
-     * A plain `src.includes("markPosixOnly")` also matched a file that merely MENTIONED the
-     * helper in a comment — which silently dropped that file from the portable set, i.e. out of
-     * Windows coverage, which is the exact failure this classifier exists to prevent. MEASURED:
-     * `windows-bash-tool.test.ts` explains the marker in prose and was excluded from
-     * `test:portable` for that reason alone.
-     */
     return new RegExp(`\\b${MARKER}\\s*\\(`).test(stripSourceComments(src));
   } catch {
     return false;

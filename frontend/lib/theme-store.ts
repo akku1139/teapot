@@ -1,24 +1,4 @@
-/**
- * Custom themes: a user-authored palette plus an optional background image.
- *
- * ## Why this is a module and not component state
- *
- * A theme used to be a hardcoded entry in `THEMES` plus a `[data-theme="…"]` block in
- * `app.css`. That is fine for ten presets and impossible for a theme the operator invents:
- * neither a CSS file nor a literal list can be written from the browser. So a CUSTOM theme is
- * applied the other way round — as inline custom properties on `<html>`, which outrank the
- * stylesheet's `:root` values and need no stylesheet at all.
- *
- * The palette is exactly the eleven variables the presets define, because that is the whole
- * contract `app.css` relies on. Anything a preset can do, a custom theme can do.
- *
- * ## What is deliberately NOT here
- *
- * No arbitrary CSS. A theme is a colour palette and an image, so it cannot break layout or
- * reach outside the page.
- */
 
-/** the eleven colours every theme defines — the contract `app.css` expects */
 export interface ThemePalette {
   bgDarkest: string;
   bgDark: string;
@@ -36,40 +16,17 @@ export interface ThemePalette {
   termFg: string;
 }
 
-/** a theme the operator made */
 export interface CustomTheme {
-  /** stable id, used as the `data-theme` value and the storage key */
   id: string;
   label: string;
   mode: "dark" | "light";
   palette: ThemePalette;
-  /**
-   * Background image as a `url(...)`-able string: a `data:` URI (pasted or dropped, kept
-   * self-contained so a reload still has it) or an http(s) URL.
-   *
-   * Kept as the CSS value rather than a File so it survives `localStorage` and can be applied
-   * with one `background-image` write.
-   */
   backgroundImage?: string;
-  /** how much to dim the image so text stays readable over it; 0 = untouched */
   backgroundDim?: number;
-  /**
-   * How opaque code blocks, tool cards and embeds are over a background image.
-   *
-   * Those surfaces force a solid fill otherwise, which is what fixed a palette colour saved with
-   * alpha from rendering machine output invisible. Fully opaque is the safe floor but a dull
-   * ceiling: with a wallpaper behind the app you want to SEE it through the panels. Exposed as a
-   * slider so the readability call belongs to the operator.
-   *
-   * Floored at 0.35 in `sanitizeTheme` — below that, monospace output over a busy photo stops
-   * being readable, which is the bug the opaque rule existed to prevent.
-   */
   surfaceAlpha?: number;
-  /** the uploaded image's real byte size, shown in the editor; not persisted meaningfully */
   backgroundImageBytes?: number;
 }
 
-/** the palette variable names `app.css` reads, in the order a form should show them */
 export const PALETTE_KEYS: { key: keyof ThemePalette; cssVar: string; label: string }[] = [
   { key: "bgDarkest", cssVar: "--bg-darkest", label: "surface (deepest)" },
   { key: "bgDark", cssVar: "--bg-dark", label: "surface" },
@@ -88,10 +45,8 @@ export const PALETTE_KEYS: { key: keyof ThemePalette; cssVar: string; label: str
 ];
 
 const STORAGE_KEY = "teapot.customThemes";
-/** the whole picture is stored inline, so cap it: localStorage is ~5MB per origin */
 export const MAX_BACKGROUND_BYTES = 1_500_000;
 
-/** a dark palette to start a new theme from — same values as the built-in dark theme */
 export const DEFAULT_PALETTE: ThemePalette = {
   bgDarkest: "#1a1c22",
   bgDark: "#232630",
@@ -109,17 +64,6 @@ export const DEFAULT_PALETTE: ThemePalette = {
   termFg: "#dcdee4",
 };
 
-/**
- * The BUILT-IN themes' palettes, mirroring the `[data-theme="…"]` blocks in app.css.
- *
- * These exist so a theme can be PREVIEWED without applying it: the picker draws each theme as a
- * miniature of the UI (Misskey's `MkThemePreview` idea), which needs that theme's colours. A
- * preview used to probe the live document, but inserting a node from inside a render broke the
- * settings dialog (MEASURED: "the config dialog renders no key inputs at all").
- *
- * `test/theme-store.test.ts` fails if any of these drifts from app.css — the duplication is
- * unavoidable (a stylesheet cannot be read as data), so it is CHECKED instead of trusted.
- */
 export const PRESET_PALETTES: Record<string, ThemePalette> = {
   "dark": { bgDarkest: "#1a1c22", bgDark: "#232630", bgMid: "#2b2e39", bgLight: "#343845", fg: "#dcdee4", dim: "#9298a5", line: "#1d2027", acc: "#5865f2", ok: "#3ba55d", warn: "#faa81a", err: "#ed4245", tool: "#3ba0c9", termBg: "#0d0e12", termFg: "#dcdee4" },
   "midnight": { bgDarkest: "#0d0f18", bgDark: "#12141f", bgMid: "#1b1f31", bgLight: "#252a42", fg: "#dfe2f2", dim: "#8a90ad", line: "#0a0c14", acc: "#8b7cf7", ok: "#54c08a", warn: "#e5b567", err: "#ef6a6a", tool: "#6aa9e9", termBg: "#0a0c13", termFg: "#dfe2f2" },
@@ -133,18 +77,9 @@ export const PRESET_PALETTES: Record<string, ThemePalette> = {
   "ramune": { bgDarkest: "#ddeff7", bgDark: "#ecf7fb", bgMid: "#c9e7f4", bgLight: "#fbfeff", fg: "#173342", dim: "#5b7d90", line: "#c2e2ef", acc: "#1d86ae", ok: "#3a9e6e", warn: "#cf9a2a", err: "#d64f5c", tool: "#3a9db8", termBg: "#f4fbfd", termFg: "#173342" },
 };
 
-/** is this a colour a CSS custom property can hold? */
 const isColour = (v: unknown): v is string =>
   typeof v === "string" && v.length > 0 && v.length <= 64 && !/[;{}]/.test(v);
 
-/**
- * Validate ONE stored theme.
- *
- * Anything can be in `localStorage` — a half-written value, a theme from a future version, or
- * text somebody edited by hand. A malformed palette that reached `style.setProperty` would
- * leave the UI with missing colours (transparent panels), which is much worse than falling
- * back to a default, so every field is checked and anything unexpected is dropped.
- */
 export function sanitizeTheme(raw: unknown): CustomTheme | null {
   if (!raw || typeof raw !== "object") return null;
   const t = raw as Partial<CustomTheme>;
@@ -159,20 +94,6 @@ export function sanitizeTheme(raw: unknown): CustomTheme | null {
     palette[key] = p[key]!;
   }
   const out: CustomTheme = { id: t.id, label: t.label.slice(0, 40), mode: t.mode, palette };
-  /**
-   * Three accepted shapes, and each is a decision rather than a convenience.
-   *
-   * `data:image/` — a theme saved by an older build. Still loaded, so an upgrade does not
-   * silently drop someone's wallpaper.
-   * `/api/assets/<name>` — where images live NOW: uploaded once, served by the server, unlimited
-   * in size. This is the point of the change: a data URI had to fit in the ~5MB `localStorage`
-   * quota shared with every other setting, so one phone photo broke the whole panel.
-   * `http(s)://` — a theme pointing at an external image.
-   *
-   * Nothing else, so a stored value cannot smuggle `url(javascript:)` into the stylesheet.
-   * The old length check is gone with the quota that justified it; the DATA-URI branch keeps a
-   * bound because those still consume storage.
-   */
   if (typeof t.backgroundImage === "string") {
     const img = t.backgroundImage;
     const isAsset = /^\/api\/assets\/[a-f0-9]{32}\.(png|jpe?g|gif|webp|avif)$/i.test(img);
@@ -187,14 +108,11 @@ export function sanitizeTheme(raw: unknown): CustomTheme | null {
     out.backgroundImageBytes = Math.max(0, Math.round(t.backgroundImageBytes));
   }
   if (typeof t.surfaceAlpha === "number" && Number.isFinite(t.surfaceAlpha)) {
-    // floored, not merely clamped to (0,1): see `surfaceAlpha` — near-zero makes machine output
-    // unreadable over the image, which is the bug the opaque rule was introduced to fix
     out.surfaceAlpha = Math.min(1, Math.max(0.35, t.surfaceAlpha));
   }
   return out;
 }
 
-/** read every stored custom theme, dropping anything malformed */
 export function loadCustomThemes(): CustomTheme[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -207,29 +125,9 @@ export function loadCustomThemes(): CustomTheme[] {
   }
 }
 
-/**
- * Persist the custom themes, returning what the write REJECTED.
- *
- * A background image is the only unbounded thing here, so an over-quota theme must be reported
- * rather than silently dropped: the operator would otherwise save a theme, reload, and find it
- * gone.
- */
 export function saveCustomThemes(themes: CustomTheme[]): { ok: boolean; error?: string } {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(themes));
-    /**
-     * …and push to the SERVER, which is the durable copy.
-     *
-     * `localStorage` remains the cache the first paint reads (the palette must be right before any
-     * network round trip, or the app flashes the default theme), but it is per-browser and per
-     * origin — a theme made on the desktop did not exist on a phone, in another browser, or after
-     * clearing site data. Asked for as "カスタムテーマをlocalStorageじゃなくてサーバーで管理するように
-     * したい".
-     *
-     * Deliberately fire-and-forget: a failed push must not fail the save. The theme IS usable in
-     * this browser, and reporting an error here would claim the opposite. The next successful save
-     * catches the server up.
-     */
     void fetch("/api/themes", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -248,14 +146,6 @@ export function saveCustomThemes(themes: CustomTheme[]): { ok: boolean; error?: 
   }
 }
 
-/**
- * Read the themes the SERVER holds, or `null` when it has none to offer.
- *
- * `null` (not `[]`) matters: an empty array is a real answer meaning "you have no themes", and the
- * caller must not overwrite the local cache with it before it has ever saved anything. A server
- * that has no `customThemes` yet — every existing install — returns `[]`, and the local themes are
- * then pushed up rather than replaced by nothing.
- */
 export async function loadCustomThemesFromServer(): Promise<CustomTheme[] | null> {
   try {
     const r = await fetch("/api/themes");
@@ -268,7 +158,6 @@ export async function loadCustomThemesFromServer(): Promise<CustomTheme[] | null
   }
 }
 
-/** a fresh id that cannot collide with a preset or an earlier custom theme */
 export function newThemeId(taken: readonly string[]): string {
   for (let i = 0; ; i++) {
     const id = `custom-${Date.now().toString(36)}${i ? `-${i}` : ""}`;
@@ -276,48 +165,12 @@ export function newThemeId(taken: readonly string[]): string {
   }
 }
 
-/**
- * Apply a custom theme to `<html>` as INLINE custom properties, or clear them.
- *
- * Passing `null` removes every property this function owns, so switching back to a preset is
- * clean — a leftover `--bg-dark` from a custom theme would keep overriding the preset's
- * colours and the UI would be half one theme and half the other.
- */
 export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): void {
-  /**
-   * Write ONLY what changed.
-   *
-   * The editor calls this on every keystroke of a colour field, and the effect driving it runs
-   * whenever the theme list changes. This used to remove all 14 variables and re-set all 14 on
-   * every call, and every `setProperty` invalidates style for the whole document — so typing
-   * `#5865f2` into the hex field re-resolved the entire UI six times.
-   *
-   * Comparing against what is already on `<html>` makes an unchanged palette a no-op, which is
-   * what keeps a live preview affordable.
-   */
-  /**
-   * The four SURFACE levels are NOT written inline when a wallpaper is set.
-   *
-   * The stylesheet remaps `--bg-darkest`/`--bg-dark`/`--bg-mid`/`--bg-light` to translucent
-   * `color-mix()` values under `html[data-bg-image="on"]`, mixing against `--bg-*-solid`. An inline
-   * custom property on `<html>` BEATS that rule — inline styles win the cascade — so writing them
-   * here silently disabled the whole transparency feature. MEASURED: a surface with an inline
-   * `--bg-darkest` computed to opaque `rgb(26,28,34)` while the same variable without the inline
-   * value computed to `color(srgb … / 0.5)`.
-   *
-   * Reported as "インラインコードブロック、tool、goal、プロンプト欄など (surfaces)の透明設定が効いて
-   * ない" — every surface, because every surface reads one of these four.
-   *
-   * So with an image the four names are left to the stylesheet and only the `-solid` bases are
-   * written (below). Without one they are written inline as before, which is how a custom palette
-   * overrides a preset.
-   */
   const SURFACE_VARS = new Set(["--bg-darkest", "--bg-dark", "--bg-mid", "--bg-light"]);
   const hasImage = !!theme?.backgroundImage;
   for (const { key, cssVar } of PALETTE_KEYS) {
     const want = theme ? theme.palette[key] : "";
     if (hasImage && SURFACE_VARS.has(cssVar)) {
-      // hand the surface names back to the stylesheet, which owns the translucency
       if (root.style.getPropertyValue(cssVar)) root.style.removeProperty(cssVar);
       continue;
     }
@@ -325,15 +178,7 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
     if (want) root.style.setProperty(cssVar, want);
     else root.style.removeProperty(cssVar);
   }
-  /**
-   * `--bg-image` is GONE: the wallpaper is an `<img srcset>` layer now (see `.bgphoto` in
-   * app.css), because a CSS `background-image` cannot carry `srcset` — which is the whole point,
-   * letting the browser download the width its display area needs instead of a 6000px photo.
-   *
-   * Only the DIM value is still a custom property, because the image element reads it.
-   */
   const wantDim = theme?.backgroundImage ? String(theme.backgroundDim ?? 0.55) : "";
-  // only meaningful over an image; cleared otherwise so a plain theme is untouched
   const wantAlpha = theme?.backgroundImage ? String(theme.surfaceAlpha ?? 0.82) : "";
   for (const [prop, want] of [
     ["--bg-image-dim", wantDim],
@@ -343,35 +188,8 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
     if (want) root.style.setProperty(prop, want);
     else root.style.removeProperty(prop);
   }
-  /**
-   * `data-bg-image` lets the stylesheet force CONTENT surfaces opaque.
-   *
-   * With a photo behind the app, anything that is not fully opaque lets it show through text —
-   * and a palette value legitimately can be semi-transparent: `normalizeColour` accepts
-   * `#rrggbbaa`, so a theme whose `--bg-darkest` was saved as `#1a1c2200` renders code blocks and
-   * tool logs at ZERO opacity. Reported as "背景画像入れてるときにコードブロックとかtoolログとかが
-   * 透明度0で表示されてる".
-   *
-   * Rather than police the palette (a translucent surface is a legitimate design choice for a
-   * plain theme), the stylesheet uses this attribute to guarantee that the surfaces holding
-   * CODE AND TOOL OUTPUT are opaque whenever there is an image to see through them. Legibility of
-   * machine output is not a place for a transparency decision to reach.
-   */
-  // `dataset` is optional in the signature's shape because a test can pass a bare style holder;
-  // the attribute is only an optimisation for the stylesheet and its absence must not throw
   if (theme?.backgroundImage) {
     if (root.dataset) root.dataset.bgImage = "on";
-    /**
-     * Alpha-stripped versions of ALL FOUR surface levels.
-     *
-     * The stylesheet remaps `--bg-darkest`/`--bg-dark`/`--bg-mid`/`--bg-light` to translucent
-     * `color-mix()` values when an image is set, and mixes against these `-solid` ones. CSS cannot
-     * strip alpha from a colour it is handed, so `#rrggbbaa` → `#rrggbb` happens here.
-     *
-     * Four, not one: naming only the deepest was the same mistake as naming only some SELECTORS —
-     * the levels that were not stripped either lost their translucency or, worse, mixed against a
-     * half-transparent base and came out invisible.
-     */
     for (const [name, value] of [
       ["--bg-darkest-solid", theme.palette.bgDarkest],
       ["--bg-dark-solid", theme.palette.bgDark],
@@ -389,18 +207,11 @@ export function applyCustomTheme(root: HTMLElement, theme: CustomTheme | null): 
   }
 }
 
-/** `#rrggbbaa` → `#rrggbb`; anything else is returned unchanged (it has no alpha to strip) */
 export function opaque(colour: string): string {
   const m = /^#([0-9a-f]{6})[0-9a-f]{2}$/i.exec(colour.trim());
   return m ? `#${m[1]}` : colour;
 }
 
-/**
- * A pasted colour, normalised to a `#rrggbb` string, or `null`.
- *
- * The picker shows a native colour input (always `#rrggbb`) next to a text field, and people
- * paste from design tools: `#RGB`, `#RRGGBBAA` and a bare `rrggbb` all reach that field.
- */
 export function normalizeColour(input: string): string | null {
   const s = input.trim().toLowerCase();
   const m = /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(s);
@@ -410,25 +221,10 @@ export function normalizeColour(input: string): string | null {
   return `#${hex}`;
 }
 
-/**
- * Decide which theme id to actually apply, given what was stored.
- *
- * A stored id can name a theme that no longer exists: deleted in another tab, dropped by
- * `saveCustomThemes` when storage was full, or left over from an older build. `data-theme` was
- * set to that dead id, which matches neither `:root` nor any `[data-theme]` block — so the page
- * had NO palette at all: every surface transparent and unreadable, with no visible way back.
- *
- * Returns the id to use and whether the caller should repair the stored value (so a reload
- * agrees with the screen instead of retrying the dead id forever).
- */
 export function resolveActiveTheme(args: {
-  /** the id read from storage / state */
   want: string;
-  /** ids of the custom themes that exist */
   customIds: readonly string[];
-  /** ids of the built-in themes that exist */
   presetIds: readonly string[];
-  /** used when nothing matches; must itself be a valid preset */
   fallback?: string;
 }): { active: string; repaired: boolean } {
   const known = args.customIds.includes(args.want) || args.presetIds.includes(args.want);

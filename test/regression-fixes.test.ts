@@ -8,9 +8,6 @@ import { buildApp } from "../src/server/api.ts";
 import { readEvents } from "../src/log/events.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — POSIX filesystem paths.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("POSIX filesystem paths");
 
 const LLM = { baseUrl: "http://mock", apiKey: "mock", model: "mock-model" };
@@ -25,15 +22,12 @@ function mkMaster(dataDir: string): Master {
 test("regression: POST /api/agents/:id/edit-prompt no longer 404 and forks correctly", async () => {
   await useTempDirs(["edit-prompt-root-", "edit-prompt-ws-"], async ([dataDir, ws]) => {
     const m = mkMaster(dataDir);
-    // need provider p for agent
     (m as any).config.providers.p = { baseUrl: "http://x", apiKey: "k", model: "m" };
     (m as any).config.defaultProvider = "p";
     const app = buildApp(m);
     const agent = await m.addAgent({ id: "alpha", workspace: ws, provider: "p", model: "m" }, { fresh: true });
-    // keep agent idle — no auto-continue loop during this test
     (agent as any).opts.autoContinue = false;
     await agent.load();
-    // create a prompt history directly via log (no LLM needed)
     await agent.log.append("prompt", agent.snapshot().session, agent.snapshot().branch, { source: "user", text: "original prompt" });
     await agent.log.append("message", agent.snapshot().session, agent.snapshot().branch, { role: "assistant", content: "reply" });
 
@@ -41,7 +35,6 @@ test("regression: POST /api/agents/:id/edit-prompt no longer 404 and forks corre
     const promptEv = events.find((e) => e.type === "prompt")!;
     assert.ok(promptEv, "prompt event must exist");
 
-    // HTTP edit-prompt: should be 200, not 404
     const res = await app.request(`/api/agents/alpha/edit-prompt`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -56,14 +49,12 @@ test("regression: POST /api/agents/:id/edit-prompt no longer 404 and forks corre
     assert.ok(j.branch, "branch returned");
     assert.ok(typeof j.droppedEvents === "number");
 
-    // verify fork event was logged
     const ev2 = await readEvents(agent.log.filePath);
     const fork = ev2.find((e) => e.type === "fork" && (e.data as any).reason === "prompt-edited");
     assert.ok(fork, "fork event with prompt-edited reason must exist");
     const lastPrompt = ev2.filter((e) => e.type === "prompt").at(-1)!;
     assert.equal((lastPrompt.data as any).text, "edited prompt text");
 
-    // invalid request should be 400, not 404
     const bad = await app.request(`/api/agents/alpha/edit-prompt`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -71,7 +62,6 @@ test("regression: POST /api/agents/:id/edit-prompt no longer 404 and forks corre
     });
     assert.equal(bad.status, 400);
 
-    // editing while running should be 409 — put agent into running with a hanging LLM
     (agent as any).opts.chatFn = async (_c: any, _m: any, _t: any, signal: any) =>
       new Promise((_res, rej) => signal?.addEventListener("abort", () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }))));
     (agent as any).opts.autoContinue = false;
@@ -116,51 +106,34 @@ test("regression: POST /api/agents/:id/model switches provider/model and API is 
     const j = await res.json() as any;
     assert.equal(j.ok, true);
 
-    // snapshot reflects new model/provider
     const snap = agent.snapshot();
     assert.equal(snap.model, "new-model");
     assert.equal(snap.provider, "anthropic");
     assert.equal(snap.ctx.window, 200_000);
 
-    // GET /api/models for the new provider should be reachable (stubbed fetch may 502, but endpoint exists)
     const badProv = await app.request(`/api/models?provider=unknown`);
-    assert.equal(badProv.status, 400); // unknown provider -> 400, not 404, proves endpoint exists
+    assert.equal(badProv.status, 400); 
 
     await agent.dispose();
   });
 });
 
 test("regression: ConfigModal no longer loses focus — uses Index not For for editable rows", async () => {
-  // the component lives in components/ConfigModal.tsx; the assertion is about WHICH primitive it
-  // uses, so it has to read the file that actually renders the rows
   const src = await readFile("frontend/components/ConfigModal.tsx", "utf8");
-  // providers and tasks editable rows must be rendered with Index (keyed by position)
   assert.match(src, /Index each=\{providers\(\)\}/, "providers rows should use Index");
   assert.match(src, /Index each=\{tasks\(\)\}/, "tasks rows should use Index");
-  // ensure we didn't keep the old For pattern for those rows (would recreate DOM and lose focus)
-  // The old pattern was `For each={providers()}` with `value={p.name}` directly — now p is accessor
-  // Check that the providers input uses p().name (accessor) not p.name
   assert.ok(src.includes("value={p().name}"), "providers input should use accessor p().name via Index");
   assert.ok(src.includes("value={t().id}"), "tasks input should use accessor t().id via Index");
-  // also check that we import Index and untrack
   assert.ok(src.includes("Index") && src.includes("from \"solid-js\""), "Index must be imported");
-  /**
-   * `untrack` belongs to the RIGHT PANEL's model switcher, which still lives in App.tsx — asserting
-   * it here mixed two files into one test once the modal was extracted. Each file is checked for the
-   * thing it actually owns.
-   */
   const app = await readFile("frontend/App.tsx", "utf8");
   assert.ok(app.includes("untrack"), "untrack must be imported for the model switcher fix");
 });
 
 test("regression: right panel model switcher no longer clears draft on keystroke", async () => {
   const src = await readFile("frontend/App.tsx", "utf8");
-  // The fix introduces _prevModelAgent guard and untrack usage to avoid clearing draft on every poll/keystroke
   assert.match(src, /_prevModelAgent/, "model switcher should track previous agent id");
   assert.match(src, /untrack\(\(\) => modelDraft\(\)\)/, "modelDraft should be read via untrack");
   assert.match(src, /untrack\(\(\) => modelProvider\(\)\)/, "modelProvider should be read via untrack");
-  // ensure the old buggy pattern `if (modelDraft()) setModelDraft("")` without untrack is gone
-  // (the new code wraps it in untrack or prev check)
   const oldPattern = /createEffect\(\(\) => \{\s+const id = selected\(\);\s+const a = agents\(\)\.find.*\n.*if \(modelProvider\(\) !== prov\)/;
   assert.doesNotMatch(src, oldPattern, "old buggy effect that read modelProvider/modelDraft reactively should be gone");
 });
@@ -171,24 +144,20 @@ test("regression: prefix collision — example-session-2 timeline not empty when
     m.config.providers = { p: { baseUrl: "http://x", apiKey: "k", model: "m" } };
     m.config.defaultProvider = "p";
 
-    // create first agent (prefix of second)
     const a1 = await m.addAgent({ id: "example-session", workspace: ws, provider: "p" }, { fresh: true });
     await a1.setGoal("goal1");
     a1.enqueuePrompt("hello from 1");
     await new Promise(r => setTimeout(r, 100));
 
-    // create second agent (has first as prefix + numeric suffix)
     const a2 = await m.addAgent({ id: "example-session-2", workspace: ws2, provider: "p" }, { fresh: true });
     await a2.setGoal("goal2");
     a2.enqueuePrompt("hello from 2");
     await new Promise(r => setTimeout(r, 100));
 
-    // verify both have non-empty logs in their own directories
     const dir1 = a1.snapshot().sessionDir;
     const dir2 = a2.snapshot().sessionDir;
     assert.notEqual(dir1, dir2, "agents must have different session dirs");
 
-    // simulate restart: new Master, same dataDir, add agents non-fresh
     await a1.dispose(); await a2.dispose();
     m.agents.clear();
 
@@ -202,11 +171,9 @@ test("regression: prefix collision — example-session-2 timeline not empty when
     const b1 = await m2.addAgent({ id: "example-session", workspace: ws, provider: "p" });
     const b2 = await m2.addAgent({ id: "example-session-2", workspace: ws2, provider: "p" });
 
-    // both must reattach to their OWN session dirs (not cross-pollute)
     assert.equal(b1.snapshot().sessionDir, dir1, "example-session must reattach to its own session dir");
     assert.equal(b2.snapshot().sessionDir, dir2, "example-session-2 must reattach to its own session dir");
 
-    // API must return events for both
     const { buildApp } = await import("../src/server/api.ts");
     const app = buildApp(m2);
 
@@ -218,15 +185,12 @@ test("regression: prefix collision — example-session-2 timeline not empty when
     j = await res.json();
     assert.ok(j.events.length >= 2, `example-session-2 must have events (not empty), got ${j.events.length}`);
 
-    // events must be from the CORRECT agent's history
     const events1 = j.events.map((e: any) => e.type + ":" + JSON.stringify(e.data).slice(0, 50));
     console.log("example-session-2 events:", events1);
 
     await b1.dispose(); await b2.dispose();
   });
 });
-
-/* ---------- #19: a cancelled pending prompt must not linger as "sent" ---------- */
 
 test("regression: cancelling a queued prompt logs prompt-cancelled and never delivers it", async () => {
   await useTempDirs(["cancel-root-", "cancel-ws-"], async ([dataDir, ws]) => {
@@ -239,7 +203,6 @@ test("regression: cancelling a queued prompt logs prompt-cancelled and never del
     );
     (agent as any).opts.autoContinue = false;
     await agent.load();
-    // keep the agent from draining: it stays stopped, so the prompt stays queued
     agent.stop("test-hold");
 
     const post = (url: string, body: unknown) =>
@@ -254,11 +217,8 @@ test("regression: cancelling a queued prompt logs prompt-cancelled and never del
     const { promptId } = await r.json();
     assert.ok(promptId, "promptId must be returned for the echo to cancel");
 
-    // still queued before the cancel
     assert.equal(agent.snapshot().pendingPrompts, 1);
 
-    // enqueuePrompt logs the prompt row asynchronously (after ensureReady), so
-    // wait for it before cancelling — otherwise we race the very row we assert
     const logFile = path.join(dataDir, "sessions", agent.snapshot().session, "chat.jsonl");
     const hasRow = async (id: string) =>
       (await readEvents(logFile)).some(
@@ -274,12 +234,8 @@ test("regression: cancelling a queued prompt logs prompt-cancelled and never del
     assert.equal(body.ok, true);
     assert.equal(body.text, "please do the thing", "cancel returns the text for the composer");
 
-    // dequeued
     assert.equal(agent.snapshot().pendingPrompts, 0);
 
-    // the log tells the whole story: the prompt row (written at enqueue) AND a
-    // prompt-cancelled note, but NEVER a prompt-delivered note — the frontend
-    // derives "withdrawn" from that pair instead of showing it as sent (#19).
     const events = await readEvents(logFile);
     const promptRow = events.find(
       (e) => e.type === "prompt" && (e.data as any)?.source === "user" && (e.data as any)?.promptId === promptId,
@@ -296,7 +252,6 @@ test("regression: cancelling a queued prompt logs prompt-cancelled and never del
       "a cancelled prompt must never be delivered to the model",
     );
 
-    // a second cancel is a 409, not a silent success
     const rc2 = await post("/api/agents/alpha/prompt/cancel", { promptId });
     assert.equal(rc2.status, 409);
 
@@ -305,17 +260,12 @@ test("regression: cancelling a queued prompt logs prompt-cancelled and never del
 });
 
 test("regression: a cancelled prompt is marked withdrawn by the pipeline (#19)", async () => {
-  // Was four `assert.match(src, …)` regexes against App.tsx — a test that cannot fail
-  // for a real reason: it pinned the SPELLING of the filter, so it went red the moment
-  // the pipeline moved into `frontend/timeline.ts` with the behaviour fully intact.
-  // This drives the real pipeline instead and asserts the ROW it produces.
   const { buildTimeline } = await import("../frontend/lib/timeline.ts");
   const FEED = new Set(["prompt", "message", "system_note"]);
   const RENDERED = new Set(["prompt", "message"]);
 
   const events = [
     { id: "e1", seq: 1, type: "prompt", data: { source: "user", promptId: "p1", text: "withdraw me" } },
-    // the note records the withdrawal at the seq where it happened
     { id: "e2", seq: 9, type: "system_note", data: { event: "prompt-cancelled", promptId: "p1" } },
   ];
   const out = buildTimeline({
@@ -335,9 +285,7 @@ test("regression: a cancelled prompt is marked withdrawn by the pipeline (#19)",
     true,
     "a withdrawn prompt carries the marker, so the UI can render it as withdrawn (#19)",
   );
-  // and it is NOT still sitting at its enqueue position: the withdrawal moved it
   assert.equal(row!.seq, 9, "it sorts at the cancellation, not where it was typed");
-  // the input is untouched — the pipeline must not write to the events store
   assert.equal((events[0]!.data as any).cancelled, undefined, "the pipeline must not mutate its input");
 });
 
@@ -361,7 +309,6 @@ test("regression: queued prompts survive stop without being delivered (#9)", asy
 
     const pid = agent.enqueuePrompt("QUEUED-WORK", "user");
     assert.ok(pid);
-    // a stopped agent must NOT drain the queue or call the model
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(agent.snapshot().status, "stopped");
     assert.equal(agent.snapshot().pendingPrompts, 1, "the message stays queued, not lost");
@@ -387,10 +334,8 @@ test("regression: cancelling one of two queued prompts keeps the other (#9)", as
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(agent.snapshot().pendingPrompts, 2);
 
-    // cancel the FIRST of the two — the second must remain queued
     assert.equal(agent.cancelPrompt(a1), "FIRST");
     assert.equal(agent.snapshot().pendingPrompts, 1);
-    // cancelling an already-withdrawn id is a miss, not a double-remove
     assert.equal(agent.cancelPrompt(a1), null);
     assert.equal(agent.snapshot().pendingPrompts, 1, "the survivor must not be consumed by a repeat cancel");
     assert.ok(a2);
@@ -400,33 +345,22 @@ test("regression: cancelling one of two queued prompts keeps the other (#9)", as
 
 test("regression: pending-echo reconciliation no longer uses the head-keep heuristic (#9)", async () => {
   const src = await readFile("frontend/App.tsx", "utf8");
-  // the buggy line dropped queued echoes when a middle message was cancelled
   assert.doesNotMatch(src, /newest entries were consumed by the model/);
-  // and the badge must admit when a stopped agent will not deliver
   assert.match(src, /\(stopped\)/);
 });
-
-/* ---------- #21: the "default provider" dropdown must show the real value ---------- */
 
 test("regression: a <select> falls back to its first option when the value matches none (#21)", async () => {
   const { Window } = await import("happy-dom");
   const w = new Window();
   const d = w.document;
-  // exactly the shape App.tsx renders: a "(none — first provider wins)" row
-  // followed by one option per provider row
   d.body.innerHTML =
     '<select id="s"><option value="">(none — first provider wins)</option>' +
     '<option value="aaa">aaa</option><option value="zzz">zzz</option></select>';
-  // happy-dom's element types and lib.dom's are structurally different, so the cast has
-  // to go through `unknown`; what the test needs is only `.value`
   const s = d.getElementById("s") as unknown as HTMLSelectElement;
 
-  // a default that names a provider with no row (deleted/renamed) has NO
-  // matching option, so the browser shows the "none" row instead
   s.value = "gone";
   assert.equal(s.value, "", "unmatched value collapses to the first option");
 
-  // with the orphan rendered as its own option, the real value survives
   const fixed = d.createElement("select");
   for (const [v, t] of [["", "(none)"], ["aaa", "aaa"], ["zzz", "zzz"], ["gone", "gone ⚠"]] as const) {
     const o = d.createElement("option");
@@ -447,7 +381,6 @@ test("regression: default provider is honored and not silently dropped (#21)", a
       zzz: { baseUrl: "http://z", apiKey: "zk", model: "zm" },
       aaa: { baseUrl: "http://a", apiKey: "ak", model: "am" },
     } as any;
-    // deliberately NOT the first key
     m.config.defaultProvider = "zzz";
     m.config.llm = { baseUrl: "http://fallback", apiKey: "k", model: "fb" };
 
@@ -457,7 +390,6 @@ test("regression: default provider is honored and not silently dropped (#21)", a
     assert.equal(agent.providerName, "zzz", "defaultProvider must win over list order");
     assert.equal(agent.llmConfig.baseUrl, "http://z");
 
-    // and the config endpoint reports it back for the panel to render
     const res = await app.request("/api/config");
     const cfg = await res.json();
     assert.equal(cfg.defaultProvider, "zzz");
@@ -466,19 +398,9 @@ test("regression: default provider is honored and not silently dropped (#21)", a
 });
 
 test("regression: the default-provider select renders an orphaned configured default (#21)", async () => {
-  /**
-   * The panel lives in components/ConfigModal.tsx now. What matters is that the ORPHAN PATH exists:
-   * a configured default with no provider row must still appear as an option and be labelled, or the
-   * <select> silently falls back to its first entry and the operator sees the wrong provider.
-   */
   const src = await readFile("frontend/components/ConfigModal.tsx", "utf8");
   assert.match(src, /providerNames/, "the option list must be built from the configured names");
   assert.match(src, /staleDefaultProvider/, "an orphaned default must be detected, not dropped");
   assert.match(src, /has no provider row here/, "and labelled, so it does not read as a provider");
 });
-
-/* ---------- #10: terminal tabs must not collide or steal focus ---------- */
-
-/* ---------- Safari IME: Enter must confirm, not send (ported from #12) ---------- */
-
 

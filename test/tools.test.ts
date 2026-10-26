@@ -8,9 +8,6 @@ import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 import { useTempDir } from "./helpers/tmp.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
-// #110: POSIX-only — runs POSIX commands through the bash tool; POSIX file modes.
-// The Windows CI job skips this file; see test/helpers/posix-only.ts for why
-// opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool; POSIX file modes");
 
 async function withCtx(fn: (ctx: ToolContext) => Promise<void>): Promise<void> {
@@ -66,8 +63,6 @@ test("paths escaping the workspace are rejected", async () => {
 test("bash captures stdout and reports failures", async () => {
   await withCtx(async (ctx) => {
     const ok = await executeTool("bash", JSON.stringify({ command: "echo hi" }), ctx);
-    // stdout comes first; the trailing "[took Ns]" stamp (#26) rides along so
-    // the MODEL sees the elapsed time, not just the operator in the UI
     assert.match(ok.result, /^hi\n\[took \d+\.\d+s\]$/);
     const fail = await executeTool("bash", JSON.stringify({ command: "exit 3" }), ctx);
     assert.equal(fail.ok, false);
@@ -129,15 +124,12 @@ test("edit_file tolerates LF patterns against CRLF files", async () => {
   });
 });
 
-/* ---------- optimistic concurrency: don't clobber unseen edits (#5) ---------- */
-
 test("edit_file refuses a stale edit when base_content no longer matches (#5)", async () => {
   await withCtx(async (ctx) => {
     const p = "race.txt";
     const v1 = "alpha\nbeta\n";
     await executeTool("write_file", JSON.stringify({ path: p, content: v1 }), ctx);
 
-    // the model reads v1, then something else edits the file behind it
     const v2 = "alpha\nBETA\n";
     await fsWrite(path.join(ctx.cwd, p), v2);
 
@@ -149,7 +141,6 @@ test("edit_file refuses a stale edit when base_content no longer matches (#5)", 
     assert.equal(r.ok, false, "a stale edit must be refused");
     assert.match(r.result, /changed on disk since you read it/);
     assert.match(r.result, /nothing was written/);
-    // the concurrent edit survives untouched
     assert.equal(await readFile(path.join(ctx.cwd, p), "utf8"), v2);
   });
 });
@@ -172,9 +163,8 @@ test("edit_file proceeds when base_content still matches (#5)", async () => {
 test("replace_all cannot rewrite occurrences added after the model read (#5)", async () => {
   await withCtx(async (ctx) => {
     const p = "multi.txt";
-    const v1 = "y=1\n"; // the model saw exactly ONE occurrence
+    const v1 = "y=1\n"; 
     await executeTool("write_file", JSON.stringify({ path: p, content: v1 }), ctx);
-    // a sub-agent appends two more occurrences
     const v2 = "y=1\ny=2\ny=3\n";
     await fsWrite(path.join(ctx.cwd, p), v2);
 
@@ -194,7 +184,7 @@ test("write_file refuses to overwrite a changed file (#5)", async () => {
     const p = "cfg.json";
     await executeTool("write_file", JSON.stringify({ path: p, content: '{"v":1}\n' }), ctx);
     const current = '{"v":1}\n';
-    await fsWrite(path.join(ctx.cwd, p), '{"v":2}\n'); // edited behind the model
+    await fsWrite(path.join(ctx.cwd, p), '{"v":2}\n'); 
 
     const r = await executeTool(
       "write_file",
@@ -242,8 +232,6 @@ test("unknown tool and invalid JSON args", async () => {
   });
 });
 
-/* ---------- read_file: grep mode + negative offset ---------- */
-
 async function seedLines(ctx: ToolContext, name = "lines.txt"): Promise<void> {
   await executeTool(
     "write_file",
@@ -257,12 +245,10 @@ test("read_file pattern mode returns matches with context and totals", async () 
     await seedLines(ctx);
     const r = await executeTool("read_file", JSON.stringify({ path: "lines.txt", pattern: "^a", context: 1 }), ctx);
     assert.ok(r.ok, r.result);
-    // only "alpha" starts with 'a'; one context line after it
     assert.equal(r.result.trim(), "1| alpha\n2| beta");
 
     const multi = await executeTool("read_file", JSON.stringify({ path: "lines.txt", pattern: "^g|^e" }), ctx);
     assert.ok(multi.ok);
-    // gamma(3) and epsilon(5) are disjoint regions → separated by "--"
     assert.match(multi.result, /3\| gamma\n--\n5\| epsilon/);
   });
 });
@@ -287,8 +273,6 @@ test("read_file pattern pagination and negative offset", async () => {
     assert.match(badRe.result, /invalid regex/);
   });
 });
-
-/* ---------- edit_file: replace_all + recovery hints ---------- */
 
 test("edit_file replace_all rewrites every occurrence", async () => {
   await withCtx(async (ctx) => {
@@ -342,8 +326,6 @@ test("edit_file errors point at the fix (match lines / re-read hint)", async () 
   });
 });
 
-/* ---------- apply_patch ---------- */
-
 const PATCH_MULTI = `*** Begin Patch
 *** Add File: pa/new.txt
 +hello
@@ -394,20 +376,17 @@ test("apply_patch is all-or-nothing on failure", async () => {
     const r = await executeTool("apply_patch", JSON.stringify({ patch }), ctx);
     assert.equal(r.ok, false);
     assert.match(r.result, /missing\.txt/);
-    assert.equal(await readFile(path.join(ctx.cwd, "keep.txt"), "utf8"), good); // rolled back = never written
+    assert.equal(await readFile(path.join(ctx.cwd, "keep.txt"), "utf8"), good); 
   });
 });
 
 test("apply_patch rolls back writes when the COMMIT phase fails midway (#6)", async () => {
-  // Phase 1 (validation) already passed for every hunk — this fails in phase 2
-  // on an I/O error, which used to leave earlier writes on disk while the tool
-  // reported failure. A read-only directory makes the second write EACCES.
   await withCtx(async (ctx) => {
     const f1 = "original one\n";
     await executeTool("write_file", JSON.stringify({ path: "a.txt", content: f1 }), ctx);
     const locked = path.join(ctx.cwd, "locked");
     await mkdir(locked, { recursive: true });
-    await chmod(locked, 0o555); // r-x: cannot create files inside
+    await chmod(locked, 0o555); 
     try {
       const patch = `*** Begin Patch
 *** Update File: a.txt
@@ -421,14 +400,12 @@ test("apply_patch rolls back writes when the COMMIT phase fails midway (#6)", as
       assert.equal(r.ok, false, `expected commit failure, got: ${r.result}`);
       assert.match(r.result, /rolled back/);
 
-      // the first write must be UNDONE, not left applied
       assert.equal(await readFile(path.join(ctx.cwd, "a.txt"), "utf8"), f1);
       assert.equal(existsSync(path.join(locked, "new.txt")), false);
-      // and no temp litter anywhere in the workspace
       const stray = readdirSync(ctx.cwd, { recursive: true }).filter((f) => String(f).includes(".teapot-patch-"));
       assert.deepEqual(stray, [], `temp files leaked: ${stray.join(", ")}`);
     } finally {
-      await chmod(locked, 0o755); // let the temp-dir cleanup remove it
+      await chmod(locked, 0o755); 
     }
   });
 });
@@ -480,7 +457,6 @@ test("apply_patch supports rename, EOF append and whitespace tolerance", async (
     assert.ok(r2.ok, r2.result);
     assert.equal(await readFile(path.join(ctx.cwd, "new-name.ts"), "utf8"), "ONE\ntwo\nthree\n");
 
-    // trailing-whitespace mismatch still applies (codex seek_sequence fallbacks)
     await executeTool("write_file", JSON.stringify({ path: "wsy.txt", content: "foo   \nbar\n" }), ctx);
     const wsPatch = `*** Begin Patch
 *** Update File: wsy.txt
@@ -493,13 +469,10 @@ test("apply_patch supports rename, EOF append and whitespace tolerance", async (
     assert.ok(r3.ok, r3.result);
     assert.equal(await readFile(path.join(ctx.cwd, "wsy.txt"), "utf8"), "baz\n");
 
-    // malformed patches are rejected with actionable messages
     const bad = await executeTool("apply_patch", JSON.stringify({ patch: "*** Begin Patch\\nnope\\n*** End Patch" }), ctx);
     assert.equal(bad.ok, false);
   });
 });
-
-/* ---------- skills with bundled scripts ---------- */
 
 test("load_skill surfaces bundled scripts as runnable paths", async () => {
   await withCtx(async (ctx) => {
@@ -520,13 +493,11 @@ test("load_skill surfaces bundled scripts as runnable paths", async () => {
 
     const r = await executeTool("load_skill", JSON.stringify({ name: "deploy" }), ctx);
     assert.ok(r.ok, r.result);
-    assert.match(r.result, /run \.\/rollback\.sh on failure/); // SKILL.md body
+    assert.match(r.result, /run \.\/rollback\.sh on failure/); 
     assert.match(r.result, /Files bundled with this skill:/);
-    assert.match(r.result, /skills\/deploy\/rollback\.sh/); // runnable, workspace-relative
+    assert.match(r.result, /skills\/deploy\/rollback\.sh/); 
   });
 });
-
-/* ---------- read_url ---------- */
 
 test("read_url extracts readable text from a local page (and caches it)", async () => {
   const server = createServer((_req, res) => {
@@ -549,7 +520,6 @@ test("read_url extracts readable text from a local page (and caches it)", async 
       assert.match(r.result, /Teapot Docs/);
       assert.match(r.result, /Brewing instructions here\./);
 
-      // second call is served from cache (server may be dead by then — still works)
       await new Promise<void>((r2) => server.close(() => r2()));
       const cached = await executeTool("read_url", JSON.stringify({ url: `http://127.0.0.1:${port}/docs` }), ctx);
       assert.ok(cached.ok, cached.result);
@@ -568,16 +538,12 @@ test("apply_patch rejects \u0000-mangled patches with actionable guidance", asyn
       defaultTimeoutMs: 5_000,
       maxOutputBytes: 10_000,
     };
-    // real-world failure (study-blog session): the model's LaTeX backslashes
-    // arrived as "\u0000" — applying verbatim writes broken source and the
-    // repair attempts then corrupted unrelated lines
     const patch =
       '*** Begin Patch\n*** Add File: t.ts\n+x = "$\\u0000sqrt{12}$";\n*** End Patch';
     const r = await executeTool("apply_patch", JSON.stringify({ patch }), ctx);
     assert.equal(r.ok, false);
     assert.match(r.result, /\\u0000/);
-    assert.match(r.result, /re-emit/); // tells the model what to do instead
-    // nothing was written
+    assert.match(r.result, /re-emit/); 
     const { access } = await import("node:fs/promises");
     await assert.rejects(access(`${ctx.cwd}/t.ts`));
   });
@@ -599,36 +565,27 @@ test("save_skill bundles helper scripts next to SKILL.md (regression)", async ()
         content: "# body",
         files: [
           { name: "tool.py", content: "print('hi')" },
-          { name: "../escape.sh", content: "nope" }, // must be skipped
+          { name: "../escape.sh", content: "nope" }, 
         ],
       }),
       ctx,
     );
     assert.equal(r.ok, true);
     assert.match(r.result, /tool\.py/);
-    // helper exists, is executable, and the traversal attempt never landed
     const { stat } = await import("node:fs/promises");
-    // PRECONDITION: the ctx must have a skill root, or the paths below are meaningless
-    // (`skillRoots` is optional on ToolContext, so this is also what narrows it)
     const roots = ctx.skillRoots;
     assert.ok(roots && roots.length > 0, "the fixture must supply a skill root");
     const st = await stat(path.join(roots[0]!.dir, "helper-check", "tool.py"));
-    assert.equal(st.mode & 0o111 ? true : false, true); // executable bit set
+    assert.equal(st.mode & 0o111 ? true : false, true); 
     await assert.rejects(stat(path.join(roots[0]!.dir, "escape.sh")));
   });
 });
-
-/* ---------- background shells: exit vs close (#23) ---------- */
 
 test("a background shell that forks an inheriting child still reports its exit (#23)", async () => {
   await withCtx(async (ctx) => {
     const exits: { id: string; code: number | null; cmd: string }[] = [];
     ctx.onBackgroundExit = (i) => exits.push({ id: i.id, code: i.code, cmd: i.cmd });
 
-    // the shell exits IMMEDIATELY, but the backgrounded grandchild inherits
-    // stdout, so Node's "close" event (stdio drained) never fires. Keying exit
-    // state off "close" left the job marked running forever, which pinned the
-    // agent in "running" and suppressed auto-continue.
     const r = await executeTool(
       "bash",
       JSON.stringify({ command: "sleep 3 & echo started", background: true }),
@@ -638,7 +595,6 @@ test("a background shell that forks an inheriting child still reports its exit (
     const jobId = /bg\d+/.exec(r.result)?.[0];
     assert.ok(jobId, `expected a bg id in: ${r.result}`);
 
-    // the shell is gone within a second even though "close" is still pending
     const t0 = Date.now();
     for (;;) {
       if (exits.length) break;
@@ -649,8 +605,6 @@ test("a background shell that forks an inheriting child still reports its exit (
     assert.equal(exits[0].code, 0);
     assert.match(exits[0].cmd, /sleep 3/);
 
-    // and it must no longer count as a running background shell, or the
-    // auto-continue loop would suppress its nudge forever
     const { hasRunningBgShells } = await import("../src/agent/tools.ts");
     assert.equal(hasRunningBgShells(ctx.cwd), false, "a dead shell must not look alive");
   });
@@ -671,21 +625,12 @@ test("a normally-exiting background shell still notifies exactly once (#23)", as
       assert.ok(Date.now() - t0 < 2500, "exit notification never arrived");
       await new Promise((r) => setTimeout(r, 25));
     }
-    // exit AND close both fire here — the notification must not double up
     await new Promise((r) => setTimeout(r, 250));
     assert.deepEqual(exits, [0], "exactly one notification, with the real code");
   });
 });
 
 test("a background job makes ONLY its own agent live, not its workspace siblings (#panel)", async () => {
-  // MEASURED: four STOPPED sub-agents in one workspace showed `· ▶4` in the sidebar because
-  // their PARENT had background jobs. Sub-agents inherit the parent's workspace, and
-  // `isLive()` asked "does this DIRECTORY have running shells?" — so one agent's `sleep 300`
-  // made every sibling look busy, and their stop buttons offered to stop work that was gone.
-  //
-  // Shells must stay keyed by workspace (a dev server serves a directory, and
-  // `killBgShells` clears a directory), so the fix is to record WHICH agent started each job
-  // and ask the owner-scoped question from `isLive()`.
   await useTempDir("teapot-bg-owner-", async (dir) => {
     const { executeTool, hasRunningBgShells, hasRunningBgShellsFor, killBgShells } = await import(
       "../src/agent/tools.ts"
@@ -697,46 +642,33 @@ test("a background job makes ONLY its own agent live, not its workspace siblings
     const r = await executeTool("bash", JSON.stringify({ command: "sleep 30", background: true }), alice);
     assert.ok(r.ok, r.result);
 
-    // the DIRECTORY really does have a live shell — that part must keep working
     assert.equal(hasRunningBgShells(dir), true, "precondition: alice's job is running");
-    // …but only alice owns it
     assert.equal(hasRunningBgShellsFor(dir, "alice"), true, "the owner must see its own job");
     assert.equal(
       hasRunningBgShellsFor(dir, "bob"),
       false,
       "a sibling in the SAME workspace must not be reported as busy — that is the · ▶N bug",
     );
-    // an unknown owner (a job recorded before owners existed) belongs to nobody
     assert.equal(hasRunningBgShellsFor(dir, ""), false, "no owner must never mean 'everyone'");
 
-    // cleanup: the job sleeps 30s, so kill it rather than leaving it running
     assert.ok(killBgShells(dir) >= 1, "the job must be killable");
     assert.equal(hasRunningBgShellsFor(dir, "alice"), false, "after the kill nothing is live");
   });
 });
 
 test("a stop aborts a foreground bash, so `sleep` cannot swallow the interrupt (#stop)", async () => {
-  // Reported: "bashでsleepされると途中で割り込みできないので微妙".
-  //
-  // `runShell` wires `ctx.signal`, and `stop()` aborts that controller — so the capability
-  // exists. What has never been asserted is that it WORKS for the ordinary foreground case:
-  // the signal listener kills the process group, and the promise resolves with an ABORTED
-  // result rather than waiting out the timeout. Without this test, a future change that stops
-  // publishing `ctx.signal` (or that re-registers the listener after the abort) would only be
-  // noticed by an operator pressing stop and watching nothing happen.
   await useTempDir("teapot-stop-bash-", async (dir) => {
     const { executeTool } = await import("../src/agent/tools.ts");
     const ac = new AbortController();
     const ctx = {
       cwd: dir,
-      defaultTimeoutMs: 60_000, // long: only the ABORT can end this in time
+      defaultTimeoutMs: 60_000, 
       maxOutputBytes: 10_000,
       signal: ac.signal,
     } as never;
 
     const started = Date.now();
     const p = executeTool("bash", JSON.stringify({ command: "sleep 30" }), ctx);
-    // let the shell actually start, then press stop
     await new Promise((r) => setTimeout(r, 300));
     ac.abort();
     const res = await p;
@@ -752,19 +684,12 @@ test("a stop aborts a foreground bash, so `sleep` cannot swallow the interrupt (
   });
 });
 
-/**
- * The four `edit_file` failures measured in tyb2-9-8155867c — each refused, and none of the
- * messages named what the model had actually done wrong.
- */
 test("a hashline new_text is stripped, never pasted into the file (#7)", async () => {
   await withCtx(async (ctx) => {
     await executeTool("write_file", JSON.stringify({ path: "f.c", content: "int a;\nint b;\nint c;\n" }), ctx);
-    // read with anchors, exactly as the tool tells the model to
     const read = await executeTool("read_file", JSON.stringify({ path: "f.c", line_ids: "hash" }), ctx);
     const rowB = read.result.split("\n").find((l) => /\| int b;$/.test(l))!;
     assert.ok(rowB, `the anchored read must contain the target row: ${read.result}`);
-    // the measured mistake: new_text carrying the READ's anchors — the model meant "these lines,
-    // rewritten" but pasted the gutter on both sides, so old_text and new_text were IDENTICAL
     const r = await executeTool(
       "edit_file",
       JSON.stringify({ path: "f.c", old_text: rowB, new_text: rowB.replace("int b;", "int B;") }),
@@ -788,7 +713,6 @@ test("a base_content too small to BE the file does not trigger the stale guard (
       JSON.stringify({ path: "big.txt", content: "x".repeat(5000) + "\nneedle\n" }),
       ctx,
     );
-    // MEASURED: two of four calls passed base_content: "x" and were told the file "changed on disk"
     const r = await executeTool(
       "edit_file",
       JSON.stringify({ path: "big.txt", old_text: "needle", new_text: "thread", base_content: "x" }),
@@ -800,7 +724,6 @@ test("a base_content too small to BE the file does not trigger the stale guard (
 
 test("a repeated opening line does not make a good anchor look disproportionate (#7)", async () => {
   await withCtx(async (ctx) => {
-    // the anchor's first line appears twice; only the LATER occurrence leads to a valid block
     const body = ["if (x) {", "  a();", "}", "", "if (x) {", "  b();", "}"].join("\n") + "\n";
     await executeTool("write_file", JSON.stringify({ path: "r.c", content: body }), ctx);
     const r = await executeTool(

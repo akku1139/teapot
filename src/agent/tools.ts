@@ -1,7 +1,3 @@
-/**
- * Tool execution: file ops, shell (with process-group kill + timeout), git.
- * Tool specs are plain JSON-schema function definitions — provider-agnostic.
- */
 import { spawn } from "node:child_process";
 import { existsSync, promises as fs, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -21,94 +17,32 @@ import { mcp, MCP_PREFIX } from "./mcp-registry.ts";
 
 export interface ToolContext {
   cwd: string;
-  /**
-   * Which agent is running this tool.
-   *
-   * Needed because background shells are stored per WORKSPACE (`bgShellsByWs`) — a dev
-   * server serves a directory, and `killBgShells` clears a directory. But "is this agent
-   * busy?" cannot be read from that map: several agents routinely share one workspace (every
-   * sub-agent inherits its parent's), so one agent's `sleep 300` made its stopped siblings
-   * report `live: true`.
-   */
   agentId?: string;
-  /**
-   * Where to keep a RECORD of background jobs, so a restart can still tell the operator that a job
-   * is running.
-   *
-   * The process itself cannot be recovered — `bgShellsByWs` holds a `ChildProcess`, and once the
-   * parent that spawned it is gone there is no fd left to read. But "pid 3174540 is still running"
-   * is far better than the silence that shipped: MEASURED on the operator's machine, a `nohup` sweep
-   * started at 10:28 outlived an OOM-killed harness, kept writing for three hours, and the new
-   * instance could only answer `unknown background job ... forgotten on harness restart`.
-   */
   stateDir?: string;
-  /** hard cap per command */
   defaultTimeoutMs: number;
   maxOutputBytes: number;
-  /** skill roots in priority order ([0] = workspace, wins on name clash) */
   skillRoots?: { dir: string; source: string }[];
-  /** aborted on harness shutdown — kills in-flight commands immediately */
   signal?: AbortSignal;
-  /** read-only persona: mutating tools are refused (enforced, not advisory) */
   readOnly?: boolean;
-  /**
-   * Tools a read-only caller may use ANYWAY.
-   *
-   * The completion auditor is read-only in intent — it checks a claim, it does not do the work — but
-   * `bash` is on the mutating list because it CAN write. Judging "the tests pass" without being able
-   * to run them forces the auditor to take the worker's word for it, which is the one thing an
-   * independent review must not do. The caller names the exception explicitly instead of getting a
-   * blanket pass, so the default stays closed.
-   */
   allowMutatingForReview?: string[];
-  /** sub-agent management hooks (wired by the master; absent → tools refuse) */
   subAgents?: {
-    /** depth of THIS agent in the spawn tree (0 = top level) */
     depth: number;
     spawn(o: {
       task: string;
       context: "none" | "fork";
       name?: string;
-      /** #105: per-spawn reasoning effort; falls back to the parent's */
       reasoning_effort?: string;
     }): Promise<{ id: string }>;
     list(): { id: string; status: string; goal: string; parent: string; nested: boolean }[];
     stop(ids?: string[]): Promise<{ stopped: string[] }>;
     message(id: string, text: string): Promise<void>;
-    /**
-     * Suspend until at least one listed sub-agent settles (finish/error/
-     * stop/waiting) or the timeout lapses. Event-driven — costs nothing
-     * while parked.
-     */
     wait(ids: string[] | undefined, timeoutMs: number): Promise<{ note: string }>;
   };
-  /**
-   * Park/unpark the agent UI while a tool blocks for a long time
-   * (wait_children). While parked the agent displays as idle-with-reason,
-   * and any user prompt/stop wakes it immediately.
-   *
-   * Returns whether the park was GRANTED. #140: a park must be refused while
-   * a prompt is already queued — a park over a pending prompt strands the
-   * operator's message until the child settles.
-   */
   onIdlePark?: (reason: string) => boolean;
   onIdleUnpark?: () => void;
-  /** #140: is a user/harness prompt waiting for the next turn boundary? */
   hasPendingPrompts?: () => boolean;
-  /** re-arm the progress-report gate (waiting on children is not activity) */
   onProgressGateReset?: () => void;
-  /**
-   * The agent read a workspace file (read_file). The harness tracks the most
-   * recently read files so it can re-inject them right after a compaction —
-   * otherwise the model immediately re-reads the same files and burns turns.
-   */
   onFileRead?: (path: string) => void;
-  /**
-   * A background shell (bash background=true) exited. The harness uses this
-   * to notify the agent at its next turn boundary + log a timeline row —
-   * without it the agent had to poll bash_output blindly to learn whether
-   * (and how) a job finished.
-   */
   onBackgroundExit?: (info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }) => void;
 }
 
@@ -122,13 +56,6 @@ export interface ToolDef {
   description: string;
   parameters: Record<string, unknown>;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
-  /**
-   * Meta-tools are answered by the HARNESS, not by `run`.
-   *
-   * `report_progress` is handled inside the progress-request path, which needs to know "did the
-   * model report?" without hardcoding the name — a new meta-tool should declare itself here rather
-   * than requiring every call site to learn its name. `run` is never called for these.
-   */
   meta?: boolean;
 }
 
@@ -144,30 +71,12 @@ async function readText(p: string): Promise<string> {
   return fs.readFile(p, "utf8");
 }
 
-/**
- * Is this file binary, i.e. not something `read_file` should return as text?
- *
- * `readText` decodes with "utf8" unconditionally, so pointing `read_file` at an image returned the
- * raw bytes as a lossy string — reported as "画像をread_fileしてバイナリが帰ってきてる". The model then
- * spends tokens on unreadable mojibake and cannot tell it is looking at data rather than source.
- *
- * The test is the classic one, applied to the FIRST block only: a NUL byte means "not text". Reads
- * are bounded, because deciding costs a file read and the answer never needs the whole file.
- */
 export async function looksBinary(p: string): Promise<{ binary: boolean; bytes: number; kind: string }> {
   const fh = await fs.open(p, "r");
   try {
     const st = await fh.stat();
     const head = Buffer.alloc(Math.min(4096, Math.max(0, st.size)));
     if (head.length) await fh.read(head, 0, head.length, 0);
-    /**
-     * MAGIC BYTES FIRST, then the NUL test.
-     *
-     * A NUL scan alone missed PDF and zip: their headers contain no zero byte in the first few
-     * bytes, so `%PDF-1.4` and `PK\x03\x04` both read as "text" — MEASURED, and it would have
-     * shipped a silent hole. A known signature is proof regardless of what the bytes happen to
-     * contain; the NUL test is the fallback for everything unrecognised.
-     */
     const kind = sniff(head);
     if (kind) return { binary: true, bytes: st.size, kind };
     return { binary: head.includes(0), bytes: st.size, kind: head.includes(0) ? "binary" : "text" };
@@ -176,7 +85,6 @@ export async function looksBinary(p: string): Promise<{ binary: boolean; bytes: 
   }
 }
 
-/** the guessed format from magic bytes, or null when nothing is recognised */
 function sniff(head: Buffer): string | null {
   const hex = (n: number) => head.subarray(0, n).toString("hex");
   if (hex(8).startsWith("89504e47")) return "PNG image";
@@ -190,13 +98,6 @@ function sniff(head: Buffer): string | null {
   return null;
 }
 
-/**
- * Persist a `write_file` payload and report what line endings it used (#84/#109).
- *
- * Extracted so the two paths — a file whose own EOL was detected, and one decided
- * by `.editorconfig` — share one write. The message names CRLF/CR only when a
- * conversion actually happened, so an ordinary LF write stays quiet.
- */
 async function finishWrite(
   p: string,
   out: string,
@@ -213,112 +114,35 @@ async function finishWrite(
   };
 }
 
-/**
- * Line-ending handling.
- *
- * A file's EOL is a property of the FILE, not of any one edit. Three forms
- * matter: LF (`\n`), CRLF (Windows, `\r\n`) and the old-Mac CR (`\r`).
- *
- * `edit_file` has handled CRLF since #61, but only on its hashline path, and
- * nothing detected CR-only files at all. Measured gaps before this:
- *
- *  - `read_file` splits on `\n` only, so a CR-only file came back as ONE line:
- *    the model could not address lines 2..n at all.
- *  - `write_file` wrote the model's content verbatim, so rewriting a CRLF file
- *    with LF content silently converted every line — a whole-file diff for what
- *    the model believed was a one-line change.
- *  - a mixed-EOL file was rewritten wholesale by any LF write.
- *
- * The detection is deliberately conservative: it reports the DOMINANT form and
- * only when the file is unambiguous. A genuinely mixed file is left alone rather
- * than homogenised, because picking a winner there would itself be a silent
- * whole-file rewrite — the very thing this is meant to prevent.
- */
 export type Eol = "\n" | "\r\n" | "\r";
 
-/**
- * The file's dominant line ending, or null when it is mixed or empty.
- *
- * `null` means "do not normalise" — see the note above.
- */
 export function detectEol(text: string): Eol | null {
   if (!text) return null;
   const crlf = (text.match(/\r\n/g) ?? []).length;
-  // a bare CR is a CR not followed by LF
   const cr = (text.match(/\r(?!\n)/g) ?? []).length;
   const lf = (text.match(/(?<!\r)\n/g) ?? []).length;
   const kinds = [crlf, cr, lf].filter((n) => n > 0).length;
-  // one kind only -> unambiguous. Mixed -> null.
   if (kinds !== 1) return null;
   if (crlf > 0) return "\r\n";
   if (cr > 0) return "\r";
   return "\n";
 }
 
-/** Split on ANY of the three line endings, dropping the terminators. */
 export function splitEolLines(text: string): string[] {
   return text.split(/\r\n|\r|\n/);
 }
 
-/**
- * Re-apply `eol` to content the model supplied.
- *
- * Models emit `\n` essentially always, so a CRLF or CR file rewritten with LF
- * content would otherwise be silently converted. Untouched terminators already
- * in the right form are left alone, so this is safe to run on merged content.
- */
 export function applyEol(content: string, eol: Eol | null): string {
   if (!eol || eol === "\n") return content;
-  // normalise to \n first, then re-apply — avoids double-CR on "\r\n"
   return content.replace(/\r\n|\r|\n/g, eol);
 }
 
-/**
- * Optimistic-concurrency guard. The model reads a file, thinks, then
- * writes — and in between, a sub-agent, a background job or the operator may
- * have changed it. Anchored edits usually fail safe (old_text is gone, so the
- * call errors), but two paths silently clobber work nobody looked at:
- * `replace_all` rewrites every occurrence present NOW, including ones that
- * appeared after the model formed its plan, and write_file/apply_patch replace
- * whole files unconditionally.
- *
- * A caller that passes `base_content` (the bytes it actually read) therefore
- * gets a refusal instead of a lost update — the same contract the web file
- * editor already enforces (see api.ts PUT /file). The check is advisory by
- * design: omitting the parameter keeps today's behaviour, so this can never
- * break a working agent loop that does not use it.
- */
 function staleGuard(pathArg: string, base: unknown, current: string | null): ToolResult | null {
-  if (typeof base !== "string") return null; // not supplied → no check
-  /**
-   * A base_content that cannot BE the file is not evidence of a change.
-   *
-   * MEASURED in tyb2-9-8155867c: four `edit_file` calls, two of which passed `base_content: "x"` —
-   * a single byte — and were refused with "changed on disk since you read it … your base_content: 1
-   * bytes, on disk now: 52351 bytes". The guard was right that the bytes differ and useless about
-   * it: nothing in the file's history can make "x" the content of a 52KB script, so the message sent
-   * the model to re-read a file it had never successfully checked against.
-   *
-   * A guard whose input cannot be the thing it guards is noise. Below a plausible-file floor the
-   * value is treated as not supplied — the edit still has to pass the anchor checks, which is where
-   * a stale read is actually caught.
-   */
-  /**
-   * A base_content that is a tiny FRACTION of the file cannot be its content.
-   *
-   * MEASURED in tyb2-9-8155867c: two of four `edit_file` calls passed `base_content: "x"` — one
-   * byte — and were refused with "changed on disk since you read it … your base_content: 1 bytes, on
-   * disk now: 52351 bytes". The guard was right that the bytes differ and useless about it: nothing
-   * can make "x" the content of a 52KB script, so the message sent the model to re-read a file whose
-   * state was never in question.
-   *
-   * The test is "unmistakably not this file", NOT "short": a legitimately small file edited by a
-   * model that re-read it must keep the guard, which is what the two #5 tests would have lost.
-   */
+  if (typeof base !== "string") return null; 
   const MIN_PLAUSIBLE_BASE = 16;
   if (base.length < MIN_PLAUSIBLE_BASE && current !== null && current.length >= MIN_PLAUSIBLE_BASE * 4)
     return null;
-  if (base === current) return null; // unchanged → proceed
+  if (base === current) return null; 
   const rel = pathArg;
   return {
     ok: false,
@@ -329,51 +153,22 @@ function staleGuard(pathArg: string, base: unknown, current: string | null): Too
   };
 }
 
-/** Read the file for a guarded write, or null when it does not exist. */
 async function currentOrNull(p: string): Promise<string | null> {
   return fs.readFile(p, "utf8").catch(() => null);
 }
 
-/** Resolve a path inside the workspace; reject escapes (incl. symlink targets).
- *  KNOWN LIMIT (review finding, accepted): the check-then-open pattern has a
- *  TOCTOU window — a symlink swapped in between safeJoin() and fs.open() could
- *  point outside the workspace. Closing it needs openat(2)/O_NOFOLLOW at every
- *  call site; the operator-facing risk is low (requires workspace write access
- *  already), so we document rather than rewrite all call sites. */
 export function safeJoin(cwd: string, p: string): string {
   const abs = path.resolve(cwd, p);
   const rel = path.relative(cwd, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error(`path escapes workspace: ${p}`);
   }
-  // symlinks inside the workspace can point anywhere — resolve the real target
-  // and confine THAT too (path.resolve alone doesn't follow links)
-  //
-  // the old code resolved `abs` and swallowed a throw, treating failure as
-  // "fine". That is exactly backwards, and the failure is the NORMAL case:
-  // `realpathSync` throws ENOENT for a file that does not exist yet, which is
-  // every write_file creating something new. So `real` stayed as the LEXICAL
-  // path — which is inside the workspace — and the symlink guard never ran.
-  //
-  // Demonstrated: with `esc -> /outside` (a real directory), safeJoin allowed
-  // `esc/pwned.txt` and write_file wrote straight through it, landing outside
-  // the workspace. The dangling case happened to fail later with ENOTDIR, which
-  // is luck, not a control.
-  //
-  // So on ENOENT/ENOTDIR, resolve the nearest EXISTING ancestor instead of
-  // giving up. That still catches the escape — the ancestor IS the symlink —
-  // while allowing genuinely new files inside the workspace.
   let real = abs;
   try {
     real = realpathSync(abs);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") {
-      // Walk up one component at a time. A component that is itself a SYMLINK
-      // must be resolved even when its target does not exist — realpathSync
-      // throws ENOENT for the dangling link itself, so naively walking to the
-      // first existing ancestor steps OVER the symlink and loses it. So read
-      // the link and check its target directly.
       let probe = path.dirname(abs);
       for (;;) {
         try {
@@ -381,20 +176,17 @@ export function safeJoin(cwd: string, p: string): string {
           break;
         } catch (inner) {
           if ((inner as NodeJS.ErrnoException).code !== "ENOENT") break;
-          // this component is a dangling symlink: resolve where it POINTS
           try {
             const target = readlinkSync(probe);
             real = path.isAbsolute(target) ? target : path.resolve(path.dirname(probe), target);
             break;
           } catch {
-            /* not a symlink after all — keep walking */
           }
           const next = path.dirname(probe);
-          if (next === probe) break; // reached the filesystem root
+          if (next === probe) break; 
           probe = next;
         }
       }
-      // keep the un-resolved tail so the comparison below sees the full path
       const tail = path.relative(probe, abs);
       if (tail && !tail.startsWith("..")) real = path.join(real, tail);
     }
@@ -415,22 +207,10 @@ interface BgShell {
   startedAt: number;
   exited: boolean;
   code: number | null;
-  /**
-   * Which AGENT started this job.
-   *
-   * Shells are stored per WORKSPACE, because that is what a dev server serves and what
-   * `killBgShells` must clear. But "is this agent busy?" must not be answered from that map:
-   * several agents routinely share one workspace (every sub-agent inherits its parent's), so
-   * one agent's `sleep 300` made every sibling report `live: true`. MEASURED: four STOPPED
-   * sub-agents in one workspace showed `· ▶4` in the sidebar because the parent had background
-   * jobs, and their stop buttons read "stop" for work that was already gone.
-   */
   owner: string;
 }
-/** per-workspace background shells (key: workspace path) */
 const bgShellsByWs = new Map<string, Map<string, BgShell>>();
 let bgSeq = 0;
-/** how much of each job's output has already been handed to the model */
 const bgReadCursors = new Map<string, number>();
 
 function bgMapFor(cwd: string): Map<string, BgShell> {
@@ -442,33 +222,11 @@ function bgMapFor(cwd: string): Map<string, BgShell> {
   return m;
 }
 
-/**
- * Environment for every shell the agent runs.
- *
- * `PWD` is deliberately removed: the server's own PWD would contradict the
- * `cwd` we spawn with, so a command trusting `$PWD` would act on the wrong
- * directory. `bash` re-creates PWD from its actual cwd.
- */
 function shellEnv(): NodeJS.ProcessEnv {
   const { PWD: _pwd, ...rest } = process.env;
   return { ...rest, TERM: "dumb", GIT_PAGER: "cat", PAGER: "cat" };
 }
 
-/**
- * The shell to run a `bash` tool command in, per platform.
- *
- * Both call sites used to hardcode `/bin/bash`, so on Windows every `bash` tool invocation
- * failed with ENOENT — the tool was entirely unavailable on a platform this package claims to
- * support. Windows has no `/bin/bash`; `cmd.exe` is always present, and Git for Windows (which
- * the CI runner has) provides `bash.exe` on PATH.
- *
- * Preference order on Windows: `%TEAPOT_SHELL%`, then `bash.exe` if it is on PATH, then
- * `cmd.exe`. `bash.exe` first because teapot's tool prompts and most commands the model writes
- * are POSIX (`&&`, `$VAR`, single quotes); a `cmd.exe` fallback keeps the tool working on a bare
- * install rather than failing outright.
- *
- * POSIX is unchanged: `$SHELL`, else `/bin/bash`.
- */
 export function toolShellFor(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
@@ -489,29 +247,14 @@ export function toolShellFor(
   return { file: env.COMSPEC || "cmd.exe", args: (cmd) => ["/d", "/s", "/c", cmd] };
 }
 
-/** the shell for THIS process — see `toolShellFor` for the rules and why they exist */
 function toolShell(): { file: string; args: (cmd: string) => string[] } {
   return toolShellFor(process.platform, process.env);
 }
 
-/**
- * Human-readable elapsed-time suffix appended to a shell result so the MODEL
- * sees how long a command actually took. Only the operator saw it — the
- * model happily re-issued commands that ran for tens of minutes.
- *
- * Kept terse and single-line: it rides along with the tool output, and mirrors
- * what bash_output already prints for a still-running job.
- */
 export function elapsed(t0: number, now = Date.now()): string {
   return `\n[took ${((now - t0) / 1000).toFixed(1)}s]`;
 }
 
-/**
- * A background job as it is PERSISTED — no process handle, no output buffer.
- *
- * Deliberately minimal: after a restart the process is unreachable, so pretending to own it would be
- * a lie the UI has to work around. What survives is the fact that it exists.
- */
 export type BgJobRecord = {
   id: string;
   cmd: string;
@@ -519,13 +262,11 @@ export type BgJobRecord = {
   workspace: string;
   pid: number | null;
   startedAt: number;
-  /** where the job's own stdout went, when the command redirected it somewhere we know */
   logPath?: string;
 };
 
 const jobsFile = (dir: string): string => path.join(dir, "bg-jobs.json");
 
-/** read the persisted records, tolerating a missing or corrupt file (never throws) */
 function readJobRecords(dir: string): BgJobRecord[] {
   try {
     const raw = readFileSync(jobsFile(dir), "utf8");
@@ -536,41 +277,24 @@ function readJobRecords(dir: string): BgJobRecord[] {
   }
 }
 
-/**
- * Write the records atomically enough for this purpose.
- *
- * A torn write here is not worth a fsync: the file is a hint for the NEXT boot, and the worst case is
- * losing one restart's worth of "this was running". Losing a job's identity entirely (the shipped
- * behaviour) is what this exists to stop.
- */
 function writeJobRecords(dir: string, records: BgJobRecord[]): void {
   try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(jobsFile(dir), JSON.stringify(records, null, 1));
   } catch {
-    /* a read-only session dir must not break the tool */
   }
 }
 
-/** add or update one record (by id) */
 function rememberJob(dir: string, rec: BgJobRecord): void {
   const all = readJobRecords(dir).filter((r) => r.id !== rec.id);
   all.push(rec);
   writeJobRecords(dir, all);
 }
 
-/** drop a record — the job finished AND was reported, or was killed */
 function forgetJob(dir: string, id: string): void {
   writeJobRecords(dir, readJobRecords(dir).filter((r) => r.id !== id));
 }
 
-/**
- * Jobs a PREVIOUS process started and whose processes may still be alive.
- *
- * `alive` is answered by the caller (pidExists) rather than here, so this module stays free of the
- * signal-plumbing and the test can drive either answer. A record whose pid is gone is stale and is
- * dropped: reporting a finished job as running is the same class of lie as forgetting a live one.
- */
 export function recoverableJobs(dir: string, alive: (pid: number) => boolean): BgJobRecord[] {
   const all = readJobRecords(dir);
   const live: BgJobRecord[] = [];
@@ -583,13 +307,10 @@ export function recoverableJobs(dir: string, alive: (pid: number) => boolean): B
 
 function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   const map = bgMapFor(ctx.cwd);
-  // opportunistic cleanup of long-dead jobs so the map can't grow forever
   for (const [id, sh] of map) {
     if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000 && !map.delete(id)) void id;
   }
   const id = `bg${++bgSeq}`;
-  // plain `-c`, not `-lc`: a login shell sources ~/.bash_profile, whose `cd`
-  // would move background jobs out of the workspace
   const shellSpec = toolShell();
   const child = spawn(shellSpec.file, shellSpec.args(cmd), {
     cwd: ctx.cwd,
@@ -607,13 +328,6 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     if (sh.out.length < 200_000) sh.out += chunk.toString("utf8");
     else sh.truncated = true;
   };
-  /**
-   * Persist the RECORD, so a later process can at least say this job exists.
-   *
-   * The `pid` is what makes it checkable on boot: a job whose pid is gone is dropped, one whose pid
-   * is alive is reported as "still running, output no longer reachable". That is the honest answer
-   * after a restart — see `ToolContext.stateDir`.
-   */
   if (ctx.stateDir) {
     rememberJob(ctx.stateDir, {
       id, cmd, owner: ctx.agentId ?? "", workspace: ctx.cwd,
@@ -623,27 +337,13 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   }
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
-  // "exit" (process gone) and "close" (all stdio drained) are DIFFERENT events.
-  // A backgrounded grandchild that inherits stdout — `npm run dev &`,
-  // `docker compose up &`, a script that forks a watcher — keeps the pipe open,
-  // so "close" can stay pending long after the shell itself is dead. Keying
-  // the exit state off "close" alone left such jobs marked running FOREVER:
-  // hasRunningBgShells() said yes, the auto-continue loop kept breaking out on
-  // "background job still running", and the agent sat in "running" with the
-  // job long dead and no notification ever delivered.
-  //
-  // So: "exit" is authoritative for state and for the completion
-  // notification; "close" only means "output finally drained" and is used to
-  // capture the tail. The notify() helper keeps this exactly-once.
   let exitNotified = false;
   const notify = (code: number | null) => {
     sh.exited = true;
     if (code !== null) sh.code = code;
     if (exitNotified) return;
     exitNotified = true;
-    // the job is over: its record must not claim otherwise on the next boot
     if (ctx.stateDir) forgetJob(ctx.stateDir, id);
-    // tell the harness so the agent learns the outcome WITHOUT polling
     try {
       ctx.onBackgroundExit?.({
         id,
@@ -653,7 +353,6 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
         outputTail: sh.out.slice(-2000),
       });
     } catch {
-      /* notification is best-effort */
     }
   };
   child.on("exit", (code) => notify(code));
@@ -662,8 +361,6 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   return id;
 }
 
-/** Heuristic: did this provider error mean "prompt exceeded the context window"?
- *  Wording varies by provider (OpenRouter/OpenAI/Anthropic/local servers). */
 export function isContextOverflow(err: unknown): boolean {
   const msg = String((err as Error)?.message ?? "").toLowerCase();
   return (
@@ -671,34 +368,15 @@ export function isContextOverflow(err: unknown): boolean {
       msg,
     ) ||
     /\b(400|413)\b.*token/.test(msg) ||
-    // some gateways answer an over-long request with HTTP 200 and put the
-    // real diagnosis in the body, which llm.ts now surfaces after the "no
-    // choices" prefix. Without this the compact-and-retry recovery never
-    // recognised it and the turn simply failed.
     /no choices:[\s\S]{0,300}context (length|window|limit)/.test(msg)
   );
 }
 
-/** Any background shell still running for this workspace? The auto-continue
- *  loop consults this before nudging a finished round: an agent that parked
- *  its work on `bash(background=true)` — dev server, watcher, long build —
- *  must NOT be nagged with "Continue working toward the current goal". The
- *  job's exit notification will wake the agent on its own. */
-/**
- * The background shells for a workspace, as the UI sees them.
- *
- * Only a VIEW: no child process, no cursors. The `out` field is the tail kept for `bash_output`, so
- * showing it costs nothing extra — the buffer is already there.
- *
- * `owner` is included because several agents share one workspace (every sub-agent inherits its
- * parent's), and "whose job is this" is the first thing an operator asks when deciding what to kill.
- */
 export function listBgShells(cwd: string, stateDir?: string): Array<{
   id: string;
   cmd: string;
   owner: string;
   running: boolean;
-  /** true when the process outlived a harness restart: alive, but its output is unreachable */
   detached?: boolean;
   pid?: number | null;
   code: number | null;
@@ -708,14 +386,6 @@ export function listBgShells(cwd: string, stateDir?: string): Array<{
   truncated: boolean;
 }> {
   const live = liveShells(cwd);
-  /**
-   * Records from a previous process are appended, marked `detached`.
-   *
-   * Without them a job that survived a restart is INVISIBLE — MEASURED: a 3-hour GPU sweep kept
-   * writing while the panel showed nothing and `bash_output` said "forgotten on harness restart".
-   * The process cannot be re-attached (no fd survives the parent), so `detached` is the whole truth
-   * the UI can be given: it is running, and its output lives wherever the command redirected it.
-   */
   if (!stateDir) return live;
   const known = new Set(live.map((j) => j.id));
   const recovered = recoverableJobs(stateDir, pidExists)
@@ -736,7 +406,6 @@ export function listBgShells(cwd: string, stateDir?: string): Array<{
   return [...live, ...recovered].sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/** does this pid exist? (EPERM means it exists but is not ours to signal) */
 function pidExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -746,7 +415,6 @@ function pidExists(pid: number): boolean {
   }
 }
 
-/** the jobs THIS process is running, as the UI sees them */
 function liveShells(cwd: string): Array<{
   id: string;
   cmd: string;
@@ -768,8 +436,6 @@ function liveShells(cwd: string): Array<{
       running: !b.exited,
       code: b.code,
       startedAt: b.startedAt,
-      // the LAST slice: a job is watched to see what it is doing NOW, and the head of a 10MB log is
-      // the least interesting part of it
       tail: b.out.slice(-4000),
       bytes: b.out.length,
       truncated: b.truncated,
@@ -777,14 +443,6 @@ function liveShells(cwd: string): Array<{
     .sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/**
- * Kill ONE background job; returns whether it existed.
- *
- * A DETACHED job (a record from a previous process) is handled differently on purpose: the harness no
- * longer owns that process, so this drops the RECORD and does NOT signal the pid. Killing a pid we
- * merely remember is how an unrelated process gets killed after pid reuse — and the operator's own
- * instruction was to never touch a job from an earlier session. The caller reports what happened.
- */
 export function killBgShell(cwd: string, id: string, stateDir?: string): boolean {
   const m = bgShellsByWs.get(cwd);
   const b = m?.get(id);
@@ -792,13 +450,11 @@ export function killBgShell(cwd: string, id: string, stateDir?: string): boolean
     try {
       killTree(b.child);
     } catch {
-      /* already gone */
     }
     m!.delete(id);
     if (stateDir) forgetJob(stateDir, id);
     return true;
   }
-  // not ours any more: forget it, leave the process alone
   if (stateDir) {
     const rec = readJobRecords(stateDir).find((r) => r.id === id);
     if (rec) {
@@ -813,7 +469,6 @@ export function hasRunningBgShells(cwd: string): boolean {
   const m = bgShellsByWs.get(cwd);
   if (!m) return false;
   for (const sh of m.values()) {
-    // opportunistic cleanup mirrors startBackgroundShell's
     if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000) {
       m.delete(sh.id);
       continue;
@@ -823,17 +478,6 @@ export function hasRunningBgShells(cwd: string): boolean {
   return false;
 }
 
-/**
- * Does THIS agent have a background job still running?
- *
- * `hasRunningBgShells(cwd)` answers for a DIRECTORY, which is the right question for
- * `killBgShells` and the wrong one for "is this agent busy". Sub-agents inherit their parent's
- * workspace, so a shared directory made every sibling of a busy agent report `live: true` —
- * their stop buttons offered to stop work that was already gone.
- *
- * An empty owner means a job started before owners were recorded; those are treated as
- * belonging to nobody, so they cannot make an unrelated agent look busy.
- */
 export function hasRunningBgShellsFor(cwd: string, owner: string): boolean {
   const m = bgShellsByWs.get(cwd);
   if (!m || !owner) return false;
@@ -844,18 +488,6 @@ export function hasRunningBgShellsFor(cwd: string, owner: string): boolean {
   return false;
 }
 
-/**
- * Kill every background shell for one workspace and forget the jobs.
- *
- * `stop()` left these running. They are spawned `detached: true` for group-killing
- * and are NOT covered by `toolAbort` (that signal only reaches a tool that is
- * still on the stack), so pressing stop on an agent that had parked its round on
- * a background job killed nothing: the loop sat in its deliberate "wait for the
- * job" idle state while the job kept burning CPU, and no control could end it.
- *
- *
- * Returns how many were actually killed, so a caller can report it.
- */
 export function killBgShells(cwd: string): number {
   const m = bgShellsByWs.get(cwd);
   if (!m) return 0;
@@ -871,23 +503,18 @@ export function killBgShells(cwd: string): number {
   return killed;
 }
 
-/** Run a command in its own process group; kill the whole group on timeout. */
 function runShell(
   cmd: string,
   ctx: ToolContext,
   timeoutMs: number,
-  /** did the caller pass `timeout_ms`, or is this the default? the message says which */
   explicitTimeout = false,
 ): Promise<ToolResult> {
   return new Promise((resolve) => {
     const t0 = Date.now();
-    // `bash -l` sources /etc/profile + ~/.bash_profile, either of which may
-    // `cd` somewhere — which silently moved every later relative path out of
-    // the workspace. Plain `-c` starts in ctx.cwd and stays there.
     const sh = toolShell();
     const child = spawn(sh.file, sh.args(cmd), {
       cwd: ctx.cwd,
-      detached: true, // own process group
+      detached: true, 
       stdio: ["ignore", "pipe", "pipe"],
       env: shellEnv(),
     });
@@ -900,33 +527,9 @@ function runShell(
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
 
-    // the kill REPORTS whether it worked. It used to swallow every failure
-    // as "already gone", and on Windows a group kill throws ALWAYS — so a timeout
-    // would report `TIMEOUT after …ms` for a process that was still running, and
-    // shutdown would leave it alive. A timeout that claims success is worse than
-    // a crash, because nothing afterwards looks wrong.
     const killGroup = () => killTree(child);
 
     const timer = setTimeout(() => {
-      /**
-       * The message has to teach the agent what it did not know.
-       *
-       * It read `TIMEOUT after 120000ms — killed`, which names neither the limit in human terms nor
-       * the parameter that changes it. MEASURED: an agent that never noticed `timeout_ms` hit this
-       * repeatedly, retrying the same command. So the message says WHAT the limit was, WHERE it came
-       * from (default vs explicit), what to pass next time, and when to switch to `background`.
-       */
-      /**
-       * The message has to teach the agent what it did not know.
-       *
-       * It read `TIMEOUT after 120000ms — killed`, which names neither the limit in human terms nor
-       * the parameter that changes it. MEASURED: an agent that never noticed `timeout_ms` hit this
-       * repeatedly, retrying the same command. So the message says WHAT the limit was, WHERE it came
-       * from (default vs explicit), what to pass next time, and when to switch to `background`.
-       *
-       * The limit keeps its raw `ms` when it is sub-second: "TIMEOUT after 0s" for a 300ms limit
-       * both reads wrong and loses the precision a caller needs to judge its next attempt.
-       */
       const limit = timeoutMs < 1000 ? `${timeoutMs}ms` : `${Math.round(timeoutMs / 1000)}s`;
       killReason =
         `TIMEOUT after ${limit} — ${describeKill(killGroup())}. ` +
@@ -938,7 +541,6 @@ function runShell(
             `or use background=true for a job with no timeout at all.`
           : `If it needs longer than the maximum, use background=true — a background job has no timeout.`);
     }, timeoutMs);
-    // harness shutdown must not wait out a long-running command
     const onAbort = () => {
       killReason = `ABORTED (harness shutdown) — ${describeKill(killGroup())}`;
     };
@@ -972,15 +574,12 @@ function runShell(
         result:
           (code === 0 ? "" : `exit=${code}${signal ? ` signal=${signal}` : ""}\n`) +
           clip(out.trim() || "(no output)", ctx.maxOutputBytes) +
-          // the model, not just the operator, needs to know a command was slow —
-          // otherwise it happily re-issues something that takes 40 minutes
           elapsed(t0),
       });
     });
   });
 }
 
-/** 1-based line number of each occurrence of needle in text. */
 function matchLines(text: string, needle: string): number[] {
   const out: number[] = [];
   let idx = text.indexOf(needle);
@@ -991,10 +590,6 @@ function matchLines(text: string, needle: string): number[] {
   return out;
 }
 
-/**
- * Fuzzy-but-safe locator: find windows of lines equal to the pattern after
- * trimming trailing whitespace on each side. Returns 0-based start line hits.
- */
 function trailingWsMatches(srcLines: string[], patLines: string[]): number[] {
   const hits: number[] = [];
   for (let i = 0; i + patLines.length <= srcLines.length; i++) {
@@ -1010,61 +605,17 @@ function trailingWsMatches(srcLines: string[], patLines: string[]): number[] {
   return hits;
 }
 
-/**
- * Did `anchor` resolve to a span far larger than it asked for? Returns the refusal, or null.
- *
- * ## Why this is a separate function
- *
- * The first version was inlined and measured `text.indexOf(anchor)` — which by definition finds
- * exactly `anchor.length` characters, so it could NEVER fire, and its test passed with the guard
- * disabled. The overshoot does not come from the exact match: it comes from the TOLERANT path,
- * where a model that omits indentation or trailing spaces hands over a short anchor and the
- * per-line comparison then accepts a much longer region.
- *
- * So the question is: how many file lines does the anchor's FIRST line's text actually cover
- * once tolerance is applied? If that region is more than twice the anchor's own line count, the
- * anchor is not specific enough and the edit would rewrite something unintended.
- *
- * cases are exactly the ones where tolerance decides what matched. Being wrong there is silent.
- */
 export function disproportionateSpan(text: string, anchor: string): string | null {
   const anchorLines = anchor.split("\n");
   const askedLines = anchorLines.length;
-  if (askedLines < 2) return null; // a single line cannot span disproportionately
-  /**
-   * Do NOT require an exact substring match.
-   *
-   * The whole point is the near-miss case: the anchor does not appear verbatim, which is why the
-   * tolerant path is consulted at all and why it can overshoot. Requiring `indexOf` here made
-   * the guard unreachable exactly when it matters.
-   */
+  if (askedLines < 2) return null; 
   const anchorFirst = anchorLines[0]!.trimEnd();
   const allSrcLines = text.split("\n");
-  /** every place the anchor's first line appears — the BEST one decides, not the first */
   const starts: number[] = [];
   for (let i = 0; i < allSrcLines.length; i++) if (allSrcLines[i]!.trimEnd() === anchorFirst) starts.push(i);
-  if (!starts.length) return null; // its first line is not in the file at all: not this guard's case
+  if (!starts.length) return null; 
 
-  /**
-   * How many file lines does the anchor COVER, allowing the same trailing-whitespace tolerance
-   * the tolerant matcher uses?
-   *
-   * This walks the file and the anchor together, and counts file lines consumed. If matching
-   * the anchor requires consuming more than twice its own line count, the anchor is too loose:
-   * applying it would replace a region the model did not point at.
-   */
   const srcLines = allSrcLines;
-  /**
-   * EVERY candidate start is considered, and the guard only fires when ALL of them overshoot.
-   *
-   * Probing just the FIRST occurrence was wrong whenever the anchor's opening line is not unique —
-   * `\tif (pwrseq->skip_power_cycle) {` appears more than once in that file, and the first one led
-   * the walk into a distant match, so a legitimate 7-line anchor was refused for "covering 58
-   * lines". MEASURED in tyb2-9-8155867c: the model then abandoned `edit_file` for that region.
-   *
-   * The guard's question is "could this anchor be read as pointing somewhere else?" — if ANY
-   * plausible reading fits inside the tolerance, it cannot.
-   */
   let best = Number.POSITIVE_INFINITY;
   for (const start of starts) {
     let fileAt = start;
@@ -1088,7 +639,7 @@ export function disproportionateSpan(text: string, anchor: string): string | nul
     }
     if (ok) best = Math.min(best, consumed);
   }
-  if (!Number.isFinite(best)) return null; // did not resolve under tolerance; not this guard's business
+  if (!Number.isFinite(best)) return null; 
   if (best > askedLines * 2) {
     return (
       `old_text spans ${askedLines} line(s) but the nearest reading of it covers ${best} ` +
@@ -1099,19 +650,10 @@ export function disproportionateSpan(text: string, anchor: string): string | nul
   return null;
 }
 
-/**
- * How long a `bash` command may run when `timeout_ms` is not given.
- *
- * The UI imports this (via `frontend/lib/bash-timeout.ts`) so the row shows the SAME cap the server
- * enforces. They drifted once: the server applied 120s while the row drew nothing, because the row
- * only looked at a `timeout_ms` the model had omitted.
- */
 export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
-/** the hard ceiling, applied after any `timeout_ms` the model passes */
 export const BASH_MAX_TIMEOUT_MS = 600_000;
 export const DEFAULT_TIMEOUT_MS = BASH_DEFAULT_TIMEOUT_MS;
 
-/* ---------- read_url cache ---------- */
 const URL_CACHE_TTL_MS = 3_600_000;
 const urlCache = new Map<string, { at: number; text: string }>();
 
@@ -1120,46 +662,14 @@ function clipText(s: string, max: number): string {
   return s.length <= n ? s : `${s.slice(0, n)}\n… [truncated, ${s.length} chars total]`;
 }
 
-/**
- * Patterns that backtrack catastrophically.
- *
- * A nested quantifier — a quantified group whose body is itself quantified, or
- * alternation that can match the same text more than one way — makes the engine
- * explore exponentially many splits. Measured on this codebase: `(a+)+b` against
- * 28 characters of "a" took 3.8s, roughly DOUBLING per character added, and a
- * 40-character line would run for days.
- *
- * There is no timeout on this path: `ctx.defaultTimeoutMs` guards `bash` only,
- * so the scan is a synchronous `re.test(line)` with nothing able to interrupt it.
- * The agent process blocks and takes the UI and every other agent with it.
- *
- * A model is poorly placed to reason about backtracking cost and nothing tells it
- * not to try, so the pattern is checked rather than trusted. This rejects the
- * SHAPE rather than trying to bound the runtime, because a synchronous regex
- * cannot be abandoned once `test` starts — the only reliable protection is to
- * never compile one.
- */
 const BACKTRACKING_PATTERNS: { re: RegExp; why: string }[] = [
-  // (a+)+  (a*)*  (a+)*  (a?)* … — a quantifier wrapping another quantifier
   { re: /\([^()]*[+*}][^()]*\)\s*[+*{]/, why: "a quantifier nested inside another quantifier" },
-  // (a|a)+ — alternation whose branches can match the SAME text. Distinct
-  // branches like (foo|bar)+ are fine and common, so this only fires when two
-  // branches are literally identical, which is the shape that explodes.
   { re: /\(([^()|]*)\|\1\)\s*[+*{]/, why: "an alternation with identical branches inside a quantifier" },
-  // (.*)*  (.+)+ — a wildcard quantified inside a quantifier
   { re: /\(\s*[.][*+]\s*\)\s*[+*{]/, why: "a wildcard quantified inside a quantifier" },
 ];
 
-/** Above this, the O(lines x pattern) scan itself becomes the cost. */
 const MAX_PATTERN_LENGTH = 1000;
 
-/**
- * Compile a model-supplied regex, refusing ones that can backtrack
- * catastrophically.
- *
- * Returns an error STRING rather than a RegExp so every existing call site —
- * which already handles that shape for an invalid pattern — needs no change.
- */
 function compileRegex(pattern: string, ignoreCase: boolean): RegExp | string {
   if (pattern.length > MAX_PATTERN_LENGTH)
     return `pattern too long (${pattern.length} chars, max ${MAX_PATTERN_LENGTH}) — narrow it, or grep for a literal substring instead`;
@@ -1174,21 +684,6 @@ function compileRegex(pattern: string, ignoreCase: boolean): RegExp | string {
   }
 }
 
-/* ---------- apply_patch (Codex-style) ----------
- * Port of the essentials of openai/codex apply-patch:
- *   *** Begin Patch
- *   *** Add File: path            (+lines follow)
- *   *** Delete File: path
- *   *** Update File: path         (*** Move to: dest = rename)
- *   @@ context hint               (single line to seek first)
- *    context / -removed / +added
- *   *** End of File               (anchor hunk at EOF)
- *   *** End Patch
- * Chunks are located with decreasing strictness (exact → rstrip → trim →
- * unicode-normalized), applied in order against a moving line index, and the
- * whole patch is validated BEFORE any byte is written.
- */
-
 interface UpdateChunk {
   changeContext: string | null;
   oldLines: string[];
@@ -1200,7 +695,6 @@ type PatchOp =
   | { kind: "delete"; path: string }
   | { kind: "update"; path: string; movePath: string | null; chunks: UpdateChunk[] };
 
-/** Codex seek_sequence: find pattern lines at/after `start`, loosening match rules stepwise. */
 function seekSequence(lines: string[], pattern: string[], start: number, eof: boolean): number | null {
   if (pattern.length === 0) return start;
   if (pattern.length > lines.length) return null;
@@ -1210,7 +704,6 @@ function seekSequence(lines: string[], pattern: string[], start: number, eof: bo
   const eqExact = (a: string, b: string) => a === b;
   const eqRstrip = (a: string, b: string) => a.trimEnd() === b.trimEnd();
   const eqTrim = (a: string, b: string) => a.trim() === b.trim();
-  // typographic dashes/quotes/spaces → ASCII, mirroring codex's final pass
   const normalise = (s: string) =>
     s
       .trim()
@@ -1237,7 +730,6 @@ function seekSequence(lines: string[], pattern: string[], start: number, eof: bo
 
 function parsePatch(patch: string): PatchOp[] | string {
   let text = patch.trim();
-  // lenient: strip a heredoc wrapper (<<EOF … EOF), as models sometimes emit one
   const lines0 = text.split("\n");
   if (
     lines0.length >= 4 &&
@@ -1249,12 +741,6 @@ function parsePatch(patch: string): PatchOp[] | string {
   const lines = text.split("\n").map((l) => l.replace(/\r$/, ""));
   if (lines[0]?.trim() !== "*** Begin Patch") return `invalid patch: The first line must be '*** Begin Patch'`;
 
-  // Backslash-corruption tripwire: models occasionally emit "\u0000" where a
-  // literal backslash belonged (a provider-side JSON escaping failure, seen
-  // live as 90× "\u0000sqrt{12}" in a LaTeX-heavy patch). Applying that
-  // verbatim writes broken source; the model then burns turns repairing the
-  // file (or discards its own work). Reject with an actionable message —
-  // retrying the SAME patch won't help, so say what will.
   if (text.includes("\\u0000")) {
     const count = (text.match(/\\u0000/g) ?? []).length;
     return (
@@ -1318,7 +804,7 @@ function parsePatch(patch: string): PatchOp[] | string {
           continue;
         }
         if (l.startsWith("+") || l.startsWith("-") || l.startsWith(" ")) {
-          cur ??= { changeContext: null, oldLines: [], newLines: [], isEndOfFile: false }; // implicit first chunk
+          cur ??= { changeContext: null, oldLines: [], newLines: [], isEndOfFile: false }; 
           if (l.startsWith("+")) cur.newLines.push(l.slice(1));
           else if (l.startsWith("-")) cur.oldLines.push(l.slice(1));
           else {
@@ -1336,7 +822,7 @@ function parsePatch(patch: string): PatchOp[] | string {
         }
         if (!l.trim()) {
           i++;
-          continue; // blank between hunks
+          continue; 
         }
         return `invalid patch: bad line in Update File '${filePath}': "${l.slice(0, 60)}" (expected ' ', '-', '+' or '@@')`;
       }
@@ -1350,7 +836,6 @@ function parsePatch(patch: string): PatchOp[] | string {
   return ops;
 }
 
-/** Compute the updated content of one file (no I/O writes). Error string on failure. */
 async function deriveUpdate(
   p: string,
   displayPath: string,
@@ -1364,7 +849,7 @@ async function deriveUpdate(
   }
   const hadCrlf = raw.includes("\r\n");
   const originalLines = raw.split("\n");
-  if (originalLines.at(-1) === "") originalLines.pop(); // trailing newline → diff-standard line list
+  if (originalLines.at(-1) === "") originalLines.pop(); 
 
   const replacements: [number, number, string[]][] = [];
   let lineIndex = 0;
@@ -1377,13 +862,11 @@ async function deriveUpdate(
     let pattern = ch.oldLines;
     let newSlice = ch.newLines;
     if (pattern.length === 0) {
-      // codex semantics: a chunk with no context/removed lines appends at end of file
       replacements.push([originalLines.length, 0, newSlice]);
       continue;
     }
     let found = seekSequence(originalLines, pattern, lineIndex, ch.isEndOfFile);
     if (found == null && pattern.at(-1) === "") {
-      // trailing "" usually represents the file's final newline sentinel
       const p2 = pattern.slice(0, -1);
       const n2 = newSlice.at(-1) === "" ? newSlice.slice(0, -1) : newSlice;
       found = seekSequence(originalLines, p2, lineIndex, ch.isEndOfFile);
@@ -1401,7 +884,7 @@ async function deriveUpdate(
     lineIndex = found + pattern.length;
   }
 
-  replacements.sort((a, b) => b[0] - a[0]); // descending so earlier edits keep indices valid
+  replacements.sort((a, b) => b[0] - a[0]); 
   const out = originalLines.slice();
   for (const [startIdx, oldLen, seg] of replacements) out.splice(startIdx, oldLen, ...seg);
   if (out.at(-1) !== "") out.push("");
@@ -1413,7 +896,6 @@ async function applyPatch(patch: string, ctx: ToolContext): Promise<ToolResult> 
   if (typeof ops === "string") return { ok: false, result: ops };
   if (ops.length === 0) return { ok: false, result: "patch contains no file operations" };
 
-  // resolve every path up front (workspace confinement + duplicate guard)
   const seen = new Set<string>();
   interface Resolved {
     op: PatchOp;
@@ -1438,7 +920,6 @@ async function applyPatch(patch: string, ctx: ToolContext): Promise<ToolResult> 
     return { ok: false, result: (e as Error).message };
   }
 
-  // phase 1 — validate everything, write nothing
   const writes: { abs: string; content: string }[] = [];
   const deletes: string[] = [];
   const summary: string[] = [];
@@ -1467,20 +948,6 @@ async function applyPatch(patch: string, ctx: ToolContext): Promise<ToolResult> 
     return { ok: false, result: `patch validation failed: ${(e as Error).message}` };
   }
 
-  // phase 2 — commit.
-  //
-  // Phase 1 validates every hunk in memory, so a CONTENT mismatch never
-  // lands halfway. An I/O failure still could: the old loop wrote straight
-  // to the final paths, so a failure on write k of n left writes 1..k-1
-  // already on disk while the tool reported "patch failed". apply_patch is
-  // documented as atomic, so make the commit phase live up to it:
-  //   1. back up the current bytes of every path we are about to change
-  //   2. write each new file to a sibling temp file, then rename() over the
-  //      target (rename within a directory is atomic, so a reader never
-  //      observes a half-written file)
-  //   3. on ANY failure, restore the backups and remove temp files
-  // Deletes are only performed once every write has landed, and a failed
-  // delete is now reported instead of silently swallowed.
   const backups = new Map<string, string | null>();
   const temps: string[] = [];
   try {
@@ -1502,9 +969,6 @@ async function applyPatch(patch: string, ctx: ToolContext): Promise<ToolResult> 
     };
   }
 
-  // writes are in — now the deletes. A delete that fails is a real, visible
-  // inconsistency (the old content moved/updated but the source survived),
-  // so roll the whole patch back rather than report a false success.
   const removed: string[] = [];
   try {
     for (const d of deletes) {
@@ -1525,11 +989,6 @@ async function applyPatch(patch: string, ctx: ToolContext): Promise<ToolResult> 
   return { ok: true, result: `patch applied:\n${summary.join("\n")}` };
 }
 
-/**
- * Undo a partially committed patch: restore each target's original bytes
- * (null = it did not exist before, so remove the file we created) and clean
- * up any temp file that never made it through its rename.
- */
 async function rollbackWrites(
   backups: Map<string, string | null>,
   temps: string[],
@@ -1541,37 +1000,9 @@ async function rollbackWrites(
   }
 }
 
-/* ---------- hashline: stable, verifiable line anchors (#7 / #4) ----------
- *
- * The default `N| ` gutter is a trap: read_file prints it, but edit_file's
- * old_text must NOT contain it — so the model strips the gutter by hand on
- * every read, and the only mitigation is a sentence in the tool description.
- *
- * Format follows the established "hashline" convention used across AI coding
- * harnesses (quangdang46/hashline, kebbbnnn/hashline, opencode-hashline,
- * pi-hashline-edit-pro, …) so anchors read the same everywhere:
- *
- *     12:a3f1| function calculateTotal(items) {
- *
- * i.e. `LINE:HASH| content` — the line number is KEPT (humans and models both
- * navigate by line) and the content hash is ADDED as an integrity anchor.
- *
- * Design points taken from those implementations rather than invented:
- *  - the hash covers the STRIPPED content, so re-indenting a line does not
- *    invalidate its anchor;
- *  - blank/whitespace-only lines get a fixed reserved hash;
- *  - when a hash occurs more than once, the anchor's line number disambiguates
- *    via PROXIMITY search, instead of silently taking the first match.
- */
-
-const HASH_BLANK = "    "; // 4 spaces: reserved, cannot collide with a hex hash
-// A real hash is 4 HEX chars, but the shape also accepts other 4-8 char
-// alphanumerics: a model that mistypes or invents an anchor is common enough
-// that we should still recognise the SHAPE and say "that anchor is malformed"
-// rather than falling through to "no similar text found".
+const HASH_BLANK = "    "; 
 const ANCHOR_RE = /^\s*(\d+):([0-9a-z]{4,8}| {4})\|/;
 
-/** 4-char content hash (FNV-1a 32-bit → hex), of the STRIPPED line */
 export function hashLine(content: string): string {
   const stripped = content.trim();
   if (!stripped) return HASH_BLANK;
@@ -1583,62 +1014,30 @@ export function hashLine(content: string): string {
   return (h >>> 0).toString(16).padStart(8, "0").slice(-4);
 }
 
-/** `LINE:HASH| content` for each line, 1-indexed */
 export function renderHashlines(lines: string[], startLine = 1): string {
-  // same trailing-newline rule as renderGutter: a file ending in "\n"
-  // splits into a final "" that is not a line, and an anchor for it is a lie
-  // the model can copy into an edit that then never verifies
   const body = lines.length && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
   return body
     .map((l, i) => `${startLine + i}:${hashLine(l)}| ${l}`)
     .join("\n");
 }
 
-/**
- * Width of the `N| ` gutter for a page, so every line in it lines up.
- *
- * the prefix had no padding, so the gutter silently widened at line 1000
- * and the whole block jumped sideways mid-file — the exact "unfriendly line
- * numbers" complaint. Padding to the widest number IN THE PAGE is enough: a
- * page is a bounded window, and aligning to the file's total length would
- * push every line of a 20-line read of a 500k-line file 6 characters right.
- */
 export function gutterWidth(startLine: number, count: number): number {
   return String(Math.max(0, startLine - 1) + count).length;
 }
 
-/**
- * The default `N| ` display, with a stable gutter width and no phantom line.
- *
- * #7, second half: the prefix was added AFTER `text.split("\n")`, so a file
- * ending in a newline produced a final numbered row for a line that does not
- * exist. A model that copies the tail verbatim then hands `edit_file` an
- * old_text with a phantom line in it, and the edit fails for no visible reason.
- * A trailing empty element is dropped, which is what the reader means.
- */
 export function renderGutter(lines: string[], startLine = 1): string {
-  // a trailing newline splits into a final "" — not a line of the file
   const body = lines.length && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
   if (!body.length) return "";
   const w = gutterWidth(startLine, body.length);
   return body.map((l, i) => `${String(startLine + i).padStart(w)}| ${l}`).join("\n");
 }
 
-/** parse a `LINE:HASH` anchor; returns null when the text is not an anchor */
 export function parseAnchor(anchor: string): { line: number; hash: string } | null {
   const m = /^\s*(\d+):([0-9a-z]{4,8}| {4})\s*$/.exec(anchor);
   if (!m) return null;
   return { line: Number(m[1]), hash: m[2] };
 }
 
-/**
- * Locate the line an anchor refers to.
- *
- * The hash is authoritative; the line number only disambiguates when the same
- * content appears twice (proximity search). Falling back to "nearest line" for
- * an unknown hash is deliberately NOT done — that would silently edit the wrong
- * line, which is the entire failure mode hashline exists to prevent.
- */
 export function resolveAnchor(
   lines: string[],
   anchor: { line: number; hash: string },
@@ -1649,24 +1048,10 @@ export function resolveAnchor(
     return {
       error: /^[0-9a-f]{4}$/.test(anchor.hash) || anchor.hash === HASH_BLANK
         ? `no line matches hash ${anchor.hash} — the file changed since you read it (re-read it)`
-        : // distinguish "you invented/mistyped this anchor" from "the file moved",
-          // which sends the agent to fix the right thing
+        : 
           `hash ${JSON.stringify(anchor.hash)} is not a valid anchor (expected 4 hex chars) — re-read the file and copy the anchor verbatim`,
     };
   if (hits.length === 1) return { index: hits[0]!, how: "unique" };
-  /**
-   * Several lines share this hash — because the hash is DERIVED FROM CONTENT.
-   *
-   * That is the structural weakness of this format compared with the anchor-table implementations
-   * (`pi-hashline-edit-pro` allocates an anchor per line "never derived from content, so
-   * byte-identical lines never share an anchor"). Here two identical lines are one anchor, so the
-   * line number has to break the tie by proximity — a guess, and a guess that can be wrong in a file
-   * with repeated blocks.
-   *
-   * The guess is kept (refusing outright would make editing any file with repeated lines
-   * impossible), but it is now REPORTED instead of being a silent choice: the caller appends it to
-   * the tool result, so a model that landed on the wrong copy can see why.
-   */
   const target = anchor.line - 1;
   const best = hits.reduce((a, b) => (Math.abs(b - target) < Math.abs(a - target) ? b : a));
   return {
@@ -1677,19 +1062,12 @@ export function resolveAnchor(
   };
 }
 
-/** Is this whole block a hashline block (every line carries an anchor)? */
 export function isHashlineBlock(block: string): boolean {
   const rows = block.split("\n").filter((l) => l !== "");
   if (!rows.length) return false;
   return rows.every((l) => ANCHOR_RE.test(l));
 }
 
-/**
- * Turn a copied hashline block back into file content.
- *
- * The anchors are verified against the CURRENT file, so a stale read is
- * refused instead of editing the wrong bytes — the whole point of the format.
- */
 export function resolveHashlineBlock(
   block: string,
   lines: string[],
@@ -1715,7 +1093,6 @@ export function resolveHashlineBlock(
   return { text: content.join("\n"), indices: picked, notes };
 }
 
-/** normalize the read_file line-reference argument */
 export function lineIdMode(args: Record<string, unknown>): "none" | "hash" {
   const v = args.line_ids ?? args.hashline;
   if (v === true) return "hash";
@@ -1770,13 +1147,6 @@ export const TOOLS: ToolDef[] = [
       required: ["path"],
     },
     async run(args, ctx) {
-      // MULTI-FILE and FUZZY reads.
-      //
-      // Both are opt-in and handled HERE rather than by restructuring this
-      // tool: `paths` re-enters executeTool once per file, and `fuzzy` locates
-      // a file then re-enters it. Nothing about the single-file path below
-      // changes, so its output stays byte-identical — which #7's hashline
-      // anchors and the existing tests both depend on.
       if (Array.isArray(args.paths) && args.paths.length) {
         const wanted = (args.paths as unknown[])
           .map((v) => str(v).trim())
@@ -1791,7 +1161,6 @@ export const TOOLS: ToolDef[] = [
         const chunks: string[] = [];
         for (const rel of wanted) {
           const r = await executeTool("read_file", JSON.stringify({ ...args, path: rel, paths: undefined }), ctx);
-          // one bad file must not sink the others: report it inline
           chunks.push(`--- ${rel} ---\n${r.ok ? r.result : `ERROR: ${r.result}`}`);
         }
         return { ok: true, result: chunks.join("\n\n") };
@@ -1800,15 +1169,6 @@ export const TOOLS: ToolDef[] = [
       const p = safeJoin(ctx.cwd, str(args.path));
       let text: string;
       try {
-        /**
-         * Refuse a BINARY file instead of decoding it as UTF-8.
-         *
-         * `readText` has no notion of encoding, so `read_file` on an image returned the raw bytes as
-         * a lossy string — reported as "画像をread_fileしてバイナリが帰ってきてる". The model then pays
-         * for mojibake it cannot interpret and has no way to tell "this is data" from "this is
-         * source". Naming the likely type (PNG/JPEG/PDF/ELF/zip) is what lets it choose the right
-         * next step instead of retrying the same read.
-         */
         const probe = await looksBinary(p);
         if (probe.binary) {
           return {
@@ -1821,9 +1181,6 @@ export const TOOLS: ToolDef[] = [
         }
         text = await readText(p);
       } catch (err) {
-        // name the file, not just the errno: a multi-file read reports each bad
-        // path inline, and "ENOENT … /tmp/xyz/nope.ts" leaves the model to work
-        // out which of the paths it asked for
         const code = (err as NodeJS.ErrnoException).code;
         return {
           ok: false,
@@ -1831,16 +1188,9 @@ export const TOOLS: ToolDef[] = [
         };
       }
       ctx.onFileRead?.(str(args.path));
-      // split on ALL THREE line endings. A CR-only (old-Mac) file used to
-      // come back as a single line, so the model could not address lines 2..n at
-      // all — and a CRLF file left a trailing "\r" on every line, which then
-      // had to be stripped again by every consumer.
       const lines = splitEolLines(text);
-      // #7/#4: opt-in hashline output. Default stays the historical `N| ` so
-      // nothing that depends on it changes until the mode is chosen.
       const idMode = lineIdMode(args as Record<string, unknown>);
 
-      // grep mode
       if (typeof args.pattern === "string" && args.pattern !== "") {
         const re = compileRegex(args.pattern, args.ignore_case === true);
         if (typeof re === "string") return { ok: false, result: re };
@@ -1873,19 +1223,10 @@ export const TOOLS: ToolDef[] = [
         return { ok: true, result };
       }
 
-      // plain mode
       let off = num(args.offset, 1);
       off = off < 0 ? Math.max(0, lines.length + off) : Math.max(0, off - 1);
       const lim = num(args.limit, 2000);
-      // A LINE cap alone does not bound the output: a single 5MB minified line is one
-      // "line", and 2000 lines of 2000 chars is 4MB. The three caps below each kill a
-      // different shape of oversized file (#17 item 3):
-      //   lines  → a 3000-line source file
-      //   bytes  → a big log, whatever its line structure
-      //   per-line → minified.js / a one-line JSON blob
       const pageLines = lines.slice(off, off + lim);
-      // PER-LINE cap first: clipping lines before joining means one giant line cannot
-      // blow the byte budget on its own, and the marker names how much was cut.
       const cappedLines = pageLines.map((l) =>
         l.length > MAX_READ_LINE_CHARS
           ? l.slice(0, MAX_READ_LINE_CHARS) +
@@ -1894,13 +1235,9 @@ export const TOOLS: ToolDef[] = [
       );
       const rendered =
         idMode === "hash" ? renderHashlines(cappedLines, off + 1) : renderGutter(cappedLines, off + 1);
-      // the phantom trailing line is dropped for the count too, or a file that
-      // ends in a newline always reports one line more than it has
       const total = lines.length && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
       const more = off + lim < total ? `\n... (${total - off - lim} more lines)` : "";
       const out = rendered + more;
-      // BYTE cap last, with the remaining line count in the marker so the model knows
-      // how to continue rather than assuming it saw everything.
       if (out.length > MAX_READ_BYTES) {
         const head = out.slice(0, MAX_READ_BYTES);
         const cutAt = head.lastIndexOf("\n");
@@ -1909,9 +1246,6 @@ export const TOOLS: ToolDef[] = [
           result:
             (cutAt > 0 ? head.slice(0, cutAt) : head) +
             `\n... [output clipped at ${MAX_READ_BYTES} bytes of ${out.length}; ` +
-            // `head` holds N rendered lines separated by N-1 newlines, and rendering
-            // started at 1-indexed line `off + 1`, so the next unread line is
-            // off + 1 + N. Counting newlines alone gives N-1 and would re-read one line.
             `continue with offset=${off + 1 + countLines(cutAt > 0 ? head.slice(0, cutAt) : head) + 1}]`,
         };
       }
@@ -1939,9 +1273,6 @@ export const TOOLS: ToolDef[] = [
       required: ["path", "content"],
     },
     async run(args, ctx) {
-      // content must be a real string: a non-string (object/array from bad
-      // model output) coerced to "[object Object]" or silently truncated —
-      // worse, an undefined slipped past required and WIPED the file
       if (typeof args.content !== "string") {
         return {
           ok: false,
@@ -1955,22 +1286,6 @@ export const TOOLS: ToolDef[] = [
       const stale = staleGuard(str(args.path), args.base_content, await currentOrNull(p));
       if (stale) return stale;
       await fs.mkdir(path.dirname(p), { recursive: true });
-      // a file's line endings belong to the FILE. Writing the model's
-      // content verbatim silently converted a CRLF (or CR) file to LF whenever
-      // the model rewrote it — the model never emits \r — so one logical edit
-      // produced a whole-file diff, and any tool that normalises on EOL (git,
-      // prettier) would rewrite it afterwards.
-      //
-      // So an EXISTING file's dominant EOL is re-applied. detectEol returns null
-      // for a mixed file, which is left untouched on purpose: choosing a winner
-      // there would itself be the silent whole-file rewrite this prevents.
-      //
-      // when the file CANNOT answer — it is new, or its EOL is mixed — ask
-      // `.editorconfig` before falling back to LF. The order is deliberate: the
-      // file's own bytes outrank configuration, which outranks the default. A
-      // `end_of_line = crlf` in a repo whose files are all LF must not convert
-      // every file the agent touches, so config is never consulted for a file that
-      // already has an unambiguous ending.
       const before = await currentOrNull(p);
       const detected = before === null ? null : detectEol(before);
       if (detected !== null) return finishWrite(p, applyEol(args.content, detected), detected, args.content);
@@ -2014,12 +1329,6 @@ export const TOOLS: ToolDef[] = [
       if (stale) return stale;
       let oldText = str(args.old_text);
       let newText = str(args.new_text);
-      // the single most common edit_file failure in the real logs (22
-      // occurrences) said only "old_text is required", while the tool's own
-      // schema already documents the better form. Name it and say what to do —
-      // the pattern master.ts uses for "not your sub-agent" (its
-      // `messageChild`),
-      // which turned a confusing refusal into a re-addressable one.
       if (!oldText)
         return {
           ok: false,
@@ -2029,31 +1338,9 @@ export const TOOLS: ToolDef[] = [
             "Do NOT copy read_file's `N| ` line-number prefixes.",
         };
       const replaceAll = args.replace_all === true;
-      // #7/#4: accept a block copied straight out of read_file's hashline
-      // output. When the anchors do not verify we FAIL with the specific reason
-      // rather than silently falling back to literal matching — a literal match
-      // that happened to succeed would edit the wrong bytes, which is the exact
-      // failure mode hashline exists to prevent.
-      //
-      // On success we edit by RESOLVED LINE INDEX rather than by searching for
-      // the text: the anchors already pinpointed the lines, so a block whose
-      // content legitimately appears twice (the case proximity search exists
-      // for) must not then fail the uniqueness check on the resolved text.
       let hashNote = "";
       let hashNotes: string[] = [];
       let hashSpan: { start: number; end: number } | null = null;
-      /**
-       * A hashline-formatted `new_text` is STRIPPED, not pasted.
-       *
-       * MEASURED in tyb2-9-8155867c: `old_text` and `new_text` were IDENTICAL, both carrying anchors
-       * (`155c| …`, `59d3| …`) copied from the read. The model meant "these lines, rewritten" but
-       * pasted the anchor gutter on both sides. The result was refused as "old_text not found",
-       * which names the wrong argument — the anchors had already been resolved away, so the literal
-       * search could not find them, and the reply never mentioned the real mistake.
-       *
-       * The anchors belong to the READ, not to the file. Stripping them from `new_text` is what the
-       * model meant, and writing them into the source would be corruption.
-       */
       const newTextHasAnchors = isHashlineBlock(newText);
       if (isHashlineBlock(oldText)) {
         const srcLines = text.replace(/\r\n/g, "\n").split("\n");
@@ -2065,13 +1352,6 @@ export const TOOLS: ToolDef[] = [
           hashSpan = { start: r.indices[0]!, end: r.indices[r.indices.length - 1]! + 1 };
         }
       }
-      /**
-       * Drop anchors from `new_text` — they are the READ's numbering, not file content.
-       *
-       * A block whose anchors cannot be resolved is still stripped (the content is what was meant);
-       * writing `155c| ` into a source file would be corruption, so the safe direction is to remove
-       * them and let the rest of the edit be judged on its text.
-       */
       if (newTextHasAnchors) {
         const stripped = newText
           .split("\n")
@@ -2086,27 +1366,7 @@ export const TOOLS: ToolDef[] = [
         }
       }
       let count = hashNote ? 0 : text.split(oldText).length - 1;
-      /**
-       * A MINIMUM ANCHOR LENGTH, from Gemini's `edit.ts`.
-       *
-       * Below this, an anchor cannot identify anything: "  }" or "\n\n" appear everywhere, and
-       * any tolerant matching on them either fails ambiguously or picks a wrong span. MEASURED
-       * across every session: `old_text not found` is 117 of 168 edit failures, and a
-       * large share of those are anchors too short to be unique, sent by a model that believed
-       * them specific.
-       *
-       * Short anchors are still ACCEPTED when they match exactly once — a one-character edit is
-       * legitimate. What is refused is trying to make a short anchor work by relaxing the match.
-       */
       const MIN_FUZZY_ANCHOR = 10;
-      /**
-       * A MULTI-LINE anchor is specific by construction: two matching lines pin both a start
-       * and a continuation, which is far stronger evidence than 10 characters on one line.
-       * Gemini's floor is about single-line anchors, where "  }" and "foo();" genuinely cannot
-       * identify anything. Applying it by raw character count rejected `foo\nbar` — a perfectly
-       * unambiguous two-line anchor — which is the guard making normal editing harder, the
-       * exact failure mode #157 warns about.
-       */
       const anchorLines = oldText.split("\n").length;
       const anchorTooShort = anchorLines < 2 && oldText.trim().length < MIN_FUZZY_ANCHOR;
       let normalized = false;
@@ -2120,17 +1380,11 @@ export const TOOLS: ToolDef[] = [
         }
       }
 
-      // tolerate patterns whose only difference is trailing whitespace per line
-      // (the most common near-miss) — applied only when it resolves uniquely
       if (count === 0 && !anchorTooShort) {
         const srcLines = text.replace(/\r\n/g, "\n").split("\n");
         const patLines = oldText.replace(/\r\n/g, "\n").split("\n");
         const hits = trailingWsMatches(srcLines, patLines);
         if (hits.length === 1 && patLines.length > 0) {
-        // same detection as the hashline path — CR-only files are detected
-        // too, and a MIXED file yields null and is left as-is rather than
-        // homogenised. The old `includes("\r\n")` test called a CR-only file
-        // "\n", so an edit to one silently converted its line endings.
         const rebuilt = [
           ...srcLines.slice(0, hits[0]),
           ...splitEolLines(newText),
@@ -2150,17 +1404,12 @@ export const TOOLS: ToolDef[] = [
       }
 
       if (count === 0) {
-        // actionable miss: point the model at recovery instead of pushing it
-        // toward bash-based editing
         const lines = matchLines(text, oldText.trim());
         const hint = lines.length
           ? `A trimmed variant appears at line(s) ${lines.slice(0, 5).join(", ")}.`
           : `No similar text found — re-read ${str(args.path)} around the target area and copy old_text exactly.`;
         return {
           ok: false,
-          // a hashline block that did not resolve gets ITS reason — the generic
-          // "not found" would send the model hunting for a whitespace problem
-          // when the real issue is a stale read
           result: hashNote
             ? `old_text is a hashline block but did not resolve: ${hashNote}.`
             : `old_text not found in file. ${hint} Watch indentation/trailing spaces and drop the \`N| \` line-number prefixes.`,
@@ -2173,34 +1422,10 @@ export const TOOLS: ToolDef[] = [
           result: `old_text matched ${count} times (lines ${at.slice(0, 5).join(", ")}) and must be unique — add surrounding lines to old_text, or pass replace_all=true`,
         };
       }
-      /**
-       * DISPROPORTIONATE MATCH guard, from OpenCode's `isDisproportionateMatch`.
-       *
-       * The dangerous shape is not "no match" — that is loud and recoverable — but a match far
-       * LARGER than the anchor, where asking to change one call site silently rewrites a whole
-       * function. A confident wrong edit is worse than a failed one.
-       */
       if (!hashSpan) {
         const over = disproportionateSpan(text, oldText);
         if (over) return { ok: false, result: over };
       }
-      // A verified hashline block is addressed BY LINE INDEX: the anchors
-      // already proved which lines it means, so a block whose content occurs
-      // twice must still edit the anchored occurrence rather than fail the
-      // uniqueness check.
-      // The hashline path splits on "\n" to index by resolved line number, which
-      // leaves a trailing "\r" on every line of a CRLF file. Rejoining with
-      // "\n" then DROPS all of them, so a single edit silently rewrote a
-      // Windows file's line endings: the replaced line arrived with the model's
-      // "\n" while every untouched line kept its "\r\n". The file still parsed
-      // and the edit "succeeded", so nothing reported it — but the next
-      // checkout diff shows the whole file changed, and tools that normalise on
-      // EOL (git, prettier, formatters) now rewrite it.
-      //
-      // So the EOL is detected ONCE from the untouched text and re-applied to
-      // the replacement, which also keeps a CRLF file CRLF when the model sends
-      // LF-separated new_text (the overwhelmingly common case — models never
-      // emit \r).
       const eol = text.includes("\r\n") ? "\r\n" : "\n";
       const out = hashSpan
         ? splitEolLines(text)
@@ -2341,13 +1566,10 @@ export const TOOLS: ToolDef[] = [
             `jobs are per-workspace and forgotten on harness restart`,
         };
       if (str(args.action) === "kill") {
-        // same swallowed-kill bug — this reported "killed" and dropped the
-        // job from the map while the process kept running, now untrackable.
         const note = sh.exited ? "(already exited)" : describeKill(killTree(sh.child));
         map.delete(sh.id);
         return { ok: true, result: `job ${sh.id} ${note}. Output so far:\n${clip(sh.out, 4000)}` };
       }
-      // action === read (default): hand back NEW bytes and remember the cursor
       const fresh = sh.out.slice(bgReadCursors.get(sh.id) ?? 0);
       bgReadCursors.set(sh.id, sh.out.length);
       const status = sh.exited
@@ -2357,7 +1579,6 @@ export const TOOLS: ToolDef[] = [
         (fresh.length ? fresh : "(no new output)") +
         (sh.truncated ? "\n… (output truncated at 200KB)" : "") +
         status;
-      // finished jobs are removed once fully drained
       if (sh.exited && bgReadCursors.get(sh.id)! >= sh.out.length) {
         map.delete(sh.id);
         bgReadCursors.delete(sh.id);
@@ -2403,7 +1624,6 @@ export const TOOLS: ToolDef[] = [
       const html = await res.text();
       if (!html.trim()) return { ok: false, result: `HTTP ${res.status} with an empty body` };
 
-      // heavy DOM deps are loaded lazily so the master's idle startup stays lean
       const { Browser } = await import("happy-dom");
       const { Readability } = await import("@mozilla/readability");
       const browser = new Browser();
@@ -2446,18 +1666,6 @@ export const TOOLS: ToolDef[] = [
         task: { type: "string", description: "self-contained instructions for the sub-agent" },
         context: { type: "string", enum: ["none", "fork"], description: "default none" },
         name: { type: "string", description: "optional short name fragment for the id" },
-        // reasoning effort for THIS sub-agent, overriding both the
-        // configured subagent default and the parent's inherited value.
-        //
-        // Precedence mirrors OpenAI Codex (codex-rs/core/src/agent/child_config.rs):
-        // spawn argument -> configured default -> parent's effort. Codex
-        // deliberately does NOT inherit by default — its own test sets a parent at
-        // XHigh and asserts a child spawned with Low runs at Low, because
-        // sub-agents are usually narrow and cheap and inheriting a parent's high
-        // effort across many trivial scouts multiplies cost for no gain.
-        //
-        // Naming it here is what stops the silent loss: previously a spawn could
-        // not express an effort at all, so the parent's value simply vanished.
         reasoning_effort: {
           type: "string",
           enum: ["minimal", "low", "medium", "high", "xhigh"],
@@ -2475,8 +1683,6 @@ export const TOOLS: ToolDef[] = [
       if (!task) return { ok: false, result: "task required" };
       const context = args.context === "fork" ? "fork" : "none";
       try {
-        // validate like the per-agent setter does, so a typo cannot reach
-        // the provider as an unrecognised effort value.
         const effort = str(args.reasoning_effort).trim();
         if (effort && !isReasoningEffort(effort))
           return {
@@ -2562,12 +1768,6 @@ export const TOOLS: ToolDef[] = [
       if (!sa) return { ok: false, result: "sub-agents are not available here" };
       const ids = Array.isArray(args.ids) ? args.ids.map(String) : undefined;
       const ms = Math.min(Math.max(num(args.timeout_ms, 300_000), 1_000), 3_600_000);
-      // a prompt ALREADY in the queue must be consumed FIRST. The
-      // enqueue-time wake only fires for prompts arriving DURING the park —
-      // one queued before the park is invisible to it, and parking over it
-      // strands the operator's message ("idle" display, nothing processed)
-      // until a child settles. Stand down and let the next turn boundary
-      // drain it; the model can call wait_children again afterwards.
       if (ctx.hasPendingPrompts?.()) {
         ctx.onProgressGateReset?.();
         return {
@@ -2576,11 +1776,8 @@ export const TOOLS: ToolDef[] = [
             "A prompt is already queued for you — handle it first, then call wait_children again if you still need to wait.",
         };
       }
-      // park VISIBLY: the UI shows idle ("waiting on sub-agents") instead of a
-      // running spinner, and any user prompt / stop wakes us instantly
       const parked = ctx.onIdlePark?.(`waiting on sub-agent${ids?.length === 1 ? ` ${ids[0]}` : "s"}`);
       if (parked === false) {
-        // the agent refused the park (a prompt raced in) — same answer as above
         ctx.onProgressGateReset?.();
         return {
           ok: true,
@@ -2588,13 +1785,11 @@ export const TOOLS: ToolDef[] = [
             "A prompt arrived while you were about to wait — handle it first, then call wait_children again if you still need to wait.",
         };
       }
-      // the child's report is about to land in our mailbox — a progress report
-      // right after it would be pure noise, so re-arm the gate here
       ctx.onProgressGateReset?.();
       try {
         const r = await sa.wait(ids, ms);
         ctx.onIdleUnpark?.();
-        ctx.onProgressGateReset?.(); // also after: waiting itself isn't "activity"
+        ctx.onProgressGateReset?.(); 
         return { ok: true, result: r.note };
       } catch (e) {
         ctx.onIdleUnpark?.();
@@ -2636,9 +1831,6 @@ export const TOOLS: ToolDef[] = [
     description:
       "Load a skill's full instructions by name. Use when the system prompt's skill list " +
       "matches your current task; follow the loaded playbook. " +
-      // the instruction used to need a SECOND, separately-queued message that
-      // only arrived at the next turn boundary. Passing `instructions` delivers it
-      // in the SAME turn as the playbook, so "load X and do Y" costs one round-trip.
       "Pass `instructions` with what you want done with it to receive both at once.",
     parameters: {
       type: "object",
@@ -2665,8 +1857,6 @@ export const TOOLS: ToolDef[] = [
       }
       let result = await readSkillFile(def);
       if (def.files.length) {
-        // surface bundled scripts as runnable paths: workspace-relative when
-        // possible (bash runs in the workspace), absolute for global skills
         const dirAbs = path.dirname(def.filePath);
         const rootDir = roots
           .map((r) => r.dir)
@@ -2680,8 +1870,6 @@ export const TOOLS: ToolDef[] = [
           listed.map((f) => `- ${f}`).join("\n") +
           `\nRun scripts with bash (chmod +x first if needed).`;
       }
-      // deliver the caller's instructions in THIS result, so the model does
-      // not have to queue a second message that only lands next turn.
       const instructions = str(args.instructions).trim();
       if (instructions)
         result +=
@@ -2728,12 +1916,6 @@ export const TOOLS: ToolDef[] = [
       if (!description) return { ok: false, result: "description required" };
       const content = str(args.content);
       if (!content.trim()) return { ok: false, result: "content required" };
-      // save GLOBALLY (config dir) so skills survive workspace switches and
-      // are shared by every agent. Same-name handling is safe:
-      //  · overwriting the global copy replaces it atomically (writeFile)
-      //  · a same-name skill in a HIGHER-priority root (workspace) still
-      //    shadows this one at load time — that's the intended override,
-      //    so tell the model when its save would be invisible
       const globalRoot = roots.find((r) => r.source === "global") ?? roots[0];
       const filePath = await saveSkill(globalRoot.dir, name, description, content.slice(0, 64_000));
       let note = "";
@@ -2743,11 +1925,10 @@ export const TOOLS: ToolDef[] = [
           try {
             await fs.access(path.join(r.dir, name, SKILL_FILE));
             note = ` (note: a workspace skill with the same name "${name}" takes precedence at load time)`;
-          } catch { /* no clash in this root */ }
+          } catch {  }
         }
       }
 
-      // bundled scripts/files next to SKILL.md
       const written: string[] = [];
       const rawFiles = Array.isArray(args.files) ? args.files : [];
       for (const f of rawFiles.slice(0, 10)) {
@@ -2769,41 +1950,17 @@ export const TOOLS: ToolDef[] = [
   },
 ];
 
-/** #16: how many files one read_file call may cover. Each costs context, so an
- *  unbounded array would just be a way to overflow the window in one shot. */
 const MAX_MULTI_READ = 10;
 
-/**
- * The three read caps (#17 item 3). A line cap alone is not a bound: one 5MB minified
- * line is a single "line", and 2000 lines of 2000 chars is 4MB. Each cap kills a
- * different shape of oversized file:
- *
- *   2000 lines  → a 3000-line source file        (the `limit` default, unchanged)
- *   256 KB      → a 5MB log, whatever its lines
- *   2000 chars  → minified.js / a one-line JSON blob
- *
- * The byte cap is a SHARE of what a tool result can be, not the whole budget: the model
- * still needs room to reason about what it read.
- */
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_READ_LINE_CHARS = 2_000;
 
-/** how many lines a string contains — used to say where to resume a clipped read */
 function countLines(s: string): number {
   let n = 0;
   for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
   return n;
 }
 
-/**
- * Subsequence match: every character of `needle` appears in `hay`, in order,
- * gaps allowed (#16 "fuzzy").
- *
- * Deliberately not a ranked edit-distance search. This answers "is this the
- * file I meant", and it can only say yes or no — it cannot rank a plausible
- * WRONG file above the right one, which is the failure mode that actually costs
- * an agent time. Searching file CONTENT is what bash/grep are for.
- */
 export function fuzzyPathMatch(needle: string, hay: string): boolean {
   const n = needle.toLowerCase().replace(/[\s._/-]+/g, "");
   if (!n) return false;
@@ -2816,14 +1973,6 @@ export function fuzzyPathMatch(needle: string, hay: string): boolean {
   return false;
 }
 
-/**
- * Locate a file by a loose name and read it.
- *
- * Walks the workspace (skipping .git, node_modules and build noise) and ranks
- * matches: exact path, exact basename, ends-with, then subsequence. When
- * several match it LISTS them rather than picking one — guessing here would have
- * the agent edit the wrong file, which is the expensive mistake.
- */
 async function fuzzyRead(
   needle: string,
   ctx: ToolContext,
@@ -2868,12 +2017,7 @@ async function fuzzyRead(
   }
   found.sort((a, b) => a.rank - b.rank || a.rel.length - b.rel.length || a.rel.localeCompare(b.rel));
   const best = found[0]!;
-  // Only a confident match is read directly. If the query is vague enough that
-  // several files match, LIST them: guessing would hand the agent the wrong
-  // file, and the cost of that mistake is far higher than one extra call.
-  // An exact path or basename is unambiguous, so those still read straight away.
   if (best.rank <= 1 || found.length === 1) {
-    // re-enter the tool so a unique match behaves exactly like a normal read
     return executeTool("read_file", JSON.stringify({ ...args, path: best.rel, fuzzy: undefined }), ctx);
   }
   return {
@@ -2884,7 +2028,6 @@ async function fuzzyRead(
   };
 }
 
-/** Current skills across the configured roots (for the system prompt listing). */
 export async function currentSkills(ctx: ToolContext): Promise<SkillDef[]> {
   return discoverSkills(ctx.skillRoots ?? []);
 }
@@ -2897,37 +2040,14 @@ export function toolSpecs(): ToolSpecLike[] {
 }
 type ToolSpecLike = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
 
-/** tools that mutate the workspace — blocked for read-only personas */
 const MUTATING_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "bash"]);
 
-/**
- * Repair + normalise one tool call's arguments (#17, "A-rank item 1").
- *
- * The issue's thesis is "the harness deterministically does what a model does
- * badly", and the concrete failures it names for Ox/Qwen/DeepSeek-class models
- * are all argument-shaped. Before this, teapot repaired only tool NAMES and
- * then did a bare JSON.parse, so any of the following burned a whole turn on a
- * generic "invalid JSON arguments":
- *
- *   - a JSON-stringified object:      {"command":"{\"path\":\"a\"}"}
- *   - a bare scalar for an object:   {"paths":"a.ts"}
- *   - everything as strings:         {"limit":"100"} / {"ignore_case":"true"}
- *   - an alias for the real key:     {"cmd":"ls"} / {"oldValue":"x"}
- *   - markdown framing on a path:    {"path":"**\`a.ts\`"}
- *
- * Pure and side-effect free so it is directly unit-testable; it returns the
- * repaired args plus any notes about what it changed, and NEVER throws — an
- * unrepairable call is reported as `error` so the caller can hand the model a
- * shape it can actually send next.
- */
 export interface RepairResult {
   args: Record<string, unknown>;
   notes: string[];
-  /** set when the call cannot be made usable; says what to send instead */
   error?: string;
 }
 
-/** per-tool aliases: the common wrong key -> the key the schema declares. */
 const ARG_ALIASES: Record<string, Record<string, string>> = {
   bash: { cmd: "command", script: "command", shell: "command", input: "command" },
   read_file: { file_path: "path", filepath: "path", file: "path", name: "path" },
@@ -2939,11 +2059,6 @@ const ARG_ALIASES: Record<string, Record<string, string>> = {
   read_url: { uri: "url", link: "url" },
 };
 
-/**
- * The one argument each tool's whole call usually boils down to. Used to
- * salvage a bare word ("ls") that was never wrapped in JSON at all — but ONLY
- * for tools where that is unambiguous, so "12" is never mistaken for a path.
- */
 const PRIMARY_STRING_ARG: Record<string, string> = {
   bash: "command",
   read_file: "path",
@@ -2955,7 +2070,6 @@ const PRIMARY_STRING_ARG: Record<string, string> = {
   save_skill: "content",
 };
 
-/** keys whose schema type is a number / boolean, per tool. */
 const NUMERIC_ARGS: Record<string, string[]> = {
   read_file: ["offset", "limit", "context"],
   bash: ["timeout_ms"],
@@ -2971,13 +2085,11 @@ const BOOL_ARGS: Record<string, string[]> = {
   list_dir: [],
 };
 
-/** markdown/backtick framing models like to wrap a path in */
 function unframe(v: string): string {
   const m = /^[`*_\s]+(.+?)[`*_\s]*$/.exec(v);
   return m ? m[1]! : v;
 }
 
-/** coerce "100" -> 100, "true" -> true; returns undefined when not coercible */
 function coerceScalar(v: unknown): unknown {
   if (typeof v !== "string") return v;
   const t = v.trim();
@@ -2987,7 +2099,6 @@ function coerceScalar(v: unknown): unknown {
   return v;
 }
 
-/** Turn a value into an array, tolerating a bare scalar or a JSON array. */
 function toArray(v: unknown): unknown[] {
   if (Array.isArray(v)) return v;
   if (typeof v === "string") {
@@ -2997,7 +2108,6 @@ function toArray(v: unknown): unknown[] {
         const p = JSON.parse(t);
         if (Array.isArray(p)) return p;
       } catch {
-        /* fall through — treat as a single element */
       }
     }
     return [v];
@@ -3012,12 +2122,8 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
   try {
     parsed = rawArgs?.trim() ? JSON.parse(rawArgs) : {};
   } catch {
-    // not JSON at all: a whole call was stringified, or the model emitted a
-    // bare word. Only salvageable when the tool takes a single obvious string.
     const bare = rawArgs?.trim().replace(/^[`*\s]+|[`*\s]+$/g, "");
     const primary = PRIMARY_STRING_ARG[name];
-    // a bare number/boolean is never a path or a command — refusing is far
-    // better than inventing one
     const isScalarish = bare !== "" && /^(true|false|null|-?\d+(\.\d+)?)$/i.test(bare);
     if (bare && primary && !isScalarish && !bare.startsWith("{") && !bare.startsWith("[")) {
       notes.push(`wrapped a bare string as {"${primary}": …}`);
@@ -3025,21 +2131,15 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
     }
     return { args: {}, notes, error: `arguments were not valid JSON — send a JSON object, e.g. {"…"}` };
   }
-  // a JSON-stringified object arrives as a string
   if (typeof parsed === "string" && /[{[]/.test(parsed.trim().slice(0, 2))) {
     try {
       parsed = JSON.parse(parsed);
       notes.push("unwrapped a JSON-stringified argument object");
     } catch {
-      /* leave as-is; it may genuinely be a string argument */
     }
   }
-  // a bare scalar where an object is required
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     if (parsed === null || parsed === undefined) return { args: {}, notes, error: "arguments were empty" };
-    // An ARRAY is a legitimate value for a path-ish argument, but only for the
-    // tools that actually take one — inventing {path:[…]} for apply_patch would
-    // hand the tool a key it has never heard of.
     if (Array.isArray(parsed) && name === "read_file") {
       notes.push("kept the array as a paths list");
       return { args: { paths: parsed }, notes };
@@ -3058,20 +2158,16 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
     };
   }
   const args = { ...(parsed as Record<string, unknown>) };
-  // alias normalisation
   for (const [from, to] of Object.entries(ARG_ALIASES[name] ?? {})) {
     if (!(from in args)) continue;
     if (!(to in args)) {
       args[to] = args[from];
       notes.push(`renamed "${from}" -> "${to}"`);
     } else {
-      // both present: the schema key wins and the stray alias is DROPPED, not
-      // left behind as an unknown argument the tool would ignore
       notes.push(`dropped "${from}" — "${to}" was also given and wins`);
     }
     delete args[from];
   }
-  // string -> number / boolean for the keys whose schema says so
   for (const k of NUMERIC_ARGS[name] ?? []) {
     if (k in args) {
       const c = coerceScalar(args[k]);
@@ -3090,17 +2186,11 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
       }
     }
   }
-  // an array-typed arg arriving as a scalar
   if (name === "read_file" && "paths" in args) {
     const before = args.paths;
     args.paths = toArray(before);
     if (!Array.isArray(before)) notes.push('coerced "paths" to an array');
   }
-  // a JSON-stringified object hiding inside a single argument, e.g.
-  // {"path": "{\"path\": \"a.ts\"}"} — unwrap it and merge its keys
-  // Only PATH-like keys: `content`/`old_text`/`new_text` legitimately hold JSON
-  // (writing a .json file!), and unwrapping those would REPLACE the file's
-  // actual data with an inner field — silent data loss, not repair.
   for (const k of ["path", "command"]) {
     const v = args[k];
     if (typeof v !== "string") continue;
@@ -3115,10 +2205,8 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
         break;
       }
     } catch {
-      /* genuinely not JSON — leave it alone */
     }
   }
-  // markdown framing on a path
   for (const k of ["path", "file_path"]) {
     if (typeof args[k] === "string") {
       const f = unframe(args[k] as string);
@@ -3132,9 +2220,6 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
 }
 
 export async function executeTool(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
-  // MCP tools are namespaced (`mcp__server__tool`) so they can never reach this point
-  // by shadowing a built-in. Dispatched BEFORE the built-in lookup because there is no
-  // static TOOLS entry to find — the tool list belongs to the server.
   if (name.startsWith(MCP_PREFIX)) {
     if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
     let args: unknown = {};
@@ -3150,12 +2235,8 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
   const def = TOOLS.find((t) => t.name === name);
   if (!def) return { ok: false, result: `unknown tool: ${name}` };
   if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
-  // read-only personas (researcher/reviewer) are enforced, not just asked
   if (ctx.readOnly && MUTATING_TOOLS.has(name) && !ctx.allowMutatingForReview?.includes(name))
     return { ok: false, result: `${name} is blocked: this agent runs with read-only tools` };
-  // repair the call before handing it to the tool. A model that sends
-  // {"cmd":"ls"} or {"limit":"100"} should get the work done, not a generic parse
-  // failure and a wasted turn. Unrepairable calls say what to send instead.
   const repaired = repairToolInput(name, rawArgs);
   if (repaired.error)
     return { ok: false, result: `${name}: ${repaired.error}` };
@@ -3169,24 +2250,6 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
   }
 }
 
-/**
- * The gateway's cap on the REQUEST BODY'S STRUCTURE, not on its token count.
- *
- * Command Code's `/alpha` gateway rejects with
- * `400 Invalid request JSON: JSON node count cannot exceed 32768`, and the distinction matters
- * because every usual recovery is wrong for it:
- *
- *   - COMPACTING does not reliably help. It does reduce message and content-part counts, but a
- *     session heavy in tool calls and images stays above the cap — measured upstream at 22.6% of a
- *     1,000,000-token window with 1,436 messages and 61 image parts. Retrying after a compaction
- *     therefore burns a full-price summarisation to be refused again.
- *   - RESENDING the same structure cannot succeed at all, so this is not a transient error.
- *
- * So it is detected SEPARATELY from `isContextOverflow`, and the remedy is the honest one: a new
- * session, or fewer messages / tool calls / images in this one.
- *
- * Reference: Mars-Sea/dsh-commandcode-provider issue #96 and its `JSON_NODE_LIMIT_REJECTION`.
- */
 export function isRequestNodeLimit(err: unknown): { hit: boolean; limit?: number } {
   const msg = String((err as Error)?.message ?? "");
   const m = /JSON node count cannot exceed\s+(\d+)/i.exec(msg);

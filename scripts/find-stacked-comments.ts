@@ -1,28 +1,4 @@
 #!/usr/bin/env node
-/**
- * Find STACKED comments: two or more comment groups with no code between them.
- *
- * The pattern this exists for:
- *
- *     /* more old comment *\/
- *     /*
- *      * old comment
- *      *\/
- *     // new comment
- *     function xxx() {
- *
- * Only the LAST group is documentation; the ones above it were orphaned when a declaration between
- * them was deleted or moved. That is worse than untidy — JSDoc tooling attaches the FIRST block to
- * the declaration below, so a `SYSTEM_TEMPLATE` docblock can end up documenting `KEEP_RECENT_TOKENS`.
- * MEASURED in `src/agent/agent.ts`: three stacked docblocks above `memoryDigestText()`, two of them
- * describing methods that no longer exist there.
- *
- * Distinct from the JSX case (`{/* … *\/}` inside a render), which `lint` already covers.
- *
- * Usage:
- *   node scripts/find-stacked-comments.ts            # report
- *   node scripts/find-stacked-comments.ts --strict   # exit 1 when any remain (for CI)
- */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
@@ -50,7 +26,6 @@ const walk = (dir: string): void => {
 };
 for (const d of DIRS) walk(path.join(ROOT, d));
 
-/** read the comment group starting at `i`, or null when line `i` is not a comment */
 const groupAt = (lines: string[], i: number): Group | null => {
   const t = lines[i]!.trim();
   if (t.startsWith("//")) {
@@ -61,7 +36,6 @@ const groupAt = (lines: string[], i: number): Group | null => {
   if (t.startsWith("/*")) {
     let j = i;
     while (j < lines.length && !lines[j]!.includes("*/")) j++;
-    // a `/* … *\/` that opens and closes on one line still ends here
     return { kind: "block", start: i, end: Math.min(j, lines.length - 1) };
   }
   return null;
@@ -84,24 +58,13 @@ for (const file of files) {
     }
     const groups: Group[] = [first];
     i = first.end + 1;
-    // keep consuming comment groups while ONLY comments separate them
     for (;;) {
       const g = groupAt(lines, i);
       if (!g) break;
-      // A BLANK LINE between groups means the author separated them deliberately — they are not
-      // stacked. Without this, two unrelated docblocks close together read as one orphaned run.
       if (groups.length > 0 && lines[i - 1]?.trim() === "") break;
       groups.push(g);
       i = g.end + 1;
     }
-    /**
-     * A SECTION BANNER is not an orphan.
-     *
-     * `/* ---------- themes ---------- *\/` is a navigational marker, and the block under it
-     * explains the code that follows. That is a deliberate grouping, so a run whose FIRST group is
-     * a banner is skipped. Judging "is this comment stale" by shape alone cannot be done; the
-     * banner case is the one shape that is unambiguously intentional.
-     */
     const isBanner = (g: Group): boolean => {
       const text = lines.slice(g.start, g.end + 1).join("\n");
       return /^\/\*\s*-{3,}/.test(text.trim());
@@ -118,7 +81,6 @@ for (const file of files) {
   }
 }
 
-/** how many groups stack, and what the last one is documenting */
 const summary = new Map<string, Hit[]>();
 for (const h of hits) {
   const key = h.file;

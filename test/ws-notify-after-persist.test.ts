@@ -1,37 +1,3 @@
-/**
- * #54 — the WebSocket notified the frontend BEFORE the event reached disk, so the
- * reload it triggered could not see it.
- *
- * ## The mechanism
- *
- * The design is deliberate: the frontend treats a `kind:"event"` frame as
- * "something changed, re-read `/events`" rather than as timeline data. That is a
- * sound choice — it means one code path builds the timeline.
- *
- * But `EventLog.append()` used to call `onEvent` BEFORE queueing the write:
- *
- *     lastByBranch.set(...)
- *     onEvent(evt)          <- frontend re-reads /events NOW
- *     stream.write(...)     <- the event reaches disk AFTER
- *
- * So the reload raced the write. Measured against a real EventLog, reloading on
- * every notification:
- *
- *     appends: 30   reloads that MISSED the event: 30
- *
- * The 120ms debounce hides this most of the time, which is exactly why #54 felt
- * random rather than reproducible: a slow write misses, a fast one lands. The
- * rows that vanish are the ones written slowly.
- *
- * ## The fix
- *
- * Write first, then notify. The observer is called once the write is handed to
- * the OS, so any read it triggers can see the event.
- *
- * A failed write deliberately does NOT notify: the event is not on disk, and
- * announcing it would tell the frontend to reload for something that will never
- * appear.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -41,7 +7,6 @@ import path from "node:path";
 import { EventLog } from "../src/log/events.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
-/** open a log, reload on every notification, count the reloads that miss */
 async function reloadMisses(n: number): Promise<{ seen: number; missed: number; log: EventLog; file: string }> {
   const dir = mkdtempInRootSync("s54-");
   const file = path.join(dir, "chat.jsonl");
@@ -75,20 +40,12 @@ test("a notified event is already readable (#54)", async () => {
 });
 
 test("notification happens after the write, not before (#54)", async () => {
-  // The invariant stated DIRECTLY.
-  //
-  // #126: the previous version of this test read the file with ASYNC readFile
-  // inside the observer. That cannot prove ordering — `await readFile()` yields,
-  // so the write can complete during the yield and the old implementation would
-  // still pass. `readFileSync` samples the file at the exact instant `onEvent`
-  // runs, which is the property under test.
   const dir = mkdtempInRootSync("s54b-");
   const file = path.join(dir, "chat.jsonl");
   const log = new EventLog(file, "a");
   await log.load();
   let ordered = true;
   log.onEvent = (e) => {
-    // SYNCHRONOUS sample — no await between onEvent and the read
     const txt = readFileSync(file, "utf8");
     if (!txt.includes(e.id)) ordered = false;
   };
@@ -102,8 +59,6 @@ test("notification happens after the write, not before (#54)", async () => {
 });
 
 test("a failed write does NOT notify (#54)", async () => {
-  // announcing an event that is not on disk would tell the frontend to reload
-  // for something that will never appear
   const dir = mkdtempInRootSync("s54c-");
   const log = new EventLog(path.join(dir, "chat.jsonl"), "a");
   await log.load();
@@ -111,7 +66,7 @@ test("a failed write does NOT notify (#54)", async () => {
   log.onEvent = () => {
     notified++;
   };
-  await log.close(); // stream is null: appends are dropped, not written
+  await log.close(); 
   await log.append("message", "s", "br0", { role: "assistant", content: "x" });
   await new Promise((r) => setTimeout(r, 120));
   assert.equal(notified, 0, "a dropped write must not notify (#54)");

@@ -1,26 +1,3 @@
-/**
- * #135 — `[harness] @tyb2-5-sub-musb is now idle. Continue your task, or finish()
- * if the work is done.` is, on reflection, meaningless.
- *
- * ## Why it was wrong, not merely unclear
- *
- * Two distinct errors:
- *
- *  1. **It was addressed to the wrong agent.** "Continue your task, or finish()" is
- *     an instruction to the PARENT — but the parent did not spawn this child to
- *     make progress on its OWN goal, and when the child DID call `finish()` the
- *     parent already receives a proper `Sub-agent X finished. Final report: …`
- *     (`finished. Final report:` in master.ts). So the nudge restated as an
- * instruction what the report
- *     already stated as fact, and invited the parent to `finish()` its own goal
- *     over a child's status change.
- *
- *  2. **It contradicted what actually happens.** Reaching this nudge means the
- *     child has settled WITHOUT calling `finish()` — so there is no report, and
- *     "continue your task" is addressed to a child nobody is about to resume.
- *
- * The replacement says what happened, and what to do about it.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -28,7 +5,6 @@ import path from "node:path";
 import { Master } from "../src/master.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
-/** a parent with one child; returns the prompts the parent receives */
 async function tree() {
   const dataDir = mkdtempInRootSync("t135a-");
   const ws = mkdtempInRootSync("t135w-");
@@ -52,32 +28,16 @@ async function tree() {
   return { m, parent, kid, got, stop };
 }
 
-/**
- * The nudge the parent sees when the child settles in `status`.
- *
- * A FRESH tree per status: `setStatus` is a no-op when the status is unchanged,
- * so asking one tree for `idle` then `stopped` would silently re-report `idle` —
- * which is exactly what happened the first time this was written.
- */
 async function nudgeFor(status: string): Promise<string> {
   const { m, kid, got, stop } = await tree();
   try {
     (m as unknown as { reportedRunning: Set<string> }).reportedRunning.add("p1-sub");
-    // Force a real transition. The child starts `stopped`, and `setStatus` is a
-    // no-op when the status is unchanged — so parking it on `idle` first (which
-    // my first attempt did for every status except `stopped`) meant asking for
-    // `idle` afterwards changed nothing and the nudge still read `idle`.
-    //
-    // `running` is the one value no settled status equals, so it is always a real
-    // transition. It is also the state that ARMS the #130 gate, which is what we
-    // want anyway.
     const set = (kid as unknown as { setStatus(s: string, r?: string): void }).setStatus.bind(kid);
     set("running", "precondition");
     await new Promise((r) => setTimeout(r, 30));
-    got.length = 0; // drop anything the precondition transition produced
+    got.length = 0; 
     set(status, "test");
     await new Promise((r) => setTimeout(r, 150));
-    // got[0] is the SPAWN DIRECTIVE; the settled-nudge is the LAST message
     return got.at(-1) ?? "";
   } finally {
     await stop();
@@ -101,8 +61,6 @@ test("the nudge no longer tells the PARENT to finish() (#135)", async () => {
 
 test("it says the child did NOT call finish() (#135)", async () => {
   const nudge = await nudgeFor("idle");
-  // reaching this nudge means the child settled WITHOUT finish(), which is the
-  // one fact the parent most needs and the old wording hid
   assert.match(
     nudge,
     /without having called finish\(\)/,
@@ -122,7 +80,6 @@ test("each status gets advice that fits it (#135)", async () => {
   assert.match(stopped, /stopped mid-task/, `stopped means resume-or-respawn (#135); got ${stopped}`);
   const error = await nudgeFor("error");
   assert.match(error, /Check its last output/, `error means look first (#135); got ${error}`);
-  // and neither contradicts itself: no "stopped" phrasing on a waiting child
   const waiting = await nudgeFor("waiting");
   assert.doesNotMatch(
     waiting,

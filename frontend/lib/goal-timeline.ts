@@ -1,31 +1,9 @@
-/**
- * Timeline rendering of the goal / completion-audit lifecycle.
- *
- * #41: "finish → audit reject → continue is hard to follow on the timeline."
- *
- * The audit emits four distinct `goal` events (status → audit-started → audit
- * → status), but the renderer collapsed every one of them into
- *
- *     🎯 goal <event>: <d.text ?? "">
- *
- * so `audit-started` and `audit` rendered as bare labels with an EMPTY body —
- * the verification contract and the verdict/feedback were dropped entirely.
- * Worse, `marked done` is logged before the audit that may reject it, so the
- * timeline read as if the goal had completed when it had not.
- *
- * Pure and dependency-free so it is unit-testable under `node --test`.
- */
 
 export type AuditPhase = "status" | "audit-started" | "audit" | "audit-failed" | "other";
 
 export interface GoalEventData {
   event?: string;
   status?: string;
-  /**
-   * WHO changed the status: "operator" (resumed, or set a new goal), "auditor" (rejected a finish)
-   * or "agent". Absent in logs written before this existed, which is why the renderer treats a
-   * missing value as neither.
-   */
   by?: string;
   verify?: string;
   verdict?: string;
@@ -40,65 +18,29 @@ export function auditPhase(d: GoalEventData): AuditPhase {
   return "other";
 }
 
-/** Is this goal event part of the finish→audit lifecycle worth calling out? */
 export function isAuditLifecycle(d: GoalEventData): boolean {
   return auditPhase(d) !== "other";
 }
 
 export interface GoalLine {
-  /** short label for the divider row */
   label: string;
-  /**
-   * The detail body — may be EMPTY when there is genuinely nothing to show.
-   *
-   * #41 required every branch to carry a non-empty detail, because the old
-   * template produced a bare "🎯 goal audit:" with nothing after it. #51 is the
-   * exception that proves the rule: a verdict the auditor gave NO reason for
-   * must render as a label alone, because a card reading "(no detail)" is the
-   * absence of a finding dressed up as one. `hasCard` says which case this is,
-   * so a consumer never has to guess from an empty string.
-   */
   detail: string;
-  /** "ok" | "warn" | "err" | "" — drives the accent colour */
   tone: "ok" | "warn" | "err" | "";
-  /** render the body as markdown rather than plain text */
   markdown: boolean;
-  /** true when `detail` is real content that deserves its own card */
   hasCard: boolean;
 }
 
-/**
- * True when this text is one of the harness's own "the model said nothing
- * useful" placeholders rather than real feedback.
- *
- * The harness stored the literal "(no detail)" when the auditor returned no
- * usable text, and the UI then drew it as a card as if it were the auditor's
- * finding. The report called that card ちょっと気持ち悪い — and rightly: it is a
- * card whose entire content is the absence of content. Anything that is empty,
- * or one of these placeholders, renders as no card at all (#51).
- */
 export function isPlaceholderDetail(s: string): boolean {
   const t = s.trim().toLowerCase();
   return t === "" || t === "(no detail)" || t === "no detail" || t === "(none)" || t === "(empty)";
 }
 
-/**
- * The detail to render, or "" when it would only be a placeholder.
- *
- * Exported so the renderer and this module agree on one rule — the bug was two
- * places each deciding independently what "no detail" meant.
- */
 export function cardDetail(raw: string, fallback: string): string {
   const t = String(raw ?? "").trim();
   if (!isPlaceholderDetail(t)) return t;
   return isPlaceholderDetail(fallback) ? "" : fallback;
 }
 
-/**
- * Turn one `goal` event into a labelled, COLOURED line that says what actually
- * happened. Every branch carries a non-empty detail, which is the bug this
- * fixes: the old template produced `🎯 goal audit:` with nothing after it.
- */
 export function goalLine(d: GoalEventData): GoalLine {
   switch (auditPhase(d)) {
     case "audit-started":
@@ -106,10 +48,6 @@ export function goalLine(d: GoalEventData): GoalLine {
         label: "🔍️ completion audit started",
         detail: String(d.verify ?? "").trim() || "checking the verification contract…",
         tone: "",
-        // NOT markdown, deliberately (#41): the contract is a COMMAND-shaped string
-        // ("npm test passes"). Rendering it as markdown invites `*` globs and `_` in a command
-        // to be reinterpreted as emphasis, which silently mangles the thing being verified.
-        // Code-fenced, so it is shown exactly as it will be checked.
         markdown: false,
         hasCard: true,
       };
@@ -118,9 +56,6 @@ export function goalLine(d: GoalEventData): GoalLine {
       return d.verdict === "approved"
         ? {
             label: "✅ audit: approved",
-            // an empty verdict body is a LABEL, not a card (#51): the auditor
-            // approved without giving a reason, and "(no detail)" as a card
-            // looked like a finding when it was the absence of one
             detail: cardDetail(d.feedback ?? "", ""),
             tone: "ok",
             markdown: true,
@@ -144,8 +79,6 @@ export function goalLine(d: GoalEventData): GoalLine {
       };
     case "status": {
       const s = String(d.status ?? "").trim();
-      // a status event with no status value is still a status event — never
-      // fall through to a bare label (#41)
       if (!s)
         return {
           label: "🎯 goal status updated",
@@ -154,18 +87,6 @@ export function goalLine(d: GoalEventData): GoalLine {
           markdown: true,
           hasCard: true,
         };
-      /**
-       * "done" has TWO causes, and only one of them is a claim awaiting an audit.
-       *
-       * `by: "operator"` is the operator deciding the work is finished — no agent `finish()` was
-       * called and no audit runs (`setGoalStatus` only writes the state; `handleFinish` is the
-       * audited path). The wording was unconditional, so marking a goal done by hand announced
-       * "the agent called finish(goalComplete=true); the verification contract is now being audited"
-       * — a claim nobody made and an audit that would never happen.
-       *
-       * Everything else (an agent's finish, or an older event with no `by`) keeps the pending-audit
-       * wording: `done` IS logged before the audit runs, so it must not read as final there.
-       */
       if (s === "done") {
         const by = String(d.by ?? "").trim();
         if (by === "operator")
@@ -184,18 +105,6 @@ export function goalLine(d: GoalEventData): GoalLine {
           hasCard: true,
         };
       }
-      /**
-       * "active" has TWO causes, and they are not the same news.
-       *
-       * `by: "auditor"` means the verification contract rejected a finish — worth a warning.
-       * Anything else is the operator resuming a paused goal (or setting a fresh one), which is a
-       * deliberate action that needs no caveat. The wording used to be hardcoded to the audit case,
-       * so pressing ▶ working on a paused goal claimed "the audit rejected the finish" — reported
-       * as "pausedからの移動はrejectじゃないのでは?".
-       *
-       * An older log has no `by` field; those events predate the distinction, so the neutral
-       * wording is used rather than guessing at an audit rejection.
-       */
       if (s === "active") {
         const by = String(d.by ?? "").trim();
         if (by === "auditor") {
@@ -217,15 +126,8 @@ export function goalLine(d: GoalEventData): GoalLine {
       }
       return {
         label: `🎯 goal ${s || "updated"}`,
-        // #101: a status event carries the STATUS but no text, so this produced
-        // an empty card — the exact shape #41 and #51 fixed in the branches
-        // above. Your read was right: it is a leftover from when this line was
-        // the centered banner, and it survived the move to left-aligned cards.
-        // Either give the card a body or drop it; an empty one reads as a verdict
-        // that was never delivered.
         detail: String(d.text ?? "").trim() || `the goal is now ${s}`,
         tone: "",
-        // carries the goal TEXT when there is one, so it is markdown too
         markdown: true,
         hasCard: true,
       };
@@ -235,16 +137,8 @@ export function goalLine(d: GoalEventData): GoalLine {
       const name = String(d.event ?? "").trim();
       return {
         label: name ? `🎯 goal ${name}` : "🎯 goal updated",
-        // #41: never render a bare label with nothing after it — that was the
-        // exact shape of the reported bug. An unknown event with no text still
-        // gets a body, but it must SAY something rather than read as a verdict
-        // that was never delivered (#51).
         detail: what || `the "${name || "goal"}" event carried no further detail`,
         tone: "",
-        // the goal text is PROSE someone wrote, and it is routinely markdown
-        // (headings, lists, backticked paths). Rendering it as a fenced code block meant the
-        // operator's own goal came back as literal `## Foo` / `- bar`. `renderMarkdown` escapes
-        // all HTML first, so pointing it at this text is safe.
         markdown: true,
         hasCard: true,
       };

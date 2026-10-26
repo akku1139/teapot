@@ -1,26 +1,3 @@
-/**
- * #141 — the `kind:"event"` WS frame must carry the FULL event.
- *
- * ## The hole this fills
- *
- * #54's fix made the socket's payload the timeline's data: the frontend does
- * `mergeEvents([msg.event])` and inserts it directly, instead of treating the frame
- * as "something changed, re-read /events".
- *
- * That fix rests entirely on the frame carrying everything `EventLog` wrote. And
- * **nothing tested it**. The only assertion in the suite was:
- *
- *     seen.some((s) => s.kind === "event" && s.event?.type === "prompt")
- *
- * — one field. I mutated the bus to emit `{ type: e.type }` instead of the whole
- * event — stripping `id`, `seq`, `ts`, `session`, `branch`, `parent` and every
- * byte of `data` — and the suite stayed green.
- *
- * That would have broken #54 completely: `mergeEvents` dedupes by `id` and sorts by
- * `seq`, so events with no id collapse into one row and events with no seq order
- * arbitrarily. The bug is invisible precisely because it was shipped in the same
- * commit as the tests that "covered" it.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -51,7 +28,6 @@ test("a kind:\"event\" frame carries the whole logged event (#141)", async () =>
     assert.ok(frame, `precondition: a prompt event was broadcast (#141); got ${JSON.stringify(seen.map((s) => s.kind))}`);
     const e = frame.event!;
 
-    // every field the timeline's merge keys on, or depends on
     for (const field of ["id", "seq", "ts", "session", "branch", "parent", "type", "data"]) {
       assert.ok(
         Object.prototype.hasOwnProperty.call(e, field),
@@ -63,7 +39,6 @@ test("a kind:\"event\" frame carries the whole logged event (#141)", async () =>
     assert.equal(typeof e["id"], "string", "id must be a string — the merge dedupes on it (#141)");
     assert.ok(e["id"] !== "", "id must not be empty, or every row collapses to one (#141)");
 
-    // and the DATA the timeline renders, not just the envelope
     const data = e["data"] as { text?: string };
     assert.equal(
       data?.text,
@@ -78,8 +53,6 @@ test("a kind:\"event\" frame carries the whole logged event (#141)", async () =>
 });
 
 test("the client's merge is viable against a real frame (#141)", async () => {
-  // the point of the payload: two events arrive with distinct ids and increasing
-  // seqs, which is exactly what mergeEvents needs to keep both and order them
   const dataDir = mkdtempInRootSync("t141b-");
   const ws = mkdtempInRootSync("t141x-");
   const m = new Master(

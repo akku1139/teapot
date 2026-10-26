@@ -1,15 +1,3 @@
-// Prove a comment-cleanup diff changed no CODE.
-//
-// A cleanup pass that silently alters a condition is the worst possible outcome:
-// the tests may still pass while behaviour drifts. So compare the CODE of the old
-// and new revision with comments removed.
-//
-// The comparison must ignore blank lines and leading indentation: removing a
-// comment SHIFTS every later line, so a positional line-by-line diff reports
-// spurious changes (and a re-indent is prose-preserving). What must be identical
-// is the sequence of non-blank CODE lines, whitespace-normalised.
-//
-// Usage: node scripts/audit-comment-only-diff.mjs <base-rev>
 import { execFileSync } from "node:child_process";
 import { stripSourceComments } from "../test/helpers/source.ts";
 
@@ -18,13 +6,9 @@ const files = execFileSync("git", ["diff", "--name-only", base, "--", "src", "fr
   .split("\n")
   .filter((f) => /\.(ts|tsx)$/.test(f));
 
-/** the code tokens that must not change: comments gone, whitespace irrelevant */
 function codeLines(src) {
   return stripSourceComments(src)
     .replace(/\r\n/g, "\n")
-    // whitespace removed entirely, so a REFORMAT (a signature joined onto one
-    // line, a re-indent) is not reported as a code change while any token change
-    // still is
     .replace(/\s+/g, "");
 }
 
@@ -36,7 +20,6 @@ for (const f of files) {
   const b = codeLines(after);
   if (a === b) continue;
 
-  // show the first divergence so a real change is reviewable
   let i = 0;
   while (i < Math.min(a.length, b.length) && a[i] === b[i]) i++;
   changed++;

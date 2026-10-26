@@ -1,25 +1,3 @@
-/**
- * #82 — "can a goal audit and an auto-compaction overlap and behave oddly?"
- * (and: document the behaviour).
- *
- * Checked rather than assumed, because the two touch the same agent from
- * different entry points: `setGoalAudit` is the model's own call inside a turn,
- * `maybeCompact` runs at the turn boundary, on overflow recovery, and on the
- * operator's explicit `compactNow()`.
- *
- * The answer is no, for three independent reasons — each pinned below:
- *
- *  1. They serialise. Every one of the four `maybeCompact` call sites and
- *     `setGoalAudit` go through `enqueue`, which chains onto `runChain`.
- *  2. The goal is INSTANCE state (`goal: GoalState`), not message content, so
- *     a compaction that rewrites `this.messages` cannot drop or truncate it.
- *  3. An audit writes to `goal.audit`, a separate field, so it is not part of
- *     what compaction rewrites.
- *
- * The genuinely interesting question is whether an audit verdict and a
- * compaction can leave the goal in a state that reads as "done" when it is not.
- * They cannot: `status` is only ever written by `setGoal`/`setGoalStatus`.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -46,8 +24,6 @@ test("an audit concurrent with a compaction preserves the goal (#82)", async () 
     await agent.setGoal("ship the thing");
     agent.enqueuePrompt("go", "user");
     agent.start("t");
-    // deliberately concurrent: the model's own audit call and the operator's
-    // explicit compact, while a turn is in flight
     await Promise.all([
       agent.setGoalAudit("changes-required", "not yet"),
       agent.compactNow(),
@@ -64,10 +40,6 @@ test("an audit concurrent with a compaction preserves the goal (#82)", async () 
 });
 
 test("the audit verdict drives the goal status, deliberately (#82)", async () => {
-  // Documented rather than asserted as a bug: `setGoalAudit` owns the status
-  // transition. `approved` completes the goal; `changes-required` REOPENS one
-  // that was already done. Both directions are intentional — an audit that
-  // could not change the status would not be an audit.
   await useTempDirs(["q82c-", "q82d-"], async ([ws, sd]) => {
     const agent = mk(ws!, sd!, async () => ({ message: { role: "assistant" as const, content: "ok" } }));
     await agent.init();
@@ -80,7 +52,6 @@ test("the audit verdict drives the goal status, deliberately (#82)", async () =>
     assert.equal((agent as any).goal.status, "done", "an approved audit completes the goal (#82)");
     assert.equal((agent as any).goal.audit?.verdict, "approved");
 
-    // and it re-opens — the reverse transition exists on purpose
     await agent.setGoalAudit("changes-required", "actually no");
     assert.equal((agent as any).goal.status, "active", "a later rejection must reopen a done goal (#82)");
     await agent.dispose();

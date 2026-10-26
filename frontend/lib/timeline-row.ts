@@ -10,18 +10,11 @@ export const AUTHORS: Record<string, { name: string; icon: string; color: string
   user: { name: "you", icon: "🟧", color: "#faa81a" },
   message: { name: "agent", icon: "🫖", color: "#5865f2" },
   progress: { name: "progress", icon: "📈", color: "#3ba55d" },
-  question: { name: "agent", icon: "❓️", color: "#5865f2" }, // ask_user comes from the agent too
+  question: { name: "agent", icon: "❓️", color: "#5865f2" }, 
 };
 
 export const HARNESS_AUTH = { name: "harness", icon: "📣", color: "#3ba55d" };
 
-/**
- * The author's colour, as a CLASS rather than an inline style.
- *
- * `style={{ "--author": colour }}` was one custom property per row, and a row is created ~1,100
- * times when a session opens — the same argument that moved every other row detail into the
- * stylesheet. The palette is a fixed set (one colour per author kind), so it maps to a class.
- */
 export const AUTHOR_TONES = ["you", "agent", "progress", "harness", "tool"] as const;
 export type AuthorTone = (typeof AUTHOR_TONES)[number];
 
@@ -55,16 +48,12 @@ export function rawOf(e: Ev): string {
   const d = e.data ?? {};
   if (e.type === "prompt") return String(d.text ?? "");
   if (e.type === "message") {
-    // include reasoning when present, separated, so nothing is lost
     const r = typeof d.reasoning === "string" && d.reasoning.trim()
       ? `<reasoning>\n${d.reasoning}\n</reasoning>\n\n`
       : "";
     return `${r}${String(d.content ?? "")}`;
   }
   if (e.type === "tool_call") {
-    // the header copy button used to sit on tool rows too and copied ""
-    // (rawOf only knew prompts/messages) — tool rows get dedicated
-    // command/output buttons inside ToolRow instead, so nothing here
     return "";
   }
   return "";

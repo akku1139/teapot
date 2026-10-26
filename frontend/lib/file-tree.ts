@@ -1,4 +1,3 @@
-/* ---------- workspace file tree ---------- */
 
 export interface TreeNode {
   name: string;
@@ -50,12 +49,6 @@ export function mediaKindOf(path: string): MediaKind | null {
   return null;
 }
 
-/* ---------- per-agent file-panel UI state (remount-proof) ----------
- * Preview popups / expanded dirs used to live INSIDE FilesPanel. Any parent
- * re-render that remounted the panel (agent snapshot churn re-evaluating the
- * keyed <Show>) wiped them: an open file popup vanished mid-read and the
- * tree collapsed. Keeping the state in a module-level store keyed by agent
- * makes it survive remounts; only a REAL agent switch starts fresh. */
 export type FileUiState = {
   expanded: Set<string>;
   preview: { path: string; content: string; binary?: boolean; truncated?: boolean } | null;

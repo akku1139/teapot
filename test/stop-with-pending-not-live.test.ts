@@ -1,36 +1,3 @@
-/**
- * #133 — "when there is a pending message, pressing stop from the controls leaves
- * the agent stopped but the controls keep showing the stop button (it should be
- * start). Reloading the page does not help either."
- *
- * ## Cause
- *
- * `isLive()` counted queued prompts, and `stop()` — correctly, per #9 — does not
- * discard them. So after a stop with anything queued the two combined to leave
- * `live` true indefinitely:
- *
- *     after stop : status = stopped   live = true   pendingPrompts = 1
- *
- * `status` was right, so nothing looked wrong server-side, and `live` is the one
- * field the single toggle button reads:
- *
- *     onclick={isSelLive() ? act("/stop") : act("/start")}   (the composer control)
- *
- * so the button stayed "■ stop". Pressing it again was a no-op — the agent was
- * already stopped — and a reload could not help, because the state was real, not
- * a stale render.
- *
- * ## The conflict with #59
- *
- * #59 asserted a stopped agent with queued prompts reads LIVE, reasoning that the
- * user must be able to "stop/clear" it. But `live` drives that one toggle, and a
- * stopped agent pressing stop is a no-op — so that reasoning made the control
- * unusable. #59's real requirement, WITHDRAWABILITY, is met independently by the
- * ✕ on the row, which posts to /prompt/cancel and never reads `isSelLive`.
- *
- * So the queued prompts are still held (#9) and still withdrawable (#59); only the
- * toggle is corrected.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -41,7 +8,6 @@ import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 const _here = path.dirname(fileURLToPath(import.meta.url));
 
-/** an agent parked mid-LLM-call with a second prompt queued behind it */
 async function stopWithPending() {
   const ws = mkdtempInRootSync("t133w-");
   const sd = mkdtempInRootSync("t133s-");
@@ -67,7 +33,7 @@ async function stopWithPending() {
   a.enqueuePrompt("first", "user");
   a.start("t");
   await new Promise((r) => setTimeout(r, 150));
-  a.enqueuePrompt("queued behind", "user"); // stays pending
+  a.enqueuePrompt("queued behind", "user"); 
   const before = a.snapshot();
   a.stop("user pressed stop");
   release();
@@ -87,17 +53,11 @@ test("a stop with prompts queued is NOT live (#133)", async () => {
 });
 
 test("the queued prompts are KEPT, not discarded (#9, #133)", async () => {
-  // #9 settled that a stop must neither deliver nor silently discard them. The
-  // fix corrects the toggle, not the queue.
   const { after } = await stopWithPending();
   assert.equal(after.pendingPrompts, 1, "the queued prompt survives the stop (#9)");
 });
 
 test("a start consumes the queued prompt and goes live again (#133)", async () => {
-  // #126: sampling 150ms after start() was a probe error, not a product one — the
-  // turn completes in single-digit milliseconds here, so `live` was already false
-  // again and the test read as a failure. What matters is that the queued prompt is
-  // CONSUMED and the agent runs a turn: assert that, not a momentary flag.
   const ws = mkdtempInRootSync("t133x-");
   const sd = mkdtempInRootSync("t133y-");
   let calls = 0;

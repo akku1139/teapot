@@ -1,17 +1,3 @@
-/**
- * #8 — "behaviour becomes unstable after compact()"
- *
- * Compaction rewrites history by dropping a PREFIX. The one invariant that
- * makes a prefix-drop safe is that the kept tail never starts on a dangling
- * `tool` message — an assistant turn that issued tool_calls must keep its
- * results, or the provider rejects the next request with a 400 ("messages with
- * role 'tool' must be a response to a preceding message with tool_calls").
- * That error is the "unstable after compact" symptom.
- *
- * The summarize path guards this with safeCut(). The TRUNCATE fallback — taken
- * when the summarizer call fails — cut with safeCut(halfCut) relative to a
- * different base and was the weak spot.
- */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -28,7 +14,6 @@ const reply = (content: string, calls?: ReturnType<typeof tc>[]): LlmResult => (
   message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
 });
 
-/** Every tool_call id that has a matching tool result, and vice versa. */
 function auditPairing(msgs: ChatMessage[]): { orphanResults: string[]; orphanCalls: string[] } {
   const called = new Set<string>();
   const answered = new Set<string>();
@@ -74,15 +59,11 @@ test("compaction leaves no dangling tool results when summarizing (#8)", async (
 });
 
 test("compaction leaves no dangling tool results when the summarizer FAILS (#8)", async () => {
-  // the truncation fallback must satisfy the same invariant as the summarize
-  // path, or the very next provider call 400s
   await useTempDirs(["c8c-", "c8d-"], async ([ws, sessionDir]) => {
     const big = "x".repeat(2000);
     let n = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
       n++;
-      // fail ONLY the summarizer call (its trailing directive is distinctive), so
-      // the main loop survives and reaches the truncation fallback
       if (isSummarizerRequest(messages)) throw new Error("summarizer unavailable");
       if (n === 1)
         return reply("writing", [tc("w1", "write_file", { path: "big.txt", content: big })]);
@@ -97,15 +78,7 @@ test("compaction leaves no dangling tool results when the summarizer FAILS (#8)"
     agent.enqueuePrompt("go");
     agent.start("t");
     await agent.settled();
-    // The regression (#8): with the summarizer down, the fallback used
-    // safeCut(floor(oldCount/2)) which rounds to 0 on a short history, so it
-    // bailed out SILENTLY — compactions stayed 0, the messages were untouched,
-    // and the context was still over budget, guaranteeing the next provider
-    // call overflowed. Truncation must always make progress.
     assert.equal(agent.stats.compactions, 1, "compaction ran despite the summarizer failing");
-    // Progress means the HISTORY shrank, not that the array is short: the truncate
-    // path now prepends a marker saying the prefix was dropped (a silent cut is
-    // undetectable by the model), so counting messages would measure the marker.
     assert.ok(
       (agent.conversation as ChatMessage[]).length < 5,
       `truncation must drop messages, got ${(agent.conversation as ChatMessage[]).length}`,
@@ -121,8 +94,6 @@ test("compaction leaves no dangling tool results when the summarizer FAILS (#8)"
 });
 
 test("a second compaction after the first stays well-formed (#8)", async () => {
-  // "unstable AFTER compact" often means the SECOND round trip breaks, because
-  // state carried across compactions (compactedAtLen, kept tail) is stale.
   await useTempDirs(["c8e-", "c8f-"], async ([ws, sessionDir]) => {
     const big = "x".repeat(2000);
     let n = 0;
@@ -150,9 +121,6 @@ test("a second compaction after the first stays well-formed (#8)", async () => {
 });
 
 test("history stays pairable after a restart that follows a compaction (#8)", async () => {
-  // compactedAtLen is in-memory only; stats.compactions is rebuilt from the
-  // log. If the restored history disagrees with the log, the next compaction
-  // can cut mid-exchange.
   await useTempDirs(["c8g-", "c8h-"], async ([ws, sessionDir]) => {
     const big = "x".repeat(2000);
     let n = 0;
@@ -175,7 +143,6 @@ test("history stays pairable after a restart that follows a compaction (#8)", as
     assert.equal(first.stats.compactions, 1);
     await first.dispose();
 
-    // same session dir, fresh process-equivalent state
     const second = new Agent({
       id: "t", workspace: ws, sessionDir,
       llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
@@ -195,8 +162,6 @@ test("history stays pairable after a restart that follows a compaction (#8)", as
   });
 });
 
-/* ---------- safeCut is the guard both paths rely on ---------- */
-
 test("safeCut never leaves the kept tail starting on a dangling tool result", async () => {
   await useTempDirs(["c8i-", "c8j-"], async ([ws, sessionDir]) => {
     const agent = new Agent({
@@ -205,7 +170,6 @@ test("safeCut never leaves the kept tail starting on a dangling tool result", as
       chatFn: async () => reply("x"), autoContinue: false,
     } as any);
     await agent.init();
-    // build a history whose tail region is dense with tool results
     const msgs: ChatMessage[] = [
       { role: "user", content: "a" },
       { role: "assistant", content: "b", tool_calls: [tc("c1", "read_file", { path: "x" })] as any },
@@ -218,7 +182,7 @@ test("safeCut never leaves the kept tail starting on a dangling tool result", as
     (agent as unknown as { messages: ChatMessage[] }).messages = msgs;
     for (let cut = 0; cut <= msgs.length; cut++) {
       const i = (agent as unknown as { safeCut(n: number): number }).safeCut(cut);
-      if (i < 0) continue; // nothing safely cuttable
+      if (i < 0) continue; 
       const kept = msgs.slice(i);
       const orphans = auditPairing(kept).orphanResults;
       assert.deepEqual(orphans, [], `safeCut(${cut}) -> start ${i} left dangling results`);
