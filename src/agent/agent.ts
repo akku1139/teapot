@@ -306,7 +306,7 @@ export class Agent {
   private workspaceMissing = false;
   private lastProgressAt = Date.now();
   private lastUsage?: { input: number; output: number; cached?: number };
-  modelPricing?: { prompt: number; completion: number };
+  modelPricing?: { prompt: number; completion: number; cacheRead?: number };
   private compactedAtLen = 0;
   private pendingSubReport = "";
   private compactPhase = "";
@@ -491,7 +491,7 @@ export class Agent {
     this.compactedAtLen = 0;
   }
 
-  async setModelPricing(p?: { prompt: number; completion: number }): Promise<void> {
+  async setModelPricing(p?: { prompt: number; completion: number; cacheRead?: number }): Promise<void> {
     const wasUndefined = !this.modelPricing;
     this.modelPricing = p;
     if (!p || !wasUndefined) return; 
@@ -503,7 +503,10 @@ export class Agent {
         const u = e.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
         const inTok = u.inputTokens ?? 0;
         const cached = Math.min(u.cachedInputTokens ?? 0, inTok);
-        cost += (inTok - cached) * p.prompt + (u.outputTokens ?? 0) * p.completion + cached * p.prompt * 0.1;
+        cost +=
+          (inTok - cached) * p.prompt +
+          (u.outputTokens ?? 0) * p.completion +
+          cached * (p.cacheRead ?? p.prompt * 0.1);
       }
       this.stats.costUsd = cost;
     } catch {
@@ -1966,7 +1969,9 @@ export class Agent {
           const uncached = Math.max(0, inTok - cached);
           this.stats.costUsd =
             (this.stats.costUsd ?? 0) +
-            (uncached * p.prompt + (res.usage.outputTokens ?? 0) * p.completion + cached * p.prompt * 0.1);
+            (uncached * p.prompt +
+              (res.usage.outputTokens ?? 0) * p.completion +
+              cached * (p.cacheRead ?? p.prompt * 0.1));
         }
         this.lastUsage = {
           input: res.usage.inputTokens ?? 0,

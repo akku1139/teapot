@@ -19,7 +19,8 @@ export interface ModelMeta {
   id: string;
   name?: string;
   contextLength?: number;
-  pricing?: { prompt: number; completion: number };
+  /** USD per TOKEN, the unit `Agent.stats.costUsd` multiplies by. models.dev publishes per MILLION. */
+  pricing?: { prompt: number; completion: number; cacheRead?: number };
   /** what the model ACCEPTS and produces, e.g. `{ input: ["text","image"], output: ["text"] }` */
   modalities?: { input: string[]; output: string[] };
   /** the effort levels this model publishes, in the provider's own spelling */
@@ -36,7 +37,7 @@ type MdModel = {
   reasoning_options?: Array<{ type?: string; values?: unknown[] }>;
   modalities?: { input?: unknown[]; output?: unknown[] };
   limit?: { context?: number };
-  cost?: { input?: number; output?: number };
+  cost?: { input?: number; output?: number; cache_read?: number };
 };
 
 type MdProvider = { id?: string; api?: string | null; models?: Record<string, MdModel> };
@@ -176,8 +177,22 @@ export function metaFrom(m: MdModel): ModelMeta {
     id: String(m.id ?? ""),
     ...(typeof m.name === "string" ? { name: m.name } : {}),
     ...(typeof m.limit?.context === "number" ? { contextLength: m.limit.context } : {}),
+    /**
+     * models.dev quotes USD per MILLION tokens; everything downstream multiplies by TOKENS.
+     *
+     * MEASURED: `claude-sonnet-4-5` is `{input: 3, output: 15}`, i.e. $3/$15 per million — so feeding
+     * those raw made a 892.6M-token session cost $15,239,168 instead of $15.31, and the picker badge
+     * read `150000/M`. Normalise here, at the single boundary, and keep the per-token convention the
+     * cost code and the badge already assume.
+     */
     ...(m.cost && (typeof m.cost.input === "number" || typeof m.cost.output === "number")
-      ? { pricing: { prompt: Number(m.cost.input ?? 0), completion: Number(m.cost.output ?? 0) } }
+      ? {
+          pricing: {
+            prompt: Number(m.cost.input ?? 0) / 1e6,
+            completion: Number(m.cost.output ?? 0) / 1e6,
+            ...(typeof m.cost.cache_read === "number" ? { cacheRead: m.cost.cache_read / 1e6 } : {}),
+          },
+        }
       : {}),
     ...(input ? { modalities: { input, output: output ?? ["text"] } } : {}),
     ...(efforts ? { supportedEfforts: efforts } : {}),

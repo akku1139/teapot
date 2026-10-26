@@ -3774,7 +3774,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <Show when={(sel()!.stats.costUsd ?? 0) > 0}>
                 <div
                   class="rtcell"
-                  title={`≈ ${(sel()!.stats.costUsd ?? 0).toFixed(4)} this session, from the model's USD/token pricing and per-turn usage. Cached input is estimated at ~10% of the prompt rate; treat as an approximation, not an invoice.`}
+                  title={`≈ ${(sel()!.stats.costUsd ?? 0).toFixed(4)} this session, from the model's per-token pricing and per-turn usage. Cached input is estimated at ~10% of the prompt rate; treat as an approximation, not an invoice.`}
                 >
                   <span>cost</span>
                   <b>${costFmt(sel()!.stats.costUsd ?? 0)}</b>

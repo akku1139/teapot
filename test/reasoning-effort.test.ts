@@ -181,7 +181,8 @@ test("a models.dev record maps without inventing anything (#47)", () => {
   assert.deepEqual(m.modalities?.input, ["text", "image", "pdf"]);
   assert.deepEqual(m.supportedEfforts, ["low", "max"]);
   assert.equal(m.contextLength, 1_050_000);
-  assert.deepEqual(m.pricing, { prompt: 2, completion: 12 });
+  // models.dev quotes per MILLION; the cost code multiplies by TOKENS (#cost)
+  assert.deepEqual(m.pricing, { prompt: 2e-6, completion: 12e-6 });
 
   // a bare record produces ABSENT fields, not empty ones — consumers test presence
   const bare = metaFrom({ id: "x" });
