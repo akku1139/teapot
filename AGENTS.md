@@ -698,6 +698,35 @@ A guard that refuses the whole class is worth more than a condition that satisfi
 you cannot find the class, say so in the commit body rather than leaving a `if` with no explanation
 of what still is not covered.
 
+## State in a Map is state you will lose
+
+`bgShellsByWs` is an in-memory `Map`, so a harness restart forgot every background job while the
+processes kept running. MEASURED: a `nohup` sweep started at 10:28 outlived an OOM-killed harness,
+kept writing for three hours, and the new instance could only answer `unknown background job …
+forgotten on harness restart` — the panel showed nothing for work still in progress.
+
+The general lesson is not "persist this Map". It is that **a restart is part of the lifecycle** and
+anything that survives one has to be handled for it. Two shapes, and picking the wrong one is worse
+than doing nothing:
+
+- **The process is gone** (an in-flight LLM call, a running turn): dropping it is correct, and the
+  code should say so.
+- **The process outlives us** (a `nohup` shell, a dev server, a pty): dropping it is a LIE, because
+  the thing is still running and something is still waiting for it. What cannot be recovered is the
+  HANDLE — no fd survives the parent — so the honest contract is a record saying "pid N is alive and
+  its output is no longer reachable", not silence and not a pretend re-attach.
+
+Two refusals worth keeping, both about not acting on stale memory:
+
+- **never signal a pid you only remember.** Pid reuse is real; a record from a previous process names
+  a number, not a process you own. Drop the record and tell the operator to stop it by hand.
+- **do not re-attach.** Reading a dead pipe is impossible, so an empty output box reads as "it printed
+  nothing" — explain why instead.
+
+A pty terminal has the same shape and got the same answer (`detach`, keep running, re-attach on the
+next connect) — and note that THIS case is the one where `nohup` is a feature: the job survived an
+OOM kill precisely because the agent had used it.
+
 ## A limit nobody can see is not a limit
 
 A cap that applies silently is the same bug as no cap, plus a surprise. Two reports, one cause:
