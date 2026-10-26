@@ -1,6 +1,7 @@
 import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
+import { storeImage, resolveImages } from "../log/image-store.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
 import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
@@ -686,6 +687,16 @@ export class Agent {
     return path.join(this.opts.sessionDir, "goal.md");
   }
 
+  /**
+   * Image bytes live in `blobs/` INSIDE this session, beside `chat.jsonl`.
+   *
+   * So `rm -r` on a session reclaims everything it ever read — which is the whole point when one
+   * session's log is what grew to hundreds of megabytes.
+   */
+  private get imagesDir(): string {
+    return path.join(this.opts.sessionDir, "blobs");
+  }
+
   private get memoryFile(): string {
     const perSession = path.join(this.opts.sessionDir, "memory.md");
     const parent = path.dirname(this.opts.sessionDir);
@@ -805,7 +816,7 @@ export class Agent {
     const lineage = lineageOf(events);
     if (!lineage.length) return;
     const last = lineage[lineage.length - 1];
-    const msgs = rebuildMessagesFrom(lineage);
+    const msgs = await rebuildMessagesFrom(lineage, this.imagesDir);
 
     for (const e of own) {
       if (this.sessionTitle === undefined && e.type === "prompt" && (e.data as { source?: string })?.source === "user") {
@@ -925,7 +936,7 @@ export class Agent {
     const kept = lineage.slice(0, tIdx);
     const dropped = lineage.slice(tIdx); 
 
-    const msgs = rebuildMessagesFrom(kept);
+    const msgs = await rebuildMessagesFrom(kept, this.imagesDir);
     msgs.push({ role: "user", content: text });
 
     const newBranch = `br${this.branchCount()}${Date.now().toString(36).slice(-4)}`;
@@ -1219,14 +1230,27 @@ export class Agent {
     const entry = { source, text, images, ...(promptId ? { id: promptId } : {}) };
     this.pendingPrompts.push(entry);
     void this.ensureReady()
-      .then(() =>
-        this.log.append("prompt", this.currentSession, this.currentBranch, {
+      .then(async () => {
+        /**
+         * A user's attachment is stored the same way a tool's image is: bytes in `blobs/`, a reference
+         * in the log. It used to keep the raw `data:` URL, which put up to 12MB of base64 into
+         * `chat.jsonl` — the same inflation the tool path just stopped doing.
+         */
+        const stored = images?.length
+          ? await Promise.all(
+              images.map(async (i) => ({
+                url: await (async () => (await storeImage(this.imagesDir, i.url)).ref)(),
+                name: i.name,
+              })),
+            )
+          : undefined;
+        return this.log.append("prompt", this.currentSession, this.currentBranch, {
           source,
           text,
-          ...(images?.length ? { images: images.map((i) => ({ url: i.url, name: i.name })) } : {}),
+          ...(stored?.length ? { images: stored } : {}),
           ...(promptId ? { promptId } : {}),
-        }),
-      )
+        });
+      })
       .then(() => {
         if (source === "user") this.opts.onFirstUserPrompt?.(this.currentSession);
       })
@@ -2045,12 +2069,26 @@ export class Agent {
         this.stats.toolCalls++;
         this.consecutiveIdleRounds = 0;
         const capped = result.result.slice(0, 8000);
+        // data URL → `blobs/<hash>` (idempotent, so re-reading the same picture costs one file)
+        const imageRef = async (u: string): Promise<string> =>
+          (await storeImage(this.imagesDir, u)).ref;
         await this.log.append("tool_result", this.currentSession, this.currentBranch, {
           callId: call.id,
           name: call.function.name,
           ok: result.ok,
           durationMs: Date.now() - t0,
           result: capped,
+          /**
+           * The IMAGE itself belongs in the log, or a restored session cannot rebuild the request.
+           *
+           * MEASURED (v0.37.69, `github-bug-research-1f48715f` seq 11280): the `tool_result` row held
+           * only the TEXT — "the image itself is attached to this message, so you are looking at it" —
+           * and the picture existed nowhere. On restore the model reads that sentence, finds no image,
+           * and has to invent what it saw.
+           *
+           * It is stored as a `blobs/<sha256>` reference, not inline: see `src/log/blobs.ts`.
+           */
+          ...(result.image ? { images: [{ url: await imageRef(result.image.url), name: result.image.name }] } : {}),
         });
         /**
          * A tool may hand the model an IMAGE (read_file on a picture).
@@ -3044,7 +3082,7 @@ function lineageOf(events: TeapotEvent[]): TeapotEvent[] {
   return lineage;
 }
 
-function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
+async function rebuildMessagesFrom(list: TeapotEvent[], imagesDir: string): Promise<ChatMessage[]> {
   const msgs: ChatMessage[] = [];
   const META_TOOLS = new Set([
     "finish", "report_progress", "set_goal", "get_goal",
@@ -3087,7 +3125,10 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
     const d = e.data as Record<string, unknown>;
     if (e.type === "prompt" && typeof d.text === "string") {
       const text: string = d.text;
-      const imgs = Array.isArray(d.images) ? (d.images as { url: string }[]) : [];
+      const imgsRaw = Array.isArray(d.images) ? (d.images as { url: string }[]) : [];
+      const imgs = imgsRaw.length
+        ? (await resolveImages(imagesDir, imgsRaw.map((i) => i.url))).map((url) => ({ url }))
+        : [];
       const mk = (): ChatMessage =>
         imgs.length
           ? {
@@ -3130,11 +3171,38 @@ function rebuildMessagesFrom(list: TeapotEvent[]): ChatMessage[] {
           else if (d.args !== undefined) tc.function.arguments = JSON.stringify(d.args ?? {});
         }
       } else if (e.type === "tool_result") {
-      msgs.push({
-        role: "tool",
-        tool_call_id: String(d.callId ?? ""),
-        content: `${d.ok === false ? "(failed) " : ""}${typeof d.result === "string" ? d.result : ""}`,
-      });
+      {
+        const text = `${d.ok === false ? "(failed) " : ""}${typeof d.result === "string" ? d.result : ""}`;
+        const toolImgsRaw = Array.isArray(d.images) ? (d.images as { url: string }[]) : [];
+        // `blobs/<hash>` → a data URL again, because only the wire needs the bytes inline
+        const toolImgs = toolImgsRaw.length
+          ? (await resolveImages(imagesDir, toolImgsRaw.map((i) => i.url))).map((url) => ({ url }))
+          : [];
+        /**
+         * Rebuild the image part on restore, exactly as it was sent live.
+         *
+         * Without this a restored session silently degrades: the text still claims the image is
+         * attached, so the model is not merely missing data, it is told something false about what it
+         * can see.
+         */
+        msgs.push(
+          toolImgs.length
+            ? {
+                role: "tool",
+                tool_call_id: String(d.callId ?? ""),
+                content: text,
+                content_parts: [
+                  { type: "text" as const, text },
+                  ...toolImgs.map((i) => ({ type: "image_url" as const, image_url: { url: i.url } })),
+                ],
+              }
+            : {
+                role: "tool",
+                tool_call_id: String(d.callId ?? ""),
+                content: text,
+              },
+        );
+      }
       openCalls.delete(String(d.callId ?? ""));
       flushUsers();
     } else if (e.type === "compaction") {

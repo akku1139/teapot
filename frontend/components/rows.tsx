@@ -64,8 +64,17 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
     if (name === "wait_children") return Number(argStr("timeout_ms")) || 300_000;
     return Number(argStr("timeout_ms")) || undefined;
   };
-  const codeBlock = (text: string, max = 1500, lang?: string) => (
-    <HighlightedCode text={truncate(text, max)} lang={lang} />
+  /**
+   * A tool's ARGUMENT text, in FULL — same rule as its output.
+   *
+   * It used to truncate at 1500 chars, so `write_file`'s content was cut with `…` while `bash` and
+   * `edit_file` showed everything. The operator's reason for the difference being wrong is that the
+   * row is ALREADY a `<details>`: opening the card is the request to see it, and `.toolbody` scrolls
+   * vertically for a tall one. A second limit inside an explicit open discards what was just asked
+   * for, and a `write_file` is exactly the case where the whole content is the thing under review.
+   */
+  const codeBlock = (text: string, _max?: number, lang?: string) => (
+    <HighlightedCode text={text} lang={lang} />
   );
   /** the ARGUMENT block: same surface as the output, and JSON-highlighted when it is an object */
   const argsBlock = () => <HighlightedCode text={JSON.stringify(d.args ?? {}, null, 1)} lang="json" />;
@@ -187,8 +196,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         hint = `${fmtK(content.length)} bytes`;
         body = (
           <>
-            {codeBlock(content, 1500)}
-            {content.length > 1500 ? <div class="meta muted">{fmtK(content.length)} bytes — open it from 🗂 files for the full view</div> : null}
+            {codeBlock(content)}
             {res() ? <div class="meta">{oneLine(out(), 160)}</div> : <div class="meta">writing…</div>}
           </>
         );
@@ -199,8 +207,10 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         hint = d.args?.replace_all === true ? "replace all" : "unique spot";
         body = (
           <>
-            <pre class="mono toolbody del">{truncate("- " + argStr("old_text"), 900)}</pre>
-            <pre class="mono toolbody add">{"+ " + truncate(argStr("new_text"), 900)}</pre>
+            {/* full text, for the same reason the output is: the card is already an explicit open,
+                and `.toolbody` scrolls. A 900-char cut hid the exact line being reviewed. */}
+            <pre class="mono toolbody del">{"- " + argStr("old_text")}</pre>
+            <pre class="mono toolbody add">{"+ " + argStr("new_text")}</pre>
             {res() ? (
               <div class="meta">
                 {oneLine(out(), 120)} · {fmtDur(res()!.data?.durationMs)}
@@ -218,16 +228,20 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
           .map((l) => l.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)?.[1])
           .filter(Boolean) as string[];
         label = files.length ? `${files.length} file${files.length > 1 ? "s" : ""}: ${oneLine(files.join(", "), 80)}` : "patch";
-        const MAX_PATCH_LINES = 60;
-        const shown = patchLines.slice(0, MAX_PATCH_LINES);
+        /**
+         * Every line, with no per-line cut.
+         *
+         * This capped the body at 60 lines and each line at 240 chars, so a patch that touched several
+         * files showed its beginning and then an elision note — the operator reviewing a patch is
+         * exactly who needs the rest, and `.toolbody.patch` already scrolls.
+         */
         body = (
           <>
             <pre class="mono toolbody patch">
-              {shown.map((l) => {
+              {patchLines.map((l) => {
                 const cls = l.startsWith("+") ? " add" : l.startsWith("-") ? " del" : /^\*\*\*|^@@/.test(l) ? " meta" : "";
-                return <div class={"pline" + cls}>{l.length > 240 ? l.slice(0, 240) + "…" : l}</div>;
+                return <div class={"pline" + cls}>{l}</div>;
               })}
-              {patchLines.length > MAX_PATCH_LINES ? <div class="pline meta">… {patchLines.length - MAX_PATCH_LINES} more lines</div> : null}
             </pre>
             {res() ? <div class="meta">{oneLine(out().split("\n")[0] ?? "", 140)}{res()!.data?.ok === false ? " · FAILED" : ""}</div> : <div class="meta">validating…</div>}
           </>

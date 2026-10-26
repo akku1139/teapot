@@ -848,6 +848,8 @@ const MAX_WS_CLIENTS = 64;
     return c.json({ ok: true, agent: a.snapshot() });
   });
 
+  // 64MB encoded (~48MB of image); a vision model rejects anything near this anyway
+  const MAX_PROMPT_IMAGE_CHARS = 64 * 1024 * 1024;
   app.post("/api/agents/:id/prompt", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return notFound(c, "agent", c.req.param("id"));
@@ -857,9 +859,32 @@ const MAX_WS_CLIENTS = 64;
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (!body.text?.trim() && !body.images?.length)
       return c.json({ error: "text or images required" }, 400);
-    const images = (body.images ?? []).filter((im) => {
+    /**
+     * Accept any image the model could take; the cap is a SANITY bound, not a storage limit.
+     *
+     * The bytes now go to `blobs/` beside `chat.jsonl` instead of into it, so the old "keep the log
+     * small" reason for a tight cutoff is gone. What remains is refusing something absurd before it is
+     * base64-decoded — and reporting WHICH image was refused rather than silently dropping it, because
+     * a prompt that quietly loses its attachment is indistinguishable from a model that ignored it.
+     */
+    const offered = body.images ?? [];
+    const tooBig = offered.find((im) => {
       const u = String(im?.url ?? "");
-      if (u.startsWith("data:image/")) return u.length < 12_000_000; 
+      return u.startsWith("data:image/") && u.length > MAX_PROMPT_IMAGE_CHARS;
+    });
+    if (tooBig) {
+      return c.json(
+        {
+          error:
+            `${tooBig.name || "an image"} is too large (${Math.round(String(tooBig.url).length / 1024 / 1024)}MB ` +
+            `encoded, limit ${MAX_PROMPT_IMAGE_CHARS / 1024 / 1024}MB)`,
+        },
+        413,
+      );
+    }
+    const images = offered.filter((im) => {
+      const u = String(im?.url ?? "");
+      if (u.startsWith("data:image/")) return true;
       return /^https?:\/\//.test(u);
     });
     const text = body.text ?? "";
