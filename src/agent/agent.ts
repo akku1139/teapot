@@ -1142,7 +1142,15 @@ export class Agent {
       model: this.opts.llm.model,
       provider: this.opts.provider,
       ...(this.opts.reasoningEffort ? { reasoningEffort: this.opts.reasoningEffort } : {}),
-      effortSupported: effortChoosable(this.opts.supportedParameters),
+      /**
+       * Offer the control unless the catalog SAYS the model cannot reason.
+       *
+       * `effortChoosable(undefined)` is `true` on purpose: a model missing from models.dev is
+       * UNKNOWN, not unsupported, and the wire recovers from a rejected `reasoning_effort`
+       * (`isEffortUnsupported`). The previous rule gated this on OpenRouter alone, which hid the
+       * control for every other provider whose model did support it.
+       */
+      effortSupported: this.opts.supportedEfforts?.length ? true : effortChoosable(undefined),
       ...(this.opts.supportedEfforts?.length ? { effortOptions: this.opts.supportedEfforts } : {}),
       sessionDir: this.opts.sessionDir,
       ctx: {

@@ -147,7 +147,17 @@ test("a prompt streams session/update WHILE the turn is still running (#15)", as
     await new Promise((r) => setTimeout(r, 80));
 
     await call(2, "session/new", { cwd: dataDir!, mcpServers: [] });
-    await new Promise((r) => setTimeout(r, 400));
+    /**
+     * POLL, do not wait a fixed 400ms.
+     *
+     * `session/new` creates an agent, and agent creation races a model-catalog lookup against
+     * `MODEL_META_BOOT_MS` (1500ms) — so under a loaded runner this took longer than the old fixed
+     * wait and the test read `sent` before the reply arrived. MEASURED: the failure only appeared in
+     * the full suite, never when the file ran alone.
+     */
+    for (let i = 0; i < 100 && !sent.some((m) => m.id === 2); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     const sessionId = sent.find((m) => m.id === 2)?.result?.sessionId;
     assert.ok(sessionId, `session/new must return an id (#15); got ${JSON.stringify(sent)}`);
     const sessions = (adapter as unknown as {

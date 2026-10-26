@@ -80,7 +80,7 @@ export function effortChoosable(supported: string[] | undefined): boolean {
   return supported.includes("reasoning_effort");
 }
 
-function isOpenRouterEndpoint(baseUrl: string | undefined): boolean {
+export function isOpenRouterEndpoint(baseUrl: string | undefined): boolean {
   try {
     return /(^|\.)openrouter\.ai$/i.test(new URL(String(baseUrl ?? "")).host);
   } catch {

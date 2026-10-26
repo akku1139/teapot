@@ -798,9 +798,6 @@ export class Master {
       ...(ac.parent ? { parent: ac.parent } : {}),
       ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
       ...(ac.reasoningEffort ? { reasoningEffort: ac.reasoningEffort } : {}),
-      ...(modelMeta?.supportedParameters
-        ? { supportedParameters: modelMeta.supportedParameters }
-        : {}),
       ...(modelMeta?.supportedEfforts?.length ? { supportedEfforts: modelMeta.supportedEfforts } : {}),
     });
     void fetchModelList(llm.baseUrl, llm.apiKey)
@@ -1556,7 +1553,6 @@ if (active().length === 0) wake();
       const cfgEntry = this.config.agents.find((a) => a.id === id);
       if (cfgEntry) cfgEntry.reasoningEffort = opts.opts.reasoningEffort || undefined;
     }
-    opts.opts.supportedParameters = meta?.supportedParameters;
     opts.opts.supportedEfforts = meta?.supportedEfforts;
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
     if (!llm.baseUrl) throw new Error("no baseUrl resolved");
