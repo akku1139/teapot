@@ -1123,7 +1123,8 @@ export const TOOLS: ToolDef[] = [
   {
     name: "read_file",
     description:
-      "Read a text file from the workspace. Returns numbered lines (`N| ` prefixes are display-only — never copy them into edit_file). " +
+      "Read a file from the workspace. Returns numbered lines (`N| ` prefixes are display-only — never copy them into edit_file). " +
+      "On an IMAGE (png/jpeg/gif/webp) the picture itself is attached to the result, so you can see it — do not decode bytes. " +
       "With `line_ids:\"hash\"` it instead returns `LINE:HASH| content` anchors (the hashline format used by other coding harnesses), " +
       "which edit_file accepts VERBATIM and re-verifies against the file — so prefer it when you intend to edit what you just read. " +
       "Pass `paths` (max 10) to read SEVERAL files in one call instead of one call per file; " +
