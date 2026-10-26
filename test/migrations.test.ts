@@ -45,12 +45,19 @@ test("running every migration twice changes nothing the second time (#migrate)",
    * switch, so a rename reverted to the derived name, and a restart never re-seeded the agent's
    * field. The migration MOVES the title to the manifest, which is why the config loses the field.
    */
-  const manifest = JSON.parse(readFileSync(path.join(sessions, "s1", "session.json"), "utf8")) as { title?: string };
-  assert.equal(manifest.title, "fix the login bug", "the title comes from the first user prompt");
+  /**
+   * Keyed by SESSION in a map, not per agent and not in a per-directory file.
+   *
+   * Per-agent is the wrong key (an agent moves between sessions, so the field had to be cleared on each
+   * switch, which reverted renames). Per-directory was MEASURED slower: 838 sessions = 13.2ms of reads
+   * for every left-panel load versus 1.2ms for one config file.
+   */
+  const titles = raw.sessionTitles as Record<string, string>;
+  assert.equal(titles.s1, "fix the login bug", "the title comes from the first user prompt");
   assert.equal(
     (raw.agents as Record<string, unknown>[])[0]!.sessionTitle,
     undefined,
-    "and config keeps NO second copy",
+    "and the per-agent field is gone",
   );
 
   const second = await runMigrations(MIGRATIONS, ctxFor(dir, raw));
@@ -70,8 +77,8 @@ test("a HAND-CHOSEN title is never overwritten (#migrate)", async () => {
     agents: [{ id: "a", workspace: "/w", session: "s1", sessionTitle: "my own name" }],
   };
   await runMigrations(MIGRATIONS, ctxFor(dir, raw));
-  const kept = JSON.parse(readFileSync(path.join(dir, "sessions", "s1", "session.json"), "utf8")) as { title?: string };
-  assert.equal(kept.title, "my own name", "the operator's name wins over a derivable one");
+  const kept = (raw.sessionTitles as Record<string, string>).s1;
+  assert.equal(kept, "my own name", "the operator's name wins over a derivable one");
 });
 
 test("a harness-only session gets NO title, and a missing log is not an error (#migrate)", async () => {
@@ -96,11 +103,10 @@ test("a harness-only session gets NO title, and a missing log is not an error (#
    * the session id never changes either, so there is nothing to retry for. Writing the id is what
    * makes the pass idempotent without a separate "tried" flag: the next boot sees a title and skips.
    */
-  const t = (sid: string) =>
-    (JSON.parse(readFileSync(path.join(dir, "sessions", sid, "session.json"), "utf8")) as { title?: string }).title;
-  assert.equal(t("sub"), "sub", "a sub-agent falls back to its session id");
-  assert.equal(t("does-not-exist"), "does-not-exist", "a missing log falls back the same way");
-  assert.equal(agents[0]!.sessionTitle, undefined, "config keeps no copy in either case");
+  const titles = raw.sessionTitles as Record<string, string>;
+  assert.equal(titles.sub, "sub", "a sub-agent falls back to its session id");
+  assert.equal(titles["does-not-exist"], "does-not-exist", "a missing log falls back the same way");
+  assert.equal(agents[0]!.sessionTitle, undefined, "the per-agent field is gone in every case");
 });
 
 test("the flat-layout move is a RENAME, so a crash cannot lose the history (#migrate)", async () => {
@@ -173,8 +179,7 @@ test("a session with NO derivable title is not rescanned on every boot (#migrate
   const first = await runMigrations(MIGRATIONS, ctxFor(dir, raw));
   assert.ok(first.applied.includes("agents-session-title"), "the first pass looks, and records the answer");
   // (the manifest is written below — a session id, because nothing is derivable)
-  const recorded = JSON.parse(readFileSync(path.join(dir, "sessions", "sub", "session.json"), "utf8")) as { title?: string };
-  assert.equal(recorded.title, "sub");
+  assert.equal((raw.sessionTitles as Record<string, string>).sub, "sub");
 
   // delete the log: if the second pass were still reading it, this would change the outcome
   const { rmSync } = await import("node:fs");
@@ -200,9 +205,8 @@ test("an existing title is never replaced, even by a derivable one (#migrate)", 
     agents: [{ id: "a", workspace: "/w", session: "s2", sessionTitle: "s2" }],
   };
   await runMigrations(MIGRATIONS, ctxFor(dir, raw));
-  const settled = JSON.parse(readFileSync(path.join(dir, "sessions", "s2", "session.json"), "utf8")) as { title?: string };
   assert.equal(
-    settled.title,
+    (raw.sessionTitles as Record<string, string>).s2,
     "s2",
     "an id fallback is a settled answer, not a placeholder to be overwritten",
   );

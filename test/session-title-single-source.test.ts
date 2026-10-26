@@ -18,6 +18,7 @@ import { useTempDirs } from "./helpers/tmp.ts";
  * and must not be replaced by a freshly derived one.
  */
 const boot = async (dataDir: string) => {
+  // re-read the file, exactly as a real restart does — reusing an in-memory object would hide the bug
   const cfgPath = path.join(dataDir, "config.json");
   const cfg = {
     port: 0,
@@ -27,8 +28,10 @@ const boot = async (dataDir: string) => {
     defaultProvider: "p",
     agents: [{ id: "t1", workspace: dataDir, provider: "p", session: "t1", model: "m" }],
   };
-  await fs.writeFile(cfgPath, JSON.stringify(cfg));
-  const m = new Master(cfg as never, cfgPath);
+  const onDisk = await fs.readFile(cfgPath, "utf8").catch(() => "");
+  const merged = onDisk ? { ...cfg, ...(JSON.parse(onDisk) as object) } : cfg;
+  await fs.writeFile(cfgPath, JSON.stringify(merged, null, 2));
+  const m = new Master(merged as never, cfgPath);
   await m.start();
   return m;
 };
@@ -55,10 +58,13 @@ test("a rename is stored with the session, and config keeps no copy (#title)", a
     await seedSession(dataDir!, "auto generated from this prompt");
     const m = await boot(dataDir!);
     await m.renameSession("t1", "t1", "OPERATOR NAME");
-    const manifest = JSON.parse(await fs.readFile(path.join(dataDir!, "sessions", "t1", "session.json"), "utf8"));
-    assert.equal(manifest.title, "OPERATOR NAME", "the session's own manifest holds it");
     const saved = JSON.parse(await fs.readFile(path.join(dataDir!, "config.json"), "utf8"));
-    assert.equal(saved.agents[0].sessionTitle, undefined, "and config holds no second copy");
+    assert.equal(
+      saved.sessionTitles?.t1,
+      "OPERATOR NAME",
+      "keyed by SESSION, so one config read serves the whole left panel",
+    );
+    assert.equal(saved.agents[0].sessionTitle, undefined, "and no per-agent copy to go stale");
     await m.stopAllAgents();
   });
 });
@@ -86,11 +92,11 @@ test("a session with no title derives one ONCE and writes it down (#title)", asy
   await useTempDirs(["st5-", "st6-"], async ([dataDir]) => {
     await seedSession(dataDir!, "derive me from this line");
     const m = await boot(dataDir!);
-    const manifest = JSON.parse(await fs.readFile(path.join(dataDir!, "sessions", "t1", "session.json"), "utf8"));
+    const saved = JSON.parse(await fs.readFile(path.join(dataDir!, "config.json"), "utf8"));
     assert.match(
-      String(manifest.title ?? ""),
+      String(saved.sessionTitles?.t1 ?? ""),
       /derive me from this line/,
-      "written once, so no caller has to scan chat.jsonl per session",
+      "written once into the config map, so no caller scans chat.jsonl per session",
     );
     await m.stopAllAgents();
   });
