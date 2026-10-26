@@ -28,12 +28,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { effortForRequest } from "../src/agent/llm.ts";
+import { effortForRequest, isOpenRouterEndpoint } from "../src/agent/llm.ts";
 import {
   REASONING_EFFORTS,
+  effortSupportedFor,
+  effortsFrom,
   isReasoningEffort,
-  isOpenRouter,
-  resolveReasoningEffort,
+  metaFrom,
+  providerFor,
   type ModelMeta,
 } from "../src/model-meta.ts";
 
@@ -111,14 +113,14 @@ test("an unrecognised effort value is dropped, not forwarded (#47)", () => {
 /* ---------- the OpenRouter host check ---------- */
 
 test("isOpenRouter matches openrouter.ai and its subdomains only (#47)", () => {
-  assert.equal(isOpenRouter(OR), true);
-  assert.equal(isOpenRouter("https://openrouter.ai/api/v1"), true);
-  assert.equal(isOpenRouter("https://eu.openrouter.ai/api/v1"), true);
-  assert.equal(isOpenRouter(OPENAI), false);
-  assert.equal(isOpenRouter("https://notopenrouter.ai.example.com"), false);
-  assert.equal(isOpenRouter("https://openrouter.ai.evil.com"), false);
-  assert.equal(isOpenRouter(undefined), false);
-  assert.equal(isOpenRouter("not a url"), false);
+  assert.equal(isOpenRouterEndpoint(OR), true);
+  assert.equal(isOpenRouterEndpoint("https://openrouter.ai/api/v1"), true);
+  assert.equal(isOpenRouterEndpoint("https://eu.openrouter.ai/api/v1"), true);
+  assert.equal(isOpenRouterEndpoint(OPENAI), false);
+  assert.equal(isOpenRouterEndpoint("https://notopenrouter.ai.example.com"), false);
+  assert.equal(isOpenRouterEndpoint("https://openrouter.ai.evil.com"), false);
+  assert.equal(isOpenRouterEndpoint(undefined), false);
+  assert.equal(isOpenRouterEndpoint("not a url"), false);
 });
 
 /* ---------- validators / shared resolution ---------- */
@@ -131,42 +133,91 @@ test("isReasoningEffort accepts only the documented levels (#47)", () => {
   assert.equal(isReasoningEffort(null), false);
 });
 
-test("resolveReasoningEffort agrees with effortForRequest (#47)", () => {
+test("effort support: models.dev says yes, no, or unknown (#47)", () => {
+  // The old rule was `isOpenRouter(baseUrl)`, which rejected every other provider no matter what
+  // its model supported — and MEASURED, Command Code (93 models), Google (38) and orcarouter
+  // publish no capability fields at all, so that gate hid the control for models that do reason.
   const list: ModelMeta[] = [
-    { id: "anthropic/claude-sonnet-5.5", supportedParameters: SUPPORTS },
-    { id: "plain/gpt", supportedParameters: ["temperature"] },
+    { id: "reasons", reasoning: true, supportedEfforts: ["low", "high"] },
+    { id: "no-reasoning", reasoning: false },
   ];
-  assert.equal(
-    resolveReasoningEffort({
-      baseUrl: OR,
-      model: "anthropic/claude-sonnet-5.5",
-      list,
-      effort: "medium",
+  // models.dev describes it
+  assert.equal(effortSupportedFor({ list, model: "reasons" }), true);
+  // models.dev says it does not reason
+  assert.equal(effortSupportedFor({ list, model: "no-reasoning" }), false);
+  // NOT LISTED is UNKNOWN, not "unsupported" — this is the half that broke every
+  // non-OpenRouter provider, and the wire recovers from a rejected reasoning_effort anyway
+  assert.equal(effortSupportedFor({ list, model: "not-listed" }), true);
+  assert.equal(effortSupportedFor({ list: undefined, model: "anything" }), true);
+});
+
+test("models.dev reasoning_options become the selectable efforts (#47)", () => {
+  // the shapes models.dev publishes, including ones with no teapot equivalent
+  assert.deepEqual(
+    effortsFrom({ reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] }] }),
+    ["low", "medium", "high", "xhigh", "max"],
+  );
+  // `toggle` and `budget_tokens` carry no effort levels — they must not become an empty list
+  assert.equal(effortsFrom({ reasoning_options: [{ type: "toggle" }] }), undefined);
+  assert.equal(effortsFrom({ reasoning_options: [{ type: "budget_tokens", values: [] }] }), undefined);
+  assert.equal(effortsFrom({}), undefined);
+  // several blocks merge and duplicates collapse
+  assert.deepEqual(
+    effortsFrom({ reasoning_options: [{ type: "effort", values: ["low"] }, { type: "effort", values: ["low", "high"] }] }),
+    ["low", "high"],
+  );
+});
+
+test("a models.dev record maps without inventing anything (#47)", () => {
+  const m = metaFrom({
+    id: "gpt-5.6-terra",
+    name: "GPT-5.6 Terra",
+    reasoning: true,
+    reasoning_options: [{ type: "effort", values: ["low", "max"] }],
+    modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+    limit: { context: 1_050_000 },
+    cost: { input: 2, output: 12 },
+  });
+  assert.deepEqual(m.modalities?.input, ["text", "image", "pdf"]);
+  assert.deepEqual(m.supportedEfforts, ["low", "max"]);
+  assert.equal(m.contextLength, 1_050_000);
+  assert.deepEqual(m.pricing, { prompt: 2, completion: 12 });
+
+  // a bare record produces ABSENT fields, not empty ones — consumers test presence
+  const bare = metaFrom({ id: "x" });
+  assert.equal(bare.modalities, undefined);
+  assert.equal(bare.supportedEfforts, undefined);
+  assert.equal(bare.reasoning, undefined);
+});
+
+test("the provider is matched by host, and a shared host is split by path (#47)", () => {
+  // Command Code is FIVE config entries on one host, so a host match is what makes it work at all.
+  // `opencode.ai` is two models.dev providers (130 vs 37), so a host match alone resolved to
+  // whichever came first — MEASURED, the wrong catalogue, with the session's model missing.
+  const many = (prefix: string, n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`${prefix}${i}`, {}]));
+  const providers = new Map(
+    Object.entries({
+      commandcode: { api: "https://api.commandcode.ai/provider/v1", models: { a: {}, b: {} } },
+      opencode: { api: "https://opencode.ai/inference/openai/v1", models: many("m", 130) },
+      ["opencode-go"]: { api: "https://opencode.ai/inference/go/openai/v1", models: many("g", 37) },
     }),
-    "medium",
   );
-  // not advertised
+  assert.equal(providerFor(providers, "https://api.commandcode.ai/provider/v1")?.api, "https://api.commandcode.ai/provider/v1");
   assert.equal(
-    resolveReasoningEffort({ baseUrl: OR, model: "plain/gpt", list, effort: "medium" }),
-    undefined,
+    providerFor(providers, "https://opencode.ai/inference/go/openai/v1")?.api,
+    "https://opencode.ai/inference/go/openai/v1",
+    "the path disambiguates two providers on one host",
   );
-  // wrong endpoint
-  assert.equal(
-    resolveReasoningEffort({
-      baseUrl: OPENAI,
-      model: "anthropic/claude-sonnet-5.5",
-      list,
-      effort: "medium",
-    }),
-    undefined,
-  );
+  // the operator's real baseUrl matches neither path, so the GENERAL catalogue wins
+  assert.equal(providerFor(providers, "https://opencode.ai/zen/v1")?.api, "https://opencode.ai/inference/openai/v1");
+  assert.equal(providerFor(providers, "https://elsewhere.invalid/v1"), undefined);
 });
 
 /* ---------- model metadata carries the capability ---------- */
 
-test("the catalogue parse keeps supported_parameters (#47)", async () => {
-  // guards the plumbing: without supportedParameters in ModelMeta the guard
-  // above could never pass, and effort would silently never be sent
+test("the catalogue fetch degrades to [] and never throws (#47)", async () => {
+  // guards the plumbing: an unreachable models.dev must leave the caller with "unknown"
+  // rather than an exception, or every agent fails to boot
   const { fetchModelList } = await import("../src/model-meta.ts");
   const list = await fetchModelList("http://127.0.0.1:1/v1", "k");
   assert.ok(Array.isArray(list), "fetchModelList must degrade to [] on failure");

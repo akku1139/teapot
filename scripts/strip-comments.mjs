@@ -189,3 +189,50 @@ export function stripComments(src, opts = {}) {
 export function stripJsxComments(src) {
   return src.replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, (m) => (/@ts-|eslint-|oxlint-|@__PURE__|@vite-ignore/.test(m) ? m : ""));
 }
+
+/**
+ * Files this stripper must NEVER be pointed at.
+ *
+ * Tests keep their comments on purpose: a test's comment says WHY the case exists (which report it
+ * reproduces, what the fixture is standing in for), and that reasoning is not derivable from the
+ * assertions. The operator restored them after the purge for exactly that reason.
+ *
+ * Exported so a caller has no excuse to re-derive the rule, and applied by `stripTree` below.
+ */
+export const COMMENT_KEEP_DIRS = ["test/", "__tests__/", "tests/"];
+
+export function isProtectedFromStripping(relPath) {
+  const p = String(relPath).replace(/\\/g, "/");
+  return COMMENT_KEEP_DIRS.some((d) => p.startsWith(d) || p.includes(`/${d}`))
+    || /\.test\.[tj]sx?$/.test(p)
+    || /\.spec\.[tj]sx?$/.test(p);
+}
+
+/** strip every non-test file under the given roots; returns what changed, never writes tests */
+export function stripTree(roots, io) {
+  const fs = io.fs;
+  const path = io.path;
+  const files = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir)) {
+      if (["node_modules", "public", ".git", "dist"].includes(e) || e.startsWith(".")) continue;
+      const p = path.join(dir, e);
+      if (fs.statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(e)) files.push(p);
+    }
+  };
+  for (const d of roots) walk(d);
+  const changed = [];
+  for (const f of files) {
+    if (isProtectedFromStripping(f)) continue;
+    if (f.endsWith("strip-comments.mjs")) continue;
+    const src = fs.readFileSync(f, "utf8");
+    let out = stripComments(src, { jsx: f.endsWith(".tsx") });
+    if (f.endsWith(".tsx")) out = stripJsxComments(out);
+    if (out !== src) {
+      fs.writeFileSync(f, out);
+      changed.push(f);
+    }
+  }
+  return changed;
+}
