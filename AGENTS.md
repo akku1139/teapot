@@ -822,6 +822,16 @@ Rules that came out of it:
   thing.** A hand-built fixture said a `state` row did not break tool grouping;
   the actual log, replayed through the app's own filter, showed it did. The
   fixture was wrong about the filter, not the app.
+- **A wire format is verified by capturing the bytes, never by reading the builder.**
+  `read_file` gained image support and I checked that the picture reached the tool
+  message — it did — and shipped it. The next real request 400'd
+  (`Invalid input: expected string, received undefined`) because `sanitize()` had a
+  `content_parts` branch returning `{ role, content }` and dropping `tool_call_id`,
+  which the API needs to pair a result with its call. MEASURED fix verification:
+  drive the real `chat()` against a local `http` server and `JSON.parse` the body —
+  three lines, and it also shows a leaked internal field (`content_parts`) that a
+  strict server rejects. `test/tool-image-wire-payload.test.ts` does exactly this
+  rather than re-implementing `sanitize()`, so it fails on the bytes actually sent.
 - **Drive the artefact, do not read it.** Dump the BUILT bundle's DOM
   (`scripts/smoke-web.mjs`) to see what a user sees. Reading `App.tsx` produced
   three plausible-and-wrong diagnoses in one session; a DOM dump produced the
