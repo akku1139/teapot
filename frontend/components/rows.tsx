@@ -557,7 +557,17 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
   const e = props.e;
   switch (e.type) {
     case "prompt": {
-      const imgs: string[] = e.data?.images ?? [];
+      /**
+       * The log stores `{ url, name }`, not a bare URL.
+       *
+       * `images.map((i) => ({ url: i.url, name: i.name }))` is what `Agent.enqueuePrompt` writes, and
+       * the renderer passed each entry straight to `src=` — MEASURED on a real prompt row:
+       * `src="[object Object]"`, i.e. no image at all. Older entries may still be plain strings, so
+       * both shapes are accepted.
+       */
+      const imgs: string[] = (e.data?.images ?? [])
+        .map((i: unknown) => (typeof i === "string" ? i : (i as { url?: unknown })?.url))
+        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0);
       return (
         <>
           <div class="content" innerHTML={renderMarkdownCached(String(e.data.text ?? ""))} />
