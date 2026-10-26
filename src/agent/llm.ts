@@ -246,7 +246,21 @@ function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
           ? { type: "image_url" as const, image_url: { url: p.image_url!.url } }
           : { type: "text" as const, text: p.text ?? "" },
       );
-      return { role: m.role, content: parts };
+      /**
+       * EVERY other field has to survive, not just `content`.
+       *
+       * This returned `{ role, content }` alone, so a TOOL message carrying an image lost its
+       * `tool_call_id` — and the API rejected the whole request: `400 Invalid input: expected string,
+       * received undefined`. MEASURED on v0.37.69 (`github-bug-research-1f48715f`): the `read_file`
+       * result rendered with its "the image itself is attached" text and the very next call 400'd.
+       *
+       * Spreading `m` first is what makes the multimodal path identical to the text path; a tool
+       * message without its id is not a message at all.
+       */
+      // `content_parts` is OUR field, carrying the parts into `content`; sending it upstream is an
+      // unknown property (a strict server rejects the request), so it is dropped here.
+      const { content_parts: _parts, ...rest } = m;
+      return { ...rest, content: parts };
     }
     if ((m.role === "user" || m.role === "assistant") && !m.content) {
       return { ...m, content: m.tool_calls?.length ? "(tool call)" : "(no content)" };
