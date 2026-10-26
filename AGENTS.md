@@ -255,6 +255,23 @@ is that way**. Nothing else.
   import says where it lives.
 - Restating the next line, restating a function's name, describing deleted code: delete.
 
+**This rule was written down here and then violated for weeks, until 41% of `agent.ts` was comment
+lines.** The rules above are not advisory; a comment that narrates an incident ("MEASURED in
+tyb2-9-…", "reported as …") is the exact shape they forbid, and it propagates because each session
+reads the previous one's prose as documentation. MEASURED before the purge: `agent.ts` 41%,
+`master.ts` 41%, `App.tsx` 38%, one 3-line guard carrying two near-identical 12-line blocks.
+
+So:
+- **Write the story in the COMMIT MESSAGE**, where it can be read once and then is out of the way.
+  The commit is reachable by `git blame`; a 12-line block in the hot path is not.
+- **If a rule needs enforcing, write a test.** A paragraph cannot fail CI, and this paragraph did
+  not stop anything.
+- When adding a comment, ask whether a reader who has the code in front of them is missing something
+  they cannot derive. If not, there is nothing to say.
+
+The source is now comment-free (`agent.ts`, `master.ts`, `tools.ts` at 0%; `App.tsx` keeps only
+directives). Keeping it that way is cheaper than another purge.
+
 ## UI / frontend conventions
 
 ### Where frontend code lives
