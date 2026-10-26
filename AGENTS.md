@@ -207,12 +207,27 @@ script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
   by a fixed width — use `blockFrom(src, anchor)`. Where a source read is genuinely
   unavoidable, use `readSource()` so CRLF checkouts behave like LF ones (#126).
 
-- **Never wait a fixed duration for a state.** Poll for the condition. A fixed
+- **Never wait a fixed duration for a state.** Poll for the condition — use
+  `waitFor(cond, { what })` / `waitForEvent(read, match, { what })` from
+  `test/helpers/wait-for.ts`, which name the condition in the failure message. A fixed
   `setTimeout` under a loaded CI runner fails as "precondition not met" with no hint
   that the test merely ran out of clock (measured: #136 on Windows, on a
   version-bump commit of otherwise identical code). Also CLEAR timers you race
   against — an abandoned 30 s timer kept a test file's process alive for 20 s of
   pure idle after its work was done.
+
+  This rule was WRITTEN DOWN and STILL re-broken four times, because a rule in prose
+  has nowhere to live: each test hand-rolled its own `setTimeout` and read the log
+  once. MEASURED on v0.37.65 — `windows.yml` failed on
+  `the suppression is recorded in the log (#95)` (300 ms, too short) while `test.yml`
+  and `publish.yml` both passed. The other three were worse than useless:
+  `delivery-marks-request-boundary` slept 900 ms and then asserted about the ORDER of
+  events that might not have been written yet, so the assertion could not fail for the
+  reason it claimed to test.
+
+  A fixed wait is legitimate in exactly two shapes, and each needs a comment saying
+  which it is: inside a MOCK to make a reply slow, and when the assertion is that
+  something did NOT happen (`settled === false`), where time passing IS the test.
 
 - **A port you released is not a port you own.** Asking the OS for `listen(0)` and then
   `close()`ing to learn the number leaves a window where any process on the runner can take it, so a
