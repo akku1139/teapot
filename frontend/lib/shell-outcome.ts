@@ -34,6 +34,14 @@ export function shellOutcome(
  * KILLED cases get their own wording.
  */
 export function outcomeMarker(outcome: ShellOutcome): string {
+  /**
+   * The marker carries its OWN leading separator, and that is deliberate.
+   *
+   * The two direct call sites in `rows.tsx` render it immediately after `{fmtDur(...)}` with nothing
+   * between them, so `" · TIMED OUT"` is what produces `5.0s · TIMED OUT`. `shellHint` joins its
+   * parts itself, so IT must not add another separator — the doubling (`· · TIMED OUT`) came from
+   * there, not from this function.
+   */
   switch (outcome) {
     case "timeout":
       return " · TIMED OUT";
@@ -59,7 +67,11 @@ export function shellHint(opts: {
   const parts: string[] = [];
   if (opts.outcome !== "empty") parts.push(opts.fmtDur(opts.durationMs));
   if (opts.timeoutMs) parts.push(`timeout ${Math.round(opts.timeoutMs / 1000)}s`);
-  const marker = outcomeMarker(opts.outcome);
-  if (marker) parts.push(marker.trim());
+  // `outcomeMarker` supplies its own leading " · " for the direct-render sites in rows.tsx (which
+  // render it straight after a duration with nothing between). Here the parts are JOINED, so the
+  // SEPARATOR must go too — `trim()` alone leaves "· TIMED OUT" and the hint reads
+  // "5.0s · timeout 120s · · TIMED OUT".
+  const marker = outcomeMarker(opts.outcome).replace(/^\s*·\s*/, "");
+  if (marker) parts.push(marker);
   return parts.join(" · ");
 }

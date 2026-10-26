@@ -14,6 +14,7 @@ import { groupedWith, type RowLike } from "../lib/row-grouping";
 import { outcomeMarker, shellHint, shellOutcome } from "../lib/shell-outcome";
 import { authorOf, fmtK, fmtTs, oneLine, rawOf, type Ev } from "../lib/timeline-row";
 import { formatToolOutput, outputLang } from "../lib/tool-output-lang";
+import { effectiveBashTimeout } from "../lib/bash-timeout";
 
 
 export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => void }) {
@@ -110,7 +111,17 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   // effective timeout for live elapsed display — tools with defaults that the
   // model omitted (wait_children: 5 min) still show their real cap
   const effTimeout = () => {
-    if (name === "bash") return Number(argStr("timeout_ms")) || undefined;
+    /**
+     * `bash` has a DEFAULT timeout, and the row must show it.
+     *
+     * `Number(argStr("timeout_ms")) || undefined` reported "no limit" whenever the model omitted the
+     * parameter — while the server was running the command under a real 120s cap. Reported as
+     * "タイムライン上にタイムアウト時間が表示されない", and it made the cap invisible exactly when it
+     * mattered: the model had not noticed `timeout_ms` existed, so nothing on screen suggested the
+     * command could be killed. Must match `DEFAULT_TIMEOUT_MS` in `src/agent/tools.ts` (600s max,
+     * same clamp the server applies).
+     */
+    if (name === "bash") return effectiveBashTimeout(argStr("timeout_ms"));
     if (name === "wait_children") return Number(argStr("timeout_ms")) || 300_000;
     return Number(argStr("timeout_ms")) || undefined;
   };

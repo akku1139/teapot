@@ -15,6 +15,7 @@ import {
 } from "./skills.ts";
 import { isReasoningEffort } from "../model-meta.ts";
 import { killTree, describeKill } from "./kill.ts";
+
 import { editorConfigFor } from "./editorconfig.ts";
 import { mcp, MCP_PREFIX } from "./mcp-registry.ts";
 
@@ -644,7 +645,13 @@ export function killBgShells(cwd: string): number {
 }
 
 /** Run a command in its own process group; kill the whole group on timeout. */
-function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<ToolResult> {
+function runShell(
+  cmd: string,
+  ctx: ToolContext,
+  timeoutMs: number,
+  /** did the caller pass `timeout_ms`, or is this the default? the message says which */
+  explicitTimeout = false,
+): Promise<ToolResult> {
   return new Promise((resolve) => {
     const t0 = Date.now();
     // `bash -l` sources /etc/profile + ~/.bash_profile, either of which may
@@ -674,7 +681,35 @@ function runShell(cmd: string, ctx: ToolContext, timeoutMs: number): Promise<Too
     const killGroup = () => killTree(child);
 
     const timer = setTimeout(() => {
-      killReason = `TIMEOUT after ${timeoutMs}ms — ${describeKill(killGroup())}`;
+      /**
+       * The message has to teach the agent what it did not know.
+       *
+       * It read `TIMEOUT after 120000ms — killed`, which names neither the limit in human terms nor
+       * the parameter that changes it. MEASURED: an agent that never noticed `timeout_ms` hit this
+       * repeatedly, retrying the same command. So the message says WHAT the limit was, WHERE it came
+       * from (default vs explicit), what to pass next time, and when to switch to `background`.
+       */
+      /**
+       * The message has to teach the agent what it did not know.
+       *
+       * It read `TIMEOUT after 120000ms — killed`, which names neither the limit in human terms nor
+       * the parameter that changes it. MEASURED: an agent that never noticed `timeout_ms` hit this
+       * repeatedly, retrying the same command. So the message says WHAT the limit was, WHERE it came
+       * from (default vs explicit), what to pass next time, and when to switch to `background`.
+       *
+       * The limit keeps its raw `ms` when it is sub-second: "TIMEOUT after 0s" for a 300ms limit
+       * both reads wrong and loses the precision a caller needs to judge its next attempt.
+       */
+      const limit = timeoutMs < 1000 ? `${timeoutMs}ms` : `${Math.round(timeoutMs / 1000)}s`;
+      killReason =
+        `TIMEOUT after ${limit} — ${describeKill(killGroup())}. ` +
+        (explicitTimeout
+          ? `You passed timeout_ms=${timeoutMs}${timeoutMs >= BASH_MAX_TIMEOUT_MS ? " (the maximum)" : ""}. `
+          : `This was the DEFAULT (${limit}) because no timeout_ms was given. `) +
+        (timeoutMs < BASH_MAX_TIMEOUT_MS
+          ? `Retry with a larger timeout_ms (up to ${BASH_MAX_TIMEOUT_MS}) if it legitimately needs longer, ` +
+            `or use background=true for a job with no timeout at all.`
+          : `If it needs longer than the maximum, use background=true — a background job has no timeout.`);
     }, timeoutMs);
     // harness shutdown must not wait out a long-running command
     const onAbort = () => {
@@ -837,7 +872,17 @@ export function disproportionateSpan(text: string, anchor: string): string | nul
   return null;
 }
 
-export const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * How long a `bash` command may run when `timeout_ms` is not given.
+ *
+ * The UI imports this (via `frontend/lib/bash-timeout.ts`) so the row shows the SAME cap the server
+ * enforces. They drifted once: the server applied 120s while the row drew nothing, because the row
+ * only looked at a `timeout_ms` the model had omitted.
+ */
+export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
+/** the hard ceiling, applied after any `timeout_ms` the model passes */
+export const BASH_MAX_TIMEOUT_MS = 600_000;
+export const DEFAULT_TIMEOUT_MS = BASH_DEFAULT_TIMEOUT_MS;
 
 /* ---------- read_url cache ---------- */
 const URL_CACHE_TTL_MS = 3_600_000;
@@ -2001,7 +2046,16 @@ export const TOOLS: ToolDef[] = [
       type: "object",
       properties: {
         command: { type: "string" },
-        timeout_ms: { type: "number", description: `default ${DEFAULT_TIMEOUT_MS}` },
+        timeout_ms: {
+          type: "number",
+          description:
+            `How long the command may run before the harness KILLS it (whole process group, partial output ` +
+            `returned). Default ${DEFAULT_TIMEOUT_MS / 1000}s, maximum 600s. ` +
+            `MEASURED, an agent that does not know this burns several attempts on long builds: a command ` +
+            `that needs more than the default MUST pass a larger timeout_ms (e.g. 300000 for a 5-minute ` +
+            `build), and one that needs more than 600s must use background=true instead — there is no ` +
+            `timeout on a background job.`,
+        },
         background: {
           type: "boolean",
           description:
@@ -2027,7 +2081,8 @@ export const TOOLS: ToolDef[] = [
             `Full output: bash_output(job_id="${id}"). Kill: bash_output(job_id="${id}", action="kill").`,
         };
       }
-      return runShell(str(args.command), ctx, Math.min(num(args.timeout_ms, ctx.defaultTimeoutMs), 600_000));
+      const explicit = args.timeout_ms !== undefined && args.timeout_ms !== null;
+      return runShell(str(args.command), ctx, Math.min(num(args.timeout_ms, ctx.defaultTimeoutMs), BASH_MAX_TIMEOUT_MS), explicit);
     },
   },
   {
