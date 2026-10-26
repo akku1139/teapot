@@ -855,7 +855,15 @@ export class Agent {
   /**
    * A short human title for this session, derived from the operator's first
    * prompt. Undefined until the log is read (or when there is no usable prompt).
+   *
+   * A MANUAL rename sets it too, and that must survive: the derivation above only fills it when it
+   * is still undefined, so an operator's name is never overwritten by the next restore. Without this
+   * path the header kept showing the old label after a rename — the value lives in `config.json`
+   * (`AgentConfig.sessionTitle`), and nothing wrote it into the live agent.
    */
+  setSessionTitle(title: string | undefined): void {
+    this.sessionTitle = title?.trim() || undefined;
+  }
   private sessionTitle?: string;
   /** overflow recoveries used in the current turn; reset when a turn succeeds */
   private overflowRecoveries = 0;

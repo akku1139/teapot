@@ -1031,13 +1031,54 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
   border-bottom: 1px solid var(--line);
   background: var(--bg-dark); flex-shrink: 0;
 }
-.chan-head .hash { color: var(--dim); font-size: var(--text-xl); font-weight: 300; }
+.chan-head .hash { color: var(--dim); font-size: var(--text-xl); font-weight: 300; cursor: pointer; }
+/**
+ * The `#` is the rename affordance: hover turns it into a pencil.
+ *
+ * Cheaper than adding a button to a header that already has five, and the `#` is decorative enough
+ * that repurposing it costs nothing. The TITLE is a second trigger (it is the thing being renamed).
+ *
+ * `color: transparent` hides the glyph while `::before` supplies the pencil — the box stays the same
+ * size, so nothing shifts on hover.
+ */
+.chan-head .hash:hover { color: transparent; position: relative; }
+.chan-head .hash:hover::before {
+  content: "✎";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--acc);
+  font-size: var(--text-lg);
+}
 .chan-head .title {
   font-weight: 600;
   font-size: var(--text-lg);
   /* negative tracking at this size: it is what separates a designed title from
      merely-large text */
   letter-spacing: var(--tracking-tight);
+  cursor: text;
+  border-radius: var(--radius-sm);
+}
+.chan-head .title:hover { outline: 1px dashed var(--line); outline-offset: 3px; }
+/**
+ * The rename input must be INDISTINGUISHABLE from the label it replaces.
+ *
+ * Any size, font or padding difference makes the header jump the moment editing starts, which is
+ * why the OpenWebUI pattern keeps the input `bg-transparent` with the same text styles. Only the
+ * caret and a focus ring are new.
+ */
+.chan-head .titleedit {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  min-width: 8ch;
+  max-width: 46ch;
+  border-bottom: 1px solid var(--acc);
 }
 /* the model/session/turns line: the smallest step, mono-free, and it must not
    compete with the title — `--dim` at `--text-xs` recedes, which is the point */
@@ -3259,4 +3300,58 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
   padding: 8px 0 4px;
   color: var(--dim);
   font-size: var(--text-xs);
+}
+
+/**
+ * Background shells: a header badge plus a popover.
+ *
+ * Design constraint: the header already holds a status badge, a queue badge, a cron badge and five
+ * buttons. Adding a permanent sixth control would make it unreadable, so the badge appears ONLY when
+ * a job exists — zero cost when there is nothing to say, and its arrival is the signal.
+ *
+ * The popover is ABSOLUTE so opening it never reflows the feed, and it is dismissed after the
+ * question it answers ("what is it doing?") rather than living in the panel.
+ */
+.bgjobs { cursor: pointer; border: none; }
+.bgjobs:hover { filter: brightness(1.15); }
+.bgjobs-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 12px;
+  z-index: 40;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg-dark);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+  padding: 8px;
+  font-size: var(--text-sm);
+}
+.bgjobs-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 4px 8px; color: var(--dim); font-size: var(--text-xs);
+}
+.bgjobs-empty { padding: 10px 4px; font-size: var(--text-xs); }
+.bgjob { padding: 6px 4px; border-top: 1px solid var(--line); }
+.bgjob-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bgjob-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+/* a running job pulses; a finished one is a flat dot — the same language as the status badge */
+.bgjob-dot.running { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+.bgjob-dot.done { background: var(--dim); }
+.bgjob-cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.bgjob-meta { flex-shrink: 0; font-size: var(--text-xs); }
+.bgjob-kill {
+  flex-shrink: 0; background: transparent; border: 1px solid var(--line); color: var(--dim);
+  border-radius: var(--radius-sm); padding: 0 6px; font-size: var(--text-xs); cursor: pointer;
+}
+.bgjob-kill:hover { border-color: var(--err); color: var(--err); }
+/* the tail: it must wrap (a long line is unreadable otherwise) and stay short enough to skim */
+.bgjob-tail {
+  margin: 6px 0 0; padding: 6px 8px; max-height: 140px; overflow-y: auto;
+  background: color-mix(in srgb, var(--bg-darkest) 70%, transparent);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: var(--text-xs); line-height: 1.35;
 }

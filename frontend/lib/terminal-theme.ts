@@ -20,6 +20,8 @@ export interface XtermTheme {
   foreground?: string;
   cursor?: string;
   cursorAccent?: string;
+  selectionBackground?: string;
+  selectionForeground?: string;
 }
 
 /** structural subset of xterm's Terminal we touch */
@@ -42,11 +44,28 @@ export function themeColors(): XtermTheme {
   } catch { /* non-DOM context */ }
   // #137: name the cursor EXPLICITLY. Defaults follow fg/bg so the caret is
   // visible on light AND dark without every theme block carrying new vars.
+  const background = bg || "#0d0e12";
+  const foreground = fg || "#dcdee4";
   return {
-    background: bg || "#0d0e12",
-    foreground: fg || "#dcdee4",
-    cursor: cursor || fg || "#dcdee4",
-    cursorAccent: cursorAccent || bg || "#0d0e12",
+    background,
+    foreground,
+    cursor: cursor || foreground,
+    cursorAccent: cursorAccent || background,
+    /**
+     * The text selection, which xterm does NOT derive from the palette.
+     *
+     * Reported as "ライトテーマでターミナルの選択中の色が背景と同じっぽい". xterm's default selection
+     * is a light grey (#FFFFFF at ~30% in some builds, a fixed light highlight in others) — perfectly
+     * visible on a dark background and INVISIBLE on `--term-bg: #ffffff`, so a drag looked like it
+     * did nothing and a copy had no visible source.
+     *
+     * Derived rather than themed per palette: a translucent wash of the FOREGROUND gives visible
+     * contrast against any background (dark text over white, light text over near-black) without
+     * every theme block needing two more variables. Selection TEXT stays the foreground colour, so
+     * a token's syntax colour is preserved where xterm allows it.
+     */
+    selectionBackground: selectionFor(foreground),
+    selectionForeground: foreground,
   };
 }
 
@@ -63,11 +82,30 @@ export function retintTerminal(s: XtermLike): void {
     cur.background === want.background &&
     cur.foreground === want.foreground &&
     cur.cursor === want.cursor &&
-    cur.cursorAccent === want.cursorAccent
+    cur.cursorAccent === want.cursorAccent &&
+    cur.selectionBackground === want.selectionBackground
   ) {
     return;
   }
   // assigning `options.theme` is xterm's documented way to re-theme a live
   // terminal; it does not disturb the scrollback or the buffer contents
   s.options.theme = want;
+}
+
+/**
+ * A selection wash that shows up on ANY background.
+ *
+ * The foreground colour at ~28% is the trick: on a white terminal that is a soft grey band behind
+ * dark text, on a near-black one it is a light band behind pale text. A FIXED colour cannot do both,
+ * which is why the default failed on light themes only.
+ *
+ * Alpha needs a hex-with-alpha (`#rrggbbaa`, which xterm accepts); an `rgb()` string would need
+ * parsing, and a `var()` cannot be resolved here because this runs outside CSS.
+ */
+export function selectionFor(foreground: string): string {
+  const hex = foreground.trim();
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (m) return `#${m[1]}47`; // 0x47 ≈ 28% opacity
+  // a non-hex colour (or empty): fall back to a mid grey that reads on both extremes
+  return "rgba(128, 128, 128, 0.35)";
 }

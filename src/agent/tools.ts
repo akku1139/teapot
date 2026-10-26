@@ -582,6 +582,59 @@ export function isContextOverflow(err: unknown): boolean {
  *  its work on `bash(background=true)` — dev server, watcher, long build —
  *  must NOT be nagged with "Continue working toward the current goal". The
  *  job's exit notification will wake the agent on its own. */
+/**
+ * The background shells for a workspace, as the UI sees them.
+ *
+ * Only a VIEW: no child process, no cursors. The `out` field is the tail kept for `bash_output`, so
+ * showing it costs nothing extra — the buffer is already there.
+ *
+ * `owner` is included because several agents share one workspace (every sub-agent inherits its
+ * parent's), and "whose job is this" is the first thing an operator asks when deciding what to kill.
+ */
+export function listBgShells(cwd: string): Array<{
+  id: string;
+  cmd: string;
+  owner: string;
+  running: boolean;
+  code: number | null;
+  startedAt: number;
+  tail: string;
+  bytes: number;
+  truncated: boolean;
+}> {
+  const m = bgShellsByWs.get(cwd);
+  if (!m) return [];
+  return [...m.values()]
+    .map((b) => ({
+      id: b.id,
+      cmd: b.cmd,
+      owner: b.owner,
+      running: !b.exited,
+      code: b.code,
+      startedAt: b.startedAt,
+      // the LAST slice: a job is watched to see what it is doing NOW, and the head of a 10MB log is
+      // the least interesting part of it
+      tail: b.out.slice(-4000),
+      bytes: b.out.length,
+      truncated: b.truncated,
+    }))
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/** kill ONE background job; returns whether it existed */
+export function killBgShell(cwd: string, id: string): boolean {
+  const m = bgShellsByWs.get(cwd);
+  const b = m?.get(id);
+  if (!b) return false;
+  try {
+    killTree(b.child);
+  } catch {
+    /* already gone */
+  }
+  m!.delete(id);
+  return true;
+}
+
 export function hasRunningBgShells(cwd: string): boolean {
   const m = bgShellsByWs.get(cwd);
   if (!m) return false;

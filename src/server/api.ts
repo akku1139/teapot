@@ -27,6 +27,7 @@ import {
   setTerminalResize,
   writeTerminal,
 } from "./terminals.ts";
+import { listBgShells, killBgShell } from "../agent/tools.ts";
 import { applyPtySize, TermSizeTracker, resolvePtySlave } from "./term-size.ts";
 import { expandTilde, homeDir } from "../home.ts";
 import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
@@ -657,7 +658,51 @@ const MAX_WS_CLIENTS = 64;
   // archive / restore / purge. "remove" used to mean "delete the config entry and
   // orphan the history on disk"; these make the three intents distinct — put it
   // away (reversible), bring it back, or destroy it for real.
+  /**
+   * Background shells for an agent's workspace.
+   *
+   * Scoped by AGENT rather than by workspace path: the operator thinks in agents, and a workspace is
+   * a shared thing several of them use. The registry keys by workspace (that is what needs killing),
+   * so the lookup is `agent.workspace` here and the response carries `owner` for each job.
+   *
+   * Read-only apart from the DELETE. There is deliberately no "start a job" route: background shells
+   * are an AGENT's tool, and a job the operator started would have no agent to notify.
+   */
+  app.get("/api/agents/:id/bg-jobs", (c) => {
+    const agent = master.agents.get(c.req.param("id"));
+    if (!agent) return c.json({ error: "no such agent" }, 404);
+    return c.json({ jobs: listBgShells(agent.snapshot().workspace ?? "") });
+  });
+
+  app.delete("/api/agents/:id/bg-jobs/:job", (c) => {
+    const agent = master.agents.get(c.req.param("id"));
+    if (!agent) return c.json({ error: "no such agent" }, 404);
+    const ok = killBgShell(agent.snapshot().workspace ?? "", c.req.param("job"));
+    return c.json({ ok }, ok ? 200 : 404);
+  });
+
   app.get("/api/archived", (c) => c.json({ agents: master.archivedAgents() }));
+
+  /**
+   * Rename the session the operator is looking at.
+   *
+   * `?session=` is required rather than inferred: a title names a SPECIFIC session, and an agent can
+   * own several, so defaulting to the agent's current one would rename the wrong thing whenever the
+   * UI was showing a past session of it.
+   */
+  app.put("/api/agents/:id/session-title", async (c) => {
+    const sessionId = c.req.query("session") ?? "";
+    if (!sessionId) return c.json({ error: "?session= is required" }, 400);
+    const body = await c.req.json<{ title?: string }>().catch(() => null);
+    if (!body || typeof body.title !== "string") return c.json({ error: "title is required" }, 400);
+    try {
+      return c.json(await master.renameSession(c.req.param("id"), sessionId, body.title));
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = /no such agent|not on session/.test(msg) ? 404 : 400;
+      return c.json({ error: msg }, code);
+    }
+  });
 
   app.post("/api/agents/:id/archive", async (c) => {
     try {

@@ -2410,6 +2410,34 @@ if (active().length === 0) wake();
    * the second: it deleted the config entry, which orphaned the session directory
    * (the files survived, but nothing in the UI could reach them again).
    */
+  /**
+   * Rename a session by hand.
+   *
+   * The stored title is what every surface shows (the sidebar row, the header, the tab), and
+   * `ensureSessionTitle` deliberately never overwrites an existing value — its own comment says so
+   * ("which is also what will let the operator rename a session by hand"). This is that path.
+   *
+   * Refuses an empty name rather than storing one: an empty `sessionTitle` is indistinguishable
+   * from "never derived", so the next `ensureSessionTitle` would silently re-derive and the
+   * operator's intent would vanish. Clearing to the derived default is what `reset` is for.
+   */
+  async renameSession(agentId: string, sessionId: string, title: string): Promise<{ title: string }> {
+    const a = this.config.agents.find((x) => x.id === agentId);
+    if (!a) throw new Error(`no such agent: ${agentId}`);
+    // the title names THAT session, so it may only be set on the one the agent is on
+    if (a.session !== sessionId) throw new Error(`agent ${agentId} is not on session ${sessionId}`);
+    const clean = title.replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!clean) throw new Error("a session title cannot be empty");
+    a.sessionTitle = clean;
+    this.saveConfig();
+    // the live agent derives its own title from the log, so it has to be told — otherwise the header
+    // and sidebar keep the old label until a restart re-reads the config
+    this.agents.get(agentId)?.setSessionTitle(clean);
+    // the sidebar caches titles by session id, so it has to learn about this one
+    bus.emit("update", { kind: "agent-update", agentId } satisfies BusEvent);
+    return { title: clean };
+  }
+
   async archiveAgent(id: string): Promise<{ archived: boolean; ids: string[] }> {
     const root = this.config.agents.find((a) => a.id === id);
     if (!root) throw new Error(`no such agent: ${id}`);

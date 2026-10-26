@@ -3307,6 +3307,68 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   /* ---------- human terminal (bottom drawer: resizable, tabs, split) ---------- */
   const [termOpen, setTermOpen] = createSignal(localStorage.getItem("teapot.term") === "1");
+  /**
+   * Rename the session in place.
+   *
+   * The draft is a separate signal from `agentLabel()` because the label comes from the SERVER
+   * (`sessionTitle`, refreshed by an `agent-update`); typing into it directly would flicker back to
+   * the stored value on the next snapshot.
+   */
+  /**
+   * Background shells of the selected agent.
+   *
+   * Polled only while the popover is OPEN (and once on switch), because a job list is not worth a
+   * socket event: nothing else on screen depends on it, and the whole point of the badge is that it
+   * is quiet until you look. A 2s tick is the pace at which a log tail is readable.
+   */
+  type BgJob = { id: string; cmd: string; owner: string; running: boolean; code: number | null; startedAt: number; tail: string; bytes: number; truncated: boolean };
+  const [bgJobs, setBgJobs] = createSignal<BgJob[]>([]);
+  const [showBg, setShowBg] = createSignal(false);
+  const refreshBg = async () => {
+    const id = selected();
+    if (!id) return;
+    const r = (await api(`/api/agents/${encodeURIComponent(id)}/bg-jobs`).catch(() => null)) as { jobs?: BgJob[] } | null;
+    if (r?.jobs) setBgJobs(r.jobs);
+  };
+  createEffect(() => {
+    // re-read on session switch, so the badge belongs to the agent on screen
+    void selected();
+    void refreshBg();
+  });
+  createEffect(() => {
+    if (!showBg()) return;
+    const t = setInterval(() => void refreshBg(), 2000);
+    onCleanup(() => clearInterval(t));
+  });
+
+  const [renaming, setRenaming] = createSignal(false);
+  const [renameDraft, setRenameDraft] = createSignal("");
+  const beginRename = () => {
+    const a = sel();
+    if (!a) return;
+    setRenameDraft(agentLabel(a));
+    setRenaming(true);
+  };
+  const commitRename = async () => {
+    if (!renaming()) return; // Escape already closed it; blur must not then save
+    const a = sel();
+    setRenaming(false);
+    const next = renameDraft().replace(/\s+/g, " ").trim();
+    // an empty or unchanged name is a cancel, not an error: the operator cleared the box and left
+    if (!a || !next || next === agentLabel(a)) return;
+    const r = (await api(
+      `/api/agents/${encodeURIComponent(a.id)}/session-title?session=${encodeURIComponent(a.session)}`,
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: next }) },
+    ).catch((e) => ({ error: String(e) }))) as { title?: string; error?: string };
+    if (r?.error) {
+      flashHint(`rename failed: ${r.error}`);
+      return;
+    }
+    // reflect it immediately; the socket's agent-update confirms the same value
+    setSessionTitles((m) => new Map(m).set(a.session, next));
+    void refreshAgents();
+  };
+
   const toggleTerm = () => {
     const next = !termOpen();
     setTermOpen(next);
@@ -4997,8 +5059,50 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 onclick={() => setShowLeft(!showLeft())}
               >☰</button>
             </Show>
-            <span class="hash">#</span>
-            <span class="title" title={agentLabelWithId(sel(), sel()!.session)}>{agentLabel(sel())}</span>
+            <span class="hash" title="rename this chat" onclick={() => beginRename()}>#</span>
+            {/**
+             * Rename in place, following the pattern GitHub/OpenWebUI use for the same job: the
+             * label becomes an input styled IDENTICALLY (transparent background, same font and
+             * padding) so nothing jumps, the text is focused AND selected, Enter commits, Escape
+             * cancels, blur commits.
+             *
+             * The `#` is also a trigger — it is already there and already looks like an affordance,
+             * so hover turns it into a pencil rather than adding another button to the header.
+             */}
+            <Show
+              when={renaming()}
+              fallback={
+                <span class="title" title={`${agentLabelWithId(sel(), sel()!.session)} — click to rename`} onclick={() => beginRename()}>
+                  {agentLabel(sel())}
+                </span>
+              }
+            >
+              <input
+                class="title titleedit"
+                value={renameDraft()}
+                ref={(el) => {
+                  // focus + select on the next frame: the input is created by this same render, and
+                  // selecting before it is in the document does nothing
+                  requestAnimationFrame(() => {
+                    el.focus();
+                    el.select();
+                  });
+                }}
+                oninput={(e) => setRenameDraft(e.currentTarget.value)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void commitRename();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    // Escape must NOT also commit through the blur that follows
+                    setRenaming(false);
+                  }
+                }}
+                onblur={() => void commitRename()}
+                spellcheck={false}
+              />
+            </Show>
             {/**
              * The badge carries the status; its tooltip carries the REASON, and only when the
              * reason adds something.
@@ -5055,6 +5159,32 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 ⏳ {queuedCount()} {queuedCount() === 1 ? "message" : "messages"} queued
                 {sel()!.status === "stopped" ? " (stopped)" : ""}
               </span>
+            </Show>
+            {/**
+             * Background shells: a badge that appears ONLY when there are jobs.
+             *
+             * The UI must not grow another always-present control — the header already carries
+             * status, the queue badge, cron and five buttons. A count that is absent when the count
+             * is zero costs nothing and reads as an event when it appears ("something is running").
+             *
+             * Clicking opens a popover listing each job with its live tail and a kill button. It is
+             * a popover rather than a right-panel section because a background job is looked at
+             * BRIEFLY, to answer "what is it doing / is it done", and then dismissed.
+             */}
+            <Show when={bgJobs().length > 0}>
+              <button
+                type="button"
+                class="badge bgjobs"
+                aria-expanded={showBg()}
+                onclick={() => {
+                  setShowBg(!showBg());
+                  if (showBg()) void refreshBg();
+                }}
+                title={`background shells — ${bgJobs().filter((j) => j.running).length} running, ${bgJobs().length} total (click to inspect)`}
+              >
+                ⚙️ {bgJobs().filter((j) => j.running).length || bgJobs().length}
+                {bgJobs().some((j) => j.running) ? " running" : " done"}
+              </button>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>
               <span class="badge cron" title={`scheduled tasks:\n${agentTasks(sel()!.id).map((t) => `${t.schedule} · ${t.id}${t.forked ? " (forked)" : ""}`).join("\n")}`}>
@@ -5122,6 +5252,53 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   click. `aria-expanded` says the same thing to a screen reader. */}
               <IconBtn icon="▤" title="toggle details panel (d)" active={showRight()} onClick={toggleRight} />
             </span>
+            {/**
+             * The background-job popover.
+             *
+             * Inside the header so it can position itself under the badge, and absolutely
+             * positioned so opening it never reflows the feed. Each row: the command, how long it has
+             * run, and its LAST lines — a job is watched to answer "what is it doing", which the head
+             * of the output cannot tell you.
+             */}
+            <Show when={showBg()}>
+              <div class="bgjobs-pop" role="dialog" aria-label="background shells">
+                <div class="bgjobs-head">
+                  <span>background shells</span>
+                  <button type="button" class="iconbtn" title="close" onclick={() => setShowBg(false)}>✕</button>
+                </div>
+                <Show
+                  when={bgJobs().length > 0}
+                  fallback={<div class="muted bgjobs-empty">no background jobs for this agent</div>}
+                >
+                  <For each={bgJobs()}>
+                    {(j) => (
+                      <div class="bgjob">
+                        <div class="bgjob-line">
+                          <span class={"bgjob-dot " + (j.running ? "running" : "done")} title={j.running ? "running" : "finished"} />
+                          <code class="mono bgjob-cmd" title={j.cmd}>{oneLine(j.cmd, 80)}</code>
+                          <span class="muted bgjob-meta">
+                            {j.running ? fmtDur(Date.now() - j.startedAt) : `exit ${j.code ?? "?"}`}
+                            {j.truncated ? " · truncated" : ""}
+                          </span>
+                          <button
+                            type="button"
+                            class="bgjob-kill"
+                            title={j.running ? "kill this job (whole process group)" : "forget this finished job"}
+                            onclick={async () => {
+                              await api(`/api/agents/${encodeURIComponent(sel()!.id)}/bg-jobs/${encodeURIComponent(j.id)}`, { method: "DELETE" }).catch(() => {});
+                              await refreshBg();
+                            }}
+                          >{j.running ? "kill" : "clear"}</button>
+                        </div>
+                        <Show when={j.tail.trim()}>
+                          <pre class="mono bgjob-tail">{j.tail}</pre>
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+              </div>
+            </Show>
           </header>
 
           <div class="feed" ref={(el) => attachFeedObserver(el)} onscroll={(e) => {
