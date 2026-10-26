@@ -607,7 +607,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
         .map((i: unknown) => (typeof i === "string" ? i : (i as { url?: unknown })?.url))
         .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
         // `blobs/<hash>` is a stored reference, not a browser path (#blobs)
-        .map((u: string) => blobUrl(props.agentId, u));
+        ;
       return (
         <>
           <div class="content" innerHTML={renderMarkdownCached(String(e.data.text ?? ""))} />

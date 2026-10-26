@@ -49,6 +49,13 @@ const EVENTS = [
       command: "echo SHIKI_MARKER --flag=value --another-flag=value2 --third-flag=value3 --fourth-flag=value4 --fifth-flag=value5 --sixth" } } },
   { id: "e4", seq: 4, ts: "2026-01-01T10:00:10Z", session: "alpha-s1", branch: "br0", parent: "e3",
     type: "tool_result", data: { callId: "c1", name: "bash", result: "file.txt", ok: true, durationMs: 12 } },
+  // a tool that returned an IMAGE: the timeline must show it, not just the sentence about it (#blobs)
+  { id: "e-img-call", seq: 4, ts: "2026-01-01T10:00:10Z", session: "alpha-s1", branch: "br0", parent: "e4",
+    type: "tool_call", data: { callId: "c-img", name: "read_file", args: { path: "card.jpg" } } },
+  { id: "e-img-res", seq: 5, ts: "2026-01-01T10:00:10Z", session: "alpha-s1", branch: "br0", parent: "e-img-call",
+    type: "tool_result", data: { callId: "c-img", name: "read_file", ok: true, durationMs: 9,
+      result: "card.jpg is a JPEG image — the image itself is attached to this message",
+      images: [{ url: "blobs/3220fc7838ccdab0a3a21b5d8498275c7abe6930abbb059e9fdb4939bba8c2fd.jpg", name: "card.jpg" }] } },
   { id: "e4b", seq: 5, ts: "2026-01-01T10:00:11Z", session: "alpha-s1", branch: "br0", parent: "e4",
     type: "prompt", data: { source: "harness", text: "[harness] Sub-agent alpha-kid finished. Final report:\nCHILD REPORT TEXT" } },
   { id: "q1", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0", parent: "e4",
@@ -3227,6 +3234,33 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
   }
 }
 console.log("deep render ok: the compaction banner lives inside the feed (#108)");
+
+/**
+ * A tool that returned an image must RENDER it.
+ *
+ * MEASURED on v0.37.73: the bytes were stored and the log referenced them, but `blobs/<hash>` went
+ * straight into `<img src>` (resolved against `/session/…` → 404), and before that tool results drew
+ * no `<img>` at all — so the agent could see the picture and the operator could not. Both failures were
+ * invisible to a test that only read the log, which is why this checks the DOM.
+ */
+{
+  const img = w.document.querySelector("img.promptimg[alt='tool image']");
+  if (!img) {
+    console.error("#blobs REGRESSION: a tool result with an image rendered no <img> — the operator cannot see it");
+    process.exit(1);
+  }
+  const src = img.getAttribute("src") ?? "";
+  const want = "blobs/3220fc7838ccdab0a3a21b5d8498275c7abe6930abbb059e9fdb4939bba8c2fd.jpg";
+  if (src === want) {
+    console.error(`#blobs REGRESSION: src is the STORED reference (${src}), which the browser resolves to a 404`);
+    process.exit(1);
+  }
+  if (!src.startsWith(`/api/agents/${AGENT.id}/blobs/`)) {
+    console.error(`#blobs REGRESSION: src is not the agent blob route: ${src}`);
+    process.exit(1);
+  }
+  console.log("a tool image renders through the agent blob route (#blobs)");
+}
 
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
