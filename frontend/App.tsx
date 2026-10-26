@@ -3032,6 +3032,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     onResize={() => {
                       if (atBottom()) pinToTail();
                     }}
+                    // a logged `blobs/<hash>` reference needs the owning agent to become a URL (#blobs)
+                    agentId={selected() ?? undefined}
                     onCancel={
                       row.data?.source === "user" &&
                       row.data?.pending && row.data?.promptId && row.data?.sent !== true

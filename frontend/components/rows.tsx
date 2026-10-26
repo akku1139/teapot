@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
 import { hasAnsi, stripAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
+import { blobUrl } from "../lib/blob-url";
 import { goalLine } from "../lib/goal-timeline";
 import { toneOf } from "../lib/timeline-row";
 import { renderMarkdown } from "../md";
@@ -41,7 +42,7 @@ export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string
   );
 }
 
-export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; agentActive?: boolean; onResize?: () => void }) {
+export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; agentActive?: boolean; onResize?: () => void; agentId?: string }) {
   const e = props.e;
   const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
   const resEv = createMemo(() => props.res?.(), undefined, {
@@ -110,6 +111,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
           {}
           <CopyBtn text={hasAnsi(out()) ? stripAnsi(out()) : formatToolOutput(out())} />
         </div>
+        <ToolImages data={r.data} agentId={props.agentId} />
       </>
     ) : (
       <div class="meta">waiting for output…</div>
@@ -372,7 +374,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   );
 }
 
-export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: () => Ev | undefined; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: () => Ev | undefined; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void; agentId?: string }) {
   const e = props.e;
   const a = authorOf(e);
   const grouped = () => groupedWith(props.prev?.() as RowLike | undefined, e as RowLike);
@@ -561,13 +563,35 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
           </div>
         </Show>
 
-        <SwitchContent e={e} prev={props.prev?.()} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} />
+        <SwitchContent e={e} prev={props.prev?.()} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} agentId={props.agentId} />
       </div>
     </div>
   );
 }
 
-export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void }) {
+/**
+ * Images a tool returned, e.g. `read_file` on a picture.
+ *
+ * The bytes are logged as `blobs/<sha256>` and served by `/api/agents/:id/blobs/:name`; without this
+ * the timeline showed only the explanatory text ("the image itself is attached…") and the operator
+ * could not see what the agent was told it was looking at.
+ */
+function ToolImages(props: { data?: { images?: unknown }; agentId?: string }) {
+  const srcs = (): string[] =>
+    (Array.isArray(props.data?.images) ? props.data!.images : [])
+      .map((i: unknown) => (typeof i === "string" ? i : (i as { url?: unknown })?.url))
+      .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+      .map((u: string) => blobUrl(props.agentId, u));
+  return (
+    <Show when={srcs().length}>
+      <div class="promptimgs">
+        <For each={srcs()}>{(src) => <img src={src} class="promptimg" alt="tool image" loading="lazy" />}</For>
+      </div>
+    </Show>
+  );
+}
+
+export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void; agentId?: string }) {
   const e = props.e;
   switch (e.type) {
     case "prompt": {
@@ -581,7 +605,9 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
        */
       const imgs: string[] = (e.data?.images ?? [])
         .map((i: unknown) => (typeof i === "string" ? i : (i as { url?: unknown })?.url))
-        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0);
+        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+        // `blobs/<hash>` is a stored reference, not a browser path (#blobs)
+        .map((u: string) => blobUrl(props.agentId, u));
       return (
         <>
           <div class="content" innerHTML={renderMarkdownCached(String(e.data.text ?? ""))} />
@@ -616,7 +642,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
       // `prev` must be FORWARDED (grouping #75): without it ToolRow cannot know it
       // continues the previous actor's run, which is what made every consecutive
       // bash row render its own icon + label.
-      return <ToolRow e={e} prev={props.prev} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} />;
+      return <ToolRow e={e} prev={props.prev} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} agentId={props.agentId} />;
     case "tool_result": {
       const out = String(e.data.result ?? "");
       const name = String(e.data.name ?? "tool");

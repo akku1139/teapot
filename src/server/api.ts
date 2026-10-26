@@ -1447,6 +1447,39 @@ const MAX_WS_CLIENTS = 64;
 
   const ALLOWED_WIDTHS = [640, 1280, 1920, 2560, 3840] as const;
   app.get("/api/assets/meta", (c) => c.json({ widths: ALLOWED_WIDTHS }));
+  /**
+   * Image bytes a session logged, served so the TIMELINE can show them.
+   *
+   * `read_file` and a prompt's attachment store `blobs/<sha256>.<ext>` beside `chat.jsonl`; the log is
+   * read by a person, so the reference has to be resolvable from the browser. MEASURED before this
+   * existed: `<img src="blobs/3220fc….png">` resolved against `/session/blobs/…`, 404'd, and every
+   * attachment and tool image rendered broken (`naturalWidth: 0`).
+   *
+   * `:id` is an AGENT, not a path, so the directory is decided by what teapot already knows rather
+   * than by the request — and the name is validated as a basename with a hash shape, so this cannot
+   * read anything outside that session's `blobs/`.
+   */
+  app.get("/api/agents/:id/blobs/:name", async (c) => {
+    const agent = master.agents.get(c.req.param("id"));
+    if (!agent) return c.notFound();
+    const name = c.req.param("name") ?? "";
+    if (!/^[a-f0-9]{64}\.(png|jpg|jpeg|gif|webp)$/i.test(name)) return c.notFound();
+    const file = path.join(agent.snapshot().sessionDir, "blobs", name);
+    try {
+      const buf = await fs.readFile(file);
+      const ext = name.split(".").pop()!.toLowerCase();
+      const mime =
+        ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg";
+      // content-addressed, so the bytes for a name never change
+      return c.body(buf, 200, {
+        "content-type": mime,
+        "cache-control": "public, max-age=31536000, immutable",
+      });
+    } catch {
+      return c.notFound();
+    }
+  });
+
   app.get("/api/assets/:name", async (c) => {
     const name = assetName(c.req.param("name") ?? "");
     if (!name) return c.notFound();
