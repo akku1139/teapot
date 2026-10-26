@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { useTempDir, useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
+import { waitFor } from "./helpers/wait-for.ts";
 import type { ChatFn, ChatMessage, LlmConfig, LlmResult, ToolSpec } from "../src/agent/llm.ts";
 import { readEvents } from "../src/log/events.ts";
 import { dataOf } from "./helpers/event-data.ts";
@@ -1252,8 +1253,16 @@ test("stopping mid-bash kills the process group and settles immediately", { time
   await withAgent({ chatFn: chat, autoContinue: false }, async (agent) => {
     agent.enqueuePrompt("go");
     agent.start("t");
-    // wait until the bash child is really running
-    await new Promise((r) => setTimeout(r, 600));
+    /**
+     * Wait for the bash TOOL CALL to be logged, not a fixed 600ms.
+     *
+     * The point of the sleep was "the child is really running"; a duration only approximates that, and
+     * a slow machine makes `settleMs < 3_000` fail for a reason unrelated to stopping.
+     */
+    await waitFor(
+      async () => (await readEvents(agent.log.filePath)).some((e) => e.type === "tool_call"),
+      { what: "the bash tool call to be logged before stopping" },
+    );
     const t0 = Date.now();
     agent.stop("user interrupt");
     await agent.settled();
@@ -1385,7 +1394,9 @@ test("auto-continue is suppressed while a background bash runs; its exit wakes t
     assert.ok(sup, "suppression is visible in the log");
 
     // …then the job exits → the agent resumes ON ITS OWN and consumes the report
-    await new Promise((r) => setTimeout(r, 500));
+    await waitFor(() => agent.snapshot().goal.status === "done", {
+      what: "the agent to finish the round on its own after the background job exits",
+    });
     assert.equal(agent.snapshot().goal.status, "done");
     await agent.dispose();
   });

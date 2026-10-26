@@ -32,6 +32,8 @@ import path from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 import { Agent } from "../src/agent/agent.ts";
+import { listBgShells } from "../src/agent/tools.ts";
+import { waitFor } from "./helpers/wait-for.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 
 // #110: POSIX-only — the fixture starts a `sleep` through the bash tool, which
@@ -77,9 +79,18 @@ async function startBgAgent(ws: string, sd: string, probe: string) {
   await agent.init();
   agent.enqueuePrompt("go");
   agent.start("t");
-  // let the tool call land and the job register
+  /**
+   * Let the tool call land and the job register, by POLLING for the registration itself.
+   *
+   * `calls < 2` already polled the LLM, but the trailing 300ms then waited for the JOB — a different
+   * fact with no condition attached, so a slow machine stopped the wait while the job was still being
+   * created.
+   */
   for (let i = 0; i < 60 && calls < 2; i++) await new Promise((r) => setTimeout(r, 100));
-  await new Promise((r) => setTimeout(r, 300));
+  await waitFor(() => listBgShells(ws, sd).length > 0, {
+    what: "the background job to be registered",
+    timeoutMs: 6_000,
+  });
   return agent;
 }
 

@@ -32,6 +32,7 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { readEvents } from "../src/log/events.ts";
+import { waitFor } from "./helpers/wait-for.ts";
 
 interface Ev {
   seq: number;
@@ -40,6 +41,12 @@ interface Ev {
 }
 
 /** drive the agent and return its events plus the observed LLM calls */
+const deliveredSeq = (evs: Ev[]) =>
+  evs.find((e) => e.type === "system_note" && e.data?.event === "prompt-delivered")?.seq ?? -1;
+const turnStartSeq = (evs: Ev[]) =>
+  evs.find((e) => e.type === "state" && String(e.data?.detail ?? "").includes("llm turn start"))?.seq ?? -1;
+const compactionSeq = (evs: Ev[]) => evs.find((e) => e.type === "compaction")?.seq ?? -1;
+
 async function drive(
   ws: string,
   sd: string,
@@ -69,15 +76,23 @@ async function drive(
   }
   a.enqueuePrompt("do the thing", "user");
   a.start("t");
-  await new Promise((r) => setTimeout(r, 900));
+  /**
+   * Poll until BOTH facts this fixture needs are in the log — the delivered note and a turn start.
+   *
+   * The 900ms sleep encoded "the turn has run"; on a slow machine the turn had not started yet, and the
+   * test then asserted about the ORDER of events that were never written. Waiting on the condition is
+   * what makes the ordering assertion meaningful.
+   */
+  await waitFor(
+    async () => {
+      const evs = (await readEvents(`${sd}/chat.jsonl`)) as Ev[];
+      return deliveredSeq(evs) >= 0 && turnStartSeq(evs) >= 0;
+    },
+    { what: "the prompt-delivered note and the llm turn start" },
+  );
   return { events: (await readEvents(`${sd}/chat.jsonl`)) as Ev[], calls };
 }
 
-const deliveredSeq = (evs: Ev[]) =>
-  evs.find((e) => e.type === "system_note" && e.data?.event === "prompt-delivered")?.seq ?? -1;
-const turnStartSeq = (evs: Ev[]) =>
-  evs.find((e) => e.type === "state" && String(e.data?.detail ?? "").includes("llm turn start"))?.seq ?? -1;
-const compactionSeq = (evs: Ev[]) => evs.find((e) => e.type === "compaction")?.seq ?? -1;
 
 test("prompt-delivered is recorded when the request starts, not when queued (#37)", async () => {
   await useTempDirs(["t37a-", "t37b-"], async ([ws, sd]) => {
