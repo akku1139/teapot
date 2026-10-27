@@ -418,24 +418,50 @@ export class Master {
       this.configDirty = true;
       return;
     }
-    this.raw.agents = this.config.agents;
-    this.raw.providers = this.config.providers;
-    this.raw.defaultProvider = this.config.defaultProvider;
-    this.raw.tasks = this.config.tasks;
-    this.raw.mcpServers = this.config.mcpServers;
-    if (this.config.sessionTitles !== undefined) this.raw.sessionTitles = this.config.sessionTitles;
-    else delete this.raw.sessionTitles;
-    if (this.config.customThemes !== undefined) this.raw.customThemes = this.config.customThemes;
-    if (this.config.password !== undefined) this.raw.password = this.config.password;
-    else delete this.raw.password;
-    if (this.config.themePrefs !== undefined) this.raw.themePrefs = this.config.themePrefs;
-    this.raw.resumeAfterUpdate = this.config.resumeAfterUpdate;
-    if (this.config.shortContext !== undefined) this.raw.shortContext = this.config.shortContext;
-    if (this.config.pluginsDir !== undefined) this.raw.pluginsDir = this.config.pluginsDir;
-    if (this.raw.progressIntervalMs === undefined && this.config.progressIntervalMs !== undefined)
-      this.raw.progressIntervalMs = this.config.progressIntervalMs;
-    if (this.raw.progressMinChars === undefined && this.config.progressMinChars !== undefined)
-      this.raw.progressMinChars = this.config.progressMinChars;
+    /**
+     * ONE list of the fields `config.json` mirrors from `this.config`.
+     *
+     * This used to be ad-hoc lines, and it was wrong in two ways that both read as "the setting does not
+     * work":
+     *
+     *   - `progressIntervalMs` / `progressMinChars` were written only when `raw` did not already have
+     *     them (`=== undefined`), so the FIRST save persisted and every later change was dropped —
+     *     reported as "progress interval (min) が機能してなくない? 少なくともconfig.jsonには書き込まれて
+     *     ない";
+     *   - `contextTokenBudget`, `contextWindowTokens`, `maxSpawnDepth`, `maxTurnsPerRound`, `onError`
+     *     and `retryDelayMs` were never written at all, so those runtime controls could not persist
+     *     either.
+     *
+     * Undefined DELETES the key rather than leaving the old value lying in the file, so clearing a
+     * control in the UI actually clears it on disk.
+     */
+    const mirrored = [
+      "agents",
+      "providers",
+      "defaultProvider",
+      "tasks",
+      "mcpServers",
+      "sessionTitles",
+      "customThemes",
+      "password",
+      "themePrefs",
+      "resumeAfterUpdate",
+      "shortContext",
+      "pluginsDir",
+      "progressIntervalMs",
+      "progressMinChars",
+      "contextTokenBudget",
+      "contextWindowTokens",
+      "maxSpawnDepth",
+      "maxTurnsPerRound",
+      "onError",
+      "retryDelayMs",
+    ] as const;
+    for (const key of mirrored) {
+      const value = (this.config as unknown as Record<string, unknown>)[key];
+      if (value === undefined) delete this.raw[key];
+      else this.raw[key] = value;
+    }
     this.writeConfigAtomic(JSON.stringify(this.raw, null, 2) + "\n");
   }
 
@@ -559,14 +585,13 @@ export class Master {
       this.config.contextWindowTokens =
         (patch.contextWindowTokens ?? 0) > 0 ? patch.contextWindowTokens! : undefined;
     }
-    for (const k of [
-      "contextTokenBudget", "contextWindowTokens", "maxSpawnDepth",
-      "maxTurnsPerRound", "onError", "retryDelayMs",
-    ] as const) {
-      const v = this.config[k];
-      if (v === undefined) delete this.raw[k];
-      else this.raw[k] = v;
-    }
+    /**
+     * No `this.raw[...] = v` loop here — `saveConfig()` owns the mirror now (see its `mirrored` list).
+     *
+     * There used to be one, covering six of these keys and not the other two, which is exactly how the
+     * runtime controls ended up in different states: `contextTokenBudget` persisted, `progressIntervalMs`
+     * did not. One owner, one rule — and it runs once, at the end, after `tasks` is updated too.
+     */
     if (patch.tasks) {
       this.config.tasks = patch.tasks;
       this.tasks = patch.tasks.map((t) => ({
