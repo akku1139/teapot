@@ -536,9 +536,27 @@ export default function App() {
     const height = f.scrollHeight;
     if (height === lastContentHeight) return;
     lastContentHeight = height;
+    /**
+     * Two frames is not always enough, and the residual gap is what #188 reports.
+     *
+     * This effect re-runs when the events change, which is BEFORE images and shiki finish laying out —
+     * a picture that decodes a frame later makes the feed taller AFTER the pin, leaving the operator
+     * 1-3px short of the bottom with no second pin. So pin again on the next frame if the height moved
+     * while we were waiting, and keep the follow decision honest by only doing it while at bottom.
+     */
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        if (atBottom()) pinToTail();
+        if (!atBottom()) return;
+        pinToTail();
+        // a late layout pass (image decode, font swap, shiki) can grow the feed again
+        requestAnimationFrame(() => {
+          if (!atBottom()) return;
+          const h = f.scrollHeight;
+          if (h !== lastContentHeight) {
+            lastContentHeight = h;
+            pinToTail();
+          }
+        });
       }),
     );
   });
@@ -2955,7 +2973,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               unskipAnchorAt = t;
               unskipAnchor = firstVisibleRow(el);
             }
-            const follow = nextFollowing(wasFollowing, cause, now);
+            // the previous top is what lets a READER's upward gesture be told from a layout shift (#188)
+            const follow = nextFollowing(wasFollowing, cause, now, lastSample?.top);
             if (follow !== wasFollowing) setAtBottom(follow);
             if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow && cause !== "reader") {

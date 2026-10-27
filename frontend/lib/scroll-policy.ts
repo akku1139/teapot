@@ -47,10 +47,29 @@ export function shouldPin(following: boolean, v: Viewport): boolean {
   return distanceToTail(v) <= STICKY_PX;
 }
 
-export function nextFollowing(following: boolean, cause: ScrollCause, v: Viewport): boolean {
+/**
+ * Should we keep following the tail after this scroll event?
+ *
+ * A `reader` gesture is the operator's own hand, and it wins: if they scrolled UP even by 2px, follow
+ * must stop, or the next `pinToTail()` shoves them back. MEASURED, this was the report —
+ * "生成中に上側に人力でスクロールしようとすると押し戻される" (#188): the old rule returned
+ * `atTail(v)`, and `atTail` allows 24px of slack, so every small upward scroll inside that window kept
+ * `following` true and the tail re-pinned underneath them.
+ *
+ * So the reader case needs BOTH: still at the very bottom, AND not moving away from it. `previousTop`
+ * is what makes "moving away" observable — a `Viewport` alone cannot say which way they went.
+ */
+export function nextFollowing(
+  following: boolean,
+  cause: ScrollCause,
+  v: Viewport,
+  previousTop?: number,
+): boolean {
   if (cause !== "reader") {
     return following || atTail(v);
   }
+  const movedUp = previousTop !== undefined && v.top < previousTop - 0.5;
+  if (movedUp) return false;
   return atTail(v);
 }
 
