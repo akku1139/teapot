@@ -4,6 +4,7 @@
 
 > Try it in 5 minutes → [Quick start](#-quick-start) · Details live in the [Reference](#-reference) section
 
+[![npm version](https://badge.fury.io/js/teapot-coding-agent.svg)](https://badge.fury.io/js/teapot-coding-agent)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/akku1139/teapot)
 
 ---
