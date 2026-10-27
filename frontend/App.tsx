@@ -1,6 +1,7 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { evictOver, weighJson } from "./lib/retention";
+import { renderMarkdownCached } from "./lib/markdown";
 import { fmtDur } from "./lib/format";
 import {
   applyDelta,
@@ -69,15 +70,6 @@ import {
   type ThemePalette,
 } from "./lib/theme-store";
 
-const mdCache = new Map<string, string>();
-function renderMarkdownCached(src: string): string {
-  const hit = mdCache.get(src);
-  if (hit !== undefined) return hit;
-  const html = renderMarkdown(src);
-  mdCache.set(src, html);
-  if (mdCache.size > 500) mdCache.delete(mdCache.keys().next().value!);
-  return html;
-}
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
