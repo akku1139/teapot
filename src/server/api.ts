@@ -1445,7 +1445,12 @@ const MAX_WS_CLIENTS = 64;
     avif: "image/avif",
   };
 
-  const ALLOWED_WIDTHS = [640, 1280, 1920, 2560, 3840] as const;
+  /**
+   * 320 exists for the ONE place a wallpaper is drawn small: the background-image picker is 260px wide,
+   * so a 640 floor made the browser fetch 2.5x the pixels it could show ("260pxなのに最小が640w").
+   * The theme cards (~200px) benefit for the same reason.
+   */
+  const ALLOWED_WIDTHS = [320, 640, 1280, 1920, 2560, 3840] as const;
   app.get("/api/assets/meta", (c) => c.json({ widths: ALLOWED_WIDTHS }));
   /**
    * Image bytes a session logged, served so the TIMELINE can show them.

@@ -1,3 +1,4 @@
+import { sizedAsset } from "./bg-srcset.ts";
 
 export interface PreviewLayers {
   dim: number;
@@ -28,8 +29,17 @@ export function veilColour(surface: string, dim: number): string {
   return `color-mix(in srgb, ${surface} ${pct}%, transparent)`;
 }
 
-export function backgroundImageValue(image?: string): string | undefined {
+/**
+ * The wallpaper layer of a theme PREVIEW, at the size the preview is drawn.
+ *
+ * The cards are `62px` tall and a couple of hundred wide, so asking for the full image meant opening
+ * `appearance` fetched every theme's wallpaper at its original resolution — "appearanceを開くとバカ重い".
+ * The asset endpoint already downsizes on demand (`?w=`, cached as `name-w640.ext`), so the preview
+ * asks for the smallest variant and the operator's bandwidth is spent on something they can see.
+ */
+export function backgroundImageValue(image?: string, width?: number): string | undefined {
   const v = image?.trim();
   if (!v) return undefined;
-  return `url("${v.replace(/"/g, "%22")}")`;
+  const src = width ? sizedAsset(v, width) ?? v : v;
+  return `url("${src.replace(/"/g, "%22")}")`;
 }

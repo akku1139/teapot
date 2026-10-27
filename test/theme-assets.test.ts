@@ -375,13 +375,18 @@ test("the appearance section's image block is NOT forced fully opaque (#ui)", as
    * dialog.
    */
   const css = stripSourceComments(await readSource("frontend/app.css"));
-  const block = cssRuleBody(css, 'html[data-bg-image="on"] .bgpreview');
-  assert.doesNotMatch(
-    block,
-    /background-color:\s*var\(--bg-darkest-solid/,
-    "the whole row must not be opaque — only the preview image needs to be",
+  /**
+   * The ROW must have no rule at all — the fix for the opaque slab was to give it `--bg-mid`, and that
+   * painted a stray raised plane in an otherwise translucent dialog: "変なプレーンができてるので、
+   * 単純にこのルールを削除して". The only rule left is for the preview IMAGE, which does need to be solid.
+   */
+  assert.equal(
+    css.includes('html[data-bg-image="on"] .bgpreview {'),
+    false,
+    "there must be no rule for the row itself",
   );
-  assert.match(block, /var\(--bg-mid\)/, "it should use a normal raised surface");
+  const img = cssRuleBody(css, 'html[data-bg-image="on"] .bgpreview img');
+  assert.match(img, /var\(--bg-darkest-solid/, "only the preview image stays opaque");
 });
 
 test("a skill body renders MARKDOWN and cannot scroll sideways (#ui)", async () => {

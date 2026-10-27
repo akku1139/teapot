@@ -1,5 +1,6 @@
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { renderMarkdownCached } from "../lib/markdown";
+import { BG_SMALL } from "../lib/bg-srcset";
 import { previewLayers, veilColour, backgroundImageValue } from "../lib/theme-preview";
 import type { ThemePalette } from "../lib/theme-store";
 
@@ -113,7 +114,14 @@ export function ThemePreview(props: {
   return (
     <span class="tprev" style={{ background: p().bgDark }}>
       <Show when={props.backgroundImage}>
-        <span class="tprev-bg" style={{ "background-image": backgroundImageValue(props.backgroundImage) }} />
+        <span
+          class="tprev-bg"
+          style={{
+            // the card is ~200x62 CSS px; the smallest asset variant is 640, which still oversamples
+            // a 2x display. Without this the original image was fetched per card (#appearance lag).
+            "background-image": backgroundImageValue(props.backgroundImage, BG_SMALL),
+          }}
+        />
         {}
         <span
           class="tprev-veil"

@@ -3383,9 +3383,11 @@ html[data-bg-image="on"] .content pre code {
  * slab in an otherwise translucent dialog. Reported as "appearanceのbackground imageのとこが背景
  * 透過されてない".
  *
- * Only the PREVIEW IMAGE itself needs to stay solid; the row is a normal raised surface.
+ * Only the PREVIEW IMAGE itself needs to stay solid; the row is a normal raised surface — so there is
+ * deliberately NO rule for `.bgpreview` here. One was tried and removed: it painted `--bg-mid` behind
+ * the row, which read as a stray opaque plane in an otherwise translucent dialog
+ * ("変なプレーンができてるので、単純にこのルールを削除して").
  */
-html[data-bg-image="on"] .bgpreview { background-color: var(--bg-mid); }
 html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-solid, var(--bg-darkest)); }
 /* the tool list is collapsible: a server can expose dozens, and an always-open list pushed every
    other row off the panel */
