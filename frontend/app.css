@@ -287,6 +287,59 @@ html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard)) {
   border-radius: var(--radius-md);
 }
 /**
+ * WITH A WALLPAPER, NO button keeps a fill. One rule, no exceptions to maintain.
+ *
+ * This is deliberately `!important`. The outline rule above uses `:where()`, which contributes ZERO
+ * specificity, so ANY class-based fill beats it: `.iconbtn` (0,1,0), `.btnrow button` (0,1,1),
+ * `.modal button:not(.iconbtn):not([class])` (0,3,1). MEASURED with the mode forced on: the settings
+ * modal's `+ key` computed `color(srgb … / 0.94)` — `--bg-light` at 94% alpha, an opaque chip on a
+ * translucent surface — and `✕` was a solid `rgb(237, 66, 69)`.
+ *
+ * The previous shape here was an exception list, and the operator rejected that design outright:
+ * "そのCSS設計は悪い / html[data-bg-image="on"] のときは全buttonに対して透明化を当てるべき /
+ * それならいちいち管理しなくて良いよね". They are right: a list of classes to keep in sync fails
+ * silently the moment someone adds a button, and every earlier attempt at it in this file has had to
+ * be repaired.
+ *
+ * So the MODE states its meaning in one place: nothing paints a background over the wallpaper.
+ */
+html[data-bg-image="on"] button {
+  background-color: transparent !important;
+}
+/**
+ * …and HOVER puts a faint fill back, in the button's OWN colour.
+ *
+ * The two states use two channels, exactly as the rest of this file already does: normal is
+ * border + text, hover adds a semi-transparent background. This has to be `!important` as well, or the
+ * rule above would blank the hover fill too.
+ *
+ * `currentColor` rather than `--acc` is what keeps it exception-free: an accent button (save, ok, run,
+ * the red ✕) tints in ITS colour without any rule knowing which button it is. That is the same shape
+ * the action-button hover already used.
+ */
+html[data-bg-image="on"] button:hover:where(:not(:disabled)) {
+  background-color: color-mix(in srgb, currentColor 12%, transparent) !important;
+}
+/**
+ * …and the text of a button that WAS white-on-fill has to stay legible.
+ *
+ * A transparent fill with `color: #fff` is invisible, so the few action buttons that relied on a
+ * coloured slab move their accent to the BORDER and the LABEL — the same treatment the stop button
+ * already had.
+ */
+html[data-bg-image="on"] button.cfgsave,
+html[data-bg-image="on"] .composer button {
+  border: 1px solid currentColor;
+  color: var(--acc);
+}
+/* destructive controls keep their red in the border and the label */
+html[data-bg-image="on"] button.danger,
+html[data-bg-image="on"] .cfgrow button.danger {
+  border: 1px solid currentColor;
+  color: var(--err);
+}
+
+/**
  * The ACTION buttons keep the accent in their BORDER, not their fill.
  *
  * A filled chip is exactly the solid tile the outline treatment exists to avoid, and these are the
