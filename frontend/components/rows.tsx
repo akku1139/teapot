@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { AnsiText, BashElapsed, HighlightedCode } from "./code";
 import { Card } from "./card";
 import { CopyBtn, IconBtn } from "./chrome";
@@ -7,6 +7,7 @@ import { flashHint } from "../lib/flash";
 import { hasAnsi, stripAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
 import { blobUrl } from "../lib/blob-url";
+import { highlightMessageCode } from "../lib/highlight-message";
 import { goalLine } from "../lib/goal-timeline";
 import { toneOf } from "../lib/timeline-row";
 import { renderMarkdown } from "../md";
@@ -442,6 +443,23 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   );
 }
 
+/**
+ * A rendered markdown body, with its fenced code blocks promoted to shiki.
+ *
+ * The body is one `innerHTML` string, so the upgrade has to happen on the DOM afterwards — see
+ * `highlightMessageCode`. This wrapper exists so a message and a prompt do not each have to remember to
+ * call it, which is how the two would drift apart.
+ */
+function MdContent(props: { html: string }) {
+  let el: HTMLDivElement | undefined;
+  createEffect(() => {
+    void props.html; // re-run when the body changes
+    // the attribute is written during reconciliation; the highlight reads the DOM after that
+    queueMicrotask(() => highlightMessageCode(el));
+  });
+  return <div class="content" ref={el} innerHTML={props.html} />;
+}
+
 export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: () => Ev | undefined; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void; agentId?: string }) {
   const e = props.e;
   const a = authorOf(e);
@@ -693,7 +711,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
         ;
       return (
         <>
-          <div class="content" innerHTML={renderMarkdownCached(String(e.data.text ?? ""))} />
+          <MdContent html={renderMarkdownCached(String(e.data.text ?? ""))} />
           <Show when={imgs.length}>
             <div class="promptimgs">
               <For each={imgs}>{(src) => <img src={src} class="promptimg" alt="attachment" />}</For>
@@ -712,7 +730,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
               <div class="mono">{String(e.data.reasoning)}</div>
             </details>
           </Show>
-          <div class="content" innerHTML={renderMarkdownCached(String(e.data.content ?? ""))} />
+          <MdContent html={renderMarkdownCached(String(e.data.content ?? ""))} />
           <Show when={e.data.interrupted}>
             <div class="interrupted">⚠ interrupted — partial output kept</div>
           </Show>

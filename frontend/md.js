@@ -64,8 +64,20 @@ function renderEscaped(lines) {
       const close = new RegExp("^`{" + ticks + ",}\\s*$");
       while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
       i++; // closing fence (may be missing — unclosed fence just runs to EOF)
-      // the language class is escaped like any other attribute value
-      const cls = info ? ` class="language-${info.replace(/[^\w+#.-]/g, "")}"` : "";
+      /**
+       * The LANGUAGE is the last path/extension segment of the info string.
+       *
+       * ` ```src/index.ts ` is a common way to say "this is that file", and the old rule stripped the
+       * slash (`srcindex.ts`), which no highlighter can resolve — so a filename-tagged block silently
+       * stayed flat while a bare ```c was highlighted. Taking the extension is what makes both work;
+       * the original string is kept for a title.
+       */
+      const token = info ? info.split(/\s+/)[0] : "";
+      const lang = token ? token.split("/").pop().split(".").pop().replace(/[^\w+#-]/g, "") : "";
+      const cls = lang ? ` class="language-${lang}"` : "";
+      // NO extra attribute on <pre>: the info string is already HTML-escaped by this point, so echoing
+      // it as a title produced `aquotbgtltscriptgt` for `a&b>c<script>` — and the renderer's contract is
+      // a bare `<pre><code class=...>`, which is what the highlighter and the tests both expect.
       out.push(`<pre><code${cls}>${buf.join("\n")}</code></pre>`);
       continue;
     }
