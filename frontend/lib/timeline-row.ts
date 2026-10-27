@@ -1,4 +1,5 @@
-import { truncate } from "./format";
+import { truncate } from "./format.ts";
+import { mcpToolLabel } from "./mcp-tool-label.ts";
 
 export interface Ev {
   id: string; seq: number; ts: string; session: string; branch: string;
@@ -29,8 +30,33 @@ export const toneOf = (color: string): AuthorTone => TONE_OF[color] ?? "agent";
 
 export const authorOf = (e: Ev) => {
   if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
-  if (e.type === "tool_call" || e.type === "tool_result")
-    return { name: String(e.data?.name ?? "tool"), icon: "⚙️", color: "#3ba0c9" };
+  if (e.type === "tool_call" || e.type === "tool_result") {
+    const name = String(e.data?.name ?? "tool");
+    /**
+     * A `run_tool` row is credited to the MCP tool it ran, not to the dispatcher.
+     *
+     * "run_tool をactor名に表示するんじゃなくて、MCPサーバーのツール名を表示する" — `run_tool` says
+     * nothing about what happened; `Ghidra/get_xrefs_to` says everything. The id is the model's own
+     * string, so it is parsed rather than trusted to have one spelling.
+     */
+    if (name === "run_tool") {
+      const label = mcpToolLabel(e.data?.args?.tool_id);
+      if (label) return { name: label, icon: "⚙️", color: "#3ba0c9" };
+    }
+    /**
+     * …and a DIRECT MCP call is credited the same way.
+     *
+     * `mcp__Ghidra__disassemble_function` is the flat name the request uses; the operator should read
+     * `Ghidra/disassemble_function`, identical to what the deferred route shows for the same tool. Two
+     * spellings for one thing is the drift this helper exists to stop.
+     *
+     * Same pattern the card renderer uses, so a server whose own name contains `_` splits the same way
+     * in both places.
+     */
+    const direct = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name);
+    if (direct) return { name: `${direct[1]!}/${direct[2]!}`, icon: "⚙️", color: "#3ba0c9" };
+    return { name, icon: "⚙️", color: "#3ba0c9" };
+  }
   if (e.type === "prompt") {
     const src = String(e.data?.source ?? "user");
     if (src === "user") return AUTHORS.prompt;

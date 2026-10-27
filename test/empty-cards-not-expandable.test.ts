@@ -45,5 +45,15 @@ test("an MCP tool renders as a normal tool row, not the JSON fallback (#mcp)", (
     /\^mcp__\(\[\^_\]\+/,
     "the flat mcp__server__tool name must be recognised in the renderer",
   );
-  assert.match(src, /\[MCP: \$\{server\}\]/, "and the server named in the hint");
+  /**
+   * The header shows the CALL, not the tool's name again.
+   *
+   * The row already says `Ghidra/get_xrefs_to` in the author column, so repeating it (or `[MCP: Ghidra]`)
+   * in the summary wastes the widest part of the header. Both routes — `run_tool` and a direct
+   * `mcp__server__tool` — go through ONE `mcpCard`, which is what stops them drifting apart.
+   */
+  assert.match(src, /const mcpCard = \(/, "one shared MCP card");
+  assert.match(src, /mcpCard\(mcp\[1\]!, mcp\[2\]!, d\.args\)/, "the direct route uses it");
+  assert.match(src, /mcpCard\(parts\.slice\(0, slash\)/, "…and so does run_tool");
+  assert.match(src, /label = keys\.length \? oneLine\(JSON\.stringify\(bare\), 120\)/, "the header is the arguments");
 });

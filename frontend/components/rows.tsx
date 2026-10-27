@@ -8,6 +8,7 @@ import { hasAnsi, stripAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
 import { blobUrl } from "../lib/blob-url";
 import { highlightMessageCode } from "../lib/highlight-message";
+import { mcpToolLabel } from "../lib/mcp-tool-label";
 import { goalLine } from "../lib/goal-timeline";
 import { toneOf } from "../lib/timeline-row";
 import { renderMarkdown } from "../md";
@@ -79,7 +80,9 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
     <HighlightedCode text={text} lang={lang} />
   );
   /** the ARGUMENT block: same surface as the output, and JSON-highlighted when it is an object */
-  const argsBlock = () => <HighlightedCode text={JSON.stringify(d.args ?? {}, null, 1)} lang="json" />;
+  const argsBlock = (value?: unknown) => (
+    <HighlightedCode text={JSON.stringify(value ?? d.args ?? {}, null, 1)} lang="json" />
+  );
   /**
    * The tool's output, in FULL.
    *
@@ -150,6 +153,34 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
   let label = name;
   let hint: string | null = "";
   let body: any = argsBlock();
+  /**
+   * ONE rendering for "we ran an MCP tool", whichever route got us here.
+   *
+   * A deferred catalog is invoked through `run_tool`, a small one through `mcp__server__tool`, but the
+   * operator sees the same thing either way: which tool, on which server, with what arguments. Keeping
+   * two copies meant they drifted — the direct path showed `[MCP: server]` while the deferred one
+   * prefixed the name with an icon, which reads as a different kind of event.
+   */
+  const mcpCard = (server: string, tool: string, toolArgs: unknown) => {
+    const bare = (toolArgs ?? {}) as Record<string, unknown>;
+    const keys = Object.keys(bare);
+    /**
+     * The summary line is the CALL, not the tool's name again.
+     *
+     * The row already says `Ghidra/get_xrefs_to` in the author column, so repeating the name here wastes
+     * the widest part of the header. `{ "address": "c07f58b0" } · 41ms` is what the operator proposed
+     * and what a bash row does with its command: identify in the author, show the invocation in the
+     * summary. A tool called with no arguments says so rather than leaving the line blank.
+     */
+    label = keys.length ? oneLine(JSON.stringify(bare), 120) : "(no arguments)";
+    hint = res() ? fmtDur(res()!.data?.durationMs) : null;
+    body = (
+      <>
+        {keys.length ? argsBlock(bare) : null}
+        {resultBlock()}
+      </>
+    );
+  };
   try {
     switch (name) {
       case "bash": {
@@ -337,24 +368,26 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         break;
       }
       case "run_tool": {
-        // the tool_id is JSON [server, name]; show the human half
-        const id = argStr("tool_id");
-        const parts = (() => {
-          try {
-            const j = JSON.parse(id) as unknown;
-            return Array.isArray(j) && j.length === 2 ? `${String(j[0])}/${String(j[1])}` : id;
-          } catch {
-            return id;
-          }
-        })();
-        label = `⚡️ ${parts || "(no tool_id)"}`;
-        hint = res() ? fmtDur(res()!.data?.durationMs) : null;
-        body = (
-          <>
-            {argsBlock()}
-            {resultBlock()}
-          </>
-        );
+        /**
+         * A deferred tool call renders EXACTLY like a direct one.
+         *
+         * The id is the model's own string, so it goes through the same tolerant parser the timeline
+         * uses (`mcpToolLabel`); the arguments shown are the MCP tool's, not `{tool_id, arguments}` —
+         * the envelope is our bookkeeping and means nothing to the operator.
+         */
+        const parts = mcpToolLabel(argStr("tool_id"));
+        const slash = parts?.indexOf("/") ?? -1;
+        if (parts && slash > 0) mcpCard(parts.slice(0, slash), parts.slice(slash + 1), d.args?.arguments);
+        else {
+          label = parts || "(no tool_id)";
+          hint = res() ? fmtDur(res()!.data?.durationMs) : null;
+          body = (
+            <>
+              {argsBlock()}
+              {resultBlock()}
+            </>
+          );
+        }
         break;
       }
       default: {
@@ -367,15 +400,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
          */
         const mcp = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name);
         if (mcp) {
-          const [, server, tool] = mcp;
-          label = `${tool}`;
-          hint = `[MCP: ${server}]${res() ? ` · ${fmtDur(res()!.data?.durationMs)}` : ""}`;
-          body = (
-            <>
-              {Object.keys(d.args ?? {}).length ? argsBlock() : null}
-              {resultBlock()}
-            </>
-          );
+          mcpCard(mcp[1]!, mcp[2]!, d.args);
           break;
         }
         label = name;

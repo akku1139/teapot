@@ -2377,12 +2377,28 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
       return { ok: false, result: `${RUN_TOOL}: arguments are not valid JSON` };
     }
     const catalog = catalogFor(ctx);
-    const entry = typeof args.tool_id === "string" ? catalog.discovered(args.tool_id) : undefined;
+    const rawId = typeof args.tool_id === "string" ? args.tool_id : "";
+    /**
+     * ANY tool in the catalog can run — not only one returned by a search in this turn.
+     *
+     * MEASURED on `tyb2-8-0161a4af`: 11 of 31 `run_tool` calls failed with "unknown tool_id" while the
+     * model was remembering `["Ghidra","get_xrefs_to"]` from earlier and using it correctly. Requiring a
+     * fresh search before every call also meant a search whose ranking did not surface that tool left
+     * the model with no way to run something it could name — it re-sent the same id twice and then gave
+     * up ("not completed — the tool did not run").
+     *
+     * A discovery step is an AID for learning what exists. Turning it into a gate only added failures.
+     */
+    const entry = catalog.resolve(rawId) ?? catalog.discovered(rawId);
     if (!entry) {
+      const near = catalog.suggest(rawId || String((args.arguments as Record<string, unknown>)?.name ?? ""));
       return {
         ok: false,
         result:
-          "unknown tool_id — search for the tool with search_tools first; only tools found in THIS turn can run",
+          `no tool matches \`${rawId.slice(0, 120)}\`. ` +
+          (near.length
+            ? `Closest by name: ${near.join(", ")}. Use one of those, or search_tools to browse.`
+            : "Use search_tools to browse the catalog."),
       };
     }
     const callArgs = args.arguments && typeof args.arguments === "object" && !Array.isArray(args.arguments)

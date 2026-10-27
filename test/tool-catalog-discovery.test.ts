@@ -86,17 +86,54 @@ test("paging returns the next slice, and reports when it ended (#tools)", () => 
   assert.equal(last.nextOffset, null, "the end is reported, so the model stops paging");
 });
 
-test("only a tool DISCOVERED this turn can run (#tools)", () => {
+test("a tool can run WITHOUT being discovered this turn (#tools)", () => {
+  /**
+   * The per-turn gate was removed after a real session showed what it costs: `tyb2-8-0161a4af` had 11 of
+   * 31 `run_tool` calls fail with "unknown tool_id" while the model was remembering an id from an
+   * earlier turn and using it correctly — then, after a search returned a DIFFERENT tool, it retried the
+   * same id and gave up ("not completed — the tool did not run").
+   *
+   * A catalog the model can name a tool from is a catalog it can use. Discovery is an aid, not a gate.
+   */
   const c = createCatalog(big, { builtInCount: 15 });
-  const neverFound = JSON.stringify(["Canva", "design_7"]);
-  assert.equal(c.discovered(neverFound), undefined, "a guessed id is not executable");
+  const fromAnotherTurn = JSON.stringify(["Canva", "design_7"]);
+  assert.equal(c.discovered(fromAnotherTurn), undefined, "not in the discovery set…");
+  assert.equal(c.resolve(fromAnotherTurn)?.name, "design_7", "…but it still resolves, so it can run");
 
+  // and the discovery set is still there for what it is good at
   const found = c.search("design", 0).entries[0]!;
   c.remember(found.id);
   assert.equal(c.discovered(found.id)?.name, found.name);
+});
 
-  c.reset();
-  assert.equal(c.discovered(found.id), undefined, "and a new turn starts empty");
+test("the same tool resolves however the model spells it (#tools)", () => {
+  // MEASURED: one session produced four spellings of the SAME id, and an exact match rejected three
+  const c = createCatalog(
+    [{ id: "Ghidra", name: "Ghidra", status: "connected", tools: [{ name: "get_xrefs_to" }] }],
+    { builtInCount: 15 },
+  );
+  for (const spelling of [
+    '["Ghidra","get_xrefs_to"]',
+    '["Ghidra", "get_xrefs_to"]',
+    "['Ghidra', 'get_xrefs_to']",
+    "Ghidra/get_xrefs_to",
+    "Ghidra__get_xrefs_to",
+    "mcp__Ghidra__get_xrefs_to",
+    "get_xrefs_to",
+  ]) {
+    assert.equal(c.resolve(spelling)?.name, "get_xrefs_to", `did not resolve: ${spelling}`);
+  }
+});
+
+test("an unknown id gets NAMES to correct itself with (#tools)", () => {
+  // the old message said only "search first", which is useless when the tool exists under another name
+  const c = createCatalog(big, { builtInCount: 15 });
+  const near = c.suggest("decompil");
+  assert.ok(near.length > 0, "a misspelling must be answerable");
+  assert.ok(
+    near.some((n) => n.includes("decompile")),
+    `the closest names must include the obvious one: ${near.join(", ")}`,
+  );
 });
 
 test("a tool name that would collide after flattening still has a unique id (#tools)", () => {
