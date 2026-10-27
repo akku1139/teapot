@@ -1,5 +1,6 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
+import { evictOver, weighJson } from "./lib/retention";
 import { fmtDur } from "./lib/format";
 import {
   applyDelta,
@@ -1082,6 +1083,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   const [branchFilter, setBranchFilter] = createSignal<string | null>(null);
   const evCache = new Map<string, Ev>();
+  /**
+   * The ONE way to drop the rendered timeline.
+   *
+   * `events()` was emptied in three places (session switch, archive, branch switch) but `evCache` was
+   * cleared in only the first — so the other two abandoned a whole feed of event objects, and a session
+   * that was archived or had its branch changed kept it alive for the life of the tab (#186). Clearing
+   * the cache wherever the timeline is emptied makes that divergence impossible.
+   */
+  const clearTimelineState = (): void => {
+    setEvents([]);
+    evCache.clear();
+    evCacheBytes = 0;
+  };
+  /** approximate bytes held by `evCache`, maintained incrementally so the cap is cheap to enforce */
+  let evCacheBytes = 0;
+  const EV_CACHE_MAX = 4000;
+  const EV_CACHE_MAX_BYTES = 8 * 1024 * 1024;
   function cacheKey(ev: { id: string }): string {
     return `${timelineId() || (selected() ?? "?")}:${ev.id}`;
   }
@@ -1094,9 +1112,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       out[i] = known ?? e;
       if (!known) {
         evCache.set(k, e);
-        if (evCache.size > 6000) {
+        /**
+         * A COUNT cap lets a handful of huge tool results pin megabytes (#186).
+         *
+         * MEASURED: the median event is small, but a `tool_result` can be 8,000 chars and an image
+         * event carries a data URL — 6,000 entries of those is tens of megabytes of live objects held
+         * only for render stability. The cap is also on BYTES now, because "6,000 events" says nothing
+         * about how much they weigh.
+         */
+        evCacheBytes += approxEventBytes(e);
+        while (evCache.size > EV_CACHE_MAX || evCacheBytes > EV_CACHE_MAX_BYTES) {
           const oldest = evCache.keys().next().value;
-          if (oldest !== undefined) evCache.delete(oldest);
+          if (oldest === undefined) break;
+          const gone = evCache.get(oldest);
+          if (gone) evCacheBytes -= approxEventBytes(gone);
+          evCache.delete(oldest);
         }
       }
     }
@@ -1263,13 +1293,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const scrollMemory = new Map<string, { eid: string; delta: number; atTail: boolean }>();
   const SCROLL_MEMORY_MAX = 24;
   const TIMELINE_CACHE_MAX = 6;
-  const TIMELINE_CACHE_MAX_BYTES = 24 * 1024 * 1024;
-  const approxEventBytes = (e: Ev): number => {
-    const d = e.data as Record<string, unknown> | undefined;
-    let n = 64; 
-    if (d) for (const v of Object.values(d)) if (typeof v === "string") n += v.length * 2;
-    return n;
-  };
+  /**
+   * Retained sessions, in bytes, and lower than it was.
+   *
+   * 24MB of event objects is 1.5-3x that once JS object overhead is counted (each event is a nested
+   * object with a `data` sub-object and several strings), so the previous budget could hold ~70MB of
+   * heap just to make a switch feel instant (#186). Three sessions is enough for the back-and-forth the
+   * operator actually does; beyond that the re-fetch is one request.
+   */
+  const TIMELINE_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+  /**
+   * What an event really costs to retain.
+   *
+   * The old version counted only the top-level string values, ignoring `data`'s own keys and nesting —
+   * a `tool_result` with 8,000 chars was counted as ~8KB when the object graph is larger. `weighJson`
+   * walks the whole shape (#186).
+   */
+  const approxEventBytes = (e: Ev): number => weighJson(e);
 
   const latestSessionOf = (agentId: string, requested?: string | null): string | null =>
     resolveTimelineSession(
@@ -1310,15 +1350,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (bytes <= TIMELINE_CACHE_MAX_BYTES) {
           timelineCache.set(prevTid, { events: prevEvents, total: prevTotal, at: Date.now(), bytes });
         }
-        const totalBytes = () => [...timelineCache.values()].reduce((n, v) => n + v.bytes, 0);
-        while (timelineCache.size > TIMELINE_CACHE_MAX || totalBytes() > TIMELINE_CACHE_MAX_BYTES) {
-          const oldest = [...timelineCache.entries()].sort((x, y) => x[1].at - y[1].at)[0];
-          if (!oldest) break;
-          timelineCache.delete(oldest[0]);
-        }
+        evictOver(timelineCache, { maxEntries: TIMELINE_CACHE_MAX, maxBytes: TIMELINE_CACHE_MAX_BYTES });
       }
-      setEvents([]);
-      evCache.clear(); 
+      clearTimelineState();
       clearLocallyAnswered();
       setCompacting(null);
       setMissed(0);
@@ -2390,7 +2424,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (next) select(next.id);
     else {
       setSelected(null);
-      setEvents([]);
+      clearTimelineState();
     }
   };
 
@@ -3834,7 +3868,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   if (!selected()) return;
                   if (changing) {
                     feedGeneration++;
-                    setEvents([]);
+                    clearTimelineState();
                     setEventsTotal(0);
                     setOlderDone(false);
                   }
