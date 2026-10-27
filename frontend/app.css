@@ -1447,6 +1447,24 @@ html[data-bg-image="on"] .embed {
 .embed.running { border-color: var(--warn); }
 .embed.running summary .meta::after { content: "⋯"; display: inline-block; margin-left: 6px; animation: blink 1s step-end infinite; color: var(--warn); }
 .embed summary { gap: var(--space-4); }
+/**
+ * A tool row's LABEL is the only part allowed to shrink.
+ *
+ * Reported as "横幅が短いときに…タイムラインが画面横幅よりも長くて横スクロールが発生してる".
+ * MEASURED at a 520px viewport: `.msg` was 1091px wide, `.embed summary` 1008px — because the label
+ * (`<b>$ <command>`) is a flex item with no `min-width: 0`, so it refused to go below its content
+ * width and pushed the whole row past the viewport instead of clipping.
+ *
+ * The copy buttons keep `flex-shrink: 0` (`.toolcopy`), so the shrinking lands on the text, which is
+ * the only thing that should ever be cut.
+ */
+.embed summary > b,
+.embed summary > .meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .embed summary .mono { font-family: ui-monospace, Menlo, monospace; }
 /**
  * TOOL CARD SURFACES — the transparency ORDER is the contract.
