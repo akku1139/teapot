@@ -53,7 +53,15 @@ test("running every migration twice changes nothing the second time (#migrate)",
    * for every left-panel load versus 1.2ms for one config file.
    */
   const titles = raw.sessionTitles as Record<string, string>;
-  assert.equal(titles.s1, "fix the login bug", "the title comes from the first user prompt");
+  /**
+   * The SESSION ID, not the first prompt.
+   *
+   * A migration runs for every agent at boot, and reading each session's `chat.jsonl` for a name is
+   * exactly what the operator ruled out: "起動中に読んでいいのはconfig.jsonとskillsだけ / セッションディ
+   * レクトリはセッションがロードされるまで開かない". A real title is derived once from the first prompt
+   * of a session the operator actually uses (`Master.ensureSessionTitle`, via `onFirstUserPrompt`).
+   */
+  assert.equal(titles.s1, "s1", "the session id is the fallback, and boot reads nothing");
   assert.equal(
     (raw.agents as Record<string, unknown>[])[0]!.sessionTitle,
     undefined,

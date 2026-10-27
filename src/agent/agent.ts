@@ -82,6 +82,18 @@ export interface AgentOptions {
   contextTokenBudget?: number;
   contextWindowTokens?: number;
   restoreSession?: boolean;
+  /**
+   * Do NOT read the session directory during `init()` — defer it to `ensureReady()`.
+   *
+   * `Master.addAgent` sets this for every agent at boot, because the operator's machine has 445 of them
+   * and reading each one's goal/todo/workspace cost MEASURED 1,780 `readFile`s / 4.5s before the first
+   * request. The rule: "起動中に読んでいいのはconfig.jsonとskillsだけ / セッションディレクトリは
+   * セッションがロードされるまで開かない".
+   *
+   * Left off by default so a caller that builds one Agent and wants it fully set up (the test helpers,
+   * a one-shot script) keeps the eager behaviour.
+   */
+  deferSessionReads?: boolean;
   onFirstUserPrompt?: (sessionId: string) => void;
   provider?: string;
   globalSkillsDir?: string;
@@ -277,8 +289,8 @@ export class Agent {
     costUsd: 0 as number | undefined,
   };
 
-  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs">> &
-    Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs"> & { chatFn?: ChatFn };
+  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads">> &
+    Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   get conversation(): readonly ChatMessage[] {
     return this.messages;
@@ -624,16 +636,25 @@ export class Agent {
   }
 
   async init(): Promise<void> {
-    await this.log.load();
-    await this.migrateMemoryToAgentScope();
-    this.workspaceMissing = !(await fs
-      .stat(this.workspace)
-      .then(() => true)
-      .catch(() => false));
-    await this.migrateGoalFromWorkspace();
-    const stored = await this.readGoalStore();
-    this.goal = stored ?? { text: "", status: "active", updatedAt: new Date().toISOString() };
-    this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");
+    /**
+     * NO `log.load()` here.
+     *
+     * It read up to 512KB of `chat.jsonl` for EVERY agent at boot — 445 of them on the operator's
+     * machine, MEASURED at 3.5s of a 7.8s start plus the parsed events on the heap (rss 1GB / heap
+     * 800MB at start-up). An agent that is never used needs none of it: the first `append` awaits
+     * `ensureLoaded()`, and `ensureReady()` reads it before restoring a session.
+     */
+
+    /**
+     * …and no SESSION-DIRECTORY reads at boot either.
+     *
+     * This block read goal.json, todo.md and stat()ed the workspace for every agent, four calls each —
+     * MEASURED 1,780 `readFile`s costing 4.5s of the same boot. They are now done in `ensureReady()`,
+     * i.e. when the session is actually loaded or used. `goal` and `todo` already have empty defaults
+     * (declared above), so a panel that reads them before the load shows "nothing yet" rather than
+     * waiting — which is the right trade for a boot that touches only config.json and skills.
+     */
+    if (!this.opts.deferSessionReads) await this.loadSessionState();
     if (this.opts.restoreSession) {
       this.status = "stopped";
       this.statusReason = "session not loaded — select it or send a prompt";
@@ -641,10 +662,45 @@ export class Agent {
     }
   }
 
+  /**
+   * Everything in the session directory that the panel needs: goal, todo, workspace presence.
+   *
+   * Idempotent, so `init()` and `ensureReady()` can both ask without reading twice.
+   */
+  private sessionStateLoaded = false;
+  private async loadSessionState(): Promise<void> {
+    if (this.sessionStateLoaded) return;
+    this.sessionStateLoaded = true;
+    await this.migrateMemoryToAgentScope();
+    this.workspaceMissing = !(await fs
+      .stat(this.workspace)
+      .then(() => true)
+      .catch(() => false));
+    await this.migrateGoalFromWorkspace();
+    this.goal = (await this.readGoalStore()) ?? this.goal;
+    this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");
+  }
+
   ensureReady(): Promise<void> {
     if (!this.readyPromise) {
       this.readyPromise = (async () => {
+        /**
+         * The session directory is opened HERE, on demand — see the note in `init()`.
+         *
+         * When it was DEFERRED (a booted agent, and every spawned child) this must not hold up the
+         * "running" transition that follows: the panel's goal/todo are not needed to run a turn, and
+         * awaiting them here delayed `setStatus("running")` past the point where a parent's
+         * `wait_children` inspects its children — it then reported "all sub-agents already settled"
+         * while the child was about to work. So it loads in the background and announces itself.
+         */
+        const state = this
+          .loadSessionState()
+          .then(() => bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent))
+          .catch(() => {});
+        if (!this.opts.deferSessionReads) await state;
         if (this.opts.restoreSession) {
+          // the restore reads the log itself, but `seq`/`lastByBranch` must be known for later appends
+          await this.log.ensureLoaded();
           await this.restoreFromLog();
           if (this.status === "stopped") this.setStatus("idle", "session loaded");
         }

@@ -784,6 +784,8 @@ export class Master {
       },
       llm,
       sessionDir,
+      // boot must touch ONLY config.json and skills; this agent's directory is opened when it is used
+      deferSessionReads: true,
       progressIntervalMs: this.config.progressIntervalMs,
       ...(this.config.progressMinChars ? { progressMinChars: this.config.progressMinChars } : {}),
       ...(this.config.maxTurnsPerRound !== undefined ? { maxTurnsPerRound: this.config.maxTurnsPerRound } : {}),
@@ -886,14 +888,14 @@ export class Master {
     if (seedTitle) agent.setSessionTitle(seedTitle);
     else {
       /**
-       * Derive a missing title at BOOT, once, and write it down.
+       * NOT derived here. Deriving a missing title reads `chat.jsonl`, and boot must not open session
+       * directories at all — "起動中に読んでいいのはconfig.jsonとskillsだけ / セッションディレクトリは
+       * セッションがロードされるまで開かない".
        *
-       * Waiting for the session's next user prompt means an existing session shows no name until the
-       * operator types into it, and every left-panel read has to fall back. Doing it here keeps the
-       * derivation to one pass per session and off the read path.
+       * The session ID is a perfectly good fallback for the panel, and the real derivation happens
+       * when that session is actually loaded (`ensureSessionTitle`, via the agent's first prompt).
        */
       const id = path.basename(sessionDir);
-      this.writeSessionTitle(id, this.sessionTitleOf(sessionDir) ?? id);
       agent.setSessionTitle(this.readSessionTitle(id) ?? id);
     }
     this.agents.set(ac.id, agent);

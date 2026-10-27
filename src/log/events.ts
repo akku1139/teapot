@@ -60,6 +60,25 @@ export class EventLog {
 
   private static readonly LOAD_TAIL_BYTES = 512 * 1024;
 
+  /**
+   * Read the log TAIL to learn `seq` and the last event per branch.
+   *
+   * LAZY, and memoised. `Agent.init()` ran it for every agent at boot, which is the startup cost the
+   * operator reported: 445 agents × up to 512KB of `chat.jsonl` parsed before the first request —
+   * MEASURED 3.5s of a 7.8s boot, plus the parsed events on the heap ("起動直後のメモリバースト",
+   * rss 1GB / heap 800MB).
+   *
+   * Nothing needs it until something WRITES (`append` increments `seq`) or asks for a branch's last
+   * event, so it now happens then. The rule from the operator: "起動中に読んでいいのはconfig.jsonと
+   * skillsだけ / セッションディレクトリはセッションがロードされるまで開かない".
+   */
+  ensureLoaded(): Promise<void> {
+    this.loadPromise ??= this.load();
+    return this.loadPromise;
+  }
+
+  private loadPromise?: Promise<void>;
+
   async load(): Promise<void> {
     mkdirSync(path.dirname(this.filePath), { recursive: true });
     try {
@@ -138,7 +157,27 @@ export class EventLog {
     });
   }
 
+  /**
+   * Queue a write, reading the log first if it has not been read yet.
+   *
+   * NOT `async` on purpose. An `async` function returns a NEW promise, so `void this.log.append(…)`
+   * — which is how most call sites fire a log write — would leave that wrapper promise unhandled when
+   * the write fails, and the failure surfaced as an `unhandledRejection` instead of the caller's
+   * problem. Returning the inner promise (which already has handlers attached below) keeps the old
+   * behaviour: awaiting still throws, ignoring stays silent.
+   */
   append(type: EventType, session: string, branch: string, data: unknown): Promise<TeapotEvent> {
+    const p = this.ensureLoaded().then(() => this.writeEvent(type, session, branch, data));
+    void p.catch(() => {});
+    return p;
+  }
+
+  private async writeEvent(
+    type: EventType,
+    session: string,
+    branch: string,
+    data: unknown,
+  ): Promise<TeapotEvent> {
     const evt: TeapotEvent = {
       v: 1,
       id: `e${++this.seq}`,

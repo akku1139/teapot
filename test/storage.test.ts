@@ -457,6 +457,8 @@ test("fresh incarnation gets a clean session dir; restart reuses the latest", as
     const b = await m.addAgent({ id: "s", workspace: ws, provider: "p" }, { fresh: true });
     const dirB = b.snapshot().sessionDir;
     assert.notEqual(dirB, dirA); // no inheritance across incarnations
+    // the session directory is read on DEMAND now, so ask for it before asserting on its contents
+    await b.load();
     assert.equal(b.conversation.length, 0); // blank slate
     assert.equal(b.goal.text, ""); // and no inherited goal
     await b.setGoal("incarnation #2");
@@ -466,6 +468,7 @@ test("fresh incarnation gets a clean session dir; restart reuses the latest", as
     // restart (non-fresh) picks up the newest session of that agent id
     const c = await m.addAgent({ id: "s", workspace: ws, provider: "p" });
     assert.equal(c.snapshot().sessionDir, dirB);
+    await c.load(); // boot does not open the session directory
     assert.equal(c.goal.text, "incarnation #2"); // continuity within one incarnation
     await c.dispose();
   });
@@ -530,11 +533,13 @@ test("sibling-prefix ids: sub-review-kernel keeps its OWN history (no empty-sess
     const m2 = mkMaster(dataDir);
     const kernel2 = await m2.addAgent({ id: "prismrv-root-sub-review-kernel", workspace: ws2, provider: "p" });
     assert.equal(kernel2.snapshot().sessionDir, dirKernel1);
+    await kernel2.load(); // the goal lives in the session dir, read on demand
     assert.equal(kernel2.goal.text, "kernel history"); // continuity, NOT a blank slate
 
     // and review must not have been disturbed either
     const review2 = await m2.addAgent({ id: "prismrv-root-sub-review", workspace: ws, provider: "p" });
     assert.equal(review2.snapshot().sessionDir, dirReview);
+    await review2.load();
     assert.equal(review2.goal.text, "review history");
     await disposeAll(m2);
   });
@@ -563,6 +568,7 @@ test("manifest ownership: an impostor manifest on the bare-name dir cannot hijac
     const b = await m.addAgent({ id: "worker", workspace: ws, provider: "p" });
     assert.notEqual(b.snapshot().sessionDir, impostor);
     assert.equal(b.snapshot().sessionDir, ownDir);
+    await b.load();
     assert.equal(b.goal.text, "first incarnation");
     await disposeAll(m);
   });

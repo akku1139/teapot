@@ -34,10 +34,16 @@ export const sessionTitles: Migration = {
       if (session && !session.includes("/") && !session.includes("..")) {
         const already = typeof titles[session] === "string" ? String(titles[session]).trim() : "";
         if (!already) {
-          const derived =
-            legacy ||
-            firstUserPromptText(path.join(ctx.dataDir, "sessions", session, "chat.jsonl")) ||
-            session;
+          /**
+         * NOT derived from `chat.jsonl` here.
+         *
+         * A migration runs for EVERY agent at boot, and reading each session's log is exactly what the
+         * operator ruled out — "起動中に読んでいいのはconfig.jsonとskillsだけ / セッションディレクトリは
+         * セッションがロードされるまで開かない". A legacy `sessionTitle` is used when present; otherwise
+         * the session id is a perfectly good name, and a real title is derived once when that session is
+         * actually opened (`Master.ensureSessionTitle`).
+         */
+        const derived = legacy || session;
           titles[session] = derived;
           changed = true;
         }

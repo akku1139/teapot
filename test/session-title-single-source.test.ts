@@ -88,15 +88,30 @@ test("the operator's name survives a restart, and beats the derived one (#title)
   });
 });
 
-test("a session with no title derives one ONCE and writes it down (#title)", async () => {
+test("a session with no title does NOT make boot read its log (#title)", async () => {
+  /**
+   * `config.sessionTitles` is the master, so naming a session never needs its log — and boot must not
+   * open session directories at all: "起動中に読んでいいのはconfig.jsonとskillsだけ / セッションディレクトリは
+   * セッションがロードされるまで開かない".
+   *
+   * A missing entry therefore falls back to the SESSION ID, and the panel shows a usable name
+   * immediately. (A real title is derived once from the first prompt, which is not boot and not a scan.)
+   */
   await useTempDirs(["st5-", "st6-"], async ([dataDir]) => {
     await seedSession(dataDir!, "derive me from this line");
+    // a log whose mtime we can compare: if boot opened it, nothing changes — so instead assert the
+    // observable contract: the map is left alone and the panel gets the id.
     const m = await boot(dataDir!);
     const saved = JSON.parse(await fs.readFile(path.join(dataDir!, "config.json"), "utf8"));
-    assert.match(
-      String(saved.sessionTitles?.t1 ?? ""),
-      /derive me from this line/,
-      "written once into the config map, so no caller scans chat.jsonl per session",
+    assert.equal(
+      saved.sessionTitles?.t1,
+      undefined,
+      "boot must not derive (and so must not read chat.jsonl) — the entry appears on a real prompt",
+    );
+    assert.equal(
+      m.agents.get("t1")?.snapshot().sessionTitle,
+      "t1",
+      "the session id is the fallback name, so the panel is never blank",
     );
     await m.stopAllAgents();
   });
