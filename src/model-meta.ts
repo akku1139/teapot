@@ -25,6 +25,14 @@ export interface ModelMeta {
   modalities?: { input: string[]; output: string[] };
   /** the effort levels this model publishes, in the provider's own spelling */
   supportedEfforts?: string[];
+  /**
+   * The provider's OWN list of accepted request parameters (`supported_parameters`).
+   *
+   * This is the only way to know which spelling of a turn's thinking the endpoint accepts: OpenRouter
+   * advertises `reasoning`, Command Code advertises nothing and wants `reasoning_content`. Sending the
+   * wrong one is a 400, so the name is chosen from here rather than guessed (#187).
+   */
+  supportedParameters?: string[];
   /** the model reasons at all — `supportedEfforts` may still be empty (a plain toggle) */
   reasoning?: boolean;
 }
@@ -265,6 +273,7 @@ async function fetchProviderModels(baseUrl: string, apiKey?: string): Promise<Mo
       ...(ctx !== undefined ? { contextLength: ctx } : {}),
       ...(input ? { modalities: { input, output: output ?? ["text"] } } : {}),
       ...(params?.some((p) => p === "reasoning" || p === "reasoning_effort") ? { reasoning: true } : {}),
+      ...(params ? { supportedParameters: params } : {}),
     });
   }
   return out.length ? out : null;
@@ -285,6 +294,9 @@ function mergeMeta(own: ModelMeta, db: ModelMeta | undefined): ModelMeta {
      * effort LEVELS, only that reasoning exists. `own.reasoning` still wins for the yes/no question.
      */
     ...(db.supportedEfforts ? { supportedEfforts: db.supportedEfforts } : {}),
+    ...(own.supportedParameters ?? db.supportedParameters
+      ? { supportedParameters: own.supportedParameters ?? db.supportedParameters }
+      : {}),
     ...(own.reasoning ?? db.reasoning ? { reasoning: own.reasoning ?? db.reasoning } : {}),
     ...(db.pricing ? { pricing: db.pricing } : {}),
   };

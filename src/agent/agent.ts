@@ -2007,6 +2007,14 @@ export class Agent {
       }
 
       const m = res.message;
+      /**
+       * Carry the thinking on the message itself, not only in the log.
+       *
+       * `res.reasoning` was written to `chat.jsonl` and then dropped: `this.messages.push(m)` stored a
+       * message with no reasoning, so the NEXT request sent back an assistant turn with its thinking
+       * missing. Providers that require it (Beam, #187) answered 400; the rest simply lost the thread.
+       */
+      if (res.reasoning && !m.reasoning) m.reasoning = res.reasoning;
       const isPlaceholder = m.content === "(tool call)" || m.content === "(no content)";
       await this.log.append("message", this.currentSession, this.currentBranch, {
         role: "assistant",
@@ -2527,6 +2535,8 @@ export class Agent {
     resetToolCatalog(this.toolCtx);
     const res = await this.llmCall(this.buildMessages(), allToolSpecs());
     const calls = res.message.tool_calls ?? [];
+    // same rule as the main loop: the thinking belongs to the message it came with (#187)
+    if (res.reasoning && !res.message.reasoning) res.message.reasoning = res.reasoning;
     this.messages.push(res.message);
     await this.log.append("message", this.currentSession, this.currentBranch, {
       role: "assistant",
@@ -3201,7 +3211,13 @@ async function rebuildMessagesFrom(list: TeapotEvent[], imagesDir: string): Prom
       const content = typeof d.content === "string" ? d.content : "";
       const hasCalls = Array.isArray(d.toolCalls) && d.toolCalls.length > 0;
       if (role === "assistant" && !content && !hasCalls) continue;
-      const m: ChatMessage = { role, content };
+      const m: ChatMessage = {
+        role,
+        content,
+        ...(role === "assistant" && typeof d.reasoning === "string" && d.reasoning
+          ? { reasoning: d.reasoning }
+          : {}),
+      };
       if (hasCalls) {
         m.tool_calls = (d.toolCalls as { id: string; name: string }[]).map((c) => ({
           id: c.id,

@@ -814,6 +814,8 @@ export class Master {
       ...(ac.chatFn ? { chatFn: ac.chatFn } : {}),
       ...(ac.reasoningEffort ? { reasoningEffort: ac.reasoningEffort } : {}),
       ...(modelMeta?.supportedEfforts?.length ? { supportedEfforts: modelMeta.supportedEfforts } : {}),
+      // decides the spelling of a turn's thinking on the wire (#187)
+      ...(modelMeta?.supportedParameters?.length ? { supportedParameters: modelMeta.supportedParameters } : {}),
     });
     void fetchModelList(llm.baseUrl, llm.apiKey)
       .then((list) => agent.setModelPricing(list.find((m) => m.id === llm.model)?.pricing))
@@ -1633,6 +1635,7 @@ if (active().length === 0) wake();
       if (cfgEntry) cfgEntry.reasoningEffort = opts.opts.reasoningEffort || undefined;
     }
     opts.opts.supportedEfforts = meta?.supportedEfforts;
+    opts.opts.supportedParameters = meta?.supportedParameters;
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
     if (!llm.baseUrl) throw new Error("no baseUrl resolved");
     agent.setLlmConfig(llm);

@@ -682,6 +682,12 @@ export function ConfigModal(props: {
         name,
         transport,
         enabled: m.enabled !== false,
+        /**
+         * The save path rebuilds each server from a whitelist, so a field not listed here is silently
+         * dropped — which is how the description box "existed" but never reached the config, and
+         * therefore never reached the model's prompt.
+         */
+        ...(String(m.description ?? "").trim() ? { description: String(m.description).trim() } : {}),
         ...(url ? { url } : {}),
         ...(transport === "stdio"
           ? { command, ...(m.args?.length ? { args: m.args } : {}) }
@@ -1122,6 +1128,17 @@ export function ConfigModal(props: {
                         class="danger"
                         onclick={() => setMcpServers(mcpServers().filter((_, j) => j !== i))}
                       >✕</button>
+                    </div>
+                    <div class="cfgrow">
+                      <input
+                        placeholder="what this server is for — e.g. reverse engineering: decompile, disassemble"
+                        value={srv().description ?? ""}
+                        oninput={(e) => upd({ description: e.currentTarget.value })}
+                        title={
+                          "shown to the model when the MCP catalog is too large to send, so it can search " +
+                          "for the right tool instead of guessing keywords"
+                        }
+                      />
                     </div>
                     <div class="cfgrow">
                       <select

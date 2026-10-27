@@ -21,6 +21,18 @@ export interface ChatMessage {
   content_parts?: ContentPart[];
   tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
+  /**
+   * The model's thinking for this assistant turn, sent back verbatim.
+   *
+   * Some providers REQUIRE it: Beam rejects a follow-up with
+   * `Missing required parameter: 'messages[2].reasoning_content'. This model needs the reasoning of
+   * every earlier assistant message` (#187). MEASURED: the log recorded `reasoning: res.reasoning`,
+   * but the message pushed into `this.messages` never carried it — so the transcript the model got back
+   * had the thinking stripped from every earlier turn, and only the FIRST request ever worked.
+   *
+   * Even where it is not required, dropping it discards the model's own chain of thought mid-task.
+   */
+  reasoning?: string;
 }
 
 export interface LlmConfig {
@@ -238,7 +250,12 @@ function issuedBefore(messages: ChatMessage[], result: ChatMessage): boolean {
   return false;
 }
 
-function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
+/** the field name this provider uses for a turn's thinking */
+export function reasoningSpelling(supported: string[] | undefined): "content" | "plain" {
+  return supported?.includes("reasoning") ? "plain" : "content";
+}
+
+function sanitize(messages: ChatMessage[], supported?: string[]): Record<string, unknown>[] {
   return repairToolPairing(messages).map((m): Record<string, unknown> => {
     if (m.content_parts?.length) {
       const parts = m.content_parts.map((p) =>
@@ -260,7 +277,7 @@ function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
       // `content_parts` is OUR field, carrying the parts into `content`; sending it upstream is an
       // unknown property (a strict server rejects the request), so it is dropped here.
       const { content_parts: _parts, ...rest } = m;
-      return { ...rest, content: parts };
+      return withReasoning({ ...rest, content: parts }, reasoningSpelling(supported));
     }
     if ((m.role === "user" || m.role === "assistant") && !m.content) {
       return { ...m, content: m.tool_calls?.length ? "(tool call)" : "(no content)" };
@@ -268,8 +285,53 @@ function sanitize(messages: ChatMessage[]): Record<string, unknown>[] {
     if (m.role === "tool" && typeof m.content !== "string") {
       return { ...m, content: String(m.content ?? "(no output)") };
     }
-    return { ...m };
+    return withReasoning({ ...m }, reasoningSpelling(supported));
   });
+}
+
+/**
+ * Send an assistant turn's thinking back as `reasoning_content`.
+ *
+ * WHY THIS EXISTS AT ALL: providers disagree on the spelling. MEASURED (commit 880d054, #153):
+ *
+ *     OpenRouter (nemotron)      -> `reasoning`
+ *     commandcode (deepseek)     -> `reasoning_content`
+ *
+ * so the READ side accepts either (`reasoningTextOf`). The WRITE side cannot guess: OpenRouter rejects
+ * a field it does not know, and a reasoning model reached through Command Code REQUIRES
+ * `reasoning_content` on EVERY earlier assistant turn (#187).
+ *
+ * WHY THE EMPTY-STRING CASE: a turn whose thinking the provider never returned (or that was compacted
+ * away) still has to carry the field, because these providers check PRESENCE across the whole history,
+ * not just the turns that had thinking. MEASURED — this is what `ClawRouter` does after hitting the
+ * same wall: patch EVERY assistant message with `reasoning_content: ""` when it is absent, because
+ * "reasoning models require it on every assistant turn in history, not just tool-call turns".
+ *
+ * Only assistant messages get it: a user prompt or a tool result has no thinking, and a stray field
+ * there is noise.
+ */
+function withReasoning(
+  m: Record<string, unknown>,
+  spell?: "content" | "plain",
+): Record<string, unknown> {
+  if (m.role !== "assistant") return m;
+  const r = typeof m.reasoning === "string" ? m.reasoning : undefined;
+  // `reasoning` is OUR field; it travels under the provider's spelling, so the original is dropped
+  const { reasoning: _r, ...rest } = m;
+  /**
+   * WHICH SPELLING is decided by what the provider ADVERTISES, and that is measurable.
+   *
+   * MEASURED on `/models`:
+   *   OpenRouter  -> `supported_parameters` includes `reasoning` and `include_reasoning`
+   *   CommandCode -> no `supported_parameters` at all
+   *
+   * `reasoning` is what OpenRouter understands (and it rejects a key it does not know), while Command
+   * Code / DeepSeek requires `reasoning_content`. So: advertised `reasoning` → use `reasoning`; silence
+   * → `reasoning_content`, the DeepSeek-family spelling that is far more common among OpenAI-compatible
+   * servers.
+   */
+  const key = spell === "plain" ? "reasoning" : "reasoning_content";
+  return { ...rest, [key]: r ?? "" };
 }
 
 function reasoningTextOf(m: Record<string, unknown> | undefined): string | undefined {
@@ -341,7 +403,7 @@ export async function chat(
       client(c).chat.completions.create(
         {
           model: c.model,
-          messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          messages: sanitize(messages, cfg.supportedParameters) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
           ...(tools.length ? { tools } : {}),
           ...effortForRequest(c),
           ...cacheControlForRequest(c),
@@ -429,7 +491,7 @@ export async function chatStream(
       client(c).chat.completions.create(
         {
           model: c.model,
-          messages: sanitize(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          messages: sanitize(messages, cfg.supportedParameters) as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
           ...(tools.length ? { tools } : {}),
           ...effortForRequest(c),
           ...cacheControlForRequest(c),
