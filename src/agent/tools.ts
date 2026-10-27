@@ -13,7 +13,8 @@ import { isReasoningEffort } from "../model-meta.ts";
 import { killTree, describeKill } from "./kill.ts";
 
 import { editorConfigFor } from "./editorconfig.ts";
-import { mcp, MCP_PREFIX } from "./mcp-registry.ts";
+import { mcp, MCP_PREFIX, flattenToolName } from "./mcp-registry.ts";
+import { createCatalog, SEARCH_TOOL, RUN_TOOL, type Catalog } from "./tool-catalog.ts";
 
 export interface ToolContext {
   cwd: string;
@@ -675,6 +676,29 @@ export const DEFAULT_TIMEOUT_MS = BASH_DEFAULT_TIMEOUT_MS;
 
 const URL_CACHE_TTL_MS = 3_600_000;
 const urlCache = new Map<string, { at: number; text: string }>();
+
+/**
+ * A SLICE of a long text, with the exact next offset.
+ *
+ * `limit` alone could not reach the end: `clipText` caps at 80k and the extracted body is read from the
+ * start every time, so the tail of a long article was unreachable in one call and awkward to reach in
+ * two (the caller had to count characters). MEASURED: an Anthropic research post extracted to ~22.8k
+ * chars and the tool returned a `[truncated, N chars total]` marker with no way to ask for the rest.
+ *
+ * The trailing hint makes the next call mechanical: pass `offset=<next>`.
+ */
+export function sliceText(s: string, offset: number, limit: number): string {
+  const start = Math.max(0, Math.floor(offset) || 0);
+  const n = Math.max(1000, Math.min(limit, 80_000));
+  const end = Math.min(s.length, start + n);
+  if (start >= s.length) return `(nothing after offset ${start}; the text is ${s.length} chars)`;
+  const body = s.slice(start, end);
+  if (end >= s.length) return start > 0 ? `…[from ${start}]
+${body}` : body;
+  return `${start > 0 ? `…[from ${start}]
+` : ""}${body}
+… [truncated at ${end} of ${s.length} chars — call again with offset=${end}]`;
+}
 
 function clipText(s: string, max: number): string {
   const n = Math.max(1000, Math.min(max, 80_000));
@@ -1638,7 +1662,14 @@ export const TOOLS: ToolDef[] = [
       type: "object",
       properties: {
         url: { type: "string", description: "absolute http(s) URL" },
-        limit: { type: "number", description: "max characters returned (default 20000)" },
+        limit: { type: "number", description: "max characters returned per call (default 20000)" },
+        offset: {
+          type: "number",
+          description:
+            "character to start at (default 0). The text is cached whole, so pass the previous `offset + " +
+            "returned length` to read the NEXT slice — the extraction is ~17-23k chars for a long article, " +
+            "and `limit` alone cannot reach past it in one call.",
+        },
       },
       required: ["url"],
     },
@@ -1651,7 +1682,7 @@ export const TOOLS: ToolDef[] = [
       const key = u.toString();
       const cached = urlCache.get(key);
       if (cached && Date.now() - cached.at < URL_CACHE_TTL_MS)
-        return { ok: true, result: clipText(cached.text, num(args.limit, 20_000)) };
+        return { ok: true, result: sliceText(cached.text, num(args.offset, 0), num(args.limit, 20_000)) };
 
       let res: Response;
       try {
@@ -1692,7 +1723,7 @@ export const TOOLS: ToolDef[] = [
         }
         urlCache.set(key, { at: Date.now(), text });
       }
-      return { ok: res.ok || text.length > 0, result: clipText(text, num(args.limit, 20_000)) };
+      return { ok: res.ok || text.length > 0, result: sliceText(text, num(args.offset, 0), num(args.limit, 20_000)) };
     },
   },
   {
@@ -2261,7 +2292,106 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
   return { args, notes };
 }
 
+/**
+ * One catalog per ToolContext (= per agent), so `search_tools` and `run_tool` agree within a turn.
+ *
+ * `resetToolCatalog(ctx)` runs at each turn boundary: discovery is per-turn, so a stale tool_id from
+ * three turns ago cannot be executed, and the search budget cannot grow without bound.
+ */
+const catalogs = new WeakMap<ToolContext, Catalog>();
+
+function catalogFor(ctx: ToolContext): Catalog {
+  let c = catalogs.get(ctx);
+  if (!c) {
+    c = createCatalog(
+      mcp.states().map((st) => ({
+        id: st.config.name,
+        name: st.config.name,
+        description: st.config.description,
+        enabled: st.status !== "disabled",
+        status: st.status,
+        tools: st.tools ?? [],
+      })),
+      // the built-ins are already in the request, so the catalog must know how much room is left
+      { builtInCount: TOOLS.length },
+    );
+    catalogs.set(ctx, c);
+  }
+  return c;
+}
+
+/** called at a turn boundary so each turn starts with nothing discovered */
+export function resetToolCatalog(ctx: ToolContext): void {
+  catalogs.delete(ctx);
+}
+
 export async function executeTool(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
+  /**
+   * Tool DISCOVERY, for a catalog too large to send.
+   *
+   * Measured: the operator's MCP catalog is 321 tools and the provider allows 128, so the whole catalog
+   * cannot go in the request. These two meta-tools are how the model still reaches all of it — and they
+   * are ordinary tools, so no provider-side support is needed (Anthropic's `defer_loading` is
+   * server-side and does not reduce the `/tools` element count, which is what this provider caps).
+   */
+  if (name === SEARCH_TOOL) {
+    let args: { query?: unknown; offset?: unknown } = {};
+    try {
+      args = rawArgs.trim() ? (JSON.parse(rawArgs) as typeof args) : {};
+    } catch {
+      return { ok: false, result: `${SEARCH_TOOL}: arguments are not valid JSON` };
+    }
+    const query = typeof args.query === "string" ? args.query.slice(0, 200) : "";
+    const offset = Number.isSafeInteger(Number(args.offset)) ? Math.max(0, Number(args.offset)) : 0;
+    const catalog = catalogFor(ctx);
+    const { entries, total, nextOffset } = catalog.search(query, offset);
+    // a discovered entry is the ONLY thing run_tool will accept, and only for this turn
+    for (const e of entries) catalog.remember(e.id);
+    return {
+      ok: true,
+      result: JSON.stringify(
+        {
+          tools: entries.map((e) => ({
+            tool_id: e.id,
+            server: e.server,
+            name: e.name,
+            description: e.description.slice(0, 1000),
+            inputSchema: e.inputSchema,
+          })),
+          totalMatches: total,
+          nextOffset,
+          ...(entries.length
+            ? { note: "Run one with run_tool, copying tool_id exactly." }
+            : { note: "No match. Try another keyword, or an empty query to browse." }),
+        },
+        null,
+        1,
+      ),
+    };
+  }
+  if (name === RUN_TOOL) {
+    let args: { tool_id?: unknown; arguments?: unknown } = {};
+    try {
+      args = rawArgs.trim() ? (JSON.parse(rawArgs) as typeof args) : {};
+    } catch {
+      return { ok: false, result: `${RUN_TOOL}: arguments are not valid JSON` };
+    }
+    const catalog = catalogFor(ctx);
+    const entry = typeof args.tool_id === "string" ? catalog.discovered(args.tool_id) : undefined;
+    if (!entry) {
+      return {
+        ok: false,
+        result:
+          "unknown tool_id — search for the tool with search_tools first; only tools found in THIS turn can run",
+      };
+    }
+    const callArgs = args.arguments && typeof args.arguments === "object" && !Array.isArray(args.arguments)
+      ? (args.arguments as Record<string, unknown>)
+      : {};
+    const r = await mcp.call(flattenToolName(entry.serverId, entry.name), callArgs);
+    if (!r) return { ok: false, result: `unknown tool: ${entry.name}` };
+    return { ok: r.ok, result: r.text };
+  }
   if (name.startsWith(MCP_PREFIX)) {
     if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
     let args: unknown = {};

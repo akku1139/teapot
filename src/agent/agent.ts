@@ -4,7 +4,8 @@ import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { storeImage, resolveImages } from "../log/image-store.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
-import { executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
+import { createCatalog, SEARCH_TOOL, RUN_TOOL } from "./tool-catalog.ts";
+import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
@@ -2258,6 +2259,15 @@ export class Agent {
         `read_memory(query) returns the matching lines, read_memory() with no query returns everything. ` +
         `Write with add_memory(text) (appends; never loses an earlier note).`;
     }
+    /**
+     * When the MCP catalog is too large to SEND, the system prompt has to carry the map.
+     *
+     * Every tool description is absent from a deferred request, so the model can only search by
+     * guessing keywords. Naming the servers (and their configured descriptions) is what makes
+     * `search_tools` usable — the same reason ChatGPT's MCP integration lists them.
+     */
+    const catalogNote = currentCatalog(toolSpecs().length + metaToolSpecs().length).guidance;
+    if (catalogNote) sys += catalogNote;
     return sys;
   }
 
@@ -2513,6 +2523,8 @@ export class Agent {
       text: request,
     });
     this.messages.push({ role: "user", content: request });
+    // discovery is per-turn: a tool_id from an earlier turn must not be executable now
+    resetToolCatalog(this.toolCtx);
     const res = await this.llmCall(this.buildMessages(), allToolSpecs());
     const calls = res.message.tool_calls ?? [];
     this.messages.push(res.message);
@@ -3040,8 +3052,49 @@ export class Agent {
   }
 }
 
+/**
+ * Every tool for one request — and never more than the provider accepts.
+ *
+ * A provider rejects a request with more than 128 tools: MEASURED, `mizuki-rakutenai-3` failed with
+ * `Invalid value for 'tools': maximum number of items is 128` three times and then stopped, because the
+ * operator's MCP catalog is Notion 65 + Ghidra 208 + Canva 48 = 321 tools. Sending them all was never
+ * going to work.
+ *
+ * Above the threshold the MCP catalog collapses into `search_tools` / `run_tool`, so the model still
+ * reaches every tool — just one lookup away instead of all at once.
+ */
 function allToolSpecs(): ReturnType<typeof toolSpecs> {
-  return [...toolSpecs(), ...metaToolSpecs(), ...mcpSpecs()];
+  const builtIn = [...toolSpecs(), ...metaToolSpecs()];
+  const catalog = currentCatalog(builtIn.length);
+  if (catalog.deferred) {
+    return [
+      ...builtIn,
+      ...catalog.tools.map((t) => ({
+        type: "function" as const,
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      })),
+    ];
+  }
+  return [...builtIn, ...mcpSpecs()];
+}
+
+/**
+ * Decide whether the MCP catalog fits in one request, for THIS request.
+ *
+ * Only the DECISION is made here (it needs the built-in count); the searchable catalog itself lives in
+ * `tools.ts`, next to the two meta-tools that use it, so there is exactly one index. Building a second
+ * one here is how `search_tools` would return tools the request never advertised.
+ */
+function currentCatalog(builtInCount: number): ReturnType<typeof createCatalog> {
+  const servers = mcp.states().map((st) => ({
+    id: st.config.name,
+    name: st.config.name,
+    description: st.config.description,
+    enabled: st.status !== "disabled",
+    status: st.status,
+    tools: st.tools ?? [],
+  }));
+  return createCatalog(servers, { builtInCount });
 }
 
 function mcpSpecs(): ReturnType<typeof toolSpecs> {

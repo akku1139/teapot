@@ -31,6 +31,15 @@ export interface McpTool {
 
 export interface McpServerConfig {
   name: string;
+  /**
+   * What this server is FOR, shown to the model in the system prompt when the catalog is deferred.
+   *
+   * A deferred catalog hides every tool description, so the model has nothing to search with — it can
+   * only guess keywords. Naming the servers and their purpose restores the map: "Ghidra: reverse
+   * engineering" tells it to search "decompile" rather than "binary". ChatGPT does the same thing, and
+   * the server's own instructions are the cheapest possible index.
+   */
+  description?: string;
   url?: string;
   command?: string;
   args?: string[];

@@ -200,12 +200,94 @@ export function metaFrom(m: MdModel): ModelMeta {
   };
 }
 
-/** every model models.dev lists for this baseUrl's provider, or [] when the provider is unknown */
-export async function fetchModelList(baseUrl: string, _apiKey?: string): Promise<ModelMeta[]> {
-  const snap = await loadDb();
+/**
+ * The model list for a provider: the PROVIDER's own catalogue, enriched by models.dev.
+ *
+ * The provider is the authority on which models exist — models.dev lags and omits entries. MEASURED:
+ * `reflection/beam:free` is served by Command Code (94 models) and absent from models.dev's
+ * `commandcode` record (72), so a models.dev-only list silently drops models the operator can
+ * actually call.
+ *
+ * models.dev is still needed for CAPABILITY, because most providers publish none: Command Code's
+ * `/models` returns only `{context_length, created, id, name, object, owned_by, supported_endpoints}`
+ * while OpenRouter publishes `architecture` (modalities) and `supported_parameters`. So:
+ *
+ *   - provider list wins for MEMBERSHIP;
+ *   - a provider field, when present, wins for that field;
+ *   - models.dev fills only what the provider did not say.
+ *
+ * When the provider cannot be reached at all we fall back to the models.dev list rather than showing
+ * nothing.
+ */
+export async function fetchModelList(baseUrl: string, apiKey?: string): Promise<ModelMeta[]> {
+  const [snap, upstream] = await Promise.all([
+    loadDb(),
+    fetchProviderModels(baseUrl, apiKey).catch(() => null),
+  ]);
   const provider = providerFor(snap.providers, baseUrl);
-  if (!provider?.models) return [];
-  return Object.values(provider.models).map(metaFrom).filter((m) => m.id);
+  const dbModels = provider?.models ? Object.values(provider.models).map(metaFrom).filter((m) => m.id) : [];
+  if (!upstream) return dbModels;
+  const byId = new Map(dbModels.map((m) => [m.id, m]));
+  return upstream
+    .map((m) => mergeMeta(m, byId.get(m.id)))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** a provider's own `/models`, normalised, or null when it does not answer usefully */
+async function fetchProviderModels(baseUrl: string, apiKey?: string): Promise<ModelMeta[] | null> {
+  const url = `${String(baseUrl).replace(/\/+$/, "")}/models`;
+  const res = await fetch(url, {
+    headers: { ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...providerHeaders(baseUrl) },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) return null;
+  const j = (await res.json()) as {
+    data?: {
+      id?: unknown;
+      name?: unknown;
+      context_length?: unknown;
+      architecture?: { input_modalities?: unknown; output_modalities?: unknown };
+      supported_parameters?: unknown;
+      pricing?: { prompt?: unknown; completion?: unknown };
+    }[];
+  };
+  const out: ModelMeta[] = [];
+  for (const m of j.data ?? []) {
+    if (typeof m.id !== "string" || !m.id) continue;
+    const input = strings(m.architecture?.input_modalities);
+    const output = strings(m.architecture?.output_modalities);
+    const ctx = typeof m.context_length === "number" ? m.context_length : undefined;
+    // `reasoning` in supported_parameters means the model accepts a reasoning_effort-style control
+    const params = strings(m.supported_parameters);
+    out.push({
+      id: m.id,
+      ...(typeof m.name === "string" ? { name: m.name } : {}),
+      ...(ctx !== undefined ? { contextLength: ctx } : {}),
+      ...(input ? { modalities: { input, output: output ?? ["text"] } } : {}),
+      ...(params?.some((p) => p === "reasoning" || p === "reasoning_effort") ? { reasoning: true } : {}),
+    });
+  }
+  return out.length ? out : null;
+}
+
+/** provider fields win; models.dev fills only the gaps */
+function mergeMeta(own: ModelMeta, db: ModelMeta | undefined): ModelMeta {
+  if (!db) return own;
+  return {
+    id: own.id,
+    ...(own.name ?? db.name ? { name: own.name ?? db.name } : {}),
+    ...(own.contextLength ?? db.contextLength ? { contextLength: own.contextLength ?? db.contextLength } : {}),
+    ...(own.modalities ?? db.modalities
+      ? { modalities: own.modalities ?? db.modalities }
+      : {}),
+    /**
+     * Efforts come from models.dev even when the provider listed the model: no provider publishes the
+     * effort LEVELS, only that reasoning exists. `own.reasoning` still wins for the yes/no question.
+     */
+    ...(db.supportedEfforts ? { supportedEfforts: db.supportedEfforts } : {}),
+    ...(own.reasoning ?? db.reasoning ? { reasoning: own.reasoning ?? db.reasoning } : {}),
+    ...(db.pricing ? { pricing: db.pricing } : {}),
+  };
 }
 
 export function peekModelList(baseUrl: string): ModelMeta[] | undefined {

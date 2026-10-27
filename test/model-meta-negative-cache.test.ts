@@ -14,10 +14,18 @@ import assert from "node:assert/strict";
  */
 const freshModule = async () => import(`../src/model-meta.ts?t=${Date.now()}${Math.random()}`);
 
-/** a fetch that always fails, counting how often it was called */
+/**
+ * A fetch that always fails, counting only models.dev.
+ *
+ * The count must be scoped: `fetchModelList` now ALSO asks the provider for its own `/models` (the
+ * provider decides which models exist, models.dev fills in capabilities), so an unscoped counter
+ * reported 4 instead of 1 and looked like a caching regression. What is under test here is the
+ * models.dev fetch policy, so only that URL is counted.
+ */
+const isModelsDev = (u: unknown): boolean => String(u).startsWith("https://models.dev");
 function failingFetch(counter: { n: number }): typeof fetch {
-  return (async () => {
-    counter.n++;
+  return (async (url: unknown) => {
+    if (isModelsDev(url)) counter.n++;
     throw new Error("endpoint down");
   }) as unknown as typeof fetch;
 }
@@ -50,8 +58,8 @@ test("a failing models.dev fetch happens ONCE, not once per caller (#143)", asyn
 test("a SUCCESSFUL fetch is shared across callers, and carries the fields the UI reads (#143)", async () => {
   const real = globalThis.fetch;
   const counter = { n: 0 };
-  globalThis.fetch = (async () => {
-    counter.n++;
+  globalThis.fetch = (async (url: unknown) => {
+    if (isModelsDev(url)) counter.n++;
     return dbOf({
       commandcode: {
         api: "https://api.commandcode.ai/provider/v1",
@@ -89,8 +97,8 @@ test("an unknown provider is 'no data', not an error and not a retry (#143)", as
   // what keeps the reasoning-effort control visible for models we cannot describe.
   const real = globalThis.fetch;
   const counter = { n: 0 };
-  globalThis.fetch = (async () => {
-    counter.n++;
+  globalThis.fetch = (async (url: unknown) => {
+    if (isModelsDev(url)) counter.n++;
     return dbOf({ openrouter: { api: "https://openrouter.ai/api/v1", models: {} } });
   }) as unknown as typeof fetch;
   try {

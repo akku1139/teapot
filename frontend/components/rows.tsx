@@ -308,7 +308,75 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
 );
         break;
       }
+      case "search_tools": {
+        // the operator must be able to see WHICH tools were surfaced — the tool_id is opaque
+        label = `🔎 ${oneLine(argStr("query") || "(browse)", 60)}`;
+        const hits = (() => {
+          try {
+            const j = JSON.parse(out()) as { tools?: { name?: string; server?: string }[]; totalMatches?: number };
+            return { names: (j.tools ?? []).map((t) => `${t.server ?? "?"}/${t.name ?? "?"}`), total: j.totalMatches ?? 0 };
+          } catch {
+            return { names: [] as string[], total: 0 };
+          }
+        })();
+        hint = res() ? `${hits.total} match${hits.total === 1 ? "" : "es"}` : null;
+        body = (
+          <>
+            {argsBlock()}
+            {res() ? (
+              hits.names.length ? (
+                <div class="meta">found: {hits.names.join(", ")}</div>
+              ) : (
+                <div class="meta">no matches</div>
+              )
+            ) : null}
+            {resultBlock()}
+          </>
+        );
+        break;
+      }
+      case "run_tool": {
+        // the tool_id is JSON [server, name]; show the human half
+        const id = argStr("tool_id");
+        const parts = (() => {
+          try {
+            const j = JSON.parse(id) as unknown;
+            return Array.isArray(j) && j.length === 2 ? `${String(j[0])}/${String(j[1])}` : id;
+          } catch {
+            return id;
+          }
+        })();
+        label = `⚡️ ${parts || "(no tool_id)"}`;
+        hint = res() ? fmtDur(res()!.data?.durationMs) : null;
+        body = (
+          <>
+            {argsBlock()}
+            {resultBlock()}
+          </>
+        );
+        break;
+      }
       default: {
+        /**
+         * An MCP tool gets a row of its own, not the fallback JSON dump.
+         *
+         * `mcp__<server>__<tool>` is the flat name the request uses, and the operator asked for these to
+         * look like ordinary tools — the raw `{...}` args block was the only thing distinguishing them,
+         * which reads as "unsupported" rather than "a tool that lives elsewhere".
+         */
+        const mcp = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name);
+        if (mcp) {
+          const [, server, tool] = mcp;
+          label = `${tool}`;
+          hint = `[MCP: ${server}]${res() ? ` · ${fmtDur(res()!.data?.durationMs)}` : ""}`;
+          body = (
+            <>
+              {Object.keys(d.args ?? {}).length ? argsBlock() : null}
+              {resultBlock()}
+            </>
+          );
+          break;
+        }
         label = name;
         hint = res() ? fmtDur(res()!.data?.durationMs) : null;
         body = (
@@ -428,6 +496,21 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
             : st === "reply"
               ? "🔍️ auditor replied"
               : "🔍️ auditor";
+    /**
+     * Only a `<details>` when there is something to expand — the same rule the compaction card follows.
+     *
+     * `started`, `verdict` and the audit's own bookkeeping rows carry neither `text` nor `args`, so the
+     * card had a disclosure triangle that opened onto nothing and grew the row by a few pixels. MEASURED
+     * as the same complaint that produced the compaction fix: "中身が空なのに展開してちょっと縦に伸びる".
+     */
+    const expandable = (st === "reply" && !!e.data?.text) || (st === "tool" && !!e.data?.args);
+    if (!expandable) {
+      return (
+        <div class="embed auditstep">
+          <span class="meta">{label}</span>
+        </div>
+      );
+    }
     return (
       <details class="embed auditstep">
         <summary>

@@ -50,6 +50,14 @@ export const ConfigPatchSchema = z.object({
       z
         .object({
           name: z.string().min(1, "MCP server name required"),
+          /**
+           * Optional, and only shown to the model when the catalog is too large to send.
+           *
+           * Without it a deferred catalog gives the model no map: it can search, but only by guessing
+           * keywords. "Ghidra: reverse engineering — decompile, disassemble" is what turns a guess into
+           * the right search term.
+           */
+          description: z.string().max(400).optional(),
           url: z.string().optional(),
           command: z.string().optional(),
           args: z.array(z.string()).optional(),
