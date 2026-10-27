@@ -44,11 +44,25 @@ test("the wrapper paints NO surface of its own (#shiki)", () => {
   assert.doesNotMatch(body, /border-radius/, "and no radius: it clipped the edge characters");
 });
 
-test("shiki's own background can never win (#shiki)", () => {
-  // dual-theme mode sets `--shiki-light-bg: #fff` inline, so every dark theme showed a white block
-  const body = rule(".shikiwrap .shiki") + rule(".shikiwrap pre.shiki") + rule(".shikiwrap code.shiki");
-  assert.match(body, /background-color:\s*transparent/, "shiki's inline background must be overridden");
-  assert.match(body, /!important/, "an inline style needs the rule to win explicitly");
+test("shiki is configured to emit NO background, so no override is needed (#shiki)", () => {
+  /**
+   * The old rule here was `.shikiwrap .shiki { background-color: transparent !important }`, whose
+   * stated reason was that dual-theme mode sets `--shiki-light-bg: #fff` inline and a dark theme showed
+   * a white block.
+   *
+   * MEASURED: with `defaultColor: false` and dual `themes`, `codeToHast` emits only the CSS variables
+   * `--shiki-light-bg` / `--shiki-dark-bg` and NO `background-color` at all. So the `!important` was
+   * undoing something the highlighter never did — and it silently beat the container's own surface,
+   * which is how a message code block lost its background ("shikiが効いてるコードブロックの背景色がない").
+   *
+   * This asserts the actual contract: nothing forces shiki's background, because it has none.
+   */
+  const css = readFileSync("frontend/app.css", "utf8");
+  assert.equal(
+    /\.shikiwrap\s+\.shiki[^{]*\{[^}]*background-color:\s*transparent/.test(css),
+    false,
+    "no rule may fight shiki's background any more",
+  );
 });
 
 test("the markdown preview is not opaque either (#shiki)", () => {

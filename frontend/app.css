@@ -1331,6 +1331,16 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
    `white-space:pre` for genuine code and takes the wrapping behaviour. */
 .content pre { background: var(--bg-darkest); padding: 8px; border-radius: var(--radius-md); overflow-x: auto; }
 .content pre > code { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* NO surface on `.shikiwrap`. It is a positioning/wrap wrapper, nothing more.
+ *
+ * The first attempt painted `--bg-darkest` here so a highlighted block would look like a plain one, and
+ * that gave TWO backgrounds — the wrapper's and `.content pre`'s — reported as "divとpreで二重に
+ * backgroundが効いてる".
+ *
+ * The reason a single rule is enough is that there are not really two paths: shiki's output is a
+ * `<pre>`, still a DESCENDANT of `.content`, so `.content pre` already styles it. Making `.content pre`
+ * the one place a code-block surface is decided is what unifies plain and highlighted blocks — one
+ * property, one owner, and adding a wrapper cannot double it again. */
 .content code { background: var(--bg-darkest); padding: 1px 4px; border-radius: var(--radius-sm); font-size: var(--text-sm); }
 .content pre code { background: none; padding: 0; }
 .content h1,.content h2,.content h3,.content h4,.content h5,.content h6 { margin: 8px 0 2px; font-size: var(--text-md); }
@@ -2911,13 +2921,17 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
    * `<pre>/<code>` wrap. Whatever surface it sits on shows through, identical to the no-shiki path.
    */
 }
-/* shiki's inline `--shiki-light-bg: #fff` must never be the visible surface: in dual-theme mode the
-   LIGHT palette is what the inline style sets, so every dark theme showed a white block. */
-.shikiwrap .shiki,
-.shikiwrap pre.shiki,
-.shikiwrap code.shiki {
-  background-color: transparent !important;
-}
+/* There is deliberately NO rule here forcing shiki's background transparent.
+ *
+ * shiki is configured with `defaultColor: false` and dual themes, which emits only the CSS variables
+ * `--shiki-light-bg` / `--shiki-dark-bg` and NO `background-color` (MEASURED). An `!important` that
+ * undoes what the highlighter never did is a rule nobody can reason about — and it silently beat the
+ * container's own surface, which is how a MESSAGE code block lost its background entirely
+ * ("shikiが効いてるコードブロックの背景色がない").
+ *
+ * The rule now is the one the operator stated: the surface belongs to the CONTAINER. `.content
+ * .shikiwrap` paints a code block; a file preview inherits the modal; a tool row uses `.toolbody`.
+ */
 
 /* notification center (pops above the sidebar footer) */
 .notifbtn { position: relative; }

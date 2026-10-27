@@ -654,6 +654,18 @@ export class Agent {
      * (declared above), so a panel that reads them before the load shows "nothing yet" rather than
      * waiting — which is the right trade for a boot that touches only config.json and skills.
      */
+    /**
+     * The WORKSPACE existence check belongs here, at boot — it is not a session-directory read.
+     *
+     * It was swept into the deferred bundle with goal/todo, which silently disabled the ghost marker:
+     * `isGhost` only ever CLEARS `workspaceMissing` (see the getter), so if nothing computes it at boot
+     * an agent whose workspace is gone never reports as a ghost. Reported as "ghostが効かなくなった".
+     *
+     * `existsSync` rather than `fs.stat`: MEASURED, 445 async stats cost ~1s of promise overhead for a
+     * single syscall each, while this check is a stat of a path FROM config.json — no session directory
+     * is opened, so it does not break the boot rule.
+     */
+    this.workspaceMissing = !existsSync(this.workspace);
     if (!this.opts.deferSessionReads) await this.loadSessionState();
     if (this.opts.restoreSession) {
       this.status = "stopped";
@@ -672,10 +684,6 @@ export class Agent {
     if (this.sessionStateLoaded) return;
     this.sessionStateLoaded = true;
     await this.migrateMemoryToAgentScope();
-    this.workspaceMissing = !(await fs
-      .stat(this.workspace)
-      .then(() => true)
-      .catch(() => false));
     await this.migrateGoalFromWorkspace();
     this.goal = (await this.readGoalStore()) ?? this.goal;
     this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");

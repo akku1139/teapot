@@ -782,7 +782,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
             <span class="meta">decision logged</span>
           </summary>
           {}
-          <div class="content" innerHTML={renderMarkdownCached(String(e.data?.rationale ?? ""))} />
+          <MdContent html={renderMarkdownCached(String(e.data?.rationale ?? ""))} />
           <Show when={alts.length}>
             <div class="content muted">Rejected: {alts.join(" / ")}</div>
           </Show>
@@ -879,7 +879,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
           </summary>
           <Show when={e.data.summary}>
             <div class="vtitle compactkept">what the agent kept</div>
-            <div class="content" innerHTML={renderMarkdownCached(String(e.data.summary))} />
+            <MdContent html={renderMarkdownCached(String(e.data.summary))} />
           </Show>
         </details>
       );

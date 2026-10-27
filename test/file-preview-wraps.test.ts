@@ -78,12 +78,21 @@ test("the code background is the THEME's surface, never shiki's white (#files)",
    * shiki's inline background lose — MEASURED identical (both `rgba(0,0,0,0)`, radius 0) after this.
    */
   assert.doesNotMatch(rule(".shikiwrap"), /background\s*:/, "the wrapper must not paint a surface (#files)");
-  assert.match(rule(".shikiwrap .shiki"), /background-color:\s*transparent/, "shiki's own background must lose (#files)");
 
+  /**
+   * …and nothing has to fight shiki for it, because shiki emits no background.
+   *
+   * MEASURED: `defaultColor: false` with dual themes produces only `--shiki-light-bg` /
+   * `--shiki-dark-bg` CSS variables on the `<pre>` — no `background-color`. The `!important` that used
+   * to live here was undoing something that never happened, and it outranked the container's own
+   * surface: a MESSAGE code block lost its background to it ("shikiが効いてるコードブロックの背景色がない").
+   *
+   * The contract is now one owner per surface: the container decides, and `.content pre` is the one
+   * place a code-block surface is decided — for the plain block and the highlighted one alike.
+   */
   const shikiBg = [...css.matchAll(/([^{}]*\.shikiwrap[^{}]*\.shiki[^{}]*)\{([^}]*)\}/g)]
     .filter((m) => /background-color/.test(m[2]!))
     .map((m) => m[2]!)
     .join("\n");
-  assert.match(shikiBg, /background-color:\s*transparent/, "shiki's own background must be transparent (#files)");
-  assert.match(shikiBg, /!important/, "it is an inline style on the element, so the rule must win (#files)");
+  assert.equal(shikiBg, "", "no rule may set shiki's background at all (#files)");
 });

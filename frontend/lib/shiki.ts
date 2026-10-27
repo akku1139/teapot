@@ -153,6 +153,19 @@ export async function* highlightChunks(
   yield* highlightLangChunks(lang, code);
 }
 
+/**
+ * shiki's own settings already keep the background off the wire.
+ *
+ * With `defaultColor: false` and dual `themes`, `codeToHast` emits **no** `background-color` — only the
+ * CSS variables `--shiki-light-bg` / `--shiki-dark-bg` (MEASURED on the generated `<pre>`). So there is
+ * nothing to strip here, and no stylesheet needs an `!important` to undo it: whatever surface the block
+ * sits on shows through, and each container decides for itself whether it HAS one.
+ *
+ * (An earlier attempt added a HAST pass to remove a background that this configuration never produces,
+ * and a `.shikiwrap … { background-color: transparent !important }` rule that existed only to undo it.
+ * The operator's instinct — "shiki自体の設定で無効化できない?" — was right, and it was already done.)
+ */
+
 export async function* highlightLangChunks(
   lang: string,
   code: string,
