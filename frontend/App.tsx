@@ -1,5 +1,6 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
+import { needsSettlePin } from "./lib/scroll-policy";
 import { evictOver, weighJson } from "./lib/retention";
 import { renderMarkdownCached } from "./lib/markdown";
 import { fmtDur } from "./lib/format";
@@ -503,6 +504,7 @@ export default function App() {
   const MAX_COMPOSER_H = 360; 
   const [composerMaximized, setComposerMaximized] = createSignal(false);
   const [atBottom, setAtBottom] = createSignal(true);
+  let pinSettleTimer: ReturnType<typeof setTimeout> | undefined;
   const [missed, setMissed] = createSignal(0);
   const [gapToTailPx, setGapToTailPx] = createSignal(-1);
   const publishGap = (s: TailSample | null) => setGapToTailPx(s ? gapToTail(s) : -1);
@@ -1270,12 +1272,38 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const s = tailSample();
     return atTail(s);
   }
+  /**
+   * Put the viewport on the true bottom, and keep it there until the layout stops moving.
+   *
+   * `scrollTop = scrollHeight` clamps to the exact (fractional) maximum, so the assignment itself is
+   * right. What it cannot do is survive what happens AFTER: a scrollbar that appears or disappears, the
+   * composer growing a line, a font or image finishing layout, a row settling. Each of those changes
+   * `scrollHeight` or `clientHeight` and leaves the viewport a fraction short — reported as "1秒後に
+   * 1pxくらいスクロールが戻される", and as the scrollbar reappearing after it had gone (#188 follow-up).
+   *
+   * So the pin is re-asserted over the next frames and once more after the layout settles. Every
+   * re-check is gated on `atBottom()`, which is false the moment the operator scrolls up — so this can
+   * never fight a reader.
+   */
   function pinToTail() {
     const f = feedEl();
     if (!f) return;
-    f.scrollTop = f.scrollHeight;
-    ledger = { top: f.scrollTop, height: f.scrollHeight };
+    const apply = (): boolean => {
+      if (!f.isConnected) return false;
+      f.scrollTop = f.scrollHeight;
+      ledger = { top: f.scrollTop, height: f.scrollHeight };
+      return true;
+    };
+    if (!apply()) return;
     setMissed(0);
+    const settle = (frames: number) => {
+      if (!f.isConnected || !atBottom()) return;
+      if (needsSettlePin(atBottom(), { top: f.scrollTop, height: f.scrollHeight, viewport: f.clientHeight })) apply();
+      if (frames > 0) requestAnimationFrame(() => settle(frames - 1));
+    };
+    requestAnimationFrame(() => settle(2));
+    if (pinSettleTimer) clearTimeout(pinSettleTimer);
+    pinSettleTimer = setTimeout(() => settle(0), 250);
   }
   function scrollBottom(force = false) {
     if (force || atBottom()) pinToTail();

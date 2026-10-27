@@ -15,9 +15,24 @@ export function floorOf(v: Viewport): number {
   return Math.max(0, v.height - v.viewport);
 }
 
+/**
+ * How far the viewport is from the tail, in CSS pixels.
+ *
+ * CAN BE NEGATIVE in one direction only, which is why it is clamped rather than trusted: MEASURED on the
+ * operator's live session, `scrollHeight - scrollTop - clientHeight` came out as **-0.25** because
+ * `scrollTop` is fractional while `scrollHeight` and `clientHeight` are integers rounded to the nearest
+ * pixel. A caller that compared this to 0 with `>` would then think the viewport was flush when it was
+ * a quarter-pixel past, and one that used the raw value as a distance would pin in the wrong direction.
+ */
 export function distanceToTail(v: Viewport | null | undefined): number {
   if (!v) return Number.POSITIVE_INFINITY;
   return Math.max(0, v.height - v.top - v.viewport);
+}
+
+/** is the viewport already flush, allowing for the sub-pixel rounding `scrollTop` can overshoot by? */
+export function isFlush(v: Viewport | null | undefined, epsilon = 0.5): boolean {
+  if (!v) return false;
+  return Math.abs(v.height - v.top - v.viewport) <= epsilon;
 }
 
 export function atTail(v: Viewport | null | undefined, tolerance = AT_TAIL_PX): boolean {
@@ -71,6 +86,22 @@ export function nextFollowing(
   const movedUp = previousTop !== undefined && v.top < previousTop - 0.5;
   if (movedUp) return false;
   return atTail(v);
+}
+
+/**
+ * Should the settle pass re-assert the pin?
+ *
+ * `scrollTop = scrollHeight` lands on the exact fractional maximum, but the layout can move afterwards
+ * — a scrollbar appearing, the composer growing, a font or image finishing — leaving the viewport a
+ * fraction short. Reported as "1秒後に1pxくらいスクロールが戻される" (#188 follow-up).
+ *
+ * The threshold is HALF A PIXEL, not the 24px used for "is the reader at the tail": that tolerance is
+ * about intent, this one is about arithmetic. And it is gated on `following`, so a reader who scrolled
+ * up is never pulled back.
+ */
+export function needsSettlePin(following: boolean, v: Viewport, epsilon = 0.5): boolean {
+  if (!following) return false;
+  return distanceToTail(v) > epsilon;
 }
 
 export function shouldShowJumpToPresent(following: boolean, v: Viewport): boolean {
