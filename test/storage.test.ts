@@ -9,6 +9,7 @@ import { Master } from "../src/master.ts";
 import { bus } from "../src/bus.ts";
 import type { ChatFn, LlmConfig, LlmResult } from "../src/agent/llm.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
+import { waitFor } from "./helpers/wait-for.ts";
 
 // #110: POSIX-only — POSIX filesystem paths.
 // The Windows CI job skips this file; see test/helpers/posix-only.ts for why
@@ -430,11 +431,9 @@ test("every appended event is broadcast on the bus (web UI freshness)", async ()
     bus.on("update", handler);
     try {
       await a.enqueuePrompt("hello"); // resolves its log append before emitting
-      await new Promise((r) => setTimeout(r, 30));
-      assert.ok(
-        seen.some((s) => s.kind === "event" && s.event?.type === "prompt"),
-        `expected a prompt event broadcast, got: ${JSON.stringify(seen.map((s) => s.kind))}`,
-      );
+      await waitFor(() => seen.some((s) => s.kind === "event" && s.event?.type === "prompt"), {
+        what: "the prompt event to be broadcast on the bus",
+      });
     } finally {
       bus.off("update", handler);
       await a.dispose();
