@@ -324,14 +324,20 @@ html[data-bg-image="on"] button:hover:where(:not(:disabled)) {
   background-color: color-mix(in srgb, currentColor 12%, transparent) !important;
 }
 /**
- * …and the text of a button that WAS white-on-fill has to stay legible.
+ * …and a button that WAS white-on-a-coloured-fill keeps its colour in the BORDER and the LABEL.
  *
- * A transparent fill with `color: #fff` is invisible, so the few action buttons that relied on a
- * coloured slab move their accent to the BORDER and the LABEL — the same treatment the stop button
- * already had.
+ * The blanket rule above takes the fill away, so `color: #fff` has nothing to sit on. On a light theme
+ * that is white text on a light surface — reported as "ask_userのボタンの文字が白くてライトテーマで視認性が
+ * 消失しちゃった" for `.qopt`, and earlier as save/send buttons losing their accent.
+ *
+ * `.qopt` lives HERE rather than in the `:where(:not(...))` exception list on purpose: that list is for
+ * elements that must not look like outlines at all (`.copybtn`, `.themecard`, the tab's ✕). An
+ * `ask_user` option IS a control and should read as one — accent border, accent label, no slab — which is
+ * the same treatment the save/send buttons get.
  */
 html[data-bg-image="on"] button.cfgsave,
-html[data-bg-image="on"] .composer button {
+html[data-bg-image="on"] .composer button,
+html[data-bg-image="on"] button.qopt {
   border: 1px solid currentColor;
   color: var(--acc);
 }

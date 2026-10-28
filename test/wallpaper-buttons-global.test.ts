@@ -52,3 +52,22 @@ test("no per-class exception list is maintained for wallpaper buttons (#ui)", ()
   assert.doesNotMatch(block, /:not\(/, "the rule must not enumerate exceptions");
   assert.doesNotMatch(block, /:where\(/, "and must not rely on :where(), which loses to class fills");
 });
+
+test("a filled action keeps its colour in the label, not a white slab (#ui)", () => {
+  /**
+   * The blanket rule takes every fill away, so any button that was `color: #fff` on a coloured background
+   * ends up as white text on a light surface. Reported twice: the save/send buttons losing their accent,
+   * then "ask_userのボタンの文字が白くてライトテーマで視認性が消失しちゃった" for `.qopt`.
+   *
+   * The fix is a colour, not a fill: border and label in the button's own hue. MEASURED after:
+   * `.qopt` computes `bg: rgba(0,0,0,0)`, `color: rgb(88,101,242)`, `border: 1px rgb(88,101,242)`.
+   */
+  const at = CSS.indexOf('html[data-bg-image="on"] button.cfgsave,');
+  assert.ok(at > 0, "precondition: the accent group exists");
+  const block = CSS.slice(at, CSS.indexOf("}", at));
+  for (const sel of ["button.cfgsave", ".composer button", "button.qopt"]) {
+    assert.ok(block.includes(sel), `${sel} must keep a legible colour`);
+  }
+  assert.match(block, /color: var\(--acc\)/, "the label carries the accent");
+  assert.match(block, /border: 1px solid currentColor/, "and so does the border");
+});
