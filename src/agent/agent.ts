@@ -2019,7 +2019,9 @@ export class Agent {
             reasoning: partial.reasoning,
             interrupted: true,
           });
-          this.messages.push({ role: "assistant", content: partial.text ?? "" });
+          this.messages.push(
+            assistantTurn({ role: "assistant", content: partial.text ?? "" }, partial.reasoning),
+          );
         } else if (this.stopRequested) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "turn-interrupted",
@@ -2088,15 +2090,8 @@ export class Agent {
         await this.log.append("usage", this.currentSession, this.currentBranch, res.usage);
       }
 
-      const m = res.message;
-      /**
-       * Carry the thinking on the message itself, not only in the log.
-       *
-       * `res.reasoning` was written to `chat.jsonl` and then dropped: `this.messages.push(m)` stored a
-       * message with no reasoning, so the NEXT request sent back an assistant turn with its thinking
-       * missing. Providers that require it (Beam, #187) answered 400; the rest simply lost the thread.
-       */
-      if (res.reasoning && !m.reasoning) m.reasoning = res.reasoning;
+      // `assistantTurn` carries the thinking, which is what `reasoning_content` is sent from (#187)
+      const m = assistantTurn(res.message, res.reasoning);
       const isPlaceholder = m.content === "(tool call)" || m.content === "(no content)";
       await this.log.append("message", this.currentSession, this.currentBranch, {
         role: "assistant",
@@ -2409,7 +2404,7 @@ export class Agent {
         if (text.trim()) await step({ step: "reply", text: text.slice(0, 400) });
         return text;
       }
-      messages.push({ role: "assistant", content: text, tool_calls: calls });
+      messages.push(assistantTurn({ role: "assistant", content: text, tool_calls: calls }, res.reasoning));
       for (const call of calls) {
         await step({ step: "tool", name: call.function?.name, args: String(call.function?.arguments ?? "").slice(0, 200) });
         let out: { ok: boolean; result: string };
@@ -2445,6 +2440,22 @@ export class Agent {
   private async handleFinish(argsJson: string): Promise<void> {
     const args = safeParse(argsJson);
     if (args.goalComplete === true && this.goal.status !== "done") {
+      /**
+       * A PAUSED goal is not the agent's to complete.
+       *
+       * `paused` means the operator took the goal off the agent's hands, so a `finish(goalComplete)`
+       * must not run the audit — reported as "goal pausedでもgoal auditが動く". It also must not flip the
+       * status to done: that would silently undo the pause. The final message is still appended, because
+       * the work itself is real and the operator should see the summary.
+       */
+      if (this.goal.status === "paused") {
+        await this.log.append("system_note", this.currentSession, this.currentBranch, {
+          event: "finish-ignored-while-paused",
+          detail: "the goal is paused, so a completion claim neither runs the audit nor marks it done",
+        });
+        await this.appendFinalMessage(args);
+        return;
+      }
       if (this.goal.verify?.trim()) {
         await this.log.append("goal", this.currentSession, this.currentBranch, {
           event: "audit-started",
@@ -3209,6 +3220,23 @@ function safeParse(json: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/**
+ * The conversation entry for a reply, with its thinking attached.
+ *
+ * THREE places used to build this by hand — the main loop, the AUDITOR's loop, and the interrupted-partial
+ * path — and each independently forgot `reasoning`, which is what `reasoning_content` is derived from
+ * (#187). MEASURED consequences: every audit attempt on `mizuki-rakutenai-3-205c7912` died with
+ * `messages[1].reasoning_content` (index 1 IS the auditor's synthetic assistant turn) and the run ended
+ * at `audit-unavailable-cap`, while the main loop had already been fixed.
+ *
+ * One builder means a fourth caller cannot be forgotten.
+ */
+function assistantTurn(m: ChatMessage, reasoning?: string): ChatMessage {
+  const out: ChatMessage = { ...m };
+  if (reasoning && !out.reasoning) out.reasoning = reasoning;
+  return out;
 }
 
 function lineageOf(events: TeapotEvent[]): TeapotEvent[] {

@@ -266,6 +266,9 @@ button:disabled { filter: none; }
  *   - `.qopt`      the `ask_user` option cards, which are the row's primary affordance
  *   - `.themecard` a preview tile, not a button shape
  *   - `.tprev*`    the preview's own simulated panels
+ *   - `.tabx`      the ✕ inside a terminal tab: it sits ON a chip that is already an outline, so a
+ *                  second border reads as a box inside a box — "ターミナルタブのバツボタンだけはボーダー
+ *                  を消してほしい". It is a glyph on the tab, not a control with its own surface.
  * Everything else — including every bare `<button>` — becomes an outline.
  */
 /**
@@ -280,7 +283,7 @@ button:disabled { filter: none; }
  * `:where()` always contributes ZERO, so the base is just `html[attr] button` = (0,1,2) and any
  * class-based state rule beats it on merit rather than on accident.
  */
-html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard)) {
+html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard, .tabx)) {
   background-color: transparent;
   border: 1px solid var(--line-strong);
   color: var(--fg);
@@ -396,7 +399,7 @@ html[data-bg-image="on"] button.runbtn.danger {
  * hoverするとなぜか青色になる". A state colour that only holds when the pointer is elsewhere is not a
  * state colour.
  */
-html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard, .primarybtn, .okbtn, .savebtn, .runbtn, .goalstate)):hover:where(:not(:disabled)) {
+html[data-bg-image="on"] button:where(:not(.copybtn, .qopt, .themecard, .tabx, .primarybtn, .okbtn, .savebtn, .runbtn, .goalstate)):hover:where(:not(:disabled)) {
   border-color: var(--acc);
   color: var(--acc);
   /* the shared rule brightens a fill; with no fill there is nothing to brighten */
