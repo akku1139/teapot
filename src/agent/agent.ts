@@ -94,7 +94,22 @@ export interface AgentOptions {
    * a one-shot script) keeps the eager behaviour.
    */
   deferSessionReads?: boolean;
-  onFirstUserPrompt?: (sessionId: string) => void;
+  /**
+   * Fired once, with the session's FIRST user prompt.
+   *
+   * The TEXT is passed because that is what names the session: the agent has it in hand, so Master does
+   * not have to read `chat.jsonl` back to recover it. Nothing else may be needed to create a title.
+   */
+  onFirstUserPrompt?: (sessionId: string, firstText: string) => void;
+  /**
+   * Look up a session's name. The ONE owner is Master's `config.sessionTitles` map.
+   *
+   * The agent used to keep its own `sessionTitle` field, seeded when it was created. A new session is
+   * named later (from its first prompt), so the field went stale and the panel showed the internal id
+   * while `config.json` had the real name. Deriving on every `snapshot()` removes the copy — and with it
+   * the class of bug where a writer forgets to push.
+   */
+  sessionTitleOf?: (sessionId: string) => string | undefined;
   provider?: string;
   globalSkillsDir?: string;
   pluginSkillRoots?: { dir: string; source: string }[];
@@ -289,8 +304,8 @@ export class Agent {
     costUsd: 0 as number | undefined,
   };
 
-  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads">> &
-    Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads"> & { chatFn?: ChatFn };
+  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads" | "sessionTitleOf">> &
+    Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads" | "sessionTitleOf"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   get conversation(): readonly ChatMessage[] {
     return this.messages;
@@ -409,10 +424,6 @@ export class Agent {
   private skillsStamp = "";
   private lastCompactSummary?: string;
   private compactRules: Rule[] = [];
-  setSessionTitle(title: string | undefined): void {
-    this.sessionTitle = title?.trim() || undefined;
-  }
-  private sessionTitle?: string;
   private overflowRecoveries = 0;
   private consecutiveCompactFailures = 0;
 
@@ -884,9 +895,6 @@ export class Agent {
     const msgs = await rebuildMessagesFrom(lineage, this.imagesDir);
 
     for (const e of own) {
-      if (this.sessionTitle === undefined && e.type === "prompt" && (e.data as { source?: string })?.source === "user") {
-        this.sessionTitle = sessionTitleFrom((e.data as { text?: string })?.text) ?? undefined;
-      }
       if (e.type === "state") {
         const d = e.data as { detail?: string };
         if (d.detail === "llm turn start") this.stats.turns++;
@@ -1214,6 +1222,16 @@ export class Agent {
   }
 
   snapshot() {
+    /**
+     * The session's name comes from ONE place — `config.sessionTitles`, via the resolver Master hands
+     * down. The agent used to keep its own copy, seeded at creation and never updated when the map
+     * learned the real title, so the panel showed the internal id while `config.json` had the name
+     * ("config.jsonにチャットタイトルが生成されているのに表示が内部IDになってる").
+     *
+     * A copy that has to be PUSHED is a copy that goes stale; deriving it means there is nothing to
+     * push. The session id is the fallback so the panel is never blank.
+     */
+    const title = this.opts.sessionTitleOf?.(this.currentSession) || this.currentSession;
     return {
       id: this.opts.id,
       status: this.status === "idle" && this.isLive() ? "waiting" : this.status,
@@ -1222,7 +1240,7 @@ export class Agent {
       workspace: this.workspace,
       workspaceMissing: this.isGhost,
       session: this.currentSession,
-      ...(this.sessionTitle ? { sessionTitle: this.sessionTitle } : {}),
+      ...(title ? { sessionTitle: title } : {}),
       branch: this.currentBranch,
       goal: {
         status: this.goal.status,
@@ -1317,7 +1335,7 @@ export class Agent {
         });
       })
       .then(() => {
-        if (source === "user") this.opts.onFirstUserPrompt?.(this.currentSession);
+        if (source === "user") this.opts.onFirstUserPrompt?.(this.currentSession, text);
       })
       .then(() =>
         bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),

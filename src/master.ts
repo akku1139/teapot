@@ -804,9 +804,11 @@ export class Master {
     const agent = new Agent({
       id: ac.id,
       workspace: resolveWorkspace(ac.workspace, path.dirname(this.configPath)),
-      onFirstUserPrompt: (sessionId) => {
-        void this.ensureSessionTitle(ac.id, sessionId);
+      onFirstUserPrompt: (sessionId, firstText) => {
+        void this.ensureSessionTitle(ac.id, sessionId, firstText);
       },
+      // ONE owner for a session's name: this map. The agent derives it on every snapshot.
+      sessionTitleOf: (sessionId) => this.readSessionTitle(sessionId) ?? undefined,
       llm,
       sessionDir,
       // boot must touch ONLY config.json and skills; this agent's directory is opened when it is used
@@ -903,26 +905,13 @@ export class Master {
     }
     await agent.init();
     /**
-     * Seed the title from the SESSION, so a restart shows the name the operator gave it.
+     * No title is seeded, and nothing is derived here.
      *
-     * `snapshot().sessionTitle` comes from the agent's own field, and that was only ever set by
-     * `renameSession` — so after a restart the UI fell back to the auto-generated name even though the
-     * title was on disk. The title comes from `config.sessionTitles`, which is the one copy.
+     * The agent derives its name from `config.sessionTitles` on every `snapshot()` (see
+     * `sessionTitleOf`), so there is no copy to seed. Deriving a missing one here would read
+     * `chat.jsonl`, and boot must not open session directories — "起動中に読んでいいのはconfig.jsonと
+     * skillsだけ / セッションディレクトリはセッションがロードされるまで開かない".
      */
-    const seedTitle = this.readSessionTitle(path.basename(sessionDir));
-    if (seedTitle) agent.setSessionTitle(seedTitle);
-    else {
-      /**
-       * NOT derived here. Deriving a missing title reads `chat.jsonl`, and boot must not open session
-       * directories at all — "起動中に読んでいいのはconfig.jsonとskillsだけ / セッションディレクトリは
-       * セッションがロードされるまで開かない".
-       *
-       * The session ID is a perfectly good fallback for the panel, and the real derivation happens
-       * when that session is actually loaded (`ensureSessionTitle`, via the agent's first prompt).
-       */
-      const id = path.basename(sessionDir);
-      agent.setSessionTitle(this.readSessionTitle(id) ?? id);
-    }
     this.agents.set(ac.id, agent);
     if (opts.persist) {
       this.config.agents.push(ac);
@@ -1297,6 +1286,17 @@ if (active().length === 0) wake();
     }
     this.config.sessionTitles ??= {};
     this.config.sessionTitles[sessionId] = title;
+    /**
+     * …and the LIVE agent has to be told, or the panel keeps showing the id.
+     *
+     * `addAgent` seeds an agent's title from this map when it is created, falling back to the session id.
+     * A NEW session gets its entry written later (on the first prompt, from `chat.jsonl`), and nothing
+     * pushed it back — so the agent still held the id and the panel displayed it while `config.json` had
+     * the real name. Reported as "config.jsonにチャットタイトルが生成されているのに表示が内部IDになってる".
+     *
+     * Pushing here rather than in each caller means every writer (the derivation, a rename) is covered by
+     * one rule: the map changed, so the agent that is showing it changes too.
+     */
     this.saveConfig();
   }
 
@@ -1307,12 +1307,21 @@ if (active().length === 0) wake();
    * per session on every call (MEASURED earlier: 0.87s for one archive toggle). Writing it down once,
    * where the session lives, keeps that scan off the hot path and keeps the answer in ONE place.
    */
-  private async ensureSessionTitle(agentId: string, sessionId: string): Promise<void> {
+  private async ensureSessionTitle(agentId: string, sessionId: string, firstText?: string): Promise<void> {
     const a = this.config.agents.find((x) => x.id === agentId);
     if (!a || a.session !== sessionId) return;
+    // the map is the master: once it has a name, nothing may replace it
     if (this.readSessionTitle(sessionId)) return;
-    const dir = path.join(this.sessionsRoot(), sessionId);
-    this.writeSessionTitle(sessionId, this.sessionTitleOf(dir) ?? sessionId);
+    /**
+     * A session is named from its FIRST USER MESSAGE — that is the whole point of this hook, and it must
+     * keep working for a session created at runtime.
+     *
+     * The text arrives from the agent, which already has it, so this needs no read of `chat.jsonl`. The
+     * log is only a fallback for a caller that could not supply it.
+     */
+    const fromText = sessionTitleFrom(firstText) ?? undefined;
+    const derived = fromText ?? this.sessionTitleOf(path.join(this.sessionsRoot(), sessionId)) ?? sessionId;
+    this.writeSessionTitle(sessionId, derived);
   }
 
   private sessionTitleOf(dirPath: string): string | null {
@@ -1532,7 +1541,7 @@ if (active().length === 0) wake();
      */
     this.writeSessionTitle(sessionId, clean);
     delete a.sessionTitle;
-    this.agents.get(agentId)?.setSessionTitle(clean);
+    // no field to set: the panel derives the name from the map, so the bus nudge is the whole update
     bus.emit("update", { kind: "agent-update", agentId } satisfies BusEvent);
     return { title: clean };
   }
