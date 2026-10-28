@@ -67,6 +67,7 @@ import {
   PALETTE_KEYS,
   PRESET_PALETTES,
   resolveActiveTheme,
+  themeWant,
   type CustomTheme,
   type ThemePalette,
 } from "./lib/theme-store";
@@ -221,27 +222,34 @@ export default function App() {
   const [cfg, setCfg] = createSignal<any>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
 
-  const activeBgImage = () => {
-    const preview = previewTheme();
-    const want =
-      preview ??
-      (themeAuto()
-        ? sysPrefersLight()
-          ? sysLightTheme()
-          : sysDarkTheme()
-        : fixedTheme());
-    return customThemes().find((t) => t.id === want)?.backgroundImage ?? "";
-  };
-  const paintedThemeId = () => {
-    const want = themeAuto()
-      ? sysPrefersLight()
-        ? sysLightTheme()
-        : sysDarkTheme()
-      : fixedTheme();
-    return customThemes().some((t) => t.id === want) || THEMES.some((t) => t.key === want)
-      ? want
-      : "dark";
-  };
+  /**
+   * THE theme on screen — the only place that answers it.
+   *
+   * Order: a theme being previewed (clicking a card shows it immediately, before it is saved), then
+   * "follow the system", then the fixed choice. With auto on there are two chosen themes, one per slot, and
+   * the system decides which one is painted — but a preview overrides that, because the preview IS what you
+   * are looking at.
+   *
+   * Keep this the ONLY place that answers it. It has already been split three ways once (a getter for the
+   * background image, another for the editor, and the paint effect), and the two that ignored the preview
+   * made the appearance editor describe a theme that was not on screen.
+   */
+  const resolvedPainted = () =>
+    resolveActiveTheme({
+      want: themeWant({
+        preview: previewTheme(),
+        auto: themeAuto(),
+        prefersLight: sysPrefersLight(),
+        dark: sysDarkTheme(),
+        light: sysLightTheme(),
+        fixed: fixedTheme(),
+      }),
+      customIds: customThemes().map((t) => t.id),
+      presetIds: THEMES.map((t) => t.key),
+      fallback: "dark",
+    });
+  const paintedThemeId = () => resolvedPainted().active;
+  const activeBgImage = () => customThemes().find((t) => t.id === paintedThemeId())?.backgroundImage ?? "";
 
   const [showCfg, setShowCfg] = createSignal(false);
   let setupNudged = false;
@@ -407,21 +415,9 @@ export default function App() {
     onCleanup(() => sysMql?.removeEventListener("change", onChange));
   });
   createEffect(() => {
-    const previewId = previewTheme();
-    const want = previewId ?? (themeAuto()
-      ? sysPrefersLight()
-        ? sysLightTheme()
-        : sysDarkTheme()
-      : fixedTheme());
-    const resolved = resolveActiveTheme({
-      want,
-      customIds: customThemes().map((t) => t.id),
-      presetIds: THEMES.map((t) => t.key),
-      fallback: "dark",
-    });
-    const active = resolved.active;
+    const { active, repaired } = resolvedPainted();
     const custom = customThemes().find((t) => t.id === active) ?? null;
-    if (resolved.repaired) {
+    if (repaired) {
       if (themeAuto()) localStorage.setItem(sysPrefersLight() ? "teapot.theme.light" : "teapot.theme.dark", active);
       else localStorage.setItem("teapot.theme", active);
     }

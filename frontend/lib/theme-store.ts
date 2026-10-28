@@ -255,3 +255,24 @@ export function themeBeingEdited(
 ): CustomTheme | undefined {
   return themes.find((t) => t.id === inUseId) ?? themes.find((t) => t.id === editingId) ?? themes[0];
 }
+
+/**
+ * Which theme id SHOULD be painted, before checking that it exists.
+ *
+ * Precedence: a preview (clicking a card shows it before it is saved) wins, then "follow the system" picks
+ * the slot for the current system appearance, then the fixed choice. With auto on there are two chosen
+ * themes — one per slot — and the system decides between them, but a preview overrides that because the
+ * preview IS what you are looking at.
+ */
+export function themeWant(args: {
+  preview: string | null;
+  auto: boolean;
+  prefersLight: boolean;
+  dark: string;
+  light: string;
+  fixed: string;
+}): string {
+  if (args.preview) return args.preview;
+  if (!args.auto) return args.fixed;
+  return args.prefersLight ? args.light : args.dark;
+}
