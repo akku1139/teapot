@@ -19,6 +19,7 @@ import {
   opaque,
   sanitizeTheme,
   saveCustomThemes,
+  themeBeingEdited,
   type CustomTheme,
   type ThemePalette,
 } from "../lib/theme-store";
@@ -33,17 +34,15 @@ export function ThemeEditor(props: {
   onChange: (next: CustomTheme[]) => void;
   onPick: (id: string) => void;
 }) {
+  /**
+   * The theme being edited is the one IN USE — see `themeBeingEdited` for why `activeId` wins over the
+   * pinned `editingId` (the background picker shows this theme's wallpaper, so a stale pin showed the
+   * wrong image).
+   */
   const [editingId, setEditingId] = createSignal<string>(
     props.themes().some((t) => t.id === props.activeId) ? props.activeId : (props.themes()[0]?.id ?? ""),
   );
-  const editing = () => {
-    const list = props.themes();
-    return (
-      list.find((t) => t.id === editingId()) ??
-      list.find((t) => t.id === props.activeId) ??
-      list[0]
-    );
-  };
+  const editing = () => themeBeingEdited(props.themes(), props.activeId, editingId());
   const [hexDraft, setHexDraft] = createSignal<Record<string, string>>({});
   let filePick: HTMLInputElement | undefined;
 

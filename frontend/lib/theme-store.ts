@@ -235,3 +235,19 @@ export function resolveActiveTheme(args: {
     repaired: true,
   };
 }
+
+/**
+ * Which custom theme the appearance editor is editing: the one IN USE.
+ *
+ * `activeId` (the theme actually applied) wins; `editingId` only covers the case where the active theme is
+ * no longer in the list (it was just deleted). The order matters: `editingId` is seeded once when the modal
+ * is created and is NOT updated by picking a theme, so preferring it left the editor — and its
+ * background-image picker — showing the previous theme's wallpaper.
+ */
+export function themeBeingEdited(
+  themes: CustomTheme[],
+  activeId: string,
+  editingId: string | undefined,
+): CustomTheme | undefined {
+  return themes.find((t) => t.id === activeId) ?? themes.find((t) => t.id === editingId) ?? themes[0];
+}
