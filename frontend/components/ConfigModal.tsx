@@ -29,20 +29,22 @@ declare const __APP_VERSION__: string;
 
 export function ThemeEditor(props: {
   themes: () => CustomTheme[];
-  activeId: string;
   paintedId: string;
   onChange: (next: CustomTheme[]) => void;
   onPick: (id: string) => void;
 }) {
   /**
-   * The theme being edited is the one IN USE — see `themeBeingEdited` for why `activeId` wins over the
-   * pinned `editingId` (the background picker shows this theme's wallpaper, so a stale pin showed the
-   * wrong image).
+   * The theme being edited is the one PAINTED on screen — `paintedId`, not `activeId`.
+   *
+   * `activeId` is the fixed fallback, and with "follow the system" on it is simply not the theme you are
+   * looking at; the painted one is. The background-image picker renders this theme, so reading anything but
+   * the painted theme shows a wallpaper that is not on screen. See `themeBeingEdited` for why the pinned
+   * `editingId` is only a fallback.
    */
   const [editingId, setEditingId] = createSignal<string>(
-    props.themes().some((t) => t.id === props.activeId) ? props.activeId : (props.themes()[0]?.id ?? ""),
+    props.themes().some((t) => t.id === props.paintedId) ? props.paintedId : (props.themes()[0]?.id ?? ""),
   );
-  const editing = () => themeBeingEdited(props.themes(), props.activeId, editingId());
+  const editing = () => themeBeingEdited(props.themes(), props.paintedId, editingId());
   const [hexDraft, setHexDraft] = createSignal<Record<string, string>>({});
   let filePick: HTMLInputElement | undefined;
 
@@ -127,12 +129,12 @@ export function ThemeEditor(props: {
       </div>
 
       <Show
-        when={editing() && props.themes().some((t) => t.id === props.activeId) ? editing() : null}
+        when={editing() && props.themes().some((t) => t.id === props.paintedId) ? editing() : null}
         fallback={
           <div class="muted" style="margin:6px 0">
             {props.themes().length === 0
               ? <>no custom themes yet — press <b>＋ duplicate current</b> to start from the palette you are using.</>
-              : <>the editor shows when one of your themes is ACTIVE — pick one under "your themes" above (or press <b>＋ duplicate current</b>).</>}
+              : <>the editor shows when one of your themes is the one on screen — pick one under "your themes" above (or press <b>＋ duplicate current</b>).</>}
           </div>
         }
       >
@@ -969,7 +971,6 @@ export function ConfigModal(props: {
 
           <ThemeEditor
             themes={customThemes}
-            activeId={fixedTheme()}
             paintedId={props.theme.paintedId()}
             onChange={(requested) => {
               let saved = saveCustomThemes(requested);

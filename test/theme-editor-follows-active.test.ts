@@ -10,22 +10,26 @@ const p = {
 const dark = { id: "ct-dark", label: "Mine dark", mode: "dark" as const, palette: p, backgroundImage: "/a.png" };
 const light = { id: "ct-light", label: "Mine light", mode: "light" as const, palette: p, backgroundImage: "/b.png" };
 
-test("the editor follows the theme in use, not the one it was pinned to", () => {
+test("the editor edits the theme ON SCREEN, not the fixed fallback", () => {
   /**
    * The background-image picker renders whatever theme the editor picked, so "which theme is the editor
-   * editing" IS "which wallpaper does the picker show". Reported: "背景選択ボタンバグってない? 当たってる
-   * 背景と違うやつがでてるよ".
+   * editing" IS "which wallpaper does the picker show". Reported twice: "背景選択ボタンバグってない?
+   * 当たってる背景と違うやつがでてるよ", then "v0.37.96 入れたのに直ってない / follow the systemのとき".
    *
-   * The pin is real — `editingId` is seeded when the modal is created and picking a theme does not update
-   * it. MEASURED in Firefox with two custom themes: opening settings on the dark theme and then clicking
-   * the light card left `picker: /a.png` while the page had `/b.png`; after this rule it is `/b.png`.
+   * With "follow the system" on there are two candidate ids and only one is the truth: `paintedId` is the
+   * theme on screen, `activeId` is the fixed fallback nobody is looking at. MEASURED in Firefox (auto on,
+   * system dark, fixed=light): picker showed /b.png while the page painted /a.png; passing `paintedId`
+   * makes both /a.png.
    */
-  assert.equal(themeBeingEdited([dark, light], "ct-light", "ct-dark")?.id, "ct-light");
-  assert.equal(themeBeingEdited([dark, light], "ct-light", undefined)?.id, "ct-light");
+  assert.equal(themeBeingEdited([dark, light], dark.id, light.id)?.id, dark.id);
+  assert.equal(themeBeingEdited([dark, light], light.id, dark.id)?.id, light.id);
 });
 
-test("a deleted active theme falls back instead of showing nothing", () => {
-  assert.equal(themeBeingEdited([dark, light], "ct-gone", "ct-light")?.id, "ct-light");
+test("a stale pin cannot win, and a deleted theme falls back", () => {
+  // `editingId` is seeded once when the modal is created and is not updated by picking a theme.
+  assert.equal(themeBeingEdited([dark, light], light.id, undefined)?.id, "ct-light");
+  // the theme in use is gone (just deleted) — fall back rather than show nothing
+  assert.equal(themeBeingEdited([dark, light], "ct-gone", light.id)?.id, "ct-light");
   assert.equal(themeBeingEdited([dark], "ct-gone", "ct-gone")?.id, "ct-dark");
   assert.equal(themeBeingEdited([], "x", undefined), undefined);
 });

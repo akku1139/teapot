@@ -237,17 +237,21 @@ export function resolveActiveTheme(args: {
 }
 
 /**
- * Which custom theme the appearance editor is editing: the one IN USE.
+ * Which custom theme the appearance editor is editing: the one ON SCREEN (`paintedId`).
  *
- * `activeId` (the theme actually applied) wins; `editingId` only covers the case where the active theme is
- * no longer in the list (it was just deleted). The order matters: `editingId` is seeded once when the modal
- * is created and is NOT updated by picking a theme, so preferring it left the editor — and its
- * background-image picker — showing the previous theme's wallpaper.
+ * The painted theme wins; `editingId` only covers the case where it is no longer in the list (it was just
+ * deleted). Two details matter and both were bugs:
+ *
+ *  - It must be the PAINTED theme, not the fixed fallback: with "follow the system" on, the fixed theme is
+ *    not what you are looking at, so the editor (and its background-image picker) showed a wallpaper that
+ *    was not on screen.
+ *  - `editingId` must not win: it is seeded once when the modal is created and is NOT updated by picking a
+ *    theme, so preferring it pinned the editor to whatever was active when settings were opened.
  */
 export function themeBeingEdited(
   themes: CustomTheme[],
-  activeId: string,
+  inUseId: string,
   editingId: string | undefined,
 ): CustomTheme | undefined {
-  return themes.find((t) => t.id === activeId) ?? themes.find((t) => t.id === editingId) ?? themes[0];
+  return themes.find((t) => t.id === inUseId) ?? themes.find((t) => t.id === editingId) ?? themes[0];
 }
