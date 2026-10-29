@@ -487,6 +487,28 @@ export class Master {
     return pool;
   }
 
+  /**
+   * The llm an agent should be using, derived from the CURRENT config.
+   *
+   * One owner on purpose: a running agent holds its own `opts.llm`, so a provider edit (a rotated token, a
+   * new baseUrl, a changed default provider) only reaches it if something re-derives from
+   * `config.providers`. `addAgent` and `updateConfig` both need that derivation, and two copies would drift
+   * the same way every other duplicated fact in this codebase has.
+   */
+  private llmFor(ac: AgentConfig): LlmConfig {
+    const provName = ac.provider ?? this.config.defaultProvider ?? "openrouter";
+    const prov = this.config.providers?.[provName];
+    const inlineKey = typeof ac.apiKey === "string" && ac.apiKey.trim() ? ac.apiKey.trim() : undefined;
+    const pool = inlineKey ? undefined : this.keyPoolFor(provName, prov);
+    return {
+      baseUrl: ac.baseUrl ?? prov?.baseUrl ?? this.config.llm.baseUrl!,
+      apiKey: inlineKey ?? currentKey(pool) ?? prov?.apiKey ?? this.config.llm.apiKey!,
+      model: ac.model ?? prov?.model ?? this.config.llm.model!,
+      timeoutMs: 120_000,
+      ...(pool && pool.keys.length > 1 ? { keyPool: pool } : {}),
+    };
+  }
+
   keyPoolReport(): { provider: string; keys: number; current: number }[] {
     return [...this.keyPools.entries()].map(([provider, pool]) => ({
       provider,
@@ -599,6 +621,41 @@ export class Master {
         schedule: parseSchedule(t.schedule),
         lastRunMin: t.lastRunMin ?? -1,
       }));
+    }
+    /**
+     * A provider edit has to reach agents that are already running.
+     *
+     * Each agent holds its own `opts.llm`, built when it was created, so writing the new key into
+     * `config.providers` alone left every live agent sending the OLD token — a rotated key looked like it had
+     * not been saved, and the next request 401'd. Re-derive for live agents; agents with their own inline
+     * `apiKey`/`baseUrl` keep them, because that is what those fields mean.
+     */
+    if (patch.providers || patch.defaultProvider !== undefined) {
+      for (const [agentId, agent] of this.agents) {
+        // the config entry is the source of an agent's provider/model overrides, but it only exists for
+        // persisted agents — fall back to what the live agent reports about itself
+        const ac: AgentConfig = this.config.agents.find((x) => x.id === agentId) ?? {
+          id: agentId,
+          workspace: "",
+          provider: agent.providerName || undefined,
+          model: agent.llm.model || undefined,
+        };
+        const next = this.llmFor(ac);
+        const merged: LlmConfig = {
+          ...agent.llm,
+          baseUrl: next.baseUrl || agent.llm.baseUrl,
+          // exact, not `||`: clearing a token means clearing it, and an empty baseUrl/model would break the
+          // agent, so those two keep the working value
+          apiKey: next.apiKey,
+          model: next.model || agent.llm.model,
+        };
+        if (next.keyPool) merged.keyPool = next.keyPool;
+        else delete merged.keyPool;
+        agent.setLlmConfig(merged);
+        // the name shown in the UI has to match the llm actually in use
+        (agent as unknown as { opts: { provider: string } }).opts.provider =
+          ac.provider ?? this.config.defaultProvider ?? "";
+      }
     }
     this.saveConfig();
   }
@@ -771,19 +828,7 @@ export class Master {
     if (!prov && !ac.baseUrl && !this.config.llm.baseUrl) {
       throw new Error(`agent ${ac.id}: unknown provider "${provName}" and no fallback`);
     }
-    const inlineKey = typeof ac.apiKey === "string" && ac.apiKey.trim() ? ac.apiKey.trim() : undefined;
-    const pool = inlineKey ? undefined : this.keyPoolFor(provName, prov);
-    const llm: LlmConfig = {
-      baseUrl: ac.baseUrl ?? prov?.baseUrl ?? this.config.llm.baseUrl!,
-      apiKey:
-        inlineKey ??
-        currentKey(pool) ??
-        prov?.apiKey ??
-        this.config.llm.apiKey!,
-      model: ac.model ?? prov?.model ?? this.config.llm.model!,
-      timeoutMs: 120_000,
-      ...(pool && pool.keys.length > 1 ? { keyPool: pool } : {}),
-    };
+    const llm: LlmConfig = this.llmFor(ac);
     if (!llm.model) throw new Error(`agent ${ac.id}: no model configured (set model on the agent or on its provider)`);
     const myDepth = ac.parent ? this.depthOf(ac.parent) + 1 : 0;
     const needsWindow = !ac.contextWindowTokens && !this.config.contextWindowTokens;
