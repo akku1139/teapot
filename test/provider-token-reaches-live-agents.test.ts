@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import path from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Master } from "../src/master.ts";
 
@@ -23,7 +24,7 @@ test("editing a provider's token reaches agents that are already running", async
         defaultProvider: "p",
         agents: [],
       },
-      "/dev/null",
+      path.join(dataDir, "teapot.config.json"),
     );
     try {
       const a = await m.addAgent({ id: "t", workspace: ws, provider: "p" });
@@ -53,7 +54,7 @@ test("a provider edit reaches the default-provider agents, but never overrides a
         defaultProvider: "p",
         agents: [],
       },
-      "/dev/null",
+      path.join(dataDir, "teapot.config.json"),
     );
     try {
       const onDefault = await m.addAgent({ id: "d", workspace: ws } as never, { persist: true, fresh: true });
