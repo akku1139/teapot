@@ -7,7 +7,6 @@ const ghost = { id: "ghost", workspaceMissing: true };
 const base = {
   urlId: null,
   ownerOf: () => undefined,
-  isSession: () => false,
   lastId: null,
   hideGhosts: true,
 };
@@ -21,7 +20,8 @@ test("a ghost never wins the boot selection when ghosts are hidden", () => {
    * load its session directory for nothing.
    */
   assert.equal(pickInitialAgent({ ...base, agents: [ghost, live], lastId: "ghost" })?.id, "live");
-  assert.equal(pickInitialAgent({ ...base, agents: [ghost, live], urlId: "ghost" })?.id, "live");
+  // a URL naming an AGENT no longer selects it — an agent id is not a session id
+  assert.equal(pickInitialAgent({ ...base, agents: [ghost, live], urlId: "ghost", lastId: "live" })?.id, "live");
   // the fallback is the first agent, and it is a ghost — skip to the first real one
   assert.equal(pickInitialAgent({ ...base, agents: [ghost, live] })?.id, "live");
 });
@@ -49,10 +49,9 @@ test("with ghosts shown, the old priority order is untouched", () => {
     "ghost",
   );
   // a URL id that is an agent (not a session) is honoured when it is not a session of anything
-  assert.equal(pickInitialAgent({ ...shown, agents: [live, ghost], urlId: "ghost" })?.id, "ghost");
-  // when the URL id IS a session of something, it is not treated as an agent id
   assert.equal(
-    pickInitialAgent({ ...shown, agents: [live, ghost], urlId: "ghost", isSession: () => true, lastId: "live" })?.id,
+    pickInitialAgent({ ...shown, agents: [live, ghost], urlId: "ghost", lastId: "live" })?.id,
     "live",
+    "an agent id in the URL selects nothing special; it falls through to what was open last",
   );
 });

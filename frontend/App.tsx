@@ -27,7 +27,7 @@ import { copyText } from "./lib/clipboard";
 import { groupedWith, type RowLike } from "./lib/row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./lib/question-answered";
 import { reconcilePending, type PendingEcho } from "./lib/pending-echo";
-import { linkableSessionId, resolveTimelineSession } from "./lib/session-index";
+import { resolveTimelineSession } from "./lib/session-index";
 import { rememberTextareaHeight, storedTextareaHeight, trackTextareaHeight } from "./lib/textarea-size";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
@@ -1344,7 +1344,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (!sessionsByAgent().size) void refreshSessionIndex(); 
     const resolved = latestSessionOf(id, forceSession);
     const requested = forceSession && masterSessionIndex().has(forceSession) ? forceSession : null;
-    let tid = resolved ?? requested ?? id;
+    // "" means "no session resolved", which is NOT the agent id: an agent id in the URL resolves to that
+    // agent's latest session, so writing one here merges two tabs onto one timeline
+    const tid = resolved ?? requested ?? "";
     if (prevId !== id || tid !== prevTid) {
       {
         const f = feedEl();
@@ -1643,14 +1645,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   }
 
   const pathId = () => decodeURIComponent(location.pathname.split("/")[2] ?? "");
+  /**
+   * Write the session into the URL.
+   *
+   * `sessionId` is a SESSION id, always — `select()` resolves it from session data and never falls back to an
+   * agent id, so this function needs no heuristic and cannot be fooled by a stale agent list. An empty value
+   * means "this agent has no session resolved yet", and the honest response is to leave the URL alone rather
+   * than to invent a link that resolves to something else.
+   */
   function navigate(sessionId: string, push = true) {
-    const linkable = linkableSessionId(
-      sessionId,
-      masterSessionIndex(),
-      agents().map((a) => a.id),
-    );
-    if (!linkable) return; 
-    const url = `/session/${encodeURIComponent(linkable)}`;
+    if (!sessionId) return;
+    const url = `/session/${encodeURIComponent(sessionId)}`;
     if (push) history.pushState(null, "", url);
     else history.replaceState(null, "", url);
   }
@@ -2078,7 +2083,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         agents: agents(),
         urlId: want,
         ownerOf: (s) => masterSessionIndex().get(s),
-        isSession: (s) => masterSessionIndex().has(s),
         lastId: localStorage.getItem("teapot.session"),
         hideGhosts: hideGhosts(),
       });
@@ -3996,7 +4000,29 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       <NewAgentModal
         providers={Object.keys(cfg().providers ?? {})}
         onClose={() => setShowNew(false)}
-        onCreated={(id) => { setShowNew(false); refreshAgents(); select(id); }}
+        onCreated={(created) => {
+          setShowNew(false);
+          /**
+           * Wait for the new agent AND its session to be indexed before selecting.
+           *
+           * `select(id)` alone resolves `tid` from `sessionsByAgent()`, which is empty for an agent created a
+           * moment ago, so it fell back to the AGENT id. `navigate()` then asked `linkableSessionId()` about
+           * it, and that guard only refuses agent ids it KNOWS — it read `agents()` before the refresh had
+           * landed — so the URL became `/session/<agent-id>` and the header showed a bare internal id.
+           * Reported as "新しくセッションを作ったときにセッション名が内部IDになって、URLがエージェント間
+           * メッセージ用の短縮名になる" / "別のセッションに行って戻ると正しいIDに戻る".
+           */
+          /**
+           * Take the server's snapshot as the truth, then select.
+           *
+           * `select()` resolves the timeline from session data — the index first, then the agent's own
+           * `session` field — so all this needs is for the agent to be in the list. Merging the snapshot does
+           * that synchronously; refreshing from the API first would leave a window in which `select()` runs
+           * against a list that does not contain the agent yet, which is how the URL ended up as the agent id.
+           */
+          setAgents((prev) => mergeAgentSnapshots(prev, [created as never]));
+          select(created.id);
+        }}
       />
     </Show>
     <Show when={showCfg()}>
@@ -4173,7 +4199,12 @@ function costFmt(usd: number): string {
 /* ---------- modal shell ---------- */
 
 /* ---------- new agent ---------- */
-function NewAgentModal(props: { providers: string[]; onClose: () => void; onCreated: (id: string) => void }) {
+function NewAgentModal(props: {
+  providers: string[];
+  onClose: () => void;
+  /** the server's own view of the new agent — its `session` is authoritative and the local index is not */
+  onCreated: (agent: { id: string; session?: string }) => void;
+}) {
   const [dir, setDir] = createSignal("~");
   const [entries, setEntries] = createSignal<string[]>([]);
   const [name, setName] = createSignal("");
@@ -4198,7 +4229,7 @@ function NewAgentModal(props: { providers: string[]; onClose: () => void; onCrea
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ workspace: dir(), id: name(), provider: provider() || undefined, model: model() || undefined, start: false }),
       });
-      props.onCreated(r.agent.id);
+      props.onCreated(r.agent as { id: string; session?: string });
     } catch (ex) { setErr(String((ex as Error).message)); }
   };
 

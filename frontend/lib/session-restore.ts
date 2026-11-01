@@ -5,9 +5,14 @@
  * simply opens something the operator did not ask for and looks stuck.
  *
  *   1. the agent that owns the session named in the URL (a deep link, or the route we saved ourselves)
- *   2. the agent whose own id is in the URL, when that id is not a session of anything
- *   3. whatever was open last time
- *   4. the first agent
+ *   2. whatever was open last time
+ *   3. the first agent
+ *
+ * The URL names a SESSION and nothing else. There used to be a step between 1 and 2 that accepted an AGENT
+ * id in the URL and opened that agent's latest session — which is how two tabs deep-linked to two agent ids
+ * collapsed onto one timeline, and it is the reason a freshly created session used to be *written* as its
+ * agent id ("URLがエージェント間メッセージ用の短縮名になる"). Deleting the reader is what makes the writer's
+ * mistake impossible to exploit; a URL that names an agent simply falls through to 2.
  *
  * Ghosts (workspaces that no longer exist on disk) are filtered out of EVERY step when the operator has
  * chosen to hide them — a ghost that wins the chain gets its session directory loaded for a workspace that
@@ -32,8 +37,6 @@ export function pickInitialAgent(args: {
   urlId: string | null;
   /** which agent owns a given session id, when it is one */
   ownerOf: (sessionId: string) => string | undefined;
-  /** is this id a known session? */
-  isSession: (id: string) => boolean;
   /** the agent open last time */
   lastId: string | null;
   hideGhosts: boolean;
@@ -44,7 +47,6 @@ export function pickInitialAgent(args: {
   const owner = want ? args.ownerOf(want) : undefined;
   return (
     (owner ? pool.find((a) => a.id === owner) : undefined) ??
-    pool.find((a) => a.id === want && !args.isSession(want)) ??
     pool.find((a) => a.id === args.lastId) ??
     pool[0]
   );
