@@ -281,6 +281,47 @@ export default function App() {
   let lastContentHeight = 0;
   let unskipAnchor: { sel: string; top: number } | null = null;
   let unskipAnchorAt = 0;
+  let feedMo: MutationObserver | undefined;
+  let feedMoEl: HTMLElement | undefined;
+  let feedMoRaf = 0;
+  /**
+   * Re-anchor the view after the feed's content changed size above the viewport.
+   *
+   * `resyncAfterUnskip` already knows how to do this — it was simply only reachable from `onscroll`, and a
+   * content growth is precisely the case where no scroll event fires.
+   */
+  const reanchorAfterContentChange = () => {
+    if (atBottom()) return; // following the tail: the pin owns the position
+    if (!unskipAnchor) return; // nothing has been read yet, so there is no anchor to hold
+    const f = feedEl();
+    if (!f) return;
+    if (!anchorStillDescribesView(f)) return;
+    resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_CONTENT_DELTA_PX);
+  };
+  /**
+   * Is the saved anchor still the row at the top of the viewport?
+   *
+   * `unskipAnchor` is only refreshed by a scroll, so after anything else moved the content it can describe a
+   * row that is no longer at the top. Correcting toward such an anchor moves the view by exactly the
+   * staleness — an arbitrary jump that looks random and happens "sometimes".
+   */
+  const anchorStillDescribesView = (f: HTMLElement): boolean => {
+    if (!unskipAnchor) return false;
+    const first = firstVisibleRow(f);
+    if (!first) return false;
+    if (first.sel === unskipAnchor.sel) return true;
+    // re-baseline instead of correcting toward a row the reader is not looking at
+    unskipAnchor = first;
+    unskipAnchorAt = performance.now();
+    return false;
+  };
+  const scheduleReanchor = () => {
+    if (feedMoRaf) return;
+    feedMoRaf = requestAnimationFrame(() => {
+      feedMoRaf = 0;
+      reanchorAfterContentChange();
+    });
+  };
   let feedRo: ResizeObserver | undefined;
   let feedRoEl: HTMLElement | undefined;
   let feedRoRaf = 0;
@@ -290,10 +331,28 @@ export default function App() {
     const f = feedEl();
     if (!f) return;
 
+    const contentChanged = f.scrollHeight !== lastSampleHeight;
     lastSampleHeight = f.scrollHeight;
     lastSampleViewport = f.clientHeight;
     if (atBottom()) {
       pinToTail();
+      return;
+    }
+    /**
+     * A change in the VIEWPORT's height alone must not move the reader.
+     *
+     * The composer growing by one line shrinks this box; the content's top edge has not moved, so there is
+     * nothing to compensate and `scrollTop` should stay where it is. Re-anchoring anyway applied a correction
+     * computed from a stale anchor, which is why the view jumped by about one line — "入力欄で改行して入力欄を
+     * 2行にするとなぜかスクロールがずれることがある (ズレないこともある)". The "sometimes" is whether the saved
+     * anchor still described the first visible row.
+     */
+    if (!contentChanged) {
+      publishGap(tailSample());
+      return;
+    }
+    if (!anchorStillDescribesView(f)) {
+      publishGap(tailSample());
       return;
     }
     const anchorRow = unskipAnchor;
@@ -308,13 +367,17 @@ export default function App() {
     publishGap(tailSample());
   };
 
-  function resyncAfterUnskip(f: HTMLElement, anchor: { sel: string; top: number } | null): void {
+  function resyncAfterUnskip(
+    f: HTMLElement,
+    anchor: { sel: string; top: number } | null,
+    maxDelta = RESYNC_MAX_DELTA_PX,
+  ): void {
     if (!anchor) return;
     const el = f.querySelector<HTMLElement>(anchor.sel);
     if (!el) return;
     const delta = el.getBoundingClientRect().top - anchor.top;
     if (Math.abs(delta) < 1) return;
-    if (Math.abs(delta) > RESYNC_MAX_DELTA_PX) return;
+    if (Math.abs(delta) > maxDelta) return;
     f.scrollTop += delta;
     ledger = { top: f.scrollTop, height: f.scrollHeight };
   }
@@ -336,6 +399,26 @@ export default function App() {
     feedRoEl = f;
     feedRoLastBox = "";
     feedRo.observe(f);
+    /**
+     * Watch the CONTENT, not just the box.
+     *
+     * `.feed` sets `overflow-anchor: none`, so when something above the viewport grows the browser does not
+     * compensate and `scrollTop` does not change — which means no `onscroll` either, and the re-anchor
+     * (`resyncAfterUnskip`) never ran. A late shiki highlight or an image finishing its load therefore slid
+     * what you were reading: "セッション移動後のスクロール追従は確実にバグがある / 数秒後に `v0.37.95 を
+     * 公開中` までスクロールが戻る".
+     *
+     * A mutation covers the highlighting and row insertion; the capture-phase `load` is what catches media
+     * that only acquires its height later, since `load` does not bubble.
+     */
+    // guarded: the smoke harness renders the real bundle in happy-dom, which has no MutationObserver
+    if (typeof MutationObserver !== "undefined") {
+      feedMo ??= new MutationObserver(scheduleReanchor);
+      if (feedMoEl && feedMoEl !== f) feedMoEl.removeEventListener("load", scheduleReanchor, true);
+      feedMoEl = f;
+      feedMo.observe(f, { childList: true, subtree: true, attributes: true, characterData: true });
+      f.addEventListener("load", scheduleReanchor, true);
+    }
   };
   onMount(() => {
     window.addEventListener("resize", scheduleRestore);
@@ -344,6 +427,11 @@ export default function App() {
       feedRo?.disconnect();
       feedRo = undefined;
       feedRoEl = undefined;
+      feedMo?.disconnect();
+      feedMo = undefined;
+      if (feedMoEl) feedMoEl.removeEventListener("load", scheduleReanchor, true);
+      feedMoEl = undefined;
+      if (feedMoRaf) cancelAnimationFrame(feedMoRaf);
       if (feedRoRaf) cancelAnimationFrame(feedRoRaf);
     });
   });
@@ -2234,6 +2322,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let lastSampleHeight: number | undefined;
   const RESYNC_BUDGET_PER_GESTURE = 4;
   const RESYNC_MAX_DELTA_PX = 240;
+  /**
+   * A content growth may move things further than an engine-initiated scroll tweak, and it is still safe to
+   * correct: this path only runs on a DOM change, never on a gesture, so there is no reader intent to fight.
+   */
+  const RESYNC_MAX_CONTENT_DELTA_PX = 1_200;
   let resyncBudget = RESYNC_BUDGET_PER_GESTURE;
   let lastSampleViewport: number | undefined;
   createEffect(() => {

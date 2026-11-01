@@ -214,7 +214,18 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         break;
       }
       case "read_file": {
-        label = argStr("path") || "(no path)";
+        /**
+         * A multi-file read passes `paths`, not `path`, so the label said "(no path)" for a call that read six
+         * files — the header contradicted the body. Show what was actually asked for.
+         */
+        const paths = Array.isArray(d.args?.paths) ? (d.args.paths as unknown[]).map(String) : [];
+        label =
+          argStr("path") ||
+          (paths.length
+            ? paths.length === 1
+              ? paths[0]!
+              : `${paths[0]} +${paths.length - 1} more`
+            : "(no path)");
         const bits: string[] = [];
         if (argStr("pattern")) bits.push(`grep /${oneLine(argStr("pattern"), 40)}/`);
         if (Number(d.args?.offset) < 0) bits.push(`last ${-Number(d.args.offset)} lines`);
