@@ -577,7 +577,7 @@ function runShell(
         resolve({ ok: false, result: `spawn error: ${err.message}${elapsed(t0)}` });
       }
     });
-    child.on("close", (code, signal) => {
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeout(timer);
       ctx.signal?.removeEventListener("abort", onAbort);
       if (done) return;
@@ -596,7 +596,22 @@ function runShell(
           clip(out.trim() || "(no output)", ctx.maxOutputBytes) +
           elapsed(t0),
       });
+    };
+    /**
+     * `close` is the normal end: it fires only once the child AND everything holding its stdio has gone, so
+     * the output is complete.
+     *
+     * `exit` is the escape hatch for the kill paths, and without it a timeout can hang forever. `close`
+     * waits for the pipes to close, and a surviving grandchild holds those pipes open — measured on Linux
+     * with a child that leaves the process group: `exit` at 501ms, `close` still not fired 2.5s later. On
+     * Windows that is the NORMAL case, because `process.kill` cannot end anything but the shell (#190,
+     * "timeout時間超過って / stopおしても継続しちゃった"). Once a kill has been requested there is no more
+     * waiting to do, so settle on `exit`.
+     */
+    child.on("exit", (code, signal) => {
+      if (killReason) finish(code, signal);
     });
+    child.on("close", (code, signal) => finish(code, signal));
   });
 }
 
