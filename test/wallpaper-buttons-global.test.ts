@@ -71,3 +71,20 @@ test("a filled action keeps its colour in the label, not a white slab (#ui)", ()
   assert.match(block, /color: var\(--acc\)/, "the label carries the accent");
   assert.match(block, /border: 1px solid currentColor/, "and so does the border");
 });
+
+test("the document itself never scrolls — only panels inside it (#ui)", () => {
+  /**
+   * Reported: "何故かUI全体がスクロールできるようになることがある / Chrome, Firefox 共に観測 / div#root は
+   * 適切な大きさになってて、これごと移動してる". Whatever grew was never identified, which is exactly why the
+   * rule belongs at the document: clipping there makes the failure impossible instead of chasing the element.
+   *
+   * MEASURED in Firefox: appending a 3000px div and setting `scrollTop = 500` leaves it at 0; forcing
+   * `overflow: visible` on html+body at runtime makes the same scroll land at 500, so the rule is what holds
+   * it. The feed still scrolls itself (scrollTop 200 while the document stays at 0).
+   */
+  const at = CSS.indexOf("html, body { overflow: hidden");
+  assert.ok(at > 0, "html and body must clip, or a stray element turns the whole app into a scrollable page");
+  const block = CSS.slice(at, CSS.indexOf("}", at));
+  assert.match(block, /overflow:\s*hidden/, "clipped, not merely hidden per-axis");
+  assert.match(block, /overscroll-behavior:\s*none/, "and no rubber-band/scroll-chaining moves it anyway");
+});

@@ -522,6 +522,19 @@ html[data-appearance="light"] {
 }
 html[data-appearance="dark"] { color-scheme: dark; }
 html, body, #root { height: 100%; margin: 0; }
+/**
+ * The window is the shell's, so the DOCUMENT must never scroll — only panels inside it.
+ *
+ * Any one element that grew a few pixels past the viewport used to turn the whole app into a scrollable page:
+ * the sidebar, the feed and the composer all moved together, with `#root` still exactly 100% and apparently
+ * fine ("UI全体がスクロールできるようになることがある / div#root は適切な大きさになってて、これごと移動して
+ * いる", seen in both Chrome and Firefox). The trigger was never identified, and that is the point: clipping at
+ * the document makes the failure impossible instead of chasing whichever element is currently overflowing.
+ *
+ * Safe because every region scrolls itself: `.feed`, `.cfgpanel`, `.modal`, `.rail`, the terminal panes.
+ * `overscroll-behavior` stops the rubber-band/scroll-chaining that would otherwise move the page anyway.
+ */
+html, body { overflow: hidden; overscroll-behavior: none; }
 body { background: var(--bg-dark); color: var(--fg); font-size: var(--text-md); }
 
 /* ---- background image (custom themes) ----
