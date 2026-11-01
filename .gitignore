@@ -5,3 +5,5 @@ workspaces/
 teapot.config.json
 *.log
 public/
+__pycache__/
+*.pyc

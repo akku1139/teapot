@@ -17,6 +17,7 @@ import { buildTimelineWithCount, type TimelineEvent, type PendingEchoLike } from
 import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
 import { Card } from "./components/card";
 import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
+import { pickInitialAgent } from "./lib/session-restore";
 import { outputLang } from "./lib/tool-output-lang";
 import { mergeThemes } from "./lib/theme-merge";
 import { previewLayers, veilColour, backgroundImageValue } from "./lib/theme-preview";
@@ -2073,12 +2074,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     refreshAgents().then(async () => {
       await refreshSessionIndex();
       const want = pathId();
-      const owner = want ? masterSessionIndex().get(want) : undefined;
-      const initial =
-        (owner ? agents().find((a) => a.id === owner) : undefined) ??
-        agents().find((a) => a.id === want && !masterSessionIndex().has(want)) ??
-        agents().find((a) => a.id === localStorage.getItem("teapot.session")) ??
-        agents()[0];
+      const initial = pickInitialAgent({
+        agents: agents(),
+        urlId: want,
+        ownerOf: (s) => masterSessionIndex().get(s),
+        isSession: (s) => masterSessionIndex().has(s),
+        lastId: localStorage.getItem("teapot.session"),
+        hideGhosts: hideGhosts(),
+      });
       if (initial) select(initial.id, false, want || null);
     });
     refreshMetrics();
