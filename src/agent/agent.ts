@@ -188,6 +188,11 @@ const AUDIT_READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "bash"])
 
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
+Start any session with three cheap calls, in this order: get_goal() (what am I
+actually doing), get_todo() (what the operator is tracking), list_skills() (what
+playbooks already exist). They cost about a line each and decide what to do next;
+skipping them is how work already done gets done again.
+
 Most session state is not injected into prompts — fetch it with tools instead:
 - get_goal() → current objective + status. Call at session start, after a
   compaction notice, or whenever you lose the thread.
@@ -195,6 +200,9 @@ Most session state is not injected into prompts — fetch it with tools instead:
 - finish(goalComplete=true, summary) → goal fully achieved.
 - ask_user(question, options?) → park the loop and wait for the operator's
   decision (plan confirmation, ambiguity). One concrete question at a time.
+  Which one ends the turn: finish() closes the round, ask_user() parks it until
+  the operator answers, and report_progress() does NOT end it — that output goes
+  to the operator's progress panel and you carry on working.
 - read_memory(query?) / add_memory(text) / forget_memory(query) / set_memory(content)
   → your durable notes (memory.md). add_memory appends and cannot lose earlier
   notes; forget_memory removes the lines matching a substring, so a stale note can
@@ -227,17 +235,19 @@ Most session state is not injected into prompts — fetch it with tools instead:
   valid string), and it took longer to repair than doing the edits one by one.
   A genuine bulk transform across many files (a rename, an import change) IS a
   job for a script — then keep the pattern specific and read the diff.
-- **NEVER \`sleep\` to wait for anything.** Not alone, not as "a quick poll".
-  A bash call with a sleep inside is one opaque command: the operator cannot
-  interrupt it, cannot see whether anything is happening, and the whole turn is
-  spent doing nothing. Two interruptible shapes instead:
+- **Never wait with a bare sleep.** A bash call with a sleep inside is one opaque
+  command: the operator cannot interrupt it, cannot see whether anything is
+  happening, and the whole turn is spent doing nothing. A fixed nap also cannot
+  tell "finished 5 minutes ago" from "still running", which is how a turn gets
+  wasted twice. Two interruptible shapes instead:
     · long single-purpose work (CI, a release, a tarball appearing, a dev
       server, a watcher) → bash(background=true). It returns a job id at once
       and you are NOTIFIED when it exits, so keep working and let it report.
-    · waiting on a condition you are actively watching → poll with a bounded
-      deadline in ONE call, then stop.
-  A fixed wait also cannot tell "finished 5 minutes ago" from "still running",
-  which is how a turn gets wasted twice.
+    · waiting on a condition you are actively watching → poll for the CONDITION
+      with a bounded deadline in ONE call, then stop. Polling is not a nap: it
+      re-checks and returns as soon as the condition holds.
+  The line is fixed-vs-condition, not short-vs-long: a bounded poll that returns
+  on the condition is fine, a sleep that always burns the same wall-clock is not.
 - When a loaded skill matches your task, follow its playbook.
 - Turn proven procedures into skills: once something non-trivial worked well,
   save_skill(name, description, content, files=[{name, content}]) so future
@@ -259,6 +269,11 @@ Most session state is not injected into prompts — fetch it with tools instead:
   panel) — do NOT also repeat the same content as a chat message; end the
   turn right after the call (a short "reported." is fine).
 - Be frugal: prefer small precise edits, avoid runaway loops.
+- **Two failures on the same cause is the signal to change approach, not to try
+  a third time.** Reread the error, list what you have already ruled out, and
+  then either fix the actual cause or ask_user with what you know: two concrete
+  options and the evidence for each. Grinding a third variation of a failing idea
+  is the costliest loop there is, because it looks like progress.
 - When the operator asks you to remember something, WRITE it with add_memory.
   Write the KIND of thing that stays true and saves work later: a decision and
   why, a gotcha that cost time, a command that works here, where you left off.
@@ -274,6 +289,9 @@ Most session state is not injected into prompts — fetch it with tools instead:
   read_memory(query), open at most one or two of the notes that match, and stop.
   If nothing is relevant, carry on — do not keep searching, and do not read the
   whole file "just in case". An unread note is an unwritten note.`;
+
+/** how much of memory.md a no-query read_memory() may dump into the transcript */
+export const MEMORY_DUMP_LIMIT = 8_000;
 
 export const PLACEHOLDER_TEXT = /^\(.*\)$/;
 
@@ -1874,7 +1892,19 @@ export class Agent {
         return "next";
       }
       if (!query) {
-        await this.answerMeta(call, mem.trim());
+        /**
+         * No query means "give me everything", and everything is now tens of KB — memory.md is capped at
+         * 32_000 chars and a long-lived session fills it. Dumping that into the transcript costs more than
+         * the answer is worth, and the prompt already carries a digest, so cap it and say how to narrow.
+         */
+        const body = mem.trim();
+        await this.answerMeta(
+          call,
+          body.length <= MEMORY_DUMP_LIMIT
+            ? body
+            : `${body.slice(0, MEMORY_DUMP_LIMIT)}\n… (truncated — ${body.length} chars in memory.md; ` +
+                `pass a query to read a specific part)`,
+        );
         return "next";
       }
       const needle = query.toLowerCase();

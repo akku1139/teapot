@@ -1606,12 +1606,8 @@ export const TOOLS: ToolDef[] = [
         return {
           ok: true,
           result:
-            `started in background (job ${id}). It runs while you work — you will be notified ` +
-            `here when it exits (exit code + output tail), and the round WAITS for that rather ` +
-            `than ending. Do NOT poll bash_output: each poll is a whole turn, and the report ` +
-            `already carries the tail. Call bash_output only when you need output BEYOND the ` +
-            `tail (a long build's earlier lines), or to kill it. ` +
-            `Full output: bash_output(job_id="${id}"). Kill: bash_output(job_id="${id}", action="kill").`,
+            `started in background (job ${id}) — you are notified when it exits (code + output tail); ` +
+            `do NOT poll it. Output: bash_output(job_id="${id}"). Stop: bash_output(job_id="${id}", action="kill").`,
         };
       }
       const explicit = args.timeout_ms !== undefined && args.timeout_ms !== null;
