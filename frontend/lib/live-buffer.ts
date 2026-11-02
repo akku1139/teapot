@@ -29,7 +29,18 @@ export function clearLive(prev: Map<string, LiveBuf>, agentId: string): Map<stri
 
 export function isTurnBoundary(ev: unknown): boolean {
   const e = ev as { type?: string; data?: { detail?: string } } | null;
-  return e?.type === "state" && e.data?.detail === "llm turn start";
+  if (e?.type === "state" && e.data?.detail === "llm turn start") return true;
+  /**
+   * A `question` event is ask_user PARKING the loop, which is the end of the LLM turn that produced it.
+   *
+   * The reasoning of that turn is stale from this moment on, and nothing else will clear it: the assistant
+   * message that carries the same reasoning was logged a moment earlier, so the "covered by the log" check
+   * compares the streamed delta against the final string and can miss on whitespace alone, and
+   * `startedToolCallSince` looks for `type: "tool_call"` — which ask_user never logs, it logs a `question`
+   * instead. Measured shape of the report: "スリープから復帰したときにask_userが発行されているとreasoningが
+   * 残留する" — the buffer was still live under `needs_operator` status and nothing had dropped it.
+   */
+  return e?.type === "question";
 }
 
 export function isLiveStatus(status: string | undefined): boolean {

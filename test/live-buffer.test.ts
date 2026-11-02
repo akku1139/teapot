@@ -81,6 +81,11 @@ test("isTurnBoundary recognises only the per-turn state event (#40)", () => {
   assert.equal(isTurnBoundary({ type: "state", data: { from: "idle", to: "running" } }), false);
   assert.equal(isTurnBoundary({ type: "state", data: { detail: "something else" } }), false);
   assert.equal(isTurnBoundary({ type: "message", data: { role: "assistant" } }), false);
+  assert.equal(
+    isTurnBoundary({ type: "question", data: { question: "which one?", callId: "c1" } }),
+    true,
+    "ask_user parking IS the end of the turn that streamed the reasoning (#193)",
+  );
   assert.equal(isTurnBoundary({ type: "tool_result", data: {} }), false);
   assert.equal(isTurnBoundary(null), false);
   assert.equal(isTurnBoundary(undefined), false);
