@@ -3214,6 +3214,35 @@ export class Agent {
         } catch {
         }
       }
+      /**
+       * The GOAL and the open TODO list, re-attached as facts — not left to the summary.
+       *
+       * memory/files/AGENTS.md were re-attached, but the two things that actually drive the work were only implied
+       * by the checkpoint the summarizer wrote. If that summary omits or paraphrases the goal, the agent drifts; and
+       * the TODO list is the only copy of what is left. Reported as "compact後にアクティブなgoalとかTODOリストを再入
+       * とかしてる? それしないと見失いそうだけど (TODOは更新せずに作業終わることがあるからなんとも言えないけど)".
+       *
+       * Only what's open is shown: a done item is noise after a compaction.
+       */
+      {
+        const open = this.todo
+          .split("\n")
+          .filter((l) => /^\s*-\s*\[\s\]/.test(l))
+          .slice(0, 40);
+        const goalText = this.goal.text.trim();
+        if (goalText || open.length) {
+          this.messages.splice(1, 0, {
+            role: "user",
+            content:
+              `[harness] Your goal and open tasks, re-attached after compaction:\n` +
+              `goal (${this.goal.status}): ${goalText ? goalText.slice(0, 2_000) : "(none set)"}\n` +
+              (open.length
+                ? `open tasks (${open.length}):\n${open.join("\n")}\n` +
+                  `Update the list as you finish work (set_todo), so this list and reality cannot drift.`
+                : `no task is open in todo.md right now — if work remains, write it there`),
+          });
+        }
+      }
       if (this.recentReads.length && mode === "summarize") {
         const restored: string[] = [];
         const restoredPaths = new Set<string>();
