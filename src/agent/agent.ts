@@ -9,6 +9,7 @@ import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isCo
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { claimsContextLimit, usageLine } from "./context-claim.ts";
+import { namesBlocker } from "./blocker.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
 import { flattenToolName } from "./mcp-registry.ts";
@@ -188,6 +189,11 @@ const SUMMARY_CLOSE = "\n</conversation_checkpoint>";
 
 const AUDIT_READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "bash"]);
 
+/** tool calls that decide/announce rather than do — they must not reset the "was that stop justified?" bounds */
+const NON_WORK_TOOLS = new Set([
+  "finish", "report_progress", "ask_user", "set_goal", "get_goal", "get_todo", "set_todo",
+]);
+
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
 
 Start any session with three cheap calls, in this order: get_goal() (what am I
@@ -366,6 +372,8 @@ export class Agent {
   private lastAssistantText = "";
   /** how many times this stale round has been answered — bounded so the answer cannot become the loop */
   private contextClaimNudges = 0;
+  /** #200: a finish(false) that names no blocker is questioned once, never twice */
+  private blockerAsks = 0;
 
   /**
    * "21:04 · 1h12m into this session · 3m since the last turn".
@@ -1805,9 +1813,53 @@ export class Agent {
         });
         await this.maybeCompact(true);
         const msg = this.contextClaimAnswer("finish");
+        /**
+         * Answer the tool call FIRST — in the log as well as in memory.
+         *
+         * The log is what a restarted session is rebuilt from, so writing the harness prompt before the tool
+         * result produced a history a provider rejects: "tool message not directly after its assistant turn"
+         * (#50, measured on the restored-session test).
+         */
+        await this.answerMeta(call, "(finish refused: the context window is the harness's to manage)");
         await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text: msg });
         this.messages.push({ role: "user", content: msg });
-        await this.answerMeta(call, "(finish refused: the context window is the harness's to manage)");
+        return "next";
+      }
+      /**
+       * #200: `finish(goalComplete=false)` with nothing named as the blocker.
+       *
+       * "progress reportをしたあとにfinish(goalComplete=false)をしがち" — and also without a progress report,
+       * with the context window fine (auto-compaction is on), time left and nothing in the way. MEASURED: of
+       * 118 `finish(false)` calls on this machine, 13 followed a progress report and 8 of those named no
+       * blocker. Asked once (never twice, and reset only by real work) so a genuinely stuck agent is not
+       * trapped by a phrasing this misses.
+       */
+      if (
+        fin.goalComplete !== true &&
+        !this.awaitingUser &&
+        this.blockerAsks < 1 &&
+        /**
+         * Waiting on a background job is a LEGITIMATE reason to end the round — the harness resumes the agent
+         * when it exits (`auto-continue-suppressed`), so the summary needs no blocker vocabulary. Asking here
+         * broke that path (measured: "auto-continue is suppressed while a background bash runs").
+         */
+        !hasRunningBgShells(this.toolCtx.cwd) &&
+        !namesBlocker(String(fin.summary ?? ""))
+      ) {
+        this.blockerAsks += 1;
+        await this.log.append("system_note", this.currentSession, this.currentBranch, {
+          event: "finish-without-blocker",
+          detail: "finish(goalComplete=false) named no blocker while the harness saw none either — asked for one instead of ending the round (#200)",
+        });
+        const msg =
+          `${this.timeAnchor()}\n[harness] That finish() was refused: its summary names no blocker, and ` +
+          `nothing in the harness agrees with one — the context window above is measured, compaction is ` +
+          `automatic, and your tools have not been failing.\nContinue the task. If you ARE blocked, name it ` +
+          `concretely: what you tried, what exactly failed, and why it cannot be worked around — then ` +
+          `finish(goalComplete=false). If the goal is met, that is finish(goalComplete=true), not a stop.`;
+        await this.answerMeta(call, "(finish refused: no blocker named — say what actually failed)");
+        await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text: msg });
+        this.messages.push({ role: "user", content: msg });
         return "next";
       }
       this.pendingSubReport = ""; 
@@ -2257,7 +2309,17 @@ export class Agent {
         reasoning: res.reasoning,
       });
       this.lastAssistantText = m.content ?? "";
-      if (m.tool_calls?.length) this.contextClaimNudges = 0;
+      /**
+       * Reset the "stop was questioned" counters only on REAL work.
+       *
+       * `finish`, `report_progress` and the meta tools are not work — and counting them as such would reset the
+       * bound on the very call being questioned, so a model that keeps calling `finish` would be refused
+       * forever instead of once.
+       */
+      if (m.tool_calls?.some((c) => !NON_WORK_TOOLS.has(c.function.name))) {
+        this.contextClaimNudges = 0;
+        this.blockerAsks = 0;
+      }
       this.messages.push(m);
       this.turnsSinceProgress++;
       this.activityChars += m.content?.length ?? 0;
