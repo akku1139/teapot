@@ -28,22 +28,34 @@ import { dataOf } from "./helpers/event-data.ts";
 
 /* ---------- the string ---------- */
 
-test("the nudge is prefixed [harness] (#136)", () => {
+test("harness templates carry NO marker; composition adds it once (#136/#201)", () => {
+  /**
+   * The marker used to live on every injected constant AND on the anchor line, so a composed message opened with
+   * `[harness]` twice — "auto-continueとコンテキストウィンドウで [harness] が重複する問題".
+   *
+   * The rule is now: constants are plain text, `harnessMessage()` prefixes exactly once. This test pins the first
+   * half; the end-to-end case below pins the composed result (one marker, on the first line).
+   */
   assert.ok(
-    AUTO_CONTINUE_NUDGE.startsWith("[harness] "),
-    `every injected instruction carries the prefix, or the model reads it as operator text (#136): ${AUTO_CONTINUE_NUDGE.slice(0, 40)}`,
+    !AUTO_CONTINUE_NUDGE.startsWith("[harness] "),
+    "the marker must not be baked into the template, or it doubles at composition",
   );
+  // the wording itself is load-bearing (#43) and must survive intact
+  assert.match(
+    AUTO_CONTINUE_NUDGE,
+    /^Continue working toward the current goal\./,
+    "the instruction reads the same, only the marker moved (#43)",
+  );
+  assert.match(AUTO_CONTINUE_NUDGE, /goalComplete=true/);
 });
 
 test("the original instruction survives verbatim (#43)", () => {
-  // the prefix must be ADDED, not substituted — #43's wording is load-bearing and
-  // existing harness prompts/tests key off it
-  // with the prefix the string no longer STARTS with it — the prefix is added,
-  // not substituted, so the sentence follows immediately
+  // #43's wording is load-bearing. The marker moved out of the template, so the assertion is on the sentence
+  // itself — the composed message is checked end to end below.
   assert.match(
     AUTO_CONTINUE_NUDGE,
-    /^\[harness\] Continue working toward the current goal\./,
-    "the prefix is prepended, the sentence is unchanged (#43/#136)",
+    /^Continue working toward the current goal\./,
+    "the instruction is unchanged (#43/#136)",
   );
   assert.match(AUTO_CONTINUE_NUDGE, /goalComplete=true/);
   assert.match(AUTO_CONTINUE_NUDGE, /goalComplete=false/);
@@ -54,7 +66,14 @@ test("the original instruction survives verbatim (#43)", () => {
 test("the builder restates the goal (#136)", () => {
   const goal = "fix the code based on the current review and release the next version";
   const nudge = autoContinueNudge(goal);
-  assert.ok(nudge.startsWith("[harness] "), "still prefixed (#136)");
+  /**
+   * The marker is added ONCE, at composition — the templates no longer carry it.
+   *
+   * Every injected constant used to start with `[harness]` and so did the anchor line, so a composed message opened
+   * with it twice ("auto-continueとコンテキストウィンドウで [harness] が重複する問題"). The builder stays
+   * marker-free and `harnessMessage()` prefixes it; the end-to-end assertion below is what checks the prefix.
+   */
+  assert.ok(!nudge.startsWith("[harness] "), "the marker is not baked into the builder (#201)");
   assert.ok(nudge.includes(goal), "and names the goal (#136)");
   assert.match(nudge, /Current goal:\n=====/, "with the delimiter the issue asked for (#136)");
   assert.ok(
@@ -115,6 +134,11 @@ test("the nudge a never-finishing agent receives names the goal (#136)", async (
       assert.ok(nudges.length > 0, "precondition: the agent was auto-continued (#136)");
       const last = String(dataOf(nudges[nudges.length - 1]!).text ?? "");
       assert.ok(last.startsWith("[harness] "), `the injected nudge must be prefixed (#136); got ${last.slice(0, 40)}`);
+      assert.equal(
+        last.split("\n")[0]!.match(/\[harness\]/g)?.length,
+        1,
+        "the marker appears ONCE on the first line, not once for the anchor and again for the body",
+      );
       assert.ok(
         last.includes("fix the code based on the current review"),
         "and must name the goal it refers to (#136)",

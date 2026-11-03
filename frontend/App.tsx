@@ -1,7 +1,7 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
-import { restoreTarget } from "./lib/scroll-restore";
+import { closeLightbox, lightboxSrc, openLightbox } from "./lib/lightbox";
 import { evictOver, weighJson } from "./lib/retention";
 import { renderMarkdownCached } from "./lib/markdown";
 import { fmtDur } from "./lib/format";
@@ -31,7 +31,7 @@ import { reconcilePending, type PendingEcho } from "./lib/pending-echo";
 import { resolveTimelineSession } from "./lib/session-index";
 import { rememberTextareaHeight, storedTextareaHeight, trackTextareaHeight } from "./lib/textarea-size";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
-import { retintTerminal, surfaceAlphaFromDom, themeColors } from "./lib/terminal-theme";
+import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { shellOutcome, shellHint, outcomeMarker } from "./lib/shell-outcome";
 import {
   treeRowsOf,
@@ -301,6 +301,14 @@ export default function App() {
   let feedMo: MutationObserver | undefined;
   let feedMoEl: HTMLElement | undefined;
   let feedMoRaf = 0;
+  /**
+   * A restore waiting for the feed element that will render it.
+   *
+   * The feed is RE-CREATED on a session switch, so a `scrollTop` applied to the previous element is discarded —
+   * MEASURED: the captured element reported `0` for every sample after the switch. The restore therefore waits in
+   * `attachFeedObserver`, which runs exactly when the new feed mounts.
+   */
+
   /** when the viewport last moved by the reader's hand — corrections are refused while this is recent (#192) */
   let lastScrollAt = 0;
   /**
@@ -1447,6 +1455,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * never fight a reader.
    */
   function pinToTail() {
+
     const f = feedEl();
     if (!f) return;
     const apply = (): boolean => {
@@ -1471,8 +1480,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   }
 
   const timelineCache = new Map<string, { events: Ev[]; total: number; at: number; bytes: number }>();
-  const scrollMemory = new Map<string, { eid: string; delta: number; atTail: boolean }>();
-  const SCROLL_MEMORY_MAX = 24;
+  /**
+   * Scroll position is NOT restored across a session switch.
+   *
+   * It was, and it caused the same report three times: "セッション遷移したときに遥か昔のメッセージに飛ばされる".
+   * The save silently skipped frames where the feed was empty (so an anchor from an EARLIER visit survived), and
+   * even with that fixed the feed's re-render on a switch defeats the restore — MEASURED with labelled call sites:
+   * the position was applied (`from=2446 delta=-953`) and `settle`/`pin-follow` immediately pulled it back to the
+   * tail. Two mechanisms, each individually reasonable, fighting over one value.
+   *
+   * So a switch opens the timeline where a timeline is read from: the end. Positioning WITHIN a session is
+   * untouched, which is the only case that behaves predictably.
+   */
   const TIMELINE_CACHE_MAX = 6;
   /**
    * Retained sessions, in bytes, and lower than it was.
@@ -1512,22 +1531,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // agent's latest session, so writing one here merges two tabs onto one timeline
     const tid = resolved ?? requested ?? "";
     if (prevId !== id || tid !== prevTid) {
-      {
-        const f = feedEl();
-        const anchor = f ? firstVisibleRow(f) : null;
-        const outKey = prevTid || prevId;
-        if (f && outKey && anchor) {
-          const row = f.querySelector<HTMLElement>(anchor.sel);
-          const eid = row?.dataset.eid ?? "";
-          const atTail = f.scrollHeight - f.scrollTop - f.clientHeight <= AT_TAIL_PX;
-          if (eid) scrollMemory.set(outKey, { eid, delta: f.getBoundingClientRect().top - anchor.top, atTail });
-          while (scrollMemory.size > SCROLL_MEMORY_MAX) {
-            const oldest = scrollMemory.keys().next().value;
-            if (oldest === undefined) break;
-            scrollMemory.delete(oldest);
-          }
-        }
-      }
       if (prevTid && prevEvents.length) {
         const bytes = prevEvents.reduce((n, e) => n + approxEventBytes(e), 0);
         if (bytes <= TIMELINE_CACHE_MAX_BYTES) {
@@ -1539,7 +1542,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       clearLocallyAnswered();
       setCompacting(null);
       setMissed(0);
-      setAtBottom(scrollMemory.get(tid)?.atTail ?? true);
+      setAtBottom(true);
       lastSample = undefined;
     }
     setSelected(id);
@@ -1557,11 +1560,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       setEvents(stabilize(cached.events));
       setEventsTotal(cached.total);
       setLoadingFeed(true);
-      if (!scrollMemory.has(tid)) {
-        requestAnimationFrame(() => {
-          if (selected() === id) scrollBottom(true);
-        });
-      }
+      requestAnimationFrame(() => {
+        if (selected() === id) scrollBottom(true);
+      });
     }
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id, tid);
@@ -1578,32 +1579,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setCompacting(
       sel()?.ctx?.compacting ? { phase: String(sel()!.ctx!.compacting) } : null,
     );
-    const restore = scrollMemory.get(tid);
-    setAtBottom(restore ? restore.atTail : true);
+    setAtBottom(true);
     requestAnimationFrame(() => {
-      if (selected() !== id) return;
-      if (restore) {
-        const f = feedEl();
-        const row = f?.querySelector<HTMLElement>(`[data-eid="${CSS.escape(restore.eid)}"]`);
-        if (restoreTarget(restore, !!row) === "anchor" && f && row) {
-          f.scrollTop += row.getBoundingClientRect().top - f.getBoundingClientRect().top + restore.delta;
-          ledger = { top: f.scrollTop, height: f.scrollHeight };
-          if (restore.atTail) scrollBottom(true);
-          return;
-        }
-        /**
-         * The anchor row is GONE — the session was compacted, its events were evicted from the page, or the
-         * feed is showing a different window. There is nothing to restore to, and simply returning leaves the
-         * feed wherever it happens to sit, which after a switch is `scrollTop = 0`: the OLDEST message in the
-         * window. That is the report — "セッション遷移したときに遥か昔のメッセージに飛ばされることがある" — and
-         * why it is intermittent: it needs a saved anchor whose row no longer exists.
-         *
-         * Land at the tail instead, which is where a timeline starts.
-         */
-        scrollBottom(true);
-        return;
-      }
-      scrollBottom(true);
+      if (selected() === id) scrollBottom(true);
     });
     void backfillUntilScrollable();
   }
@@ -1960,7 +1938,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     localStorage.setItem("teapot.term", next ? "1" : "0");
   };
 
-  type TermTab = { key: string; agentId: string; title: string };
+  type TermTab = { key: string; agentId: string; title: string; cwd?: string };
   type TermSession = {
     el: HTMLDivElement;
     term: any;
@@ -1969,6 +1947,30 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     ro: ResizeObserver | null;
   };
   const [termTabs, setTermTabs] = createSignal<TermTab[]>([]);
+  /**
+   * A tab is named after the shell's WORKING DIRECTORY.
+   *
+   * The operator wants to see where a shell is, but a double-click-to-rename would fight the single click that
+   * switches tabs ("シェルのリネームもやりたいけど、タブ切り替えと操作が被る"), and "shell 1 / shell 2" says nothing.
+   * The basename is short enough for a tab and the full path is in the tooltip.
+   */
+  const tabLabel = (t: TermTab) => {
+    const base = (t.cwd ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+    return base && base.length <= 24 ? base : t.title;
+  };
+  const refreshTermTabs = async () => {
+    const r = (await api("/api/terminals").catch(() => null)) as {
+      terminals?: { id: string; agentId: string; title: string; cwd?: string }[];
+    } | null;
+    const list = r?.terminals ?? [];
+    if (!list.length) return;
+    setTermTabs((prev) =>
+      prev.map((t) => {
+        const hit = list.find((x) => x.id === t.key);
+        return hit ? { ...t, title: hit.title, cwd: hit.cwd } : t;
+      }),
+    );
+  };
   const [paneL, setPaneL] = createSignal(0);
   const [paneR, setPaneR] = createSignal(-1);
   const [splitView, setSplitView] = createSignal(false);
@@ -2014,14 +2016,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ agentId: who }),
-      })) as { terminal?: { id: string; agentId: string; title: string } };
+      })) as { terminal?: { id: string; agentId: string; title: string; cwd?: string } };
       const t = r.terminal;
       if (!t) {
         flashHint("could not open a shell");
         return;
       }
       const at = indexAfterAppend(termTabs());
-      setTermTabs((list) => [...list, { key: t.id, agentId: t.agentId, title: t.title }]);
+      setTermTabs((list) => [...list, { key: t.id, agentId: t.agentId, title: t.title, cwd: t.cwd }]);
       if (focusedPane() === 0) setPaneL(at);
       else setPaneR(at);
     } catch (ex) {
@@ -2053,15 +2055,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * the alpha, and `allowTransparency` has to be on at construction for xterm to honour it.
    */
   const termAlpha = () => {
-    if (document.documentElement.dataset.bgImage !== "on") return 1;
     /**
-     * The SAME alpha code blocks use, read from the same variable rather than picked by eye.
+     * Keyed on the SIGNAL, not on `document.documentElement.dataset.bgImage`.
      *
-     * With a wallpaper on, `--bg-darkest` (the code-block surface) is a `color-mix` at
-     * `--surface-alpha-darkest`, so the terminal has to take that number or the two surfaces read as different
-     * materials — "ターミナルの背景透過はコードブロックと同じ薄さにしてほしい".
+     * The attribute is written by the paint effect, so at the moment a terminal is constructed it may not be set
+     * yet — the pane was then built with an opaque theme and stayed black over the wallpaper. A signal is
+     * available at construction time and the retint effect already tracks it.
      */
-    return surfaceAlphaFromDom(document);
+    if (!activeBgImage()) return 1;
+    /**
+     * 0, not the surface alpha: the drawer IS the surface now (`.termbody`/`.termpane` are transparent), so a
+     * half-transparent xterm background on top of it would composite 0.7 over 0.7 into a denser pane than the
+     * frame around it. The theme colour stays in the value, at zero alpha, so xterm's own contrast maths still
+     * has it.
+     */
+    return 0;
   };
   createEffect(() => {
     void themeAuto();
@@ -2305,6 +2313,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   };
 
   onMount(() => {
+    const onLightboxKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && lightboxSrc()) closeLightbox();
+    };
+    window.addEventListener("keydown", onLightboxKey);
+    onCleanup(() => window.removeEventListener("keydown", onLightboxKey));
     loadCfg();
     refreshAgents().then(async () => {
       await refreshSessionIndex();
@@ -2323,10 +2336,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     loadPersonas();
     connectWs();
     void api("/api/terminals")
-      .then((r: { terminals?: { id: string; agentId: string; title: string }[] }) => {
+      .then((r: { terminals?: { id: string; agentId: string; title: string; cwd?: string }[] }) => {
         const list = r.terminals ?? [];
         if (!list.length) return;
-        setTermTabs(list.map((t) => ({ key: t.id, agentId: t.agentId, title: t.title })));
+        setTermTabs(list.map((t) => ({ key: t.id, agentId: t.agentId, title: t.title, cwd: t.cwd })));
         if (termOpen()) {
           setPaneL(0);
           setPaneR(-1);
@@ -2511,7 +2524,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       reader.readAsDataURL(f);
     }
   };
-  const sendText = async (text: string, targetId?: string, source?: "harness") => {
+  const sendText = async (text: string, targetId?: string) => {
     const id = targetId ?? selected();
     if (!id) return;
     const images = pendingImages();
@@ -2520,7 +2533,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const r = await api(`/api/agents/${id}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, start: true, ...(source ? { source } : {}), ...(images.length ? { images } : {}) }),
+        body: JSON.stringify({ text, start: true, ...(images.length ? { images } : {}) }),
       });
       writePending(echoKey, [
         ...pendingFor(echoKey),
@@ -2631,11 +2644,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       }
       else if (name === "skill") {
         if (!arg) { flashHint("usage: /skill <name>"); return; }
-        await sendText(
-          `[harness] Force-load and follow the skill "${arg}" now: call load_skill("${arg}") and execute its playbook for the current task.`,
-          undefined,
-          "harness",
-        );
+        // the harness wording is the SERVER's to write; the browser only names the skill
+        await post("/skill", { name: arg });
         flashHint(`skill "${arg}" dispatched`);
       }
       else {
@@ -3453,6 +3463,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </Show>
           </div>
 
+          {/*
+            * One overlay for every image in the app (#204 "添付画像やread_fileの画像をクリックしたら拡大するように").
+            * Clicking the backdrop, the image, or pressing Escape closes it — the same three ways out that every
+            * lightbox has, because a modal you cannot dismiss by the obvious gesture is worse than no modal.
+            */}
+          <Show when={lightboxSrc()}>
+            {(src) => (
+              <div
+                class="lightbox"
+                role="dialog"
+                aria-modal="true"
+                aria-label="enlarged image"
+                onclick={closeLightbox}
+                title="click to close"
+              >
+                <img src={src()} alt="" onclick={(e) => e.stopPropagation()} />
+              </div>
+            )}
+          </Show>
           <Show when={termOpen()}>
             <div class="termdrawer" style={{ height: `${termHeight()}px` } as any}>
               <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
@@ -3462,10 +3491,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     {(t, i) => (
                       <span
                         class={"termtab" + (focusedPane() === 0 && paneL() === i() ? " active" : "") + (splitView() && focusedPane() === 1 && paneR() === i() ? " active" : "")}
-                        onclick={() => focusTab(i())}
-                        title={`${t.title} — click to show in focused pane`}
+                        onclick={() => {
+                          focusTab(i());
+                          // the shell's cwd moves with `cd`, so the label is refreshed when the operator looks at
+                          // it rather than on a poll (#198 follow-up: "ワーキングディレクトリをタイトルにするでもいい")
+                          void refreshTermTabs();
+                        }}
+                        title={`${t.cwd ? `${t.cwd}\n` : ""}${t.title} — click to show in focused pane`}
                       >
-                        ⌨ {t.title}
+                        ⌨ {tabLabel(t)}
                         <button class="tabx" onclick={(e) => { e.stopPropagation(); closeTab(i()); }} title="close this shell">✕</button>
                       </span>
                     )}
@@ -3545,7 +3579,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   <For each={pendingImages()}>
                     {(im, i) => (
                       <span class="imgchip" title={im.name}>
-                        <img src={im.url} alt={im.name} />
+                        <img src={im.url} alt={im.name} title="click to enlarge" onclick={() => openLightbox(im.url)} />
                         <button
                           type="button"
                           class="imgx"
@@ -3795,26 +3829,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </Show>
           </div>
 
-          {}
-          <div class="ctrlrow">
-            <label
-              title="auto-continue fires after a round ONLY when all hold: ① this toggle is on ② a goal is set and its status is 'active' ③ the round ended cleanly (no error / not stopped). It stops when the goal is marked done, or if you press ■ stop. Sending any prompt also starts an idle agent regardless."
-            >
-              <input
-                type="checkbox"
-                checked={sel()!.autoContinue ?? true}
-                onchange={(e) => {
-                  if (!selected()) return;
-                  api(`/api/agents/${selected()}/auto-continue`, {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ value: e.currentTarget.checked }),
-                  }).then(refreshAgents);
-                }}
-              />
-              auto-continue
-            </label>
-          </div>
 
           <h3 title="what the agent is working toward. Stored with the session; the agent reads it via get_goal(). Auto-continue keeps looping while the status is 'active' and stops when marked done.">🎯 goal
             <Show
@@ -3909,6 +3923,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <label
                 class="muted"
                 style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
+                title="auto-continue acts on the GOAL above: it fires after a round ONLY when all hold — ① this toggle is on ② a goal is set and its status is 'active' ③ the round ended cleanly (no error / not stopped). It stops when the goal is marked done, or if you press ■ stop."
+              >
+                <input
+                  type="checkbox"
+                  checked={sel()!.autoContinue ?? true}
+                  onchange={(e) => {
+                    if (!selected()) return;
+                    api(`/api/agents/${selected()}/auto-continue`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ value: e.currentTarget.checked }),
+                    }).then(refreshAgents);
+                  }}
+                />
+                auto-continue
+              </label>
+              <label
+                class="muted"
+                style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
                 title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
               >
                 <input id="goal-notify" type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} /> notify agent
@@ -3916,6 +3949,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <button type="submit" class="primarybtn">✓ save goal</button>
             </div>
           </form>
+
 
           <h3 title="todo.md — a shared checklist in the session dir. Write tasks like '- [ ] fix login'; the agent ticks them off via set_todo, you edit here. With notify on, it's told at its next turn boundary.">
             ✅ tasks

@@ -57,21 +57,66 @@ export interface McpAuth {
 
 export interface McpConnection {
   tools(): Promise<McpTool[]>;
-  call(name: string, args: unknown): Promise<{ text: string; ok: boolean }>;
+  call(name: string, args: unknown): Promise<{ text: string; ok: boolean; images?: { url: string; name: string }[] }>;
   finishAuth(code: string, iss?: string): Promise<McpConnection>;
   close(): Promise<void>;
 }
 
-function resultText(result: {
-  content?: Array<{ type?: string; text?: string }>;
-  isError?: boolean;
-}): { text: string; ok: boolean } {
+/**
+ * Turn an MCP result into what teapot can actually use.
+ *
+ * The MCP spec's content blocks are `text`, `image`, `audio`, `resource_link` and embedded `resource`. This used to
+ * keep `text` and replace everything else with "[<type> content omitted]" — so a server answering with a picture
+ * (a chart, a screenshot, a PDF page) gave the model nothing at all, which is issue #203 ("MCPクライアントでテキスト
+ * 以外のサポートちゃんと実装できてるのかな / 画像とか").
+ *
+ * Images become data URLs, which is the shape `ToolResult.image` already carries for `read_file`; the rest is
+ * summarised by size rather than silently dropped, because "something was here and it was 240KB" is information.
+ */
+interface McpContentBlock {
+  type?: string;
+  text?: string;
+  data?: string;
+  mimeType?: string;
+  resource?: { uri?: string; mimeType?: string; text?: string; blob?: string };
+}
+
+export function resultText(result: { content?: McpContentBlock[]; isError?: boolean }): {
+  text: string;
+  ok: boolean;
+  images: { url: string; name: string }[];
+} {
   const parts: string[] = [];
+  const images: { url: string; name: string }[] = [];
+  let extraImages = 0;
+  const bytes = (b64: string) => Math.round((b64.length * 3) / 4);
+
   for (const c of result?.content ?? []) {
-    if (c?.type === "text" && typeof c.text === "string") parts.push(c.text);
-    else if (c?.type) parts.push(`[${c.type} content omitted]`);
+    if (!c) continue;
+    if (c.type === "text" && typeof c.text === "string") {
+      parts.push(c.text);
+    } else if (c.type === "image" && typeof c.data === "string" && c.data) {
+      const mime = c.mimeType || "image/png";
+      const name = `mcp-image-${images.length + 1}.${mime.split("/")[1] ?? "png"}`;
+      if (images.length === 0) images.push({ url: `data:${mime};base64,${c.data}`, name });
+      else extraImages++;
+      parts.push(`[image: ${mime}, ${Math.round(bytes(c.data) / 1024)}KB]`);
+    } else if (c.type === "resource" && c.resource) {
+      const r = c.resource;
+      if (typeof r.text === "string") parts.push(r.text);
+      else if (typeof r.blob === "string") {
+        parts.push(
+          `[resource ${r.mimeType || "unknown"} · ${r.uri || "embedded"} · ${Math.round(bytes(r.blob) / 1024)}KB]`,
+        );
+      } else parts.push(`[resource ${r.uri || "embedded"}]`);
+    } else if (c.type === "audio" && typeof c.data === "string") {
+      parts.push(`[audio: ${c.mimeType || "unknown"}, ${Math.round(bytes(c.data) / 1024)}KB — not readable by the model]`);
+    } else if (c.type) {
+      parts.push(`[${c.type} content: ${Math.round(bytes(String(c.data ?? "")) / 1024)}KB]`);
+    }
   }
-  return { text: parts.join("\n") || "(no content)", ok: result?.isError !== true };
+  if (extraImages > 0) parts.push(`(+${extraImages} more image(s) shown as metadata — only the first is attached)`);
+  return { text: parts.join("\n") || "(no content)", ok: result?.isError !== true, images };
 }
 
 function toTools(list: { tools?: Array<Record<string, unknown>> }, server: string): McpTool[] {
@@ -117,7 +162,7 @@ function buildConnection(
     },
     async call(name, args) {
       const res = await client.callTool({ name, arguments: (args ?? {}) as Record<string, unknown> });
-      return resultText(res as { content?: Array<{ type?: string; text?: string }>; isError?: boolean });
+      return resultText(res as { content?: McpContentBlock[]; isError?: boolean });
     },
     async finishAuth(code, iss) {
       if (typeof (session as { finishAuth?: unknown }).finishAuth !== "function")

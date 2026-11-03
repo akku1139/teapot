@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { toolShellFor } from "../agent/tools.ts";
 
 export function terminalShellFor(
@@ -14,6 +14,8 @@ export interface TerminalInfo {
   id: string;
   agentId: string;
   title: string;
+  /** the shell's working directory — the tab label uses its basename */
+  cwd?: string;
   clients: number;
   createdAt: number;
 }
@@ -22,6 +24,8 @@ interface Term {
   id: string;
   agentId: string;
   title: string;
+  /** the directory the shell started in — the fallback label when /proc cannot be read */
+  workspace: string;
   child: ChildProcess;
   buffer: string;
   createdAt: number;
@@ -85,6 +89,7 @@ export function createTerminal(
   const id = `t${++seq}-${Date.now().toString(36)}`;
   const t: Term = {
     id,
+    workspace,
     agentId,
     title: title?.trim().slice(0, 60) || `shell ${live.length + 1}`,
     child,
@@ -124,11 +129,33 @@ export function createTerminal(
   return { ok: true, terminal: infoOf(t) };
 }
 
+/**
+ * The shell's current directory, for the tab label.
+ *
+ * The pty is spawned through `script`, so `t.child.pid` is script's — the SHELL is its child, and it is the shell
+ * whose cwd moves when the operator `cd`s. Reading `/proc/<pid>/cwd` is Linux-only and deliberately falls back to
+ * the workspace: a wrong label is worse than a generic one, and this must never throw.
+ */
+function shellCwd(t: Term): string {
+  try {
+    const kids = readFileSync(`/proc/${t.child.pid}/task/${t.child.pid}/children`, "utf8").trim().split(/\s+/);
+    for (const pid of kids) {
+      if (!pid) continue;
+      const cwd = readlinkSync(`/proc/${pid}/cwd`);
+      if (cwd) return cwd;
+    }
+  } catch {
+    /* not Linux, or the process is gone */
+  }
+  return t.workspace;
+}
+
 function infoOf(t: Term): TerminalInfo {
   return {
     id: t.id,
     agentId: t.agentId,
     title: t.title,
+    cwd: shellCwd(t),
     clients: sinks.get(t.id)?.size ?? 0,
     createdAt: t.createdAt,
   };

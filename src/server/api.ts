@@ -894,6 +894,27 @@ const MAX_WS_CLIENTS = 64;
     return c.json({ ok: true, promptId, queued: a.snapshot().pendingPrompts });
   });
 
+  /**
+   * Force-load and follow a skill.
+   *
+   * The wording lives HERE, not in the browser: it is a harness message, and the frontend used to compose it and
+   * post it with `source: "harness"` — which put harness-authored text in the UI and let the client claim the
+   * harness role. The goal notification two hundred lines down already worked this way; this is the same shape.
+   */
+  app.post("/api/agents/:id/skill", async (c) => {
+    const a = master.agents.get(c.req.param("id"));
+    if (!a) return notFound(c, "agent", c.req.param("id"));
+    const body = await c.req.json<{ name?: string }>().catch(() => null);
+    const name = String(body?.name ?? "").trim();
+    if (!name) return c.json({ error: "name required" }, 400);
+    const promptId = a.enqueuePrompt(
+      `[harness] Force-load and follow the skill "${name}" now: call load_skill("${name}") and execute its playbook for the current task.`,
+      "harness",
+    );
+    if (a.status !== "running") a.start("skill");
+    return c.json({ ok: true, promptId });
+  });
+
   app.post("/api/agents/:id/prompt/cancel", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return notFound(c, "agent", c.req.param("id"));

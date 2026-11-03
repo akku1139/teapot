@@ -115,35 +115,3 @@ test("no correction while the reader is moving (#192)", async () => {
   assert.equal(correctionAllowed(10_000, 9_700), true, "quiet long enough to correct");
   assert.equal(correctionAllowed(10_000, 0), true, "nothing has scrolled yet");
 });
-
-test("a session switch always lands somewhere — never 'leave it where it is' (#192)", async () => {
-  /**
-   * The missing third answer. With a saved anchor whose row had disappeared, `select()` positioned nothing, so
-   * the feed stayed at `scrollTop = 0` — the oldest message in the window.
-   */
-  const { restoreTarget } = await import("../frontend/lib/scroll-restore.ts");
-  assert.equal(restoreTarget(null, false), "tail", "first visit → the tail");
-  assert.equal(restoreTarget({ eid: "e1" }, true), "anchor", "the saved row exists → restore it");
-  assert.equal(restoreTarget({ eid: "gone" }, false), "tail", "the saved row is gone → the tail, never the top");
-});
-
-test("an upward move always stops following, whatever the classifier says (#192)", async () => {
-  /**
-   * "アイドル状態でもタイムライン一番下から1つ上にスクロールするときに、ブラウザの補助アニメーションなしで
-   * いきなりその高さまで遷移することがある". While `following` stayed true, `shouldPin` re-asserted the tail and
-   * the notch was undone instantly — a jump with no animation, because it is a `scrollTop` assignment.
-   *
-   * `nextFollowing` already stops following for a `reader`-classified up-move; the handler now also stops it when
-   * the classifier calls the same movement a layout change, because the content did not move — the operator did.
-   */
-  const { nextFollowing, shouldPin } = await import("../frontend/lib/scroll-policy.ts");
-  const atTailView = { top: 1000, height: 1500, viewport: 500 };
-  const nudgedUp = { top: 980, height: 1500, viewport: 500 };
-  // the classifier's own answer for a non-reader cause would keep following…
-  assert.equal(nextFollowing(true, "layout", nudgedUp, 1000), true);
-  // …which is why the handler overrides it: an upward move is the reader, full stop
-  const movedUp = nudgedUp.top < atTailView.top - 0.5;
-  assert.equal(movedUp ? false : nextFollowing(true, "layout", nudgedUp, 1000), false);
-  // and with following false there is no pin to undo the notch
-  assert.equal(shouldPin(false, nudgedUp), false);
-});

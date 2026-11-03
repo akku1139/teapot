@@ -193,7 +193,10 @@ export class McpRegistry {
       .flatMap((s) => s.tools);
   }
 
-  async call(flatName: string, args: unknown): Promise<{ ok: boolean; text: string } | null> {
+  async call(
+    flatName: string,
+    args: unknown,
+  ): Promise<{ ok: boolean; text: string; images?: { url: string; name: string }[] } | null> {
     const parts = splitToolName(flatName);
     if (!parts) return null;
     const st = this.servers.get(parts.server);
@@ -207,7 +210,7 @@ export class McpRegistry {
     }
     try {
       const r = await this.servers.get(parts.server)!.connection!.call(parts.tool, args);
-      return { ok: r.ok, text: r.text };
+      return { ok: r.ok, text: r.text, ...(r.images?.length ? { images: r.images } : {}) };
     } catch (err) {
       const st = this.servers.get(parts.server);
       if (st) {

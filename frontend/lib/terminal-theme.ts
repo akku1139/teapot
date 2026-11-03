@@ -84,39 +84,3 @@ export function selectionFor(foreground: string): string {
   if (m) return `#${m[1]}47`;
   return "rgba(128, 128, 128, 0.35)";
 }
-
-/**
- * The alpha the code-block surface is actually painted with, read from a real element.
- *
- * The custom property holds `max(.35, calc(.82 - .12))` — an expression, not a number — so `parseFloat` on it
- * fails and the terminal would silently fall back to a hard-coded value while the code blocks used the
- * operator's setting. Measuring a probe that is painted with `var(--bg-darkest)` reads the RESOLVED colour, so
- * the two surfaces always agree no matter what the theme editor's slider says.
- *
- * Returns 1 when the value cannot be resolved: opaque is the safe answer (it cannot make text unreadable).
- */
-export function surfaceAlphaFromDom(doc: Document = document): number {
-  const view = doc.defaultView;
-  if (!view) return 1;
-  const probe = doc.createElement("div");
-  probe.setAttribute("aria-hidden", "true");
-  probe.style.cssText = "position:absolute;left:-9999px;top:-9999px;width:0;height:0;background-color:var(--bg-darkest)";
-  doc.body.appendChild(probe);
-  try {
-    const bg = view.getComputedStyle(probe).backgroundColor ?? "";
-    const slash = /\/\s*([\d.]+)\s*\)/.exec(bg);
-    if (slash) {
-      const a = Number.parseFloat(slash[1]!);
-      return Number.isFinite(a) ? Math.max(0, Math.min(1, a)) : 1;
-    }
-    const rgba = /^rgba\([^)]*,\s*([\d.]+)\s*\)$/i.exec(bg.trim());
-    if (rgba) {
-      const a = Number.parseFloat(rgba[1]!);
-      return Number.isFinite(a) ? Math.max(0, Math.min(1, a)) : 1;
-    }
-    // `rgb(...)` with no alpha means the surface is opaque
-    return 1;
-  } finally {
-    probe.remove();
-  }
-}

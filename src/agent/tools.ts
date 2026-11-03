@@ -2448,7 +2448,8 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
       : {};
     const r = await mcp.call(flattenToolName(entry.serverId, entry.name), callArgs);
     if (!r) return { ok: false, result: `unknown tool: ${entry.name}` };
-    return { ok: r.ok, result: r.text };
+    // an MCP server may answer with an image; carry the first one the same way `read_file` does (#203)
+    return { ok: r.ok, result: r.text, ...(r.images?.[0] ? { image: r.images[0] } : {}) };
   }
   if (name.startsWith(MCP_PREFIX)) {
     if (ctx.signal?.aborted) return { ok: false, result: "aborted (harness shutdown)" };
@@ -2460,7 +2461,7 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
     }
     const r = await mcp.call(name, args);
     if (!r) return { ok: false, result: `unknown tool: ${name}` };
-    return { ok: r.ok, result: r.text };
+    return { ok: r.ok, result: r.text, ...(r.images?.[0] ? { image: r.images[0] } : {}) };
   }
   const def = TOOLS.find((t) => t.name === name);
   if (!def) return { ok: false, result: `unknown tool: ${name}` };

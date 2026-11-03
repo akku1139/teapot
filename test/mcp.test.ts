@@ -154,9 +154,17 @@ test("connect + tools + call work through the official client (#67)", async () =
 
     const r = await conn.call("echo", { q: 1 });
     assert.equal(r.ok, true);
-    // text parts are joined; the image part is NAMED rather than silently dropped
+    /**
+     * Text parts are joined, and a non-text part is CARRIED rather than described away (#203).
+     *
+     * This used to assert "[image content omitted]": the placeholder announced a picture and then threw it away, so
+     * a server answering with a chart gave the model nothing. The image now arrives as a data URL, and the text
+     * keeps a byte-level note so the timeline can still say what came back.
+     */
     assert.match(r.text, /line one\nline two/);
-    assert.match(r.text, /\[image content omitted\]/);
+    assert.match(r.text, /\[image: image\/png, \d+KB\]/);
+    assert.equal(r.images?.length, 1, "the image itself is carried for the model");
+    assert.match(r.images![0]!.url, /^data:image\/png;base64,/, "as a data URL, the shape tool results already use");
     await conn.close();
   } finally {
     await srv.close();

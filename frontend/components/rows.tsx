@@ -4,6 +4,7 @@ import { Card } from "./card";
 import { CopyBtn, IconBtn } from "./chrome";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
+import { openLightbox } from "../lib/lightbox";
 import { hasAnsi, stripAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
 import { blobUrl } from "../lib/blob-url";
@@ -657,6 +658,15 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
         (e.data?.cancelled ? " withdrawn" : "")
       }
       data-eid={e.id}
+      /**
+       * The session this row belongs to.
+       *
+       * `data-eid` alone is not an identity: ids are per-session counters (`e1`, `e2`…), so the row for `e45` in one
+       * session is indistinguishable from `e45` in another. Scroll restoration queried by id alone and could land on
+       * a row from the session that was on screen a frame earlier — "セッション遷移したときに遥か昔のメッセージに
+       * 飛ばされる".
+       */
+      data-session={String((e as { session?: string }).session ?? "")}
     >
       {}
       {}
@@ -722,7 +732,18 @@ function ToolImages(props: { data?: { images?: unknown }; agentId?: string }) {
   return (
     <Show when={srcs().length}>
       <div class="promptimgs">
-        <For each={srcs()}>{(src) => <img src={src} class="promptimg" alt="tool image" loading="lazy" />}</For>
+        <For each={srcs()}>
+          {(src) => (
+            <img
+              src={src}
+              class="promptimg"
+              alt="tool image"
+              loading="lazy"
+              title="click to enlarge"
+              onclick={() => openLightbox(src)}
+            />
+          )}
+        </For>
       </div>
     </Show>
   );
@@ -750,7 +771,11 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
           <MdContent html={renderMarkdownCached(String(e.data.text ?? ""))} />
           <Show when={imgs.length}>
             <div class="promptimgs">
-              <For each={imgs}>{(src) => <img src={src} class="promptimg" alt="attachment" />}</For>
+              <For each={imgs}>
+              {(src) => (
+                <img src={src} class="promptimg" alt="attachment" title="click to enlarge" onclick={() => openLightbox(src)} />
+              )}
+            </For>
             </div>
           </Show>
         </>

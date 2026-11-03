@@ -19,7 +19,6 @@ import { extractRules, enforceRules, type Rule, RULES_HEADING } from "./compact-
 import { bus, type BusEvent } from "../bus.ts";
 
 export const AUTO_CONTINUE_NUDGE =
-  "[harness] " +
   "Continue working toward the current goal. If you are blocked, explain why briefly. " +
   "When the goal is genuinely met — or truly blocked — call finish() " +
   "(finish(goalComplete=true) when met, finish(goalComplete=false) when blocked) " +
@@ -32,7 +31,7 @@ export function autoContinueNudge(goalText: string): string {
 }
 
 export const PROGRESS_REQUEST =
-  "[harness] Please give a brief progress report now: what you are doing, goal progress, " +
+  "Please give a brief progress report now: what you are doing, goal progress, " +
   "what you recently tried, any problems, and your next step. Keep it under 10 lines. " +
   "Record it with the report_progress TOOL (doing, goalStatus, recent, problems, next) — " +
   "call that tool; do NOT answer in prose, which would just duplicate this request.";
@@ -409,7 +408,7 @@ export class Agent {
         ? "That finish() was refused: it gives the context window as the blocker, and the window is not yours to run out of."
         : "You stopped, giving the context window as the reason.";
     return (
-      `${this.timeAnchor()}\n[harness] ${head} The numbers above are MEASURED, compaction is automatic and has ` +
+      `${this.timeAnchor()}\n${head} The numbers above are MEASURED, compaction is automatic and has ` +
       `just run — so how much window is left is not something you have to guess, and continuing the same way ` +
       `would land you here again in a few turns. Change the perspective instead:\n` +
       `1. Write down what you have LEARNED (add_memory) and what is LEFT (set_todo), so nothing depends on ` +
@@ -423,7 +422,16 @@ export class Agent {
     );
   }
 
-
+  /**
+   * A harness message: the time/usage anchor, then the body with any `[harness]` marker of its own removed.
+   *
+   * The marker is added HERE, once — the templates no longer carry it. They all used to start with `[harness]`, and
+   * so does the anchor line, so every composed message opened with it twice: "auto-continueとコンテキストウィンドウで
+   * [harness] が重複する問題". Adding it at construction also means a body written without the marker cannot forget.
+   */
+  private harnessMessage(body: string): string {
+    return `${this.timeAnchor()}\n${body.replace(/^\[harness\]\s*/, "")}`;
+  }
 
   private timeAnchor(): string {
     const clock = turnAnchor({
@@ -1735,10 +1743,9 @@ export class Agent {
           continue;
         }
         const isSub = !!this.opts.parent;
-        const anchor = this.timeAnchor();
         const nudge = isSub
-          ? `${anchor}\n[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
-          : `${anchor}\n${autoContinueNudge(this.goal.text)}`;
+          ? this.harnessMessage(`[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`)
+          : this.harnessMessage(autoContinueNudge(this.goal.text));
         await this.log.append("prompt", this.currentSession, this.currentBranch, {
           source: "harness",
           text: nudge,
@@ -1890,11 +1897,13 @@ export class Agent {
           detail: "finish(goalComplete=false) named no blocker while the harness saw none either — asked for one instead of ending the round (#200)",
         });
         const msg =
-          `${this.timeAnchor()}\n[harness] That finish() was refused: its summary names no blocker, and ` +
+          this.harnessMessage(
+            `[harness] That finish() was refused: its summary names no blocker, and ` +
           `nothing in the harness agrees with one — the context window above is measured, compaction is ` +
           `automatic, and your tools have not been failing.\nContinue the task. If you ARE blocked, name it ` +
           `concretely: what you tried, what exactly failed, and why it cannot be worked around — then ` +
-          `finish(goalComplete=false). If the goal is met, that is finish(goalComplete=true), not a stop.`;
+          `finish(goalComplete=false). If the goal is met, that is finish(goalComplete=true), not a stop.`,
+          );
         await this.answerMeta(call, "(finish refused: no blocker named — say what actually failed)");
         await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text: msg });
         this.messages.push({ role: "user", content: msg });
@@ -2878,7 +2887,7 @@ export class Agent {
     this.lastProgressAt = Date.now();
     this.activityChars = 0;
     this.turnsSinceProgress = 0;
-    const request = `${this.timeAnchor()}\n${PROGRESS_REQUEST}`;
+    const request = this.harnessMessage(PROGRESS_REQUEST);
     await this.log.append("prompt", this.currentSession, this.currentBranch, {
       source: "harness",
       text: request,

@@ -1764,6 +1764,66 @@ html[data-bg-image="on"] .termbar {
 html[data-bg-image="on"] .xterm .xterm-viewport {
   background-color: transparent;
 }
+/**
+ * …and the pane's own frame is what was actually opaque.
+ *
+ * MEASURED with a wallpaper theme, walking the drawer: `.termdrawer` 0.7 and the xterm surface itself
+ * `rgba(13,14,18,0.7)` — correctly translucent — while `.termbody` and `.termpane` painted a solid
+ * `rgb(13,14,18)` underneath them. That solid is the black the operator saw, and it is why replacing
+ * `--term-bg` or the theme colour changed nothing: the layer above was never the problem.
+ *
+ * One owner, as with the code blocks: the DRAWER carries the surface, everything inside it paints nothing.
+ */
+html[data-bg-image="on"] .termbody,
+html[data-bg-image="on"] .termpane {
+  background: transparent;
+}
+/**
+ * xterm draws its OWN scrollbar as DOM (`.xterm-scrollable-element > .scrollbar > .slider`) and xterm.css paints
+ * the slider near-white. Over a translucent terminal that reads as a bright strip down a dark pane — and it is not
+ * a native scrollbar, so `scrollbar-color` does nothing for it (MEASURED: sampling the screenshot put 14px of
+ * white at the pane's right edge, matching that element's width).
+ *
+ * Themed to the foreground at low alpha, and the track left transparent so no opaque column reappears over the
+ * wallpaper.
+ */
+/**
+ * …and the white strip was not xterm's DOM scrollbar at all.
+ *
+ * `.xterm-viewport` is a real scroll container, so the ENGINE paints a platform scrollbar down its right edge —
+ * white on this platform, over a dark translucent pane. MEASURED: setting `scrollbar-width: none` on it turned the
+ * white pixels back into the wallpaper, while the element inspection had been chasing xterm's own DOM slider
+ * (which is `opacity: 0`). xterm draws its own scrollbar, so the native one is pure duplication.
+ */
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+/**
+ * The FEED's scrollbar gets the same treatment as the terminal's.
+ *
+ * It is a real scroll container, so the engine paints a platform scrollbar down its edge: an opaque black column on
+ * a theme whose whole point is that the wallpaper shows through every surface. Thin and translucent instead.
+ */
+.feed {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--dim) 55%, transparent) transparent;
+}
+
+.xterm .xterm-scrollable-element {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--dim) 55%, transparent) transparent;
+}
+.xterm .xterm-scrollable-element > .scrollbar {
+  background: transparent;
+}
+.xterm .xterm-scrollable-element > .scrollbar > .slider {
+  background: color-mix(in srgb, var(--fg) 18%, transparent);
+  border-radius: var(--radius-sm);
+}
 .termgrip {
   height: 6px; cursor: ns-resize; background: var(--bg-light); opacity: .6;
   border-bottom: 1px solid var(--line);
@@ -1787,7 +1847,14 @@ html[data-bg-image="on"] .xterm .xterm-viewport {
    background, which is how VS Code and Alacritty read: the surface tells you, not a border. */
 .termtab.active { color: var(--fg); background: var(--bg-light); }
 .termtab:hover { filter: brightness(1.15); }
-.tabx { background: none; border: none; color: inherit; opacity: .5; cursor: pointer; font-size: var(--text-xs); padding: 0; }
+/**
+ * The ✕ needs a radius of its own.
+ *
+ * It paints no background, but the wallpaper-mode blanket hover (`button:hover:where(:not(:disabled))`) does, with
+ * `!important` — so hovering the tab's close button showed a SQUARE tint in a pill-shaped tab ("ターミナル ✕ ボタンの
+ * 背景に角丸が効いてない"). Rounding the element is enough; the blanket rule then paints a shape that fits.
+ */
+.tabx { background: none; border: none; color: inherit; opacity: .5; cursor: pointer; font-size: var(--text-xs); padding: 0; border-radius: var(--radius-sm); }
 .tabx:hover { opacity: 1; color: var(--err); }
 .termbody { flex: 1; display: flex; min-height: 0; padding: 4px; gap: var(--space-2); background: var(--term-bg); }
 .termbody.split .termpane { width: 50%; }
@@ -3530,3 +3597,32 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
 
 /* a detached job explains itself instead of showing an empty output box */
 .bgjob-detached { margin-top: 6px; font-size: var(--text-xs); line-height: 1.4; color: var(--dim); }
+
+/**
+ * The enlarged-image overlay (#204).
+ *
+ * `position: fixed` and above everything: it is a modal, and a lightbox that can be scrolled away from is not one.
+ * The image itself stops the click so only the backdrop closes it — otherwise clicking to zoom further would
+ * dismiss the thing being examined.
+ */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: color-mix(in srgb, #000 78%, transparent);
+  cursor: zoom-out;
+}
+.lightbox img {
+  max-width: 94vw;
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, .55);
+  cursor: default;
+}
+/* an image you can enlarge should look like one */
+.promptimg { cursor: zoom-in; }
