@@ -70,3 +70,21 @@ test("a quoted log line is evidence, not a stop — fenced and blockquoted text 
   // …while the same sentence as the agent's own words still does
   assert.equal(claimsContextLimit("調査の結果、コンテキスト上限のため停止します。"), true);
 });
+
+test("being stuck is a different claim from the window being full (#201)", async () => {
+  /**
+   * "コンテキストが尽きたっていうのがコンテキストウィンドウが尽きたと勘違いしてるパターンと、自力の推論の限界に達した
+   * 場合がありそう" — the first is false and gets corrected with numbers; the second is real and needs a different
+   * answer (name the question, hand it over, change angle), because "continue" would just spin.
+   */
+  const { claimsOwnLimit } = await import("../src/agent/context-claim.ts");
+  assert.equal(claimsOwnLimit("I have reached the limits of my reasoning on this step."), true);
+  assert.equal(claimsOwnLimit("no further approaches come to mind"), true);
+  assert.equal(claimsOwnLimit("推論の限界に達しました。これ以上は思いつきません。"), true);
+  assert.equal(claimsOwnLimit("打つ手がない。行き詰まった。"), true);
+  // a resource problem is NOT a stuck problem
+  assert.equal(claimsOwnLimit("my context window is nearly exhausted"), false);
+  assert.equal(claimsOwnLimit("コンテキスト上限のため停止します"), false);
+  // and reporting progress is neither
+  assert.equal(claimsOwnLimit("物理読みは全域で動作しています。次は書き込みを確認します。"), false);
+});

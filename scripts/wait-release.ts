@@ -71,20 +71,32 @@ for (const wf of WORKFLOWS) {
 }
 
 if (versionArg) {
-  const deadline = Date.now() + 15 * 60_000;
+  /**
+ * If a workflow already FAILED, npm cannot possibly get this version — polling it for the full 15 minutes only
+ * delays the report. MEASURED: a failed v0.37.120 publish kept this script alive for 1378s before it printed
+ * "NOT YET", and the failing step it had already found was scrolled out of the tail.
+ */
+const alreadyFailed = results.some((r) => r.outcome.startsWith("FAILURE"));
+const deadline = Date.now() + 15 * 60_000;
   let seen = "";
-  while (Date.now() < deadline) {
+  /** always check npm at least once, so the report names what IS published even when a workflow already failed */
+  do {
     try {
       seen = (await run("npm", ["view", "teapot-coding-agent", "version"])).stdout.trim().split("\n").pop() ?? "";
     } catch {
       seen = "";
     }
     if (seen === versionArg) break;
+    if (alreadyFailed) break;
     await sleep(POLL_MS);
-  }
+  } while (Date.now() < deadline);
+  const failedAt = results.find((r) => r.outcome.startsWith("FAILURE"));
   results.push({
     workflow: `npm ${versionArg}`,
-    outcome: seen === versionArg ? "published" : `NOT YET (npm shows ${seen || "nothing"})`,
+    outcome:
+      seen === versionArg
+        ? "published"
+        : `NOT YET (npm shows ${seen || "nothing"})${failedAt ? ` — ${failedAt.workflow} ${failedAt.outcome}` : ""}`,
   });
 }
 
@@ -94,6 +106,16 @@ if (args.has("--json")) {
   for (const r of results) {
     console.log(`${r.workflow}: ${r.outcome}`);
     if (r.detail) console.log(r.detail);
+  }
+  /**
+   * The verdict goes LAST so a `tail` always shows it. MEASURED: v0.37.120's failing step ("Run pnpm test") was
+   * printed correctly and then scrolled away by the npm line, which is the one that looked like the answer.
+   */
+  const verdict = results.filter((r) => r.outcome.startsWith("FAILURE"));
+  if (verdict.length > 0) {
+    console.log(`VERDICT: NOT RELEASED — ${verdict.map((v) => `${v.workflow}${v.detail ? ` (${v.detail})` : ""}`).join("; ")}`);
+  } else {
+    console.log(`VERDICT: ${versionArg} published`);
   }
 }
 

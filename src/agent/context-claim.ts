@@ -26,6 +26,11 @@ const STOP_PATTERNS = [
   /上下文[^。\n]{0,10}(?:快|即将|要)?(?:用满|耗尽|不足)/,
   /(?:token|上下文)[^。\n]{0,12}(?:预算|额度)[^。\n]{0,12}(?:不足|耗尽)/,
   /(?:context|token)s?[\s-]*(?:window|limit)[^.\n]{0,40}(?:stop|halt|end|paus|abort)/i,
+  // the reasoning-side phrasing measured in akku1139/teapot#201's follow-up report
+  /context (?:is |was )?(?:nearly |almost )?(?:exhausted|full|gone|out)/i,
+  /out of context (?:to|for)/i,
+  /can'?t reliably continue/i,
+  /context[- ]blocked/i,
   // deepseek-ai/DeepSeek-V3#1737 / #1744: the web product's own wording, reproduced by the model
   /le?ngth\s*limit[^.\n]{0,20}(?:reached|exceeded|hit)/i,
   /(?:your )?chat limit (?:has )?(?:finished|been reached|reached)/i,
@@ -71,4 +76,31 @@ export function usageLine(used: number, budget: number): string {
   if (!Number.isFinite(budget) || budget <= 0) return `context ${fmt(used)} tokens used`;
   const pct = Math.max(0, Math.min(100, Math.round((used / budget) * 100)));
   return `context ${pct}% (${fmt(used)}/${fmt(budget)} tokens)`;
+}
+
+/**
+ * …and the OTHER thing that gets reported as "context is exhausted": the model has run out of its own ideas.
+ *
+ * "コンテキストが尽きたっていうのがコンテキストウィンドウが尽きたと勘違いしてるパターンと、自力の推論の限界に達した
+ * 場合がありそう" — two different problems with different answers. The window case is false and gets corrected with
+ * numbers; being STUCK is real, and telling the model to continue would just spin. What a stuck agent needs is to
+ * name the question it cannot answer and hand it over (ask_user) or change angle — not another turn of the same.
+ */
+const OWN_LIMIT_PATTERNS = [
+  /(?:reasoning|analysis|own) (?:limit|limits|capacity)s?\b/i,
+  /reached (?:the )?limits? of my (?:reasoning|analysis|understanding)/i,
+  /can'?t (?:reason|figure|work) (?:this |it )?out (?:any (?:further|longer))?/i,
+  /no (?:further|more) (?:ideas|approaches|options|progress)/i,
+  /(?:推論|思考|自力)[^。\n]{0,12}(?:限界|行き詰|手詰)/,
+  /(?:打つ手|手立て|これ以上)[^。\n]{0,10}(?:ない|尽きた|思いつかない)/,
+  /行き詰ま(?:った|り)/,
+  /(?:无法再|想不出|推理到极限)/,
+];
+
+export function claimsOwnLimit(text: string | null | undefined): boolean {
+  const raw = String(text ?? "");
+  if (!raw.trim()) return false;
+  const t = withoutQuotedBlocks(raw);
+  if (!t.trim()) return false;
+  return OWN_LIMIT_PATTERNS.some((re) => re.test(t));
 }

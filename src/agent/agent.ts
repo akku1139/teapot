@@ -8,7 +8,7 @@ import { createCatalog, SEARCH_TOOL, RUN_TOOL } from "./tool-catalog.ts";
 import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
-import { claimsContextLimit, usageLine } from "./context-claim.ts";
+import { claimsContextLimit, claimsOwnLimit, usageLine } from "./context-claim.ts";
 import { namesBlocker } from "./blocker.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
@@ -370,6 +370,14 @@ export class Agent {
   private lastTurnEndedAt: number | null = null;
   /** the last assistant text, so the loop can tell a context-limit stop from a real one (#201) */
   private lastAssistantText = "";
+  /**
+   * The last turn's REASONING.
+   *
+   * The claim usually lives here, not in the visible text: akku1139/teapot#201's follow-up shows a turn whose
+   * reasoning reads "My context is nearly exhausted … let me give a final status and stop" while the message it
+   * sends is an ordinary status. Checking only the message missed exactly the case that was reported.
+   */
+  private lastReasoning = "";
   /** how many times this stale round has been answered — bounded so the answer cannot become the loop */
   private contextClaimNudges = 0;
   /** #200: a finish(false) that names no blocker is questioned once, never twice */
@@ -387,19 +395,35 @@ export class Agent {
    * (#201) or inside `finish(goalComplete=false)`'s summary, which is how it actually arrived three times in
    * `mediapad-t5-root-attempt-2-2601e254` (#200 is the same event seen as a stopping habit).
    */
+  /**
+   * The answer to "I have run out of context".
+   *
+   * ONE answer for both things that get said this way: the (false) claim that the window is full, and the real
+   * stuck-in-my-own-reasoning case. They are hard to tell apart from the text — "どっちのパターンでも同じようなこと
+   * 喋るから混同してる可能性もある" — so the answer does not try: it states the MEASURED window and asks for a new
+   * perspective, which is the useful half of both.
+   */
   private contextClaimAnswer(where: "stop" | "finish"): string {
+    const head =
+      where === "finish"
+        ? "That finish() was refused: it gives the context window as the blocker, and the window is not yours to run out of."
+        : "You stopped, giving the context window as the reason.";
     return (
-      `${this.timeAnchor()}\n[harness] ` +
-      (where === "finish"
-        ? "That finish() was refused: its summary gives the context window as the blocker, and the window is not yours to run out of."
-        : "You stopped because of the context window.") +
-      ` The numbers above are measured, not estimated — the harness compacts automatically and has just done so.` +
-      `\nContinue the task. If this is a FALSE POSITIVE (you were quoting that phrase in a report rather than ` +
-      `stopping for it), say so and carry on, or call finish() with your summary if the work is actually done. ` +
-      `If you are genuinely blocked, finish(goalComplete=false) with a blocker that is NOT the context size — and ` +
-      `weigh it against the current goal first: a goal that is met is finish(goalComplete=true), not a stop.`
+      `${this.timeAnchor()}\n[harness] ${head} The numbers above are MEASURED, compaction is automatic and has ` +
+      `just run — so how much window is left is not something you have to guess, and continuing the same way ` +
+      `would land you here again in a few turns. Change the perspective instead:\n` +
+      `1. Write down what you have LEARNED (add_memory) and what is LEFT (set_todo), so nothing depends on ` +
+      `holding this conversation in your head.\n` +
+      `2. Name the exact question you cannot answer ("I cannot tell whether X, because Y") and call ask_user with ` +
+      `it — or list what you have already ruled out and pick a different mechanism that produces the same evidence.\n` +
+      `3. Choose the SMALLEST next step that produces evidence — one experiment, not a longer version of the same ` +
+      `attempt.\n` +
+      `If this is a FALSE POSITIVE (you were quoting the phrase), say so and carry on. finish(goalComplete=false) ` +
+      `only with a blocker that is NOT the context size.`
     );
   }
+
+
 
   private timeAnchor(): string {
     const clock = turnAnchor({
@@ -1656,16 +1680,27 @@ export class Agent {
          * carry on. Bounded, and reset by any round that does actual work, so the answer cannot become its own
          * spin.
          */
+        /**
+         * Either claim — "the window is full" (false, and corrected with numbers) or "I cannot see the next
+         * step" (real, and answered with a new perspective) — takes the same route. They are too similar in the
+         * text to separate safely, and the one answer covers both.
+         */
+        const windowClaim =
+          claimsContextLimit(this.lastAssistantText) ||
+          claimsContextLimit(this.lastReasoning) ||
+          claimsOwnLimit(this.lastAssistantText) ||
+          claimsOwnLimit(this.lastReasoning);
         if (
           this.contextClaimNudges < 2 &&
           !this.awaitingUser &&
-          claimsContextLimit(this.lastAssistantText)
+          windowClaim
         ) {
           this.contextClaimNudges += 1;
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "context-claim-answered",
             attempt: this.contextClaimNudges,
-            detail: "the agent stopped because of the context window — compaction is the harness's job, so it compacted and told the agent to continue (#201)",
+            via: "stop",
+            detail: "the agent stopped blaming its remaining capacity — the harness compacted and answered with the measured window plus a fresh-perspective instruction (#201)",
           });
           await this.maybeCompact(true);
           const msg = this.contextClaimAnswer("stop");
@@ -1802,7 +1837,10 @@ export class Agent {
         fin.goalComplete !== true &&
         !this.awaitingUser &&
         this.contextClaimNudges < 2 &&
-        claimsContextLimit(String(fin.summary ?? ""))
+        (claimsContextLimit(String(fin.summary ?? "")) ||
+          claimsContextLimit(this.lastReasoning) ||
+          claimsOwnLimit(String(fin.summary ?? "")) ||
+          claimsOwnLimit(this.lastReasoning))
       ) {
         this.contextClaimNudges += 1;
         await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -2309,6 +2347,7 @@ export class Agent {
         reasoning: res.reasoning,
       });
       this.lastAssistantText = m.content ?? "";
+      this.lastReasoning = res.reasoning ?? "";
       /**
        * Reset the "stop was questioned" counters only on REAL work.
        *

@@ -71,9 +71,16 @@ test("a 'context limit' stop is answered, not counted as an idle round (#201)", 
       const said = harnessPrompts.map((e) => String(dataOf(e).text ?? "")).join("\n");
       assert.match(said, /context \d+% \(/, "the answer must carry the REAL usage, not just reassurance");
       assert.match(said, /FALSE POSITIVE/, "and it must offer the way out when the detection is wrong");
+      /**
+       * "これ単純にcontinueするだけじゃ意味ないかもしれない / 視野を広くしてとかそういう指示を出さないと数ターン後
+       * にやっぱり停止する" — so the answer asks for a different WAY of working, not just another turn.
+       */
+      assert.match(said, /write down what you have LEARNED/i, "it must ask the agent to externalise what it knows");
+      assert.match(said, /SMALLEST next step/i, "and to shrink the next step instead of repeating the attempt");
+      assert.match(said, /Change the perspective/i, "and to change angle when the same wall returns");
       assert.match(
         said,
-        /compacts automatically/,
+        /compaction is automatic/,
         `the agent must be told the window is the harness's to manage; got: ${said.slice(0, 200)}`,
       );
       assert.ok(calls >= 2, `the loop must carry on after answering (model calls: ${calls})`);
@@ -196,6 +203,132 @@ test("finish(false) with no blocker is questioned ONCE, then accepted (#200)", a
       assert.ok(calls >= 2, `a second attempt must be accepted (model calls: ${calls})`);
       const after = events.filter((e) => e.type === "system_note" && dataOf(e).event === "goal-done");
       assert.ok(Array.isArray(after), "and the round must end without corruption");
+    } finally {
+      await a.dispose();
+    }
+  });
+});
+
+test("a claim that lives only in the REASONING is caught too (#201)", async () => {
+  /**
+   * Verbatim from the follow-up report: the reasoning says "My context is nearly exhausted … let me give a final
+   * status and stop" while the message itself is an ordinary status line. Checking only the message missed
+   * exactly the reported case.
+   */
+  await useTempDirs(["ctx201e-", "ctx201f-"], async ([ws, sd]) => {
+    let calls = 0;
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            reasoning: "My context is nearly exhausted. I can't reliably continue, so let me give a final status and stop.",
+            message: { role: "assistant" as const, content: "現状のまとめ: 物理読みは全域動作。" },
+          };
+        }
+        return {
+          message: {
+            role: "assistant" as const,
+            content: "",
+            tool_calls: [
+              { id: "c1", type: "function" as const, function: { name: "finish", arguments: '{"goalComplete":true,"summary":"done"}' } },
+            ],
+          },
+        };
+      },
+      autoContinue: true,
+      continueDelayMs: 5,
+      maxConsecutiveIdleRounds: 3,
+    } as never) as InstanceType<typeof Agent>;
+    await a.init();
+    await a.setGoal("keep going");
+    a.enqueuePrompt("go", "user");
+    a.start("t");
+    try {
+      const deadline = Date.now() + 15_000;
+      let events: Awaited<ReturnType<typeof readEvents>> = [];
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+        events = await readEvents(`${sd}/chat.jsonl`);
+        if (events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered") && calls >= 2) break;
+      }
+      assert.ok(
+        events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered"),
+        "a claim made only in the reasoning must still be answered",
+      );
+      assert.ok(calls >= 2, `the loop must carry on (model calls: ${calls})`);
+    } finally {
+      await a.dispose();
+    }
+  });
+});
+
+test("being stuck takes the SAME route as a full window — one answer covers both (#201)", async () => {
+  /**
+   * "どっちのパターンでも同じようなこと喋るから混同してる可能性もある / どっちのパターンでもコンテキストウィンドウの
+   * 残りと、新しい視点の指示を出せばいいかなって感じ / 誤検出しそうだし".
+   *
+   * So the answer deliberately does not try to tell the two apart: it states the MEASURED window and asks for a
+   * new perspective, which is the useful half of both.
+   */
+  await useTempDirs(["ctx201g-", "ctx201h-"], async ([ws, sd]) => {
+    let calls = 0;
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            message: {
+              role: "assistant" as const,
+              content: "I have reached the limits of my reasoning on this step. これ以上は思いつきません。",
+            },
+          };
+        }
+        return {
+          message: {
+            role: "assistant" as const,
+            content: "",
+            tool_calls: [
+              { id: "c1", type: "function" as const, function: { name: "finish", arguments: '{"goalComplete":true,"summary":"done"}' } },
+            ],
+          },
+        };
+      },
+      autoContinue: true,
+      continueDelayMs: 5,
+      maxConsecutiveIdleRounds: 3,
+    } as never) as InstanceType<typeof Agent>;
+    await a.init();
+    await a.setGoal("keep going");
+    a.enqueuePrompt("go", "user");
+    a.start("t");
+    try {
+      const deadline = Date.now() + 15_000;
+      let events: Awaited<ReturnType<typeof readEvents>> = [];
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+        events = await readEvents(`${sd}/chat.jsonl`);
+        if (events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered") && calls >= 2) break;
+      }
+      assert.ok(
+        events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered"),
+        "a 'cannot see the next step' stop is answered by the same route",
+      );
+      const said = events
+        .filter((e) => e.type === "prompt" && dataOf(e).source === "harness")
+        .map((e) => String(dataOf(e).text ?? ""))
+        .join("\n");
+      assert.match(said, /context \d+% \(/, "the answer states how much window is left");
+      assert.match(said, /Change the perspective/i, "and asks for a new perspective");
+      assert.match(said, /ask_user/, "with a way to hand the question over");
     } finally {
       await a.dispose();
     }
