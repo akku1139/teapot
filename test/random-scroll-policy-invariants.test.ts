@@ -115,3 +115,14 @@ test("no correction while the reader is moving (#192)", async () => {
   assert.equal(correctionAllowed(10_000, 9_700), true, "quiet long enough to correct");
   assert.equal(correctionAllowed(10_000, 0), true, "nothing has scrolled yet");
 });
+
+test("a session switch always lands somewhere — never 'leave it where it is' (#192)", async () => {
+  /**
+   * The missing third answer. With a saved anchor whose row had disappeared, `select()` positioned nothing, so
+   * the feed stayed at `scrollTop = 0` — the oldest message in the window.
+   */
+  const { restoreTarget } = await import("../frontend/lib/scroll-restore.ts");
+  assert.equal(restoreTarget(null, false), "tail", "first visit → the tail");
+  assert.equal(restoreTarget({ eid: "e1" }, true), "anchor", "the saved row exists → restore it");
+  assert.equal(restoreTarget({ eid: "gone" }, false), "tail", "the saved row is gone → the tail, never the top");
+});

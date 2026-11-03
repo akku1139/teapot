@@ -1,6 +1,7 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
+import { restoreTarget } from "./lib/scroll-restore";
 import { evictOver, weighJson } from "./lib/retention";
 import { renderMarkdownCached } from "./lib/markdown";
 import { fmtDur } from "./lib/format";
@@ -1584,13 +1585,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       if (restore) {
         const f = feedEl();
         const row = f?.querySelector<HTMLElement>(`[data-eid="${CSS.escape(restore.eid)}"]`);
-        if (f && row) {
+        if (restoreTarget(restore, !!row) === "anchor" && f && row) {
           f.scrollTop += row.getBoundingClientRect().top - f.getBoundingClientRect().top + restore.delta;
           ledger = { top: f.scrollTop, height: f.scrollHeight };
           if (restore.atTail) scrollBottom(true);
           return;
         }
-        if (restore.atTail) scrollBottom(true);
+        /**
+         * The anchor row is GONE — the session was compacted, its events were evicted from the page, or the
+         * feed is showing a different window. There is nothing to restore to, and simply returning leaves the
+         * feed wherever it happens to sit, which after a switch is `scrollTop = 0`: the OLDEST message in the
+         * window. That is the report — "セッション遷移したときに遥か昔のメッセージに飛ばされることがある" — and
+         * why it is intermittent: it needs a saved anchor whose row no longer exists.
+         *
+         * Land at the tail instead, which is where a timeline starts.
+         */
+        scrollBottom(true);
         return;
       }
       scrollBottom(true);
