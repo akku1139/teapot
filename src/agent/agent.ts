@@ -3225,19 +3225,27 @@ export class Agent {
        * Only what's open is shown: a done item is noise after a compaction.
        */
       {
-        const open = this.todo
-          .split("\n")
-          .filter((l) => /^\s*-\s*\[\s\]/.test(l))
-          .slice(0, 40);
+        /**
+         * The WHOLE list, not just the unchecked lines.
+         *
+         * todo.md is free-form input — the operator writes paragraphs into it, and the checklist is the part of it
+         * that survives a round trip, not the whole of it. Filtering to bullets would silently drop the context
+         * around them. The only case worth omitting is when every item is already done: then the list says nothing
+         * actionable, and its past is in the log.
+         */
+        const lines = this.todo.split("\n");
+        const items = lines.filter((l) => /^\s*-/.test(l));
+        const allDone = items.length > 0 && items.every((l) => /^\s*-\s*\[x\]/i.test(l));
+        const todoText = allDone ? "" : this.todo.trim();
         const goalText = this.goal.text.trim();
-        if (goalText || open.length) {
+        if (goalText || todoText) {
           this.messages.splice(1, 0, {
             role: "user",
             content:
-              `[harness] Your goal and open tasks, re-attached after compaction:\n` +
+              `[harness] Your goal and TODO list, re-attached after compaction:\n` +
               `goal (${this.goal.status}): ${goalText ? goalText.slice(0, 2_000) : "(none set)"}\n` +
-              (open.length
-                ? `open tasks (${open.length}):\n${open.join("\n")}\n` +
+              (todoText
+                ? `todo.md (verbatim):\n${todoText.slice(0, 8_000)}\n` +
                   `Update the list as you finish work (set_todo), so this list and reality cannot drift.`
                 : `no task is open in todo.md right now — if work remains, write it there`),
           });

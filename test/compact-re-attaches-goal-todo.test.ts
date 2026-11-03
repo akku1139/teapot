@@ -28,7 +28,7 @@ test("compaction re-attaches the goal and the OPEN tasks, not just the summary",
     const big = "x".repeat(2000);
     writeFileSync(
       `${sessionDir}/todo.md`,
-      "- [ ] fix the splice\n- [x] already done\n- [ ] verify on the device\n",
+      "TODO: splice work, round 3\nthese notes are context around the list\n- [ ] fix the splice\n- [x] already done\n- [ ] verify on the device\n",
     );
     let n = 0;
     const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
@@ -57,12 +57,14 @@ test("compaction re-attaches the goal and the OPEN tasks, not just the summary",
     const attached = texts.find((t) => t.includes("re-attached after compaction"));
     assert.ok(attached, "the goal/todo re-attachment must exist");
     assert.match(attached!, /keep going until the splice is verified/, "and carry the goal verbatim");
-    assert.match(attached!, /fix the splice\n- \[ \] verify on the device/, "and the open tasks, in order");
-    assert.doesNotMatch(
-      attached!,
-      /already done/,
-      "a finished item is noise after a compaction — only what is left is re-attached",
-    );
+    /**
+     * The whole list, not just the unchecked lines: todo.md is free-form, so filtering to `- [ ]` lines would drop
+     * the paragraphs around them. The only omission is a list that is ALL done — nothing actionable remains.
+     */
+    assert.match(attached!, /TODO: splice work, round 3/, "including the prose around the list");
+    assert.match(attached!, /- \[ \] fix the splice/, "and every item, done or not");
+    assert.match(attached!, /- \[ \] verify on the device/, "and every open item, in order");
+    assert.match(attached!, /already done/, "done items are kept: they are what makes the open ones legible");
     await agent.dispose();
   });
 });
