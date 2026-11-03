@@ -45,6 +45,8 @@ export interface ToolContext {
   onProgressGateReset?: () => void;
   onFileRead?: (path: string) => void;
   onBackgroundExit?: (info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }) => void;
+  /** fired when a background shell STARTS, so the count the UI shows can be pushed rather than polled */
+  onBackgroundStart?: (id: string) => void;
 }
 
 export interface ToolResult {
@@ -378,6 +380,14 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
   child.on("exit", (code) => notify(code));
   child.on("close", (code) => notify(code));
   map.set(id, sh);
+  /**
+   * Tell the UI the count changed.
+   *
+   * The header badge reads `bgRunning` off the agent snapshot, and a snapshot only reaches the browser on an
+   * `agent-update` — which nothing emitted when a job started or finished, so the badge was right only after
+   * an unrelated update happened to arrive (#197 "クリックしないと値更新されなかった").
+   */
+  ctx.onBackgroundStart?.(id);
   return id;
 }
 

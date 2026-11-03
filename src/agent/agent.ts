@@ -431,6 +431,7 @@ export class Agent {
       onIdleUnpark: () => this.unparkFromTool(),
       hasPendingPrompts: () => this.pendingPrompts.length > 0,
       onBackgroundExit: (info) => void this.onBackgroundJobExit(info),
+      onBackgroundStart: () => this.emitSnapshotUpdate(),
       onFileRead: (p) => this.trackFileRead(p),
     };
     this.mainSession = path.basename(opts.sessionDir);
@@ -619,7 +620,18 @@ export class Agent {
     this.recentReads = [p, ...this.recentReads.filter((x) => x !== p)].slice(0, 5);
   }
 
+  /**
+   * Push a fresh snapshot to the UI.
+   *
+   * `agent-update` is the only carrier of `bgRunning`, and it previously came from session-title writes only.
+   * Cheap: the snapshot is what the browser replaces on the other end anyway.
+   */
+  private emitSnapshotUpdate(): void {
+    bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
+  }
+
   private onBackgroundJobExit(info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }): void {
+    this.emitSnapshotUpdate();
     const ok = info.code === 0;
     const one = info.cmd.replace(/\s+/g, " ").slice(0, 80);
     void this.log.append("system_note", this.currentSession, this.currentBranch, {

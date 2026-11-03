@@ -32,7 +32,8 @@ import path from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 import { Agent } from "../src/agent/agent.ts";
-import { listBgShells } from "../src/agent/tools.ts";
+import { executeTool, killBgShells, listBgShells } from "../src/agent/tools.ts";
+import { bus } from "../src/bus.ts";
 import { waitFor } from "./helpers/wait-for.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 
@@ -151,5 +152,31 @@ test("dispose() kills a running background shell too — shutdown must not orpha
       false,
       "a background job survived harness shutdown, still burning CPU with nothing tracking it (#158)",
     );
+  });
+});
+
+test("starting a background shell notifies through the tool context — the push the badge needs (#197)", async () => {
+  /**
+   * The header badge reads `bgRunning` off the agent snapshot, and a snapshot only reaches the browser on an
+   * `agent-update`. Nothing emitted one when a job started or finished, so the count was whatever the last
+   * unrelated update had carried — reported as "クリックしないと値更新されなかった".
+   *
+   * The assertion is on the HOOK, not on "some update arrived": the session-title write already emits an
+   * agent-update, so an end-to-end "an update happened" check passes against the broken wiring (measured —
+   * two earlier versions of this test did exactly that).
+   */
+  await useTempDirs(["bg197a-", "bg197b-"], async ([ws, _sd]) => {
+    const started: string[] = [];
+    const ctx = {
+      cwd: ws!,
+      defaultTimeoutMs: 10_000,
+      maxOutputBytes: 10_000,
+      onBackgroundStart: (id: string) => started.push(id),
+    } as never;
+    const r = await executeTool("bash", JSON.stringify({ command: "sleep 3", background: true }), ctx);
+    assert.ok(r.ok, r.result);
+    assert.equal(started.length, 1, "starting a background shell must fire onBackgroundStart exactly once");
+    assert.match(r.result, new RegExp(`job ${started[0]}`), "and it names the job the tool reported");
+    killBgShells(ws!);
   });
 });
