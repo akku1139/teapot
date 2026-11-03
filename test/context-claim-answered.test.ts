@@ -45,15 +45,24 @@ test("a 'context limit' stop is answered, not counted as an idle round (#201)", 
     a.enqueuePrompt("go", "user");
     a.start("t");
     try {
+      /**
+       * Poll for what the assertions actually need — the note AND the harness prompt carrying the numbers.
+       *
+       * Waiting only for the note left a race: it is logged BEFORE the prompt, so the prompt could still be
+       * absent when `events` was read, and the "must carry the REAL usage" assertion failed. MEASURED: that is
+       * how v0.37.120's publish died — the product was fine, the test read the log a moment early.
+       */
       const deadline = Date.now() + 15_000;
       let events: Awaited<ReturnType<typeof readEvents>> = [];
-      let answered = false;
+      const answeredWithUsage = () =>
+        events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered") &&
+        events.some((e) => e.type === "prompt" && dataOf(e).source === "harness" && /context \d+% \(/.test(String(dataOf(e).text ?? "")));
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 25));
         events = await readEvents(`${sd}/chat.jsonl`);
-        answered = events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered");
-        if (answered && calls >= 2) break;
+        if (answeredWithUsage() && calls >= 2) break;
       }
+      const answered = events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered");
       assert.ok(
         answered,
         "the harness must ANSWER the claim (log context-claim-answered) instead of treating the round as idle",
