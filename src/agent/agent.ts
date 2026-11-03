@@ -7,6 +7,7 @@ import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
 import { createCatalog, SEARCH_TOOL, RUN_TOOL } from "./tool-catalog.ts";
 import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
+import { turnAnchor } from "./timing.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
 import { flattenToolName } from "./mcp-registry.ts";
@@ -358,6 +359,19 @@ export class Agent {
   private pendingSubReport = "";
   private compactPhase = "";
   private awaitingUser = false;
+  /** when the previous round finished, for the time anchor in harness messages (#194) */
+  private lastTurnEndedAt: number | null = null;
+
+  /**
+   * "21:04 · 1h12m into this session · 3m since the last turn".
+   *
+   * Attached to harness-generated prompts only: the system prompt is the provider's prefix-cache anchor, so a
+   * clock in there would invalidate the cache on every request. Reported as "AIが時間把握するのが極めて下手"
+   * — a five minute exploit and a device reboot read exactly like an instant in the transcript.
+   */
+  private timeAnchor(): string {
+    return turnAnchor({ now: Date.now(), startedAt: this.stats.startedAt, lastTurnAt: this.lastTurnEndedAt });
+  }
   private activityChars = 0;
   private turnsSinceProgress = 0;
   private consecutiveToolErrors = 0;
@@ -1609,9 +1623,10 @@ export class Agent {
           continue;
         }
         const isSub = !!this.opts.parent;
+        const anchor = this.timeAnchor();
         const nudge = isSub
-          ? `[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
-          : autoContinueNudge(this.goal.text);
+          ? `${anchor}\n[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`
+          : `${anchor}\n${autoContinueNudge(this.goal.text)}`;
         await this.log.append("prompt", this.currentSession, this.currentBranch, {
           source: "harness",
           text: nudge,
@@ -1651,6 +1666,7 @@ export class Agent {
         return;
       }
     }
+    this.lastTurnEndedAt = Date.now();
     if (!this.stopRequested && !this.awaitingUser) this.setStatus("idle", "round complete");
   }
   private async llmCall(
@@ -2662,7 +2678,7 @@ export class Agent {
     this.lastProgressAt = Date.now();
     this.activityChars = 0;
     this.turnsSinceProgress = 0;
-    const request = PROGRESS_REQUEST;
+    const request = `${this.timeAnchor()}\n${PROGRESS_REQUEST}`;
     await this.log.append("prompt", this.currentSession, this.currentBranch, {
       source: "harness",
       text: request,
