@@ -3163,24 +3163,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             const el = e.currentTarget;
             const now: TailSample = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
             const cause = classifyScroll(now, ledger, lastSampleHeight, lastSampleViewport);
-            if (
-              cause === "layout" &&
-              !atBottom() &&
-              resyncBudget > 0 &&
-              Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1 &&
-              /**
-               * …and only when the saved anchor still describes the top of the viewport.
-               *
-               * During an active gesture the anchor is up to 100ms old while the content moves ~200px a frame,
-               * so `resyncAfterUnskip` measured the distance from a row that had scrolled far away and moved the
-               * viewport by that whole distance. MEASURED from the operator's trace: an upward scroll jumping
-               * +199 / +263 / +445 px and then landing back on the value it had a second earlier.
-               */
-              anchorStillDescribesView(el)
-            ) {
-              resyncBudget--;
-              resyncAfterUnskip(el, unskipAnchor);
-            }
+            /**
+             * NO correction here any more — this is the gesture itself.
+             *
+             * `unskipAnchor` is at best ~100ms old, so correcting toward it during a scroll moves the viewport by
+             * however far the content travelled in that window. MEASURED from the operator's trace by scrolling a
+             * real session upward: backward jumps of +56 / +64 / +121 / +125 px with `内容高差 = 0`, i.e. no
+             * layout change at all — just the correction fighting the gesture.
+             *
+             * Layout corrections now happen only AFTER the fact: `reanchorAfterContentChange` (a rAF after the DOM
+             * actually changed) and `restoreAfterBoxChange` (the viewport changed). Both refuse to correct toward
+             * an anchor that no longer describes the top row, which during a scroll is every frame.
+             */
+            void cause;
             ledger = null;
             lastSampleHeight = now.height;
             lastSampleViewport = now.viewport;
