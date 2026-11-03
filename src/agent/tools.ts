@@ -485,6 +485,27 @@ export function killBgShell(cwd: string, id: string, stateDir?: string): boolean
   return false;
 }
 
+/**
+ * How many background shells are running in this workspace right now.
+ *
+ * The header badge used to be fetched only when it was CLICKED, so the count was whatever it had been at the
+ * last click — "クリックしないと値更新されなかった" (#197). It now rides on the agent snapshot, which is pushed
+ * on every update, so there is nothing to fetch and nothing to go stale.
+ */
+export function runningBgShellCount(cwd: string): number {
+  const m = bgShellsByWs.get(cwd);
+  if (!m) return 0;
+  let n = 0;
+  for (const sh of m.values()) {
+    if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000) {
+      m.delete(sh.id);
+      continue;
+    }
+    if (!sh.exited) n++;
+  }
+  return n;
+}
+
 export function hasRunningBgShells(cwd: string): boolean {
   const m = bgShellsByWs.get(cwd);
   if (!m) return false;

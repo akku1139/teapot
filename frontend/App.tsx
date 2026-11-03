@@ -114,6 +114,7 @@ interface Agent {
   session: string; branch: string; goal: { status: string; text: string; verify?: string; audit?: { verdict: "approved" | "changes-required"; feedback: string; at: string } };
   sessionTitle?: string;
   workspaceMissing?: boolean;
+  bgRunning?: number;
   latestProgress: any; stats: any; model: string; provider?: string;
   reasoningEffort?: string; effortSupported?: boolean; effortOptions?: string[];
   pendingPrompts?: number;
@@ -272,7 +273,21 @@ export default function App() {
   const isNarrow = () => window.innerWidth <= NARROW_PX;
   const [narrow, setNarrow] = createSignal(isNarrow());
   onMount(() => {
-    const onResize = () => setNarrow(isNarrow());
+    const onResize = () => {
+      const now = isNarrow();
+      if (now === narrow()) return;
+      setNarrow(now);
+      /**
+       * Crossing the boundary is asymmetric, on purpose:
+       *
+       *  - narrowing must NOT close the panel (#50): the operator is reading it and the window shrank around
+       *    them, so the current state is kept unless THIS mode has its own stored choice;
+       *  - widening restores the wide preference (or its default, open): a panel that was closed only because
+       *    the display was narrow has no reason to stay closed (#195).
+       */
+      const stored = localStorage.getItem(panelKey(now));
+      if (stored !== null || !now) setShowRight(readPanel(now));
+    };
     window.addEventListener("resize", onResize);
     onCleanup(() => window.removeEventListener("resize", onResize));
     onResize(); 
@@ -459,14 +474,25 @@ export default function App() {
     const eid = rows[found]!.dataset.eid ?? "";
     return eid ? { sel: `[data-eid="${CSS.escape(eid)}"]`, top: at(found).top } : null;
   }
-  const [showRight, setShowRight] = createSignal(
-    localStorage.getItem("teapot.panel") !== null
-      ? localStorage.getItem("teapot.panel") === "1"
-      : window.innerWidth > NARROW_PX,
-  );
+  /**
+   * The details panel has ONE preference per width mode, and its DEFAULT is per mode too.
+   *
+   * On a narrow display the panel is an overlay on top of the timeline (see the backdrop below), so "in the
+   * way" is not a matter of taste — but closing it there must not follow the operator back to a wide display.
+   * Two keys, one rule each: whichever mode you are in reads its own key and a manual toggle writes it there;
+   * the default is open when wide, closed when narrow.
+   * Reported as "幅が狭い表示のときにデフォルトで右パネルを閉じる / これ閉じると元の表示に戻した時に右パネル
+   * 閉じられててストレス".
+   */
+  const panelKey = (narrowNow: boolean) => (narrowNow ? "teapot.panel.narrow" : "teapot.panel");
+  const readPanel = (narrowNow: boolean) => {
+    const v = localStorage.getItem(panelKey(narrowNow));
+    return v === null ? !narrowNow : v === "1";
+  };
+  const [showRight, setShowRight] = createSignal(readPanel(isNarrow()));
   const setRight = (next: boolean) => {
     setShowRight(next);
-    localStorage.setItem("teapot.panel", next ? "1" : "0");
+    localStorage.setItem(panelKey(narrow()), next ? "1" : "0");
   };
   const toggleRight = () => setRight(!showRight());
   const closeRight = () => {
@@ -501,7 +527,24 @@ export default function App() {
   onMount(() => {
     const onChange = (e: MediaQueryListEvent) => setSysPrefersLight(e.matches);
     sysMql?.addEventListener("change", onChange);
-    onCleanup(() => sysMql?.removeEventListener("change", onChange));
+    /**
+     * Re-read the system preference when the tab becomes visible again.
+     *
+     * A machine that slept with this tab suspended does not reliably deliver the media query's `change` event
+     * on wake — the preference flipped while nothing was listening. Without this, "follow the system" stopped
+     * following it in exactly the situation it exists for: colours and background image disagreed with the OS
+     * after sleep (#196 "スリープ中に(?)システムテーマが切り替わると背景画像が変わらない").
+     */
+    const onWake = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = sysMql?.matches ?? false;
+      if (now !== sysPrefersLight()) setSysPrefersLight(now);
+    };
+    document.addEventListener("visibilitychange", onWake);
+    onCleanup(() => {
+      sysMql?.removeEventListener("change", onChange);
+      document.removeEventListener("visibilitychange", onWake);
+    });
   });
   createEffect(() => {
     const { active, repaired } = resolvedPainted();
@@ -2983,7 +3026,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               </span>
             </Show>
             {}
-            <Show when={bgJobs().length > 0}>
+            {/*
+              * Count comes from the live agent snapshot, so it is right without a click (#197
+              * "クリックしないと値更新されなかった"), and it only exists while something IS running: a
+              * "1 done" badge was both unclear and a layout shift, because the text changed width as jobs
+              * started and finished.
+              */}
+            <Show when={(sel()?.bgRunning ?? 0) > 0}>
               <button
                 type="button"
                 class="badge bgjobs"
@@ -2992,10 +3041,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   setShowBg(!showBg());
                   if (showBg()) void refreshBg();
                 }}
-                title={`background shells — ${bgJobs().filter((j) => j.running).length} running, ${bgJobs().length} total (click to inspect)`}
+                title={`${sel()!.bgRunning} background shell(s) running — click to inspect`}
               >
-                ⚙️ {bgJobs().filter((j) => j.running).length || bgJobs().length}
-                {bgJobs().some((j) => j.running) ? " running" : " done"}
+                ⚙️ {sel()!.bgRunning}
               </button>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>

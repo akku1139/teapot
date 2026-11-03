@@ -259,6 +259,36 @@ setGlobal(
 );
 setGlobal("WebSocket", MockWS);
 
+/**
+ * #196 — a controllable `prefers-color-scheme`.
+ *
+ * The app reads the system preference ONCE at mount and then listens for the media query's `change` event.
+ * A machine that slept with the tab suspended does not reliably deliver that event on wake, so the test needs
+ * to flip the answer and wake the tab itself. happy-dom's own matchMedia cannot be flipped, so it is replaced
+ * before the bundle runs.
+ */
+const mqlState = { light: false, listeners: [] as ((e: { matches: boolean }) => void)[] };
+Object.defineProperty(w, "matchMedia", {
+  configurable: true,
+  value: (query: string) => ({
+    get matches() {
+      return mqlState.light;
+    },
+    media: query,
+    addEventListener: (_t: string, cb: (e: { matches: boolean }) => void) => {
+      mqlState.listeners.push(cb);
+    },
+    removeEventListener: () => {},
+  }),
+});
+/**
+ * "Follow the system" with the two PRESET slots. No custom themes: the wallpaper path is covered by the real
+ * browser checks, and seeding themes here changes what the settings modal renders, which unrelated suites read.
+ */
+localStorage.setItem("teapot.theme.auto", "1");
+localStorage.setItem("teapot.theme.dark", "dark");
+localStorage.setItem("teapot.theme.light", "light");
+
 const requests: { url: string; method: string; body: any }[] = [];
 let baseFetch: typeof fetch | undefined;
 setGlobal("fetch", async (url, init) => {
@@ -316,6 +346,35 @@ async function waitFor(label, predicate, deadlineMs = 8000) {
 const bodyText = () => w.document.body.textContent ?? "";
 
 if (!(await waitFor("agent list", () => bodyText().includes("alpha")))) process.exit(1);
+
+/**
+ * #196 — "follow the system" must re-read the preference when the tab comes back.
+ *
+ * A machine that slept with the tab suspended does not reliably deliver the media query's `change` event on
+ * wake; the preference flipped while nothing was listening. So: flip the (stubbed) query, deliver ONLY a
+ * visibilitychange, and the painted theme must follow — that is the same value the background image is
+ * derived from.
+ */
+{
+  const painted = () => String(w.document.documentElement.dataset.theme ?? "");
+  const waitPainted = async (want: string, what: string) => {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      if (painted() === want) return;
+      if (Date.now() > deadline) {
+        console.error(`#196 REGRESSION (${what}): painted theme is ${JSON.stringify(painted())}, expected ${want}`);
+        process.exit(1);
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+  await waitPainted("dark", "boot: the dark slot is painted");
+  // the OS flips while the tab is suspended: no change event arrives, only a wake
+  mqlState.light = true;
+  w.document.dispatchEvent(new w.Event("visibilitychange"));
+  await waitPainted("light", "wake: the light slot follows the system after a visibilitychange");
+  console.log("follow-the-system re-reads on wake (#196)");
+}
 console.log("deep render ok: sidebar shows agent");
 
 if (!(await waitFor("runtime gauge", () => bodyText().includes("61.7% of 200k")))) process.exit(1);
@@ -3273,6 +3332,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   }
   console.log("a tool image renders through the agent blob route (#blobs)");
 }
+
 
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);

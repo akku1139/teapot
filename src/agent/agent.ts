@@ -5,7 +5,7 @@ import { storeImage, resolveImages } from "../log/image-store.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
 import { createCatalog, SEARCH_TOOL, RUN_TOOL } from "./tool-catalog.ts";
-import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, type ToolContext } from "./tools.ts";
+import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
@@ -1257,6 +1257,8 @@ export class Agent {
       live: this.isLive(),
       workspace: this.workspace,
       workspaceMissing: this.isGhost,
+      // live count for the header badge — see runningBgShellCount (#197)
+      bgRunning: runningBgShellCount(this.workspace),
       session: this.currentSession,
       ...(title ? { sessionTitle: title } : {}),
       branch: this.currentBranch,
