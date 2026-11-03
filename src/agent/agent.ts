@@ -374,6 +374,25 @@ export class Agent {
    * clock in there would invalidate the cache on every request. Reported as "AIが時間把握するのが極めて下手"
    * — a five minute exploit and a device reboot read exactly like an instant in the transcript.
    */
+  /**
+   * The answer to a "the context window made me stop" claim — the same words whether it arrived as prose
+   * (#201) or inside `finish(goalComplete=false)`'s summary, which is how it actually arrived three times in
+   * `mediapad-t5-root-attempt-2-2601e254` (#200 is the same event seen as a stopping habit).
+   */
+  private contextClaimAnswer(where: "stop" | "finish"): string {
+    return (
+      `${this.timeAnchor()}\n[harness] ` +
+      (where === "finish"
+        ? "That finish() was refused: its summary gives the context window as the blocker, and the window is not yours to run out of."
+        : "You stopped because of the context window.") +
+      ` The numbers above are measured, not estimated — the harness compacts automatically and has just done so.` +
+      `\nContinue the task. If this is a FALSE POSITIVE (you were quoting that phrase in a report rather than ` +
+      `stopping for it), say so and carry on, or call finish() with your summary if the work is actually done. ` +
+      `If you are genuinely blocked, finish(goalComplete=false) with a blocker that is NOT the context size — and ` +
+      `weigh it against the current goal first: a goal that is met is finish(goalComplete=true), not a stop.`
+    );
+  }
+
   private timeAnchor(): string {
     const clock = turnAnchor({
       now: Date.now(),
@@ -1641,14 +1660,7 @@ export class Agent {
             detail: "the agent stopped because of the context window — compaction is the harness's job, so it compacted and told the agent to continue (#201)",
           });
           await this.maybeCompact(true);
-          const msg =
-            `${this.timeAnchor()}\n[harness] You stopped because of the context window. The numbers above are ` +
-            `measured, not estimated: the harness compacts automatically and has just done so, so running out ` +
-            `of window is not something you can decide. Continue the task.\n` +
-            `If this is a FALSE POSITIVE — you were quoting that phrase in a report rather than stopping for it — ` +
-            `say so and carry on, or call finish() with your summary if the work is actually done. If you are ` +
-            `genuinely blocked, finish(goalComplete=false) with a blocker that is NOT the context size, and weigh ` +
-            `it against the current goal first: a goal that is met is finish(goalComplete=true), not a stop.`;
+          const msg = this.contextClaimAnswer("stop");
           await this.log.append("prompt", this.currentSession, this.currentBranch, {
             source: "harness",
             text: msg,
@@ -1770,6 +1782,34 @@ export class Agent {
     (call: { id: string; function: { name: string; arguments: string } }, m: ChatMessage) => Promise<"next" | "end">
   > = {
     finish: async (call, m) => {
+      /**
+       * A `finish(goalComplete=false)` whose summary blames the context window is not a blocker (#200/#201).
+       *
+       * MEASURED in `mediapad-t5-root-attempt-2-2601e254`: the stopping turns were NOT prose without tool calls —
+       * they were `finish(goalComplete=false)` calls whose summary read "コンテキスト上限のため停止します".
+       * Handling only the prose path would have missed every real occurrence.
+       */
+      const fin = safeParse(call.function.arguments);
+      if (
+        fin.goalComplete !== true &&
+        !this.awaitingUser &&
+        this.contextClaimNudges < 2 &&
+        claimsContextLimit(String(fin.summary ?? ""))
+      ) {
+        this.contextClaimNudges += 1;
+        await this.log.append("system_note", this.currentSession, this.currentBranch, {
+          event: "context-claim-answered",
+          attempt: this.contextClaimNudges,
+          via: "finish",
+          detail: "a finish(goalComplete=false) blamed the context window — refused, compacted, and told to continue (#201)",
+        });
+        await this.maybeCompact(true);
+        const msg = this.contextClaimAnswer("finish");
+        await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text: msg });
+        this.messages.push({ role: "user", content: msg });
+        await this.answerMeta(call, "(finish refused: the context window is the harness's to manage)");
+        return "next";
+      }
       this.pendingSubReport = ""; 
       await this.answerMeta(call, "(completion submitted for audit)");
       await this.handleFinish(call.function.arguments);
