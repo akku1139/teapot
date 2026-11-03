@@ -30,7 +30,7 @@ import { reconcilePending, type PendingEcho } from "./lib/pending-echo";
 import { resolveTimelineSession } from "./lib/session-index";
 import { rememberTextareaHeight, storedTextareaHeight, trackTextareaHeight } from "./lib/textarea-size";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
-import { retintTerminal, themeColors } from "./lib/terminal-theme";
+import { retintTerminal, surfaceAlphaFromDom, themeColors } from "./lib/terminal-theme";
 import { shellOutcome, shellHint, outcomeMarker } from "./lib/shell-outcome";
 import {
   treeRowsOf,
@@ -2036,13 +2036,33 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setPaneR((p) => (p === -1 ? -1 : paneIndexAfterClose(p, i, rest.length)));
   }
 
+  /**
+   * How opaque the terminal paints itself.
+   *
+   * xterm draws its own background, so CSS alone cannot let the wallpaper through — the theme value has to carry
+   * the alpha, and `allowTransparency` has to be on at construction for xterm to honour it.
+   */
+  const termAlpha = () => {
+    if (document.documentElement.dataset.bgImage !== "on") return 1;
+    /**
+     * The SAME alpha code blocks use, read from the same variable rather than picked by eye.
+     *
+     * With a wallpaper on, `--bg-darkest` (the code-block surface) is a `color-mix` at
+     * `--surface-alpha-darkest`, so the terminal has to take that number or the two surfaces read as different
+     * materials — "ターミナルの背景透過はコードブロックと同じ薄さにしてほしい".
+     */
+    return surfaceAlphaFromDom(document);
+  };
   createEffect(() => {
     void themeAuto();
     void fixedTheme();
     void sysPrefersLight();
     void sysLightTheme();
     void sysDarkTheme();
-    for (const [, s] of liveTerms) retintTerminal(s.term);
+    // the wallpaper is what decides the alpha, so it has to be a dependency of this retint
+    void activeBgImage();
+    const alpha = termAlpha();
+    for (const [, s] of liveTerms) retintTerminal(s.term, alpha);
   });
 
   function disposeAllTerms() {
@@ -2056,7 +2076,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   function ensureSession(tab: TermTab, host: HTMLElement): TermSession {
     let s = liveTerms.get(tab.key);
-    if (s) retintTerminal(s.term);
+    if (s) retintTerminal(s.term, termAlpha());
     if (!s) {
       const el = document.createElement("div");
       el.className = "termsession";
@@ -2065,7 +2085,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         cursorBlink: true,
         fontSize: 12.5,
         fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
-        theme: themeColors(),
+        // xterm only honours a translucent theme background with this on
+        allowTransparency: true,
+        theme: themeColors(termAlpha()),
+      });
+      /**
+       * Ctrl+Shift+C copies the selection (#198 "ターミナルで Ctrl+Shift+C でコピーできるように").
+       *
+       * Returning false keeps xterm from sending the chord to the shell, where it would be read as Ctrl+C and
+       * interrupt whatever is running — the behaviour the report is actually about. On macOS the same gesture is
+       * Cmd+C, which the browser already handles, so only the Ctrl+Shift form is claimed here.
+       */
+      t.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
+        if (ev.type !== "keydown") return true;
+        if (!(ev.ctrlKey && ev.shiftKey) || ev.altKey) return true;
+        if (ev.key !== "C" && ev.key !== "c") return true;
+        const sel = t.getSelection();
+        if (sel) void navigator.clipboard?.writeText(sel).catch(() => {});
+        ev.preventDefault();
+        return false;
       });
       const f = new FitAddon();
       t.loadAddon(f);

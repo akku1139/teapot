@@ -1731,6 +1731,21 @@ details.reasoning .thinkscroll {
   display: flex; flex-direction: column;
   background: var(--term-bg); border-top: 1px solid var(--line);
 }
+/**
+ * With a wallpaper on, the terminal joins the rest of the surfaces: the image shows through.
+ *
+ * The pane itself is xterm's own canvas, which paints from its theme — that alpha is set in
+ * `terminal-theme.ts` (the `--surface-alpha-darkest` level, i.e. exactly what code blocks use) and needs
+ * `allowTransparency` at construction. These two rules are the
+ * frame AROUND that canvas (the drawer and the tab bar), which are plain elements and would otherwise stay
+ * opaque and box the image out.
+ */
+html[data-bg-image="on"] .termdrawer {
+  background: color-mix(in srgb, var(--term-bg) calc(var(--surface-alpha-darkest) * 100%), transparent);
+}
+html[data-bg-image="on"] .termbar {
+  background: color-mix(in srgb, var(--bg-darkest-solid, #1a1c22) calc(var(--surface-alpha-darkest) * 100%), transparent);
+}
 .termgrip {
   height: 6px; cursor: ns-resize; background: var(--bg-light); opacity: .6;
   border-bottom: 1px solid var(--line);
