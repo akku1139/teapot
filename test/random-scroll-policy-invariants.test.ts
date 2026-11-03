@@ -101,3 +101,17 @@ test("a taller feed at the same top is never 'reader' (#185)", async () => {
     );
   });
 });
+
+test("no correction while the reader is moving (#192)", async () => {
+  /**
+   * A running session showed backward jumps of +154/+188/+407/+656 px during an upward scroll with the content
+   * height unchanged; an idle session showed none. The difference is that live tokens mutate the feed every
+   * frame, which schedules a correction — and a correction measured from an anchor one or two frames old moves
+   * the viewport by the distance scrolled since.
+   */
+  const { correctionAllowed } = await import("../frontend/lib/scroll-policy.ts");
+  assert.equal(correctionAllowed(10_000, 9_990), false, "the reader is mid-gesture");
+  assert.equal(correctionAllowed(10_000, 9_950), false, "100ms ago is still a gesture");
+  assert.equal(correctionAllowed(10_000, 9_700), true, "quiet long enough to correct");
+  assert.equal(correctionAllowed(10_000, 0), true, "nothing has scrolled yet");
+});

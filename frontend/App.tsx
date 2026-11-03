@@ -45,6 +45,7 @@ import {
   atTail,
   AT_TAIL_PX,
   classifyScroll,
+  correctionAllowed,
   distanceToTail,
   gapToTail,
   nextFollowing,
@@ -299,6 +300,8 @@ export default function App() {
   let feedMo: MutationObserver | undefined;
   let feedMoEl: HTMLElement | undefined;
   let feedMoRaf = 0;
+  /** when the viewport last moved by the reader's hand — corrections are refused while this is recent (#192) */
+  let lastScrollAt = 0;
   /**
    * Re-anchor the view after the feed's content changed size above the viewport.
    *
@@ -310,8 +313,38 @@ export default function App() {
     if (!unskipAnchor) return; // nothing has been read yet, so there is no anchor to hold
     const f = feedEl();
     if (!f) return;
+    /**
+     * A live session mutates the feed every frame (streaming tokens, tool rows), so a correction is scheduled
+     * every frame — including while the reader is scrolling. Then the saved anchor is one or two frames old and
+     * "correcting" toward it moves the viewport by the distance scrolled since: MEASURED as +154/+188/+407/+656
+     * px during an upward scroll, and never in an idle session because nothing scheduled a correction there.
+     *
+     * So a correction is only allowed once the reader has stopped, and until then the anchor is RE-BASELINED to
+     * where they actually are, so the next correction is measured from the right place.
+     */
+    if (!correctionAllowed(performance.now(), lastScrollAt)) {
+      unskipAnchor = firstVisibleRow(f);
+      unskipAnchorAt = performance.now();
+      return;
+    }
+    /**
+     * Only a change in the CONTENT'S SIZE moves what is on screen, and only that difference is worth correcting.
+     *
+     * The mutation observer fires for every streaming token and every tool row repaint — most of which change
+     * nothing above the viewport, so the honest delta is zero. Correcting anyway used the saved anchor's stale
+     * position and moved the viewport by the difference. "タイムラインに新しいイベントが届いた時だけその差分が
+     * 補正されればいい" is exactly the rule: measure, and correct only what actually changed.
+     */
+    if (f.scrollHeight === lastSampleHeight) {
+      unskipAnchor = firstVisibleRow(f);
+      unskipAnchorAt = performance.now();
+      return;
+    }
     if (!anchorStillDescribesView(f)) return;
+    const before = f.scrollHeight;
     resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_CONTENT_DELTA_PX);
+    lastSampleHeight = f.scrollHeight;
+    if (before !== lastSampleHeight) ledger = { top: f.scrollTop, height: f.scrollHeight };
   };
   /**
    * Is the saved anchor still the row at the top of the viewport?
@@ -363,6 +396,12 @@ export default function App() {
      * anchor still described the first visible row.
      */
     if (!contentChanged) {
+      publishGap(tailSample());
+      return;
+    }
+    if (!correctionAllowed(performance.now(), lastScrollAt)) {
+      unskipAnchor = firstVisibleRow(f);
+      unskipAnchorAt = performance.now();
       publishGap(tailSample());
       return;
     }
@@ -3177,6 +3216,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             void cause;
             ledger = null;
+            lastScrollAt = performance.now();
             lastSampleHeight = now.height;
             lastSampleViewport = now.viewport;
             lastSample = now;

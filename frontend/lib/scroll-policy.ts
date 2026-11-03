@@ -108,3 +108,20 @@ export function shouldShowJumpToPresent(following: boolean, v: Viewport): boolea
 }
 
 export const gapToTail = distanceToTail;
+
+/**
+ * May a layout correction be applied right now?
+ *
+ * Corrections work from a saved anchor, and the anchor is only meaningful while the reader is holding still.
+ * During a gesture the saved anchor is one or two frames old, so correcting toward it moves the viewport by
+ * however far the content travelled since — measured on a RUNNING session (live tokens mutate the feed every
+ * frame, which is what schedules a correction) as backward jumps of +154, +188, +407 and +656 px while an
+ * upward scroll was in progress. An IDLE session never showed them, because nothing schedules a correction.
+ *
+ * The window is generous because a wheel gesture does not fire a scroll event every frame; it only needs to
+ * cover "the operator is moving" versus "they stopped".
+ */
+export function correctionAllowed(now: number, lastScrollAt: number, quietMs = 200): boolean {
+  if (!lastScrollAt) return true;
+  return now - lastScrollAt >= quietMs;
+}
