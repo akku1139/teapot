@@ -1,4 +1,3 @@
-
 export interface MetaTool {
   name: string;
   spec: {

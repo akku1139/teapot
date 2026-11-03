@@ -1,4 +1,3 @@
-
 export interface TreeAgent {
   id: string;
   parent?: string;
@@ -41,7 +40,7 @@ export function treeRowsOf<T extends TreeAgent>(
         }
         for (const id of seenIds) {
           const d = agents.find((x) => x.id === id);
-          if (d && !d.workspaceMissing) return true; 
+          if (d && !d.workspaceMissing) return true;
         }
         return false;
       })
@@ -97,7 +96,7 @@ export function workspaceOf(agents: readonly TreeAgent[], id: string, seen = new
   const a = agents.find((x) => x.id === id);
   if (!a) return "";
   if (!a.parent) return a.workspace || "";
-  if (seen.has(id)) return a.workspace || ""; 
+  if (seen.has(id)) return a.workspace || "";
   seen.add(id);
   const parentWs = workspaceOf(agents, a.parent, seen);
   if (parentWs) return parentWs;
@@ -131,7 +130,7 @@ export function descendantsOf<T extends TreeAgent>(
   const guard = new Set(seen);
   for (const a of agents) {
     if (a.parent !== agentId) continue;
-    if (guard.has(a.id)) continue; 
+    if (guard.has(a.id)) continue;
     guard.add(a.id);
     out.push(a, ...descendantsOf(agents, a.id, guard));
   }
@@ -153,7 +152,7 @@ export function chatGroupKeyOf(agents: readonly TreeAgent[], a: TreeAgent): stri
 export function wsChatCountsOf(agents: readonly TreeAgent[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const a of agents) {
-    if (a.parent) continue; 
+    if (a.parent) continue;
     const ws = workspaceOf(agents, a.id);
     if (!ws) continue;
     counts.set(ws, (counts.get(ws) ?? 0) + 1);

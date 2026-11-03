@@ -1,4 +1,3 @@
-
 export interface RowLike {
   type: string;
   session?: string;

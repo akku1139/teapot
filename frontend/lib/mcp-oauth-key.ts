@@ -1,4 +1,3 @@
-
 export type OAuthStateLike = {
   required?: boolean;
   authorized?: boolean;
@@ -12,6 +11,6 @@ export const oauthStateFrom = (
 ): OAuthStateLike | null => {
   const key = String(name ?? "").trim();
   if (!key) return null;
-  if (/^\d+$/.test(key)) return null; 
+  if (/^\d+$/.test(key)) return null;
   return map?.[key] ?? null;
 };

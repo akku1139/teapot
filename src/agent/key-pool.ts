@@ -1,4 +1,3 @@
-
 export interface KeyPoolState {
   keys: string[];
   current: number;

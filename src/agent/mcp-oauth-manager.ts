@@ -1,8 +1,6 @@
-
 import { createServer, type Server } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
 import type {
   OAuthClientMetadata,
   OAuthClientProvider,
@@ -89,7 +87,7 @@ export class ServerAuth implements OAuthClientProvider {
       if (!loopback(a.hostname) || !loopback(b.hostname)) return false;
       return a.protocol === b.protocol && a.pathname === b.pathname;
     } catch {
-      return false; 
+      return false;
     }
   }
 
@@ -113,7 +111,7 @@ export class ServerAuth implements OAuthClientProvider {
   private registrationIsStale(): boolean {
     const stored = this.store.clientInformation as { redirect_uris?: unknown } | undefined;
     const uris = Array.isArray(stored?.redirect_uris) ? (stored.redirect_uris as string[]) : [];
-    if (uris.length === 0) return false; 
+    if (uris.length === 0) return false;
     return !uris.some((u) => this.redirectMatches(String(u)));
   }
 

@@ -1,4 +1,3 @@
-
 export function fmtDur(ms: number | undefined | null): string {
   if (ms === undefined || ms === null || !Number.isFinite(ms)) return "?";
   const n = Math.max(0, ms);

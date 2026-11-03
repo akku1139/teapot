@@ -1,4 +1,3 @@
-
 export type ShellOutcome = "timeout" | "aborted" | "exit" | "ok" | "empty";
 
 export function shellOutcome(

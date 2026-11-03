@@ -1,4 +1,3 @@
-
 export type TailSample = Viewport;
 
 export interface Viewport {

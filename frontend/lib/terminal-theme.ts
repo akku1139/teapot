@@ -1,4 +1,3 @@
-
 export interface XtermTheme {
   background?: string;
   foreground?: string;
@@ -55,6 +54,6 @@ export function retintTerminal(s: XtermLike): void {
 export function selectionFor(foreground: string): string {
   const hex = foreground.trim();
   const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (m) return `#${m[1]}47`; 
+  if (m) return `#${m[1]}47`;
   return "rgba(128, 128, 128, 0.35)";
 }

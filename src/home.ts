@@ -1,4 +1,3 @@
-
 export function homeDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.HOME) return env.HOME;
   if (env.USERPROFILE) return env.USERPROFILE;
@@ -12,6 +11,6 @@ export function homeDir(env: NodeJS.ProcessEnv = process.env): string {
 export function expandTilde(input: string, env: NodeJS.ProcessEnv = process.env): string {
   if (!/^~(?=$|[/\\])/.test(input)) return input;
   const home = homeDir(env);
-  if (!home) return input; 
+  if (!home) return input;
   return input.replace(/^~(?=$|[/\\])/, home);
 }

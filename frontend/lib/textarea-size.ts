@@ -1,4 +1,3 @@
-
 const KEY_PREFIX = "teapot.textareaH.";
 
 export function storedTextareaHeight(key: string): number {

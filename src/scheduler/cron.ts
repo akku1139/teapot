@@ -1,4 +1,3 @@
-
 export interface Schedule {
   raw: string;
   fields: [Set<number>, Set<number>, Set<number>, Set<number>, Set<number>];
@@ -9,7 +8,7 @@ const BOUNDS: [number, number][] = [
   [0, 23],
   [1, 31],
   [1, 12],
-  [0, 7], 
+  [0, 7],
 ];
 
 function parseField(part: string, min: number, max: number): Set<number> {
@@ -77,7 +76,7 @@ export function matches(schedule: Schedule, d: Date): boolean {
 }
 
 export function nextFireAt(schedule: Schedule, from = new Date()): string | null {
-  const startMinute = Math.floor(from.getTime() / 60_000) + 1; 
+  const startMinute = Math.floor(from.getTime() / 60_000) + 1;
   const horizon = 60 * 24 * 366;
   for (let i = 0; i < horizon; i++) {
     const d = new Date((startMinute + i) * 60_000);

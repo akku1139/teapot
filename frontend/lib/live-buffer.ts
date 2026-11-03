@@ -1,4 +1,3 @@
-
 export interface LiveBuf {
   text: string;
   reasoning: string;
@@ -136,8 +135,8 @@ export function pruneDeadLiveBuffers<T>(
   const doomed: string[] = [];
   for (const id of buffers.keys()) {
     const st = statusOf(id);
-    if (st === undefined) continue; 
-    if (isLiveStatus(st)) continue; 
+    if (st === undefined) continue;
+    if (isLiveStatus(st)) continue;
     doomed.push(id);
   }
   if (doomed.length === 0) return buffers as Map<string, T>;
@@ -164,7 +163,7 @@ export function clearThinkClockIfDone(
   selected: string | null | undefined,
   live: { text: string; reasoning: string } | null | undefined,
 ): number {
-  if (!startedAt) return 0; 
+  if (!startedAt) return 0;
   if (live) return startedAt;
   if (!selected) return 0;
   const a = agents.find((x) => x.id === selected);

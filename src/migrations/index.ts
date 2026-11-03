@@ -1,4 +1,3 @@
-
 export interface Migration {
   order: number;
   id: string;
@@ -31,4 +30,3 @@ export async function runMigrations(
   }
   return { applied };
 }
-

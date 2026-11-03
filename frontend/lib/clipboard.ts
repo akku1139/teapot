@@ -1,4 +1,3 @@
-
 export type CopyResult = "copied" | "unsupported" | "failed";
 
 export interface StagingTextarea {

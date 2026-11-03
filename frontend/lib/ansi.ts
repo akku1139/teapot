@@ -1,4 +1,3 @@
-
 export interface AnsiRun {
   text: string;
   classes: string[];

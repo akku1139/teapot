@@ -1,4 +1,3 @@
-
 export type AuditVerdict =
   | { kind: "approved"; reason: string }
   | { kind: "changes-required"; reason: string }

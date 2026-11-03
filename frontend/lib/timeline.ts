@@ -1,4 +1,3 @@
-
 import { pendingFloor, placeEchoesBelow, resequenceToDelivery } from "./timeline-order.ts";
 
 export interface TimelineEvent {
@@ -62,7 +61,7 @@ export function expandSubRows(events: readonly TimelineEvent[]): TimelineEvent[]
     }
     const d = e.data as { sub?: string; type?: string; data?: any };
     const kind = String(d?.type ?? "message");
-    if (kind === "state") continue; 
+    if (kind === "state") continue;
     out.push({ ...e, type: kind, data: { ...(d?.data ?? {}), actor: d?.sub } });
   }
   return out;

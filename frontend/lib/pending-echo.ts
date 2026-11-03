@@ -1,4 +1,3 @@
-
 export type PendingEcho = {
   id: string;
   text: string;

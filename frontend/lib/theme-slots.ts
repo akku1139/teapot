@@ -1,4 +1,3 @@
-
 export type AppearanceMode = "dark" | "light";
 
 export interface SlotTarget {

@@ -1,4 +1,3 @@
-
 import type { Client } from "@modelcontextprotocol/client";
 import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { SSEClientTransport } from "@modelcontextprotocol/client";
@@ -79,7 +78,7 @@ function toTools(list: { tools?: Array<Record<string, unknown>> }, server: strin
   const out: McpTool[] = [];
   for (const t of list?.tools ?? []) {
     const name = typeof t.name === "string" ? t.name : "";
-    if (!name) continue; 
+    if (!name) continue;
     const schema = t.inputSchema;
     out.push({
       name,

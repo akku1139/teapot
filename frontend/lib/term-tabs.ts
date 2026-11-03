@@ -1,4 +1,3 @@
-
 export function indexAfterAppend<T>(list: readonly T[]): number {
   return list.length;
 }

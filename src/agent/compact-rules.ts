@@ -1,4 +1,3 @@
-
 export interface Rule {
   level: "MUST" | "MUST NOT" | "SHOULD";
   text: string;

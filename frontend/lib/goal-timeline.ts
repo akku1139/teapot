@@ -1,4 +1,3 @@
-
 export type AuditPhase = "status" | "audit-started" | "audit" | "audit-failed" | "other";
 
 export interface GoalEventData {

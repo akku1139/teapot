@@ -1,4 +1,3 @@
-
 export function shouldWriteComposerValue(composing: boolean): boolean {
   return !composing;
 }

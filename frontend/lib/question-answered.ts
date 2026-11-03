@@ -1,4 +1,3 @@
-
 export interface QuestionEvent {
   type: string;
   seq: number;

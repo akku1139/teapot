@@ -1,4 +1,3 @@
-
 export interface ThemePalette {
   bgDarkest: string;
   bgDark: string;

@@ -1,4 +1,3 @@
-
 export interface ArchivableAgent {
   id: string;
   workspaceMissing?: boolean;

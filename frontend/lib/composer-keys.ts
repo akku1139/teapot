@@ -1,4 +1,3 @@
-
 export interface ComposerKeyState {
   key: string;
   shiftKey: boolean;

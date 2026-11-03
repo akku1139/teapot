@@ -1,4 +1,3 @@
-
 export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
 
 export const BASH_MAX_TIMEOUT_MS = 600_000;
