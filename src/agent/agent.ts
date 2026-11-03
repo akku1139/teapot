@@ -8,6 +8,7 @@ import { createCatalog, SEARCH_TOOL, RUN_TOOL } from "./tool-catalog.ts";
 import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
+import { claimsContextLimit, usageLine } from "./context-claim.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
 import { flattenToolName } from "./mcp-registry.ts";
@@ -361,6 +362,10 @@ export class Agent {
   private awaitingUser = false;
   /** when the previous round finished, for the time anchor in harness messages (#194) */
   private lastTurnEndedAt: number | null = null;
+  /** the last assistant text, so the loop can tell a context-limit stop from a real one (#201) */
+  private lastAssistantText = "";
+  /** how many times this stale round has been answered — bounded so the answer cannot become the loop */
+  private contextClaimNudges = 0;
 
   /**
    * "21:04 · 1h12m into this session · 3m since the last turn".
@@ -370,7 +375,20 @@ export class Agent {
    * — a five minute exploit and a device reboot read exactly like an instant in the transcript.
    */
   private timeAnchor(): string {
-    return turnAnchor({ now: Date.now(), startedAt: this.stats.startedAt, lastTurnAt: this.lastTurnEndedAt });
+    const clock = turnAnchor({
+      now: Date.now(),
+      startedAt: this.stats.startedAt,
+      lastTurnAt: this.lastTurnEndedAt,
+    });
+    /**
+     * …plus the one fact the model otherwise GUESSES: how much of the window is actually used.
+     *
+     * deepseek-ai/DeepSeek-V3#1669 measured a model declaring "上下文余量不足" at 44-47% of the window, after a
+     * compaction had succeeded — the numbers were never in front of it, so it inferred exhaustion from elapsed
+     * time and task size. Telling it the real percentage each turn costs nothing (this line is already
+     * per-message) and removes the inference.
+     */
+    return `${clock} · ${usageLine(this.contextSizeForBudgeting(), this.opts.contextTokenBudget)}`;
   }
   private activityChars = 0;
   private turnsSinceProgress = 0;
@@ -1601,6 +1619,45 @@ export class Agent {
           !this.goal.text.trim()
         )
           break;
+        /**
+         * The model stopped and blamed the context window (#201).
+         *
+         * "コンテキスト上限のため停止します" with no tool call and no finish() is not a blocker the model is
+         * entitled to declare: compaction is the harness's job and it runs automatically. Accepting the claim
+         * counted the round as idle until `maxConsecutiveIdleRounds` stopped the loop — measured three times in
+         * `mediapad-t5-root-attempt-2-2601e254`. So the loop answers it: compact for real, then say so and
+         * carry on. Bounded, and reset by any round that does actual work, so the answer cannot become its own
+         * spin.
+         */
+        if (
+          this.contextClaimNudges < 2 &&
+          !this.awaitingUser &&
+          claimsContextLimit(this.lastAssistantText)
+        ) {
+          this.contextClaimNudges += 1;
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "context-claim-answered",
+            attempt: this.contextClaimNudges,
+            detail: "the agent stopped because of the context window — compaction is the harness's job, so it compacted and told the agent to continue (#201)",
+          });
+          await this.maybeCompact(true);
+          const msg =
+            `${this.timeAnchor()}\n[harness] You stopped because of the context window. The numbers above are ` +
+            `measured, not estimated: the harness compacts automatically and has just done so, so running out ` +
+            `of window is not something you can decide. Continue the task.\n` +
+            `If this is a FALSE POSITIVE — you were quoting that phrase in a report rather than stopping for it — ` +
+            `say so and carry on, or call finish() with your summary if the work is actually done. If you are ` +
+            `genuinely blocked, finish(goalComplete=false) with a blocker that is NOT the context size, and weigh ` +
+            `it against the current goal first: a goal that is met is finish(goalComplete=true), not a stop.`;
+          await this.log.append("prompt", this.currentSession, this.currentBranch, {
+            source: "harness",
+            text: msg,
+          });
+          this.messages.push({ role: "user", content: msg });
+          this.lastAssistantText = "";
+          this.consecutiveIdleRounds = 0;
+          continue;
+        }
         if (++this.consecutiveIdleRounds > this.opts.maxConsecutiveIdleRounds) {
           this.consecutiveIdleRounds = 0;
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -2159,6 +2216,8 @@ export class Agent {
         toolCalls: m.tool_calls?.map((c) => ({ id: c.id, name: c.function.name })),
         reasoning: res.reasoning,
       });
+      this.lastAssistantText = m.content ?? "";
+      if (m.tool_calls?.length) this.contextClaimNudges = 0;
       this.messages.push(m);
       this.turnsSinceProgress++;
       this.activityChars += m.content?.length ?? 0;
