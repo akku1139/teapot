@@ -1743,8 +1743,26 @@ details.reasoning .thinkscroll {
 html[data-bg-image="on"] .termdrawer {
   background: color-mix(in srgb, var(--term-bg) calc(var(--surface-alpha-darkest) * 100%), transparent);
 }
+/**
+ * The tab bar paints NOTHING of its own when a wallpaper is on: the drawer beneath it already carries the
+ * surface, and two translucent layers composite (0.7 over 0.7 ≈ 0.91) into a strip denser than the pane it
+ * labels — the same "two owners of one surface" mistake the code blocks had. The `border-bottom` is what
+ * separates the bar, and it costs no opacity to keep.
+ */
 html[data-bg-image="on"] .termbar {
-  background: color-mix(in srgb, var(--bg-darkest-solid, #1a1c22) calc(var(--surface-alpha-darkest) * 100%), transparent);
+  background: transparent;
+}
+/**
+ * xterm's own stylesheet paints `.xterm-viewport` BLACK, and that is what you see where the canvas is
+ * transparent — so a translucent theme background composited over it produced a black terminal, not a
+ * see-through one. MEASURED: with the wallpaper on, the drawer was `… / 0.7` and the viewport was still
+ * `rgb(0, 0, 0)`.
+ *
+ * Scoped to the wallpaper case on purpose: with an opaque theme the canvas covers the viewport anyway, and this
+ * stays out of the way of anyone not using an image.
+ */
+html[data-bg-image="on"] .xterm .xterm-viewport {
+  background-color: transparent;
 }
 .termgrip {
   height: 6px; cursor: ns-resize; background: var(--bg-light); opacity: .6;
