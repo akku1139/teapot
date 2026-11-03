@@ -370,15 +370,8 @@ export default function App() {
       publishGap(tailSample());
       return;
     }
-    const anchorRow = unskipAnchor;
-    if (!anchorRow) return;
-    const el = f.querySelector<HTMLElement>(anchorRow.sel);
-    if (!el) return;
-    const delta = el.getBoundingClientRect().top - anchorRow.top;
-    if (delta) {
-      f.scrollTop += delta;
-      ledger = { top: f.scrollTop, height: f.scrollHeight };
-    }
+    // the same cap the scroll path uses: an uncapped correction is how a 445px jump got through
+    resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_DELTA_PX);
     publishGap(tailSample());
   };
 
@@ -1724,16 +1717,35 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         if (msg.event) settleLiveBuffer();
         pendingRefresh = true;
         if (document.visibilityState !== "visible") return;
-        if (timer) return;
-        timer = setTimeout(runFeedRefresh, 60);
+        scheduleFeedRefresh();
       }
       if (document.visibilityState === "hidden") {
         pendingRefresh = true;
         return;
       }
-      if (timer) return;
-      timer = setTimeout(runFeedRefresh, 120);
+      scheduleFeedRefresh();
     };
+    /**
+     * Coalesce refreshes into ONE animation frame instead of a 60/120ms timer.
+     *
+     * A timer lands the re-render AFTER the frame the gesture produced, so the scroll is applied, the picture is
+     * stable, and then the feed re-renders underneath it — reported as "スクロールすると何故か微妙なラグの後に
+     * スクロール位置がズレる". A frame callback runs before paint, so the anchor correction the refresh performs
+     * happens while the position is still being settled rather than as a visible second step. It is also the
+     * shape fluxer uses for the same problem (pending value + one rAF flush, no debounce timers).
+     */
+    let refreshRaf = 0;
+    function scheduleFeedRefresh() {
+      if (refreshRaf) return;
+      refreshRaf = requestAnimationFrame(() => {
+        refreshRaf = 0;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        void runFeedRefresh();
+      });
+    }
     pendingRefresh = false;
     const runFeedRefresh = async () => {
         timer = null;
@@ -3155,7 +3167,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               cause === "layout" &&
               !atBottom() &&
               resyncBudget > 0 &&
-              Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1
+              Math.abs(now.height - (lastSampleHeight ?? now.height)) > 1 &&
+              /**
+               * …and only when the saved anchor still describes the top of the viewport.
+               *
+               * During an active gesture the anchor is up to 100ms old while the content moves ~200px a frame,
+               * so `resyncAfterUnskip` measured the distance from a row that had scrolled far away and moved the
+               * viewport by that whole distance. MEASURED from the operator's trace: an upward scroll jumping
+               * +199 / +263 / +445 px and then landing back on the value it had a second earlier.
+               */
+              anchorStillDescribesView(el)
             ) {
               resyncBudget--;
               resyncAfterUnskip(el, unskipAnchor);
