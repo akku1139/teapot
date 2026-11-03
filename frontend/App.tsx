@@ -3275,8 +3275,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               unskipAnchorAt = t;
               unskipAnchor = firstVisibleRow(el);
             }
-            // the previous top is what lets a READER's upward gesture be told from a layout shift (#188)
-            const follow = nextFollowing(wasFollowing, cause, now, lastSample?.top);
+            /**
+             * The previous top is what lets a READER's upward gesture be told from a layout shift (#188).
+             *
+             * And an upward move wins over the classifier: whatever `cause` says, the content did not move under
+             * the operator — they moved it. Reported as "アイドル状態でもタイムライン一番下から1つ上にスクロール
+             * するときに、ブラウザの補助アニメーションなしでいきなりその高さまで遷移することがある": while
+             * `following` stayed true, `pinned` re-asserted the tail and the notch was undone instantly.
+             */
+            const movedUp = lastSample !== undefined && now.top < lastSample.top - 0.5;
+            const follow = movedUp ? false : nextFollowing(wasFollowing, cause, now, lastSample?.top);
             if (follow !== wasFollowing) setAtBottom(follow);
             if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow && cause !== "reader") {
