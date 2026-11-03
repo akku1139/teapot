@@ -46,5 +46,9 @@ export function turnAnchor(args: {
     // below a few seconds the gap is noise, not information
     if (gap >= 3_000) parts.push(`${shortDuration(gap)} since the last turn`);
   }
-  return `[harness] ${parts.join(" · ")}`;
+  /**
+   * `now 21:09` rather than a bare `21:09` — reported as "21:09 がいきなり出されても意味不明". A timestamp with no
+   * label is a number in a sentence; the label is three characters.
+   */
+  return `[harness] now ${parts.join(" · ")}`;
 }

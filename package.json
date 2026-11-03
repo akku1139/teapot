@@ -46,7 +46,8 @@
     "test:portable": "node scripts/run-portable-tests.ts",
     "test:clean": "node scripts/clean-test-tmp.ts --apply",
     "test:tmp": "node scripts/clean-test-tmp.ts",
-    "release:wait": "node scripts/wait-npm-version.ts"
+    "release:wait": "node scripts/wait-npm-version.ts",
+    "pre-release": "pnpm typecheck && pnpm typecheck-web && pnpm typecheck:scripts && pnpm lint && pnpm build && pnpm test && pnpm test:portable && node scripts/smoke-web.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.4",

@@ -334,3 +334,61 @@ test("being stuck takes the SAME route as a full window — one answer covers bo
     }
   });
 });
+
+test("answering a claim does NOT summarise the conversation itself (#201)", async () => {
+  /**
+   * MEASURED on `mediapad-t5-root-attempt-2-2601e254`: a `finish(false)` that blamed the window triggered a full
+   * summarisation of 1,159 messages at 589k tokens on a 750k budget.
+   *
+   * The guard does not compact at all now: auto-compaction already fires when the budget is reached, and below it
+   * the measured numbers in the answer are the refutation. A branch that compacts "to prove the point" spends
+   * minutes summarising a conversation nobody was short of.
+   */
+  await useTempDirs(["ctx201i-", "ctx201j-"], async ([ws, sd]) => {
+    let calls = 0;
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async () => {
+        calls += 1;
+        const args =
+          calls === 1
+            ? { goalComplete: false, summary: "コンテキスト上限のため停止します。" }
+            : { goalComplete: true, summary: "done" };
+        return {
+          message: {
+            role: "assistant" as const,
+            content: "",
+            tool_calls: [
+              { id: `c${calls}`, type: "function" as const, function: { name: "finish", arguments: JSON.stringify(args) } },
+            ],
+          },
+        };
+      },
+      autoContinue: true,
+      continueDelayMs: 5,
+    } as never) as InstanceType<typeof Agent>;
+    await a.init();
+    await a.setGoal("keep going");
+    a.enqueuePrompt("go", "user");
+    a.start("t");
+    try {
+      const deadline = Date.now() + 15_000;
+      let events: Awaited<ReturnType<typeof readEvents>> = [];
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+        events = await readEvents(`${sd}/chat.jsonl`);
+        if (events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered") && calls >= 2) break;
+      }
+      assert.equal(
+        events.some((e) => e.type === "system_note" && dataOf(e).event === "context-compaction-started"),
+        false,
+        "a claim answered well under budget must not summarise the whole conversation",
+      );
+    } finally {
+      await a.dispose();
+    }
+  });
+});

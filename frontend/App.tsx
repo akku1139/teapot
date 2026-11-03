@@ -1,6 +1,7 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
+import { jumpTargetMatches } from "./lib/jump-target";
 import { closeLightbox, lightboxSrc, openLightbox } from "./lib/lightbox";
 import { evictOver, weighJson } from "./lib/retention";
 import { renderMarkdownCached } from "./lib/markdown";
@@ -965,13 +966,29 @@ const isTimelineLive = (): boolean => {
       });
     }
   };
-  const jumpToEvent = (eventId: string) => {
-    const el = document.querySelector<HTMLElement>(`[data-eid="${eventId}"]`);
-    if (el) {
+  /**
+   * Scroll to one event, and only to the one on screen.
+   *
+   * `data-eid` is not an identity: ids are per-session counters, so looking one up while the feed still renders the
+   * PREVIOUS session finds a row with the same id there and scrolls to it. Reported as a session switch that "flew to
+   * `<div class="msg withdrawn" data-eid="e90468" data-session="teapot-10-16854917">`" — a row from the session that
+   * was on screen a moment earlier.
+   *
+   * So the row must match the timeline being shown, and it is waited for (bounded) rather than jumped to after a
+   * guessed delay: the notification calls this 350ms/60ms after selecting, and those numbers were the whole
+   * synchronisation.
+   */
+  const jumpToEvent = (eventId: string, tries = 0) => {
+    const want = timelineId();
+    const el = document.querySelector<HTMLElement>(`[data-eid="${CSS.escape(eventId)}"]`);
+    const ok = !!el && jumpTargetMatches(el.dataset.session, want);
+    if (el && ok) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.classList.add("flash-target");
       setTimeout(() => el.classList.remove("flash-target"), 1600);
+      return;
     }
+    if (tries < 30) requestAnimationFrame(() => jumpToEvent(eventId, tries + 1));
   };
 
   const pairInfo = createMemo(() => {
@@ -1580,9 +1597,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       sel()?.ctx?.compacting ? { phase: String(sel()!.ctx!.compacting) } : null,
     );
     setAtBottom(true);
-    requestAnimationFrame(() => {
-      if (selected() === id) scrollBottom(true);
-    });
+    /**
+     * Keep pinning for a few frames, not one.
+     *
+     * The switch empties the feed and re-fills it in stages (cached events first, then the fetch), so a single
+     * `requestAnimationFrame` can pin before the taller render lands — leaving the viewport at whatever scrollTop the
+     * shorter render allowed, i.e. an arbitrary position "in the middle of an old conversation". MEASURED while
+     * empty: `scrollTop 0, rows 0`. Bounded, and it stops as soon as the tail is reached.
+     */
+    const settleAtTail = (tries: number) => {
+      if (selected() !== id || !atBottom()) return;
+      const f = feedEl();
+      if (f && distanceToTail({ top: f.scrollTop, height: f.scrollHeight, viewport: f.clientHeight }) <= 1) return;
+      scrollBottom(true);
+      if (tries < 12) requestAnimationFrame(() => settleAtTail(tries + 1));
+    };
+    requestAnimationFrame(() => settleAtTail(0));
     void backfillUntilScrollable();
   }
 
@@ -4257,7 +4287,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     if (selected() !== n.agentId && agents().some((a) => a.id === n.agentId)) select(n.agentId);
                     setShowNotifs(false);
                     if (n.eventId)
-                      setTimeout(() => jumpToEvent(n.eventId!), selected() !== n.agentId ? 350 : 60);
+                      // the jump waits for the row to exist on the timeline being shown; no guessed delay
+                      jumpToEvent(n.eventId!);
                   }}
                 >
                   <div class="nhead">

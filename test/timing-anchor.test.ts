@@ -21,7 +21,7 @@ test("the anchor says what time it is, how long the session has run, and the gap
   const startedAt = new Date("2026-05-01T10:00:00").toISOString();
   const now = new Date("2026-05-01T11:12:00").getTime();
   const line = turnAnchor({ now, startedAt, lastTurnAt: now - 3 * 60_000 });
-  assert.match(line, /^\[harness\] \d\d:\d\d · 1h12m into this session · 3m since the last turn$/);
+  assert.match(line, /^\[harness\] now \d\d:\d\d · 1h12m into this session · 3m since the last turn$/);
 });
 
 test("missing or unparseable parts are dropped, never rendered as NaN", () => {

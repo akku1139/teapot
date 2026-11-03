@@ -876,7 +876,7 @@ export class Agent {
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "unfinished-tools-closed",
         count: seen.size,
-        detail: "a restart left these tool calls without a result; they are marked not completed (#54)",
+        detail: "a restart left these tool calls without a result; they are marked not completed",
       });
   }
 
@@ -1647,7 +1647,7 @@ export class Agent {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "audit-retry-cap",
             rejects: this.consecutiveAuditRejects,
-            detail: "the completion audit rejected the same goal repeatedly ? stopping to avoid an unbounded retry loop (#128)",
+            detail: "the completion audit rejected the same goal repeatedly ? stopping to avoid an unbounded retry loop",
           });
           this.consecutiveAuditRejects = 0;
           break;
@@ -1708,9 +1708,8 @@ export class Agent {
             event: "context-claim-answered",
             attempt: this.contextClaimNudges,
             via: "stop",
-            detail: "the agent stopped blaming its remaining capacity — the harness compacted and answered with the measured window plus a fresh-perspective instruction (#201)",
+            detail: "the agent stopped blaming its remaining capacity — answered with the measured window plus a fresh-perspective instruction; auto-compaction handles the window on its own",
           });
-          await this.maybeCompact(true);
           const msg = this.contextClaimAnswer("stop");
           await this.log.append("prompt", this.currentSession, this.currentBranch, {
             source: "harness",
@@ -1737,7 +1736,7 @@ export class Agent {
         if (this.progressRequestedThisRound) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "auto-continue-suppressed",
-            detail: "a progress report was already requested this round (#95) — the round that carried it already continues the work, so no nudge is added and the loop goes on",
+            detail: "a progress report was already requested this round — the round that carried it already continues the work, so no nudge is added and the loop goes on",
           });
           this.progressRequestedThisRound = false;
           continue;
@@ -1854,9 +1853,8 @@ export class Agent {
           event: "context-claim-answered",
           attempt: this.contextClaimNudges,
           via: "finish",
-          detail: "a finish(goalComplete=false) blamed the context window — refused, compacted, and told to continue (#201)",
+          detail: "a finish(goalComplete=false) blamed the context window — refused and told to continue; auto-compaction handles the window on its own",
         });
-        await this.maybeCompact(true);
         const msg = this.contextClaimAnswer("finish");
         /**
          * Answer the tool call FIRST — in the log as well as in memory.
@@ -1894,7 +1892,7 @@ export class Agent {
         this.blockerAsks += 1;
         await this.log.append("system_note", this.currentSession, this.currentBranch, {
           event: "finish-without-blocker",
-          detail: "finish(goalComplete=false) named no blocker while the harness saw none either — asked for one instead of ending the round (#200)",
+          detail: "finish(goalComplete=false) named no blocker while the harness saw none either — asked for one instead of ending the round",
         });
         const msg =
           this.harnessMessage(
@@ -2753,7 +2751,7 @@ export class Agent {
             await this.log.append("system_note", this.currentSession, this.currentBranch, {
               event: "audit-unavailable-cap",
               attempts: this.auditUnavailableStreak,
-              detail: "the completion audit could not produce a verdict repeatedly — stopping so the operator decides (#128)",
+              detail: "the completion audit could not produce a verdict repeatedly — stopping so the operator decides",
             });
             await this.captureRecentTurns();
             return;
@@ -2817,7 +2815,7 @@ export class Agent {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "audit-unavailable-cap",
             attempts: this.auditUnavailableStreak,
-            detail: "the completion audit could not produce a verdict repeatedly — stopping so the operator decides (#128)",
+            detail: "the completion audit could not produce a verdict repeatedly — stopping so the operator decides",
           });
           await this.captureRecentTurns();
           return;
