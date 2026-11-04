@@ -46,9 +46,18 @@ function firstRule(selector: string): string {
  * so matching on selector text finds the comment's block instead.
  */
 function shrinkableRule(): { selector: string; body: string } {
-  const at = css.indexOf("min-width: 0; overflow: hidden; text-overflow: ellipsis");
+  /**
+   * Located by the SELECTOR, not by a declaration string.
+   *
+   * Finding it with `indexOf("min-width: 0; overflow: hidden; text-overflow: ellipsis")` worked until another rule
+   * with the same declaration appeared earlier in the stylesheet (`.wsheader .wsname`, added for #206) — from then
+   * on the badge-exclusion assertions were checked against that rule's selector and reported `.dot` shrinking,
+   * which is the opposite of what the test is about.
+   */
+  const marker = ".agent-item > span:not(.dot)";
+  const at = css.indexOf(marker);
   assert.notEqual(at, -1, "the shrinkable-id rule must exist (#60)");
-  const open = css.lastIndexOf("{", at);
+  const open = css.indexOf("{", at);
   const selStart = css.lastIndexOf("}", open) + 1;
   return {
     selector: css.slice(selStart, open),
