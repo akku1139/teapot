@@ -1854,7 +1854,14 @@ html[data-bg-image="on"] .termpane {
  * `!important` — so hovering the tab's close button showed a SQUARE tint in a pill-shaped tab ("ターミナル ✕ ボタンの
  * 背景に角丸が効いてない"). Rounding the element is enough; the blanket rule then paints a shape that fits.
  */
-.tabx { background: none; border: none; color: inherit; opacity: .5; cursor: pointer; font-size: var(--text-xs); padding: 0; border-radius: var(--radius-sm); }
+.tabx {
+  /* SQUARE (#207, "正方形なボタンの縦横の長さを揃える"). It used to size to its glyph, so a ✕ sat in a slightly
+     rectangular box that drifted when the tab's line-height changed. 16px is the square small enough for a tab
+     strip and big enough to click; `line-height: 1` keeps the glyph centred, as with `.iconbtn`. */
+  width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+  background: none; border: none; color: inherit; opacity: .5; cursor: pointer; font-size: var(--text-xs); padding: 0;
+  border-radius: var(--radius-sm); flex: 0 0 auto;
+}
 .tabx:hover { opacity: 1; color: var(--err); }
 .termbody { flex: 1; display: flex; min-height: 0; padding: 4px; gap: var(--space-2); background: var(--term-bg); }
 .termbody.split .termpane { width: 50%; }
@@ -2400,7 +2407,9 @@ html[data-bg-image="on"] .composer form {
 /* ---- modals & misc ---- */
 .iconbtn {
   background: var(--bg-light); border: none; color: var(--fg); border-radius: var(--radius-md);
-  width: 26px; height: 24px; cursor: pointer; font-size: var(--text-sm);
+  /* SQUARE (#207): a one-character button that is 2px wider than it is tall reads as lopsided, and the mismatch
+     was original (#44 only pinned the numbers). 26px both ways keeps the click target at least as large as before. */
+  width: 26px; height: 26px; cursor: pointer; font-size: var(--text-sm);
   /* centre the emoji in the button box. Without this the glyph sits on the
      text baseline, which reads as "not centred" — the first half of #44. */
   display: inline-flex; align-items: center; justify-content: center;

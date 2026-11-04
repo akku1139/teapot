@@ -93,8 +93,18 @@ test("the submit and max buttons are pinned too — 📎 now matches them (#44)"
 
 /* ---------- sizing preserved ---------- */
 
-test("icon buttons keep their fixed square-ish size (#44)", () => {
+test("one-character buttons are SQUARE (#207)", () => {
+  /**
+   * "正方形なボタンの縦横の長さを揃える" — a glyph button that is 2px wider than tall reads as lopsided, which is what
+   * the ✕ on the terminal tab showed. Both featured sizes are now square.
+   */
   const body = firstRule(".iconbtn");
-  assert.match(body, /width:\s*26px/, "must keep its width (#44)");
-  assert.match(body, /height:\s*24px/, "must keep its height (#44)");
+  const w = Number(/width:\s*(\d+)px/.exec(body)?.[1]);
+  const h = Number(/height:\s*(\d+)px/.exec(body)?.[1]);
+  assert.equal(w, h, `width and height must match, got ${w}x${h}`);
+  assert.ok(w >= 24, "and the box must stay a usable click target");
+  const tabx = firstRule(".tabx");
+  const tw = Number(/width:\s*(\d+)px/.exec(tabx)?.[1]);
+  const th = Number(/height:\s*(\d+)px/.exec(tabx)?.[1]);
+  assert.equal(tw, th, `the terminal tab's ✕ must be square too, got ${tw}x${th}`);
 });
