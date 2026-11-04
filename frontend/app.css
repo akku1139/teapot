@@ -964,6 +964,17 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 .wsheader:first-child { border-top: none; margin-top: 0; }
 .wsheader:hover { color: var(--fg); }
 .wsheader .wscaret { width: 12px; flex-shrink: 0; font-size: var(--text-xs); }
+/**
+ * The working-directory name elides instead of stretching the panel.
+ *
+ * It was a bare text node in a flex row: with no `min-width: 0` and no overflow rule on the item, a long directory
+ * name widened the row past the panel and the left rail scrolled horizontally ("ディレクトリ名が長いワークスペースで
+ * 左パネルが横スクロール可能になる"). A chat's own name already had this; the group header was the one spot that
+ * did not.
+ */
+.wsheader .wsname {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
 /* how many separate chats share this directory (#18) — several top-level
    chats routinely point at one working directory, and without a count the
    group reads as a single anonymous entry */

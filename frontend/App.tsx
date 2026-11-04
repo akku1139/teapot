@@ -2881,7 +2881,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         : row.wsHeader || ""
                   }
                   onclick={() => toggleWsGroup(`ws:${row.wsHeader}`, basenameOf(row.wsHeader!), row.wsCollapsedGroup === true, row.collapsedVia)}
-                ><span class="wscaret">{row.wsCollapsedGroup ? "▸" : "▾"}</span>{basenameOf(row.wsHeader!)}
+                ><span class="wscaret">{row.wsCollapsedGroup ? "▸" : "▾"}</span>
+                {/* a flex item needs min-width: 0 for its text to be able to shrink, otherwise a long directory name
+                    stretches the row and the whole left panel scrolls sideways — the chat name already has this */}
+                <span class="wsname" title={row.wsHeader}>{basenameOf(row.wsHeader!)}</span>
                   {}
                   <Show when={(wsChatCounts().get(row.wsHeader!) ?? 0) > 1 || row.wsCollapsedGroup}>
                     <span class="wscount">{wsChatCounts().get(row.wsHeader!) ?? 0}</span>

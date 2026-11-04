@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { cssRuleBody } from "./helpers/css.ts";
 
 /**
  * With a wallpaper, EVERY button is transparent — by ONE rule, not a list of classes.
@@ -87,4 +88,19 @@ test("the document itself never scrolls — only panels inside it (#ui)", () => 
   const block = CSS.slice(at, CSS.indexOf("}", at));
   assert.match(block, /overflow:\s*hidden/, "clipped, not merely hidden per-axis");
   assert.match(block, /overscroll-behavior:\s*none/, "and no rubber-band/scroll-chaining moves it anyway");
+});
+
+test("the workspace group header elides instead of widening the left panel (#206)", () => {
+  /**
+   * Reported: a long WORKSPACE directory name made the left panel horizontally scrollable, while a long SESSION name
+   * elided correctly.
+   *
+   * The header name was a bare text node in a flex row. A flex item needs `min-width: 0` (plus an overflow rule) for
+   * its contents to shrink at all, so the row stretched to fit the longest directory.
+   */
+  const body = cssRuleBody(CSS, ".wsheader .wsname");
+  assert.match(body, /min-width:\s*0/, "a flex item cannot shrink without it");
+  assert.match(body, /overflow:\s*hidden/, "and the excess must be hidden, not laid out");
+  assert.match(body, /text-overflow:\s*ellipsis/, "… for the part that does not fit");
+  assert.match(body, /white-space:\s*nowrap/, "no wrapping around the count badge");
 });
