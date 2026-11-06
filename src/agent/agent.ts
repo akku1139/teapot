@@ -1297,9 +1297,17 @@ export class Agent {
     return parts.join(". ");
   }
 
+  /**
+   * `by` is REQUIRED: the default was "operator", and the agent's own `finish(goalComplete=true)` was logged with it.
+   *
+   * The timeline then rendered "you marked this goal done — no audit runs for a manual completion" for a completion the
+   * AGENT had claimed and that was supposed to be audited ("finish(goalComplete=true) なのに … が発行される"). A
+   * default that guesses the actor is exactly the kind of thing that is right until somebody forgets an argument, so the
+   * compiler asks now.
+   */
   async setGoalStatus(
     status: GoalState["status"],
-    by: "operator" | "auditor" | "agent" = "operator",
+    by: "operator" | "auditor" | "agent",
   ): Promise<void> {
     this.goal = { ...this.goal, status, updatedAt: new Date().toISOString() };
     await this.writeGoalFile();
@@ -2950,7 +2958,7 @@ export class Agent {
           return;
         }
       } else {
-        await this.setGoalStatus("done");
+        await this.setGoalStatus("done", "agent");
       }
     }
     await this.appendFinalMessage(args);

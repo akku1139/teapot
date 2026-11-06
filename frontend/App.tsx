@@ -3279,27 +3279,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   </span>
                 </Show>
                 {}
-                <Show
-                  when={
-                    subsCollapsed(row.a.id) ||
-                    (row.chatCollapsedGroup === true && chatCollapsed().has(`chat:${row.a.id}`))
-                  }
-                >
-                  {(() => {
-                    const kids = descendantsOf(agents(), row.a.id);
-                    const running = kids.filter(
-            (k) => k.live ?? (k.status === "running" || k.status === "waiting" || k.status === "needs_operator"),
-          ).length;
-                    return kids.length > 0 ? (
-                      <span
-                        class={"subcount" + (running > 0 ? " live" : "")}
-                        title={`${kids.length} sub-agent${kids.length > 1 ? "s" : ""} (${running} active)`}
-                      >
-                        🧩 {kids.length}{running > 0 ? ` · ▶${running}` : ""}
-                      </span>
-                    ) : null;
-                  })()}
-                </Show>
+                {/* The count always shows, collapsed or not — the same rule the workspace header above follows.
+                    Reported: "サブエージェントは展開するとカウントが消えるのに、ワーキングディレクトリは常にカウントが
+                    出てる". Two row kinds, one question ("how much is in here?"), so one behaviour. */}
+                {(() => {
+                  const kids = descendantsOf(agents(), row.a.id);
+                  const running = kids.filter(
+                    (k) => k.live ?? (k.status === "running" || k.status === "waiting" || k.status === "needs_operator"),
+                  ).length;
+                  return kids.length > 0 ? (
+                    <span
+                      class={"subcount" + (running > 0 ? " live" : "")}
+                      title={`${kids.length} sub-agent${kids.length > 1 ? "s" : ""} (${running} active)`}
+                    >
+                      🧩 {kids.length}{running > 0 ? ` · ▶${running}` : ""}
+                    </span>
+                  ) : null;
+                })()}
                 <Show when={row.a.parent}><span class="subtag">🧩</span></Show>
                 <Show when={agentTasks(row.a.id).length > 0}>
                   <span class="mini-cron" title={agentTasks(row.a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>

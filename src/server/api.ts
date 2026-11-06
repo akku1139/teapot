@@ -1022,7 +1022,7 @@ const MAX_WS_CLIENTS = 64;
         );
         if (a.status !== "running") a.start("goal set");
       }
-    } else if (body.status) await a.setGoalStatus(body.status);
+    } else if (body.status) await a.setGoalStatus(body.status, "operator");
     else return c.json({ error: "text or status required" }, 400);
     return c.json({ ok: true });
   });

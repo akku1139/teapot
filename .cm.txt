@@ -1,0 +1,13 @@
+fix: the agent's own finish was logged as an operator action, and the sidebar count vanished on expand
+
+"finish(goalComplete=true) なのに `you marked this goal done — no audit runs for a manual completion` が発行される".
+`setGoalStatus` defaulted `by` to `"operator"`, and the agent's finish call passed no actor — so a completion the agent
+claimed (and that was supposed to be audited) was rendered as the OPERATOR ticking the box. `by` is now required, which
+is the fix and the guard: the compiler asks every caller, and there were only two. The agent path passes `"agent"`, the
+API path `"operator"`.
+
+"左パネルのサブエージェントは展開するとカウントが消えるのに、ワーキングディレクトリは常にカウントが出てる". The sub-agent
+count was gated on "collapsed" while the workspace count is not, so two rows answering the same question behaved
+differently. The count now always shows; only the disclosure of the children follows the collapse.
+
+Verified: pnpm pre-release (typecheck ×3, lint, build, 1735 tests, portable, smoke).

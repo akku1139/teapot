@@ -152,7 +152,7 @@ test("a NEW goal must not inherit the previous goal's rejection lineage (#A2)", 
       // goal2: a fresh contract in the same session
       await agent.setGoal("goal two");
       (agent as unknown as { goal: { verify?: string } }).goal.verify = "must hold";
-      await agent.setGoalStatus("active");
+      await agent.setGoalStatus("active", "auditor");
       agent.enqueuePrompt("again", "user");
       agent.start("t");
       await Promise.race([agent.settled(), wait(8000)]);
