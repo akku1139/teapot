@@ -312,6 +312,9 @@ export default function App() {
 
   /** when the viewport last moved by the reader's hand — corrections are refused while this is recent (#192) */
   let lastScrollAt = 0;
+  /** while now < this, a layout-classified sample may not re-enable the follow (#212) */
+  let readerUntil = 0;
+  const READER_LOCK_MS = 400;
   /**
    * Re-anchor the view after the feed's content changed size above the viewport.
    *
@@ -1711,6 +1714,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         }
         return;
       }
+      if (msg.kind === "terminal-closed" && msg.terminalId) {
+        /**
+         * The pty is gone (reaped while nothing was attached, or it exited). Drop the tab so the strip does not keep
+         * a control for something that no longer exists — "長時間放置すると開いてたターミナルが消失する" was the tab
+         * outliving its shell (#219).
+         */
+        setTermTabs((list) => {
+          const i = list.findIndex((t) => t.key === msg.terminalId);
+          if (i < 0) return list;
+          flashHint(
+            msg.reason === "idle"
+              ? "a terminal was closed after being idle — open a new shell with ＋"
+              : "a terminal exited",
+          );
+          return list.filter((_, j) => j !== i);
+        });
+        return;
+      }
       if (msg.kind === "compaction-progress") {
         if (msg.agentId !== selected()) return;
         if (msg.phase === "done") setCompacting(null);
@@ -2559,22 +2580,38 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (!id) return;
     const images = pendingImages();
     const echoKey = agents().find((a) => a.id === id)?.session || id;
+    /**
+     * The optimistic row exists BEFORE the request, and is only LABELLED by it.
+     *
+     * It used to be added after `await`, so the server's own broadcast (which happens inside `enqueuePrompt`, before
+     * the response) rendered the real prompt row first and the echo appeared afterwards as a second "queued" row.
+     * With two messages in flight that is a visible reorder, and alone it is the moment where a queued message
+     * briefly is not queued: "queuedになるメッセージを送信したときに、一瞬queuedじゃない表示になる、2個以上queuedが
+     * あったら何故か一瞬並び替わる" (#211).
+     */
+    const localId = `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+    writePending(echoKey, [
+      ...pendingFor(echoKey),
+      {
+        id: localId,
+        text,
+        at: Date.now(),
+        ...(images.length ? { images: images.map((i) => i.url) } : {}),
+      },
+    ]);
     try {
       const r = await api(`/api/agents/${id}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, start: true, ...(images.length ? { images } : {}) }),
       });
-      writePending(echoKey, [
-        ...pendingFor(echoKey),
-        {
-          id: `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
-          text,
-          at: Date.now(),
-          promptId: (r as any).promptId,
-          ...(images.length ? { images: images.map((i) => i.url) } : {}),
-        },
-      ]);
+      const pid = (r as { promptId?: string }).promptId;
+      if (pid) {
+        writePending(
+          echoKey,
+          pendingFor(echoKey).map((p) => (p.id === localId ? { ...p, promptId: pid } : p)),
+        );
+      }
       setPendingImages([]);
       if (shouldRestoreAfterSend(composerMaximized())) setComposerMaximized(false);
       autosizeComposer();
@@ -2584,7 +2621,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         });
       }
     } catch (ex) {
-      saveDraft(text); 
+      // the optimistic row must not survive a send that never happened
+      writePending(echoKey, pendingFor(echoKey).filter((p) => p.id !== localId));
+      saveDraft(text);
       console.error("send failed:", ex);
     }
   };
@@ -3327,7 +3366,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * `following` stayed true, `pinned` re-asserted the tail and the notch was undone instantly.
              */
             const movedUp = lastSample !== undefined && now.top < lastSample.top - 0.5;
-            const follow = movedUp ? false : nextFollowing(wasFollowing, cause, now, lastSample?.top);
+            if (movedUp) readerUntil = performance.now() + READER_LOCK_MS;
+            /**
+             * A reader's upward move LOCKS the follow for a moment, not just for this event.
+             *
+             * `nextFollowing` already stops following on an upward move it classifies as `reader`, and the previous
+             * change made an upward move win outright. That is still per-event: the next mutation or layout-classified
+             * sample inside the 24px tolerance re-enabled the pin and shoved the operator back — reported as
+             * "生成中に上に行こうとすると押し戻される / タッチUIで操作しづらい". Touch scrolling produces exactly that
+             * pattern: many small samples, some of them classified as layout.
+             */
+            const follow =
+              movedUp || performance.now() < readerUntil
+                ? false
+                : nextFollowing(wasFollowing, cause, now, lastSample?.top);
             if (follow !== wasFollowing) setAtBottom(follow);
             if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow && cause !== "reader") {

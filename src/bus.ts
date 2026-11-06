@@ -9,4 +9,6 @@ export type BusEvent =
   | { kind: "llm-delta"; agentId: string; sessionId: string; text: string; reasoning: string }
   | { kind: "event"; agentId: string; event: unknown }
   | { kind: "metrics"; metrics: unknown }
-  | { kind: "tasks"; tasks: unknown };
+  | { kind: "tasks"; tasks: unknown }
+  /** a pty the UI still has a tab for is gone — the tab must not dangle forever (#219) */
+  | { kind: "terminal-closed"; terminalId: string; reason: "idle" | "exited" | "requested" };

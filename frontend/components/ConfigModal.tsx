@@ -141,7 +141,23 @@ export function ThemeEditor(props: {
         {(t) => (
           <>
             <div class="cfggrid" style="margin-top:8px">
-              {}
+              {/*
+                * The theme's NAME is editable (#214 "テーマの名前を変える手段がない").
+                *
+                * Duplicating a theme copies its label, so two custom themes routinely ended up as "Dark copy" and
+                * "Dark copy" with no way to tell them apart — the only editable fields were the palette and the
+                * appearance. Renaming is a plain text input: the id does not change, so nothing that points at this
+                * theme breaks.
+                */}
+              <label class="trow">name
+                <input
+                  type="text"
+                  value={editing()!.label}
+                  maxlength={40}
+                  placeholder="theme name"
+                  oninput={(e) => patch((cur) => ({ ...cur, label: e.currentTarget.value }))}
+                />
+              </label>
               <label class="trow">appearance
                 <select
                   value={editing()!.mode}

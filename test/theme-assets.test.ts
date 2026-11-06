@@ -604,19 +604,22 @@ test("the MAXIMIZED composer shows the wallpaper too (#ui)", async () => {
    * must exist for BOTH the element and its `::before` (which is what actually covers the feed).
    */
   const css = stripSourceComments(await readSource("frontend/app.css"));
-  for (const sel of [".composer.maximized", ".composer.maximized::before"]) {
-    assert.ok(
-      css.includes(sel),
-      `${sel} must be covered by a wallpaper rule — its opaque fill hides the image (#ui)`,
-    );
-  }
-  // and the fill must be an alpha mix, not a solid colour
-  const at = css.indexOf('html[data-bg-image="on"] .composer.maximized');
-  const body = css.slice(at, css.indexOf("}", at));
-  assert.match(
-    body,
-    /color-mix\(/,
-    "the surface must take the theme's alpha — a solid colour is what hid the wallpaper (#ui)",
-  );
-  assert.match(body, /--surface-alpha/, "and the alpha is the theme's own setting");
+  const ruleBody = (selector: string) => {
+    const at = css.indexOf(selector);
+    assert.notEqual(at, -1, `${selector} must exist (#ui)`);
+    return css.slice(at, css.indexOf("}", at));
+  };
+  /**
+   * ONE surface, as with the code blocks.
+   *
+   * The wrapper used to take the composer alpha as well, on top of its `::before` backdrop and the form — three
+   * translucent fills compositing into something far denser than the normal composer ("入力欄最大化した時の背景透過率
+   * が違う", #217). So the wrapper paints NOTHING, and the alpha lives on the two layers that have a job: the
+   * backdrop (which must hide the timeline behind it, so it takes the PANEL alpha) and the form (the composer alpha,
+   * in the `.composer form` rule).
+   */
+  const wrapper = ruleBody('html[data-bg-image="on"] .composer.maximized {');
+  assert.match(wrapper, /background-color:\s*transparent/, "the wrapper must not add a third layer (#217)");
+  const backdrop = ruleBody('html[data-bg-image="on"] .composer.maximized::before');
+  assert.match(backdrop, /var\(--bg-dark\)/, "the backdrop takes a themed surface, not a solid colour (#ui)");
 });

@@ -2342,6 +2342,15 @@ export class Agent {
           cached: res.usage.cachedInputTokens,
         };
         await this.log.append("usage", this.currentSession, this.currentBranch, res.usage);
+        /**
+         * Push the new usage so the context meter moves while the agent works.
+         *
+         * `ctx.usedTokens` rides on the agent snapshot, which only went out on a session-title write — so the meter sat
+         * still for an entire turn and jumped at the end. Reported as "コンテキストウィンドウ消費がリアルタイムで
+         * 更新されてない? ターンごとにWSに乗せれば良いはず": once per LLM call is exactly that, and it is already the
+         * moment the number changes.
+         */
+        this.emitSnapshotUpdate();
       }
 
       // `assistantTurn` carries the thinking, which is what `reasoning_content` is sent from (#187)

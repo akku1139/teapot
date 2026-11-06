@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { toolShellFor } from "../agent/tools.ts";
+import { bus, type BusEvent } from "../bus.ts";
 
 export function terminalShellFor(
   platform: NodeJS.Platform,
@@ -244,8 +245,23 @@ export function reapIdleTerminals(now = Date.now()): number {
   for (const t of [...terms.values()]) {
     const attached = (sinks.get(t.id)?.size ?? 0) > 0;
     if (attached) continue;
-    if (t.exited || now - t.createdAt > IDLE_REAP_MS) {
-      if (closeTerminal(t.id)) n++;
+    const idle = now - t.createdAt > IDLE_REAP_MS;
+    if (t.exited || idle) {
+      if (closeTerminal(t.id)) {
+        n++;
+        /**
+         * Tell the UI, so the tab does not dangle.
+         *
+         * Reported as "長時間放置すると開いてたターミナルが消失する": the pty is reaped when nothing is attached (a
+         * sleeping browser drops its socket), and the tab stayed in the strip pointing at an id that no longer
+         * exists — the shell "disappeared" with no explanation. The client now removes the tab and says why.
+         */
+        bus.emit("update", {
+          kind: "terminal-closed",
+          terminalId: t.id,
+          reason: t.exited ? "exited" : "idle",
+        } satisfies BusEvent);
+      }
     }
   }
   return n;

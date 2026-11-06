@@ -1983,13 +1983,22 @@ html[data-bg-image="on"] .termpane {
  * wallpaper stopped showing through: "最大化した入力欄が背景付きテーマで背景透過されてない".
  * Two formulas for one surface is how they drifted apart; there is now one.
  */
-html[data-bg-image="on"] .composer.maximized,
+/**
+ * Maximizing must not ADD a layer.
+ *
+ * The wrapper, its `::before` backdrop and the `form` each painted a surface, so the maximized composer composited
+ * three translucent fills (≈0.39 over 0.39 over 0.39) and read far denser than the box it grew out of — "入力欄最大化
+ * した時の背景透過率が違う". The normal composer paints on the FORM only.
+ *
+ * So: the wrapper paints nothing, the `::before` backdrop keeps the PANEL alpha (it exists to hide the timeline
+ * behind, so it must stay opaque enough to do that), and the form keeps the composer alpha it always had. One
+ * surface for the box, one for the backdrop.
+ */
+html[data-bg-image="on"] .composer.maximized {
+  background-color: transparent;
+}
 html[data-bg-image="on"] .composer.maximized::before {
-  background-color: color-mix(
-    in srgb,
-    var(--bg-light-solid, #343845) calc(var(--surface-alpha-composer) * 100%),
-    transparent
-  );
+  background-color: var(--bg-dark);
 }
 /**
  * The PROMPT BOX is translucent at PANEL strength, not control strength.
@@ -3646,3 +3655,16 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
 }
 /* an image you can enlarge should look like one */
 .promptimg { cursor: zoom-in; }
+
+/**
+ * A long placeholder must not wrap (#218 "入力欄の横幅が狭いときにプレースホルダーが改行してスクロールが発生").
+ *
+ * The hint is a full sentence; at a narrow width it wrapped, which made the textarea's line box taller and the
+ * composer scroll for text the operator has not typed. The placeholder is a single line that truncates; the real
+ * content still wraps normally.
+ */
+.composer textarea::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
