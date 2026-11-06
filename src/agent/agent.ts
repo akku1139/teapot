@@ -9,6 +9,7 @@ import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isCo
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { claimsContextLimit, claimsOwnLimit, usageLine } from "./context-claim.ts";
+import { isDegenerateRepeat } from "./loop-guard.ts";
 import { namesBlocker } from "./blocker.ts";
 import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
@@ -1602,6 +1603,13 @@ export class Agent {
 
   private stopSeq = 0;
   private progressRequestedThisRound = false;
+  /** the agent called report_progress in this round — a report is not a stop (#215) */
+  private reportedThisRound = false;
+  /** bounded: the forced continue after a report may happen once per round */
+  private reportedNudges = 0;
+  /** the stream was aborted because the model looped on the same characters (#209) */
+  private degenerateOutput = false;
+  private degenerateStops = 0;
   private nudgedAtTurn = -1;
 
   onControlStatusChange: ((agentId: string, status: AgentStatus) => void) | null = null;
@@ -1671,6 +1679,48 @@ export class Agent {
           }
         }
         if (finished) this.consecutiveIdleRounds = 0;
+        /**
+         * A progress report is not a stopping point (#215 "progress report後は強制的にauto-continueする /
+         * `reported.` で止まるケースが多すぎる").
+         *
+         * The prompt asks for a report and says "end the turn right after the call", so the model files the report,
+         * answers "reported." and stops — while the work is unfinished. The loop continues here even with
+         * auto-continue off or no goal set, because filing a report is not a decision to stop. Once per round, and
+         * reset by any round that does actual work.
+         */
+        if (
+          !finished &&
+          this.reportedThisRound &&
+          this.reportedNudges < 1 &&
+          // a PAUSED goal means the operator parked this agent; forcing another turn would fight that
+          this.goal.status !== "paused"
+        ) {
+          this.reportedNudges += 1;
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "auto-continue-after-progress",
+            detail: "the round filed a progress report and then stopped — a report is not a stop, so the loop continues",
+          });
+          /**
+           * Worded for a session WITHOUT a goal too, because this branch runs before the goal check.
+           *
+           * A progress report can be filed by an agent that has no goal — the harness asks for one after real
+           * activity, and the operator's own message is what defines the task then. Saying "the goal is genuinely
+           * met" to an agent that has no goal is noise.
+           */
+          const msg = this.harnessMessage(
+            this.goal.text.trim()
+              ? `[harness] You filed a progress report and then stopped. A report is not a stopping point: ` +
+                `keep working on the goal above and call finish() only when it is genuinely met or you are ` +
+                `concretely blocked.`
+              : `[harness] You filed a progress report and then stopped. A report is not a stopping point: ` +
+                `continue what the operator asked for, and call finish() when it is done or you are concretely ` +
+                `blocked.`,
+          );
+          await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text: msg });
+          this.messages.push({ role: "user", content: msg });
+          this.consecutiveIdleRounds = 0;
+          continue;
+        }
         if (
           finished ||
           !this.opts.autoContinue ||
@@ -1753,6 +1803,28 @@ export class Agent {
         this.nudgedAtTurn = this.stats.turns + 1;
       } catch (err) {
         const name = (err as Error).name;
+        /**
+         * A loop we cut off is ASSISTED, not fatal: tell the model what happened and let it continue.
+         *
+         * Stopping the agent would make the operator restart it; leaving it to spin costs the budget. Bounded to
+         * three per round so a model that can only loop still ends.
+         */
+        if (this.degenerateOutput) {
+          this.degenerateOutput = false;
+          if (this.degenerateStops < 3 && !this.stopRequested) {
+            this.degenerateStops += 1;
+            const msg = this.harnessMessage(
+              `[harness] Your last output began repeating the same characters, so the stream was cut off. ` +
+                `That wastes the context and tells nobody anything. Restate the next step in one short ` +
+                `paragraph and then continue the task.`,
+            );
+            await this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text: msg });
+            this.messages.push({ role: "user", content: msg });
+            this.consecutiveIdleRounds = 0;
+            continue;
+          }
+          break;
+        }
         if (this.stopRequested || name === "AbortError" || name === "StopRequested" || name === "WaitForUser") break;
         const msg = (err as Error).message ?? String(err);
         await this.log.append("error", this.currentSession, this.currentBranch, { message: msg });
@@ -1927,6 +1999,7 @@ export class Agent {
     },
     report_progress: async (call, m) => {
       await this.recordProgress(call.function.arguments);
+      this.reportedThisRound = true;
       await this.answerMeta(call, "progress recorded");
       return "next";
     },
@@ -2238,6 +2311,14 @@ export class Agent {
 
   private async runTurnsUntilIdle(): Promise<boolean> {
     let finished = false;
+    /**
+     * Once per ROUND, not once per LLM turn.
+     *
+     * Clearing it each turn made the flag useless: the model files the report in one turn, the loop resets it before
+     * the next, and the "reported." that ends the round is seen with the flag already false — so the forced continue
+     * never fired (MEASURED: the #215 test failed with the per-turn reset).
+     */
+    this.reportedThisRound = false;
     const cap = Math.max(0, this.opts.maxTurnsPerRound ?? 200);
     for (let guard = 0; cap === 0 || guard < cap; guard++) {
       if (this.stopRequested) return finished;
@@ -2263,6 +2344,25 @@ export class Agent {
             text: s.text,
             reasoning: s.reasoning,
           } satisfies BusEvent);
+          /**
+           * Cut a degenerate stream off as it happens (#209).
+           *
+           * "DeepSeekが `  ********` を一生吐いたりするので無駄にトークン食って困る". Every chunk is a valid token, so
+           * nothing downstream notices — the only place that can stop it is the accumulator. Aborting here is what
+           * the abort controller is for; the catch below turns it into a nudge rather than a stop.
+           */
+          if (!this.degenerateOutput && isDegenerateRepeat(`${s.text}${s.reasoning}`)) {
+            this.degenerateOutput = true;
+            void this.log.append("system_note", this.currentSession, this.currentBranch, {
+              event: "degenerate-output-stopped",
+              chars: s.text.length + s.reasoning.length,
+              detail: "the model began repeating the same characters; the stream was aborted before it could burn the context",
+            });
+            try {
+              this.abort?.abort();
+            } catch {
+            }
+          }
         });
       } catch (err) {
         const partial = (err as { partial?: { text?: string; reasoning?: string } }).partial;
@@ -2374,6 +2474,7 @@ export class Agent {
       if (m.tool_calls?.some((c) => !NON_WORK_TOOLS.has(c.function.name))) {
         this.contextClaimNudges = 0;
         this.blockerAsks = 0;
+        this.reportedNudges = 0;
       }
       this.messages.push(m);
       this.turnsSinceProgress++;
