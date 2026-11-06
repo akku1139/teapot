@@ -2733,6 +2733,100 @@ console.log("deep render ok: feed rows present");
     back?.click();
     await new Promise((r) => setTimeout(r, 250));
   }
+
+  /**
+   * Returning to a session returns the reader to their place (#205).
+   *
+   * This feature was REMOVED in v0.37.124 after four measured failure modes (stale anchor, `data-eid` from another
+   * session, a restore written to a re-created feed, and `settle`/`pin-follow` dragging it back). It is back because
+   * each of those is now structurally impossible — so the test asserts the round trip, with the geometry faked the way
+   * the rest of this file fakes it (happy-dom does no layout).
+   */
+  {
+    const ROW_H = 100;
+    const VIEW = 800;
+    const geometry = (f: HTMLElement) => {
+      const rows = [...f.querySelectorAll<HTMLElement>("[data-eid]")];
+      Object.defineProperty(f, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ top: 0, bottom: VIEW, height: VIEW, left: 0, right: 0, width: 0, x: 0, y: 0 }),
+      });
+      rows.forEach((r, i) =>
+        Object.defineProperty(r, "getBoundingClientRect", {
+          configurable: true,
+          value: () => ({
+            top: i * ROW_H - (f as unknown as { scrollTop: number }).scrollTop,
+            bottom: i * ROW_H - (f as unknown as { scrollTop: number }).scrollTop + ROW_H,
+            height: ROW_H,
+            left: 0,
+            right: 0,
+            width: 0,
+            x: 0,
+            y: 0,
+          }),
+        }),
+      );
+      return rows.length;
+    };
+    const feedNow = () => w.document.querySelector(".feed") as HTMLElement | null;
+    const agentRow = (name: string) =>
+      [...w.document.querySelectorAll(".agent-item")].find((el) => new RegExp(`\\b${name}\\b`).test(el.textContent ?? "")) as
+        | HTMLElement
+        | undefined;
+
+    const f = feedNow();
+    const rows = f ? geometry(f) : 0;
+    if (!f || rows < 4) {
+      console.error(`#205 check: need a feed with rows to restore into (found ${rows}) — vacuous`);
+      process.exit(1);
+    }
+    Object.defineProperty(f, "scrollHeight", { configurable: true, get: () => rows * ROW_H });
+    Object.defineProperty(f, "clientHeight", { configurable: true, get: () => VIEW });
+    let top = 2 * ROW_H + 50; // 50px into the 3rd row
+    Object.defineProperty(f, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = Math.max(0, Math.min(v, Math.max(0, rows * ROW_H - VIEW)));
+      },
+    });
+    f.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    const wanted = top;
+
+    agentRow("beta")?.click();
+    await new Promise((r) => setTimeout(r, 250));
+    agentRow("alpha")?.click();
+    // patch the NEW feed as soon as its rows exist, so the restore has geometry to resolve against
+    for (let i = 0; i < 60; i++) {
+      const g = feedNow();
+      if (g && g !== f && g.querySelector("[data-eid]")) {
+        const n = geometry(g);
+        Object.defineProperty(g, "scrollHeight", { configurable: true, get: () => n * ROW_H });
+        Object.defineProperty(g, "clientHeight", { configurable: true, get: () => VIEW });
+        Object.defineProperty(g, "scrollTop", {
+          configurable: true,
+          get: () => top,
+          set: (v: number) => {
+            top = Math.max(0, Math.min(v, Math.max(0, n * ROW_H - VIEW)));
+          },
+        });
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await new Promise((r) => setTimeout(r, 300));
+
+    const tail = rows * ROW_H - VIEW;
+    if (Math.abs(top - wanted) > 2) {
+      console.error(
+        `#205 REGRESSION: coming back to the session landed at ${top}, not the ${wanted} the reader left at ` +
+          `(tail is ${tail}) — this is the "遥か昔のメッセージに飛ばされる" class of bug`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a session switch returns the reader to their place (#205)");
+  }
 }
 
 {

@@ -56,6 +56,7 @@ import {
   type TailSample,
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
+import { restoreTop, spotFromRows, type RowGeom, type SavedSpot } from "./lib/scroll-return";
 import { bindStoredHeight } from "./lib/resizable-height";
 import { agentLabel, agentLabelWithId } from "./lib/agent-label";
 import { queuedBadgeCount } from "./lib/queued-count";
@@ -1505,6 +1506,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   const timelineCache = new Map<string, { events: Ev[]; total: number; at: number; bytes: number }>();
   /**
+   * Where the operator was reading in each session, taken from the LIVE feed as they leave it (#205).
+   *
+   * This feature was removed in v0.37.124 after four measured failure modes: a saved anchor from a stale frame
+   * (81929 → 53721), a `data-eid` matching a DIFFERENT session, a restore applied to a feed element that had been
+   * re-created, and `settle`/`pin-follow` dragging the view back to the tail right after the restore. Every one of them
+   * is now structurally impossible: the spot is captured from the outgoing element and carries its session, the
+   * restore resolves a ROW (not a number) in the current feed and only then writes `scrollTop`, and the switch's pin
+   * stands down entirely when a restore was applied.
+   */
+  const scrollSpot = new Map<string, SavedSpot>();
+  const rowGeometry = (f: HTMLElement): RowGeom[] =>
+    [...f.querySelectorAll<HTMLElement>("[data-eid]")].map((r) => {
+      const b = r.getBoundingClientRect();
+      return { eid: r.dataset.eid ?? "", session: r.dataset.session ?? "", top: b.top, height: b.height };
+    });
+  /**
    * Scroll position is NOT restored across a session switch.
    *
    * It was, and it caused the same report three times: "セッション遷移したときに遥か昔のメッセージに飛ばされる".
@@ -1561,6 +1578,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           timelineCache.set(prevTid, { events: prevEvents, total: prevTotal, at: Date.now(), bytes });
         }
         evictOver(timelineCache, { maxEntries: TIMELINE_CACHE_MAX, maxBytes: TIMELINE_CACHE_MAX_BYTES });
+      }
+      /**
+       * Capture the spot from the OUTGOING feed while it still exists.
+       *
+       * A feed sitting at the tail is nothing worth remembering — remembering "bottom" and restoring it later is how a
+       * reader gets pinned where they did not want to be.
+       */
+      {
+        const el = feedEl();
+        if (el && prevTid) {
+          const here = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
+          const spot = spotFromRows(rowGeometry(el), el.getBoundingClientRect().top, prevTid);
+          if (spot && distanceToTail(here) > 1) scrollSpot.set(prevTid, spot);
+          else scrollSpot.delete(prevTid);
+        }
       }
       clearTimelineState();
       clearLocallyAnswered();
@@ -1638,10 +1670,45 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       scrollBottom(true);
       if (tries < 12) requestAnimationFrame(() => settleAtTail(tries + 1));
     };
+    /**
+     * Restore the reader's place, or land at the tail — never a guess in between (#205).
+     *
+     * The three answers are deliberately distinct: `applied` means the anchor row was FOUND in this timeline and its
+     * position was written; `give-up` means this timeline genuinely does not contain it (deleted message, different
+     * branch, older page never loaded) so the tail is the honest answer; `wait` means no rows have rendered yet.
+     */
+    const attemptRestore = (): "applied" | "wait" | "give-up" => {
+      const spot = scrollSpot.get(tid);
+      if (!spot) return "give-up";
+      const f = feedEl();
+      if (!f) return "wait";
+      const rows = rowGeometry(f);
+      if (!rows.length) return "wait";
+      const top = restoreTop(spot, rows, f.scrollHeight - f.clientHeight);
+      if (top === null) {
+        scrollSpot.delete(tid);
+        return "give-up";
+      }
+      f.scrollTop = top;
+      scrollSpot.delete(tid);
+      return "applied";
+    };
     void (async () => {
       await backfillUntilScrollable();
       if (selected() !== id || settleGen !== feedGeneration) return;
-      requestAnimationFrame(() => settleAtTail(0));
+      const restoreTries = (n: number) => {
+        if (selected() !== id || settleGen !== feedGeneration) return;
+        const verdict = attemptRestore();
+        // a restore that has just been written must NOT be followed by the switch pin, which is what undid this
+        // feature in v0.37.124 ("applied tries=0 from=2446 delta=-953" — restored, then dragged back)
+        if (verdict === "applied") return;
+        if (verdict === "wait" && n > 0) {
+          requestAnimationFrame(() => restoreTries(n - 1));
+          return;
+        }
+        requestAnimationFrame(() => settleAtTail(0));
+      };
+      requestAnimationFrame(() => restoreTries(12));
     })();
   }
 

@@ -2475,6 +2475,14 @@ export class Agent {
         this.contextClaimNudges = 0;
         this.blockerAsks = 0;
         this.reportedNudges = 0;
+        /**
+         * `reportedThisRound` deliberately SURVIVES work done after the report.
+         *
+         * Measured in prismrv-2 (events 1077→1087): `report_progress`, one `bash git status`, then a summary of the
+         * finished work — and the operator's verdict on narrowing the rule to "only a stop immediately after the
+         * report" was "これ緩めないほうがいいかも / このパターンは結構ある". A report followed by a little tidying and a
+         * summary IS the shape that will be answered, and it is answered once per round.
+         */
       }
       this.messages.push(m);
       this.turnsSinceProgress++;
