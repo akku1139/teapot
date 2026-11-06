@@ -70,6 +70,24 @@ function append(t: Term, chunk: string) {
   if (t.buffer.length > BUFFER_BYTES) t.buffer = t.buffer.slice(-BUFFER_BYTES);
 }
 
+/**
+ * The environment a pty child gets.
+ *
+ * It used to carry `COLUMNS=100`/`LINES=30`, frozen at spawn. ncurses honours those variables OVER the terminal's
+ * real size (`use_env(TRUE)` is its default), so a full-screen ncurses program — `nano` — ignored every resize while
+ * a non-ncurses pager (`less`) followed the ioctl and worked. That is exactly the report: "lessで高さ調整が効いてるけど
+ * nanoでは効いてません" (#172).
+ *
+ * The pty's size is authoritative and is applied with TIOCSWINSZ on attach and on every resize, so the environment must
+ * not carry a competing copy of it.
+ */
+export function terminalEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, TERM: "xterm-256color" };
+  delete env.COLUMNS;
+  delete env.LINES;
+  return env;
+}
+
 export function createTerminal(
   agentId: string,
   workspace: string,
@@ -81,7 +99,7 @@ export function createTerminal(
   }
   const shell = terminalShellFor(process.platform, process.env);
   const hasScript = process.platform !== "win32" && existsSync("/usr/bin/script");
-  const env = { ...process.env, TERM: "xterm-256color", COLUMNS: "100", LINES: "30" };
+  const env = terminalEnv(process.env);
   const child = hasScript
     ? spawn("script", ["-qec", shell, "/dev/null"], { cwd: workspace, env, detached: true })
     : spawn(shell, [], { cwd: workspace, env: { ...env, TERM: "dumb" }, detached: true });

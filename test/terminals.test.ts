@@ -320,3 +320,19 @@ test("a client size that arrives BEFORE the seed wins — the seed must stand do
   );
   closeTerminal(r.terminal.id);
 });
+
+test("the pty environment does not compete with the terminal's real size (#172)", async () => {
+  /**
+   * "lessで高さ調整が効いてるけどnanoでは効いてません".
+   *
+   * ncurses takes `COLUMNS`/`LINES` from the environment in preference to the tty size, so a spawn-time pair froze
+   * nano's geometry at 100x30 while `less` (which asks the tty) resized normally. The size is applied with TIOCSWINSZ,
+   * so the environment must not carry a second opinion.
+   */
+  const { terminalEnv } = await import("../src/server/terminals.ts");
+  const env = terminalEnv({ ...process.env, COLUMNS: "100", LINES: "30", HOME: "/home/x" });
+  assert.equal(env.COLUMNS, undefined, "COLUMNS must not be inherited by a full-screen program");
+  assert.equal(env.LINES, undefined, "nor LINES");
+  assert.equal(env.TERM, "xterm-256color", "but the terminal type still is");
+  assert.equal(env.HOME, "/home/x", "and the rest of the environment is passed through");
+});

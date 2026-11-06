@@ -2179,6 +2179,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const t = new Terminal({
         cursorBlink: true,
         fontSize: 12.5,
+        /**
+         * Three lines per wheel notch.
+         *
+         * The default is ONE line per notch, which on a 40-row drawer is 40 notches for a screenful — reported as
+         * "スクロールが1行ずつで遅い" (#172). (Shift+wheel already jumps a page through xterm's built-in
+         * `fastScrollModifier` handling; the option itself is not in this version's option type, so only the
+         * sensitivity is set here.)
+         */
+        scrollSensitivity: 3,
         fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
         // xterm only honours a translucent theme background with this on
         allowTransparency: true,
