@@ -350,3 +350,26 @@ test("reasoning the log does NOT carry survives (#40)", () => {
     "an unpersisted thinking stretch must stay visible (#40)",
   );
 });
+
+test("a transient non-live status does not delete the streaming bubble", async () => {
+  /**
+   * "キューなメッセージ送信した瞬間一瞬agentの thinking... だけ書かれてるメッセージが消える".
+   *
+   * Every prompt send re-reads the agent snapshot. `pruneDeadLiveBuffers` deleted the buffer for ANY status that is
+   * not live, so an `idle` that lasted one snapshot erased the streaming text and the next delta had to rebuild it.
+   * Only a terminal status (or a deleted agent) proves nothing more is coming.
+   */
+  const { pruneDeadLiveBuffers } = await import("../frontend/lib/live-buffer.ts");
+  const buf = new Map([["a1", { text: "half a sentence", reasoning: "why", at: Date.now() }]]);
+  for (const blip of ["idle", "waiting", "needs_operator", "running"]) {
+    const kept = pruneDeadLiveBuffers(buf, () => blip);
+    assert.equal(kept.size, 1, `the buffer must survive a "${blip}" snapshot`);
+  }
+  assert.equal(pruneDeadLiveBuffers(buf, () => "stopped").size, 0, "a stopped agent's buffer goes");
+  assert.equal(pruneDeadLiveBuffers(buf, () => "error").size, 0, "so does an errored one");
+  assert.equal(
+    pruneDeadLiveBuffers(buf, () => undefined).size,
+    1,
+    "an unknown status must not prune — a snapshot we have not received yet is not evidence (#40)",
+  );
+});

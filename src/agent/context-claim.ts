@@ -70,12 +70,20 @@ export function claimsContextLimit(text: string | null | undefined): boolean {
   return STOP_PATTERNS.some((re) => re.test(t));
 }
 
-/** "68k/200k tokens (34%)" — the ground truth the model does not otherwise have */
+/**
+ * "context 13% used (97k/750k, 653k to compaction)" — the ground truth the model does not otherwise have.
+ *
+ * The bare percentage was read BACKWARDS. A real session hit its own limit and wrote "私のコンテキストが実質的に尽きま
+ * した" while the harness line said `context 13% (97k/750k tokens)` — 13% USED, 87% free — and the operator's note on
+ * that comment is just "解釈が逆". A number with no direction is a coin flip, so the direction is now a word, and the
+ * remaining room is spelled out in the unit the model actually spends.
+ */
 export function usageLine(used: number, budget: number): string {
   const fmt = (n: number) => (n >= 1_000 ? `${Math.round(n / 1_000)}k` : String(Math.max(0, Math.round(n))));
   if (!Number.isFinite(budget) || budget <= 0) return `context ${fmt(used)} tokens used`;
   const pct = Math.max(0, Math.min(100, Math.round((used / budget) * 100)));
-  return `context ${pct}% (${fmt(used)}/${fmt(budget)} tokens)`;
+  const left = Math.max(0, budget - used);
+  return `context ${pct}% used (${fmt(used)}/${fmt(budget)} tokens, ${fmt(left)} until compaction)`;
 }
 
 /**

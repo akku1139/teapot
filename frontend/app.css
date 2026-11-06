@@ -153,6 +153,21 @@
   --term-bg: #170f1d; --term-fg: #f0dfe4;
 }
 
+/**
+ * Sakura — the operator's own `Sakura Dark (custom)` colour scheme, as a BUILT-IN.
+ *
+ * "configに `Sakura Dark (custom)` ってやつ置いてあるので、それの色使いを組み込みテーマにして (背景画像は入れない)".
+ * The palette is copied verbatim from that theme (`#22131f` … `#f2558e`); only the wallpaper is left out, so this is a
+ * colour scheme and not a picture.
+ */
+[data-theme="sakura"] {
+  --bg-darkest: #22131f; --bg-dark: #251322; --bg-mid: #311a2d; --bg-light: #3f213a;
+  --fg: #f6eaf3; --dim: #bba6bd; --line: #402b43;
+  --acc: #f2558e; --ok: #34bd73; --warn: #f5b83d; --err: #f43f5e; --tool: #a77bff;
+  --term-bg: #170b15; --term-fg: #f2e6f0;
+  color-scheme: dark;
+  --line-strong: #7d5578;
+}
 [data-theme="light"] {
   --bg-darkest: #eceef4; --bg-dark: #f6f7fa; --bg-mid: #e2e5ee; --bg-light: #ffffff;
   --fg: #24272f; --dim: #5d6470; --line: #d8dbe4;
@@ -1704,6 +1719,23 @@ html[data-bg-image="on"] .embed {
 .toolcopy { margin-left: auto; display: flex; gap: var(--space-2); flex-shrink: 0; }
 .msgfoot { display: flex; align-items: center; gap: var(--space-3); margin-top: 4px; color: var(--dim); font-size: var(--text-xs); }
 /* composer image staging + timeline thumbnails */
+/**
+ * The attachment strip sits ABOVE the prompt box, in its own row.
+ *
+ * It used to be the first child of the `form` — a flex row that ends in the buttons — so the chips pushed the
+ * textarea aside and the count became a `🖼 2` chip wedged next to `send`. Reported as
+ * "添付ファイル欄の設計微妙すぎる (send左の 🖼 2 も含めて) / 多分入力欄上にやったほうがいい".
+ *
+ * So: a full-width row above the box, chips left-aligned, one `clear` action, no redundant counter.
+ */
+.attachrow {
+  display: flex; gap: var(--space-3); margin-bottom: 6px; flex-wrap: wrap; align-items: flex-end;
+}
+.attachrow .attachclear {
+  background: none; border: 1px solid var(--line); color: var(--dim); font-size: var(--text-xs);
+  border-radius: var(--radius-md); padding: 2px 8px; cursor: pointer; align-self: flex-end; margin-bottom: 2px;
+}
+.attachrow .attachclear:hover { color: var(--fg); border-color: var(--dim); }
 .imgstage { display: flex; gap: var(--space-3); margin-bottom: 6px; flex-wrap: wrap; }
 .imgchip { position: relative; display: inline-flex; }
 .imgchip img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-md); border: 1px solid var(--line); }
@@ -1994,11 +2026,28 @@ html[data-bg-image="on"] .termpane {
  * behind, so it must stay opaque enough to do that), and the form keeps the composer alpha it always had. One
  * surface for the box, one for the backdrop.
  */
+/**
+ * Maximizing HIDES the timeline instead of painting over it.
+ *
+ * Painting over it was the earlier design, and it cannot work: a backdrop opaque enough to hide the feed also
+ * hides the wallpaper, and a backdrop translucent enough to show the wallpaper also shows the feed — which is
+ * exactly what was reported on 0.37.131 ("#217 : 悪化してそう", with the previous messages legible through the
+ * maximized box). One surface cannot be both.
+ *
+ * So the feed is REMOVED from the picture (`visibility: hidden`, not `display: none`: a display:none scroll
+ * container loses its `scrollTop`, and restoring a remembered position is how three rounds of "遥か昔に飛ばされる"
+ * happened). What remains behind the composer is the wallpaper, so the composer can be the same translucent panel
+ * it is in every other place.
+ */
+.channel:has(.composer.maximized) .feed {
+  visibility: hidden;
+}
 html[data-bg-image="on"] .composer.maximized {
   background-color: transparent;
 }
 html[data-bg-image="on"] .composer.maximized::before {
-  background-color: var(--bg-dark);
+  /* the panel surface, so the wallpaper reads through it exactly as it does through the panels */
+  background-color: color-mix(in srgb, var(--bg-dark-solid, #232630) calc(var(--surface-alpha) * 100%), transparent);
 }
 /**
  * The PROMPT BOX is translucent at PANEL strength, not control strength.

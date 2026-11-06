@@ -764,8 +764,15 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
       const imgs: string[] = (e.data?.images ?? [])
         .map((i: unknown) => (typeof i === "string" ? i : (i as { url?: unknown })?.url))
         .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
-        // `blobs/<hash>` is a stored reference, not a browser path (#blobs)
-        ;
+        /**
+         * `blobs/<hash>` is a stored reference, not a browser path.
+         *
+         * This comment said so and then passed the raw value to `src=` anyway — MEASURED on a real prompt row:
+         * `<img src="blobs/36fcab….png">` resolved against `/session/blobs/…` and 404'd, so every attachment the
+         * operator had ever sent rendered broken. Tool images already went through `blobUrl`; this one did not,
+         * which is the same "two owners of one fact" shape as the earlier image bugs.
+         */
+        .map((u: string) => blobUrl(props.agentId, u));
       return (
         <>
           <MdContent html={renderMarkdownCached(String(e.data.text ?? ""))} />

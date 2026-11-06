@@ -49,7 +49,6 @@ const SEED_COLS = 100;
 
 const BUFFER_BYTES = 200_000;
 const MAX_PER_AGENT = 10;
-const IDLE_REAP_MS = 6 * 60 * 60_000;
 
 const terms = new Map<string, Term>();
 let seq = 0;
@@ -240,26 +239,35 @@ export function closeAllTerminals(): number {
   return n;
 }
 
-export function reapIdleTerminals(now = Date.now()): number {
+/**
+ * Close a terminal only when its PROCESS IS GONE and nobody is watching it.
+ *
+ * It used to also reap one that had been idle for 6 hours with no client attached — i.e. a terminal whose shell was
+ * still perfectly alive disappeared because a sleeping browser had dropped its socket. Reported as
+ * "全クライアントが離れたらターミナル消してる? ターミナルはサーバーが生きてる限り保持して欲しい".
+ *
+ * The operator's rule is the right one: a shell outlives a browser tab. Nothing here is leaked by that, because an
+ * EXITED pty with no sink is still collected on the next pass.
+ */
+export function reapIdleTerminals(_now = Date.now()): number {
   let n = 0;
   for (const t of [...terms.values()]) {
     const attached = (sinks.get(t.id)?.size ?? 0) > 0;
     if (attached) continue;
-    const idle = now - t.createdAt > IDLE_REAP_MS;
-    if (t.exited || idle) {
+    if (t.exited) {
       if (closeTerminal(t.id)) {
         n++;
         /**
          * Tell the UI, so the tab does not dangle.
          *
-         * Reported as "長時間放置すると開いてたターミナルが消失する": the pty is reaped when nothing is attached (a
-         * sleeping browser drops its socket), and the tab stayed in the strip pointing at an id that no longer
-         * exists — the shell "disappeared" with no explanation. The client now removes the tab and says why.
+         * Reported as "長時間放置すると開いてたターミナルが消失する": the tab stayed in the strip pointing at an id
+         * that no longer existed. With the idle rule gone this only fires for a REALLY exited shell, and the client
+         * still removes the tab and says why.
          */
         bus.emit("update", {
           kind: "terminal-closed",
           terminalId: t.id,
-          reason: t.exited ? "exited" : "idle",
+          reason: "exited",
         } satisfies BusEvent);
       }
     }

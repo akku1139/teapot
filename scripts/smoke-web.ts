@@ -41,7 +41,9 @@ const AGENT = {
 
 const EVENTS = [
   { id: "e1", seq: 1, ts: "2026-01-01T10:00:00Z", session: "alpha-s1", branch: "br0", parent: null,
-    type: "prompt", data: { source: "user", text: "hello **world**" } },
+    // an attachment the OPERATOR sent: stored as a `blobs/` reference like every other image
+    type: "prompt", data: { source: "user", text: "hello **world**",
+      images: [{ url: "blobs/9f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9012345678abc.png", name: "shot.png" }] } },
   { id: "e2", seq: 2, ts: "2026-01-01T10:00:05Z", session: "alpha-s1", branch: "br0", parent: "e1",
     type: "message", data: { content: "hi there\n\n- one\n- two", final: true } },
   { id: "e3", seq: 3, ts: "2026-01-01T10:00:09Z", session: "alpha-s1", branch: "br0", parent: "e2",
@@ -935,6 +937,15 @@ console.log("deep render ok: feed rows present");
 
 {
   const RUNNING_AGENT = { ...AGENT, status: "running", pendingPrompts: 1 };
+  /**
+   * How many prompts this agent has queued, and how many the client has sent.
+   *
+   * The queue depth has to FOLLOW the sends: with a fixed `pendingPrompts: 1`, `reconcilePending` trims the echo list
+   * back to one row, so a second queued message silently cannot be tested for (#211 order, and the ✕ cancel that must
+   * be on every queued row, not just the first).
+   */
+  let queueDepth = 1;
+  let promptSeq = 0;
   const PENDING_EVENTS: {
     id: string;
     seq: number;
@@ -960,13 +971,19 @@ console.log("deep render ok: feed rows present");
         ok: true,
         status: 200,
         json: async () => ({
-          agents: [RUNNING_AGENT, { ...RUNNING_AGENT, id: "beta", workspace: "/tmp/other-project" }],
+          agents: [
+            { ...RUNNING_AGENT, pendingPrompts: queueDepth },
+            { ...RUNNING_AGENT, id: "beta", workspace: "/tmp/other-project" },
+          ],
         }),
       };
     if (u === `/api/agents/${AGENT.id}/events`)
       return { ok: true, status: 200, json: async () => ({ events: PENDING_EVENTS, total: PENDING_EVENTS.length }) };
-    if (u === `/api/agents/${AGENT.id}/prompt`)
-      return { ok: true, status: 200, json: async () => ({ ok: true, promptId: "upending1" }) };
+    if (u === `/api/agents/${AGENT.id}/prompt`) {
+      promptSeq++;
+      if (promptSeq > queueDepth) queueDepth = promptSeq;
+      return { ok: true, status: 200, json: async () => ({ ok: true, promptId: `upending${promptSeq}` }) };
+    }
     return origFetch(url, init);
   });
 
@@ -1028,6 +1045,52 @@ console.log("deep render ok: feed rows present");
     process.exit(1);
   }
   console.log("deep render ok: undelivered prompt shows once, as pending");
+
+  /**
+   * TWO queued prompts: send order on screen, and a ✕ cancel on EVERY one of them.
+   *
+   * Reported: "メッセージ1 → メッセージ2 の順で送った結果、タイムライン上では上から 2 → 1 の順に並んでる" and
+   * "cancelボタンが一番上のやつにしか出てないわ". Both came from the queued list having two owners — the send path
+   * appended, the server-queue effect prepended — so the same prompt could appear twice and in the wrong order, and
+   * only the prepended copy carried the `promptId` the withdraw button is gated on.
+   */
+  {
+    const ta2 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+    if (!ta2) throw new Error("composer textarea vanished");
+    const sendText = async (text: string) => {
+      ta2.value = text;
+      ta2.dispatchEvent(new w.Event("input", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      (ta2.closest("form") as HTMLFormElement).dispatchEvent(
+        new w.Event("submit", { bubbles: true, cancelable: true }),
+      );
+      const until = Date.now() + 4000;
+      while (Date.now() < until && !bodyText().includes(text)) await new Promise((r) => setTimeout(r, 20));
+    };
+    await sendText("second queued message");
+    await new Promise((r) => setTimeout(r, 150));
+
+    const rows = [...w.document.querySelectorAll(".msg.pending")];
+    const texts = rows.map((r) => (r.textContent ?? "").trim());
+    const first = texts.findIndex((t) => t.includes("queued while running"));
+    const second = texts.findIndex((t) => t.includes("second queued message"));
+    if (first === -1 || second === -1) {
+      console.error(`#211 REGRESSION: both queued rows must be on screen — found ${JSON.stringify(texts).slice(0, 300)}`);
+      process.exit(1);
+    }
+    if (first > second) {
+      console.error(`#211 REGRESSION: queued prompts are in reversed order (first at ${first}, second at ${second})`);
+      process.exit(1);
+    }
+    const withCancel = rows.filter((r) => [...r.querySelectorAll("button")].some((b) => (b.textContent ?? "").includes("cancel")));
+    if (withCancel.length !== rows.length) {
+      console.error(
+        `#211 REGRESSION: only ${withCancel.length} of ${rows.length} queued rows can be withdrawn — every queued row needs ✕ cancel`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: two queued prompts keep their order and are both withdrawable");
+  }
 
   {
     const feed = w.document.querySelector(".feed") as HTMLElement | null;
@@ -2450,7 +2513,7 @@ console.log("deep render ok: feed rows present");
     console.error("#scroll check: .feed or the composer textarea is missing");
     process.exit(1);
   }
-  const CONTENT = 4000;
+  let CONTENT = 4000;
   let viewport = 800;
   Object.defineProperty(feed, "scrollHeight", { configurable: true, get: () => CONTENT });
   Object.defineProperty(feed, "clientHeight", { configurable: true, get: () => viewport });
@@ -2537,6 +2600,69 @@ console.log("deep render ok: feed rows present");
   console.log(
     "deep render ok: a growing composer re-pins a follower and leaves a scrolled-up reader alone (#scroll)",
   );
+
+  /**
+   * A SMALL upward nudge during streaming must break the follow — not be "within tolerance".
+   *
+   * The operator's own trace: `124596.48 → 124592.48 → 124596.48 → 124592.98 → 124596.48 …`, i.e. every streaming
+   * delta dragged the reader back to the tail. The guard meant to catch that (`movedUp`) compared the sample against
+   * `lastSample` AFTER `lastSample` had been overwritten with the same object, so it was `now.top < now.top` — never
+   * true. What survives a large deliberate scroll is the classifier; what a live session produces is a stream of
+   * 1-3px nudges, which the classifier reads as "still at the tail".
+   */
+  {
+    scrollTop = CONTENT - viewport;
+    feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    const tailTop = scrollTop;
+    /**
+     * The nudge must land in the SAME sample as a content growth, which is what a live session produces.
+     *
+     * A clean 3px scroll with a still content is classified as `reader` on its own, so it does not reproduce anything.
+     * In the reported trace the drag happened while tokens were arriving: every sample carried both an upward move and
+     * a taller feed, the classifier therefore said `layout`, and the only thing that could have overruled it was the
+     * "upward wins" comparison — which was comparing the sample against itself.
+     */
+    CONTENT += 400;
+    scrollTop = tailTop - 3; // still inside the 24px tail tolerance
+    feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 120));
+
+    /**
+     * Streaming appends ~400px of content while the reader sits 3px up.
+     *
+     * The growth has to arrive the way a live session delivers it — a WS `event` plus a taller feed — because the pin
+     * that drags the reader back is the one the events effect runs when the feed's height changed.
+     */
+    const sock = MockWS.instances.at(-1);
+    sock?.onmessage?.({
+      data: JSON.stringify({
+        kind: "event",
+        agentId: AGENT.id,
+        event: {
+          agent: AGENT.id,
+          id: "e-stream-1",
+          seq: 900,
+          ts: "2026-01-01T10:05:00Z",
+          session: AGENT.session,
+          branch: "br0",
+          parent: null,
+          type: "message",
+          data: { content: "streaming adds a row", final: true },
+        },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 200));
+
+    if (scrollTop > tailTop - 2) {
+      console.error(
+        `#scroll REGRESSION: a 3px upward nudge was undone by streaming content (scrollTop ${scrollTop}, ` +
+          `nudged to ${tailTop - 3}) — this is the reported "ライブストリーミングで押し戻される" (#212)`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a 3px upward nudge is not undone by streaming content (#212)");
+  }
 
   {
     const switchToBeta = async () => {
@@ -3331,6 +3457,32 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     process.exit(1);
   }
   console.log("a tool image renders through the agent blob route (#blobs)");
+}
+
+/**
+ * An image the OPERATOR attached must render too — the same `blobs/` mapping, a different call site.
+ *
+ * MEASURED on a real prompt row: `<img class="promptimg" alt="attachment" src="blobs/36fcab….png">`, which resolves
+ * against `/session/blobs/…` and 404s ("imgが404 (まずクライアントは session/:name から開かれてるので相対パス解決自体
+ * が成立しないし、 / からでも壊れてる)"). The prompt row had a comment claiming it went through `blobUrl` and the
+ * code did not.
+ */
+{
+  const img = w.document.querySelector("img.promptimg[alt='attachment']");
+  if (!img) {
+    console.error("#blobs REGRESSION: a prompt with an attachment rendered no <img> — the operator's own image is invisible");
+    process.exit(1);
+  }
+  const src = img.getAttribute("src") ?? "";
+  if (src.startsWith("blobs/")) {
+    console.error(`#blobs REGRESSION: a prompt attachment kept the stored reference (${src}) — it resolves to a 404`);
+    process.exit(1);
+  }
+  if (!src.startsWith(`/api/agents/${AGENT.id}/blobs/`)) {
+    console.error(`#blobs REGRESSION: a prompt attachment is not on the agent blob route: ${src}`);
+    process.exit(1);
+  }
+  console.log("an operator's attachment renders through the agent blob route (#blobs)");
 }
 
 

@@ -28,9 +28,8 @@ import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./l
 import { copyText } from "./lib/clipboard";
 import { groupedWith, type RowLike } from "./lib/row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./lib/question-answered";
-import { reconcilePending, type PendingEcho } from "./lib/pending-echo";
+import { mergeQueued, reconcilePending, type PendingEcho } from "./lib/pending-echo";
 import { resolveTimelineSession } from "./lib/session-index";
-import { rememberTextareaHeight, storedTextareaHeight, trackTextareaHeight } from "./lib/textarea-size";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { shellOutcome, shellHint, outcomeMarker } from "./lib/shell-outcome";
@@ -57,6 +56,7 @@ import {
   type TailSample,
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
+import { bindStoredHeight } from "./lib/resizable-height";
 import { agentLabel, agentLabelWithId } from "./lib/agent-label";
 import { queuedBadgeCount } from "./lib/queued-count";
 import {
@@ -804,20 +804,15 @@ export default function App() {
     const queue = sel()?.pendingPromptQueue;
     if (!queue?.length) return;
     const key = sel()?.session || pendingKey();
-    const have = new Set(pendingFor(key).map((p) => p.promptId).filter(Boolean));
-    const missing = queue.filter((q) => q.id && !have.has(q.id));
-    if (!missing.length) return;
-    writePending(key, [
-      ...missing.map((q) => ({
-        id: `p${q.id}`,
-        text: q.text,
-        at: Number(q.at) || Date.now(),
-        promptId: q.id,
-        images: q.images?.map((i) => i.url),
-        ...(q.source ? { source: q.source } : {}),
-      })),
-      ...pendingFor(key),
-    ]);
+    /**
+     * Add what the server knows and this client does not — at the END, never in front.
+     *
+     * This PREPENDED the server's queue entries, so while a POST was in flight the server's copy of the prompt the
+     * operator had just typed was placed ahead of its own echo, and two queued prompts came out reversed:
+     * "メッセージ1 → メッセージ2 の順で送った結果、タイムライン上では上から 2 → 1 の順に並んでる" (#211).
+     */
+    const next = mergeQueued(pendingFor(key), queue);
+    if (next !== pendingFor(key)) writePending(key, next);
   });
 
   createEffect(() => {
@@ -1056,7 +1051,16 @@ const isTimelineLive = (): boolean => {
   };
   const echoCache = new Map<string, Ev>();
   function echoEv(p: PendingEcho): Ev {
-    const key = `${p.id}:${p.sent ? "s" : "p"}`;
+    /**
+     * The key must cover EVERYTHING the row renders, not just the id.
+     *
+     * It was `${id}:${sent}`, so the echo cached before the POST returned kept being handed back after the response
+     * labelled it with its `promptId` — and every affordance gated on that id silently never appeared.
+     * Reported as "cancelボタンが一番上のやつにしか出てないわ": the row that happened to be cached with a promptId
+     * (one that came from the server's queue, which carries the id from the start) kept its ✕ cancel, and every
+     * locally cached echo lost it.
+     */
+    const key = `${p.id}:${p.sent ? "s" : "p"}:${p.promptId ?? ""}`;
     const hit = echoCache.get(key);
     if (hit) return hit;
     if (echoCache.size > 64) echoCache.clear();
@@ -1608,15 +1612,37 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * shorter render allowed, i.e. an arbitrary position "in the middle of an old conversation". MEASURED while
      * empty: `scrollTop 0, rows 0`. Bounded, and it stops as soon as the tail is reached.
      */
+    /**
+     * The switch owns the scroll position until the tail is reached — and the backfill runs FIRST.
+     *
+     * Two separate mistakes made this land in the middle of an old conversation:
+     *
+     *  1. the pin bailed out when `atBottom()` was false, but a switched-into feed is not "at bottom" yet — it is
+     *     empty or short, at `scrollTop 0`. So the guard fired immediately and nothing was ever pinned;
+     *  2. `backfillUntilScrollable()` then PREPENDED older pages for a session whose first page did not fill the
+     *     viewport. Prepending keeps the visible content still by construction, so the viewport stayed on that old
+     *     content while the tail grew far below it.
+     *
+     * Reported as "セッション移動時のタイムラインスクロールは確実にまだバグが残ってる / mediapad-t5-… を開いたら
+     * `1. カーネルが安定して残るようにした ✅` の付近まで飛ばされたし" — an early message of a huge session.
+     *
+     * So the order is: backfill, then pin; the pin's only veto is that ANOTHER switch took over (feedGeneration) or
+     * that the operator is reading (the reader lock), never `atBottom()`.
+     */
+    const settleGen = feedGeneration;
     const settleAtTail = (tries: number) => {
-      if (selected() !== id || !atBottom()) return;
+      if (selected() !== id || settleGen !== feedGeneration) return;
+      if (Date.now() < readerUntil) return;
       const f = feedEl();
       if (f && distanceToTail({ top: f.scrollTop, height: f.scrollHeight, viewport: f.clientHeight }) <= 1) return;
       scrollBottom(true);
       if (tries < 12) requestAnimationFrame(() => settleAtTail(tries + 1));
     };
-    requestAnimationFrame(() => settleAtTail(0));
-    void backfillUntilScrollable();
+    void (async () => {
+      await backfillUntilScrollable();
+      if (selected() !== id || settleGen !== feedGeneration) return;
+      requestAnimationFrame(() => settleAtTail(0));
+    })();
   }
 
   const [connected, setConnected] = createSignal(false);
@@ -2783,37 +2809,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     });
 
   const [goalDraft, setGoalDraft] = createSignal("");
-  const [goalHeight, setGoalHeight] = createSignal(storedTextareaHeight("goal"));
-  const [goalPreviewHeight, setGoalPreviewHeight] = createSignal(storedTextareaHeight("goalPreview"));
-  const goalPreviewStyle = (): Record<string, string> => {
-    const base: Record<string, string> = {
-      "max-height": "none",
-      "overflow-y": "auto",
-      resize: "vertical",
-    };
-    if (goalPreviewHeight() > 0) base.height = `${goalPreviewHeight()}px`;
-    return base;
-  };
+  /**
+   * The goal boxes' heights are owned by `bindStoredHeight` — NOT by a JSX `style` object.
+   *
+   * They used to be applied through `style={{ height: stored > 0 ? … }}`, and Solid's style binding REMOVES a
+   * property that is absent from the object it is handed. Setting a goal calls `refreshAgents`, which replaces the
+   * selected agent object and re-renders this panel: the style object was written again without `height`, the inline
+   * height was dropped, and the box fell back to its content height — "goalの表示欄が、set goalをしたときに元の高さが
+   * 尊重されずに…デフォルトの高さになる場合がある". That is why a repro was hard to pin down: the value was still in
+   * `localStorage`, so a reload sometimes brought the height back.
+   */
+  const goalPreviewStyle = (): Record<string, string> => ({
+    "max-height": "none",
+    "overflow-y": "auto",
+    resize: "vertical",
+  });
   const trackGoalPreviewHeight = (el: HTMLElement) => {
-    const stop = trackTextareaHeight(el, (h) => {
-      setGoalPreviewHeight((cur) => {
-        if (Math.abs(cur - h) < 1) return cur;
-        rememberTextareaHeight("goalPreview", h);
-        return h;
-      });
-    });
-    onCleanup(stop);
+    onCleanup(bindStoredHeight(el, "goalPreview"));
   };
-  const goalHeightStyle = () => (goalHeight() > 0 ? { height: `${goalHeight()}px` } : undefined);
   const trackGoalHeight = (el: HTMLTextAreaElement) => {
-    const stop = trackTextareaHeight(el, (h) => {
-      setGoalHeight((cur) => {
-        if (Math.abs(cur - h) < 1) return cur;
-        rememberTextareaHeight("goal", h);
-        return h;
-      });
-    });
-    onCleanup(stop);
+    onCleanup(bindStoredHeight(el, "goal"));
   };
   const [goalVerifyDraft, setGoalVerifyDraft] = createSignal("");
   const [_goalDirty, setGoalDirty] = createSignal(false);
@@ -3352,6 +3367,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             void cause;
             ledger = null;
             lastScrollAt = performance.now();
+            /**
+             * The PREVIOUS top has to be read before `lastSample` is overwritten.
+             *
+             * `movedUp` compares against `lastSample.top`, and this handler used to assign `lastSample = now` a few
+             * lines earlier — so the comparison was always `now.top < now.top`, i.e. FALSE, and no upward gesture was
+             * ever recognised. Everything that keys off it went with it: the reader lock, `movedUp` winning over the
+             * layout classifier, and `nextFollowing`'s previous-top argument (which was handed the CURRENT top).
+             * The result is the trace the operator pasted from a real browser — every streaming delta re-pinned the
+             * tail and dragged the reader back down (`124596 → 124592 → 124596` over and over) — and it is why
+             * "上に行こうとすると押し戻される" survived several releases (#212).
+             */
+            const prevTop = lastSample?.top;
             lastSampleHeight = now.height;
             lastSampleViewport = now.viewport;
             lastSample = now;
@@ -3370,7 +3397,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * するときに、ブラウザの補助アニメーションなしでいきなりその高さまで遷移することがある": while
              * `following` stayed true, `pinned` re-asserted the tail and the notch was undone instantly.
              */
-            const movedUp = lastSample !== undefined && now.top < lastSample.top - 0.5;
+            const movedUp = prevTop !== undefined && now.top < prevTop - 0.5;
             if (movedUp) readerUntil = performance.now() + READER_LOCK_MS;
             /**
              * A reader's upward move LOCKS the follow for a moment, not just for this event.
@@ -3381,10 +3408,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * "生成中に上に行こうとすると押し戻される / タッチUIで操作しづらい". Touch scrolling produces exactly that
              * pattern: many small samples, some of them classified as layout.
              */
-            const follow =
-              movedUp || performance.now() < readerUntil
-                ? false
-                : nextFollowing(wasFollowing, cause, now, lastSample?.top);
+            /**
+             * Back at the tail → follow again, immediately.
+             *
+             * The reader lock must not outlive the reason for it: once the operator is at the bottom again they are
+             * following the stream, and the lock used to hold the follow off for another 400ms after a deliberate
+             * scroll back (measured as a follower left 20px short of the tail as the composer grew).
+             */
+            const follow = movedUp
+              ? false
+              : atTail(now)
+                ? true
+                : performance.now() < readerUntil
+                  ? false
+                  : nextFollowing(wasFollowing, cause, now, prevTop);
             if (follow !== wasFollowing) setAtBottom(follow);
             if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow && cause !== "reader") {
@@ -3662,28 +3699,39 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 </For>
               </div>
             </Show>
+            {/**
+              * Attachments live ABOVE the prompt box, in their own row.
+              *
+              * They used to be the first child of the `form`, which is a flex row ending in the buttons — so the
+              * chips shoved the textarea aside and the counter became a `🖼 2` chip sitting next to `send`
+              * ("添付ファイル欄の設計微妙すぎる (send左の 🖼 2 も含めて) / 多分入力欄上にやったほうがいい").
+              * The counter is gone with them: the chips ARE the count.
+              */}
+            <Show when={pendingImages().length > 0}>
+              <div class="attachrow">
+                <For each={pendingImages()}>
+                  {(im, i) => (
+                    <span class="imgchip" title={im.name}>
+                      <img src={im.url} alt={im.name} title="click to enlarge" onclick={() => openLightbox(im.url)} />
+                      <button
+                        type="button"
+                        class="imgx"
+                        title="remove"
+                        onclick={() => setPendingImages((l) => l.filter((_, j) => j !== i()))}
+                      >✕</button>
+                    </span>
+                  )}
+                </For>
+                <button
+                  type="button"
+                  class="attachclear"
+                  title="remove every attachment"
+                  onclick={() => setPendingImages([])}
+                >clear</button>
+              </div>
+            </Show>
             <form onsubmit={send}>
               {}
-              <Show when={pendingImages().length > 0}>
-                <div class="imgstage">
-                  <For each={pendingImages()}>
-                    {(im, i) => (
-                      <span class="imgchip" title={im.name}>
-                        <img src={im.url} alt={im.name} title="click to enlarge" onclick={() => openLightbox(im.url)} />
-                        <button
-                          type="button"
-                          class="imgx"
-                          title="remove"
-                          onclick={() => setPendingImages((l) => l.filter((_, j) => j !== i()))}
-                        >✕</button>
-                      </span>
-                    )}
-                  </For>
-                  <span class="muted" style="font-size:11px;align-self:center">
-                    {pendingImages().length} image{pendingImages().length > 1 ? "s" : ""} attached
-                  </span>
-                </div>
-              </Show>
               <textarea
                 ref={(el) => {
                   composerEl = el;
@@ -3771,9 +3819,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 title="attach images (or paste them straight into the box)"
                 onClick={() => document.getElementById("composer-file")?.click()}
               />
-              <Show when={pendingImages().length}>
-                <span class="muted" style="font-size:11.5px;white-space:nowrap">🖼 {pendingImages().length}</span>
-              </Show>
               <button type="submit">send</button>
               {}
               <input
@@ -3993,7 +4038,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               value={goalDraft()}
               oninput={(e) => { setGoalDraft(e.currentTarget.value); setGoalDirty(true); }}
               style={{
-                ...(goalHeightStyle() ?? {}),
                 background: "var(--bg-darkest)", border: "none", "border-radius": "6px",
                 padding: "6px 8px", color: "var(--fg)", font: "inherit",
                 width: "100%", resize: "vertical",

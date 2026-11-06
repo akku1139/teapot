@@ -169,23 +169,46 @@ test("the per-agent cap refuses the eleventh shell", async () => {
   closeTerminalsFor("a2");
 });
 
-test("an idle terminal is reaped, a held one is not", async () => {
+test("an unattached shell is kept as long as it is alive — a browser tab is not its owner", async () => {
+  /**
+   * "全クライアントが離れたらターミナル消してる? ターミナルはサーバーが生きてる限り保持して欲しい".
+   *
+   * The rule used to be "unattached for 6 hours → close", so a live shell died because a sleeping browser dropped
+   * its socket. Time no longer closes anything: only the process being gone does.
+   */
   _resetTerminalsForTest();
   spyResize();
   const dir = mkdtempInRootSync("term-reap");
-  const idle = createTerminal("a1", dir);
-  const held = createTerminal("a2", dir);
-  assert.ok(idle.ok && held.ok);
+  const live = createTerminal("a1", dir);
+  assert.ok(live.ok);
 
-  attachTerminal(held.terminal.id, () => {});
-  // six hours later (the idle window is 6h in the module)
-  const later = Date.now() + 7 * 60 * 60 * 1000;
-  reapIdleTerminals(later);
+  // nothing attached, and a week goes by
+  assert.equal(reapIdleTerminals(Date.now() + 7 * 24 * 60 * 60 * 1000), 0, "a live shell must not be reaped");
+  assert.deepEqual(
+    listTerminals().map((t) => t.id),
+    [live.terminal.id],
+    "the terminal is still there",
+  );
+  closeTerminal(live.terminal.id);
+});
 
-  const left = listTerminals();
-  assert.equal(left.length, 1, "only the unattended terminal should be reaped");
-  assert.equal(left[0]!.id, held.terminal.id);
-  closeTerminal(held.terminal.id);
+test("an EXITED terminal nobody is watching is still collected", async () => {
+  _resetTerminalsForTest();
+  spyResize();
+  const dir = mkdtempInRootSync("term-reap-exit");
+  const prev = process.env.SHELL;
+  // a shell that exits immediately, so the pty is genuinely gone
+  process.env.SHELL = "/bin/true";
+  try {
+    const dead = createTerminal("a1", dir);
+    assert.ok(dead.ok);
+    // the file has its own `waitFor(cond, ms)`
+    await waitFor(() => reapIdleTerminals() === 1, 10_000);
+    assert.equal(listTerminals().length, 0, "nothing is leaked by keeping live shells");
+  } finally {
+    if (prev === undefined) delete process.env.SHELL;
+    else process.env.SHELL = prev;
+  }
 });
 
 test("a real pty reports the size it was given, without stty text in the stream", { skip: !hasProc() }, async () => {

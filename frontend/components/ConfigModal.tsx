@@ -279,7 +279,13 @@ export function ThemeEditor(props: {
                         type="range"
                         min="0"
                         max="0.9"
-                        step="0.05"
+                        /**
+                         * 1%, like `surfaces` right below it.
+                         *
+                         * It was 5% while its neighbour was 1% — "surfaceは1%刻みなのにdimが5%刻みで謎". There is no
+                         * reason for two sliders in the same row to move in different increments.
+                         */
+                        step="0.01"
                         value={editing()!.backgroundDim ?? 0.55}
                         oninput={(e) => patch((cur) => ({ ...cur, backgroundDim: Number(e.currentTarget.value) }))}
                       />

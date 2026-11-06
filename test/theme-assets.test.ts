@@ -621,5 +621,33 @@ test("the MAXIMIZED composer shows the wallpaper too (#ui)", async () => {
   const wrapper = ruleBody('html[data-bg-image="on"] .composer.maximized {');
   assert.match(wrapper, /background-color:\s*transparent/, "the wrapper must not add a third layer (#217)");
   const backdrop = ruleBody('html[data-bg-image="on"] .composer.maximized::before');
-  assert.match(backdrop, /var\(--bg-dark\)/, "the backdrop takes a themed surface, not a solid colour (#ui)");
+  assert.match(backdrop, /var\(--bg-dark-solid/, "the backdrop takes a themed surface, not a solid colour (#ui)");
+  assert.match(backdrop, /var\(--surface-alpha\)/, "and the PANEL alpha, so the wallpaper reads through it");
+  /**
+   * Maximizing HIDES the timeline; it does not paint over it.
+   *
+   * One surface cannot be both opaque enough to hide the feed and translucent enough to show the wallpaper, and the
+   * attempt was reported as "#217 : 悪化してそう" with the previous messages legible through the maximized box.
+   * `visibility: hidden` keeps the feed's `scrollTop` (a `display: none` scroll container loses it, which is how the
+   * "遥か昔に飛ばされる" reports happened), so the contract is: hidden, not removed.
+   */
+  const hideRule = ruleBody(".channel:has(.composer.maximized) .feed {");
+  assert.match(hideRule, /visibility:\s*hidden/, "the feed must be hidden while the composer is maximized");
+  assert.doesNotMatch(hideRule, /display:\s*none/, "display:none would discard the feed's scroll position");
+});
+
+test("the attachment strip sits above the prompt box, not inside its button row", async () => {
+  /**
+   * "添付ファイル欄の設計微妙すぎる (send左の 🖼 2 も含めて) / 多分入力欄上にやったほうがいい".
+   *
+   * The chips were the first child of a flex `form` that ends in the buttons, so they shoved the textarea aside and
+   * the counter became a `🖼 2` chip next to `send`. Geometry is asserted as CSS here because happy-dom does no
+   * layout: a row of its own above the box, wrapping, with the chips laid out in a line.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const at = css.indexOf(".attachrow {");
+  assert.notEqual(at, -1, "the attachment strip needs its own class (#ui)");
+  const body = css.slice(at, css.indexOf("}", at));
+  assert.match(body, /display:\s*flex/, "it is a row, not inline content inside the form");
+  assert.match(body, /flex-wrap:\s*wrap/, "many attachments must wrap instead of widening the box");
 });

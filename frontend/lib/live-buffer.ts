@@ -128,15 +128,48 @@ export function isOwnLiveWork(row: { data?: { actor?: unknown } } | null | undef
   return !(typeof actor === "string" && actor.length > 0);
 }
 
+/**
+ * Is this status TERMINAL for the purposes of a live buffer?
+ *
+ * Only a stopped/errored agent — or one that is no longer in the list — proves no more deltas are coming. A plain
+ * `idle` does not: every prompt send re-reads the agent snapshot, and a transient `idle` between `running` states used
+ * to DELETE the buffer, so the streaming bubble vanished for a moment and reappeared on the next delta.
+ * Reported as "キューなメッセージ送信した瞬間一瞬agentの thinking... だけ書かれてるメッセージが消える".
+ *
+ * The display already gates the bubble on `isTimelineLive()`, and the real end of a turn is a turn boundary or a
+ * reconcile against the log — so keeping a buffer for an idle agent hides nothing and loses nothing.
+ */
+const TERMINAL_STATUS = new Set(["stopped", "error"]);
+
+/**
+ * How long an `idle` buffer survives without a fresh delta.
+ *
+ * Both rules below are real bugs, so neither can simply win:
+ *   - #40 "agent2's message shows agent1's content, with a writing cursor": an idle agent's buffer must go, because a
+ *     turn boundary lost across a reconnect left stale text on screen;
+ *   - "キューなメッセージ送信した瞬間一瞬agentの thinking... だけ書かれてるメッセージが消える": every prompt send re-reads
+ *     the agent snapshot, and a one-snapshot `idle` deleted the buffer of a turn that was still streaming.
+ *
+ * A live stream refreshes `at` on every delta, so "idle AND untouched for a moment" separates the two: the stale one
+ * is minutes old, the blipped one is milliseconds old.
+ */
+const IDLE_GRACE_MS = 2000;
+
 export function pruneDeadLiveBuffers<T>(
   buffers: ReadonlyMap<string, T>,
   statusOf: (agentId: string) => string | undefined,
+  now = Date.now(),
 ): Map<string, T> {
   const doomed: string[] = [];
-  for (const id of buffers.keys()) {
+  for (const [id, buf] of buffers) {
     const st = statusOf(id);
+    // absence of evidence is not evidence of completion: a snapshot we have not received yet must not prune (#40)
     if (st === undefined) continue;
-    if (isLiveStatus(st)) continue;
+    if (!TERMINAL_STATUS.has(st)) {
+      if (isLiveStatus(st)) continue;
+      const at = Number((buf as { at?: unknown } | undefined)?.at ?? 0);
+      if (now - at <= IDLE_GRACE_MS) continue;
+    }
     doomed.push(id);
   }
   if (doomed.length === 0) return buffers as Map<string, T>;

@@ -218,17 +218,18 @@ test("the LIGHT themes override color-scheme, or their widgets would stay dark (
 
 test("the dark themes do NOT set color-scheme: light (#102)", () => {
   // the mirror: a dark theme declaring light would render its widgets wrong the other way
-  for (const t of ["midnight", "tea", "coffee", "matcha", "matrix", "sunset"]) {
+  for (const t of ["midnight", "tea", "coffee", "matcha", "matrix", "sunset", "sakura"]) {
     const block = new RegExp(`\\[data-theme="${t}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
     assert.doesNotMatch(block, /color-scheme:\s*light/, `${t} is dark (#102)`);
   }
 });
 
 test("every theme either declares color-scheme or inherits the dark default (#102)", () => {
-  // Nine `[data-theme]` blocks; `:root` is the dark default and carries no attribute, so
+  // Ten `[data-theme]` blocks; `:root` is the dark default and carries no attribute, so
   // the light three must each opt in. Derived from backgroud luminance, not guessed.
+  // (`sakura` is the operator's own colour scheme, promoted to a built-in.)
   const themes = [...new Set([...css.matchAll(/\[data-theme="([a-z]+)"\]/g)].map((m) => m[1]!))];
-  assert.equal(themes.length, 9, `theme count changed — re-check which are light: ${themes.join(", ")}`);
+  assert.equal(themes.length, 10, `theme count changed — re-check which are light: ${themes.join(", ")}`);
   const light = ["light", "strawberry", "ramune"];
   assert.deepEqual(
     themes.filter((t) => light.includes(t)).sort(),

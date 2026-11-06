@@ -56,7 +56,7 @@ test("a 'context limit' stop is answered, not counted as an idle round (#201)", 
       let events: Awaited<ReturnType<typeof readEvents>> = [];
       const answeredWithUsage = () =>
         events.some((e) => e.type === "system_note" && dataOf(e).event === "context-claim-answered") &&
-        events.some((e) => e.type === "prompt" && dataOf(e).source === "harness" && /context \d+% \(/.test(String(dataOf(e).text ?? "")));
+        events.some((e) => e.type === "prompt" && dataOf(e).source === "harness" && /context \d+% used \(/.test(String(dataOf(e).text ?? "")));
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 25));
         events = await readEvents(`${sd}/chat.jsonl`);
@@ -69,7 +69,7 @@ test("a 'context limit' stop is answered, not counted as an idle round (#201)", 
       );
       const harnessPrompts = events.filter((e) => e.type === "prompt" && dataOf(e).source === "harness");
       const said = harnessPrompts.map((e) => String(dataOf(e).text ?? "")).join("\n");
-      assert.match(said, /context \d+% \(/, "the answer must carry the REAL usage, not just reassurance");
+      assert.match(said, /context \d+% used \(/, "the answer must carry the REAL usage, not just reassurance");
       assert.match(said, /FALSE POSITIVE/, "and it must offer the way out when the detection is wrong");
       /**
        * "これ単純にcontinueするだけじゃ意味ないかもしれない / 視野を広くしてとかそういう指示を出さないと数ターン後
@@ -326,7 +326,7 @@ test("being stuck takes the SAME route as a full window — one answer covers bo
         .filter((e) => e.type === "prompt" && dataOf(e).source === "harness")
         .map((e) => String(dataOf(e).text ?? ""))
         .join("\n");
-      assert.match(said, /context \d+% \(/, "the answer states how much window is left");
+      assert.match(said, /context \d+% used \(/, "the answer states how much window is left");
       assert.match(said, /Change the perspective/i, "and asks for a new perspective");
       assert.match(said, /ask_user/, "with a way to hand the question over");
     } finally {

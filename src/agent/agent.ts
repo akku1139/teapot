@@ -3184,6 +3184,19 @@ export class Agent {
     const summarizeBar = Math.max(SUMMARIZE_MIN_TOKENS, this.opts.contextTokenBudget * SUMMARIZE_MIN_SHARE);
     const worthSummarizing = force || oldTokens >= summarizeBar;
     const previousSummary = this.lastCompactSummary;
+    /**
+     * A compaction is WORK, so the agent is not idle while it runs.
+     *
+     * Reported: "compact開始時にステータスがidleのままでwaitingになってなさそう / よくわかんないけど何らかのトリガー
+     * によってwaitingになる". Exactly right, and the trigger was a snapshot emit: `emitSnapshotUpdate` maps a live
+     * `idle` agent to `waiting` for the DISPLAY (line ~1359), so the label flipped to "waiting" the first time
+     * anything else emitted — while `this.status` was still `idle` and the persisted state events said `idle`.
+     *
+     * A manual compaction made it worst: it can run for minutes on an idle agent, and the whole time the operator saw
+     * "idle". The status is now set where the work starts and restored where it ends, so both paths agree.
+     */
+    const resumeStatus = this.status === "idle";
+    if (resumeStatus) this.setStatus("waiting", "compacting the context — resumes by itself");
     this.compactPhase = "summarizing";
     bus.emit("update", {
       kind: "compaction-progress",
@@ -3307,6 +3320,19 @@ export class Agent {
         ];
       }
       const after = this.estimateTokens();
+      /**
+       * The remaining room goes on the compaction notice, where the model will actually read it.
+       *
+       * "compact後にサボりがちなので、compactの末尾にauto-continueとかと同じようにコンテキストの残量くっつけたほうがよさそう".
+       * Right: a model that has just watched its history be summarized tends to read that as "we are nearly out" and
+       * starts winding down, when the truth is the opposite — the window was just made roomy again. The number is
+       * computed from the messages as they are NOW (`after`), which is the only value that answers "how much do I
+       * still have?", and it is appended rather than prepended so the checkpoint text stays first.
+       */
+      const notice = this.messages[0];
+      if (notice?.role === "user" && /^\[harness\] (Context was compacted|[\d,]+ earlier messages were DROPPED)/.test(String(notice.content))) {
+        notice.content = `${String(notice.content)}\n\n${usageLine(after, this.opts.contextTokenBudget)} — the window is roomy again, not nearly exhausted.`;
+      }
       this.stats.compactions++;
       if (mode === "summarize") this.consecutiveCompactFailures = 0;
       this.compactedAtLen = this.messages.length;
@@ -3411,6 +3437,8 @@ export class Agent {
       });
     } finally {
       this.compactPhase = "";
+      // only undo OUR status: a round that started meanwhile owns it now
+      if (resumeStatus && this.status === "waiting") this.setStatus("idle", "compaction finished");
       bus.emit("update", { kind: "compaction-progress", agentId: this.opts.id, phase: "done" } satisfies BusEvent);
     }
   }

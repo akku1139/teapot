@@ -130,11 +130,27 @@ test("manual compact is observable in the snapshot from the FIRST progress event
         1,
         "exactly one compaction was recorded",
       );
+      /**
+       * …and the REAL status is what changed, not just the display.
+       *
+       * "compact開始時にステータスがidleのままでwaitingになってなさそう / よくわかんないけど何らかのトリガーによって
+       * waitingになる". The snapshot maps a live `idle` to `waiting` for DISPLAY, so the badge could flip to waiting
+       * while `this.status` was still `idle` — the persisted state events said `idle` the whole time. Both paths now
+       * agree, and the status goes back when the work ends.
+       */
+      assert.equal(after.status, "idle", "the status returns to idle once the compaction is done");
       const events = await readEvents(a.log.filePath);
       assert.ok(
         events.some((e) => e.type === "compaction"),
         "the compaction event is on the timeline",
       );
+      const waiting = events.filter(
+        (e) =>
+          e.type === "state" &&
+          (e.data as { to?: string }).to === "waiting" &&
+          /compact/i.test(String((e.data as { reason?: string }).reason ?? "")),
+      );
+      assert.ok(waiting.length > 0, "the log itself records the agent as waiting while it compacts");
     } finally {
       release();
       await a.dispose().catch(() => {});

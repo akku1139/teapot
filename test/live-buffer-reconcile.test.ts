@@ -125,11 +125,21 @@ test("the prune helper uses the shared predicate (#40)", () => {
     () => "waiting",
   );
   assert.equal(kept.size, 1, "prune must agree that a waiting agent is live (#40)");
+  /**
+   * Idle means "not live", and a STALE idle buffer is dropped — but not instantly.
+   *
+   * `buf` is stamped `Date.now()`. Every prompt send re-reads the agent snapshot, and a one-snapshot `idle` used to
+   * delete the buffer of a turn that was still streaming ("キューなメッセージ送信した瞬間一瞬agentの thinking... だけ
+   * 書かれてるメッセージが消える"). A fresh buffer therefore survives a blip; `IDLE_GRACE_MS` later it goes, which is
+   * the #40 case (stale text left by a turn boundary lost across a reconnect).
+   */
+  const fresh = pruneDeadLiveBuffers(new Map([["a", buf]]), () => "idle");
+  assert.equal(fresh.size, 1, "a just-updated buffer survives a one-snapshot idle");
   const dropped = pruneDeadLiveBuffers(
-    new Map([["a", buf]]),
+    new Map([["a", { ...buf, at: Date.now() - 60_000 }]]),
     () => "idle",
   );
-  assert.equal(dropped.size, 0, "and that an idle one is not (#40)");
+  assert.equal(dropped.size, 0, "a stale idle buffer must go (#40)");
 });
 
 /* ---------- the wiring, which was the real bug twice already ---------- */
