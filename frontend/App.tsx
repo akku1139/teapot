@@ -3161,7 +3161,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     stretches the row and the whole left panel scrolls sideways — the chat name already has this */}
                 <span class="wsname" title={row.wsHeader}>{basenameOf(row.wsHeader!)}</span>
                   {}
-                  <Show when={(wsChatCounts().get(row.wsHeader!) ?? 0) > 1 || row.wsCollapsedGroup}>
+                  {/**
+                    * The count is a COLLAPSED-state hint, like the sub-agent one below it.
+                    *
+                    * It used to show whenever the directory held more than one chat, so an expanded group carried a
+                    * number nobody needed while its sub-agent rows dropped theirs — "ワーキングディレクトリは常にカウントが
+                    * 出てる / ワークスペース側を展開で消して欲しい".
+                    */}
+                  <Show when={row.wsCollapsedGroup}>
                     <span class="wscount">{wsChatCounts().get(row.wsHeader!) ?? 0}</span>
                   </Show>
                 </div>
@@ -3282,20 +3289,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 {/* The count always shows, collapsed or not — the same rule the workspace header above follows.
                     Reported: "サブエージェントは展開するとカウントが消えるのに、ワーキングディレクトリは常にカウントが
                     出てる". Two row kinds, one question ("how much is in here?"), so one behaviour. */}
-                {(() => {
-                  const kids = descendantsOf(agents(), row.a.id);
-                  const running = kids.filter(
-                    (k) => k.live ?? (k.status === "running" || k.status === "waiting" || k.status === "needs_operator"),
-                  ).length;
-                  return kids.length > 0 ? (
-                    <span
-                      class={"subcount" + (running > 0 ? " live" : "")}
-                      title={`${kids.length} sub-agent${kids.length > 1 ? "s" : ""} (${running} active)`}
-                    >
-                      🧩 {kids.length}{running > 0 ? ` · ▶${running}` : ""}
-                    </span>
-                  ) : null;
-                })()}
+                <Show
+                  when={
+                    subsCollapsed(row.a.id) ||
+                    (row.chatCollapsedGroup === true && chatCollapsed().has(`chat:${row.a.id}`))
+                  }
+                >
+                  {(() => {
+                    const kids = descendantsOf(agents(), row.a.id);
+                    const running = kids.filter(
+                      (k) => k.live ?? (k.status === "running" || k.status === "waiting" || k.status === "needs_operator"),
+                    ).length;
+                    return kids.length > 0 ? (
+                      <span
+                        class={"subcount" + (running > 0 ? " live" : "")}
+                        title={`${kids.length} sub-agent${kids.length > 1 ? "s" : ""} (${running} active)`}
+                      >
+                        🧩 {kids.length}{running > 0 ? ` · ▶${running}` : ""}
+                      </span>
+                    ) : null;
+                  })()}
+                </Show>
                 <Show when={row.a.parent}><span class="subtag">🧩</span></Show>
                 <Show when={agentTasks(row.a.id).length > 0}>
                   <span class="mini-cron" title={agentTasks(row.a.id).map((t) => `${t.id}: ${t.schedule}`).join("\n")}>⏰</span>
