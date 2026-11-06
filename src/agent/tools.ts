@@ -154,6 +154,26 @@ export function splitEolLines(text: string): string[] {
   return text.split(/\r\n|\r|\n/);
 }
 
+/**
+ * Strip trailing whitespace from every line, as `.editorconfig`'s `trim_trailing_whitespace = true` asks.
+ *
+ * A file written by the agent should look like a file written by a person in that repository; leaving trailing spaces
+ * behind is what makes `git diff --check` complain on somebody else's commit. Line endings are untouched here — that is
+ * `applyEol`'s job, and the two compose in ONE place (`applyEditorConfig`) so a caller cannot apply one and forget the
+ * other.
+ */
+export function trimTrailingWhitespace(content: string): string {
+  return content.replace(/[ \t]+(?=\r?\n|$)/g, "");
+}
+
+export function applyEditorConfig(
+  content: string,
+  ec: { eol: Eol | null; finalNewline?: boolean; trimTrailingWhitespace?: boolean },
+): string {
+  const trimmed = ec.trimTrailingWhitespace === true ? trimTrailingWhitespace(content) : content;
+  return applyEol(trimmed, ec.eol);
+}
+
 export function applyEol(content: string, eol: Eol | null): string {
   if (!eol || eol === "\n") return content;
   return content.replace(/\r\n|\r|\n/g, eol);
@@ -1402,7 +1422,7 @@ export const TOOLS: ToolDef[] = [
       const detected = before === null ? null : detectEol(before);
       if (detected !== null) return finishWrite(p, applyEol(args.content, detected), detected, args.content);
       const ec = editorConfigFor(p);
-      const out = applyEol(args.content, ec.eol);
+      const out = applyEditorConfig(args.content, ec);
       const final = ec.finalNewline === true && out !== "" && !out.endsWith("\n") ? `${out}\n` : out;
       return finishWrite(p, final, ec.eol, args.content);
     },

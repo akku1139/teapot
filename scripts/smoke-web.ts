@@ -2661,7 +2661,13 @@ console.log("deep render ok: feed rows present");
       );
       process.exit(1);
     }
+    /**
+     * The wheel/key rules themselves are unit-tested (`test/scroll-gesture.test.ts`); this file cannot drive the pin a
+     * real wheel would trigger, so asserting it here would only produce a check that cannot fail for the right reason.
+     */
     console.log("deep render ok: a 3px upward nudge is not undone by streaming content (#212)");
+
+
   }
 
   {
@@ -2865,6 +2871,13 @@ console.log("deep render ok: feed rows present");
       if (g && g !== first && !faked.has(g) && g.querySelector("[data-eid]")) {
         landed = g;
         fakeFeed(g);
+        /**
+         * The incoming feed INHERITS the outgoing one's scrollTop (the scroll container is not re-created, only its
+         * rows), so the restore must measure rows in CONTENT coordinates. Seeding a non-zero inherited position is what
+         * makes this check able to see that mistake — with the feed at 0 both coordinate spaces coincide and the
+         * assertion passes for the wrong reason.
+         */
+        (g as unknown as { scrollTop: number }).scrollTop = 900;
       }
       await new Promise((r) => setTimeout(r, 20));
       if (faked.has(landed ?? first) && (landed as unknown as { scrollTop: number }).scrollTop > 0) break;

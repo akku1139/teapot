@@ -2046,8 +2046,19 @@ html[data-bg-image="on"] .composer.maximized {
   background-color: transparent;
 }
 html[data-bg-image="on"] .composer.maximized::before {
-  /* the panel surface, so the wallpaper reads through it exactly as it does through the panels */
-  background-color: color-mix(in srgb, var(--bg-dark-solid, #232630) calc(var(--surface-alpha) * 100%), transparent);
+  /**
+   * NOTHING — the backdrop's only job was to hide the timeline, and the timeline is now `visibility: hidden`.
+   *
+   * MEASURED in real Firefox (magenta wallpaper, `surfaceAlpha 0.82`), sampling the rendered pixels of the prompt box:
+   *
+   *     normal composer    form alpha 0.39 → the box composites over the WALLPAPER
+   *     maximized          form 0.39 over a 0.82 backdrop → 0.89 effective → the wallpaper is almost gone
+   *
+   * That is the remaining half of "#217 が治ってない": the timeline no longer ghosts through, but the box read as a
+   * solid slab because a second surface was stacked under it. With the feed hidden there is nothing left for the
+   * backdrop to cover, so the maximized box is now the SAME single surface as the normal one.
+   */
+  background-color: transparent;
 }
 /**
  * The PROMPT BOX is translucent at PANEL strength, not control strength.
@@ -3698,7 +3709,13 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
   max-width: 94vw;
   max-height: 92vh;
   object-fit: contain;
-  border-radius: var(--radius-md);
+  /**
+   * NO rounded corners: this is a viewer, not a card.
+   *
+   * "添付画像の拡大画面は角丸を止める (画像の端が切れるので)" — a radius clips the picture's own corners, which is exactly
+   * the part somebody enlarged it to look at.
+   */
+  border-radius: 0;
   box-shadow: 0 12px 48px rgba(0, 0, 0, .55);
   cursor: default;
 }

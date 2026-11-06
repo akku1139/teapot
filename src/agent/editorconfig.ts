@@ -5,6 +5,15 @@ import type { Eol } from "./tools.ts";
 export interface EditorConfigEol {
   eol: Eol | null;
   finalNewline?: boolean;
+  /**
+   * `trim_trailing_whitespace` — the knob almost every repo sets, and the one the harness ignored.
+   *
+   * Applied to every line of a file the agent writes, exactly as an editor would. The consequence worth knowing: a
+   * Markdown hard break (two trailing spaces) inside such a repo is trimmed like any other trailing whitespace, which
+   * is what the repository asked for and what an editor would do too. `false` in a later section wins, like the rest of
+   * this parser.
+   */
+  trimTrailingWhitespace?: boolean;
 }
 
 const NONE: EditorConfigEol = { eol: null };
@@ -45,6 +54,9 @@ export function editorConfigFor(targetPath: string): EditorConfigEol {
       const fn = section.props.get("insert_final_newline");
       if (fn === "true") out = { ...out, finalNewline: true };
       else if (fn === "false") out = { ...out, finalNewline: false };
+      const tt = section.props.get("trim_trailing_whitespace");
+      if (tt === "true") out = { ...out, trimTrailingWhitespace: true };
+      else if (tt === "false") out = { ...out, trimTrailingWhitespace: false };
     }
   }
   return out;

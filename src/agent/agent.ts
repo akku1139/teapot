@@ -1661,7 +1661,17 @@ export class Agent {
           break;
         }
         if (this.pendingPrompts.length) continue;
-        if (hasRunningBgShells(this.toolCtx.cwd)) {
+        /**
+         * Suppress the continue only for a job THIS agent started.
+         *
+         * The check used to be workspace-wide (`hasRunningBgShells(cwd)`), and the resume is owner-scoped: the exit
+         * notification goes to `ctx.onBackgroundExit`, i.e. to the agent that launched the job. Sub-agents share their
+         * parent's workspace, so a child's `sleep 300` suppressed the PARENT's auto-continue while the parent's own
+         * path back (`auto-continue-suppressed` → resume on exit) could never fire — the parent simply stopped.
+         * `isLive()` has always asked the owner-scoped question (`hasRunningBgShellsFor`); these two sites now agree
+         * with it.
+         */
+        if (hasRunningBgShellsFor(this.toolCtx.cwd, this.opts.id)) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "auto-continue-suppressed",
             reason: "background job still running — the agent resumes when it exits",
@@ -1958,7 +1968,8 @@ export class Agent {
          * when it exits (`auto-continue-suppressed`), so the summary needs no blocker vocabulary. Asking here
          * broke that path (measured: "auto-continue is suppressed while a background bash runs").
          */
-        !hasRunningBgShells(this.toolCtx.cwd) &&
+        // owner-scoped for the same reason as the suppression above: a sibling's job is not this agent's excuse
+        !hasRunningBgShellsFor(this.toolCtx.cwd, this.opts.id) &&
         !namesBlocker(String(fin.summary ?? ""))
       ) {
         this.blockerAsks += 1;

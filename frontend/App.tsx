@@ -56,6 +56,7 @@ import {
   type TailSample,
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
+import { keyReleasesFollow, wheelReleasesFollow } from "./lib/scroll-gesture";
 import { restoreTop, spotFromRows, type RowGeom, type SavedSpot } from "./lib/scroll-return";
 import { bindStoredHeight } from "./lib/resizable-height";
 import { agentLabel, agentLabelWithId } from "./lib/agent-label";
@@ -446,8 +447,49 @@ export default function App() {
     if (feedRoRaf) return;
     feedRoRaf = requestAnimationFrame(restoreAfterBoxChange);
   };
+  /**
+   * A reader gesture is an EVENT, not a deduction from geometry.
+   *
+   * `https://github.com/fluxerapp/fluxer` does exactly this in `useScrollAnchor`: while an anchor is being held, `wheel`,
+   * `touchstart`, `touchmove` and `pointerdown` on the container (plus `keydown` on the window) CANCEL it. Nothing
+   * infers "the operator is reading" from a `scrollTop` delta.
+   *
+   * Ours inferred it, and that is the reported bug: "スクロール追従が上向きスクロールだと勘違いしてキャンセルする可能性".
+   * Streaming makes the content grow, the browser re-anchors, `scrollTop` moves DOWN a little, and the sample looks
+   * like an upward gesture. With gestures as the signal, a growth can never cancel the follow and a real gesture always
+   * does — including the ones geometry cannot see (a scrollbar drag, a trackpad fling, a keyboard page-up).
+   */
+  let detachedGestureListeners: (() => void) | null = null;
+  const attachGestureLatch = (f: HTMLElement) => {
+    detachedGestureListeners?.();
+    const up = (e: Event) => {
+      if (!wheelReleasesFollow((e as WheelEvent).deltaY)) return;
+      readerUntil = performance.now() + READER_LOCK_MS;
+      if (atBottom()) setAtBottom(false);
+    };
+    const taken = () => {
+      readerUntil = performance.now() + READER_LOCK_MS;
+      if (atBottom()) setAtBottom(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (keyReleasesFollow(e.key)) taken();
+    };
+    f.addEventListener("wheel", up, { passive: true });
+    f.addEventListener("touchmove", taken, { passive: true });
+    f.addEventListener("touchstart", taken, { passive: true });
+    window.addEventListener("keydown", onKey, { capture: true });
+    detachedGestureListeners = () => {
+      f.removeEventListener("wheel", up);
+      f.removeEventListener("touchmove", taken);
+      f.removeEventListener("touchstart", taken);
+      window.removeEventListener("keydown", onKey, { capture: true } as never);
+      detachedGestureListeners = null;
+    };
+  };
+
   const attachFeedObserver = (f: HTMLElement | null) => {
     if (!f) return;
+    attachGestureLatch(f);
     if (f === feedRoEl) return; 
     feedRo ??= new ResizeObserver((entries) => {
       const box = entries[0]?.contentRect;
@@ -1431,6 +1473,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * (their ids only look unique within a session), so the old array has to go — just not before the new one exists.
    */
   let replaceEventsOnLoad = false;
+  /**
+   * True while a switch's events are still arriving and the feed is showing the OUTGOING session's rows.
+   *
+   * Keeping those rows is what removed the empty frame (and with it the ancient-position jump), but it also removed the
+   * only feedback the operator had: "loading timeline… が表示されなくなって、遷移中が単にラグいだけの表示になって最悪".
+   * The rows stay; a small banner says what is happening.
+   */
+  const [switchingFeed, setSwitchingFeed] = createSignal(false);
 
   async function loadEvents(id: string, sessionId?: string) {
     const genAtStart = feedGeneration;
@@ -1454,6 +1504,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       if (genAtStart !== feedGeneration || selected() !== id) return; 
       if (replaceEventsOnLoad) {
         replaceEventsOnLoad = false;
+        setSwitchingFeed(false);
         evCache.clear();
         setEvents(stabilize(ev.events));
       } else {
@@ -1470,6 +1521,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // nothing arrived: an empty feed is the honest state, and the next select will replace it atomically
       if (replaceEventsOnLoad) {
         replaceEventsOnLoad = false;
+        setSwitchingFeed(false);
         clearTimelineState();
       }
     }
@@ -1536,10 +1588,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * stands down entirely when a restore was applied.
    */
   const scrollSpot = new Map<string, SavedSpot>();
-  const rowGeometry = (f: HTMLElement): RowGeom[] =>
+  /**
+   * Row geometry in CONTENT coordinates.
+   *
+   * `getBoundingClientRect()` is viewport-relative, and the feed element KEEPS its `scrollTop` across a switch (the
+   * rows are replaced, the scroll container is not), so a rect top on the incoming session is offset by whatever the
+   * outgoing one had scrolled to. Adding the reader's offset to that wrote the wrong `scrollTop` — the restore landed
+   * somewhere arbitrary and the operator's verdict was "実測したら一瞬でわかる" (#205).
+   *
+   * Passing `scrollTop` converts to the coordinate space that survives the switch: distance from the start of content.
+   */
+  const rowGeometry = (f: HTMLElement, scrollTop = 0): RowGeom[] =>
     [...f.querySelectorAll<HTMLElement>("[data-eid]")].map((r) => {
       const b = r.getBoundingClientRect();
-      return { eid: r.dataset.eid ?? "", session: r.dataset.session ?? "", top: b.top, height: b.height };
+      return {
+        eid: r.dataset.eid ?? "",
+        session: r.dataset.session ?? "",
+        top: b.top + scrollTop,
+        height: b.height,
+      };
     });
   /**
    * Scroll position is NOT restored across a session switch.
@@ -1619,6 +1686,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           const rows = rowGeometry(el);
           const session = rows.find((r) => r.session)?.session || prevTid;
           const here = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
+          // capture in VIEWPORT coordinates (rows and the feed's top are measured the same way)
           const spot = session ? spotFromRows(rows, el.getBoundingClientRect().top, session) : null;
           if (spot && distanceToTail(here) > 1) scrollSpot.set(session, spot);
           else if (session) scrollSpot.delete(session);
@@ -1636,6 +1704,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        */
       clearLocallyAnswered();
       replaceEventsOnLoad = true;
+      setSwitchingFeed(true);
       setCompacting(null);
       setMissed(0);
       setAtBottom(true);
@@ -1724,7 +1793,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       if (!spot) return "give-up";
       const f = feedEl();
       if (!f) return "wait";
-      const rows = rowGeometry(f);
+      // content coordinates: the feed still holds the outgoing session's scrollTop
+      const rows = rowGeometry(f, f.scrollTop);
       if (!rows.length) return "wait";
       const top = restoreTop(spot, rows, f.scrollHeight - f.clientHeight);
       if (top === null) {
@@ -1735,6 +1805,28 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       f.scrollTop = top;
       scrollSpot.delete(tid);
       scrollSpot.delete(id);
+      /**
+       * Close the loop on the anchor row.
+       *
+       * One open-loop write lands "somewhere near" it: MEASURED in real Firefox on a 99k-event session, the reader sat
+       * at `e101165 / 59532px` and came back to `e101166 / 59605px` — off by exactly one row (73px), because the row
+       * heights below it were still settling when the position was computed. Re-measuring the anchor and correcting the
+       * delta converges in a frame or two and does not care why the layout moved.
+       */
+      const anchor = `[data-eid="${CSS.escape(spot.eid)}"][data-session="${CSS.escape(spot.session)}"]`;
+      const settle = (tries: number) => {
+        if (selected() !== id) return;
+        const g = feedEl();
+        if (!g) return;
+        const row = g.querySelector<HTMLElement>(anchor);
+        if (!row) return;
+        const want = g.getBoundingClientRect().top - spot.offset;
+        const delta = row.getBoundingClientRect().top - want;
+        if (Math.abs(delta) < 2 || tries <= 0) return;
+        g.scrollTop += delta;
+        requestAnimationFrame(() => settle(tries - 1));
+      };
+      requestAnimationFrame(() => settle(6));
       return "applied";
     };
     void (async () => {
@@ -3508,6 +3600,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * "上に行こうとすると押し戻される" survived several releases (#212).
              */
             const prevTop = lastSample?.top;
+            const prevHeight = lastSample?.height;
             lastSampleHeight = now.height;
             lastSampleViewport = now.viewport;
             lastSample = now;
@@ -3526,7 +3619,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * するときに、ブラウザの補助アニメーションなしでいきなりその高さまで遷移することがある": while
              * `following` stayed true, `pinned` re-asserted the tail and the notch was undone instantly.
              */
-            const movedUp = prevTop !== undefined && now.top < prevTop - 0.5;
+            /**
+             * Growth can move `scrollTop` DOWN without the operator touching anything (the browser re-anchors when
+             * content is inserted above the viewport, and a shrinking scrollbar does the same). That is not a gesture —
+             * and since gestures now latch the follow themselves, geometry only needs to catch the case where nothing
+             * is growing.
+             */
+            const grew = prevHeight !== undefined && now.height > prevHeight + 0.5;
+            const movedUp = prevTop !== undefined && now.top < prevTop - 0.5 && !grew;
             if (movedUp) readerUntil = performance.now() + READER_LOCK_MS;
             /**
              * A reader's upward move LOCKS the follow for a moment, not just for this event.
@@ -3666,7 +3766,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               </For>
               {}
               {}
-              <Show when={loadingFeed()}>
+              <Show when={switchingFeed()}>
+                <div class="feedloading">
+                  <span class="spinner" aria-hidden="true" /> loading timeline…
+                </div>
+              </Show>
+              <Show when={loadingFeed() && !switchingFeed()}>
                 <div class="feedloading">
                   <span class="spinner" aria-hidden="true" /> loading newer events…
                 </div>

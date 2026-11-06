@@ -138,3 +138,31 @@ test("editorconfig globs match the way the format documents (#109)", () => {
   assert.equal(sectionMatches("lib/[ab].js", "lib/a.js"), true);
   assert.equal(sectionMatches("lib/[ab].js", "lib/c.js"), false);
 });
+
+test("trim_trailing_whitespace is supported, and `false` in a later section wins", async () => {
+  /**
+   * Requested: ".editorconfig サポートについて、trim_trailing_whitespace もサポートを追加 (変な副作用とか起きないなら)".
+   * The parser knew `end_of_line` and `insert_final_newline` only, so a repo that trims got the agent's trailing spaces
+   * back — the one thing `git diff --check` flags on somebody else's commit.
+   */
+  const { editorConfigFor } = await import("../src/agent/editorconfig.ts");
+  const dir = mkdtempInRootSync("ec-trim");
+  fs.writeFileSync(
+    path.join(dir, ".editorconfig"),
+    "root = true\n\n[*]\ntrim_trailing_whitespace = true\n\n[*.md]\ntrim_trailing_whitespace = false\n",
+  );
+  const ts = editorConfigFor(path.join(dir, "src/app.ts"));
+  assert.equal(ts.trimTrailingWhitespace, true, "[*] applies to the file");
+  const md = editorConfigFor(path.join(dir, "README.md"));
+  assert.equal(md.trimTrailingWhitespace, false, "a later, more specific section overrides it");
+  const none = editorConfigFor(path.join(dir, "src/app.ts"));
+  assert.equal(none.eol, null, "and nothing invents an EOL the repo did not ask for");
+});
+
+test("applyEditorConfig trims THEN converts line endings, and leaves the rest alone", async () => {
+  const { applyEditorConfig } = await import("../src/agent/tools.ts");
+  const out = applyEditorConfig("a  \nb\t\nc  ", { eol: "\r\n", trimTrailingWhitespace: true });
+  assert.equal(out, "a\r\nb\r\nc", "trailing spaces and tabs go, CRLF comes back, and the last line is untouched");
+  const untouched = applyEditorConfig("a  \nb\n", { eol: null });
+  assert.equal(untouched, "a  \nb\n", "without the option nothing is trimmed");
+});

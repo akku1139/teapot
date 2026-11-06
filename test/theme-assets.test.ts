@@ -620,9 +620,24 @@ test("the MAXIMIZED composer shows the wallpaper too (#ui)", async () => {
    */
   const wrapper = ruleBody('html[data-bg-image="on"] .composer.maximized {');
   assert.match(wrapper, /background-color:\s*transparent/, "the wrapper must not add a third layer (#217)");
+  /**
+   * The backdrop paints NOTHING, and that is a measurement, not a preference.
+   *
+   * MEASURED in real Firefox with a magenta wallpaper and `surfaceAlpha 0.82`, sampling the rendered pixels of the
+   * prompt box (see `scripts/harness/probe-maximized.py` for the method):
+   *
+   *     normal composer    form alpha 0.39  → composites over the WALLPAPER
+   *     maximized          form 0.39 over a 0.82 backdrop → 0.89 effective → the wallpaper is nearly gone
+   *
+   * That is what "#217 が治ってない" was after the ghosting was fixed: a second surface stacked under the box made the
+   * one mode that covers the most screen the one that showed the least of the theme. With the feed hidden there is
+   * nothing left for a backdrop to cover, so the box is a single surface again.
+   */
   const backdrop = ruleBody('html[data-bg-image="on"] .composer.maximized::before');
-  assert.match(backdrop, /var\(--bg-dark-solid/, "the backdrop takes a themed surface, not a solid colour (#ui)");
-  assert.match(backdrop, /var\(--surface-alpha\)/, "and the PANEL alpha, so the wallpaper reads through it");
+  assert.match(backdrop, /background-color:\s*transparent/, "the backdrop must not stack a second surface (#217)");
+  assert.doesNotMatch(backdrop, /var\(--surface-alpha\)/, "and must not add its own alpha on top of the form's");
+  const form = ruleBody('html[data-bg-image="on"] .composer form {');
+  assert.match(form, /var\(--surface-alpha-composer\)/, "the FORM is the single surface, as it is un-maximized");
   /**
    * Maximizing HIDES the timeline; it does not paint over it.
    *
@@ -650,4 +665,16 @@ test("the attachment strip sits above the prompt box, not inside its button row"
   const body = css.slice(at, css.indexOf("}", at));
   assert.match(body, /display:\s*flex/, "it is a row, not inline content inside the form");
   assert.match(body, /flex-wrap:\s*wrap/, "many attachments must wrap instead of widening the box");
+});
+
+test("the image viewer does not round the picture's own corners", async () => {
+  /**
+   * "添付画像の拡大画面は角丸を止める (画像の端が切れるので)". The overlay is a card; the IMAGE inside it is not, and a
+   * radius there clips the corners of the thing being inspected.
+   */
+  const css = stripSourceComments(await readSource("frontend/app.css"));
+  const at = css.indexOf(".lightbox img {");
+  assert.notEqual(at, -1, "the viewer rule must exist (#ui)");
+  const body = css.slice(at, css.indexOf("}", at));
+  assert.match(body, /border-radius:\s*0/, "the enlarged image must not be rounded");
 });
