@@ -810,16 +810,31 @@ export class Agent {
   /**
    * Everything in the session directory that the panel needs: goal, todo, workspace presence.
    *
-   * Idempotent, so `init()` and `ensureReady()` can both ask without reading twice.
+   * Idempotent via the IN-FLIGHT PROMISE, not a boolean.
+   *
+   * The flag was set before the first `await`, so a second caller during the read got an already-"done" state and
+   * returned immediately — while the goal and todo had not been applied yet. MEASURED as a CI-only failure of
+   * `test/storage.test.ts` ("sibling-prefix ids", `kernel2.goal.text` was `""` right after `load()` while the session
+   * directory assertion right above it passed), and it is a contract violation rather than a flake: `load()` promises
+   * the session is ready, and the goal is part of the session.
+   *
+   * Sharing the promise means every caller waits for the SAME read — `ensureReady()` can still start it in the
+   * background (so a spawned child's "running" transition is not delayed, which is why it was deferred at all), and
+   * `load()` can wait for it without re-reading.
    */
-  private sessionStateLoaded = false;
-  private async loadSessionState(): Promise<void> {
-    if (this.sessionStateLoaded) return;
-    this.sessionStateLoaded = true;
-    await this.migrateMemoryToAgentScope();
-    await this.migrateGoalFromWorkspace();
-    this.goal = (await this.readGoalStore()) ?? this.goal;
-    this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");
+  private sessionStatePromise?: Promise<void>;
+  private loadSessionState(): Promise<void> {
+    this.sessionStatePromise ??= (async () => {
+      await this.migrateMemoryToAgentScope();
+      await this.migrateGoalFromWorkspace();
+      this.goal = (await this.readGoalStore()) ?? this.goal;
+      this.todo = await fs.readFile(this.todoFile, "utf8").catch(() => "");
+    })().catch((err) => {
+      // a failed read must not poison the memo: the next caller may retry
+      this.sessionStatePromise = undefined;
+      throw err;
+    });
+    return this.sessionStatePromise;
   }
 
   ensureReady(): Promise<void> {
@@ -852,6 +867,13 @@ export class Agent {
 
   async load(): Promise<void> {
     await this.ensureReady();
+    /**
+     * …and the session's own state, which `ensureReady()` starts but deliberately does not wait for.
+     *
+     * Without this, `load()` returned while the goal/todo read was still in flight: `snapshot()` and `goal` looked
+     * loaded, and a caller that read `agent.goal` straight afterwards got the empty initial value.
+     */
+    await this.loadSessionState();
   }
 
   private async answerUnansweredRestoredCalls(): Promise<void> {
