@@ -1814,6 +1814,20 @@ if (active().length === 0) wake();
       heapUsedMb: +(mu.heapUsed / 1048576).toFixed(1),
       heapTotalMb: +(mu.heapTotal / 1048576).toFixed(1),
       externalMb: +(mu.external / 1048576).toFixed(1),
+      /**
+       * The rest of the picture, because RSS alone says "something is big" and nothing else.
+       *
+       * MEASURED on the operator's machine: `rss 805 · heap 250 · total 316 · ext 5.7` — i.e. ~490MB outside the JS
+       * heap with almost no external memory. That points at V8's untracked space and pages freed-but-not-returned
+       * rather than a JS leak, and these three fields are what tells the two apart next time:
+       *   - `arrayBuffersMb` big → Buffers are held (a read, a pty, a response);
+       *   - `messagesInMemory` big → conversations are held (agents whose sessions are loaded);
+       *   - both small while RSS stays high → allocator fragmentation, not a leak.
+       */
+      arrayBuffersMb: +(mu.arrayBuffers / 1048576).toFixed(1),
+      messagesInMemory: [...this.agents.values()].reduce((n, a) => n + a.conversation.length, 0),
+      // a session that has been read into memory: this is the count that makes "messagesInMemory" interpretable
+      loadedSessions: [...this.agents.values()].filter((a) => a.conversation.length > 0).length,
       cpuMsTotal: Math.round((cu.user + cu.system) / 1000),
       loadavg1: +(os.loadavg()[0]).toFixed(2),
       agents: [...this.agents.values()].map((a) => ({

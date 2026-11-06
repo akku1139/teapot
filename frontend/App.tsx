@@ -3120,7 +3120,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB
               <Show when={metrics().heapTotalMb !== undefined}> · total {metrics().heapTotalMb}MB</Show>
               <Show when={metrics().externalMb !== undefined}> · ext {metrics().externalMb}MB</Show>
+              <Show when={metrics().arrayBuffersMb !== undefined}> · buf {metrics().arrayBuffersMb}MB</Show>
               <br />
+              <Show when={metrics().messagesInMemory !== undefined}>
+                msgs {metrics().messagesInMemory} in {metrics().loadedSessions} loaded session(s)
+                <br />
+              </Show>
               load1 {metrics().loadavg1} · up {Math.floor(metrics().uptimeSec / 60)}m
             </Show>
           </div>
