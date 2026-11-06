@@ -1587,11 +1587,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        */
       {
         const el = feedEl();
-        if (el && prevTid) {
+        if (el) {
+          /**
+           * Key the spot by the session the ROWS declare, not by `timelineId()`.
+           *
+           * `prevTid` is whatever the timeline resolved to when the switch started, and on a slower machine that can
+           * still be the AGENT id for the first frames after a switch — MEASURED as a Windows-only CI failure of the
+           * #205 smoke ("landed at 1600, not the 250 the reader left at"), while the same run on Linux saved and
+           * restored fine. The rendered rows carry `data-session`, which is the identity that matters, so it wins.
+           */
+          const rows = rowGeometry(el);
+          const session = rows.find((r) => r.session)?.session || prevTid;
           const here = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
-          const spot = spotFromRows(rowGeometry(el), el.getBoundingClientRect().top, prevTid);
-          if (spot && distanceToTail(here) > 1) scrollSpot.set(prevTid, spot);
-          else scrollSpot.delete(prevTid);
+          const spot = session ? spotFromRows(rows, el.getBoundingClientRect().top, session) : null;
+          if (spot && distanceToTail(here) > 1) scrollSpot.set(session, spot);
+          else if (session) scrollSpot.delete(session);
         }
       }
       clearTimelineState();
@@ -1678,7 +1688,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * branch, older page never loaded) so the tail is the honest answer; `wait` means no rows have rendered yet.
      */
     const attemptRestore = (): "applied" | "wait" | "give-up" => {
-      const spot = scrollSpot.get(tid);
+      // the spot was keyed by the session the rows carry; `tid` is the same session once it has resolved, and the
+      // agent id is the honest fallback for a timeline that has not resolved yet
+      const spot = scrollSpot.get(tid) ?? scrollSpot.get(id);
       if (!spot) return "give-up";
       const f = feedEl();
       if (!f) return "wait";
@@ -1687,28 +1699,39 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const top = restoreTop(spot, rows, f.scrollHeight - f.clientHeight);
       if (top === null) {
         scrollSpot.delete(tid);
+        scrollSpot.delete(id);
         return "give-up";
       }
       f.scrollTop = top;
       scrollSpot.delete(tid);
+      scrollSpot.delete(id);
       return "applied";
     };
     void (async () => {
       await backfillUntilScrollable();
       if (selected() !== id || settleGen !== feedGeneration) return;
-      const restoreTries = (n: number) => {
+      /**
+       * Give the restore a DEADLINE, not a frame count.
+       *
+       * Twelve frames is ~200ms on this machine and ~700ms on a slow one, and a session whose events arrive after that
+       * window loses its restore entirely — MEASURED as a Windows-only CI failure where the same bundle restored fine
+       * on Linux. Waiting on time rather than on frames makes the outcome the same everywhere; the tail is still the
+       * answer once the deadline passes.
+       */
+      const restoreBy = performance.now() + 1500;
+      const restoreTries = () => {
         if (selected() !== id || settleGen !== feedGeneration) return;
         const verdict = attemptRestore();
         // a restore that has just been written must NOT be followed by the switch pin, which is what undid this
         // feature in v0.37.124 ("applied tries=0 from=2446 delta=-953" — restored, then dragged back)
         if (verdict === "applied") return;
-        if (verdict === "wait" && n > 0) {
-          requestAnimationFrame(() => restoreTries(n - 1));
+        if (verdict === "wait" && performance.now() < restoreBy) {
+          requestAnimationFrame(restoreTries);
           return;
         }
         requestAnimationFrame(() => settleAtTail(0));
       };
-      requestAnimationFrame(() => restoreTries(12));
+      requestAnimationFrame(restoreTries);
     })();
   }
 
