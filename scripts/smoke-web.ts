@@ -2735,18 +2735,81 @@ console.log("deep render ok: feed rows present");
   }
 
   /**
+   * A session switch must never leave the feed with ZERO rows, not even for a frame.
+   *
+   * Reported as "時々セッションロード時にタイムラインが表示されて、一瞬中身が空になって、直後に中身が戻ってくる", and by
+   * the operator as the likely cause of the "遥か昔のタイムライン位置まで飛ばされる" jumps: an empty feed collapses
+   * `scrollHeight`, the browser clamps `scrollTop` to 0, and the new rows then appear with the viewport at the TOP.
+   * Sampling every frame is the point — a check after the switch is over would pass either way.
+   */
+  {
+    const counts: { at: number; rows: number }[] = [];
+    const sample = () => counts.push({ at: performance.now(), rows: w.document.querySelectorAll(".feed .msg").length });
+    const betaRow = [...w.document.querySelectorAll(".agent-item")].find((el) => /\bbeta\b/.test(el.textContent ?? "")) as
+      | HTMLElement
+      | undefined;
+    if (!betaRow) {
+      console.error("#205 check: no beta row — cannot drive a switch");
+      process.exit(1);
+    }
+    sample();
+    betaRow.click();
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      sample();
+    }
+    const sawRows = counts.some((c) => c.rows > 0);
+    const emptied = counts.some((c) => c.rows === 0);
+    if (!sawRows) {
+      console.error("#205 check: the feed had no rows before the switch — vacuous");
+      process.exit(1);
+    }
+    if (emptied) {
+      const when = counts.findIndex((c) => c.rows === 0);
+      console.error(
+        `#205 REGRESSION: the feed went EMPTY during a session switch (frame ${when} of ${counts.length}, ` +
+          `rows ${JSON.stringify(counts.map((c) => c.rows))}) — an empty feed clamps scrollTop to 0, which is how the ` +
+          `view ends up on the oldest message`,
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a session switch never empties the feed (#205)");
+    // back to alpha for the restore check below
+    [...w.document.querySelectorAll(".agent-item")]
+      .find((el) => /\balpha\b/.test(el.textContent ?? ""))
+      ?.dispatchEvent(new w.Event("click", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
+  /**
    * Returning to a session returns the reader to their place (#205).
    *
-   * This feature was REMOVED in v0.37.124 after four measured failure modes (stale anchor, `data-eid` from another
+   * This feature was REMOVED in v0.37.124 after four measured failure modes (a stale anchor, a `data-eid` from another
    * session, a restore written to a re-created feed, and `settle`/`pin-follow` dragging it back). It is back because
-   * each of those is now structurally impossible — so the test asserts the round trip, with the geometry faked the way
-   * the rest of this file fakes it (happy-dom does no layout).
+   * each of those is now structurally impossible — so the test drives a real switch in the built bundle.
+   *
+   * The geometry is faked per ELEMENT, because happy-dom does no layout and the feed is re-created on every switch:
+   * each element gets its own `scrollTop`, starting at 0 like a fresh mount. A shared variable across elements would
+   * make this pass without any restore at all (the assertion would read the value the test itself wrote).
    */
   {
     const ROW_H = 100;
     const VIEW = 800;
-    const geometry = (f: HTMLElement) => {
+    const faked = new WeakSet<HTMLElement>();
+    const fakeFeed = (f: HTMLElement): { top: () => number } => {
+      let top = 0;
       const rows = [...f.querySelectorAll<HTMLElement>("[data-eid]")];
+      const max = Math.max(0, rows.length * ROW_H - VIEW);
+      Object.defineProperty(f, "scrollHeight", { configurable: true, get: () => rows.length * ROW_H });
+      Object.defineProperty(f, "clientHeight", { configurable: true, get: () => VIEW });
+      Object.defineProperty(f, "offsetHeight", { configurable: true, get: () => VIEW });
+      Object.defineProperty(f, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (v: number) => {
+          top = Math.max(0, Math.min(v, max));
+        },
+      });
       Object.defineProperty(f, "getBoundingClientRect", {
         configurable: true,
         value: () => ({ top: 0, bottom: VIEW, height: VIEW, left: 0, right: 0, width: 0, x: 0, y: 0 }),
@@ -2755,73 +2818,66 @@ console.log("deep render ok: feed rows present");
         Object.defineProperty(r, "getBoundingClientRect", {
           configurable: true,
           value: () => ({
-            top: i * ROW_H - (f as unknown as { scrollTop: number }).scrollTop,
-            bottom: i * ROW_H - (f as unknown as { scrollTop: number }).scrollTop + ROW_H,
+            top: i * ROW_H - top,
+            bottom: i * ROW_H - top + ROW_H,
             height: ROW_H,
             left: 0,
             right: 0,
             width: 0,
             x: 0,
-            y: 0,
+            y: i * ROW_H - top,
           }),
         }),
       );
-      return rows.length;
+      faked.add(f);
+      return { top: () => top, rows: rows.length } as unknown as { top: () => number };
     };
     const feedNow = () => w.document.querySelector(".feed") as HTMLElement | null;
     const agentRow = (name: string) =>
-      [...w.document.querySelectorAll(".agent-item")].find((el) => new RegExp(`\\b${name}\\b`).test(el.textContent ?? "")) as
-        | HTMLElement
-        | undefined;
+      [...w.document.querySelectorAll(".agent-item")].find((el) =>
+        new RegExp(`\\b${name}\\b`).test(el.textContent ?? ""),
+      ) as HTMLElement | undefined;
 
-    const f = feedNow();
-    const rows = f ? geometry(f) : 0;
-    if (!f || rows < 4) {
-      console.error(`#205 check: need a feed with rows to restore into (found ${rows}) — vacuous`);
+    const first = feedNow();
+    if (!first || !first.querySelector("[data-eid]")) {
+      console.error("#205 check: no feed rows to start from — vacuous");
       process.exit(1);
     }
-    Object.defineProperty(f, "scrollHeight", { configurable: true, get: () => rows * ROW_H });
-    Object.defineProperty(f, "clientHeight", { configurable: true, get: () => VIEW });
-    let top = 2 * ROW_H + 50; // 50px into the 3rd row
-    Object.defineProperty(f, "scrollTop", {
-      configurable: true,
-      get: () => top,
-      set: (v: number) => {
-        top = Math.max(0, Math.min(v, Math.max(0, rows * ROW_H - VIEW)));
-      },
-    });
-    f.dispatchEvent(new w.Event("scroll", { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 40));
-    const wanted = top;
+    const before = fakeFeed(first);
+    // 50px into the third row
+    (first as unknown as { scrollTop: number }).scrollTop = 2 * ROW_H + 50;
+    const wanted = before.top();
+    first.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 60));
 
     agentRow("beta")?.click();
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 300));
+    if (feedNow() === first) {
+      console.error("#205 check: the switch did not rebuild the feed — cannot test the return");
+      process.exit(1);
+    }
     agentRow("alpha")?.click();
-    // patch the NEW feed as soon as its rows exist, so the restore has geometry to resolve against
-    for (let i = 0; i < 60; i++) {
+
+    // give every newly mounted feed its own fake geometry, as fast as the DOM produces them
+    let landed = feedNow();
+    for (let i = 0; i < 150; i++) {
       const g = feedNow();
-      if (g && g !== f && g.querySelector("[data-eid]")) {
-        const n = geometry(g);
-        Object.defineProperty(g, "scrollHeight", { configurable: true, get: () => n * ROW_H });
-        Object.defineProperty(g, "clientHeight", { configurable: true, get: () => VIEW });
-        Object.defineProperty(g, "scrollTop", {
-          configurable: true,
-          get: () => top,
-          set: (v: number) => {
-            top = Math.max(0, Math.min(v, Math.max(0, n * ROW_H - VIEW)));
-          },
-        });
-        break;
+      if (g && g !== first && !faked.has(g) && g.querySelector("[data-eid]")) {
+        landed = g;
+        fakeFeed(g);
       }
       await new Promise((r) => setTimeout(r, 20));
+      if (faked.has(landed ?? first) && (landed as unknown as { scrollTop: number }).scrollTop > 0) break;
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 200));
 
-    const tail = rows * ROW_H - VIEW;
-    if (Math.abs(top - wanted) > 2) {
+    const returned = landed as unknown as { scrollTop: number } | null;
+    if (!returned || returned.scrollTop !== wanted) {
+      const rows = first.querySelectorAll("[data-eid]").length;
       console.error(
-        `#205 REGRESSION: coming back to the session landed at ${top}, not the ${wanted} the reader left at ` +
-          `(tail is ${tail}) — this is the "遥か昔のメッセージに飛ばされる" class of bug`,
+        `#205 REGRESSION: coming back to the session landed at ${returned?.scrollTop}, not the ${wanted} the reader ` +
+          `left at (rows ${rows}, tail ${Math.max(0, rows * ROW_H - VIEW)}) — this is the ` +
+          `"遥か昔のメッセージに飛ばされる" class of bug`,
       );
       process.exit(1);
     }

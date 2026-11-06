@@ -1424,6 +1424,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     return parts.join("");
   }
 
+  /**
+   * The next `loadEvents` REPLACES the timeline instead of merging into it.
+   *
+   * Merging is right for a refresh of the session already on screen. After a switch it would mix two sessions' rows
+   * (their ids only look unique within a session), so the old array has to go — just not before the new one exists.
+   */
+  let replaceEventsOnLoad = false;
+
   async function loadEvents(id: string, sessionId?: string) {
     const genAtStart = feedGeneration;
     const tid = sessionId ?? timelineId() ?? "";
@@ -1444,15 +1452,27 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       ]);
       if (needsBranches) lastBranchesGen = genAtStart;
       if (genAtStart !== feedGeneration || selected() !== id) return; 
-      setEvents((prev) => {
-        const map = new Map<string, Ev>();
-        for (const e of prev) map.set(e.id, e);
-        for (const e of stabilize(ev.events)) map.set(e.id, e);
-        return [...map.values()].sort((a, b) => a.seq - b.seq);
-      });
+      if (replaceEventsOnLoad) {
+        replaceEventsOnLoad = false;
+        evCache.clear();
+        setEvents(stabilize(ev.events));
+      } else {
+        setEvents((prev) => {
+          const map = new Map<string, Ev>();
+          for (const e of prev) map.set(e.id, e);
+          for (const e of stabilize(ev.events)) map.set(e.id, e);
+          return [...map.values()].sort((a, b) => a.seq - b.seq);
+        });
+      }
       setEventsTotal(ev.total ?? ev.events.length);
       setBranches(br.branches);
-    } catch {  }
+    } catch {
+      // nothing arrived: an empty feed is the honest state, and the next select will replace it atomically
+      if (replaceEventsOnLoad) {
+        replaceEventsOnLoad = false;
+        clearTimelineState();
+      }
+    }
     finally { setLoadingFeed(false); }
   }
 
@@ -1604,8 +1624,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           else if (session) scrollSpot.delete(session);
         }
       }
-      clearTimelineState();
+      /**
+       * Do NOT empty the feed here.
+       *
+       * `clearTimelineState()` set `events` to `[]`, the feed's rows disappeared for a frame or two, `scrollHeight`
+       * collapsed, the browser clamped `scrollTop` to 0 — and when the new rows arrived the viewport was at the TOP,
+       * i.e. on the oldest message on screen. Reported as "時々セッションロード時にタイムラインが表示されて、一瞬中身が
+       * 空になって、直後に中身が戻ってくる" and, by the operator, as the likely cause of the "遥か昔のタイムライン位置まで
+       * 飛ばされる" jumps. The rows are now REPLACED in one `setEvents` when the new session's events land
+       * (`replaceEventsOnLoad`), so the feed never has a zero-content frame.
+       */
       clearLocallyAnswered();
+      replaceEventsOnLoad = true;
       setCompacting(null);
       setMissed(0);
       setAtBottom(true);
