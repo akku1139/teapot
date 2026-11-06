@@ -246,11 +246,29 @@ export class EventLog {
   }
 }
 
+/**
+ * Parse a whole log file, STREAMING it.
+ *
+ * It used to `readFile()` the entire file into one string and `.split("\n")` it, so a large session paid for three
+ * copies at once: the file's bytes, one string per line, and the parsed objects. MEASURED on the operator's server:
+ * `master rss 1034.4MB · heap 599.1MB` at the moment of a burst, back to `heap 248.2MB` a moment later — a transient
+ * allocation that GC could reclaim, not a leak.
+ *
+ * Reading line-by-line through a stream removes the first two copies: the only thing retained is the events, and the
+ * peak no longer scales with (file bytes × 3).
+ */
 export async function readEvents(filePath: string): Promise<TeapotEvent[]> {
+  const out: TeapotEvent[] = [];
   try {
-    const { readFile } = await import("node:fs/promises");
-    const out: TeapotEvent[] = [];
-    for (const line of (await readFile(filePath, "utf8")).split("\n")) {
+    const [{ createReadStream }, { createInterface }] = await Promise.all([
+      import("node:fs"),
+      import("node:readline"),
+    ]);
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    });
+    for await (const line of rl) {
       if (!line.trim()) continue;
       try {
         out.push(JSON.parse(line) as TeapotEvent);

@@ -1227,14 +1227,35 @@ const MAX_WS_CLIENTS = 64;
   });
 
   const eventsCache = new Map<string, { mtimeMs: number; size: number; events: Awaited<ReturnType<typeof readEvents>> }>();
+  /**
+   * The whole-file cache is bounded by EVENTS, not by file count.
+   *
+   * `if (eventsCache.size > 64) eventsCache.clear()` counted FILES, so eight sessions with 90k events each were all
+   * retained — hundreds of MB the process never gives back, since nothing evicts them until the 65th file appears.
+   * A parsed event is roughly a few hundred bytes, so the budget below is a few tens of MB.
+   */
+  const EVENTS_CACHE_BUDGET = 250_000;
+  let eventsCached = 0;
   async function readEventsCached(filePath: string) {
     try {
       const st = await fs.stat(filePath);
       const hit = eventsCache.get(filePath);
-      if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.events;
+      if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+        // refresh insertion order so the eviction below stays LRU
+        eventsCache.delete(filePath);
+        eventsCache.set(filePath, hit);
+        return hit.events;
+      }
       const events = await readEvents(filePath);
-      if (eventsCache.size > 64) eventsCache.clear();
+      if (hit) eventsCached -= hit.events.length;
       eventsCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, events });
+      eventsCached += events.length;
+      for (const [key, entry] of eventsCache) {
+        if (eventsCached <= EVENTS_CACHE_BUDGET && eventsCache.size <= 8) break;
+        eventsCache.delete(key);
+        eventsCached -= entry.events.length;
+      }
+      if (eventsCached < 0) eventsCached = 0;
       return events;
     } catch {
       return readEvents(filePath);
@@ -1274,6 +1295,18 @@ const MAX_WS_CLIENTS = 64;
     const before = c.req.query("before");
     const after = c.req.query("after");
     if (after && !before && !branch) {
+      /**
+       * The incremental case must not read the whole file.
+       *
+       * `after=` is what a client sends to catch up after a reconnect, and it is almost always near the END of the log,
+       * so the tail window answers it — reading 90k events to find one id was the burst path.
+       */
+      const tailFirst = await readEventsTail(filePath, Math.max(limit, 4_000));
+      const inTail = tailFirst.events.findIndex((e) => e.id === after);
+      if (inTail !== -1) {
+        const events = tailFirst.events.slice(inTail + 1);
+        return c.json({ events, total: tailFirst.total, appended: events.length > 0 });
+      }
       const all = await readEventsCached(filePath);
       const idx = all.findIndex((e) => e.id === after);
       if (idx === -1) {
