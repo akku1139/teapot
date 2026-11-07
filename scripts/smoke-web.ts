@@ -2665,9 +2665,14 @@ console.log("deep render ok: feed rows present");
      * The wheel/key rules themselves are unit-tested (`test/scroll-gesture.test.ts`); this file cannot drive the pin a
      * real wheel would trigger, so asserting it here would only produce a check that cannot fail for the right reason.
      */
+    /**
+     * A collapsing live bubble (thinking → tool row) shrinks the feed, which clamps `scrollTop` down exactly like a
+     * growth re-anchors it. Neither is a gesture: the follow is latched by `wheel`/`touch`/`key`/`pointerdown`
+     * (`scroll-gesture.ts`), and the geometry check now ignores any sample whose content height changed, so a shrink
+     * cannot read as "the operator scrolled up". This harness cannot drive the pin that would follow, so the rule
+     * itself is unit-tested rather than asserted here.
+     */
     console.log("deep render ok: a 3px upward nudge is not undone by streaming content (#212)");
-
-
   }
 
   {

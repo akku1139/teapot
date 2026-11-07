@@ -2097,7 +2097,24 @@ html[data-bg-image="on"] .composer form {
   );
 }
 .composer textarea {
-  flex: 1; background: none; border: none; outline: none; color: var(--fg); font: inherit;
+  flex: 1;
+  /**
+   * `min-width: 0` is the whole bug (#218), and it is a CSS-only fix.
+   *
+   * A flex item will not shrink below its intrinsic width, and for a `<textarea>` the PLACEHOLDER counts towards that
+   * width — so at the widths where the buttons are still on one row the long hint ("message #… — / for commands · paste
+   * or 📎 to attach images") refused to be clipped and widened the row instead. Measured in real Firefox with the four
+   * candidate rules: `text-overflow: ellipsis` on `::placeholder` works there (and in Chrome the text is simply clipped,
+   * with NO horizontal scroll), so clipping was never the problem — the box was not allowed to get narrower.
+   */
+  min-width: 0;
+  /**
+   * …and the BOX must not scroll sideways either. MEASURED in Firefox at 660px: the page and the form were clean but
+   * the textarea itself had `scrollWidth - clientWidth = 15`, i.e. a horizontal scrollbar inside the prompt box, which is
+   * the same complaint one layer down.
+   */
+  overflow-x: hidden;
+  background: none; border: none; outline: none; color: var(--fg); font: inherit;
   /* NO max-height here: the JS sets an explicit pixel height capped at MAX_COMPOSER_H
      (360px). A CSS cap below that silently won the cascade, so every height between 160 and
      360 was clamped and the box started scrolling instead of growing — the pin then had
@@ -3732,5 +3749,15 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
 .composer textarea::placeholder {
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+/**
+ * …and the ELEMENT side of the same rule.
+ *
+ * `::placeholder { text-overflow: ellipsis }` alone leaves the text as a clipped run at some widths: MEASURED in Firefox
+ * at 660px the textarea still had 15px of horizontally scrollable content. The `:placeholder-shown` form is what makes
+ * the browser lay the placeholder out as an ELLIPSISED string, which removes the overflow instead of hiding it.
+ */
+.composer textarea:placeholder-shown {
   text-overflow: ellipsis;
 }

@@ -477,11 +477,14 @@ export default function App() {
     f.addEventListener("wheel", up, { passive: true });
     f.addEventListener("touchmove", taken, { passive: true });
     f.addEventListener("touchstart", taken, { passive: true });
+    // a scrollbar drag and a text selection both start here; fluxer's `useScrollAnchor` cancels on the same event
+    f.addEventListener("pointerdown", taken, { passive: true });
     window.addEventListener("keydown", onKey, { capture: true });
     detachedGestureListeners = () => {
       f.removeEventListener("wheel", up);
       f.removeEventListener("touchmove", taken);
       f.removeEventListener("touchstart", taken);
+      f.removeEventListener("pointerdown", taken);
       window.removeEventListener("keydown", onKey, { capture: true } as never);
       detachedGestureListeners = null;
     };
@@ -719,6 +722,7 @@ export default function App() {
   });
   const MAX_COMPOSER_H = 360; 
   const [composerMaximized, setComposerMaximized] = createSignal(false);
+
   const [atBottom, setAtBottom] = createSignal(true);
   let pinSettleTimer: ReturnType<typeof setTimeout> | undefined;
   const [missed, setMissed] = createSignal(0);
@@ -1598,16 +1602,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    *
    * Passing `scrollTop` converts to the coordinate space that survives the switch: distance from the start of content.
    */
-  const rowGeometry = (f: HTMLElement, scrollTop = 0): RowGeom[] =>
-    [...f.querySelectorAll<HTMLElement>("[data-eid]")].map((r) => {
+  const rowGeometry = (f: HTMLElement, scrollTop = 0, untilBelowTop = false): RowGeom[] => {
+    const feedTop = untilBelowTop ? f.getBoundingClientRect().top : Number.NEGATIVE_INFINITY;
+    const out: RowGeom[] = [];
+    for (const r of f.querySelectorAll<HTMLElement>("[data-eid]")) {
       const b = r.getBoundingClientRect();
-      return {
+      out.push({
         eid: r.dataset.eid ?? "",
         session: r.dataset.session ?? "",
         top: b.top + scrollTop,
         height: b.height,
-      };
-    });
+      });
+      // a couple of rows past the edge is all the capture needs, and it keeps the click from laying out 2000 rows
+      if (untilBelowTop && b.top > feedTop + 4) break;
+    }
+    return out;
+  };
   /**
    * Scroll position is NOT restored across a session switch.
    *
@@ -1674,6 +1684,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        */
       {
         const el = feedEl();
+        /**
+         * SHOW the switch before measuring anything.
+         *
+         * The capture below walks the feed's rows, and measuring every row forced a layout of the whole timeline before
+         * the click handler could paint — so the operator saw "click → lag → old timeline + loading → new content"
+         * instead of the banner appearing immediately ("少なくとも 旧タイムライン表示+loading が先に来るべきでは?").
+         * The banner is set here, first, and the measurement after it is bounded to the rows near the top edge.
+         */
+        setSwitchingFeed(true);
         if (el) {
           /**
            * Key the spot by the session the ROWS declare, not by `timelineId()`.
@@ -1683,7 +1702,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
            * #205 smoke ("landed at 1600, not the 250 the reader left at"), while the same run on Linux saved and
            * restored fine. The rendered rows carry `data-session`, which is the identity that matters, so it wins.
            */
-          const rows = rowGeometry(el);
+          const rows = rowGeometry(el, 0, true);
           const session = rows.find((r) => r.session)?.session || prevTid;
           const here = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
           // capture in VIEWPORT coordinates (rows and the feed's top are measured the same way)
@@ -3630,13 +3649,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * `following` stayed true, `pinned` re-asserted the tail and the notch was undone instantly.
              */
             /**
-             * Growth can move `scrollTop` DOWN without the operator touching anything (the browser re-anchors when
-             * content is inserted above the viewport, and a shrinking scrollbar does the same). That is not a gesture —
-             * and since gestures now latch the follow themselves, geometry only needs to catch the case where nothing
-             * is growing.
+             * A CHANGE IN CONTENT HEIGHT is not a gesture, in EITHER direction.
+             *
+             * Growing moves `scrollTop` down (the browser re-anchors when content is inserted above the viewport);
+             * SHRINKING clamps it down too, and that is the reported one: "スクロール追従が thinkingのライブ終了で折り
+             * たたみ -> bash みたいなタイミングで外れる". When the live bubble collapses into a tool row the feed gets
+             * shorter, the browser pulls `scrollTop` back, and the sample looked like the operator scrolling up.
+             *
+             * Gestures latch the follow themselves now (`wheel`/`touch`/`key`/`pointerdown`), so geometry only has to
+             * answer the remaining case: the viewport moved up while the content did not change at all.
              */
-            const grew = prevHeight !== undefined && now.height > prevHeight + 0.5;
-            const movedUp = prevTop !== undefined && now.top < prevTop - 0.5 && !grew;
+            const heightChanged = prevHeight !== undefined && Math.abs(now.height - prevHeight) > 0.5;
+            const movedUp = prevTop !== undefined && now.top < prevTop - 0.5 && !heightChanged;
             if (movedUp) readerUntil = performance.now() + READER_LOCK_MS;
             /**
              * A reader's upward move LOCKS the follow for a moment, not just for this event.
