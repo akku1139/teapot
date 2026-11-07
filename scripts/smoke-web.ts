@@ -60,6 +60,12 @@ const EVENTS = [
       images: [{ url: "blobs/3220fc7838ccdab0a3a21b5d8498275c7abe6930abbb059e9fdb4939bba8c2fd.jpg", name: "card.jpg" }] } },
   { id: "e4b", seq: 5, ts: "2026-01-01T10:00:11Z", session: "alpha-s1", branch: "br0", parent: "e4",
     type: "prompt", data: { source: "harness", text: "[harness] Sub-agent alpha-kid finished. Final report:\nCHILD REPORT TEXT" } },
+  // a write_file with a .ts path: its card must be highlighted by the extension
+  { id: "e-wf-call", seq: 5, ts: "2026-01-01T10:00:21Z", session: "alpha-s1", branch: "br0", parent: "e4",
+    type: "tool_call", data: { callId: "c-wf", name: "write_file",
+      args: { path: "src/app.ts", content: "export const written = (n: number): string => `v${n}`;" } } },
+  { id: "e-wf-res", seq: 5, ts: "2026-01-01T10:00:21Z", session: "alpha-s1", branch: "br0", parent: "e-wf-call",
+    type: "tool_result", data: { callId: "c-wf", name: "write_file", ok: true, durationMs: 4, result: "wrote 1 file" } },
   { id: "q1", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0", parent: "e4",
     type: "question", data: { callId: "q-call-1", question: "which library?", options: ["libfoo", "libbar"] } },
   { id: "g1", seq: 6, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0", parent: "q1",
@@ -458,6 +464,35 @@ console.log("deep render ok: feed rows present");
     process.exit(1);
   }
   console.log(`deep render ok: tool cards are shiki-highlighted (${tokens.length} token spans) (#shiki)`);
+
+  /**
+   * A `write_file` card is highlighted by the file's OWN extension.
+   *
+   * It went through `HighlightedCode` without a `lang`, so every written file rendered as a plain `<pre>` while
+   * `read_file`, bash output and message fences were coloured. The mapping existed (`langForPath`) and was not asked for.
+   */
+  {
+    let hit: Element | undefined;
+    for (let i = 0; i < 120; i++) {
+      hit = [...w.document.querySelectorAll(".feed .toolbody.shiki")].find((el) =>
+        (el.textContent ?? "").includes("export const written"),
+      );
+      if (hit) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    if (!hit) {
+      const bodies = [...w.document.querySelectorAll(".feed .toolbody")].map((el) => el.className);
+      console.error(
+        `#shiki REGRESSION: a write_file card with a .ts path is not highlighted (bodies: ${JSON.stringify(bodies.slice(0, 6))})`,
+      );
+      process.exit(1);
+    }
+    if (!hit.querySelector("span[style*='--shiki']")) {
+      console.error("#shiki REGRESSION: the write_file block carries the class but no highlighted token spans");
+      process.exit(1);
+    }
+    console.log("deep render ok: a write_file card is highlighted by its extension (#shiki)");
+  }
 }
 
 {

@@ -17,6 +17,7 @@ import { renderMarkdownCached } from "../lib/markdown";
 import { groupedWith, type RowLike } from "../lib/row-grouping";
 import { outcomeMarker, shellHint, shellOutcome } from "../lib/shell-outcome";
 import { authorOf, fmtK, fmtTs, oneLine, rawOf, type Ev } from "../lib/timeline-row";
+import { langForPath } from "../lib/shiki";
 import { formatToolOutput, outputLang } from "../lib/tool-output-lang";
 import { effectiveBashTimeout } from "../lib/bash-timeout";
 
@@ -254,11 +255,19 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       }
       case "write_file": {
         const content = String(d.args?.content ?? "");
-        label = argStr("path") || "(no path)";
+        const path = argStr("path");
+        label = path || "(no path)";
         hint = `${fmtK(content.length)} bytes`;
         body = (
           <>
-            {codeBlock(content)}
+            {/**
+              * Highlighted by the file's own extension.
+              *
+              * `codeBlock()` already went through `HighlightedCode`, but without a `lang` — so every `write_file` rendered
+              * as a plain `<pre>` while `read_file`, bash output and message fences were coloured. The mapping already
+              * existed (`langForPath`, used by message fences); this just asks it.
+              */}
+            {codeBlock(content, undefined, langForPath(path) ?? undefined)}
             {res() ? <div class="meta">{oneLine(out(), 160)}</div> : <div class="meta">writing…</div>}
           </>
         );

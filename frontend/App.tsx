@@ -331,6 +331,7 @@ export default function App() {
      * because the rows landed after the switch's frame-count settle and nothing looked at the feed again.
      */
     if (performance.now() < tailSeekingUntil) {
+      if (performance.now() < readerUntil) return;
       const f0 = feedEl();
       // unconditionally: during a tail-seek the target IS the bottom, and the measurement can be taken before the
       // new rows have a height at all (distance 0 with an empty box), which is how the pin kept being skipped
@@ -426,6 +427,15 @@ export default function App() {
   const tailWatch = () => {
     tailWatchRaf = 0;
     if (performance.now() >= tailSeekingUntil) return;
+    /**
+     * A GESTURE cancels the seek: the operator has taken the viewport over, and a watchdog that keeps pulling would be
+     * the "マウスホイールでスクロールできない" bug again. The gesture latch (`readerUntil`) is the same signal every other
+     * correction uses.
+     */
+    if (performance.now() < readerUntil) {
+      tailWatchRaf = requestAnimationFrame(tailWatch);
+      return;
+    }
     const f = feedEl();
     if (f && distanceToTail({ top: f.scrollTop, height: f.scrollHeight, viewport: f.clientHeight }) > 1) {
       pinTailAndRebaseline(f);
@@ -3116,12 +3126,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         setAtBottom(true);
         setMissed(0);
         readerUntil = 0;
-        requestAnimationFrame(() => {
-          pinToTail();
-          requestAnimationFrame(() => {
-            if (atBottom()) pinToTail();
-          });
-        });
+        /**
+         * Arm the tail watchdog instead of pinning twice by hand.
+         *
+         * MEASURED in real Firefox: the FIRST send after a page load left the viewport exactly one row short (48px, with
+         * "jump to present" showing). The pin ran before the new echo row had its final height, and the 48px gap then
+         * put `atBottom()` out of its tolerance, so every later pin — including `pinToTail`'s own settle frames — was
+         * gated off. The watchdog pins every frame for the window and ignores `atBottom()`, which is the same fix that
+         * made session switches reliable.
+         */
+        seekTail(700);
       }
     } catch (ex) {
       // the optimistic row must not survive a send that never happened
