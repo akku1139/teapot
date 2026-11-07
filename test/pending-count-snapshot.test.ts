@@ -38,7 +38,17 @@ test("snapshot.pendingPrompts stays the DELIVERY counter (harness included) (#14
       const queue = (s as unknown as { pendingPromptQueue?: unknown[] }).pendingPromptQueue ?? [];
       assert.equal(s.pendingPrompts, 2, "the delivery counter counts every queued prompt");
       assert.equal(ids.length, 1, "the cancellable set is the user prompt only");
-      assert.equal(queue.length, 1, "the echoed queue matches the cancellable set");
+      /**
+       * The queue is for DISPLAY, the ids are for CANCELLATION — they are no longer the same list.
+       *
+       * "harnessからのメッセージにqueuedがついてない問題が v0.37.160 でもあった": the client can only draw a queued row for a
+       * prompt the server can name, and harness prompts had no id, so they were absent from both the queue and the count.
+       * They are in the queue now (with an id) while staying OUT of `pendingPromptIds`, because a queued harness message
+       * is not the operator's to withdraw.
+       */
+      assert.equal(queue.length, 2, "the queue carries every queued prompt, harness included");
+      assert.ok(queue.every((q) => typeof (q as { id?: unknown }).id === "string" && (q as { id: string }).id),
+        "each queue entry is nameable, or the client cannot draw it");
     } finally {
       a.stop("end");
       await a.settled().catch(() => {});

@@ -1182,8 +1182,6 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: a queued prompt is born queued, withdrawable and in order (#queued)");
-
-
   }
   }
 

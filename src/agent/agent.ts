@@ -1436,7 +1436,17 @@ export class Agent {
         ...(this.compactPhase ? { compacting: this.compactPhase } : {}),
       },
       pendingPrompts: this.pendingPrompts.length,
-      pendingPromptIds: this.pendingPrompts.map((p) => p.id).filter((x): x is string => !!x).slice(0, 64),
+      /**
+       * The CANCELLABLE set — user prompts only (#141).
+       *
+       * Harness prompts are named too now (they need a row and a count), but they must not appear here: the ✕ cancel is
+       * offered for what this list contains, and a queued harness message is not the operator's to withdraw.
+       */
+      pendingPromptIds: this.pendingPrompts
+        .filter((p) => p.source === "user")
+        .map((p) => p.id)
+        .filter((x): x is string => !!x)
+        .slice(0, 64),
       pendingPromptQueue: this.pendingPrompts
         .filter((p) => !!p.id)
         .slice(0, 64)
@@ -1473,9 +1483,19 @@ export class Agent {
       this.activityChars = 0;
       this.turnsSinceProgress = 0;
     }
+    /**
+     * EVERY queued prompt gets an id, harness ones included.
+     *
+     * Only user prompts were given one, and the snapshot publishes just the prompts it can name
+     * (`pendingPromptQueue`/`pendingPromptIds` filter on `id`). A queued harness prompt was therefore invisible to the
+     * client — no row, no count — which is the remaining half of "harnessからのメッセージにqueuedがついてない問題が
+     * v0.37.160 でもあった".
+     */
     const promptId =
-      source === "user" ? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` : "";
-    const entry = { source, text, images, ...(promptId ? { id: promptId } : {}) };
+      source === "user"
+        ? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+        : `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const entry = { source, text, images, id: promptId };
     this.pendingPrompts.push(entry);
     void this.ensureReady()
       .then(async () => {
@@ -3024,7 +3044,7 @@ export class Agent {
               : `The auditor returned no specific gaps. Re-read the verification contract above and re-run it yourself, item by item, before finishing again:\n\n${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
             const retryText = `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`;
             if (this.consecutiveAuditRejects < (this.opts.maxAuditRejects ?? 3)) {
-              this.pendingPrompts.push({ source: "harness", text: retryText });
+              this.pendingPrompts.push({ source: "harness", text: retryText, id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` });
               await this.log.append("prompt", this.currentSession, this.currentBranch, {
                 source: "harness",
                 text: retryText,
@@ -3066,7 +3086,7 @@ export class Agent {
       `AUDIT, not a finding about your work. Before finishing again, state plainly and briefly what ` +
       `you verified for each item of the contract, so the auditor has something to judge.\n\n` +
       `${this.goal.verify?.slice(0, 2000) || this.goal.text.slice(0, 2000)}`;
-    this.pendingPrompts.push({ source: "harness", text });
+    this.pendingPrompts.push({ source: "harness", text, id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` });
     void this.log
       .append("prompt", this.currentSession, this.currentBranch, { source: "harness", text })
       .catch(() => {});

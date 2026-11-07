@@ -54,3 +54,15 @@ test("a prompt is queued only when something is ahead of it (#queued)", async ()
   assert.equal(queuedOnSend(0, 1), true, "another echo is already on screen");
   assert.equal(queuedOnSend(2, 3), true);
 });
+
+test("a prompt sent to a BUSY agent is queued even as the first in the queue (#queued)", async () => {
+  /**
+   * "キューの1つ目のメッセージは時刻がついてるし" — it waited for the running turn, so it is queued; it just had nothing
+   * else ahead of it. The value is frozen at send time, so no later status change can relabel the row.
+   */
+  const { queuedOnSend } = await import("../frontend/lib/pending-echo.ts");
+  assert.equal(queuedOnSend(0, 0, true), true, "a running agent means this prompt waits");
+  assert.equal(queuedOnSend(0, 0, false), false, "an idle agent starts on it, so it is not queued");
+  assert.equal(queuedOnSend(2, 0, false), true);
+  assert.equal(queuedOnSend(0, 1, false), true);
+});

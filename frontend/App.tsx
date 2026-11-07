@@ -1027,6 +1027,15 @@ export default function App() {
     const qid = (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId;
     if (!qid) return;
     if (events().some((e) => e.id === qid)) return;
+    /**
+     * First: REFETCH the tail. A reload shows the row, so the data is reachable; the socket frame is the part that can
+     * go missing (measured: the server emits `question`, the badge updates from the agent snapshot, and the row only
+     * appeared after a reload). A refetch is a few KB and only happens while a question is parked and unseen.
+     */
+    if (!questionRefetched.has(qid)) {
+      questionRefetched.add(qid);
+      void loadEvents(selected()!, timelineId());
+    }
     if (olderDone() || loadingOlder()) return;
     void (async () => {
       for (let i = 0; i < 8; i++) {
@@ -1049,6 +1058,8 @@ export default function App() {
    * looks like. Only a NEW question takes the operator there, so reading history is not interrupted on every render.
    */
   let lastQuestionJump = "";
+  /** question ids already re-fetched: one attempt each, or a stale id would poll for ever */
+  const questionRefetched = new Set<string>();
   createEffect(() => {
     const qid = (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId;
     if (!qid || qid === lastQuestionJump) return;
@@ -2322,7 +2333,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         }
         if (FEED_IRRELEVANT.has(et) && !NOTE_FEED_TYPES.has(et)) return;
         maybeNotify(msg.agentId, msg.event);
-        if (msg.event?.agent !== selected()) return;
+        /**
+         * The SESSION decides, not the agent id that happens to be selected this frame.
+         *
+         * `msg.event?.agent !== selected()` returned early, and during a switch (or right after a load) `selected()` can
+         * still be the previous agent while the event already belongs to the timeline on screen — the frame was then
+         * dropped and never re-fetched, which is how a parked `ask_operator` question reached the header badge
+         * (`needs_operator`) but not the timeline: "別のセッション見て戻ってきたらask出るのでwebsocketで配信されてないとか
+         * か?". `eventBelongsOnTimeline` already answers the real question (agent + session), so it decides alone.
+         */
         if (!eventBelongsOnTimeline(msg.event as { agent?: string; session?: string }, selected(), timelineId()))
           return;
 
@@ -3163,7 +3182,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      *   - nothing waiting → this prompt STARTS the agent, so it is not queued (and never becomes queued);
      *   - something waiting → it queues behind that, from the first frame.
      */
-    const queuedBehindTurn = queuedOnSend(sel()?.pendingPrompts, pendingFor(echoKey).length);
+    const status = sel()?.status ?? "";
+    const agentBusy = status === "running" || status === "waiting" || status === "needs_operator";
+    const queuedBehindTurn = queuedOnSend(sel()?.pendingPrompts, pendingFor(echoKey).length, agentBusy);
     const localId = `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     writePending(echoKey, [
       ...pendingFor(echoKey),

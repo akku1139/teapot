@@ -89,6 +89,19 @@ export function mergeQueued(mine: PendingEcho[], queue: readonly QueuedPrompt[])
  *   - nothing waiting → this prompt starts the agent, so it is never queued;
  *   - something waiting → it queues behind that from the first frame.
  */
-export function queuedOnSend(pendingPrompts: number | undefined, alreadyPending: number): boolean {
-  return (pendingPrompts ?? 0) > 0 || alreadyPending > 0;
+export function queuedOnSend(
+  pendingPrompts: number | undefined,
+  alreadyPending: number,
+  agentBusy = false,
+): boolean {
+  /**
+   * "Queued" means the prompt will WAIT — either behind something already waiting, or behind the turn the agent is
+   * running right now.
+   *
+   * The second half was missing: with an idle queue and a running agent, the first prompt sent was labelled with a plain
+   * timestamp even though it could not possibly run yet ("キューの1つ目のメッセージは時刻がついてるし"). The value is
+   * frozen at send time, so it cannot flip a frame later — which is what the earlier `isSelLive()` attempt did at render
+   * time.
+   */
+  return (pendingPrompts ?? 0) > 0 || alreadyPending > 0 || agentBusy;
 }
