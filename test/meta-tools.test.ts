@@ -189,3 +189,16 @@ test("the node-count rejection is NOT treated as a context overflow (#nodecap)",
   assert.equal(isRequestNodeLimit(new Error("context length exceeded")).hit, false);
   assert.equal(isContextOverflow(new Error("context length exceeded")), true);
 });
+
+test("ask_operator is the advertised name, and ask_user still dispatches", async () => {
+  /**
+   * "ask_userツールを ask_operator に改名したほうがいい説はある / モデルがreasoningでoperatorってよく使うから多分そっちの
+   * ほうがいい". The system prompt already says "operator" everywhere, so the tool name disagreed with the vocabulary the
+   * model reads. The old name stays dispatchable so a prompt written before the rename, a session resumed mid-call, or
+   * an operator note that still says `ask_user` keep working — it is simply no longer advertised.
+   */
+  const { META_TOOLS } = await import("../src/agent/meta-tools.ts");
+  const advertised: string[] = META_TOOLS.map((t) => String(t.name));
+  assert.ok(advertised.includes("ask_operator"), `ask_operator must be advertised (got ${advertised.join(", ")})`);
+  assert.equal(advertised.includes("ask_user"), false, "the pre-rename name must not be advertised");
+});

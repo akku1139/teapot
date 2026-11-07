@@ -78,11 +78,19 @@ export const META_TOOLS = [
       },
   },
   {
-    name: "ask_user",
+    /**
+     * `ask_operator`, not `ask_user`.
+     *
+     * "モデルがreasoningでoperatorってよく使うから多分そっちのほうがいい" — and the whole system prompt already says
+     * "operator" everywhere, so the tool name disagreed with the vocabulary the model is reading. The old name stays
+     * DISPATCHABLE (see `TOOL_ALIASES`) so a prompt written before the rename, or a session resumed mid-call, still
+     * works; it is simply no longer advertised.
+     */
+    name: "ask_operator",
     spec: {
         type: "function" as const,
         function: {
-          name: "ask_user",
+          name: "ask_operator",
           description:
             "Pause and ask the operator a question — plan confirmation, ambiguous requirements, " +
             "a decision only they can make. The loop parks until they reply; their message arrives " +

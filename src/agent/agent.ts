@@ -192,7 +192,7 @@ const AUDIT_READ_ONLY_TOOLS = new Set(["read_file", "list_dir", "grep", "bash"])
 
 /** tool calls that decide/announce rather than do — they must not reset the "was that stop justified?" bounds */
 const NON_WORK_TOOLS = new Set([
-  "finish", "report_progress", "ask_user", "set_goal", "get_goal", "get_todo", "set_todo",
+  "finish", "report_progress", "ask_operator", "ask_user", "set_goal", "get_goal", "get_todo", "set_todo",
 ]);
 
 const SYSTEM_TEMPLATE = `You are a coding agent working autonomously inside a workspace.
@@ -207,9 +207,9 @@ Most session state is not injected into prompts — fetch it with tools instead:
   compaction notice, or whenever you lose the thread.
 - set_goal(text) → change the objective itself (not routine updates).
 - finish(goalComplete=true, summary) → goal fully achieved.
-- ask_user(question, options?) → park the loop and wait for the operator's
+- ask_operator(question, options?) → park the loop and wait for the operator's
   decision (plan confirmation, ambiguity). One concrete question at a time.
-  Which one ends the turn: finish() closes the round, ask_user() parks it until
+  Which one ends the turn: finish() closes the round, ask_operator() parks it until
   the operator answers, and report_progress() does NOT end it — that output goes
   to the operator's progress panel and you carry on working.
 - read_memory(query?) / add_memory(text) / forget_memory(query) / set_memory(content)
@@ -280,7 +280,7 @@ Most session state is not injected into prompts — fetch it with tools instead:
 - Be frugal: prefer small precise edits, avoid runaway loops.
 - **Two failures on the same cause is the signal to change approach, not to try
   a third time.** Reread the error, list what you have already ruled out, and
-  then either fix the actual cause or ask_user with what you know: two concrete
+  then either fix the actual cause or ask_operator with what you know: two concrete
   options and the evidence for each. Grinding a third variation of a failing idea
   is the costliest loop there is, because it looks like progress.
 - When the operator asks you to remember something, WRITE it with add_memory.
@@ -415,7 +415,7 @@ export class Agent {
       `would land you here again in a few turns. Change the perspective instead:\n` +
       `1. Write down what you have LEARNED (add_memory) and what is LEFT (set_todo), so nothing depends on ` +
       `holding this conversation in your head.\n` +
-      `2. Name the exact question you cannot answer ("I cannot tell whether X, because Y") and call ask_user with ` +
+      `2. Name the exact question you cannot answer ("I cannot tell whether X, because Y") and call ask_operator with ` +
       `it — or list what you have already ruled out and pick a different mechanism that produces the same evidence.\n` +
       `3. Choose the SMALLEST next step that produces evidence — one experiment, not a longer version of the same ` +
       `attempt.\n` +
@@ -449,7 +449,7 @@ export class Agent {
      * time and task size. Telling it the real percentage each turn costs nothing (this line is already
      * per-message) and removes the inference.
      */
-    return `${clock} · ${usageLine(this.contextSizeForBudgeting(), this.opts.contextTokenBudget)}`;
+    return `${clock} · ${usageLine(this.contextSizeForBudgeting(), this.opts.contextTokenBudget, this.opts.contextWindowTokens)}`;
   }
   private activityChars = 0;
   private turnsSinceProgress = 0;
@@ -2118,7 +2118,7 @@ export class Agent {
       );
       return "next";
     },
-    ask_user: async (call, m) => {
+    ask_operator: async (call, m) => {
       const a = safeParse(call.function.arguments);
       const question = String(a.question ?? "").slice(0, 2000);
       const options = Array.isArray(a.options)
@@ -2611,7 +2611,14 @@ export class Agent {
           await this.answerUnansweredToolCalls(m);
           return finished;
         }
-        const meta = this.metaHandlers[call.function.name as MetaToolName];
+        /**
+         * `ask_user` is the pre-rename name of `ask_operator` and stays dispatchable.
+         *
+         * One normalization point: a prompt written before the rename, a session resumed mid-call, or an operator's own
+         * note that still says `ask_user` all keep working. The spec advertises only `ask_operator`.
+         */
+        const toolName = call.function.name === "ask_user" ? "ask_operator" : call.function.name;
+        const meta = this.metaHandlers[toolName as MetaToolName];
         if (meta) {
           if ((await meta(call, m)) === "end") {
             finished = true;
@@ -3414,7 +3421,7 @@ export class Agent {
           ...this.messages.slice(halfCut),
         ];
       } else {
-        noticeLine = usageLine(this.estimateTokens(this.messages.slice(cut)), this.opts.contextTokenBudget);
+        noticeLine = usageLine(this.estimateTokens(this.messages.slice(cut)), this.opts.contextTokenBudget, this.opts.contextWindowTokens);
         /**
          * The usage line is computed ONCE, from the kept tail, and then WRITTEN INTO the compaction event.
          *

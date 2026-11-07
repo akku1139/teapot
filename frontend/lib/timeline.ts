@@ -30,7 +30,7 @@ export interface TimelineInput {
   renderedNoteEvents: ReadonlySet<string>;
 }
 
-const META_TOOLS_HIDDEN = new Set(["report_progress", "ask_user", "record_decision"]);
+const META_TOOLS_HIDDEN = new Set(["report_progress", "ask_operator", "ask_user", "record_decision"]);
 
 export function feedCandidates(input: TimelineInput): TimelineEvent[] {
   const { events, consumed, feedTypes } = input;

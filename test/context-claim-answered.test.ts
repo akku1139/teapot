@@ -328,7 +328,8 @@ test("being stuck takes the SAME route as a full window — one answer covers bo
         .join("\n");
       assert.match(said, /context \d+% used \(/, "the answer states how much window is left");
       assert.match(said, /Change the perspective/i, "and asks for a new perspective");
-      assert.match(said, /ask_user/, "with a way to hand the question over");
+      // the tool was renamed to `ask_operator` (models say "operator"); the old name still dispatches
+      assert.match(said, /ask_operator/, "with a way to hand the question over");
     } finally {
       await a.dispose();
     }

@@ -86,12 +86,29 @@ export function claimsContextLimit(text: string | null | undefined): boolean {
  * that comment is just "解釈が逆". A number with no direction is a coin flip, so the direction is now a word, and the
  * remaining room is spelled out in the unit the model actually spends.
  */
-export function usageLine(used: number, budget: number): string {
+export function usageLine(used: number, budget: number, window?: number): string {
   const fmt = (n: number) => (n >= 1_000 ? `${Math.round(n / 1_000)}k` : String(Math.max(0, Math.round(n))));
-  if (!Number.isFinite(budget) || budget <= 0) return `context ${fmt(used)} tokens used`;
-  const pct = Math.max(0, Math.min(100, Math.round((used / budget) * 100)));
-  const left = Math.max(0, budget - used);
-  return `context ${pct}% used (${fmt(used)}/${fmt(budget)} tokens, ${fmt(left)} until compaction)`;
+  /**
+   * The percentage is of the WINDOW, and the compaction threshold is stated separately.
+   *
+   * It used to be `used / budget`, where `budget` is the compaction threshold — so a 900k window that compacts at 750k
+   * read as "82% used" at 615k and the denominator was a number the model could not see anywhere else. Reported as
+   * "生のサイズじゃなくてcompactボーダーまでにしたのはなぜ? 消費/フルサイズ とcompactまでの残り値にすべきでは?".
+   *
+   *     context 68% used (615k/900k tokens, 135k until compaction)
+     *
+   * When the window is unknown the budget is the only denominator available, and the line says so by omitting the
+   * window entirely rather than pretending they are the same thing.
+   */
+  const full = Number.isFinite(window) && (window ?? 0) > 0 ? window! : 0;
+  const denom = full || (Number.isFinite(budget) && budget > 0 ? budget : 0);
+  if (!denom) return `context ${fmt(used)} tokens used`;
+  const pct = Math.max(0, Math.min(100, Math.round((used / denom) * 100)));
+  const until = Number.isFinite(budget) && budget > 0 ? Math.max(0, budget - used) : null;
+  const size = full ? `${fmt(used)}/${fmt(full)} tokens` : `${fmt(used)}/${fmt(budget)} tokens (compaction threshold; full window unknown)`;
+  return until === null
+    ? `context ${pct}% used (${size})`
+    : `context ${pct}% used (${size}, ${fmt(until)} until compaction)`;
 }
 
 /**
@@ -100,7 +117,7 @@ export function usageLine(used: number, budget: number): string {
  * "コンテキストが尽きたっていうのがコンテキストウィンドウが尽きたと勘違いしてるパターンと、自力の推論の限界に達した
  * 場合がありそう" — two different problems with different answers. The window case is false and gets corrected with
  * numbers; being STUCK is real, and telling the model to continue would just spin. What a stuck agent needs is to
- * name the question it cannot answer and hand it over (ask_user) or change angle — not another turn of the same.
+ * name the question it cannot answer and hand it over (ask_operator) or change angle — not another turn of the same.
  */
 const OWN_LIMIT_PATTERNS = [
   /(?:reasoning|analysis|own) (?:limit|limits|capacity)s?\b/i,

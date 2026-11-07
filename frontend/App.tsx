@@ -1031,7 +1031,9 @@ const isTimelineLive = (): boolean => {
   const _answeredIds = createMemo(() => {
     const set = new Set<string>();
     for (const e of events()) {
-      if (e.type === "tool_result" && e.data?.name === "ask_user") set.add(String(e.data.callId));
+      // both names: `ask_operator` is the current one, `ask_user` is pre-rename and still in old logs
+      if (e.type === "tool_result" && (e.data?.name === "ask_operator" || e.data?.name === "ask_user"))
+        set.add(String(e.data.callId));
     }
     return set;
   });

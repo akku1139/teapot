@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { claimsContextLimit } from "../src/agent/context-claim.ts";
+import { claimsContextLimit, usageLine } from "../src/agent/context-claim.ts";
 
 test("the reported stopping claims are recognised (#201)", () => {
   /**
@@ -111,4 +111,26 @@ test("the Japanese claim measured in a real session is recognised (#201)", () =>
   ]) {
     assert.equal(claimsContextLimit(line), false, line);
   }
+});
+
+test("the usage line is measured against the WINDOW, with the compaction room stated separately", () => {
+  /**
+   * "生のサイズじゃなくてcompactボーダーまでにしたのはなぜ? 消費/フルサイズ とcompactまでの残り値にすべきでは?"
+   *
+   * The percentage used to be `used / compactionBudget`, so a 900k window that compacts at 750k read as "82% used" at
+   * 615k — a denominator the model could not see anywhere else.
+   */
+  const line = usageLine(615_000, 750_000, 900_000);
+  assert.match(line, /context 68% used/, line);
+  assert.match(line, /615k\/900k tokens/, "the full window is the denominator");
+  assert.match(line, /135k until compaction/, "and the compaction threshold is stated as room left");
+  assert.match(line, /roomy|until compaction/, line);
+
+  // no window known: fall back to the budget and SAY that it is the threshold, not the window
+  const fallback = usageLine(615_000, 750_000);
+  assert.match(fallback, /compaction threshold; full window unknown/, fallback);
+  assert.match(fallback, /135k until compaction/, fallback);
+
+  // nothing known at all
+  assert.match(usageLine(1234, 0), /1k tokens used/);
 });

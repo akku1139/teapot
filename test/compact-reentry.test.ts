@@ -225,7 +225,8 @@ test("the compaction notice ends with the room that is left, not just the room t
       await a.compactNow();
       const first = String((a as unknown as { messages: { content?: string }[] }).messages[0]?.content ?? "");
       assert.match(first, /Context was compacted/, "precondition: the checkpoint notice is the first message");
-      assert.match(first, /% used \([\d.]+k?\/[\d.]+k? tokens, [\d.]+k? until compaction\)/, "the notice must carry the usage line");
+      assert.match(first, /% used \(/, "the notice must carry the usage line");
+      assert.match(first, /until compaction/, "…including the room left before the next compaction");
       assert.match(first, /roomy again/, "and say which DIRECTION that is — the bare percentage was read backwards");
       /**
        * …and the SAME line must be in the log, because the notice itself never is.
