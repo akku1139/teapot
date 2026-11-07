@@ -1563,35 +1563,22 @@ export class Agent {
     if (this.bgExits.length > 32) this.bgExits.shift(); 
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
     /**
-     * A finished GOAL is not woken by a background exit.
+     * Wake the agent, but NEVER for a round with nothing to report.
      *
-     * Each exit used to start a round, so a session that had launched a sweep of eleven jobs (bg32…bg42) ran eleven
-     * rounds AFTER its finish was accepted — every one of them one turn of "完了済みです。追加の作業はありません。" and
-     * then a stop, which reads as a loop ("こいつなんで終了時にループしてんの?").
+     * Two failures met here. The original callback re-checked only `status === "idle"`, so an exit that arrived while a
+     * round was running scheduled a round that the running round had already drained — that produced eleven rounds in
+     * mediapad-t5 with the reason "background job bgNN finished" and no report in any of them, which read as a loop at
+     * shutdown ("こいつなんで終了時にループしてんの?").
      *
-     * Nothing is lost: the exit stays in `bgExits` and `drainBackgroundExits()` puts it in front of the model at the
-     * start of the next round, so a manual ▶ start (or the operator's own message) still sees every result.
+     * Suppressing the wake for a finished goal fixed the loop but silenced the completion entirely — "goal doneで通知
+     * しないのは違うのでは? / エージェントにも通知されてない". So the condition is the CONTENT, not the goal state: a round
+     * starts only if `bgExits` still holds something undrained, which is exactly "there is news to deliver".
      */
-    const workIsDone = this.goal.status === "done";
-    /**
-     * …and a RUNNING round is not given an extra one.
-     *
-     * The exit is already in `bgExits` and the running round drains it at its next turn (`drainBackgroundExits`), so
-     * scheduling a round from here produced one extra round per exit whose only content was "完了済みです。追加の作業は
-     * ありません。" — the reason on those `state` events named the job, but no report was in them, because the report had
-     * gone to the round that was already running. MEASURED in mediapad-t5-root-attempt-2: eleven such rounds in a row,
-     * all labelled "background job bgNN finished", none with a prompt row.
-     *
-     * So only an IDLE agent is woken, and the `enqueue` re-check stays because a round can start in between.
-     */
-    /**
-     * `waiting` is the PARKED state — a tool is blocked on this very job (`parkForTool`), so that agent must be woken.
-     * Only `running` is excluded, because a round in flight drains the exit itself at its next turn.
-     */
-    const canWake = this.status === "idle" || this.status === "waiting";
-    if (!this.stopRequested && !workIsDone && canWake) {
+    if (!this.stopRequested && (this.status === "idle" || this.status === "waiting" || this.status === "running")) {
       void this.enqueue(async () => {
         if (this.stopRequested) return;
+        // the round that was running may have drained it; then there is nothing to say
+        if (!this.bgExits.length) return;
         if (this.status === "idle" || this.status === "waiting") this.start(`background job ${info.id} finished`);
       });
     }

@@ -972,6 +972,26 @@ const isTimelineLive = (): boolean => {
     );
   };
   const maybeNotify = (agentId: string, ev: any) => {
+    /**
+     * A background job finishing is a NOTIFICATION, not a conversation turn.
+     *
+     * It used to be reported only by waking the agent, so suppressing the pointless round for a finished goal also
+     * suppressed the only sign the operator had that the job was done — "goal doneで通知しないのは違うのでは?". The bell
+     * now fires from the `background-exit` note itself, which is logged whatever the goal state is.
+     */
+    if (ev.type === "system_note" && ev.data?.event === "background-exit") {
+      const who = agents().find((a) => a.id === agentId)?.id ?? agentId;
+      const failed = ev.data.failed === true;
+      const secs = Math.round(Number(ev.data.durationMs ?? 0) / 1000);
+      addNotif({
+        agentId,
+        kind: failed ? "error" : "progress",
+        title: `${who}: ${failed ? "⚠" : "✓"} background job ${String(ev.data.jobId ?? "?")} ` +
+          (failed ? `FAILED (exit ${String(ev.data.code ?? "?")})` : `finished (${secs}s)`),
+        body: String(ev.data.cmd ?? "").slice(0, 200),
+      });
+      return;
+    }
     const who = agents().find((a) => a.id === agentId)?.id ?? agentId;
     const eid = typeof ev.id === "string" ? ev.id : undefined;
     if (ev.type === "message" && ev.data?.final === true) {
@@ -2885,6 +2905,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * briefly is not queued: "queuedになるメッセージを送信したときに、一瞬queuedじゃない表示になる、2個以上queuedが
      * あったら何故か一瞬並び替わる" (#211).
      */
+    // captured BEFORE any await: see the pin at the end of this function
+    const wasFollowing = atBottom();
     const localId = `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     writePending(echoKey, [
       ...pendingFor(echoKey),
@@ -2911,9 +2933,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       setPendingImages([]);
       if (shouldRestoreAfterSend(composerMaximized())) setComposerMaximized(false);
       autosizeComposer();
-      if (atBottom()) {
+      /**
+       * Restore the follow the reader HAD when they pressed send.
+       *
+       * The end of this function is many awaits later, and the follow may have been dropped in between by a transient
+       * (a pointerdown in the feed, a sample the geometry classified as a read) — the operator then typed a message and
+       * watched it not arrive: "プロンプトを送ったときにスクロール追従が働かないことがある". Reading the state AFTER the
+       * send was the mistake; the decision belongs to the moment the operator hit send, and it must not move someone who
+       * deliberately scrolled up to read history (#send-scroll).
+       */
+      if (wasFollowing) {
+        setAtBottom(true);
+        setMissed(0);
+        readerUntil = 0;
         requestAnimationFrame(() => {
-          if (atBottom()) pinToTail();
+          pinToTail();
+          requestAnimationFrame(() => {
+            if (atBottom()) pinToTail();
+          });
         });
       }
     } catch (ex) {
