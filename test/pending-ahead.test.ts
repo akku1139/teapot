@@ -77,3 +77,36 @@ test("an unknown id has nothing ahead of it", async () => {
     }
   });
 });
+
+test("the enqueued prompt event records the queue position it had (no inference for the row)", async () => {
+  await useTempDirs(["ahead-e-", "ahead-sd-"], async ([ws, sd]) => {
+    const a = await agent(sd, ws);
+    try {
+      (a as unknown as { status: string }).status = "running";
+      /**
+       * The append happens after the agent is ready, so spy on it rather than racing the file: what matters is the DATA
+       * the row will be drawn from (`ahead`), not when the write lands.
+       */
+      const seen: { type: string; data: Record<string, unknown> }[] = [];
+      const log = a.log as unknown as { append: (type: string, s: string, b: string, data: Record<string, unknown>) => Promise<unknown> };
+      const real = log.append.bind(a.log);
+      log.append = async (type, sess, branch, data) => {
+        seen.push({ type, data });
+        return real(type, sess, branch, data);
+      };
+      a.enqueuePrompt("one", "user");
+      for (let i = 0; i < 100 && !seen.some((s2) => s2.type === "prompt"); i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      const row = seen.find((s2) => s2.type === "prompt");
+      assert.ok(row, "the prompt must be logged");
+      assert.equal(
+        row!.data.ahead,
+        1,
+        "the row carries the position, so the client does not have to guess from delivery timing",
+      );
+    } finally {
+      a.stop("test done");
+    }
+  });
+});

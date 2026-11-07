@@ -1527,6 +1527,15 @@ export class Agent {
         : `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`);
     const entry = { source, text, images, id: promptId };
     this.pendingPrompts.push(entry);
+    /**
+     * Recorded on the LOGGED prompt event, because the row's label must not depend on timing.
+     *
+     * The client cannot tell "waiting behind a turn" from "about to start in 3ms": both look like "enqueued, no delivery
+     * note yet". MEASURED as the report that survived three releases — "idleやwaitingからプロンプト送ると一瞬キューに
+     * なってる". The queue position is known HERE, synchronously, before the append and before `start()`; putting it in the
+     * event makes the row's label a fact instead of an inference.
+     */
+    const aheadAtEnqueue = this.pendingAheadOf(promptId);
     void this.ensureReady()
       .then(async () => {
         /**
@@ -1547,6 +1556,7 @@ export class Agent {
           text,
           ...(stored?.length ? { images: stored } : {}),
           ...(promptId ? { promptId } : {}),
+          ahead: aheadAtEnqueue,
         });
       })
       .then(() => {

@@ -134,17 +134,20 @@ const awaitingCache = new WeakMap<TimelineEvent, TimelineEvent>();
 
 export function markAwaitingPrompts(
   events: readonly TimelineEvent[],
-  lifecycle: ReturnType<typeof promptLifecycle>,
+  _lifecycle: ReturnType<typeof promptLifecycle>,
 ): TimelineEvent[] {
-  let newestNote = -1;
-  for (const seq of lifecycle.deliveredNotes.values()) if (seq > newestNote) newestNote = seq;
-  for (const seq of lifecycle.cancelledNotes.values()) if (seq > newestNote) newestNote = seq;
   return events.map((e) => {
     if (e.type !== "prompt") return e;
-    const pid = String(e.data?.promptId ?? "");
-    if (!pid) return e;
-    if (lifecycle.deliveredIds.has(pid) || lifecycle.cancelledNotes.has(pid)) return e;
-    if (e.seq <= newestNote) return e;
+    /**
+     * The SERVER's queue position, recorded when it enqueued the prompt. `> 0` means something was in front of it.
+     *
+     * This replaced a delivery-note inference ("no note yet ⇒ queued"), which was wrong for the one case the operator
+     * kept reporting: an idle (or waiting) agent takes the prompt within milliseconds, so the row that had not yet seen
+     * its note claimed "queued…" for a frame — "idleやwaitingからプロンプト送ると一瞬キューになってる". A missing note is
+     * not a queue; an `ahead` count is.
+     */
+    const ahead = Number(e.data?.ahead ?? 0);
+    if (!(ahead > 0)) return e;
     if (e.data?.pending) return e;
     /**
      * Cached, because a row's OBJECT IDENTITY is what keeps Solid from re-creating it (and the suite names that

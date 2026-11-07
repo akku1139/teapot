@@ -3214,7 +3214,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      *   - something waiting → it queues behind that, from the first frame.
      */
     const status = sel()?.status ?? "";
-    const agentBusy = status === "running" || status === "waiting" || status === "needs_operator";
+    /**
+     * Only a RUNNING turn is a queue. `waiting` (a compaction, a parked question) is not a turn this prompt waits for —
+     * counting it made a send from `waiting` flash "queued…" until the server's `ahead` corrected it.
+     */
+    const agentBusy = status === "running";
     /**
      * Provisional only: a turn in flight is the one thing the client can see for itself. The server's `ahead` replaces
      * this when the POST returns, so leftover local echoes (which used to count) can no longer label a fresh send
