@@ -74,3 +74,19 @@ export function mergeQueued(mine: PendingEcho[], queue: readonly QueuedPrompt[])
   if (!added.length) return mine;
   return [...mine, ...added];
 }
+
+/**
+ * Should a just-sent prompt be labelled "queued"?
+ *
+ * The rule is "something is ahead of it", not "the agent looks busy". The status the client holds can be one snapshot
+ * stale, and deciding from it produced exactly the flicker the operator recorded — the row appeared un-queued, then
+ * flipped to queued a frame later, re-ordering the list under them ("非queuedで、queuedより先に挿入 -> queuedになって
+ * オーダーが直る", "queuedが無いときも一瞬queuedになってない状態がある").
+ *
+ * Counting what is already waiting is a local fact that does not change while the row exists:
+ *   - nothing waiting → this prompt starts the agent, so it is never queued;
+ *   - something waiting → it queues behind that from the first frame.
+ */
+export function queuedOnSend(pendingPrompts: number | undefined, alreadyPending: number): boolean {
+  return (pendingPrompts ?? 0) > 0 || alreadyPending > 0;
+}

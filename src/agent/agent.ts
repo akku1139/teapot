@@ -9,6 +9,7 @@ import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isCo
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { claimsContextLimit, claimsOwnLimit, usageLine } from "./context-claim.ts";
+import { compactionNotice } from "./compaction-notice.ts";
 import { isDegenerateRepeat } from "./loop-guard.ts";
 import { namesBlocker } from "./blocker.ts";
 import { sessionTitleFrom } from "../session-title.ts";
@@ -3248,6 +3249,8 @@ export class Agent {
     const oldChars = old.reduce((n, m) => n + (m.content?.length ?? 0), 0);
     const oldShareOfBefore = totalChars > 0 ? Math.round((before * oldChars) / totalChars) : 0;
     let summary = "";
+    /** the usage line the notice carries, recorded with the compaction so a restore reproduces the same bytes */
+    let noticeLine = "";
     let mode: "summarize" | "truncate" = "summarize";
     let summarizedCount = oldCount;
     let droppedCount = 0;
@@ -3378,14 +3381,18 @@ export class Agent {
           ...this.messages.slice(halfCut),
         ];
       } else {
+        noticeLine = usageLine(this.estimateTokens(this.messages.slice(cut)), this.opts.contextTokenBudget);
+        /**
+         * The usage line is computed ONCE, from the kept tail, and then WRITTEN INTO the compaction event.
+         *
+         * It cannot be recomputed at restore time: the restored notice must be byte-identical to the one the model saw,
+         * or the front of every request changes after a restart and the provider's prefix cache misses for the whole
+         * session. The line is therefore a recorded fact, and `compactionNotice()` is the single builder both paths use.
+         */
         this.messages = [
           {
             role: "user",
-            content:
-              `[harness] Context was compacted: ${oldCount} earlier messages were summarized. ` +
-              "AGENTS.md is embedded in your system prompt; memory.md, todo.md and decisions.md are NOT — "
-              + "call read_memory / get_todo / get_decisions if you need them.\n\n" +
-              `## Summary of earlier conversation\n${summary}`,
+            content: compactionNotice({ summarized: oldCount, summary, contextLine: noticeLine }),
           },
           ...this.messages.slice(cut),
         ];
@@ -3400,10 +3407,6 @@ export class Agent {
        * computed from the messages as they are NOW (`after`), which is the only value that answers "how much do I
        * still have?", and it is appended rather than prepended so the checkpoint text stays first.
        */
-      const notice = this.messages[0];
-      if (notice?.role === "user" && /^\[harness\] (Context was compacted|[\d,]+ earlier messages were DROPPED)/.test(String(notice.content))) {
-        notice.content = `${String(notice.content)}\n\n${usageLine(after, this.opts.contextTokenBudget)} — the window is roomy again, not nearly exhausted.`;
-      }
       this.stats.compactions++;
       if (mode === "summarize") this.consecutiveCompactFailures = 0;
       this.compactedAtLen = this.messages.length;
@@ -3496,6 +3499,15 @@ export class Agent {
         dropped: droppedCount,
         mode,
         ...(summary ? { summary: String(summary).slice(0, 20_000) } : {}),
+        /**
+         * The usage line the notice carries, recorded HERE because this is the event `restoreFromLog` replays.
+         *
+         * The notice sits at the front of every request, so the restored text must be byte-identical to the live one or
+         * the prefix cache misses for the whole session. Recomputing the line at restore would be a second owner of a
+         * fact about a moment in time; recording it here makes the notice reproducible, and an older log without it gets
+         * exactly the notice it always had.
+         */
+        contextLine: noticeLine,
       });
       if (summary) this.lastCompactSummary = summary;
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
@@ -3505,14 +3517,6 @@ export class Agent {
         summarized: summarizedCount,
         dropped: droppedCount,
         mode,
-        /**
-         * The same line the checkpoint message carries, here so it is VERIFIABLE.
-         *
-         * The notice is a message in the agent's list and is never logged, so "did the model get the remaining budget
-         * after the compaction?" could not be answered from a session log at all — which is exactly the question that
-         * came back after a model stopped claiming "残コンテキストが僅少" at 3.5% used.
-         */
-        contextLine: usageLine(after, this.opts.contextTokenBudget),
       });
     } finally {
       this.compactPhase = "";
@@ -3910,24 +3914,31 @@ async function rebuildMessagesFrom(list: TeapotEvent[], imagesDir: string): Prom
         msgs.splice(0, Math.min(msgs.length, Number(d.dropped ?? 0)));
       } else {
         const sum = typeof d.summary === "string" ? d.summary.trim() : "";
-        const summarized = Math.min(msgs.length, Number(d.summarized ?? 0) || msgs.length);
+        /**
+         * The COUNT in the notice is the recorded one; only the SPLICE is clamped.
+         *
+         * It used to be `Math.min(msgs.length, recorded)`, which is right for the splice and wrong for the text: while
+         * replaying, `msgs.length` is the number of messages restored SO FAR, so the rebuilt notice said "0 earlier
+         * messages were summarized" where the model had been told 59. That is a different byte at the FRONT of every
+         * request after a restart — the prefix-cache miss the operator warned about, and it was already there before the
+         * usage line was added.
+         */
+        const recorded = Number(d.summarized ?? 0) || msgs.length;
+        const summarized = Math.min(msgs.length, recorded);
         if (!sum) {
           console.warn(
             `[teapot] compaction at seq ${e.seq} has no summary text — keeping the full history rather than discarding it`,
           );
         } else {
-          msgs.splice(
-            0,
-            summarized,
-            {
-              role: "user",
-              content:
-                `[harness] Context was compacted: ${summarized} earlier messages were summarized. ` +
-                "AGENTS.md is embedded in your system prompt; memory.md, todo.md and decisions.md are NOT — "
-              + "call read_memory / get_todo / get_decisions if you need them.\n\n" +
-                `## Summary of earlier conversation\n${sum}`,
-            },
-          );
+          msgs.splice(0, summarized, {
+            role: "user",
+            // the SAME builder as the compaction itself, with the line as it was recorded then
+            content: compactionNotice({
+              summarized: recorded,
+              summary: sum,
+              contextLine: typeof d.contextLine === "string" ? d.contextLine : undefined,
+            }),
+          });
         }
       }
     } else if (e.type === "progress") {

@@ -1046,6 +1046,8 @@ console.log("deep render ok: feed rows present");
   }
   console.log("deep render ok: undelivered prompt shows once, as pending");
 
+
+
   /**
    * TWO queued prompts: send order on screen, and a ✕ cancel on EVERY one of them.
    *

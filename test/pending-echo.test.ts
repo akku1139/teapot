@@ -40,3 +40,17 @@ test("a prompt from ANOTHER client is added at the end, not in front", async () 
   // and a known promptId is never added twice
   assert.equal(mergeQueued(merged as never, queue).length, 2);
 });
+
+test("a prompt is queued only when something is ahead of it (#queued)", async () => {
+  /**
+   * Decided at send time from "what is already waiting", never from the agent's live status — that status can be one
+   * snapshot stale, which made the row appear un-queued and flip a frame later ("非queuedで、queuedより先に挿入 ->
+   * queuedになってオーダーが直る").
+   */
+  const { queuedOnSend } = await import("../frontend/lib/pending-echo.ts");
+  assert.equal(queuedOnSend(0, 0), false, "a lone prompt starts the agent — it is not queued");
+  assert.equal(queuedOnSend(undefined, 0), false, "and an unknown snapshot must not invent one");
+  assert.equal(queuedOnSend(1, 0), true, "the server already has one waiting");
+  assert.equal(queuedOnSend(0, 1), true, "another echo is already on screen");
+  assert.equal(queuedOnSend(2, 3), true);
+});

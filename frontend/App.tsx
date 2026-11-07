@@ -28,7 +28,7 @@ import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./l
 import { copyText } from "./lib/clipboard";
 import { groupedWith, type RowLike } from "./lib/row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./lib/question-answered";
-import { mergeQueued, reconcilePending, type PendingEcho } from "./lib/pending-echo";
+import { mergeQueued, queuedOnSend, reconcilePending, type PendingEcho } from "./lib/pending-echo";
 import { resolveTimelineSession } from "./lib/session-index";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
@@ -951,7 +951,12 @@ export default function App() {
      * operator had just typed was placed ahead of its own echo, and two queued prompts came out reversed:
      * "メッセージ1 → メッセージ2 の順で送った結果、タイムライン上では上から 2 → 1 の順に並んでる" (#211).
      */
-    const next = mergeQueued(pendingFor(key), queue);
+    // forget ids the server no longer reports: the cancel has been accepted
+    if (withdrawnPids.size) {
+      const live = new Set(queue.map((q) => String(q.id ?? "")));
+      for (const pid of [...withdrawnPids]) if (!live.has(pid)) withdrawnPids.delete(pid);
+    }
+    const next = mergeQueued(pendingFor(key), queue.filter((q) => !withdrawnPids.has(String(q.id ?? ""))));
     if (next !== pendingFor(key)) writePending(key, next);
   });
 
@@ -1730,6 +1735,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * stands down entirely when a restore was applied.
    */
   const scrollSpot = new Map<string, SavedSpot>();
+  /**
+   * Prompt ids this client has withdrawn but the server has not dropped yet.
+   *
+   * `mergeQueued` tops the list up from the server's `pendingPromptQueue`, so a just-cancelled prompt came straight back
+   * — at the END, which also re-ordered everything behind it: "queuedのメッセージ取り消したときにオーダーが乱れる" and the
+   * layout churn that came with it.
+   */
+  const withdrawnPids = new Set<string>();
   /**
    * Row geometry in CONTENT coordinates.
    *
@@ -3050,8 +3063,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      */
     // captured BEFORE any await: see the pin at the end of this function
     const wasFollowing = atBottom();
-    // was the agent busy? that is the only thing that makes this prompt "queued" rather than "being delivered"
-    const queuedBehindTurn = isSelLive();
+    /**
+     * "Queued" means something is AHEAD of this prompt — not "the agent happened to look busy".
+     *
+     * `isSelLive()` was the previous test and it produced exactly the flicker the operator recorded: the client's view of
+     * the agent can be one snapshot stale at send time, so the row appeared un-queued, then flipped to queued when the
+     * snapshot caught up ("非queuedで、queuedより先に挿入 -> queuedになってオーダーが直る"). Counting what is already
+     * waiting is a fact the client can answer locally and it does not change while the row exists:
+     *
+     *   - nothing waiting → this prompt STARTS the agent, so it is not queued (and never becomes queued);
+     *   - something waiting → it queues behind that, from the first frame.
+     */
+    const queuedBehindTurn = queuedOnSend(sel()?.pendingPrompts, pendingFor(echoKey).length);
     const localId = `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     writePending(echoKey, [
       ...pendingFor(echoKey),
@@ -3992,10 +4015,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     // a logged `blobs/<hash>` reference needs the owning agent to become a URL (#blobs)
                     agentId={selected() ?? undefined}
                     onCancel={
+                      /**
+                       * Offered from the FIRST paint of a queued echo.
+                       *
+                       * It used to need `row.data.promptId`, which only exists once the POST returns — so the button
+                       * appeared a frame or two after the row and re-flowed the header: "cancelボタンの描画が多分遅延してる /
+                       * queueの先読みとか、cancelとかその辺のレイアウトが確定してからタイムラインに表示されるべき". The id
+                       * is resolved when the operator actually clicks, which is always after the response.
+                       */
                       row.data?.source === "user" &&
-                      row.data?.pending && row.data?.promptId && row.data?.sent !== true
+                      row.data?.pending && row.data?.sent !== true
                         ? () => {
-                            const pid = String(row.data.promptId);
+                            const echo = pendingFor(pendingKey()).find((p) => p.id === row.id);
+                            const pid = String(echo?.promptId ?? row.data?.promptId ?? "");
+                            if (!pid) {
+                              flashHint("still being sent — try again in a moment");
+                              return;
+                            }
+                            const wasFollowing = atBottom();
                             api(`/api/agents/${selected()}/prompt/cancel`, {
                               method: "POST",
                               headers: { "content-type": "application/json" },
@@ -4004,7 +4041,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                               .then((r: any) => {
                                 const back = String(r.text ?? "");
                                 saveDraft(draft() ? `${back}\n\n${draft()}` : back);
+                                withdrawnPids.add(pid);
                                 writePending(pendingKey(), pendingMsgs().filter((p) => p.promptId !== pid));
+                                /**
+                                 * Removing a row makes the feed shorter, and the browser clamps `scrollTop` with it —
+                                 * "queuedなメッセージをcancelしたときにスクロールが必要以上に押し戻される". A follower
+                                 * goes back to the tail; a reader keeps the row they were looking at.
+                                 */
+                                const f = feedEl();
+                                if (wasFollowing) seekTail(400);
+                                else if (f) {
+                                  unskipAnchor = firstVisibleRow(f);
+                                  unskipAnchorAt = performance.now();
+                                }
                                 flashHint("message withdrawn — draft restored");
                               })
                               .catch(() => flashHint("withdraw failed — it may have already been sent"));

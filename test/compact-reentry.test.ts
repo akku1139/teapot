@@ -217,9 +217,10 @@ test("the compaction notice ends with the room that is left, not just the room t
     } as never) as Agent;
     try {
       await a.init();
-      (a as unknown as { messages: unknown[] }).messages = history(40).map((m) => ({
+      // big enough that the compaction SUMMARIZES (the truncate path has no notice with a usage line)
+      (a as unknown as { messages: unknown[] }).messages = history(60).map((m) => ({
         ...m,
-        content: `${m.content} ${"z".repeat(600)}`,
+        content: `${m.content} ${"z".repeat(3000)}`,
       }));
       await a.compactNow();
       const first = String((a as unknown as { messages: { content?: string }[] }).messages[0]?.content ?? "");
@@ -232,9 +233,7 @@ test("the compaction notice ends with the room that is left, not just the room t
        * The question "did the model get the remaining budget after the compaction?" came back after a model stopped
        * claiming "残コンテキストが僅少" at 3.5% used, and a session log could not answer it at all.
        */
-      const comp = (await readEvents(`${sd}/chat.jsonl`)).filter(
-        (e) => e.type === "system_note" && String(dataOf(e).event ?? "") === "context-compacted",
-      );
+      const comp = (await readEvents(`${sd}/chat.jsonl`)).filter((e) => e.type === "compaction");
       assert.ok(comp.length > 0, "precondition: the compaction is logged");
       const line = String(dataOf(comp.at(-1)!)?.contextLine ?? "");
       assert.match(line, /% used/, `the note must carry the usage line (got ${JSON.stringify(line)})`);
