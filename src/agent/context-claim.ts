@@ -38,6 +38,14 @@ const STOP_PATTERNS = [
   /(?:running (?:low on|out of) context|not enough context (?:left|remaining)|context (?:is )?(?:almost )?(?:full|exhausted)|out of context (?:space|budget))/i,
   /(?:stop|halt|end|paus|abort)[a-z]*\s+(?:here|now)?\s*(?:because|due to)[^.\n]{0,40}(?:context|token)/i,
   /stopping (?:here )?(?:because|due to)[^.\n]{0,40}(?:context|token)/i,
+  /**
+   * Japanese phrasings, MEASURED on mediapad-t5-root-attempt-2: right after a compaction that left 26,610 of ~750,000
+   * tokens, the model wrote "ここで一旦区切ります(残コンテキストが僅少)" and stopped — the vocabulary above knew the
+   * Chinese and English forms and missed this one, so the guard that answers with the real usage never fired.
+   */
+  /残(?:り)?(?:の)?(?:コンテキスト|トークン)[^。\n]{0,12}(?:僅少|わずか|少な|尽き|残っていない|無くな)/,
+  /コンテキスト(?:の)?(?:残量|残り)[^。\n]{0,12}(?:僅少|わずか|少な|尽き|残っていない|無くな)/,
+  /(?:コンテキスト|トークン)(?:を)?(?:節約|温存)[^。\n]{0,20}(?:区切|停止|終了|打ち切)/,
 ];
 
 /**

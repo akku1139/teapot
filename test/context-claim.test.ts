@@ -88,3 +88,27 @@ test("being stuck is a different claim from the window being full (#201)", async
   // and reporting progress is neither
   assert.equal(claimsOwnLimit("物理読みは全域で動作しています。次は書き込みを確認します。"), false);
 });
+
+test("the Japanese claim measured in a real session is recognised (#201)", () => {
+  /**
+   * MEASURED on mediapad-t5-root-attempt-2: a compaction left 26,610 of ~750,000 tokens used, and the model wrote
+   * "ここで一旦区切ります(残コンテキストが僅少)" and stopped. The vocabulary knew the Chinese and English forms; this one
+   * slipped through, so the guard that answers with the real numbers never fired.
+   */
+  for (const line of [
+    "ここで一旦区切ります(残コンテキストが僅少)。",
+    "残りコンテキストが少ないので区切ります。",
+    "コンテキスト残量が僅少です。",
+    "コンテキストを節約するためここで区切ります。",
+  ]) {
+    assert.equal(claimsContextLimit(line), true, line);
+  }
+  // and it must not fire on ordinary prose that merely mentions context
+  for (const line of [
+    "コンテキストを確認します。",
+    "残りの作業は 3 点です。",
+    "ここで一旦区切ります。",
+  ]) {
+    assert.equal(claimsContextLimit(line), false, line);
+  }
+});
