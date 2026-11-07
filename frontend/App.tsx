@@ -389,6 +389,10 @@ export default function App() {
   let feedRoEl: HTMLElement | undefined;
   let feedRoRaf = 0;
   let feedRoLastBox = "";
+  /** the feed's client width at the last box sample — a change means every row re-wrapped */
+  let lastFeedWidth = 0;
+  /** a width change can move the anchor much further than a scroll correction ever should */
+  const RESYNC_MAX_DELTA_PX_RESIZE = 1200;
   const restoreAfterBoxChange = () => {
     feedRoRaf = 0;
     const f = feedEl();
@@ -397,8 +401,24 @@ export default function App() {
     const contentChanged = f.scrollHeight !== lastSampleHeight;
     lastSampleHeight = f.scrollHeight;
     lastSampleViewport = f.clientHeight;
+    const widthChanged = f.clientWidth !== lastFeedWidth;
+    lastFeedWidth = f.clientWidth;
     if (atBottom()) {
+      // following stays following: reflow changes every row's height, the tail is still the tail
       pinToTail();
+      return;
+    }
+    /**
+     * A WIDTH change re-wraps every row, and the reader must keep looking at the same message.
+     *
+     * "画面横幅変えた時のタイムライン位置もおかしい (追従なら追従維持、そうでないなら画面内の適当なメッセージをアンカーに
+     * する)". Following already returned above; otherwise the last known first-visible row is the anchor, and its own
+     * movement is exactly what has to be cancelled. The `anchorStillDescribesView` guard below is skipped on purpose —
+     * after a reflow that same row is usually NOT the top row any more, which is why the correction never fired.
+     */
+    if (widthChanged && unskipAnchor) {
+      resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_DELTA_PX_RESIZE);
+      publishGap(tailSample());
       return;
     }
     /**
@@ -1762,6 +1782,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        */
       clearLocallyAnswered();
       replaceEventsOnLoad = true;
+      /**
+       * No cache for the session being opened → show the LOADING state, not the timeline being left.
+       *
+       * Keeping the outgoing rows was the fix for the empty-frame scroll jump, but on a FIRST visit there is nothing
+       * worth keeping: the operator saw the previous session's tail under a loading banner ("初回遷移では遷移元の
+       * タイムライン末尾にloadingがついてる"). With a cache the content is the target session's own, so it is rendered
+       * immediately and the swap is a no-op for the eye.
+       */
+      if (!timelineCache.get(tid)?.events.length) clearTimelineState();
       setSwitchingFeed(true);
       setCompacting(null);
       setMissed(0);
@@ -3792,7 +3821,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <div class="divider-msg">loading older events…</div>
             </Show>
             <Show when={chatEvents().length > 0} fallback={
-              loadingFeed()
+              /**
+               * `switchingFeed()` belongs here, not only in the banner inside the list: when an uncached switch
+               * empties the feed, this fallback IS the whole view, and without it the operator sees "no events yet —
+               * say something" during a load.
+               */
+              loadingFeed() || switchingFeed()
                 ? <div style="display:grid;place-items:center;height:100%" class="muted">
                     <span><span class="spinner" aria-hidden="true" /> loading timeline…</span>
                   </div>

@@ -475,6 +475,17 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
           </Show>
         </span>
       </summary>
+      {/**
+        * The FULL command, always, at the top of the body (#ui).
+        *
+        * The summary clips its label at narrow widths (`min-width: 0` + ellipsis), and expanding used to show only the
+        * OUTPUT — so the command being inspected was simply gone: "画面横幅が狭いときにヘッダーがはみ出して ... になり、
+        * 展開してもコマンドが見えない". Repeating it here is cheap and removes the need for the "does the header fit on one
+        * line" reasoning entirely.
+        */}
+      <Show when={name === "bash" && String((e.data?.args as { command?: string } | undefined)?.command ?? "") !== ""}>
+        <pre class="mono toolbody cmd">{"$ " + String((e.data?.args as { command?: string } | undefined)?.command ?? "")}</pre>
+      </Show>
       {derived().body}
     </details>
   );

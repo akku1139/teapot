@@ -1505,6 +1505,8 @@ html[data-bg-image="on"] .embed {
 .embed.running { border-color: var(--warn); }
 .embed.running summary .meta::after { content: "⋯"; display: inline-block; margin-left: 6px; animation: blink 1s step-end infinite; color: var(--warn); }
 .embed summary { gap: var(--space-4); }
+/* the full command inside an opened bash card: dim, above the output, and never the thing that is cut */
+.embed .toolbody.cmd { color: var(--dim); border-bottom: 1px solid var(--line); margin-bottom: 4px; padding-bottom: 4px; }
 /**
  * A tool row's LABEL is the only part allowed to shrink.
  *

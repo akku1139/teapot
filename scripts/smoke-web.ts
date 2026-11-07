@@ -2753,46 +2753,38 @@ console.log("deep render ok: feed rows present");
   }
 
   /**
-   * A session switch must never leave the feed with ZERO rows, not even for a frame.
+   * A switch with NO cache shows the loading state — never the session being left.
    *
-   * Reported as "時々セッションロード時にタイムラインが表示されて、一瞬中身が空になって、直後に中身が戻ってくる", and by
-   * the operator as the likely cause of the "遥か昔のタイムライン位置まで飛ばされる" jumps: an empty feed collapses
-   * `scrollHeight`, the browser clamps `scrollTop` to 0, and the new rows then appear with the viewport at the TOP.
-   * Sampling every frame is the point — a check after the switch is over would pass either way.
+   * Keeping the outgoing rows is what removed the empty-frame scroll jump, but on a first visit there is nothing worth
+   * keeping: "初回遷移では遷移元のタイムライン末尾にloadingがついてる". So the feed is emptied into its loading state, and
+   * the position is put right when the new rows land (the settle pin / #205 restore), which the checks below cover.
    */
   {
-    const counts: { at: number; rows: number }[] = [];
-    const sample = () => counts.push({ at: performance.now(), rows: w.document.querySelectorAll(".feed .msg").length });
     const betaRow = [...w.document.querySelectorAll(".agent-item")].find((el) => /\bbeta\b/.test(el.textContent ?? "")) as
       | HTMLElement
       | undefined;
     if (!betaRow) {
-      console.error("#205 check: no beta row — cannot drive a switch");
+      console.error("#switch check: no beta row — cannot drive a switch");
       process.exit(1);
     }
-    sample();
+    const before = w.document.querySelectorAll(".feed .msg").length;
+    if (!before) {
+      console.error("#switch check: no rows before the switch — vacuous");
+      process.exit(1);
+    }
     betaRow.click();
-    for (let i = 0; i < 40; i++) {
-      await new Promise((r) => requestAnimationFrame(() => r(null)));
-      sample();
-    }
-    const sawRows = counts.some((c) => c.rows > 0);
-    const emptied = counts.some((c) => c.rows === 0);
-    if (!sawRows) {
-      console.error("#205 check: the feed had no rows before the switch — vacuous");
+    await new Promise((r) => setTimeout(r, 120));
+    const stale = w.document.querySelectorAll(".feed .msg").length;
+    const loading = /loading timeline|loading newer events/i.test(w.document.querySelector(".feed")?.textContent ?? "");
+    if (stale !== 0) {
+      console.error(`#switch REGRESSION: the outgoing session's ${stale} rows were still on screen`);
       process.exit(1);
     }
-    if (emptied) {
-      const when = counts.findIndex((c) => c.rows === 0);
-      console.error(
-        `#205 REGRESSION: the feed went EMPTY during a session switch (frame ${when} of ${counts.length}, ` +
-          `rows ${JSON.stringify(counts.map((c) => c.rows))}) — an empty feed clamps scrollTop to 0, which is how the ` +
-          `view ends up on the oldest message`,
-      );
+    if (!loading) {
+      console.error("#switch REGRESSION: an uncached switch emptied the feed with no loading indicator");
       process.exit(1);
     }
-    console.log("deep render ok: a session switch never empties the feed (#205)");
-    // back to alpha for the restore check below
+    console.log("deep render ok: an uncached switch shows loading, not the old timeline");
     [...w.document.querySelectorAll(".agent-item")]
       .find((el) => /\balpha\b/.test(el.textContent ?? ""))
       ?.dispatchEvent(new w.Event("click", { bubbles: true }));
