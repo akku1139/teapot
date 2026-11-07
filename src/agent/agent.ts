@@ -2373,6 +2373,15 @@ export class Agent {
      * never fired (MEASURED: the #215 test failed with the per-turn reset).
      */
     this.reportedThisRound = false;
+    /**
+     * …and the nudge BUDGET resets per round too.
+     *
+     * It used to be reset only by a round that called a work tool, so two report-only rounds in a row left it at 1 and
+     * the second one was silently skipped — MEASURED on this operator's own session: `report_progress` → "reported." →
+     * `round complete` with no `auto-continue-after-progress` note, because the previous report round had already spent
+     * the budget and nothing had reset it since.
+     */
+    this.reportedNudges = 0;
     const cap = Math.max(0, this.opts.maxTurnsPerRound ?? 200);
     for (let guard = 0; cap === 0 || guard < cap; guard++) {
       if (this.stopRequested) return finished;

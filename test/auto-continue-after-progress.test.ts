@@ -68,3 +68,44 @@ test("a report followed by 'reported.' continues the loop — with NO goal set (
     }
   });
 });
+
+test("two report-only rounds in a row both get answered (#215)", async () => {
+  /**
+   * MEASURED on the operator's own session: `report_progress` → "reported." → `round complete`, no nudge. The budget
+   * (`reportedNudges`) was only reset by a round that called a WORK tool, so a report-only round spent it and the next
+   * report-only round was skipped. The budget is per ROUND now.
+   */
+  await useTempDirs(["ac215e-", "ac215f-"], async ([ws, sd]) => {
+    let calls = 0;
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async (): Promise<LlmResult> => {
+        calls += 1;
+        // every odd call files a report, every even one answers "reported." and stops
+        if (calls % 2 === 1)
+          return reply("", [tc(`p${calls}`, "report_progress", { doing: "x", goalStatus: "y", recent: "z" })]);
+        return reply("reported.");
+      },
+      autoContinue: false,
+    } as never) as InstanceType<typeof Agent>;
+    await a.init();
+    a.enqueuePrompt("do the thing", "user");
+    a.start("t");
+    try {
+      const deadline = Date.now() + 15_000;
+      let notes = 0;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+        const events = await readEvents(`${sd}/chat.jsonl`);
+        notes = events.filter((e) => e.type === "system_note" && dataOf(e).event === "auto-continue-after-progress").length;
+        if (notes >= 2) break;
+      }
+      assert.ok(notes >= 2, `both report rounds must be answered (nudges: ${notes}, calls: ${calls})`);
+    } finally {
+      await a.dispose();
+    }
+  });
+});
