@@ -3,6 +3,12 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
+/**
+ * What the fixture's `POST /prompt` reports as `ahead` — the server's answer to "will this prompt wait?".
+ * The fixture's world is a BUSY agent, so the default is 1; a block that wants the idle case sets it to 0.
+ */
+let aheadOfNext = 1;
+
 const req = createRequire(path.join(process.cwd(), "package.json"));
 const { Window } = req("happy-dom");
 
@@ -1024,7 +1030,11 @@ console.log("deep render ok: feed rows present");
     if (u === `/api/agents/${AGENT.id}/prompt`) {
       promptSeq++;
       if (promptSeq > queueDepth) queueDepth = promptSeq;
-      return { ok: true, status: 200, json: async () => ({ ok: true, promptId: `upending${promptSeq}` }) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, promptId: `upending${promptSeq}`, ahead: aheadOfNext }),
+      };
     }
     return origFetch(url, init);
   });
@@ -1078,7 +1088,10 @@ console.log("deep render ok: feed rows present");
     console.error(`PENDING ECHO DUPLICATED: appears ${occurrences}x (expected 1x)`);
     process.exit(1);
   }
-  const pendingRow = w.document.querySelector(".msg.pending");
+  // several rows can be legitimately waiting; this check is about the row for the prompt just sent
+  const pendingRow = [...w.document.querySelectorAll(".msg.pending")].find((r) =>
+    (r.textContent ?? "").includes("queued while running"),
+  );
   if (!pendingRow || !pendingRow.textContent.includes("queued while running")) {
     console.error(
       "PENDING ECHO MISSING pending STYLE — undelivered log row leaked through as settled" +
@@ -1145,6 +1158,14 @@ console.log("deep render ok: feed rows present");
   {
     const ta3 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
     if (!ta3) throw new Error("composer textarea vanished");
+    /**
+     * A prompt only waits when a turn is running (or something is queued ahead), so state the turn — that is the one
+     * fact the client knows at send time, and it draws "queued…" from it in the very first frame.
+     */
+    MockWS.instances.at(-1)?.onmessage?.({
+      data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "running" } }),
+    });
+    await new Promise((r) => setTimeout(r, 80));
     ta3.value = "born queued message";
     ta3.dispatchEvent(new w.Event("input", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 40));
@@ -3956,6 +3977,158 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log("an operator's attachment renders through the agent blob route (#blobs)");
 }
 
+
+
+/**
+ * Queue-label contract, checked LAST: these send prompts and move the agent's status, so running them earlier would
+ * perturb the scroll-restoration checks that depend on how many rows a session has (#205 is exactly that kind).
+ *
+ * Reported across three releases, all from the label having several owners: a prompt sent to an IDLE agent that
+ * momentarily said "queued…" (and later, momentarily settled), and a harness prompt queued behind another harness prompt
+ * that "一瞬確定する". The row's `queued` now comes from the server's `ahead` (POST /prompt) and from the delivery notes,
+ * never from a lagging snapshot count or from which component drew the row.
+ */
+{
+  const sock = MockWS.instances.at(-1);
+  const ta3 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+  const form3 = ta3?.closest("form") as HTMLFormElement | null;
+  if (!sock || !ta3 || !form3) {
+    console.error("#queued2 check: composer or socket missing — the check would be vacuous");
+    process.exit(1);
+  }
+  const setStatus = async (status: string) => {
+    sock.onmessage?.({ data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status } }) });
+    await new Promise((r) => setTimeout(r, 80));
+  };
+  const sendIt = async (text: string) => {
+    ta3.value = text;
+    ta3.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 20));
+    form3.dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
+  };
+  const echoRow = (text: string) =>
+    [...w.document.querySelectorAll(".feed .msg")].find(
+      (n) => (n.getAttribute("data-eid") ?? "").startsWith("@p") && (n.textContent ?? "").includes(text),
+    );
+  const tsOf = (row: Element | undefined) => row?.querySelector(".msg-head .ts")?.textContent?.trim() ?? "";
+  const frames = async (n: number, onFrame: () => void) => {
+    for (let i = 0; i < n; i++) {
+      onFrame();
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    }
+  };
+
+  // (a) the server says this prompt starts immediately → its row never says "queued…"
+  await setStatus("idle");
+  aheadOfNext = 0;
+  await sendIt("queuedlabel idle");
+  let idleQueued = "";
+  await frames(45, () => {
+    const ts = tsOf(echoRow("queuedlabel idle"));
+    if (ts.includes("queued")) idleQueued = ts;
+  });
+  if (idleQueued) {
+    console.error(
+      `#queued2 REGRESSION: the server reported 0 prompts ahead, but the row said "${idleQueued}" — a prompt that starts ` +
+        "the agent queues behind nothing",
+    );
+    process.exit(1);
+  }
+
+  // (b) the server says it waits → every queued row says so on every frame, the FIRST one included
+  await setStatus("running");
+  aheadOfNext = 1;
+  await sendIt("queuedlabel one");
+  await sendIt("queuedlabel two");
+  const settled: string[] = [];
+  await frames(45, () => {
+    for (const text of ["queuedlabel one", "queuedlabel two"]) {
+      const row = echoRow(text);
+      if (!row) continue;
+      const ts = tsOf(row);
+      if (ts && !ts.includes("queued")) settled.push(`${text}: ${ts}`);
+    }
+  });
+  if (settled.length) {
+    console.error(
+      `#queued2 REGRESSION: a prompt behind a queue rendered as SETTLED (${JSON.stringify(settled[0])}) — the first row ` +
+        'of a queued run showed a timestamp instead of "queued…"',
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: the queued label follows the server's answer on every frame (#queued2)");
+}
+
+{
+  /**
+   * A queued marker is drawn in its AUTHOR's colour.
+   *
+   * "harnessからのがqueuedなときに queued... [branch] が黄色(youと同じ色)になるのはどうなの? harnessの名前(基本的には緑色)
+   * にすべきでは?" — `.msg.pending .ts` hard-coded `--warn`, so a queued harness row looked like the operator's own
+   * message. The row now carries `tone-<author>` and the marker inherits it.
+   */
+  // the preceding checks may leave another session selected — the row has to be drawn on THIS timeline
+  ([...w.document.querySelectorAll(".agent-item")].find((el) =>
+    new RegExp("\\balpha\\b").test(el.textContent ?? "")) as HTMLElement | undefined)?.click();
+  for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  MockWS.instances.at(-1)?.onmessage?.({
+    data: JSON.stringify({
+      kind: "agent-update",
+      agentId: AGENT.id,
+      snapshot: {
+        ...AGENT,
+        status: "running",
+        pendingPrompts: 1,
+        pendingPromptQueue: [{ id: "q-tone", text: "already waiting", at: Date.now() - 1000, source: "harness" }],
+      },
+    }),
+  });
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  const row = [...w.document.querySelectorAll(".feed .msg")].find((n) => (n.textContent ?? "").includes("already waiting"));
+  if (!row) {
+    console.error("#tone check: the queued harness row is missing — the check would be vacuous");
+    process.exit(1);
+  }
+  if (!row.className.includes("pending") || !row.className.includes("tone-progress")) {
+    console.error(
+      `#tone REGRESSION: a queued HARNESS row is not pending+tone-progress (${row.className}) — its queued marker and`,
+      "branch chip would render in the operator's yellow",
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: a queued marker takes its author's tone (#tone)");
+
+  /**
+   * One word for one person: the operator asked why this said "human".
+   */
+  const pushTodo = (id: string, by: string) =>
+    MockWS.instances.at(-1)?.onmessage?.({
+      data: JSON.stringify({
+        kind: "event",
+        agentId: AGENT.id,
+        event: {
+          agent: AGENT.id, id, seq: 9400 + Number(id.slice(1)), ts: "2026-01-01T10:30:00Z",
+          session: AGENT.session, branch: "br0", parent: null, type: "todo",
+          data: { by, items: [{ text: "ship it", done: false }] },
+        },
+      }),
+    });
+  pushTodo("t1", "operator");
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  const text1 = bodyText();
+  pushTodo("t2", "human");
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  const text2 = bodyText();
+  if (!text1.includes("tasks updated (operator)") || text2.split("tasks updated (operator)").length < 3) {
+    console.error(`#todo-by REGRESSION: the todo divider does not say "operator" (${text1.slice(-200)})`);
+    process.exit(1);
+  }
+  if (text2.includes("(human)")) {
+    console.error('#todo-by REGRESSION: a row still says "human" — the operator has one name');
+    process.exit(1);
+  }
+  console.log('deep render ok: the todo divider says operator, legacy "human" included (#todo-by)');
+}
 
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);

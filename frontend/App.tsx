@@ -1963,10 +1963,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
            * restored fine. The rendered rows carry `data-session`, which is the identity that matters, so it wins.
            */
           const rows = rowGeometry(el, 0, true);
+          /**
+           * Anchor on a row that will still exist: an optimistic echo (`@p…`) is replaced by the log row for the same
+           * prompt as soon as the server acknowledges it, so anchoring there means the spot cannot be found on return
+           * and the reader is dropped at the tail instead — measured as #205 failing once pending rows changed.
+           */
+          const durable = rows.filter((r) => !r.eid.startsWith("@p"));
           const session = prevTid || rows.find((r) => r.session)?.session || "";
           const here = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
           // capture in VIEWPORT coordinates (rows and the feed's top are measured the same way)
-          const spot = session ? spotFromRows(rows, el.getBoundingClientRect().top, session) : null;
+          const spot = session ? spotFromRows(durable.length ? durable : rows, el.getBoundingClientRect().top, session) : null;
           if (spot && distanceToTail(here) > 1) scrollSpot.set(session, spot);
           else if (session) scrollSpot.delete(session);
 
@@ -3209,7 +3215,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      */
     const status = sel()?.status ?? "";
     const agentBusy = status === "running" || status === "waiting" || status === "needs_operator";
-    const queuedBehindTurn = queuedOnSend(sel()?.pendingPrompts, pendingFor(echoKey).length, agentBusy);
+    /**
+     * Provisional only: a turn in flight is the one thing the client can see for itself. The server's `ahead` replaces
+     * this when the POST returns, so leftover local echoes (which used to count) can no longer label a fresh send
+     * queued — that was the surviving "idle から送信したときに queued になる" report.
+     */
+    const queuedBehindTurn = queuedOnSend(agentBusy);
     const localId = `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     writePending(echoKey, [
       ...pendingFor(echoKey),
@@ -3236,10 +3247,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         body: JSON.stringify({ text, start: true, clientId: localId, ...(images.length ? { images } : {}) }),
       });
       const pid = (r as { promptId?: string }).promptId;
-      if (pid) {
+      /**
+       * The SERVER decides whether this prompt waits (`ahead`), and this is where its answer is applied.
+       *
+       * The provisional flag on the optimistic row is a guess made before the request left; replacing it here means an
+       * idle send can never keep a "queued…" label a heuristic invented, and a queued one cannot lose it.
+       */
+      const ahead = (r as { ahead?: number }).ahead;
+      if (pid || typeof ahead === "number") {
         writePending(
           echoKey,
-          pendingFor(echoKey).map((p) => (p.id === localId ? { ...p, promptId: pid } : p)),
+          pendingFor(echoKey).map((p) =>
+            p.id === localId
+              ? {
+                  ...p,
+                  ...(pid ? { promptId: pid } : {}),
+                  ...(typeof ahead === "number" ? { queued: ahead > 0 } : {}),
+                }
+              : p,
+          ),
         );
       }
       setPendingImages([]);

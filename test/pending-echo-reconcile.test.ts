@@ -78,9 +78,8 @@ test("nothing is dropped when the count cannot be trusted (#78)", () => {
 /* ---------- the fallbacks must not regress the plain case ---------- */
 
 test("with no ids available the head is kept (#78)", () => {
-  // older server, or every echo predates promptId tracking: the head-keep
-  // heuristic is CORRECT for a plain front-to-back drain, which is all it is
-  // used for now
+  // no ids: the count is all the information there is. Trimming by COUNT is the part that was measured wrong (it cut a
+  // prompt that was still queued); the id-based branch above is what the client relies on, and it always has ids now.
   const list = [P(1, "a", "p1"), P(2, "b", "p2"), P(3, "c", "p3")];
   assert.deepEqual(ids(reconcilePending(list, 2, undefined)), [1, 2], "#78");
 });

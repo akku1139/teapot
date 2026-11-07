@@ -60,28 +60,11 @@ test("a prompt is queued only when something is ahead of it (#queued)", async ()
    * queuedになってオーダーが直る").
    */
   const { queuedOnSend } = await import("../frontend/lib/pending-echo.ts");
-  assert.equal(queuedOnSend(0, 0), false, "a lone prompt starts the agent — it is not queued");
-  assert.equal(queuedOnSend(undefined, 0), false, "and an unknown snapshot must not invent one");
   /**
-   * The server's count is NOT evidence of waiting: it comes from the last snapshot the client holds and it lags. An idle
-   * agent with a stale non-zero count labelled the very first prompt "queued…" for a frame — "idle状態でプロンプトを
-   * 送っても一瞬queuedになる問題". What makes a prompt wait is a running turn or another prompt just queued here.
+   * The provisional flag is ONE fact: a turn is running. The server's `ahead` decides for real once the POST returns.
+   * Every other input was tried and measured wrong — a lagging snapshot count labelled an idle send "queued…".
    */
-  assert.equal(queuedOnSend(1, 0, false), false, "a stale server count alone does not make it queued");
-  assert.equal(queuedOnSend(1, 0, true), true, "a running turn does");
-  assert.equal(queuedOnSend(0, 1, false), true, "so does a prompt already queued by this client");
-  assert.equal(queuedOnSend(0, 1), true, "another echo is already on screen");
-  assert.equal(queuedOnSend(2, 3), true);
-});
-
-test("a prompt sent to a BUSY agent is queued even as the first in the queue (#queued)", async () => {
-  /**
-   * "キューの1つ目のメッセージは時刻がついてるし" — it waited for the running turn, so it is queued; it just had nothing
-   * else ahead of it. The value is frozen at send time, so no later status change can relabel the row.
-   */
-  const { queuedOnSend } = await import("../frontend/lib/pending-echo.ts");
-  assert.equal(queuedOnSend(0, 0, true), true, "a running agent means this prompt waits");
-  assert.equal(queuedOnSend(0, 0, false), false, "an idle agent starts on it, so it is not queued");
-  assert.equal(queuedOnSend(2, 0, false), false, "a lagging server count is not waiting — see above");
-  assert.equal(queuedOnSend(0, 1, false), true);
+  assert.equal(queuedOnSend(true), true, "a running agent means this prompt cannot start immediately");
+  assert.equal(queuedOnSend(false), false, "an idle agent starts on it, so it is not queued");
+  assert.equal(queuedOnSend(), false, "an unknown status must not invent a queue");
 });

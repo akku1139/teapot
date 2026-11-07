@@ -350,6 +350,22 @@ export class Agent {
     return this.opts.provider;
   }
   private pendingPrompts: { source: string; text: string; images?: { url: string; name?: string }[]; id?: string }[] = [];
+
+  /**
+   * Will this prompt WAIT, and behind how much? The server's answer, because only the server knows.
+   *
+   * The client used to decide from a snapshot it happened to hold (`pendingPrompts`, which lags) and from its own
+   * leftover echoes, and MEASURED that as the surviving half of "idle状態でプロンプトを送っても一瞬queuedになる問題":
+   * a prompt to an idle agent still flickered "queued…". A prompt waits behind the prompts already queued and behind a
+   * turn that is still running — nothing else.
+   */
+  pendingAheadOf(id: string): number {
+    const idx = this.pendingPrompts.findIndex((p) => p.id === id);
+    if (idx < 0) return 0;
+    const queuedAhead = idx;
+    const turnRunning = this.status === "running" ? 1 : 0;
+    return queuedAhead + (queuedAhead === 0 ? turnRunning : 0);
+  }
   private stopRequested = false;
   private windDownRequested = false;
   private wake: (() => void) | null = null;

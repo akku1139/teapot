@@ -16,6 +16,19 @@ export type PendingEcho = {
   queued?: boolean;
 };
 
+/**
+ * Drop the echoes the SERVER says are no longer queued — by ID, never by count.
+ *
+ * It used to trim the list to the snapshot's `pendingPrompts` count. That number is a snapshot taken a moment earlier, so
+ * with two prompts in flight it could read 1 and cut the OLDER echo: its row disappeared, and the log row for the same
+ * prompt (already in `events()`) took its place as if it had settled. MEASURED in a real browser: send two prompts while
+ * the agent is running and the FIRST shows a timestamp while the second correctly shows "queued…" — "queuedが連なってるとき
+ * の1つ目にqueuedじゃなくて黄色文字の時刻が出る".
+ *
+ * The client proposes the prompt id now, so every echo is nameable and the server's list is authoritative:
+ * an id in `liveIds` stays, everything else is gone. With no list at all, nothing is trimmed — a missing snapshot is not
+ * evidence that a prompt was delivered.
+ */
 export const reconcilePending = (
   list: PendingEcho[],
   queued: number,
@@ -32,6 +45,8 @@ export const reconcilePending = (
   }
   return list.slice(0, queued);
 };
+
+
 
 export type QueuedPrompt = { id?: string; text?: string; at?: number; images?: { url: string }[]; source?: string };
 
@@ -97,25 +112,14 @@ export function mergeQueued(mine: PendingEcho[], queue: readonly QueuedPrompt[])
  *   - nothing waiting → this prompt starts the agent, so it is never queued;
  *   - something waiting → it queues behind that from the first frame.
  */
-export function queuedOnSend(
-  pendingPrompts: number | undefined,
-  alreadyPending: number,
-  agentBusy = false,
-): boolean {
-  /**
-   * "Queued" means the prompt will WAIT — either behind something already waiting, or behind the turn the agent is
-   * running right now.
-   *
-   * The second half was missing: with an idle queue and a running agent, the first prompt sent was labelled with a plain
-   * timestamp even though it could not possibly run yet ("キューの1つ目のメッセージは時刻がついてるし"). The value is
-   * frozen at send time, so it cannot flip a frame later — which is what the earlier `isSelLive()` attempt did at render
-   * time.
-   */
-  /**
-   * NOT `pendingPrompts`: that number comes from the last snapshot the client happens to hold, and it lags. MEASURED as
-   * the remaining half of "idle状態でプロンプトを送っても一瞬queuedになる問題" — an idle agent still had a stale non-zero
-   * count, so the very first prompt was labelled queued. A prompt can only WAIT behind a running turn or behind another
-   * prompt this client just queued.
-   */
-  return agentBusy || alreadyPending > 0;
-}
+/**
+ * The PROVISIONAL "queued" flag for a row that does not exist server-side yet.
+ *
+ * Only one thing is knowable before the request leaves: a turn is running, so this prompt cannot start immediately. The
+ * server's `ahead` (from `POST /prompt`) replaces this value a moment later, and it is the only one that decides.
+ *
+ * Everything else was tried and MEASURED wrong: the snapshot's `pendingPrompts` lags (a stale non-zero count labelled a
+ * prompt sent to an idle agent "queued…"), and counting this client's leftover echoes did the same.
+ */
+export const queuedOnSend = (agentBusy = false): boolean => agentBusy;
+

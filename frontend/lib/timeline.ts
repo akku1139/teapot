@@ -115,6 +115,49 @@ export function promptLifecycle(events: readonly TimelineEvent[]): {
   return { deliveredIds, loggedUserPrompts, deliveredNotes, cancelledNotes };
 }
 
+/**
+ * A prompt that has not been delivered yet IS the queued row — whoever drew it.
+ *
+ * MEASURED (both recurring reports): the "pending" look was only ever put on the client's optimistic echo, so the LOG row
+ * for the same prompt rendered settled until the echo was removed or a snapshot caught up. Two visible consequences:
+ *
+ *   - a prompt sent to an idle agent flashed settled for a frame (the echo was replaced by the log row before the
+ *     delivery note arrived);
+ *   - a harness prompt queued behind another harness prompt "一瞬確定する" — harness prompts have no local echo at all,
+ *     so their log row is what the operator sees, and it was drawn as if it had already run.
+ *
+ * The delivery note (`prompt-delivered`) is the single source of truth for "it ran", and it is logged by the server that
+ * dispatched it. Everything after the newest note is still waiting, which also bounds this to the live tail so an old log
+ * that never recorded a note cannot make ancient prompts look queued.
+ */
+const awaitingCache = new WeakMap<TimelineEvent, TimelineEvent>();
+
+export function markAwaitingPrompts(
+  events: readonly TimelineEvent[],
+  lifecycle: ReturnType<typeof promptLifecycle>,
+): TimelineEvent[] {
+  let newestNote = -1;
+  for (const seq of lifecycle.deliveredNotes.values()) if (seq > newestNote) newestNote = seq;
+  for (const seq of lifecycle.cancelledNotes.values()) if (seq > newestNote) newestNote = seq;
+  return events.map((e) => {
+    if (e.type !== "prompt") return e;
+    const pid = String(e.data?.promptId ?? "");
+    if (!pid) return e;
+    if (lifecycle.deliveredIds.has(pid) || lifecycle.cancelledNotes.has(pid)) return e;
+    if (e.seq <= newestNote) return e;
+    if (e.data?.pending) return e;
+    /**
+     * Cached, because a row's OBJECT IDENTITY is what keeps Solid from re-creating it (and the suite names that
+     * contract). Handing back a fresh object on every build would re-render every waiting prompt on every event.
+     */
+    const hit = awaitingCache.get(e);
+    if (hit) return hit;
+    const marked = { ...e, data: { ...e.data, pending: true, queued: true } };
+    awaitingCache.set(e, marked);
+    return marked;
+  });
+}
+
 export function dropInvisibleRows(
   events: readonly TimelineEvent[],
   input: Pick<TimelineInput, "renderedTypes" | "renderedNoteEvents">,
@@ -231,7 +274,8 @@ export function buildTimelineWithCount(input: TimelineInput): {
     if (!id || lifecycle.deliveredIds.has(id)) continue;
     if (input.pending.some((p) => p.promptId === id)) stillPendingIds.add(id);
   }
-  const visible = dropInvisibleRows(deduped, input, stillPendingIds);
+  const awaiting = markAwaitingPrompts(deduped, lifecycle);
+  const visible = dropInvisibleRows(awaiting, input, stillPendingIds);
   const resequenced = resequencePrompts(visible, lifecycle);
   const echoes = remainingEchoes(input.pending, lifecycle).map(input.echo);
   return { rows: placeEchoesBelow(resequenced, echoes), pendingCount: echoes.length };

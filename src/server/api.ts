@@ -902,8 +902,14 @@ const MAX_WS_CLIENTS = 64;
       images.length ? images : undefined,
       body.clientId,
     );
+    /**
+     * `ahead` is the answer the client draws "queued…" from — computed BEFORE `start()` flips the status, so a prompt
+     * that starts the agent reports 0 and never blinks queued. `queued` (a count taken after the enqueue, so always ≥ 1)
+     * stays for the API's older callers but is not what the row uses any more.
+     */
+    const ahead = a.pendingAheadOf(promptId);
     if (body.start !== false && a.status !== "running") a.start("prompt");
-    return c.json({ ok: true, promptId, queued: a.snapshot().pendingPrompts });
+    return c.json({ ok: true, promptId, ahead, queued: a.snapshot().pendingPrompts });
   });
 
   /**
