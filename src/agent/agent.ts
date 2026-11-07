@@ -1563,7 +1563,18 @@ export class Agent {
     if (this.bgExits.length > 32) this.bgExits.shift(); 
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
     const windingDown = this.status === "running";
-    if (!this.stopRequested && (this.status === "idle" || windingDown)) {
+    /**
+     * A finished GOAL is not woken by a background exit.
+     *
+     * Each exit used to start a round, so a session that had launched a sweep of eleven jobs (bg32…bg42) ran eleven
+     * rounds AFTER its finish was accepted — every one of them one turn of "完了済みです。追加の作業はありません。" and
+     * then a stop, which reads as a loop ("こいつなんで終了時にループしてんの?").
+     *
+     * Nothing is lost: the exit stays in `bgExits` and `drainBackgroundExits()` puts it in front of the model at the
+     * start of the next round, so a manual ▶ start (or the operator's own message) still sees every result.
+     */
+    const workIsDone = this.goal.status === "done";
+    if (!this.stopRequested && !workIsDone && (this.status === "idle" || windingDown)) {
       void this.enqueue(async () => {
         if (this.stopRequested) return; 
         if (this.status === "idle") this.start(`background job ${info.id} finished`);
