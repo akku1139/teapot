@@ -134,3 +134,32 @@ test("the usage line is measured against the WINDOW, with the compaction room st
   // nothing known at all
   assert.match(usageLine(1234, 0), /1k tokens used/);
 });
+
+/**
+ * The BUDGET give-up, measured on prismrv-2-9bb8660a: "今回の予算では達成できませんでした".
+ *
+ * It names no context/token word, so every pattern that knew "コンテキスト上限" and "out of context" missed it — the turn
+ * stopped and the guard that answers with the real usage never fired. Widening this is only safe with the give-up verb
+ * required, which the negative cases below pin.
+ */
+test("a give-up blaming its 'budget' is recognised", () => {
+  for (const text of [
+    "今回の予算では達成できませんでした。",
+    "このターンでは完了できません",
+    "残りの予算では実装できません",
+    "今回のセッション内では達成できなかった",
+  ]) {
+    assert.equal(claimsContextLimit(text), true, text);
+  }
+});
+
+test("talking about a budget without giving up is not a stop claim", () => {
+  for (const text of [
+    "予算の範囲で実装しました。",
+    "今回の予算では達成できません、とは言えないので続けます。",
+    "コンテキスト上限に注意しながら続けます。",
+    "今回のターンでは2回リトライしました。",
+  ]) {
+    assert.equal(claimsContextLimit(text), false, text);
+  }
+});

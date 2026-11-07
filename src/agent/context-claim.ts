@@ -46,6 +46,15 @@ const STOP_PATTERNS = [
   /残(?:り)?(?:の)?(?:コンテキスト|トークン)[^。\n]{0,12}(?:僅少|わずか|少な|尽き|残っていない|無くな)/,
   /コンテキスト(?:の)?(?:残量|残り)[^。\n]{0,12}(?:僅少|わずか|少な|尽き|残っていない|無くな)/,
   /(?:コンテキスト|トークン)(?:を)?(?:節約|温存)[^。\n]{0,20}(?:区切|停止|終了|打ち切)/,
+  /**
+   * …and the BUDGET wording of the same give-up, MEASURED in prismrv-2-9bb8660a: "今回の予算では達成できませんでした".
+   *
+   * It is the same false claim as "out of context" — compaction is the harness's job, so a budget the model invented is
+   * not a blocker — but it names no context/token word, so every pattern above missed it. The give-up verb is
+   * REQUIRED (達成できません / 完了できません / 間に合いません / 見送ります): "予算の範囲で実装しました" is a normal report
+   * and must stay untouched, which is the false-positive risk of widening this at all.
+   */
+  /(?:今回|この|残りの?)(?:の)?(?:予算|ターン|セッション)[^。\n]{0,24}(?:では|内では|の範囲では)[^。\n]{0,24}(?:達成でき(?:ません|ない|なかった)|完了でき(?:ません|ない|なかった)|実装でき(?:ません|ない|なかった)|間に合いません|見送ります)/,
 ];
 
 /**
@@ -75,7 +84,22 @@ export function claimsContextLimit(text: string | null | undefined): boolean {
   if (!raw.trim()) return false;
   const t = withoutQuotedBlocks(raw);
   if (!t.trim()) return false;
-  return STOP_PATTERNS.some((re) => re.test(t));
+  for (const re of STOP_PATTERNS) {
+    const m = re.exec(t);
+    if (!m) continue;
+    /**
+     * A quote of the claim, or its negation, is not a claim.
+     *
+     * "今回の予算では達成できません、とは言えないので続けます" is a model REFUSING to stop, and answering it with a
+     * forced continue would be noise on an otherwise healthy turn — the operator's own risk note when this pattern was
+     * widened ("誤検知も増えそう"). Only the immediate tail is inspected, because the giveaway is the grammar of the same
+     * sentence, not something later in the paragraph.
+     */
+    const tail = t.slice(m.index + m[0].length, m.index + m[0].length + 12);
+    if (/^(?:\s*[,、。]?\s*)?(?:とは(?:言え|限ら)な|わけではな|のではなく|というわけではな)/.test(tail)) continue;
+    return true;
+  }
+  return false;
 }
 
 /**

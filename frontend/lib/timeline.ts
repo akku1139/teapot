@@ -94,16 +94,20 @@ export function dedupeAgainstEmbeds(events: readonly TimelineEvent[]): TimelineE
 export function promptLifecycle(events: readonly TimelineEvent[]): {
   deliveredIds: Set<string>;
   loggedUserPrompts: Set<string>;
+  /** every prompt id the LOG already carries, harness included — that row is the queue row, no echo needed */
+  loggedPromptIds: Set<string>;
   deliveredNotes: Map<string, number>;
   cancelledNotes: Map<string, number>;
 } {
   const deliveredIds = new Set<string>();
   const loggedUserPrompts = new Set<string>();
+  const loggedPromptIds = new Set<string>();
   const deliveredNotes = new Map<string, number>();
   const cancelledNotes = new Map<string, number>();
   for (const e of events) {
     const pid = e.data?.promptId;
     if (!pid) continue;
+    if (e.type === "prompt") loggedPromptIds.add(String(pid));
     if (e.type === "prompt" && e.data?.source === "user") loggedUserPrompts.add(String(pid));
     if (e.type === "system_note" && e.data?.event === "prompt-delivered") {
       deliveredIds.add(String(pid));
@@ -112,7 +116,7 @@ export function promptLifecycle(events: readonly TimelineEvent[]): {
     if (e.type === "system_note" && e.data?.event === "prompt-cancelled")
       cancelledNotes.set(String(pid), e.seq);
   }
-  return { deliveredIds, loggedUserPrompts, deliveredNotes, cancelledNotes };
+  return { deliveredIds, loggedUserPrompts, loggedPromptIds, deliveredNotes, cancelledNotes };
 }
 
 /**
@@ -132,6 +136,18 @@ export function promptLifecycle(events: readonly TimelineEvent[]): {
  */
 const awaitingCache = new WeakMap<TimelineEvent, TimelineEvent>();
 
+/**
+ * Where a WAITING prompt row sits: after everything else, in arrival order.
+ *
+ * MEASURED (the "task4 → task3 と一瞬並んで、すぐ 3→4 に戻る" report, and the same on the goal path): a harness prompt has
+ * no optimistic echo, so its LOG row appears first at its natural seq — above the queue — and the next snapshot swaps it
+ * for a queue clone whose seq is `MAX_SAFE_INTEGER`. The row visibly jumped to the bottom. Keeping the log row (there is
+ * one owner now) but placing it where the queue is removes the jump: waiting prompts sort after delivered history, in the
+ * order they were enqueued.
+ */
+const QUEUED_TAIL_SEQ = Number.MAX_SAFE_INTEGER - 100_000;
+const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
+
 export function markAwaitingPrompts(
   events: readonly TimelineEvent[],
   _lifecycle: ReturnType<typeof promptLifecycle>,
@@ -148,6 +164,8 @@ export function markAwaitingPrompts(
      */
     const ahead = Number(e.data?.ahead ?? 0);
     if (!(ahead > 0)) return e;
+    if (_lifecycle.deliveredIds.has(String(e.data?.promptId ?? ""))) return e;
+    if (_lifecycle.cancelledNotes.has(String(e.data?.promptId ?? ""))) return e;
     if (e.data?.pending) return e;
     /**
      * Cached, because a row's OBJECT IDENTITY is what keeps Solid from re-creating it (and the suite names that
@@ -155,7 +173,7 @@ export function markAwaitingPrompts(
      */
     const hit = awaitingCache.get(e);
     if (hit) return hit;
-    const marked = { ...e, data: { ...e.data, pending: true, queued: true } };
+    const marked = { ...e, seq: QUEUED_TAIL_SEQ + e.seq, data: { ...e.data, pending: true, queued: true } };
     awaitingCache.set(e, marked);
     return marked;
   });
@@ -278,8 +296,24 @@ export function buildTimelineWithCount(input: TimelineInput): {
     if (input.pending.some((p) => p.promptId === id)) stillPendingIds.add(id);
   }
   const awaiting = markAwaitingPrompts(deduped, lifecycle);
-  const visible = dropInvisibleRows(awaiting, input, stillPendingIds);
+  /**
+   * ONE owner per prompt: the log row if the server has logged it, the optimistic echo if it has not.
+   *
+   * The echo used to survive until delivery and the log row was hidden underneath it, which is what made a harness prompt
+   * (no echo at all) and a user prompt (echo first) take different routes through the same queue. Deciding here — and
+   * using the SAME list for `stillPendingIds` — means a row is drawn in exactly one place.
+   */
+  const drawnEchoes = remainingEchoes(input.pending, lifecycle).filter(
+    (p) => !p.promptId || !lifecycle.loggedPromptIds.has(p.promptId),
+  );
+  /**
+   * Nothing is hidden any more: an echo only exists while the log has no row for its prompt, so the log row can never be
+   * a duplicate of one that is on screen. (Hiding it used to be the fix for "queued HARNESS prompts rendered twice", and
+   * it created the opposite hole — a prompt whose echo had just been removed showed nothing at all for a frame.)
+   */
+  void stillPendingIds;
+  const visible = dropInvisibleRows(awaiting, input, EMPTY_IDS);
   const resequenced = resequencePrompts(visible, lifecycle);
-  const echoes = remainingEchoes(input.pending, lifecycle).map(input.echo);
+  const echoes = drawnEchoes.map(input.echo);
   return { rows: placeEchoesBelow(resequenced, echoes), pendingCount: echoes.length };
 }

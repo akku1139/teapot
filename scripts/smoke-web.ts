@@ -1000,7 +1000,8 @@ console.log("deep render ok: feed rows present");
     ...EVENTS,
     { id: "e5", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0",
       parent: null, type: "prompt",
-      data: { source: "user", text: "queued while running", promptId: "upending1" } },
+      // `ahead: 1` is what the real server records at enqueue time — it is the reason the row is drawn as queued
+      data: { source: "user", text: "queued while running", promptId: "upending1", ahead: 1 } },
   ];
   const origFetch = globalThis.fetch;
   setGlobal("fetch", async (url, init) => {
