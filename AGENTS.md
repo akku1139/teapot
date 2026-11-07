@@ -145,6 +145,18 @@ script deletes somebody else's data (measured: 2006 stray fixture dirs, 439 MB).
   (`app.fixed.tsx`, `fx2.tsx`, `rp.ts`, `t.log`) were sitting next to 335 real test
   fixtures, with no way to tell which were safe to delete.
 
+## The socket is a fast path, not the source of truth
+
+A row that only exists in a socket frame is a row that can go missing. MEASURED (v0.37.161): the server emitted a
+`question` frame — a raw WS client received it — the header badge updated from the agent snapshot, and the timeline
+stayed empty until a reload. The client-side cause was never pinned down, and a parked `ask_operator` question is the
+worst possible thing to lose.
+
+So the rule: **whatever the timeline must show, the snapshot (or the REST payload) has to carry enough to recover it.**
+`pendingQuestionId` exists for that reason — when a question is parked and its row is not in `events()`, the client
+re-fetches the timeline once and, if needed, a bounded number of older pages. A WS-only delivery path has no such
+recovery, so do not add one.
+
 ## Testing
 
 - **Never assert on SOURCE TEXT.** Do not read `App.tsx` / `agent.ts` / `app.css`
