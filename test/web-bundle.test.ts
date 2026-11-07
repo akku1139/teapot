@@ -76,7 +76,12 @@ test("web bundle: module init + deep render survive", async (t) => {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       rej(new Error("smoke test timed out after 30s"));
-    }, 30_000);
+    /**
+     * 120s, not 30s: the bundle smoke drives the whole UI and grows with every check, and MEASURED on the Windows CI
+     * runner it crossed 30s (two checks failed with `30005ms` while every assertion inside was still passing on the
+     * fast runner). A timeout that fails a passing run is a false red on the release path.
+     */
+    }, 120_000);
     child.on("exit", (c) => {
       clearTimeout(timer);
       res(c);
@@ -123,7 +128,12 @@ test("web bundle: the narrow-screen drawer can be closed (#50)", async (t) => {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       rej(new Error("narrow-viewport smoke test timed out after 30s"));
-    }, 30_000);
+    /**
+     * 120s, not 30s: the bundle smoke drives the whole UI and grows with every check, and MEASURED on the Windows CI
+     * runner it crossed 30s (two checks failed with `30005ms` while every assertion inside was still passing on the
+     * fast runner). A timeout that fails a passing run is a false red on the release path.
+     */
+    }, 120_000);
     child.on("exit", (c) => {
       clearTimeout(timer);
       res(c);
