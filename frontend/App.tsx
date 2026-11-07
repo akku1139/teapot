@@ -2252,8 +2252,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return;
       }
       if (msg.kind === "event" && isTurnBoundary(msg.event)) {
+        /**
+         * A turn boundary ENDS the live reasoning stream — it does not swallow the event.
+         *
+         * `question` is a boundary (the turn that asked it is over, so its streamed reasoning is stale) AND it is a row
+         * the operator has to see. This branch used to `return`, so every question that arrived over the socket cleared
+         * the buffer and was then dropped: the header badge went `needs_operator` (it comes from the agent snapshot) and
+         * the timeline stayed empty until a reload picked the row up over REST —
+         * "タイムラインにask_userが出てないのに何故かneeds_operatorが出てる". Clearing and merging are independent, so the
+         * event now falls through to the normal path below.
+         */
         setLiveByAgent((prev) => clearLive(prev, msg.agentId));
-        return; 
       }
       if (msg.kind === "llm-delta") {
         if (!deltaBelongsToTimeline(msg, selected(), timelineId())) return;

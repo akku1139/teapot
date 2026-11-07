@@ -1182,6 +1182,55 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: a queued prompt is born queued, withdrawable and in order (#queued)");
+
+  /**
+   * A `question` that arrives over the socket must become a row, with no reload.
+   *
+   * `isTurnBoundary` treats a question as the end of the turn that asked it, and the handler cleared the live buffer and
+   * `return`ed — swallowing the event. The badge said `needs_operator` (from the agent snapshot) while the timeline
+   * stayed empty until a reload read the row over REST: "タイムラインにask_userが出てないのに何故かneeds_operatorが
+   * 出てる". The row below is the positive control: it fails if the frame is consumed instead of merged.
+   */
+  {
+    const ws = MockWS.instances.at(-1);
+    if (!ws) {
+      console.error("#ask check: no socket was opened — the check would be vacuous");
+      process.exit(1);
+    }
+    const before = w.document.querySelectorAll(".feed .embed.question").length;
+    const asked = "which way over the socket?";
+    ws.onmessage?.({
+      data: JSON.stringify({
+        kind: "event",
+        agentId: AGENT.id,
+        event: {
+          agent: AGENT.id,
+          id: "e-ws-question",
+          seq: 9100,
+          ts: "2026-01-01T10:10:00Z",
+          session: AGENT.session,
+          branch: "br0",
+          parent: null,
+          type: "question",
+          data: { callId: "ws-q", question: asked, options: ["sockA", "sockB"] },
+        },
+      }),
+    });
+    let seen = before;
+    for (let i = 0; i < 60; i++) {
+      seen = w.document.querySelectorAll(".feed .embed.question").length;
+      if (seen > before && bodyText().includes(asked)) break;
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    }
+    if (seen <= before || !bodyText().includes(asked)) {
+      console.error(
+        "#ask REGRESSION: a question delivered over the WebSocket never became a row — the frame was consumed as a " +
+          "turn boundary instead of being merged, so only a reload shows the question",
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a question arriving over the socket renders immediately (#ask)");
+  }
   }
   }
 
