@@ -1649,8 +1649,10 @@ export class Agent {
   private progressRequestedThisRound = false;
   /** the agent called report_progress in this round — a report is not a stop (#215) */
   private reportedThisRound = false;
-  /** bounded: the forced continue after a report may happen once per round */
+  /** how many forced continues this round has issued (diagnostics only — the bound is on PROGRESS, not on reports) */
   private reportedNudges = 0;
+  /** consecutive forced continues that produced no work at all: the model is repeating, not progressing */
+  private stalledReportContinues = 0;
   /** the stream was aborted because the model looped on the same characters (#209) */
   private degenerateOutput = false;
   private degenerateStops = 0;
@@ -1750,21 +1752,36 @@ export class Agent {
          * a running background shell, an audit cap) either logs its own note or leaves no trace. This note makes the
          * decision observable the next time it goes the wrong way.
          */
-        if (!finished && this.reportedThisRound && this.reportedNudges >= 1) {
-          await this.log.append("system_note", this.currentSession, this.currentBranch, {
-            event: "auto-continue-after-progress-skipped",
-            reason: "the nudge budget for this round was already spent",
-            nudges: this.reportedNudges,
-          });
-        }
-        if (
-          !finished &&
-          this.reportedThisRound &&
-          this.reportedNudges < 1 &&
+        /**
+         * EVERY report-then-stop is answered — there is no budget.
+         *
+         * "まず上限を設定すべきではなくない? インターバルで発火するprogress要求に対してそれぞれ答えてからちゃんと進んで
+         * いるかっていうのが重要". The interval asks for a report; each answer must be followed by work, and a cap turns
+         * that into "the third interval is ignored". What actually needs guarding is the case where the model answers
+         * and does NOTHING — that is the stall counter below, which measures progress instead of counting reports.
+         */
+        if (!finished && this.reportedThisRound &&
           // a PAUSED goal means the operator parked this agent; forcing another turn would fight that
           this.goal.status !== "paused"
         ) {
           this.reportedNudges += 1;
+          this.stalledReportContinues += 1;
+          /**
+           * …, but a model that answers "reported." and does NOTHING must not be pinged for ever.
+           *
+           * This is the guard that belongs here: measure PROGRESS, not reports. Any round that calls a work tool resets
+           * the counter, so a session that reports on each interval and keeps working never trips it; a model repeating
+           * "reported." ends the round with a note instead of spinning (measured without it: 1430 nudges in one round).
+           */
+          if (this.stalledReportContinues > 3) {
+            await this.log.append("system_note", this.currentSession, this.currentBranch, {
+              event: "auto-continue-after-progress-stalled",
+              continues: this.stalledReportContinues,
+              detail: "the model kept reporting progress without doing any work — stopping instead of pinging it again",
+            });
+            this.stalledReportContinues = 0;
+            break;
+          }
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "auto-continue-after-progress",
             detail: "the round filed a progress report and then stopped — a report is not a stop, so the loop continues",
@@ -2554,6 +2571,7 @@ export class Agent {
         this.contextClaimNudges = 0;
         this.blockerAsks = 0;
         this.reportedNudges = 0;
+        this.stalledReportContinues = 0;
         /**
          * `reportedThisRound` deliberately SURVIVES work done after the report.
          *

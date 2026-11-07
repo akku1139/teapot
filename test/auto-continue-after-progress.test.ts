@@ -115,3 +115,86 @@ test("two report-only rounds in a row both get answered (#215)", async () => {
     }
   });
 });
+
+test("a SECOND report-then-stop in the same round is answered too (up to three)", async () => {
+  /**
+   * Reproduced with the real mediapad history and a mock model: the first report was answered, and the second
+   * report-then-stop in the SAME round was silently swallowed by a one-nudge budget. The bound is three per round now —
+   * enough for "report, work, report, work, report" and small enough that a model that only reports still ends.
+   */
+  await useTempDirs(["ac215g-", "ac215h-"], async ([ws, sd]) => {
+    let calls = 0;
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async (): Promise<LlmResult> => {
+        calls += 1;
+        if (calls === 1 || calls === 3)
+          return reply("", [tc(`p${calls}`, "report_progress", { doing: "x", goalStatus: "y", recent: "z" })]);
+        return reply("reported.");
+      },
+      autoContinue: false,
+    } as never) as InstanceType<typeof Agent>;
+    await a.init();
+    a.enqueuePrompt("do the thing", "user");
+    a.start("t");
+    try {
+      const deadline = Date.now() + 15_000;
+      let nudges = 0;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+        const events = await readEvents(`${sd}/chat.jsonl`);
+        nudges = events.filter((e) => e.type === "system_note" && dataOf(e).event === "auto-continue-after-progress").length;
+        if (nudges >= 2) break;
+      }
+      assert.ok(nudges >= 2, `both report-then-stop rounds must be answered in one round (nudges: ${nudges}, calls: ${calls})`);
+    } finally {
+      await a.dispose();
+    }
+  });
+});
+
+test("a model that only reports is stopped as STALLED, not pinged for ever", async () => {
+  /**
+   * The bound belongs on progress, not on reports: "インターバルで発火するprogress要求に対してそれぞれ答えてからちゃんと
+   * 進んでいるかっていうのが重要". So every report-then-stop is answered, but four in a row with no tool call at all means
+   * the model is repeating, not working — that ends the round.
+   */
+  await useTempDirs(["ac215i-", "ac215j-"], async ([ws, sd]) => {
+    let calls = 0;
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async (): Promise<LlmResult> => {
+        calls += 1;
+        if (calls % 2 === 1)
+          return reply("", [tc(`p${calls}`, "report_progress", { doing: "x", goalStatus: "y", recent: "z" })]);
+        return reply("reported.");
+      },
+      autoContinue: false,
+    } as never) as InstanceType<typeof Agent>;
+    await a.init();
+    a.enqueuePrompt("go", "user");
+    a.start("t");
+    try {
+      const deadline = Date.now() + 20_000;
+      let stalled = false;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+        const events = await readEvents(`${sd}/chat.jsonl`);
+        if (events.some((e) => e.type === "system_note" && dataOf(e).event === "auto-continue-after-progress-stalled")) {
+          stalled = true;
+          break;
+        }
+      }
+      assert.ok(stalled, `a report-only loop must be stopped as stalled (calls: ${calls})`);
+      assert.ok(calls < 20, `and soon, not after hundreds of turns (calls: ${calls})`);
+    } finally {
+      await a.dispose();
+    }
+  });
+});
