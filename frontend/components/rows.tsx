@@ -196,8 +196,8 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
          * 描画すればいいだけ". Layout is CSS's job here (`.embed summary > b` wraps), and the full text is what a tool
          * card exists to show.
          */
-        // the label stays a short marker; the COMMAND gets its own always-rendered element below
-        label = isBg ? "⏳" : "$";
+        // the header keeps a SHORT label; the full command lives in the body, always
+        label = (isBg ? "⏳ " : "$ ") + oneLine(cmd, 96);
         const timeoutMs = argStr("timeout_ms") ? Number(argStr("timeout_ms")) : undefined;
         const r = res();
         const outcome = shellOutcome(r?.data?.ok, r ? String(r.data?.result ?? "") : "");
@@ -459,16 +459,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
       <summary>
         {}
         <b>{derived().label}</b>
-        {/**
-          * The FULL command, always — no "does it fit on one line" truncation anywhere.
-          *
-          * The header used to run the command through `oneLine(cmd, 96)`, so at narrow widths the interesting part was
-          * ellipsised away and nothing else showed it ("「1行に収まる判定」自体を消して、常にコマンドエリアを描画すればいい
-          * だけ"). It lives in its own element that wraps, so the label keeps its shape and the command is never cut.
-          */}
-        <Show when={name === "bash" && String((e.data?.args as { command?: string } | undefined)?.command ?? "") !== ""}>
-          <span class="toolcmd">{String((e.data?.args as { command?: string } | undefined)?.command ?? "")}</span>
-        </Show>
         <Show when={e.data?.actor}>
           <span class="actor">@{String(e.data.actor)}</span>
         </Show>
@@ -494,6 +484,16 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
           </Show>
         </span>
       </summary>
+      {/**
+        * The command area of the BODY, always — the condition that used to decide whether to show it is gone.
+        *
+        * The header is a summary line and must stay short, so the command gets clipped there; that is fine as long as
+        * nothing is the ONLY place it appears. "ヘッダーサイズとうまく兼ね合いを取ることは難しいから本文カードでcmdの
+        * 省略する条件を削除しよう" — so: full text here, every time, and the header keeps its compact label.
+        */}
+      <Show when={name === "bash" && String((e.data?.args as { command?: string } | undefined)?.command ?? "") !== ""}>
+        <pre class="mono toolbody cmd">{"$ " + String((e.data?.args as { command?: string } | undefined)?.command ?? "")}</pre>
+      </Show>
       {derived().body}
     </details>
   );
@@ -703,7 +703,10 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
             <Show when={e.data?.actor}>
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
-            <span class="ts">{e.data?.pending ? "queued…" : e.data?.cancelled ? "withdrawn" : fmtTs(e.ts)}</span>
+            <span class="ts">
+              {/* "queued…" only when the agent really had work in front of it — see `queued` in `echoEv` */}
+              {e.data?.pending && e.data?.queued !== false && !e.data?.sent ? "queued…" : e.data?.cancelled ? "withdrawn" : fmtTs(e.ts)}
+            </span>
             {}
             <Show when={props.showBranch}>
               <span class="ts">{e.branch}</span>

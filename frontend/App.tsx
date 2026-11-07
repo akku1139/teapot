@@ -1236,6 +1236,14 @@ const isTimelineLive = (): boolean => {
         source: p.source ?? "user",
         text: p.text,
         pending: !p.sent,
+        /**
+         * …but the row only SAYS "queued" when the agent was busy when the prompt was sent.
+         *
+         * The echo was labelled queued for every send, so a prompt to an IDLE agent flashed "queued…" for a frame or two
+         * ("idle状態でプロンプトを送っても一瞬queuedになる問題"). A prompt sent to an idle agent starts it; it queues
+         * behind nothing.
+         */
+        queued: !p.sent && p.queued === true,
         ...(p.images?.length ? { images: p.images } : {}),
         ...(p.promptId ? { promptId: p.promptId } : {}),
       },
@@ -3042,6 +3050,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      */
     // captured BEFORE any await: see the pin at the end of this function
     const wasFollowing = atBottom();
+    // was the agent busy? that is the only thing that makes this prompt "queued" rather than "being delivered"
+    const queuedBehindTurn = isSelLive();
     const localId = `@p${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     writePending(echoKey, [
       ...pendingFor(echoKey),
@@ -3049,6 +3059,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         id: localId,
         text,
         at: Date.now(),
+        ...(queuedBehindTurn ? { queued: true } : {}),
         ...(images.length ? { images: images.map((i) => i.url) } : {}),
       },
     ]);

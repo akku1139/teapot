@@ -1530,17 +1530,8 @@ html[data-bg-image="on"] .embed {
  * ellipsis, so a narrow window hid the command entirely ("ヘッダーがはみ出して ... になり、展開してもコマンドが見えない").
  * Only the hint next to it may be a single ellipsised line.
  */
-.embed summary > b { flex: 0 0 auto; }
-/* the command area: always rendered, wraps, never clipped — the label above it is just a marker */
-.embed summary > .toolcmd {
-  flex: 1 1 auto;
-  min-width: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: ui-monospace, Menlo, monospace;
-  color: var(--fg);
-}
-.embed summary > .meta { white-space: nowrap; }
+/* the header keeps its compact label; the full command lives in the body card */
+.embed .toolbody.cmd { color: var(--dim); border-bottom: 1px solid var(--line); margin-bottom: 4px; padding-bottom: 4px; }
 .embed summary .mono { font-family: ui-monospace, Menlo, monospace; }
 /**
  * TOOL CARD SURFACES — the transparency ORDER is the contract.

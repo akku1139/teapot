@@ -6,6 +6,14 @@ export type PendingEcho = {
   sent?: boolean;
   images?: string[];
   source?: string;
+  /**
+   * Was the agent BUSY when this was sent?
+   *
+   * "idle状態でプロンプトを送っても一瞬queuedになる問題" — the optimistic echo rendered as queued for every send, because
+   * `pending` only meant "the server has not confirmed it yet". A prompt sent to an idle agent is not queued at all; it
+   * is simply being delivered, and showing "queued…" for a frame or two is a lie the operator notices.
+   */
+  queued?: boolean;
 };
 
 export const reconcilePending = (
