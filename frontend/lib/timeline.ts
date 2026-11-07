@@ -22,6 +22,8 @@ export interface TimelineInput {
   events: readonly TimelineEvent[];
   consumed: ReadonlySet<string>;
   pending: readonly PendingEchoLike[];
+  /** ids the server still lists in its pending queue — their log rows must not render as settled */
+  serverPendingIds?: readonly string[];
   echo: (p: PendingEchoLike) => TimelineEvent;
   feedTypes: ReadonlySet<string>;
   renderedTypes: ReadonlySet<string>;
@@ -203,6 +205,24 @@ export function buildTimelineWithCount(input: TimelineInput): {
   const stillPendingIds = new Set<string>();
   for (const p of input.pending) {
     if (p.promptId && !lifecycle.deliveredIds.has(p.promptId)) stillPendingIds.add(p.promptId);
+  }
+  /**
+   * …and every id the SERVER still reports as queued.
+   *
+   * The server logs a `prompt` event when a prompt is enqueued, so its row exists in the log before the local echo has
+   * been labelled with a `promptId`. The log row was therefore rendered as if it had been delivered — a settled copy of
+   * a prompt that had not run yet, sitting next to its own queued echo until one of them went away:
+   * "送った瞬間は適切にcancel/copyのついたキュー状態が出てるのに、その数フレーム後に何故か確定状態のメッセージが出て
+   * queued状態のやつも当然残ってて、さらに数フレーム後に謎の確定状態のメッセージが消える".
+   *
+   * The echo is what draws a queued row, and `mergeQueued` creates one for ids that only the server knows about, so
+   * hiding the log row here never leaves the prompt invisible.
+   */
+  for (const id of input.serverPendingIds ?? []) {
+    // ONLY when an echo (or a queue clone) will draw the row in its place — hiding a log row with nothing behind it
+    // would make the prompt disappear entirely, which is worse than the duplicate this exists to prevent
+    if (!id || lifecycle.deliveredIds.has(id)) continue;
+    if (input.pending.some((p) => p.promptId === id)) stillPendingIds.add(id);
   }
   const visible = dropInvisibleRows(deduped, input, stillPendingIds);
   const resequenced = resequencePrompts(visible, lifecycle);

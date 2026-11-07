@@ -972,7 +972,14 @@ console.log("deep render ok: feed rows present");
         status: 200,
         json: async () => ({
           agents: [
-            { ...RUNNING_AGENT, pendingPrompts: queueDepth },
+            {
+              ...RUNNING_AGENT,
+              pendingPrompts: queueDepth,
+              // one prompt already waiting: the send below has something AHEAD of it
+              pendingPromptQueue: [
+                { id: "q-old", text: "already waiting", at: Date.now() - 1000, source: "user" },
+              ],
+            },
             { ...RUNNING_AGENT, id: "beta", workspace: "/tmp/other-project" },
           ],
         }),
@@ -1092,6 +1099,57 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: two queued prompts keep their order and are both withdrawable");
+
+  /**
+   * The row must be BORN queued, withdrawable, and BELOW what is already waiting — in the same frame.
+   *
+   * Recorded from the operator's screen: "非queuedで、queuedより先に挿入 -> queuedになってオーダーが直る" and
+   * "cancelボタンの描画が多分遅延してる … 確実にレイアウトが微妙に変わったことは見える". Both are the same question: does the
+   * row arrive finished, or does it get rearranged after the operator sees it?
+   */
+  {
+    const ta3 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+    if (!ta3) throw new Error("composer textarea vanished");
+    ta3.value = "born queued message";
+    ta3.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    (ta3.closest("form") as HTMLFormElement).dispatchEvent(
+      new w.Event("submit", { bubbles: true, cancelable: true }),
+    );
+    let frames = 0;
+    for (let i = 0; i < 30; i++) {
+      const rows = [...w.document.querySelectorAll(".feed .msg")];
+      const row = rows.find((r) => (r.textContent ?? "").includes("born queued message"));
+      if (!row) {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        continue;
+      }
+      frames++;
+      const text = row.textContent ?? "";
+      if (!/queued…/.test(text)) {
+        console.error(`#queued REGRESSION: the row appeared WITHOUT "queued…" (frame ${i}) — it must be born queued`);
+        process.exit(1);
+      }
+      if (![...row.querySelectorAll("button")].some((b) => (b.textContent ?? "").includes("cancel"))) {
+        console.error(`#queued REGRESSION: the row appeared WITHOUT its ✕ cancel (frame ${i}) — a later re-flow is visible`);
+        process.exit(1);
+      }
+      const olderIdx = rows.findIndex((r) => (r.textContent ?? "").includes("already waiting"));
+      const newIdx = rows.indexOf(row);
+      if (olderIdx !== -1 && newIdx < olderIdx) {
+        console.error(`#queued REGRESSION: the new prompt was inserted ABOVE the one already waiting (${newIdx} < ${olderIdx})`);
+        process.exit(1);
+      }
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    }
+    if (!frames) {
+      console.error("#queued check: the sent row never appeared — vacuous");
+      process.exit(1);
+    }
+    console.log("deep render ok: a queued prompt is born queued, withdrawable and in order (#queued)");
+
+
+  }
   }
 
   {

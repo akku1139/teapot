@@ -1196,6 +1196,7 @@ const isTimelineLive = (): boolean => {
       events: events() as TimelineEvent[],
       consumed: pairInfo().consumed,
       pending: pendingMsgs() as PendingEchoLike[],
+      serverPendingIds: sel()?.pendingPromptIds ?? [],
       echo: echoEv as (p: PendingEchoLike) => TimelineEvent,
       feedTypes: FEED_TYPES,
       renderedTypes: RENDERED_TYPES,
