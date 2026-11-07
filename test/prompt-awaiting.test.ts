@@ -107,3 +107,30 @@ test("one owner per prompt: an echo is not drawn once the log carries that promp
   assert.equal(rows[0]!.id, "e1");
   void echoRow;
 });
+
+test("the harness row lands in the queue block the moment its event arrives — and the later snapshot changes nothing", () => {
+  /**
+   * The exact A/B pair GPT's report asked for (teapot#211 follow-up): the same prompt seen (A) as only the WS event and
+   * (B) with the agent snapshot that reports it in `pendingPromptQueue`.
+   *
+   * Before the fix, (A) put the raw row ahead of the existing queued echoes and (B) replaced it with a synthetic echo at
+   * the bottom: a row that jumped from the top of the queue to its end. Now the event's own row IS the queue row, so both
+   * states must agree — which is what makes the jump impossible rather than merely fast.
+   */
+  const history = [
+    ev("e1", 1, "message", { role: "assistant", content: "older work", final: true }),
+    ev("e2", 2, "prompt", { source: "harness", text: "H1", promptId: "h1", ahead: 1 }),
+    ev("e3", 3, "prompt", { source: "harness", text: "H2", promptId: "h2", ahead: 2 }),
+  ];
+  const arrived = [...history, ev("e4", 4, "prompt", { source: "harness", text: "H3", promptId: "h3", ahead: 3 })];
+  const stateA = build(arrived).map((r) => r.id);
+  // what `mergeQueued` produces from `pendingPromptQueue`: the server ids become `promptId`, flagged queued
+  const snapshotQueue = [
+    { id: "@p1", text: "H1", at: 1, source: "harness", promptId: "h1", queued: true },
+    { id: "@p2", text: "H2", at: 2, source: "harness", promptId: "h2", queued: true },
+    { id: "@p3", text: "H3", at: 3, source: "harness", promptId: "h3", queued: true },
+  ];
+  const stateB = build(arrived, snapshotQueue).map((r) => r.id);
+  assert.deepEqual(stateA, ["e1", "e2", "e3", "e4"], "history, then the queue in enqueue order");
+  assert.deepEqual(stateB, stateA, "the snapshot must not reorder or duplicate what the event already drew");
+});
