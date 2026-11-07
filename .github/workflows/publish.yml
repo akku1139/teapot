@@ -80,5 +80,24 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # Provenance is ON by default and must stay that way; the switch exists because
+      # sigstore's transparency log can be DOWN, and when it is, every publish fails with
+      #
+      #     npm error code TLOG_CREATE_ENTRY_ERROR
+      #     npm error error creating tlog entry - (500) unexpected result from transparency log
+      #
+      # MEASURED during such an outage: https://rekor.sigstore.dev/api/v1/log answered
+      # {"code":500,"message":"unexpected error communicating with inactive shard"} while npm's own
+      # status page said "All Systems Operational" — the fault is the log, not the registry, and it
+      # blocks a release that is otherwise ready. Setting the repository variable
+      # TEAPOT_PUBLISH_PROVENANCE=off publishes without the attestation instead of not at all;
+      # unset it (or set it back to "on") once the log recovers, so the next release is attested.
+      # Trusted publishing (OIDC) works either way.
       - name: Publish
-        run: npm publish --provenance --access public
+        run: |
+          if [ "${{ vars.TEAPOT_PUBLISH_PROVENANCE }}" = "off" ]; then
+            echo "::warning::provenance DISABLED via TEAPOT_PUBLISH_PROVENANCE=off (sigstore outage) — unset it after the release"
+            npm publish --provenance=false --access public
+          else
+            npm publish --provenance --access public
+          fi
