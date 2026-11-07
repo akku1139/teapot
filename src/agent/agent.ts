@@ -3505,6 +3505,14 @@ export class Agent {
         summarized: summarizedCount,
         dropped: droppedCount,
         mode,
+        /**
+         * The same line the checkpoint message carries, here so it is VERIFIABLE.
+         *
+         * The notice is a message in the agent's list and is never logged, so "did the model get the remaining budget
+         * after the compaction?" could not be answered from a session log at all — which is exactly the question that
+         * came back after a model stopped claiming "残コンテキストが僅少" at 3.5% used.
+         */
+        contextLine: usageLine(after, this.opts.contextTokenBudget),
       });
     } finally {
       this.compactPhase = "";

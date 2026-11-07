@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { Agent } from "../src/agent/agent.ts";
+import { readEvents } from "../src/log/events.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const dataOf = (e: { data?: unknown }) => (e.data ?? {}) as Record<string, unknown>;
 const reply = (content: string): LlmResult => ({ message: { role: "assistant" as const, content } });
 
 /** History big enough that `safeCut` can find a prefix to compact. */
@@ -224,6 +226,18 @@ test("the compaction notice ends with the room that is left, not just the room t
       assert.match(first, /Context was compacted/, "precondition: the checkpoint notice is the first message");
       assert.match(first, /% used \([\d.]+k?\/[\d.]+k? tokens, [\d.]+k? until compaction\)/, "the notice must carry the usage line");
       assert.match(first, /roomy again/, "and say which DIRECTION that is — the bare percentage was read backwards");
+      /**
+       * …and the SAME line must be in the log, because the notice itself never is.
+       *
+       * The question "did the model get the remaining budget after the compaction?" came back after a model stopped
+       * claiming "残コンテキストが僅少" at 3.5% used, and a session log could not answer it at all.
+       */
+      const comp = (await readEvents(`${sd}/chat.jsonl`)).filter(
+        (e) => e.type === "system_note" && String(dataOf(e).event ?? "") === "context-compacted",
+      );
+      assert.ok(comp.length > 0, "precondition: the compaction is logged");
+      const line = String(dataOf(comp.at(-1)!)?.contextLine ?? "");
+      assert.match(line, /% used/, `the note must carry the usage line (got ${JSON.stringify(line)})`);
     } finally {
       await a.dispose().catch(() => {});
     }

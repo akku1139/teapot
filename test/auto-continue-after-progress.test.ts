@@ -62,6 +62,12 @@ test("a report followed by 'reported.' continues the loop — with NO goal set (
         .join("\n");
       assert.match(nudge, /A report is not a stopping point/, "and says why it was nudged");
       assert.doesNotMatch(nudge, /goal above/, "the wording must not assume a goal exists");
+      /**
+       * The note is logged BEFORE the nudge is pushed and the next turn starts, so asserting the call count right here is
+       * a race — it failed on a loaded CI runner ("model calls: 2"). Poll for the outcome instead.
+       */
+      const until = Date.now() + 5_000;
+      while (calls < 3 && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
       assert.ok(calls >= 3, `the loop must have continued (model calls: ${calls})`);
     } finally {
       await a.dispose();

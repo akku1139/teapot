@@ -215,9 +215,16 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
               </div>
             ) : null}
             {}
-            {cmd !== label.slice(isBg ? 2 : 2) ? (
-              <HighlightedCode text={cmd} lang="shellscript" />
-            ) : null}
+            {/**
+              * The shiki cmd block ALWAYS renders — the condition is what was wrong, not the header.
+              *
+              * It used to be drawn only when the header's label was not the whole command (`cmd !== label.slice(2)`), so a
+              * command short enough to fit the summary line had no cmd area at all, and a narrow window clipped the
+              * summary into an ellipsis with nothing to read it from. "ヘッダーサイズとうまく兼ね合いを取ることは難しいから
+              * 本文カードでcmdの省略する条件を削除しよう" — the header stays a one-line label, the body always carries the
+              * command.
+              */}
+            <HighlightedCode text={cmd} lang="shellscript" />
             {resultBlock()}
           </>
         );
@@ -484,16 +491,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
           </Show>
         </span>
       </summary>
-      {/**
-        * The command area of the BODY, always — the condition that used to decide whether to show it is gone.
-        *
-        * The header is a summary line and must stay short, so the command gets clipped there; that is fine as long as
-        * nothing is the ONLY place it appears. "ヘッダーサイズとうまく兼ね合いを取ることは難しいから本文カードでcmdの
-        * 省略する条件を削除しよう" — so: full text here, every time, and the header keeps its compact label.
-        */}
-      <Show when={name === "bash" && String((e.data?.args as { command?: string } | undefined)?.command ?? "") !== ""}>
-        <pre class="mono toolbody cmd">{"$ " + String((e.data?.args as { command?: string } | undefined)?.command ?? "")}</pre>
-      </Show>
       {derived().body}
     </details>
   );
