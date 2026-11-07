@@ -49,7 +49,7 @@ async function listModels(baseUrl: string, apiKey?: string): Promise<ModelMeta[]
 }
 import path from "node:path";
 import { bus } from "../bus.ts";
-import { readEvents, readEventsTail, filterByBranch } from "../log/events.ts";
+import { branchCounts, readEvents, readEventsTail, readEventsWindow, filterByBranch } from "../log/events.ts";
 import type { Master } from "../master.ts";
 import { mcp } from "../agent/mcp-registry.ts";
 import { connectMcp, type McpServerConfig } from "../agent/mcp.ts";
@@ -1226,41 +1226,12 @@ const MAX_WS_CLIENTS = 64;
     return c.json({ ok: true, ...r });
   });
 
-  const eventsCache = new Map<string, { mtimeMs: number; size: number; events: Awaited<ReturnType<typeof readEvents>> }>();
   /**
-   * The whole-file cache is bounded by EVENTS, not by file count.
-   *
-   * `if (eventsCache.size > 64) eventsCache.clear()` counted FILES, so eight sessions with 90k events each were all
-   * retained — hundreds of MB the process never gives back, since nothing evicts them until the 65th file appears.
-   * A parsed event is roughly a few hundred bytes, so the budget below is a few tens of MB.
+   * No whole-file cache. MEASURED: keeping the parsed log of every session the UI opened retained **221MB of heap** for
+   * two sessions of ~100k events — "master rss 812MB · heap 352.2MB" with 1316 messages in memory. The pages the client
+   * actually asks for are answered by streaming (`readEventsTail` for the newest page, `readEventsWindow` for the page
+   * before an id, `branchCounts` for the branch list), so the cost is the page instead of the session.
    */
-  const EVENTS_CACHE_BUDGET = 250_000;
-  let eventsCached = 0;
-  async function readEventsCached(filePath: string) {
-    try {
-      const st = await fs.stat(filePath);
-      const hit = eventsCache.get(filePath);
-      if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
-        // refresh insertion order so the eviction below stays LRU
-        eventsCache.delete(filePath);
-        eventsCache.set(filePath, hit);
-        return hit.events;
-      }
-      const events = await readEvents(filePath);
-      if (hit) eventsCached -= hit.events.length;
-      eventsCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, events });
-      eventsCached += events.length;
-      for (const [key, entry] of eventsCache) {
-        if (eventsCached <= EVENTS_CACHE_BUDGET && eventsCache.size <= 8) break;
-        eventsCache.delete(key);
-        eventsCached -= entry.events.length;
-      }
-      if (eventsCached < 0) eventsCached = 0;
-      return events;
-    } catch {
-      return readEvents(filePath);
-    }
-  }
   app.get("/api/agents/:id/events", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) {
@@ -1307,28 +1278,32 @@ const MAX_WS_CLIENTS = 64;
         const events = tailFirst.events.slice(inTail + 1);
         return c.json({ events, total: tailFirst.total, appended: events.length > 0 });
       }
-      const all = await readEventsCached(filePath);
-      const idx = all.findIndex((e) => e.id === after);
-      if (idx === -1) {
+      const win = await readEventsWindow(filePath, { after, limit });
+      if (!win.found) {
         const tail = await readEventsTail(filePath, limit);
         return c.json({ events: tail.events, total: tail.total, partial: tail.truncated, gap: true });
       }
-      const events = all.slice(idx + 1);
-      return c.json({ events, total: all.length, appended: events.length > 0 });
+      return c.json({ events: win.events, total: win.total, appended: win.events.length > 0 });
     }
     if (!before && !branch) {
       const tail = await readEventsTail(filePath, limit);
       return c.json({ events: tail.events, total: tail.total, partial: tail.truncated });
     }
 
-    let events = await readEventsCached(filePath);
-    if (branch) events = filterByBranch(events, branch, c.req.query("lineage") === "true");
-    if (before) {
-      const idx = events.findIndex((e) => e.id === before);
-      events = idx === -1 ? [] : events.slice(0, idx);
+    /**
+     * `lineage=true` is the one shape that still needs the whole log (it walks parents to the fork point), so it reads
+     * the file for the request and lets it go — a transient peak instead of a permanent one.
+     */
+    if (branch && c.req.query("lineage") === "true") {
+      let events = filterByBranch(await readEvents(filePath), branch, true);
+      if (before) {
+        const idx = events.findIndex((e) => e.id === before);
+        events = idx === -1 ? [] : events.slice(0, idx);
+      }
       return c.json({ events: events.slice(-limit), total: events.length });
     }
-    return c.json({ events: events.slice(-limit), total: events.length });
+    const win = await readEventsWindow(filePath, { before, limit, branch });
+    return c.json({ events: win.events, total: win.total });
   });
 
   app.get("/api/sessions", (c) => c.json({ sessions: master.allSessions() }));
@@ -1344,26 +1319,10 @@ const MAX_WS_CLIENTS = 64;
   app.get("/api/agents/:id/branches", async (c) => {
     const a = master.agents.get(c.req.param("id"));
     if (!a) return notFound(c, "agent", c.req.param("id"));
-    const events = await readEventsCached(a.log.filePath);
-    const branches = new Map<string, { branch: string; events: number; forkedFrom?: unknown }>();
-    for (const e of events) {
-      const b = branches.get(e.branch) ?? { branch: e.branch, events: 0 };
-      b.events++;
-      branches.set(e.branch, b);
-      if (e.type === "fork") {
-        const created = String((e.data as { newBranch?: string } | undefined)?.newBranch ?? "");
-        if (created && created !== e.branch) {
-          const nb = branches.get(created) ?? { branch: created, events: 0 };
-          nb.forkedFrom = e.data;
-          branches.set(created, nb);
-          b.events--; 
-          if (b.events <= 0) branches.delete(e.branch);
-        } else {
-          b.forkedFrom = e.data;
-        }
-      }
-    }
-    return c.json({ branches: [...branches.values()] });
+    const counts = await branchCounts(a.log.filePath);
+    return c.json({
+      branches: [...counts].map(([branch, c2]) => ({ branch, events: c2.events, forkedFrom: c2.forkedFrom })),
+    });
   });
 
   app.get("/api/metrics", (c) => c.json(master.metrics()));

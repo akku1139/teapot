@@ -281,6 +281,126 @@ export async function readEvents(filePath: string): Promise<TeapotEvent[]> {
   }
 }
 
+/**
+ * A bounded page of the log, read by streaming — nothing is retained after the call.
+ *
+ * The whole-file cache this replaces held every parsed event of every session the UI had opened: MEASURED on the
+ * operator's data, two sessions of ~100k events each retained **221MB of heap** for a page the UI shows 400 rows of.
+ * `readEventsTail` already answers the newest page and the `after=` catch-up from the end of the file, so the only
+ * remaining readers are "the page before this id" (scrolling up) and the branch filter; both are answered here with a
+ * ring buffer of `limit` events, so the memory cost is the page, not the session.
+ */
+export async function readEventsWindow(
+  filePath: string,
+  opts: { before?: string; after?: string; limit: number; branch?: string },
+): Promise<{ events: TeapotEvent[]; total: number; found: boolean }> {
+  const limit = Math.max(0, opts.limit);
+  const empty = { events: [] as TeapotEvent[], total: 0, found: false };
+  if (limit <= 0) return empty;
+  const accept = (e: TeapotEvent) => !opts.branch || e.branch === opts.branch;
+  const ring: TeapotEvent[] = [];
+  const push = (e: TeapotEvent) => {
+    ring.push(e);
+    if (ring.length > limit) ring.shift();
+  };
+  try {
+    const [{ createReadStream }, { createInterface }] = await Promise.all([
+      import("node:fs"),
+      import("node:readline"),
+    ]);
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    });
+    let seen = 0;
+    let collecting = opts.after === undefined;
+    let found = opts.after === undefined;
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      let e: TeapotEvent;
+      try {
+        e = JSON.parse(line) as TeapotEvent;
+      } catch {
+        continue;
+      }
+      if (!accept(e)) continue;
+      if (!collecting) {
+        if (e.id === opts.after) {
+          collecting = true;
+          found = true;
+          seen++;
+          continue;
+        }
+        seen++;
+        continue;
+      }
+      if (opts.before !== undefined && e.id === opts.before) {
+        return { events: ring.slice(-limit), total: seen, found: true };
+      }
+      push(e);
+      seen++;
+      if (opts.after !== undefined && ring.length >= limit) {
+        // the count still has to be complete: `total` drives the client's "is there more history" decision
+        for await (const rest of rl) {
+          if (!rest.trim()) continue;
+          try {
+            if (accept(JSON.parse(rest) as TeapotEvent)) seen++;
+          } catch {}
+        }
+        return { events: ring.slice(-limit), total: seen, found };
+      }
+    }
+    return { events: opts.before !== undefined ? [] : ring.slice(-limit), total: seen, found };
+  } catch {
+    return empty;
+  }
+}
+
+/** Branch counts without holding the log: the endpoint only needs `{branch, events}` pairs. */
+export async function branchCounts(
+  filePath: string,
+): Promise<Map<string, { events: number; forkedFrom?: unknown }>> {
+  const out = new Map<string, { events: number; forkedFrom?: unknown }>();
+  try {
+    const [{ createReadStream }, { createInterface }] = await Promise.all([
+      import("node:fs"),
+      import("node:readline"),
+    ]);
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    });
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      let e: TeapotEvent;
+      try {
+        e = JSON.parse(line) as TeapotEvent;
+      } catch {
+        continue;
+      }
+      const b = out.get(e.branch) ?? { events: 0 };
+      b.events++;
+      if (e.type === "fork") {
+        const created = String((e.data as { newBranch?: string } | undefined)?.newBranch ?? "");
+        if (created && created !== e.branch) {
+          const nb = out.get(created) ?? { events: 0 };
+          nb.forkedFrom = e.data;
+          out.set(created, nb);
+          b.events--;
+          if (b.events > 0) out.set(e.branch, b);
+          else out.delete(e.branch);
+          continue;
+        }
+        b.forkedFrom = e.data;
+      }
+      out.set(e.branch, b);
+    }
+    return out;
+  } catch {
+    return out;
+  }
+}
+
 const TAIL_MIN_BYTES = 64 * 1024;
 
 export async function readEventsTail(
