@@ -24,6 +24,15 @@ docs/           design notes and surveys
    Do not modify `.gitconfig`, `user.name`, `user.email`, hooks, or remotes.
    Commit as the configured identity only. (See issue #145 — agents doing this
    introduced bogus contributors.)
+2b. **A release can be blocked by sigstore, not by us.** `npm publish --provenance` registers the
+   attestation in the transparency log (Rekor). When that log is down every publish fails with
+   `TLOG_CREATE_ENTRY_ERROR … (500) unexpected result from transparency log` **while npm's own status
+   page says "All Systems Operational"** — MEASURED: `https://rekor.sigstore.dev/api/v1/log` answered
+   `{"code":500,"message":"unexpected error communicating with inactive shard"}`. Do not bump versions
+   at that point hoping for luck: set the repository variable `TEAPOT_PUBLISH_PROVENANCE=off`, release,
+   and remove the variable once the log answers 200 so the next release is attested again. Note that a
+   tag re-run uses the workflow **at that tag**, so a workflow fix needs a new version.
+
 2. **Never `git push --force` and never rewrite published history.**
 
    That includes a **release tag**. Once `Publish to npm` has succeeded for `vX.Y.Z`, that
