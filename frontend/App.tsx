@@ -1015,6 +1015,47 @@ export default function App() {
     onCleanup(() => document.removeEventListener("visibilitychange", onVisible));
   });
   const sel = createMemo(() => agents().find((a) => a.id === selected()));
+  /**
+   * A parked question must be ON SCREEN, whatever page of the log it was asked on.
+   *
+   * The status can say `needs_operator` while the row is older than the last page of events — the timeline then shows a
+   * demand for an answer with no question: "タイムラインにask_userが出てないのにneeds_operatorが出てる / しばらくいじいじ
+   * してたら出てきた". The snapshot carries the question's event id, so the page that contains it is fetched here (bounded —
+   * a session whose question is hundreds of pages back must not hold the UI hostage).
+   */
+  createEffect(() => {
+    const qid = (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId;
+    if (!qid) return;
+    if (events().some((e) => e.id === qid)) return;
+    if (olderDone() || loadingOlder()) return;
+    void (async () => {
+      for (let i = 0; i < 8; i++) {
+        if (events().some((e) => e.id === qid) || olderDone()) return;
+        if (loadingOlder()) {
+          await new Promise((r) => setTimeout(r, 50));
+          continue;
+        }
+        const before = events().length;
+        await loadOlder();
+        if (events().length === before) return;
+      }
+    })();
+  });
+  /**
+   * …and SHOW it.
+   *
+   * MEASURED on the real session: the question was in the fetched page all along (`has e29298: true`) with 31 feed rows
+   * after it, so the row was rendered but above the fold — "しばらくいじいじしてたら出てきた" is exactly what scrolling up
+   * looks like. Only a NEW question takes the operator there, so reading history is not interrupted on every render.
+   */
+  let lastQuestionJump = "";
+  createEffect(() => {
+    const qid = (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId;
+    if (!qid || qid === lastQuestionJump) return;
+    if (!events().some((e) => e.id === qid)) return;
+    lastQuestionJump = qid;
+    void jumpToEvent(qid, 0);
+  });
   const queuedCount = () => {
     const mine = sel()?.session === pendingKey() || !sel()?.session;
     return queuedBadgeCount({ sameSession: !!mine, agent: sel(), echoCount: pendingCount() });

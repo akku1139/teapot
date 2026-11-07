@@ -367,6 +367,15 @@ export class Agent {
   private pendingSubReport = "";
   private compactPhase = "";
   private awaitingUser = false;
+  /**
+   * The event id of the question the loop is parked on.
+   *
+   * The status says `needs_operator`, but the ROW lives in the log and the client only holds the last page of events — so
+   * a question that was asked before that window was invisible until the operator scrolled far enough:
+   * "タイムラインにask_userが出てないのにneeds_operatorが出てる / しばらくいじいじしてたら出てきた". The id lets the client
+   * fetch the page that contains it.
+   */
+  private pendingQuestionId = "";
   /** when the previous round finished, for the time anchor in harness messages (#194) */
   private lastTurnEndedAt: number | null = null;
   /** the last assistant text, so the loop can tell a context-limit stop from a real one (#201) */
@@ -1441,6 +1450,7 @@ export class Agent {
       todo: this.todo.slice(0, 32_000), 
       parent: this.opts.parent,
       awaiting: this.awaitingUser,
+      ...(this.awaitingUser && this.pendingQuestionId ? { pendingQuestionId: this.pendingQuestionId } : {}),
       autoContinue: this.opts.autoContinue,
       autoCompact: this.opts.autoCompact,
     };
@@ -2135,11 +2145,12 @@ export class Agent {
             })
             .filter((o: string) => o.trim())
         : [];
-      await this.log.append("question", this.currentSession, this.currentBranch, {
+      const questionEvent = await this.log.append("question", this.currentSession, this.currentBranch, {
         question,
         options,
         callId: call.id,
       });
+      this.pendingQuestionId = questionEvent?.id ?? "";
       await this.answerMeta(
         call,
         "question shown to the operator — the loop is parked until they reply. " +
