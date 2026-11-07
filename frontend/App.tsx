@@ -414,6 +414,15 @@ export default function App() {
    * feed's box or content, and all three should keep a follower at the bottom.
    */
   let tailSeekingUntil = 0;
+  /**
+   * Did the reader INTEND to follow, as of the last reading of their own gesture?
+   *
+   * A re-wrap can shrink the content so much that the browser clamps `scrollTop` onto the new tail, and then `atBottom()`
+   * reads true even though the reader was parked in the middle — which sent them to the bottom on a width change
+   * ("画面横幅でズレるのはセッション移動した時以外も"). The intent is what decides: following → the tail, otherwise the
+   * anchor.
+   */
+  let intentFollowing = true;
   let tailWatchRaf = 0;
   /**
    * While a tail-seek is active, pin the feed on every frame — from ONE watchdog, not from per-switch closures.
@@ -475,9 +484,14 @@ export default function App() {
     lastSampleViewport = f.clientHeight;
     const widthChanged = f.clientWidth !== lastFeedWidth;
     lastFeedWidth = f.clientWidth;
-    if (atBottom() || performance.now() < tailSeekingUntil) {
+    if (!widthChanged && (atBottom() || performance.now() < tailSeekingUntil)) {
       // following stays following: reflow changes every row's height, the tail is still the tail
       pinToTail();
+      return;
+    }
+    if (widthChanged && (intentFollowing || performance.now() < tailSeekingUntil)) {
+      pinToTail();
+      publishGap(tailSample());
       return;
     }
     /**
@@ -488,21 +502,34 @@ export default function App() {
      * movement is exactly what has to be cancelled. The `anchorStillDescribesView` guard below is skipped on purpose —
      * after a reflow that same row is usually NOT the top row any more, which is why the correction never fired.
      */
-    if (widthChanged && unskipAnchor) {
-      resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_DELTA_PX_RESIZE);
+    if (widthChanged) {
+      /**
+       * A width change does not move `scrollTop` — and neither do we.
+       *
+       * In plain HTML the browser keeps the scroll OFFSET across a resize; only the wrapping changes, so the rows on
+       * screen shift but the position does not ("普通にHTML書いてたらそんなことなくない?"). Every earlier attempt to
+       * "correct" here is what moved the reader: measuring an anchor before the re-wrap, guessing a delta, clamping it
+       * — and one of those paths landed on the tail. The only case that may still move is the browser clamping a
+       * position past the end because the content got SHORTER, which nothing can prevent.
+       *
+       * So: following → stay at the tail; otherwise leave `scrollTop` exactly where the browser left it.
+       */
+      if (intentFollowing || performance.now() < tailSeekingUntil) pinToTail();
       publishGap(tailSample());
       return;
     }
-    /**
-     * A change in the VIEWPORT's height alone must not move the reader.
-     *
-     * The composer growing by one line shrinks this box; the content's top edge has not moved, so there is
-     * nothing to compensate and `scrollTop` should stay where it is. Re-anchoring anyway applied a correction
-     * computed from a stale anchor, which is why the view jumped by about one line — "入力欄で改行して入力欄を
-     * 2行にするとなぜかスクロールがずれることがある (ズレないこともある)". The "sometimes" is whether the saved
-     * anchor still described the first visible row.
-     */
     if (!contentChanged) {
+      /**
+       * Keep an anchor warm even when nothing needs correcting.
+       *
+       * A width change can only be held if SOME row was recorded before it: a page that has not been scrolled yet had
+       * none, so the first re-wrap of the window moved the viewport by however much the rows grew ("画面横幅でズレるの
+       * はセッション移動した時以外も"). Refreshing it here means the first resize already has one.
+       */
+      if (!unskipAnchor) {
+        unskipAnchor = firstVisibleRow(f);
+        unskipAnchorAt = performance.now();
+      }
       publishGap(tailSample());
       return;
     }
@@ -2017,6 +2044,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        */
       setAtBottom(false);
       readerUntil = performance.now() + READER_LOCK_MS;
+      /**
+       * …and the switch's tail-seek must be DISARMED, not merely outlived.
+       *
+       * The watchdog pins every frame for its whole window and only yields to `readerUntil` (400ms), so a restored
+       * session was pulled to the bottom a moment later: "ロード中に変な位置 -> アンカーに戻る -> タイムライン一番下に
+       * 移動する". A restore is the definitive answer for this switch, so it ends the seek.
+       */
+      tailSeekingUntil = 0;
       scrollSpot.delete(tid);
       scrollSpot.delete(id);
       /**
@@ -3948,6 +3983,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 : performance.now() < readerUntil
                   ? false
                   : nextFollowing(wasFollowing, cause, now, prevTop);
+            intentFollowing = follow;
             if (follow !== wasFollowing) setAtBottom(follow);
             if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow && cause !== "reader") {

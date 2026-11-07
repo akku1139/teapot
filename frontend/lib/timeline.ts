@@ -123,7 +123,14 @@ export function dropInvisibleRows(
   return events.filter((e) => {
     if (!input.renderedTypes.has(e.type))
       return e.type === "system_note" && input.renderedNoteEvents.has(String(e.data?.event ?? ""));
-    if (e.type !== "prompt" || e.data?.source !== "user") return true;
+    if (e.type !== "prompt") return true;
+    /**
+     * ANY source: a prompt the harness queued is as pending as one the operator typed.
+     *
+     * Only `source === "user"` rows were hidden, so a queued HARNESS prompt was drawn twice — its log row as if it had
+     * already run, plus the queue clone that says "queued…": "#122 harness からのメッセージがpendingであるにもかかわらず、
+     * メッセージにpending表示がついてない". The clone is what the operator should see, for both sources.
+     */
     const pid = String(e.data?.promptId ?? "");
     return pid === "" || !stillPendingIds.has(pid);
   });

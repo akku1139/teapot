@@ -1742,6 +1742,21 @@ export class Agent {
          * auto-continue off or no goal set, because filing a report is not a decision to stop. Once per round, and
          * reset by any round that does actual work.
          */
+        /**
+         * …and when the branch does NOT fire, say why.
+         *
+         * A report followed by a stop went unanswered on mediapad-t5 at 09:29Z on a build that HAS the per-round reset,
+         * and nothing in the log could explain it: every guard that could have swallowed the branch (`pendingPrompts`,
+         * a running background shell, an audit cap) either logs its own note or leaves no trace. This note makes the
+         * decision observable the next time it goes the wrong way.
+         */
+        if (!finished && this.reportedThisRound && this.reportedNudges >= 1) {
+          await this.log.append("system_note", this.currentSession, this.currentBranch, {
+            event: "auto-continue-after-progress-skipped",
+            reason: "the nudge budget for this round was already spent",
+            nudges: this.reportedNudges,
+          });
+        }
         if (
           !finished &&
           this.reportedThisRound &&
