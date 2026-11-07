@@ -324,6 +324,19 @@ export default function App() {
    * content growth is precisely the case where no scroll event fires.
    */
   const reanchorAfterContentChange = () => {
+    /**
+     * Content growth inside the feed does NOT fire its ResizeObserver (that observes the element's own box), so this
+     * mutation path is the only one that sees new rows — and while a tail-seek is in progress it must pin, not
+     * re-anchor. MEASURED: coming back to a session that gained rows left a 631px gap with "jump to present" showing,
+     * because the rows landed after the switch's frame-count settle and nothing looked at the feed again.
+     */
+    if (performance.now() < tailSeekingUntil) {
+      const f0 = feedEl();
+      // unconditionally: during a tail-seek the target IS the bottom, and the measurement can be taken before the
+      // new rows have a height at all (distance 0 with an empty box), which is how the pin kept being skipped
+      if (f0) pinTailAndRebaseline(f0);
+      return;
+    }
     if (atBottom()) return; // following the tail: the pin owns the position
     if (!unskipAnchor) return; // nothing has been read yet, so there is no anchor to hold
     const f = feedEl();
@@ -389,6 +402,55 @@ export default function App() {
   let feedRoEl: HTMLElement | undefined;
   let feedRoRaf = 0;
   let feedRoLastBox = "";
+  /**
+   * Until this moment, the feed is being taken back to the tail — so growth re-pins, whatever `atBottom()` says.
+   *
+   * MEASURED: leaving a session at its tail, appending six rows while away and coming back left the viewport 583px
+   * short with "jump to present" showing. By then `atBottom()` is false, and every pin path is gated on it, so nothing
+   * recovers — a frame-count settle cannot cover a session whose rows (and their heights) land later.
+   *
+   * Set on a session switch, on the terminal drawer opening/closing and on the composer maximizing: all three change the
+   * feed's box or content, and all three should keep a follower at the bottom.
+   */
+  let tailSeekingUntil = 0;
+  let tailWatchRaf = 0;
+  /**
+   * While a tail-seek is active, pin the feed on every frame — from ONE watchdog, not from per-switch closures.
+   *
+   * MEASURED: coming back to a session that had gained rows sat 631px above the tail with "jump to present" showing, and
+   * a manual `scrollTop = scrollHeight` closed it and kept it closed. So the position was closable and nothing was
+   * fighting it — the per-switch settle loop simply never ran, because it bails when `feedGeneration` has moved on (the
+   * switch itself increments it, and a second `select()` for the URL does too). This watchdog knows nothing about
+   * generations: if a seek is active, the bottom is the target.
+   */
+  const tailWatch = () => {
+    tailWatchRaf = 0;
+    if (performance.now() >= tailSeekingUntil) return;
+    const f = feedEl();
+    if (f && distanceToTail({ top: f.scrollTop, height: f.scrollHeight, viewport: f.clientHeight }) > 1) {
+      pinTailAndRebaseline(f);
+    }
+    tailWatchRaf = requestAnimationFrame(tailWatch);
+  };
+  const seekTail = (ms = 1500) => {
+    tailSeekingUntil = performance.now() + ms;
+    if (!tailWatchRaf) tailWatchRaf = requestAnimationFrame(tailWatch);
+  };
+  /**
+   * Pin, and RE-BASELINE the anchor the layout corrections measure against.
+   *
+   * A pin that leaves an old `unskipAnchor` behind is undone later: MEASURED, coming back to a session that had gained
+   * rows sat at a constant 631px above the tail, because after the seek window expired `reanchorAfterContentChange`
+   * "corrected" toward a row captured before the growth and moved the viewport back up.
+   */
+  const pinTailAndRebaseline = (f: HTMLElement): void => {
+    f.scrollTop = f.scrollHeight;
+    ledger = { top: f.scrollTop, height: f.scrollHeight };
+    setAtBottom(true);
+    setMissed(0);
+    unskipAnchor = firstVisibleRow(f);
+    unskipAnchorAt = performance.now();
+  };
   /** the feed's client width at the last box sample — a change means every row re-wrapped */
   let lastFeedWidth = 0;
   /** a width change can move the anchor much further than a scroll correction ever should */
@@ -403,7 +465,7 @@ export default function App() {
     lastSampleViewport = f.clientHeight;
     const widthChanged = f.clientWidth !== lastFeedWidth;
     lastFeedWidth = f.clientWidth;
-    if (atBottom()) {
+    if (atBottom() || performance.now() < tailSeekingUntil) {
       // following stays following: reflow changes every row's height, the tail is still the tail
       pinToTail();
       return;
@@ -562,6 +624,17 @@ export default function App() {
     });
   });
 
+  /**
+   * A `data-eid` selector that also works where `CSS.escape` does not exist (happy-dom).
+   *
+   * Calling `CSS.escape` unguarded from a rAF/timer throws an uncaught ReferenceError, which took the whole bundle
+   * smoke down when the tail watchdog started using `firstVisibleRow` ("UNCAUGHT ReferenceError: CSS is not defined").
+   * Event ids are `e<number>`, so the fallback only has to survive quotes and backslashes.
+   */
+  const eidSelector = (eid: string): string => {
+    const esc = (globalThis as { CSS?: { escape?: (v: string) => string } }).CSS?.escape?.(eid) ?? eid.replace(/["\\]/g, "\\$&");
+    return `[data-eid="${esc}"]`;
+  };
   function firstVisibleRow(
     f: HTMLElement,
   ): { sel: string; top: number } | null {
@@ -583,7 +656,7 @@ export default function App() {
     }
     if (found < 0) return null;
     const eid = rows[found]!.dataset.eid ?? "";
-    return eid ? { sel: `[data-eid="${CSS.escape(eid)}"]`, top: at(found).top } : null;
+    return eid ? { sel: eidSelector(eid), top: at(found).top } : null;
   }
   /**
    * The details panel has ONE preference per width mode, and its DEFAULT is per mode too.
@@ -1065,7 +1138,7 @@ const isTimelineLive = (): boolean => {
    */
   const jumpToEvent = (eventId: string, tries = 0) => {
     const want = timelineId();
-    const el = document.querySelector<HTMLElement>(`[data-eid="${CSS.escape(eventId)}"]`);
+    const el = document.querySelector<HTMLElement>(eidSelector(eventId));
     const ok = !!el && jumpTargetMatches(el.dataset.session, want);
     if (el && ok) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1858,13 +1931,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * that the operator is reading (the reader lock), never `atBottom()`.
      */
     const settleGen = feedGeneration;
-    const settleAtTail = (tries: number) => {
+    /**
+     * Keep pinning until the content settles, not until twelve frames have passed.
+     *
+     * MEASURED in real Firefox: leaving a session at its tail, appending six rows while away, and coming back left the
+     * viewport 583px short with the "jump to present" button showing — the follow was not maintained. Twelve frames is
+     * ~200ms, and the returned session's rows (and their heights) can land after that; once the gap exists, `atBottom`
+     * is false and every other pin path refuses, so nothing recovers.
+     *
+     * So: a deadline, and re-asserting the follow each time the position is corrected.
+     */
+    seekTail(3000);
+    const settleUntil = performance.now() + 3000;
+    const settleAtTail = () => {
       if (selected() !== id || settleGen !== feedGeneration) return;
       if (Date.now() < readerUntil) return;
       const f = feedEl();
-      if (f && distanceToTail({ top: f.scrollTop, height: f.scrollHeight, viewport: f.clientHeight }) <= 1) return;
-      scrollBottom(true);
-      if (tries < 12) requestAnimationFrame(() => settleAtTail(tries + 1));
+      if (f) pinTailAndRebaseline(f);
+      if (performance.now() < settleUntil) requestAnimationFrame(settleAtTail);
     };
     /**
      * Restore the reader's place, or land at the tail — never a guess in between (#205).
@@ -1911,12 +1995,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
        * heights below it were still settling when the position was computed. Re-measuring the anchor and correcting the
        * delta converges in a frame or two and does not care why the layout moved.
        */
-      const anchor = `[data-eid="${CSS.escape(spot.eid)}"][data-session="${CSS.escape(spot.session)}"]`;
+      /**
+       * Find the row by its data attributes, not by a CSS selector.
+       *
+       * `CSS.escape` does not exist in happy-dom, and this closure runs from a timer — so the ReferenceError escaped as
+       * an uncaught exception and took the whole bundle smoke down with it ("UNCAUGHT ReferenceError: CSS is not
+       * defined"). Comparing `dataset` values needs no escaping and cannot be fooled by an id with quotes in it.
+       */
+      const findAnchor = (): HTMLElement | null => {
+        const g = feedEl();
+        if (!g) return null;
+        for (const el of g.querySelectorAll<HTMLElement>("[data-eid]")) {
+          if (el.dataset.eid === spot.eid && el.dataset.session === spot.session) return el;
+        }
+        return null;
+      };
       const settle = (tries: number) => {
         if (selected() !== id) return;
         const g = feedEl();
         if (!g) return;
-        const row = g.querySelector<HTMLElement>(anchor);
+        const row = findAnchor();
         if (!row) return;
         const want = g.getBoundingClientRect().top - spot.offset;
         const delta = row.getBoundingClientRect().top - want;
@@ -1949,7 +2047,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           requestAnimationFrame(restoreTries);
           return;
         }
-        requestAnimationFrame(() => settleAtTail(0));
+        requestAnimationFrame(settleAtTail);
       };
       requestAnimationFrame(restoreTries);
     })();
@@ -2323,6 +2421,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const next = !termOpen();
     setTermOpen(next);
     localStorage.setItem("teapot.term", next ? "1" : "0");
+    /**
+     * Opening the drawer shrinks the feed, and a follower must end up with the terminal's top edge as its bottom.
+     *
+     * "ターミナルを開いたときにスクロール追従の基準がターミナルの上辺にならないことがある" — the box changes over a couple
+     * of frames (the drawer animates and xterm fits), so a single pin used a stale height. `seekTail` keeps pinning
+     * through the transition wherever the content's bottom actually is.
+     */
+    seekTail(900);
   };
 
   type TermTab = { key: string; agentId: string; title: string; cwd?: string };
@@ -4192,6 +4298,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 onclick={() => {
                   const next = !composerMaximized();
                   setComposerMaximized(next);
+                  seekTail(900);
                   requestAnimationFrame(() => autosizeComposer());
                 }}
               >{composerMaximized() ? "⤡" : "⤢"}</button>
