@@ -591,6 +591,16 @@ export default function App() {
       if (atBottom()) setAtBottom(false);
     };
     const onKey = (e: KeyboardEvent) => {
+      /**
+       * A key pressed while TYPING is not a reading gesture.
+       *
+       * The listener is on `window` (a reader may press PageUp without focusing the feed), so it also saw the arrow keys
+       * used to edit the message in the composer — which dropped the follow, and the next send then did not scroll:
+       * "プロンプト送った時にスクロール追従されない問題もあるし". Reading gestures only count away from an editable target.
+       */
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === "function" && t.closest("textarea, input, select, [contenteditable=''], [contenteditable='true']"))
+        return;
       if (keyReleasesFollow(e.key)) taken();
     };
     f.addEventListener("wheel", up, { passive: true });
@@ -1286,7 +1296,13 @@ const isTimelineLive = (): boolean => {
     buildTimelineWithCount({
       events: events() as TimelineEvent[],
       consumed: pairInfo().consumed,
-      pending: pendingMsgs() as PendingEchoLike[],
+      /**
+       * An echo is nameable from the first frame: its own id IS the prompt id now, so the log row that the server
+       * broadcasts for the same prompt can be hidden immediately instead of after the POST resolves. Without this the
+       * settled server row and the optimistic row both existed for a moment — "queuedがあるときに追加投稿すると何故か
+       * 一瞬queuedにならずに確定状態になる".
+       */
+      pending: pendingMsgs().map((p) => ({ ...p, promptId: p.promptId ?? p.id })) as PendingEchoLike[],
       serverPendingIds: sel()?.pendingPromptIds ?? [],
       echo: echoEv as (p: PendingEchoLike) => TimelineEvent,
       feedTypes: FEED_TYPES,
@@ -3209,7 +3225,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const r = await api(`/api/agents/${id}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, start: true, ...(images.length ? { images } : {}) }),
+        /**
+         * Send the id the optimistic row is already drawn with.
+         *
+         * The server used to mint its own, so one prompt had two ids (`@p…` for the row, `p…` for the log entry, the
+         * queue entry and the delivery note). Every "is this still queued?" test then had to guess which id it was
+         * looking at, and the row had to be re-created when the second id arrived — the flicker between "queued…" and
+         * a timestamp in both directions. One prompt, one id, from the first frame.
+         */
+        body: JSON.stringify({ text, start: true, clientId: localId, ...(images.length ? { images } : {}) }),
       });
       const pid = (r as { promptId?: string }).promptId;
       if (pid) {

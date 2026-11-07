@@ -609,7 +609,10 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
     );
   }
   if (e.type === "todo") {
-    return <div class="divider-msg">✅ tasks updated ({String(e.data?.by ?? "human")})</div>;
+    // one word for one person: the server says "operator" (agent.ts setGoalStatus/setTodo), so the row must not say
+    // "human" for the same actor — the operator asked for consistency, and "human" was the only place it appeared
+    const by = String(e.data?.by ?? "operator");
+    return <div class="divider-msg">✅ tasks updated ({by === "human" ? "operator" : by})</div>;
   }
   if (e.type === "state") {
     if (e.data.from === e.data.to) return null;
@@ -680,7 +683,10 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
         (grouped() ? " grouped" : "") +
         (nextGrouped() ? " next-grouped" : "") +
         (e.data?.pending ? " pending" : "") +
-        (e.data?.cancelled ? " withdrawn" : "")
+        (e.data?.cancelled ? " withdrawn" : "") +
+        // the row carries its AUTHOR's tone so a queued marker is drawn in that author's colour: a queued harness
+        // message was yellow ("you"'s colour) because the pending style hard-coded `--warn` for every `.ts` in the row
+        ` tone-${toneOf(a.color)}`
       }
       data-eid={e.id}
       /**

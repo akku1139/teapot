@@ -854,7 +854,14 @@ const MAX_WS_CLIENTS = 64;
     const a = master.agents.get(c.req.param("id"));
     if (!a) return notFound(c, "agent", c.req.param("id"));
     const body = await c.req
-      .json<{ text?: string; start?: boolean; source?: "user" | "harness"; images?: { url: string; name?: string }[] }>()
+      .json<{
+        text?: string;
+        start?: boolean;
+        source?: "user" | "harness";
+        images?: { url: string; name?: string }[];
+        /** the id the client already drew the optimistic row with — one id from the first frame (see enqueuePrompt) */
+        clientId?: string;
+      }>()
       .catch(() => null); 
     if (!body) return c.json({ error: "invalid JSON" }, 400);
     if (!body.text?.trim() && !body.images?.length)
@@ -889,7 +896,12 @@ const MAX_WS_CLIENTS = 64;
     });
     const text = body.text ?? "";
     const src = body.source === "harness" ? "harness" : "user";
-    const promptId = a.enqueuePrompt(text || "(see attached image)", src, images.length ? images : undefined);
+    const promptId = a.enqueuePrompt(
+      text || "(see attached image)",
+      src,
+      images.length ? images : undefined,
+      body.clientId,
+    );
     if (body.start !== false && a.status !== "running") a.start("prompt");
     return c.json({ ok: true, promptId, queued: a.snapshot().pendingPrompts });
   });

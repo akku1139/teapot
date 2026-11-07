@@ -1,6 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mergeQueued } from "../frontend/lib/pending-echo.ts";
 
+
+test("a prompt whose id the client proposed is never cloned from the server queue", () => {
+  /**
+   * The client sends its row id as `clientId`, so the server's queue entry carries the SAME id. Before that, the echo
+   * had `@p…` and the queue `p…`, and the entry was re-added as a clone — the clone says "queued…" unconditionally, so
+   * a prompt sent to an IDLE agent blinked queued for a frame or two.
+   */
+  const mine = [{ id: "@p123", text: "hello there", at: 1 }];
+  const queue = [{ id: "@p123", text: "hello  there ", at: 1 }];
+  assert.deepEqual(mergeQueued(mine, queue), mine, "same id, different whitespace: still one row");
+});
 
 test("two prompts in flight keep their send order (#211)", async () => {
   /**
@@ -50,7 +62,14 @@ test("a prompt is queued only when something is ahead of it (#queued)", async ()
   const { queuedOnSend } = await import("../frontend/lib/pending-echo.ts");
   assert.equal(queuedOnSend(0, 0), false, "a lone prompt starts the agent — it is not queued");
   assert.equal(queuedOnSend(undefined, 0), false, "and an unknown snapshot must not invent one");
-  assert.equal(queuedOnSend(1, 0), true, "the server already has one waiting");
+  /**
+   * The server's count is NOT evidence of waiting: it comes from the last snapshot the client holds and it lags. An idle
+   * agent with a stale non-zero count labelled the very first prompt "queued…" for a frame — "idle状態でプロンプトを
+   * 送っても一瞬queuedになる問題". What makes a prompt wait is a running turn or another prompt just queued here.
+   */
+  assert.equal(queuedOnSend(1, 0, false), false, "a stale server count alone does not make it queued");
+  assert.equal(queuedOnSend(1, 0, true), true, "a running turn does");
+  assert.equal(queuedOnSend(0, 1, false), true, "so does a prompt already queued by this client");
   assert.equal(queuedOnSend(0, 1), true, "another echo is already on screen");
   assert.equal(queuedOnSend(2, 3), true);
 });
@@ -63,6 +82,6 @@ test("a prompt sent to a BUSY agent is queued even as the first in the queue (#q
   const { queuedOnSend } = await import("../frontend/lib/pending-echo.ts");
   assert.equal(queuedOnSend(0, 0, true), true, "a running agent means this prompt waits");
   assert.equal(queuedOnSend(0, 0, false), false, "an idle agent starts on it, so it is not queued");
-  assert.equal(queuedOnSend(2, 0, false), true);
+  assert.equal(queuedOnSend(2, 0, false), false, "a lagging server count is not waiting — see above");
   assert.equal(queuedOnSend(0, 1, false), true);
 });

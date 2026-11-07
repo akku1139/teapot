@@ -1320,7 +1320,8 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 /* queued prompt echo: half-transparent + pulsing dot until the LLM call that
    contains it fires; delivered-but-unconsumed turns calm green */
 .msg.pending { opacity: .75; }
-.msg.pending .ts { color: var(--warn); font-weight: 600; }
+/* a queued marker takes the AUTHOR's colour, not "you" yellow — a queued harness message read as if the operator sent it */
+.msg.pending .ts { color: var(--author, var(--warn)); font-weight: 600; }
 .msg.pending .avatar { animation: pulse 1.6s ease-in-out infinite; }
 .msg.pending .editbtn.cancel { color: var(--err); }
 /* withdrawn: the operator sent this and pulled it back before the model ever

@@ -1470,6 +1470,17 @@ export class Agent {
     text: string,
     source = "user",
     images?: { url: string; name?: string }[],
+    /**
+     * The id the CLIENT already drew the row with.
+     *
+     * A prompt used to get one id from the browser (`@p…`, the optimistic row) and another from the server (`p…`, the
+     * log row, the queue entry, the delivery note). Two ids for one prompt means the row has to be re-created when the
+     * second one arrives, and every "is it still queued?" test has to guess which id it is looking at — MEASURED as
+     * four different symptoms of the same thing: a prompt sent to an idle agent blinking "queued…", the FIRST prompt of
+     * a queued run showing a timestamp instead of "queued…", and adding a prompt behind a queue briefly rendering as
+     * settled. The client now proposes the id and this is it.
+     */
+    clientId?: string,
   ): string {
     if (this.parkedByTool) {
       this.toolAbort.abort();
@@ -1491,10 +1502,13 @@ export class Agent {
      * client — no row, no count — which is the remaining half of "harnessからのメッセージにqueuedがついてない問題が
      * v0.37.160 でもあった".
      */
+    const proposed = String(clientId ?? "").trim();
+    const usable = /^[A-Za-z0-9@_-]{1,64}$/.test(proposed) ? proposed : "";
     const promptId =
-      source === "user"
+      usable ||
+      (source === "user"
         ? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
-        : `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        : `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`);
     const entry = { source, text, images, id: promptId };
     this.pendingPrompts.push(entry);
     void this.ensureReady()

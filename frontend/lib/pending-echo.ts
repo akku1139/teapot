@@ -50,7 +50,15 @@ export type QueuedPrompt = { id?: string; text?: string; at?: number; images?: {
  * at the END, because an unknown queued prompt is one this client did not type.
  */
 export function mergeQueued(mine: PendingEcho[], queue: readonly QueuedPrompt[]): PendingEcho[] {
-  const known = new Set(mine.map((p) => p.promptId).filter((v): v is string => !!v));
+  /**
+   * `promptId ?? id`: a locally echoed prompt is nameable before the POST returns, because the client proposes the id
+   * (`clientId`). Matching only on `promptId` left a window of a few frames where the server's copy of the SAME prompt
+   * looked unknown — the text fallback then had to rescue it, and any difference in whitespace made a duplicate row.
+   */
+  const idOf = (p: PendingEcho) => p.promptId ?? p.id;
+  const known = new Set(mine.map(idOf).filter((v): v is string => !!v));
+  // an echo with no `promptId` may still be the server's prompt under a different id (a send from another tab), so the
+  // text comparison stays as the fallback for exactly those
   const unlabelled = mine.filter((p) => !p.promptId).map((p) => p.text);
   const added: PendingEcho[] = [];
   for (const q of queue) {
@@ -103,5 +111,11 @@ export function queuedOnSend(
    * frozen at send time, so it cannot flip a frame later — which is what the earlier `isSelLive()` attempt did at render
    * time.
    */
-  return (pendingPrompts ?? 0) > 0 || alreadyPending > 0 || agentBusy;
+  /**
+   * NOT `pendingPrompts`: that number comes from the last snapshot the client happens to hold, and it lags. MEASURED as
+   * the remaining half of "idle状態でプロンプトを送っても一瞬queuedになる問題" — an idle agent still had a stale non-zero
+   * count, so the very first prompt was labelled queued. A prompt can only WAIT behind a running turn or behind another
+   * prompt this client just queued.
+   */
+  return agentBusy || alreadyPending > 0;
 }

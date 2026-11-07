@@ -1012,7 +1012,7 @@ console.log("deep render ok: feed rows present");
               pendingPrompts: queueDepth,
               // one prompt already waiting: the send below has something AHEAD of it
               pendingPromptQueue: [
-                { id: "q-old", text: "already waiting", at: Date.now() - 1000, source: "user" },
+                { id: "q-old", text: "already waiting", at: Date.now() - 1000, source: "harness" },
               ],
             },
             { ...RUNNING_AGENT, id: "beta", workspace: "/tmp/other-project" },
@@ -1183,6 +1183,8 @@ console.log("deep render ok: feed rows present");
     }
     console.log("deep render ok: a queued prompt is born queued, withdrawable and in order (#queued)");
 
+
+
   /**
    * A `question` that arrives over the socket must become a row, with no reload.
    *
@@ -1234,6 +1236,165 @@ console.log("deep render ok: feed rows present");
   }
   }
 
+  /**
+   * The label must not flicker in EITHER direction (#queued2).
+   *
+   * Reported, all four as separate bugs: a prompt sent to an idle agent blinking "queued…"; the FIRST prompt of a queued
+   * run showing a timestamp instead of "queued…"; and adding a prompt behind a queue briefly rendering as settled. They
+   * are one defect — the row was keyed by two ids (the local `@p…` and the server's) — so this samples every frame and
+   * refuses ANY transition of a prompt row between "queued…" and a settled timestamp.
+   */
+  {
+    const ws = MockWS.instances.at(-1);
+    const ta2 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement;
+    const form2 = ta2?.closest("form") as HTMLFormElement;
+    const spacer = w.document.querySelector(".feed .msg") as HTMLElement | null;
+    if (!ws || !ta2 || !form2 || !spacer) {
+      console.error("#queued2 check: setup missing — the check would be vacuous");
+      process.exit(1);
+    }
+    const feed2 = w.document.querySelector(".feed") as HTMLElement;
+    let content = 5000;
+    let view = 700;
+    let top2 = content - view;
+    Object.defineProperty(feed2, "scrollHeight", { configurable: true, get: () => content });
+    Object.defineProperty(feed2, "clientHeight", { configurable: true, get: () => view });
+    Object.defineProperty(feed2, "scrollTop", {
+      configurable: true,
+      get: () => top2,
+      set: (v: number) => { top2 = Math.max(0, Math.min(v, Math.max(0, content - view))); },
+    });
+
+    const labels = () =>
+      [...w.document.querySelectorAll(".feed .msg")].map((n) => {
+        const ts = n.querySelector(".msg-head .ts")?.textContent?.trim() ?? "";
+        const text = n.textContent ?? "";
+        return text.includes("queuedlabel") || ts.includes("queued") ? `${text.slice(0, 30)}|${ts}` : null;
+      }).filter((v): v is string => v !== null);
+    const sendIt = async (text: string) => {
+      ta2.value = text;
+      ta2.dispatchEvent(new w.Event("input", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+      form2.dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
+    };
+    const sample = async (frames: number, onFrame: (i: number) => void) => {
+      for (let i = 0; i < frames; i++) {
+        onFrame(i);
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    };
+
+    /**
+     * The idle-send case cannot be asserted here: earlier blocks in this suite leave prompts pending, so this client
+     * always has something ahead of it. It is pinned by `queuedOnSend` in test/pending-echo.test.ts (the server's
+     * `pendingPrompts` is NOT evidence of waiting — it lags) and measured in a real browser.
+     */
+    // 2. queued behind a busy agent: EVERY row (the first one included) says "queued…" on every frame until delivery
+    ws.onmessage?.({ data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "running" } }) });
+    await new Promise((r) => setTimeout(r, 60));
+    await sendIt("queuedlabel one");
+    await sendIt("queuedlabel two");
+    const settledWhileQueued: string[] = [];
+    await sample(45, () => {
+      const rows = [...w.document.querySelectorAll(".feed .msg")].filter((n) => (n.textContent ?? "").includes("queuedlabel"));
+      for (const r of rows) {
+        const ts = r.querySelector(".msg-head .ts")?.textContent?.trim() ?? "";
+        if (ts && !ts.includes("queued")) settledWhileQueued.push(ts);
+      }
+    });
+    if (settledWhileQueued.length) {
+      console.error(
+        `#queued2 REGRESSION: a prompt behind a queue rendered as SETTLED (timestamp ${JSON.stringify(settledWhileQueued[0])}) ` +
+          "— the first row of a queued run showed a timestamp instead of \"queued…\"",
+      );
+      process.exit(1);
+    }
+    console.log("deep render ok: a queued row says queued on every frame, idle sends never do (#queued2)");
+
+  {
+    /**
+     * A queued marker is drawn in its AUTHOR's colour.
+     *
+     * Reported: "harnessからのがqueuedなときに queued... [branch] が黄色(youと同じ色)になるのはどうなの? harnessの名前
+     * (基本的には緑色)にすべきでは?" — `.msg.pending .ts` hard-coded `--warn`, so every pending row's marker and branch
+     * chip looked like the operator's own message. The row now carries `tone-<author>` and the marker inherits it.
+     */
+    // the queue comes from the snapshot; re-state it so this check does not depend on which block ran last
+    MockWS.instances.at(-1)?.onmessage?.({
+      data: JSON.stringify({
+        kind: "agent-update",
+        agentId: AGENT.id,
+        snapshot: {
+          ...AGENT,
+          status: "running",
+          pendingPrompts: 1,
+          pendingPromptQueue: [{ id: "q-tone", text: "already waiting", at: Date.now() - 1000, source: "harness" }],
+        },
+      }),
+    });
+    for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const row = [...w.document.querySelectorAll(".feed .msg")].find((n) => (n.textContent ?? "").includes("already waiting"));
+    if (!row) {
+      console.error("#tone check: the queued harness row is missing — the check would be vacuous");
+      process.exit(1);
+    }
+    if (!row.className.includes("pending")) {
+      console.error(`#tone check: the row is not pending (${row.className}) — nothing to colour`);
+      process.exit(1);
+    }
+    if (!row.className.includes("tone-progress")) {
+      console.error(
+        `#tone REGRESSION: a queued HARNESS row is not tone-progress (${row.className}) — its queued marker and branch ` +
+          "chip would render in the operator's yellow",
+      );
+      process.exit(1);
+    }
+    const mine = [...w.document.querySelectorAll(".feed .msg")].find((n) => (n.textContent ?? "").includes("queuedlabel one"));
+    if (mine && !mine.className.includes("tone-you")) {
+      console.error(`#tone REGRESSION: the operator's own queued row is not tone-you (${mine.className})`);
+      process.exit(1);
+    }
+    console.log("deep render ok: a queued marker takes its author's tone (#tone)");
+
+    /**
+     * One word for one person: the operator asked why this said "human".
+     *
+     * `setTodo(by)` records "operator"/"auditor"/"agent", so a row reading "human" was the only place the operator was
+     * called something else — and an older log can still carry `by: "human"`, which must read the same.
+     */
+    const send = (id: string, by: string) =>
+      MockWS.instances.at(-1)?.onmessage?.({
+        data: JSON.stringify({
+          kind: "event",
+          agentId: AGENT.id,
+          event: {
+            agent: AGENT.id, id, seq: 9200 + Number(id.slice(1)), ts: "2026-01-01T10:30:00Z",
+            session: AGENT.session, branch: "br0", parent: null, type: "todo",
+            data: { by, items: [{ text: "ship it", done: false }] },
+          },
+        }),
+      });
+    send("t1", "operator");
+    for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const text1 = bodyText();
+    send("t2", "human");
+    for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const text2 = bodyText();
+    if (!text1.includes("tasks updated (operator)") || text2.split("tasks updated (operator)").length < 3) {
+      console.error(
+        `#todo-by REGRESSION: the todo divider does not say "operator" (operator=${text1.includes("(operator)")}, ` +
+          `legacy human mapped=${text2.split("tasks updated (operator)").length >= 3})`,
+      );
+      process.exit(1);
+    }
+    if (text2.includes("(human)")) {
+      console.error("#todo-by REGRESSION: a row still says \"human\" — the operator has one name");
+      process.exit(1);
+    }
+    console.log("deep render ok: the todo divider says operator, legacy \"human\" included (#todo-by)");
+  }
+    ws.onmessage?.({ data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "idle" } }) });
+  }
   {
     const feed = w.document.querySelector(".feed") as HTMLElement | null;
     if (!feed) {
