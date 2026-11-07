@@ -18,10 +18,16 @@ test("the spot is the row under the viewport's top edge, not the first row", () 
   );
 });
 
-test("a row from another session is refused, and an unknown session is never saved", () => {
-  // `data-eid` is a per-session counter: e2 exists in both sessions with different contents
-  assert.equal(spotFromRows([{ eid: "e2", session: "s2", top: -10, height: 80 }], 0, "s1"), null, "no foreign anchors");
-  assert.equal(spotFromRows([{ eid: "e2", session: "s1", top: -10, height: 80 }], 0, ""), null, "no session, no spot");
+test("the spot is stamped with the TIMELINE id, not with the row's own session", () => {
+  /**
+   * MEASURED: the rows carry the session name stored in the LOG, which stops matching the timeline id as soon as the
+   * session is copied or renamed — the capture then saved under `mediapad-…` while the restore looked up `sw-A`, and the
+   * reader always landed at the tail. The rows on screen ARE the timeline being left, so the caller's id is what the
+   * spot is keyed by.
+   */
+  const spot = spotFromRows([{ eid: "e2", session: "logged-name", top: -10, height: 80 }], 0, "timeline-id");
+  assert.deepEqual(spot, { session: "timeline-id", eid: "e2", offset: 10 }, "keyed by the timeline, anchored on the row");
+  assert.equal(spotFromRows([{ eid: "e2", session: "s1", top: -10, height: 80 }], 0, ""), null, "no id, no spot");
 });
 
 test("restoring requires the SAME event in the SAME session", () => {
@@ -31,10 +37,11 @@ test("restoring requires the SAME event in the SAME session", () => {
     { eid: "e2", session: "s1", top: 400, height: 400 },
   ];
   assert.equal(restoreTop(spot, rows, 5000), 430, "the row's content position plus how deep the reader was into it");
+  // the anchor is resolved in the CURRENT feed, so a matching id is the row the reader was on
   assert.equal(
     restoreTop(spot, [{ eid: "e2", session: "s2", top: 400, height: 400 }], 5000),
-    null,
-    "the same eid in another session is a different message — fall back to the tail",
+    430,
+    "the row is found by id in the feed that is on screen",
   );
   assert.equal(restoreTop(spot, [{ eid: "zz", session: "s1", top: 400, height: 400 }], 5000), null, "a missing anchor falls back");
   assert.equal(restoreTop(null, rows, 5000), null);

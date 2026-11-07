@@ -2693,10 +2693,17 @@ console.log("deep render ok: feed rows present");
       console.error("#scroll check: .feed missing after the switch");
       process.exit(1);
     }
-    if (feed2 === feed) {
+    /**
+     * …and the feed element must SURVIVE the switch.
+     *
+     * It used to be re-created, because the channel was a `keyed` `<Show>` on the agent id: the new element mounted with
+     * `scrollTop: 0` while the rows were re-rendered inside it, and the operator saw the TOP of the old timeline under
+     * the loading banner for ~650ms (MEASURED in real Firefox: same rows on screen, `top=0`). Keeping one element
+     * means the scroll position is never reset, so there is nothing to hide or re-pin.
+     */
+    if (feed2 !== feed) {
       console.error(
-        "#scroll check: the feed element did not change across the session switch — the " +
-          "keyed rebuild this check exists for did not happen, so it is vacuous",
+        "#scroll REGRESSION: the feed element was re-created by the switch — its scrollTop is gone with it",
       );
       process.exit(1);
     }
@@ -2863,10 +2870,11 @@ console.log("deep render ok: feed rows present");
 
     agentRow("beta")?.click();
     await new Promise((r) => setTimeout(r, 300));
-    if (feedNow() === first) {
-      console.error("#205 check: the switch did not rebuild the feed — cannot test the return");
-      process.exit(1);
-    }
+    /**
+     * The feed element now SURVIVES a switch (that is the #scroll fix), so its `scrollTop` is whatever the switch left
+     * there — which is the point of the restore: it must be written back from the saved spot, not inherited.
+     */
+    (first as unknown as { scrollTop: number }).scrollTop = 0;
     agentRow("alpha")?.click();
 
     // give every newly mounted feed its own fake geometry, as fast as the DOM produces them

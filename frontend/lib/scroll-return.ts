@@ -10,7 +10,13 @@
  * found in the new timeline, including its session. Nothing is restored by number alone.
  */
 export type SavedSpot = {
-  /** the session the spot belongs to — a `data-eid` is a per-session counter, not an identity */
+  /**
+   * The TIMELINE id the spot belongs to.
+   *
+   * It used to be the session recorded on the row (`data-session`), which is the name in the LOG — that differs from
+   * the timeline id whenever the session has been copied or renamed, and then the capture and the restore disagreed
+   * about the key and the spot was never found (MEASURED: saved under `mediapad-…`, looked up as `sw-A`).
+   */
   session: string;
   /** the event id of the row that was at the top of the viewport */
   eid: string;
@@ -32,8 +38,14 @@ export function spotFromRows(
   session: string,
 ): SavedSpot | null {
   if (!session) return null;
-  // the first row whose BOTTOM edge is below the feed's top edge — i.e. the one crossing it
-  const row = rows.find((r) => r.top + r.height > feedTop + 0.5 && r.session === session);
+  /**
+   * The first row whose BOTTOM edge is below the feed's top edge — no session filtering.
+   *
+   * The rows on screen ARE the timeline being left (that is why the capture reads the live feed), and a mirrored
+   * sub-agent row belongs to that timeline too. Filtering by the row's own session only re-introduced the key mismatch
+   * above.
+   */
+  const row = rows.find((r) => r.top + r.height > feedTop + 0.5);
   if (!row) return null;
   const offset = Math.min(Math.max(0, Math.round(feedTop - row.top)), Math.max(0, Math.round(row.height)));
   return { session, eid: row.eid, offset };
@@ -55,7 +67,7 @@ export function restoreTop(
   maxTop: number,
 ): number | null {
   if (!spot) return null;
-  const row = rows.find((r) => r.eid === spot.eid && r.session === spot.session);
+  const row = rows.find((r) => r.eid === spot.eid);
   if (!row) return null;
   /**
    * `row.top` is measured in the new feed (at its top), so it IS the row's content offset — and the viewer was

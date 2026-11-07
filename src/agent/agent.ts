@@ -1584,10 +1584,15 @@ export class Agent {
      *
      * So only an IDLE agent is woken, and the `enqueue` re-check stays because a round can start in between.
      */
-    if (!this.stopRequested && !workIsDone && this.status === "idle") {
+    /**
+     * `waiting` is the PARKED state — a tool is blocked on this very job (`parkForTool`), so that agent must be woken.
+     * Only `running` is excluded, because a round in flight drains the exit itself at its next turn.
+     */
+    const canWake = this.status === "idle" || this.status === "waiting";
+    if (!this.stopRequested && !workIsDone && canWake) {
       void this.enqueue(async () => {
         if (this.stopRequested) return;
-        if (this.status === "idle") this.start(`background job ${info.id} finished`);
+        if (this.status === "idle" || this.status === "waiting") this.start(`background job ${info.id} finished`);
       });
     }
   }

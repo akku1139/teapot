@@ -1508,9 +1508,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       if (genAtStart !== feedGeneration || selected() !== id) return; 
       if (replaceEventsOnLoad) {
         replaceEventsOnLoad = false;
-        setSwitchingFeed(false);
         evCache.clear();
+        /**
+         * Swap the rows and put the viewport where it belongs in the SAME task.
+         *
+         * A switch replaces every row — the incoming session's events are objects that have never been rendered, so
+         * Solid has nothing to reuse and rebuilds the list. During that rebuild the feed is momentarily short and the
+         * browser clamps `scrollTop` to 0; MEASURED in real Firefox on two 27k-event sessions, the operator saw that
+         * position for about a second (`74405 → 0 → 74373`).
+         *
+         * Correcting it on the next animation frame is too late — the frame has already painted. Reading `scrollHeight`
+         * forces the new layout synchronously, so writing the target here means the collapsed position never reaches
+         * the screen, and no hiding or per-frame pinning is needed.
+         */
         setEvents(stabilize(ev.events));
+        setSwitchingFeed(false);
+        const f = feedEl();
+        if (f) {
+          const spot = scrollSpot.get(tid) ?? scrollSpot.get(id);
+          if (!spot) f.scrollTop = f.scrollHeight;
+        }
       } else {
         setEvents((prev) => {
           const map = new Map<string, Ev>();
@@ -1669,6 +1686,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     // agent's latest session, so writing one here merges two tabs onto one timeline
     const tid = resolved ?? requested ?? "";
     if (prevId !== id || tid !== prevTid) {
+
       if (prevTid && prevEvents.length) {
         const bytes = prevEvents.reduce((n, e) => n + approxEventBytes(e), 0);
         if (bytes <= TIMELINE_CACHE_MAX_BYTES) {
@@ -1703,12 +1721,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
            * restored fine. The rendered rows carry `data-session`, which is the identity that matters, so it wins.
            */
           const rows = rowGeometry(el, 0, true);
-          const session = rows.find((r) => r.session)?.session || prevTid;
+          const session = prevTid || rows.find((r) => r.session)?.session || "";
           const here = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
           // capture in VIEWPORT coordinates (rows and the feed's top are measured the same way)
           const spot = session ? spotFromRows(rows, el.getBoundingClientRect().top, session) : null;
           if (spot && distanceToTail(here) > 1) scrollSpot.set(session, spot);
           else if (session) scrollSpot.delete(session);
+
         }
       }
       /**
@@ -1816,12 +1835,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const rows = rowGeometry(f, f.scrollTop);
       if (!rows.length) return "wait";
       const top = restoreTop(spot, rows, f.scrollHeight - f.clientHeight);
+
       if (top === null) {
         scrollSpot.delete(tid);
         scrollSpot.delete(id);
         return "give-up";
       }
       f.scrollTop = top;
+      /**
+       * A restored position is NOT the tail, and every pin path is gated on `atBottom()`.
+       *
+       * Writing `scrollTop` does not update that signal by itself — the scroll event arrives a frame later — so the
+       * events effect saw "still at the bottom" and pinned straight back to the tail. MEASURED: the restore computed
+       * 68961 and the feed ended at 74347. Dropping the follow here is the same thing the gesture latch does, and it
+       * is honest: after a restore the reader is not following.
+       */
+      setAtBottom(false);
+      readerUntil = performance.now() + READER_LOCK_MS;
       scrollSpot.delete(tid);
       scrollSpot.delete(id);
       /**
@@ -3400,7 +3430,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       {}
       <section class="channel" style={{ "--termh": `${termHeight()}px` } as any}>
         {}
-        <Show when={sel()?.id} keyed fallback={<div style="display:grid;place-items:center;height:100%" class="muted">select an agent</div>}>
+        {/**
+          * NOT `keyed`: switching agents must not re-create the channel.
+          *
+          * With `keyed`, every switch disposed the whole subtree — including the `.feed` element — so the new feed
+          * mounted with `scrollTop: 0` while the rows were re-rendered inside it. MEASURED in real Firefox on two
+          * 27k-event sessions: the same rows were on screen (`first=e25273 last=e27261` before AND after) but the
+          * viewport sat at `top=0` for ~650ms, which is the "あらぬ場所にスクロールが飛ばされる" report and also why the
+          * switch read as "old timeline + loading" — it was the TOP of the old timeline.
+          *
+          * Everything inside reads the same signals (`sel()`, `events()`), so it updates in place without being
+          * rebuilt; the rows are diffed by `<For>` and the element keeps its scroll position.
+          */}
+        <Show when={sel()?.id} fallback={<div style="display:grid;place-items:center;height:100%" class="muted">select an agent</div>}>
           <header class="chan-head">
             {}
             <Show when={narrow()}>
