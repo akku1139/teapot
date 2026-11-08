@@ -56,7 +56,7 @@ import {
   type TailSample,
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
-import { keyReleasesFollow, wheelReleasesFollow } from "./lib/scroll-gesture";
+import { keyReleasesFollow, keyTargetsTimeline, wheelReleasesFollow } from "./lib/scroll-gesture";
 import { restoreTop, spotFromRows, type RowGeom, type SavedSpot } from "./lib/scroll-return";
 import { bindStoredHeight } from "./lib/resizable-height";
 import { agentLabel, agentLabelWithId } from "./lib/agent-label";
@@ -623,7 +623,7 @@ export default function App() {
        */
       const inFeed = !!t && typeof f.contains === "function" && f.contains(t);
       const onBackground = !t || t === document.body || t === document.documentElement;
-      if (!inFeed && !onBackground) return;
+      if (!keyTargetsTimeline({ target: t, insideFeed: inFeed, isBackground: onBackground, editable: false })) return;
       if (keyReleasesFollow(e.key)) taken();
     };
     f.addEventListener("wheel", up, { passive: true });
