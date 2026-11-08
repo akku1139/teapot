@@ -163,3 +163,18 @@ test("the pending count is the number of rows that SAY queued — an idle send i
     "one that waits is",
   );
 });
+
+test("a harness prompt that was delivered stops saying queued", () => {
+  /**
+   * The delivery note is the only "it ran" signal, and it was logged for USER prompts only — so a harness prompt queued
+   * behind a turn kept "queued…" for ever (measured on v0.37.169: "tasks updateのハーネスからのメッセージが一生queuedに
+   * なってる"). Both sides are pinned here: the row is queued while waiting, and settles once the note exists.
+   */
+  const waiting = [ev("e1", 1, "prompt", { source: "harness", text: "tasks", promptId: "h1", ahead: 1 })];
+  const queuedRow = markAwaitingPrompts(waiting, promptLifecycle(waiting))[0] as unknown as { data: { pending?: boolean } };
+  assert.equal(queuedRow.data.pending, true, "it is waiting");
+
+  const delivered = [...waiting, ev("e2", 2, "system_note", { event: "prompt-delivered", promptId: "h1" })];
+  const settledRow = markAwaitingPrompts(delivered, promptLifecycle(delivered))[0] as unknown as { data: { pending?: boolean } };
+  assert.equal(settledRow.data.pending, undefined, "and it stops waiting when the harness says it was dispatched");
+});

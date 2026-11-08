@@ -1608,10 +1608,15 @@ export class Agent {
       } else {
         this.messages.push({ role: "user", content: p.text });
       }
-      if (p.source === "user") {
-        const id = p.id ?? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-        this.undeliveredPrompts.push({ id, preview: p.text.slice(0, 80) });
-      }
+      /**
+       * EVERY prompt that reaches the model gets a delivery note, harness ones included.
+       *
+       * The note is how the timeline knows a prompt stopped WAITING — it is the only "it ran" signal the client has. Only
+       * user prompts produced one, so a harness prompt (queued behind a turn, with `ahead > 0` recorded at enqueue) kept
+       * its "queued…" label for ever: "tasks updateのハーネスからのメッセージが一生queuedになってるバグ".
+       */
+      const noteId = p.id ?? `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      this.undeliveredPrompts.push({ id: noteId, preview: p.text.slice(0, 80) });
     }
   }
 

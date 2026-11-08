@@ -4231,8 +4231,17 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   top = content - view;
   feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 80));
-  const outside = (w.document.querySelector("#goal-input, #todo-input, .settings input") ?? w.document.body) as HTMLElement;
-  outside.dispatchEvent(Object.assign(new w.KeyboardEvent("keydown", { bubbles: true }), { key: "PageUp" }));
+  /**
+   * A target that is definitely outside the feed AND not the page background: the background is allowed to drive the
+   * feed's follow on purpose, so falling back to `body` here made this check measure the opposite of its contract (it
+   * failed on the Windows runner, where the goal panel is collapsed and `#goal-input` does not exist).
+   */
+  const outside = w.document.querySelector(".agent-item, #goal-input, #todo-input, .settings input") as HTMLElement | null;
+  if (!outside) {
+    console.error("#reader-safe check: no element outside the feed to send the key to — vacuous");
+    process.exit(1);
+  }
+  outside!.dispatchEvent(Object.assign(new w.KeyboardEvent("keydown", { bubbles: true }), { key: "PageUp" }));
   content += 400;
   for (let i = 0; i < 25; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
   if (Math.round(content - top - view) > 24) {
