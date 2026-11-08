@@ -180,50 +180,110 @@ test("a harness prompt that was delivered stops saying queued", () => {
   assert.equal(settledRow.data.pending, undefined, "and it stops waiting when the harness says it was dispatched");
 });
 
-test("a row from an OLD log (no delivery note) stops saying queued once the server no longer lists it", () => {
+test("a FRESH row is queued on its first frame, before the snapshot arrives (issue #224)", () => {
   /**
-   * MEASURED on the operator's session: harness rows for "tasks updated" stayed "queued…" for ever. Those logs predate
-   * v0.37.172, where harness prompts started producing a delivery note, so nothing could ever settle them. The live
-   * snapshot is the tiebreaker: not in `pendingPromptIds` ⇒ not waiting.
+   * MEASURED in a real browser: a prompt sent to a RUNNING agent arrived as a log row and rendered SETTLED for one frame
+   * (~17ms) until `pendingPromptIds` caught up, then flipped to "queued…" — "runningでは一瞬queuedじゃない状態になる". The
+   * log row carries the queue position recorded at enqueue, so the first frame must use it.
    */
-  const events = [ev("e1", 1, "prompt", { source: "harness", text: "tasks", promptId: "h1", ahead: 1 })];
-  const withServerList = (ids: string[]) =>
-    buildTimelineWithCount({
-      events: events as never,
-      consumed: new Set(),
-      pending: [],
-      serverPendingIds: ids,
-      echo: (p: { id: string; text: string; at: number }) =>
-        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: {} }) as never,
-      feedTypes: FEED,
-      renderedTypes: RENDERED,
-      renderedNoteEvents: new Set(),
-    }).rows as unknown as { data?: { pending?: boolean } }[];
-  assert.equal(withServerList(["h1"])[0]?.data?.pending, true, "still queued on the server ⇒ still queued on screen");
-  assert.equal(withServerList(["other"])[0]?.data?.pending, undefined, "gone from the server's queue ⇒ settled");
+  const events = [
+    ev("e1", 1, "message", { role: "assistant", content: "older", final: true }),
+    ev("e2", 2, "message", { role: "assistant", content: "older still", final: true }),
+    ev("e3", 3, "prompt", { source: "user", text: "go", promptId: "p1", ahead: 1 }),
+  ];
+  const rows = buildTimelineWithCount({
+    events: events as never,
+    consumed: new Set(),
+    pending: [],
+    serverPendingIds: ["someone-else"], // the snapshot has not caught up with p1 yet
+    echo: (p: { id: string; text: string; at: number }) =>
+      ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: {} }) as never,
+    feedTypes: FEED,
+    renderedTypes: RENDERED,
+    renderedNoteEvents: new Set(),
+  }).rows as unknown as { data?: { pending?: boolean } }[];
+  assert.equal(rows[2]?.data?.pending, true, "the newest prompt row must be queued from its first frame");
 });
 
-test("an EMPTY server queue settles old harness rows (the reported 'forever queued' case)", () => {
+test("an OLD row with no delivery note settles once the server stops listing it", () => {
   /**
-   * MEASURED on the operator's session on v0.37.176: two harness "tasks updated" rows stayed "queued…" although the agent
-   * had long since consumed them. Those prompts predate the delivery note, so nothing could settle them — and the guard
-   * that consults the server's list skipped itself when the list was EMPTY ("size > 0"), which is exactly the state a
-   * finished queue is in. Empty means "nothing is waiting"; `undefined` is what "no information" looks like.
+   * The other half: a log written before v0.37.172 has no delivery note for harness prompts, so `ahead > 0` kept those
+   * rows saying "queued…" for ever ("tasks updateのハーネスからのメッセージが一生queued"). A row that is no longer near the
+   * end of the log cannot be waiting.
    */
-  const events = [ev("e1", 1, "prompt", { source: "harness", text: "tasks", promptId: "h1", ahead: 1 })];
-  const rowsWith = (ids: string[] | undefined) =>
-    buildTimelineWithCount({
-      events: events as never,
-      consumed: new Set(),
-      pending: [],
-      serverPendingIds: ids,
-      echo: (p: { id: string; text: string; at: number }) =>
-        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: {} }) as never,
-      feedTypes: FEED,
-      renderedTypes: RENDERED,
-      renderedNoteEvents: new Set(),
-    }).rows as unknown as { data?: { pending?: boolean } }[];
-  assert.equal(rowsWith([])[0]?.data?.pending, undefined, "an empty queue means nothing is waiting");
-  assert.equal(rowsWith(["h1"])[0]?.data?.pending, true, "still queued on the server ⇒ still queued on screen");
-  assert.equal(rowsWith(undefined)[0]?.data?.pending, true, "no information is not evidence of anything — keep the note rule");
+  const tail = Array.from({ length: 12 }, (_, i) =>
+    ev(`m${i}`, 10 + i, "message", { role: "assistant", content: `later ${i}`, final: true }),
+  );
+  const events = [ev("e1", 1, "prompt", { source: "harness", text: "tasks", promptId: "h1", ahead: 1 }), ...tail];
+  const rows = buildTimelineWithCount({
+    events: events as never,
+    consumed: new Set(),
+    pending: [],
+    serverPendingIds: [],
+    echo: (p: { id: string; text: string; at: number }) =>
+      ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: {} }) as never,
+    feedTypes: FEED,
+    renderedTypes: RENDERED,
+    renderedNoteEvents: new Set(),
+  }).rows as unknown as { data?: { pending?: boolean } }[];
+  assert.equal(rows[0]?.data?.pending, undefined, "an old row that the server no longer lists is settled");
 });
+
+test("the harness row lands in the queue block the moment its event arrives — and the later snapshot changes nothing", () => {
+  /**
+   * The exact A/B pair GPT's report asked for (teapot#211 follow-up): the same prompt seen (A) as only the WS event and
+   * (B) with the agent snapshot that reports it in `pendingPromptQueue`.
+   *
+   * Before the fix, (A) put the raw row ahead of the existing queued echoes and (B) replaced it with a synthetic echo at
+   * the bottom: a row that jumped from the top of the queue to its end. Now the event's own row IS the queue row, so both
+   * states must agree — which is what makes the jump impossible rather than merely fast.
+   */
+  const history = [
+    ev("e1", 1, "message", { role: "assistant", content: "older work", final: true }),
+    ev("e2", 2, "prompt", { source: "harness", text: "H1", promptId: "h1", ahead: 1 }),
+    ev("e3", 3, "prompt", { source: "harness", text: "H2", promptId: "h2", ahead: 2 }),
+  ];
+  const arrived = [...history, ev("e4", 4, "prompt", { source: "harness", text: "H3", promptId: "h3", ahead: 3 })];
+  const stateA = build(arrived).map((r) => r.id);
+  // what `mergeQueued` produces from `pendingPromptQueue`: the server ids become `promptId`, flagged queued
+  const snapshotQueue = [
+    { id: "@p1", text: "H1", at: 1, source: "harness", promptId: "h1", queued: true },
+    { id: "@p2", text: "H2", at: 2, source: "harness", promptId: "h2", queued: true },
+    { id: "@p3", text: "H3", at: 3, source: "harness", promptId: "h3", queued: true },
+  ];
+  const stateB = build(arrived, snapshotQueue).map((r) => r.id);
+  assert.deepEqual(stateA, ["e1", "e2", "e3", "e4"], "history, then the queue in enqueue order");
+  assert.deepEqual(stateB, stateA, "the snapshot must not reorder or duplicate what the event already drew");
+});
+
+test("the pending count is the number of rows that SAY queued — an idle send is not a queue", () => {
+  /**
+   * The badge read "not delivered yet", so an idle send flashed it for the few milliseconds between enqueue and
+   * dispatch: "一瞬queuedになってる" with the client's and the server's status both correctly idle.
+   */
+  const idleSend = [ev("e1", 1, "prompt", { source: "user", text: "go", promptId: "p1", ahead: 0 })];
+  assert.equal(
+    buildTimelineWithCount({
+      events: idleSend as never, consumed: new Set(), pending: [], serverPendingIds: [],
+      echo: (p: { id: string; text: string; at: number }) =>
+        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: { text: p.text, pending: true } }) as never,
+      feedTypes: FEED, renderedTypes: RENDERED, renderedNoteEvents: new Set(),
+    }).pendingCount,
+    0,
+    "a prompt that starts the agent is not queued",
+  );
+  const busySend = [ev("e1", 1, "prompt", { source: "user", text: "go", promptId: "p1", ahead: 1 })];
+  assert.equal(
+    buildTimelineWithCount({
+      // the server agrees it is still queued — an EMPTY list now means "nothing is waiting", which settles the row
+      events: busySend as never, consumed: new Set(), pending: [], serverPendingIds: ["p1"],
+      echo: (p: { id: string; text: string; at: number }) =>
+        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: { text: p.text, pending: true } }) as never,
+      feedTypes: FEED, renderedTypes: RENDERED, renderedNoteEvents: new Set(),
+    }).pendingCount,
+    1,
+    "one that waits is",
+  );
+});
+
+

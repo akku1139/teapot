@@ -161,6 +161,7 @@ export function markAwaitingPrompts(
    */
   livePendingIds?: ReadonlySet<string>,
 ): TimelineEvent[] {
+  const newestSeq = events.reduce((m, e) => (e.seq > m ? e.seq : m), 0);
   return events.map((e) => {
     if (e.type !== "prompt") return e;
     /**
@@ -177,13 +178,19 @@ export function markAwaitingPrompts(
     if (_lifecycle.deliveredIds.has(pid)) return e;
     if (_lifecycle.cancelledNotes.has(pid)) return e;
     /**
-     * The server's list decides whenever it EXISTS — including when it is EMPTY.
+     * The event's OWN `ahead` decides, and the server's live list only refines it for rows that are not fresh.
      *
-     * `livePendingIds.size > 0` skipped the check for an empty queue, which is exactly the reported case: nothing is
-     * waiting, so every harness row stayed "queued…" for ever (they have no delivery note, since they predate v0.37.172).
-     * An empty list means "nothing is waiting", not "no information" — `undefined` is what "no information" looks like.
+     * MEASURED (issue #224): gating on `pendingPromptIds` alone inverted the flicker — a prompt sent to a RUNNING agent
+     * arrived as a log row and rendered SETTLED for ~17ms (one frame) until the snapshot listed it, then flipped to
+     * "queued…". The log row already carries the queue position the server recorded at enqueue, so the first frame can
+     * be right; the snapshot is only needed to settle STALE rows (a log written before v0.37.172 has no delivery note, so
+     * nothing else could ever settle them).
+     *
+     * `recent` is what separates the two: only the tail of the log can be waiting, so an old row is settled even when the
+     * server is silent about it, and a fresh one is trusted even before the snapshot arrives.
      */
-    if (livePendingIds && !livePendingIds.has(pid)) return e;
+    const recent = e.seq > newestSeq - 8;
+    if (livePendingIds && !livePendingIds.has(pid) && !recent) return e;
     if (e.data?.pending) return e;
     /**
      * Cached, because a row's OBJECT IDENTITY is what keeps Solid from re-creating it (and the suite names that
