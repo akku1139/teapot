@@ -88,10 +88,15 @@ test("an empty goal falls back to the bare nudge (#136)", () => {
   assert.equal(autoContinueNudge("   \n "), AUTO_CONTINUE_NUDGE);
 });
 
-test("a huge goal is clipped, as the sub-agent nudge's is (#136)", () => {
-  // otherwise a 20k-character goal re-enters the context on EVERY round
-  const nudge = autoContinueNudge("g".repeat(5000));
-  assert.ok(nudge.length < 2000, `must be clipped (#136); got ${nudge.length} chars`);
+test("a huge goal is clipped — and the clip is announced (#136)", () => {
+  /**
+   * The nudge is injected on EVERY auto-continue round, so an unbounded goal would re-enter the context over and over
+   * (#136). Clipped, but never SILENTLY: a shortened goal is a requirement the model cannot see and cannot ask about,
+   * which is the same failure as the AGENTS.md slice. The full text stays one `get_goal()` away.
+   */
+  const nudge = autoContinueNudge("g".repeat(20_000));
+  assert.ok(nudge.length < 9_000, `must stay bounded (#136); got ${nudge.length} chars`);
+  assert.match(nudge, /clipped: \d+ more characters — call get_goal\(\)/, "and it must say so");
 });
 
 /* ---------- what the model actually receives ---------- */

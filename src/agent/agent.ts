@@ -26,10 +26,23 @@ export const AUTO_CONTINUE_NUDGE =
   "(finish(goalComplete=true) when met, finish(goalComplete=false) when blocked) " +
   "instead of replying in prose; prose here does not stop the loop.";
 
+/**
+ * How much of the goal the nudge repeats.
+ *
+ * The nudge is injected on EVERY auto-continue round, so an unbounded goal would re-enter the context over and over
+ * (#136). It is clipped — but the clip is ANNOUNCED, because a silently shortened goal is a requirement the model cannot
+ * see and cannot ask about: the same failure as the AGENTS.md slice. The full text stays one `get_goal()` away.
+ */
+const NUDGE_GOAL_CHARS = 8_000;
+
 export function autoContinueNudge(goalText: string): string {
   const goal = goalText.trim();
   if (!goal) return AUTO_CONTINUE_NUDGE;
-  return `${AUTO_CONTINUE_NUDGE}\nCurrent goal:\n=====\n${goal.slice(0, 1500)}\n=====`;
+  const shown =
+    goal.length > NUDGE_GOAL_CHARS
+      ? `${goal.slice(0, NUDGE_GOAL_CHARS)}\n… (clipped: ${goal.length - NUDGE_GOAL_CHARS} more characters — call get_goal() for the whole goal)`
+      : goal;
+  return `${AUTO_CONTINUE_NUDGE}\nCurrent goal:\n=====\n${shown}\n=====`;
 }
 
 export const PROGRESS_REQUEST =
@@ -227,9 +240,9 @@ Most session state is not injected into prompts — fetch it with tools instead:
 - list_skills() / load_skill(name) / save_skill(...) → reusable playbooks.
 
 ## Rules
-- Project instructions from AGENTS.md (workspace root) are EMBEDDED in this
-  prompt below when present — read them here, don't re-read_file it. Keep the
-  file current by editing it when it goes stale.
+- Project instructions from AGENTS.md (workspace root) are EMBEDDED **in full**
+  in this prompt below when present — read them here, don't re-read_file it.
+  Keep the file current by editing it when it goes stale.
 - Work step by step with tools. Verify results (run tests/builds) before claiming progress.
 - File changes — pick by scope: write_file (one new file / full rewrite) ·
   edit_file (exactly one small unique replacement) · apply_patch (several
@@ -607,7 +620,16 @@ export class Agent {
   private skillCatalogueText(): string {
     if (!this.skillsCache.length) return "";
     const lines = this.skillsCache.map((s) => {
-      const desc = (s.description || "(no description)").replace(/\s+/g, " ").slice(0, 200);
+      /**
+       * The description is passed WHOLE.
+       *
+       * It was cut at 200 characters, and a skill's description is the only thing the model sees when deciding whether to
+       * load it — "when a loaded skill matches your task, follow its playbook" is decidable only from that sentence. A
+       * truncated one ("…use when verifying work, writing test cases, or rev…") hides exactly the conditions that make
+       * the skill relevant, which is the same class of bug as the AGENTS.md truncation: the harness hiding its own
+       * instructions and then behaving as if it had given them.
+       */
+      const desc = (s.description || "(no description)").replace(/\s+/g, " ");
       return `- ${s.name}: ${desc}`;
     });
     return lines.join("\n");
@@ -1374,11 +1396,11 @@ export class Agent {
   }
 
   async setGoalVerify(verify: string): Promise<void> {
-    this.goal = { ...this.goal, verify: verify.slice(0, 4000), updatedAt: new Date().toISOString() };
+    this.goal = { ...this.goal, verify, updatedAt: new Date().toISOString() };
     await this.writeGoalFile();
     await this.log.append("goal", this.currentSession, this.currentBranch, {
       event: "verify-set",
-      verify: verify.slice(0, 2000),
+      verify,
     });
   }
 
@@ -1386,7 +1408,7 @@ export class Agent {
     this.goal = {
       ...this.goal,
       updatedAt: new Date().toISOString(),
-      audit: { verdict, feedback: feedback.slice(0, 4000), at: new Date().toISOString() },
+      audit: { verdict, feedback, at: new Date().toISOString() },
     };
     if (verdict === "approved") this.goal.status = "done";
     const reopened = verdict !== "approved" && this.goal.status === "done";
@@ -1402,7 +1424,11 @@ export class Agent {
     await this.log.append("goal", this.currentSession, this.currentBranch, {
       event: "audit",
       verdict,
-      feedback: feedback.slice(0, 2000),
+      /**
+       * Not cut: `feedback` is what the auditor tells the NEXT turn to fix, so a truncation silently drops requirements —
+       * the same failure mode as the AGENTS.md slice. The bound is only a runaway guard.
+       */
+      feedback: feedback.slice(0, 20_000),
     });
   }
 
@@ -1432,7 +1458,7 @@ export class Agent {
       goal: {
         status: this.goal.status,
         text: this.goal.text,
-        ...(this.goal.verify ? { verify: this.goal.verify.slice(0, 1000) } : {}),
+        ...(this.goal.verify ? { verify: this.goal.verify } : {}),
         ...(this.goal.audit ? { audit: this.goal.audit } : {}),
       },
       latestProgress: this.latestProgress,
@@ -1961,7 +1987,7 @@ export class Agent {
         }
         const isSub = !!this.opts.parent;
         const nudge = isSub
-          ? this.harnessMessage(`[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.slice(0, 1500)}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`)
+          ? this.harnessMessage(`[harness] Auto-nudge. Re-anchor on YOUR task — and only that:\n\n${this.goal.text.length > NUDGE_GOAL_CHARS ? this.goal.text.slice(0, NUDGE_GOAL_CHARS) + "\n… (clipped — call get_goal() for the whole goal)" : this.goal.text}\n\nThe inherited conversation is reference only; other agents own any older tasks in it. If your task is complete, call finish() now instead of continuing. If blocked, explain why briefly and finish().`)
           : this.harnessMessage(autoContinueNudge(this.goal.text));
         await this.log.append("prompt", this.currentSession, this.currentBranch, {
           source: "harness",
@@ -2177,7 +2203,7 @@ export class Agent {
       const text = String(a.text ?? "").trim();
       if (text) await this.setGoal(text);
       if (typeof a.verify === "string" && a.verify.trim())
-        await this.setGoalVerify(a.verify.trim().slice(0, 4000));
+        await this.setGoalVerify(a.verify.trim().slice(0, 20_000));
       await this.answerMeta(
         call,
         text ? "goal updated" : "empty goal rejected",
@@ -2202,7 +2228,8 @@ export class Agent {
     },
     ask_operator: async (call, m) => {
       const a = safeParse(call.function.arguments);
-      const question = String(a.question ?? "").slice(0, 2000);
+      // a question cut at 2,000 characters asks the operator something else than what the model meant
+      const question = String(a.question ?? "").slice(0, 20_000);
       const options = Array.isArray(a.options)
         ? a.options
             .slice(0, 6)
@@ -2818,16 +2845,31 @@ export class Agent {
     return hasSystem ? [...head, ...this.messages.slice(1)] : [...head, ...this.messages];
   }
 
-  private reloadAgentsMd(): string | null {
-    if (!this.agentsMdLoaded) return null; 
-    let fresh: string;
+  /**
+   * AGENTS.md is passed WHOLE, and read in one place.
+   *
+   * It was `readFileSync(...).slice(0, 12_000)` in three places — MEASURED on this repository: 56,290 characters, so
+   * ~79% of the project's rules never reached the model, while the prompt line says "EMBEDDED in this prompt below when
+   * present — read them here, don't re-read_file it". The rules that were cut are exactly the ones written after
+   * repeated bugs (reproduce before fixing, verify the PATH a helper is called from, prefer the real measurement over a
+   * synthetic test), so the harness hid its own hard-won knowledge and then behaved as if it had been told.
+   *
+   * `reloadAgentsMd` compared the same truncated prefix, so an edit in the second half was invisible to the reload too.
+   */
+  private readAgentsMd(): string {
     try {
       const p = path.join(this.opts.workspace, "AGENTS.md");
-      if (!existsSync(p)) return null; 
-      fresh = readFileSync(p, "utf8").slice(0, 12_000);
+      if (!existsSync(p)) return "";
+      return readFileSync(p, "utf8");
     } catch {
-      return null; 
+      return "";
     }
+  }
+
+  private reloadAgentsMd(): string | null {
+    if (!this.agentsMdLoaded) return null; 
+    const fresh = this.readAgentsMd();
+    if (!fresh) return null;
     if (fresh === this.agentsMd) return null;
     this.agentsMd = fresh;
     return fresh;
@@ -2852,13 +2894,7 @@ export class Agent {
         this.wsSnapshot = "(empty workspace)"; 
       }
       if (!this.wsSnapshot) {
-        try {
-          this.agentsMd = existsSync(path.join(this.opts.workspace, "AGENTS.md"))
-            ? readFileSync(path.join(this.opts.workspace, "AGENTS.md"), "utf8").slice(0, 12_000)
-            : "";
-        } catch {
-          this.agentsMd = "";
-        }
+        this.agentsMd = this.readAgentsMd();
         try {
           const entries = readdirSync(this.opts.workspace, { withFileTypes: true });
           const lines: string[] = [];
@@ -2883,20 +2919,20 @@ export class Agent {
           this.wsSnapshot = "(workspace not readable)";
         }
       } else {
-        try {
-          this.agentsMd = existsSync(path.join(this.opts.workspace, "AGENTS.md"))
-            ? readFileSync(path.join(this.opts.workspace, "AGENTS.md"), "utf8").slice(0, 12_000)
-            : "";
-        } catch {
-          this.agentsMd = "";
-        }
+        this.agentsMd = this.readAgentsMd();
       }
       this.skillCatalogue = this.skillCatalogueText();
       this.memoryDigest = this.memoryDigestText();
     }
     let sys = SYSTEM_TEMPLATE;
     if (this.agentsMd.trim()) {
-      sys += `\n\n## Project instructions (AGENTS.md)\n\n${this.agentsMd}`;
+      // the whole file, with its size stated so the model can tell "this is everything" from "this was cut"
+      // the heading stays stable (tests and the model both key on it); the size line says "this is the whole file", so a
+      // model cannot mistake it for an excerpt the way it could when 79% was silently cut
+      sys +=
+        `\n\n## Project instructions (AGENTS.md)\n` +
+        `(complete file, ${this.agentsMd.length.toLocaleString()} characters)\n\n` +
+        this.agentsMd;
     }
     if (this.wsSnapshot) {
       sys += `\n\n## Workspace snapshot (top level)\n${this.wsSnapshot}\nUse list_dir/read_file for anything deeper — do NOT list again what is already here.`;

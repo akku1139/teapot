@@ -151,6 +151,15 @@ const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 export function markAwaitingPrompts(
   events: readonly TimelineEvent[],
   _lifecycle: ReturnType<typeof promptLifecycle>,
+  /**
+   * The prompts the SERVER still reports as queued.
+   *
+   * The delivery note settles a prompt, but a log written before harness prompts produced one (anything older than
+   * v0.37.172) has no note at all — so `ahead > 0` alone kept those rows saying "queued…" for ever, which is the report
+   * "harnessのメッセージがqueuedから外れなくなった". The snapshot's list is the live truth: a prompt that is not in it is
+   * not waiting, whatever its log says.
+   */
+  livePendingIds?: ReadonlySet<string>,
 ): TimelineEvent[] {
   return events.map((e) => {
     if (e.type !== "prompt") return e;
@@ -164,8 +173,10 @@ export function markAwaitingPrompts(
      */
     const ahead = Number(e.data?.ahead ?? 0);
     if (!(ahead > 0)) return e;
-    if (_lifecycle.deliveredIds.has(String(e.data?.promptId ?? ""))) return e;
-    if (_lifecycle.cancelledNotes.has(String(e.data?.promptId ?? ""))) return e;
+    const pid = String(e.data?.promptId ?? "");
+    if (_lifecycle.deliveredIds.has(pid)) return e;
+    if (_lifecycle.cancelledNotes.has(pid)) return e;
+    if (livePendingIds && livePendingIds.size > 0 && !livePendingIds.has(pid)) return e;
     if (e.data?.pending) return e;
     /**
      * Cached, because a row's OBJECT IDENTITY is what keeps Solid from re-creating it (and the suite names that
@@ -295,7 +306,7 @@ export function buildTimelineWithCount(input: TimelineInput): {
     if (!id || lifecycle.deliveredIds.has(id)) continue;
     if (input.pending.some((p) => p.promptId === id)) stillPendingIds.add(id);
   }
-  const awaiting = markAwaitingPrompts(deduped, lifecycle);
+  const awaiting = markAwaitingPrompts(deduped, lifecycle, new Set(input.serverPendingIds ?? []));
   /**
    * ONE owner per prompt: the log row if the server has logged it, the optimistic echo if it has not.
    *

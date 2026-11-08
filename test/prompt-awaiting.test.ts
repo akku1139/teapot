@@ -178,3 +178,26 @@ test("a harness prompt that was delivered stops saying queued", () => {
   const settledRow = markAwaitingPrompts(delivered, promptLifecycle(delivered))[0] as unknown as { data: { pending?: boolean } };
   assert.equal(settledRow.data.pending, undefined, "and it stops waiting when the harness says it was dispatched");
 });
+
+test("a row from an OLD log (no delivery note) stops saying queued once the server no longer lists it", () => {
+  /**
+   * MEASURED on the operator's session: harness rows for "tasks updated" stayed "queued…" for ever. Those logs predate
+   * v0.37.172, where harness prompts started producing a delivery note, so nothing could ever settle them. The live
+   * snapshot is the tiebreaker: not in `pendingPromptIds` ⇒ not waiting.
+   */
+  const events = [ev("e1", 1, "prompt", { source: "harness", text: "tasks", promptId: "h1", ahead: 1 })];
+  const withServerList = (ids: string[]) =>
+    buildTimelineWithCount({
+      events: events as never,
+      consumed: new Set(),
+      pending: [],
+      serverPendingIds: ids,
+      echo: (p: { id: string; text: string; at: number }) =>
+        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: {} }) as never,
+      feedTypes: FEED,
+      renderedTypes: RENDERED,
+      renderedNoteEvents: new Set(),
+    }).rows as unknown as { data?: { pending?: boolean } }[];
+  assert.equal(withServerList(["h1"])[0]?.data?.pending, true, "still queued on the server ⇒ still queued on screen");
+  assert.equal(withServerList(["other"])[0]?.data?.pending, undefined, "gone from the server's queue ⇒ settled");
+});
