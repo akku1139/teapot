@@ -18,6 +18,7 @@ import {
 import { buildTimelineWithCount, type TimelineEvent, type PendingEchoLike } from "./lib/timeline";
 import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
 import { Card } from "./components/card";
+import { BgJobsPanel, type BgJob } from "./components/bg-jobs";
 import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
 import { pickInitialAgent } from "./lib/session-restore";
 import { outputLang } from "./lib/tool-output-lang";
@@ -2562,17 +2563,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   });
 
   const [termOpen, setTermOpen] = createSignal(localStorage.getItem("teapot.term") === "1");
-  type BgJob = {
-    id: string; cmd: string; owner: string; running: boolean; code: number | null;
-    startedAt: number; tail: string; bytes: number; truncated: boolean;
-    detached?: boolean; pid?: number | null;
-  };
-  const [bgJobs, setBgJobs] = createSignal<BgJob[]>([]);
+  /**
+   * The shape lives with the component that renders it, so the panel and the API result cannot drift apart. The extra
+   * fields (`owner`, `bytes`) are what the endpoint returns and the panel simply ignores.
+   */
+  type BgJobRow = BgJob & { owner?: string; bytes?: number };
+  const [bgJobs, setBgJobs] = createSignal<BgJobRow[]>([]);
   const [showBg, setShowBg] = createSignal(false);
   const refreshBg = async () => {
     const id = selected();
     if (!id) return;
-    const r = (await api(`/api/agents/${encodeURIComponent(id)}/bg-jobs`).catch(() => null)) as { jobs?: BgJob[] } | null;
+    const r = (await api(`/api/agents/${encodeURIComponent(id)}/bg-jobs`).catch(() => null)) as { jobs?: BgJobRow[] } | null;
     if (r?.jobs) setBgJobs(r.jobs);
   };
   createEffect(() => {
@@ -2609,6 +2610,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
     setSessionTitles((m) => new Map(m).set(a.session, next));
     void refreshAgents();
+  };
+
+  const killBgJob = async (j: { id: string }) => {
+    if (!selected()) return;
+    await api(`/api/agents/${encodeURIComponent(selected()!)}/bg-jobs/${encodeURIComponent(j.id)}`, { method: "DELETE" }).catch(() => {});
+    await refreshBg();
   };
 
   const toggleTerm = () => {
@@ -3947,6 +3954,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               * "1 done" badge was both unclear and a layout shift, because the text changed width as jobs
               * started and finished.
               */}
+            {}
             <Show when={(sel()?.bgRunning ?? 0) > 0}>
               <button
                 type="button"
@@ -3958,7 +3966,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 }}
                 title={`${sel()!.bgRunning} background shell(s) running — click to inspect`}
               >
-                ⚙️ {sel()!.bgRunning}
+                🐚 {sel()!.bgRunning}
               </button>
             </Show>
             <Show when={agentTasks(sel()!.id).length > 0}>
@@ -3998,68 +4006,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <IconBtn icon="▤" title="toggle details panel (d)" active={showRight()} onClick={toggleRight} />
             </span>
             {}
-            <Show when={showBg()}>
-              <div class="bgjobs-pop" role="dialog" aria-label="background shells">
-                <div class="bgjobs-head">
-                  <span>background shells</span>
-                  <button type="button" class="iconbtn" title="close" onclick={() => setShowBg(false)}>✕</button>
-                </div>
-                <Show
-                  when={bgJobs().length > 0}
-                  fallback={<div class="muted bgjobs-empty">no background jobs for this agent</div>}
-                >
-                  <For each={bgJobs()}>
-                    {(j) => (
-                      <div class="bgjob">
-                        <div class="bgjob-line">
-                          <span class={"bgjob-dot " + (j.running ? "running" : "done")} title={j.running ? "running" : "finished"} />
-                          <code class="mono bgjob-cmd" title={j.cmd}>{oneLine(j.cmd, 80)}</code>
-                          <span class="muted bgjob-meta">
-                            {j.detached
-                              ? `detached · pid ${j.pid ?? "?"}`
-                              : j.running
-                                ? fmtDur(Date.now() - j.startedAt)
-                                : `exit ${j.code ?? "?"}`}
-                            {j.truncated ? " · truncated" : ""}
-                          </span>
-                          {}
-                          <button
-                            type="button"
-                            class="bgjob-kill"
-                            title={
-                              j.detached
-                                ? `this job survived a harness restart (pid ${j.pid ?? "?"}) — its output can no longer be read here; stop it yourself if needed`
-                                : j.running
-                                  ? "kill this job (whole process group)"
-                                  : "forget this finished job"
-                            }
-                            onclick={async () => {
-                              await api(`/api/agents/${encodeURIComponent(sel()!.id)}/bg-jobs/${encodeURIComponent(j.id)}`, { method: "DELETE" }).catch(() => {});
-                              await refreshBg();
-                            }}
-                          >{j.detached ? "forget" : j.running ? "kill" : "clear"}</button>
-                        </div>
-                        {}
-                        <Show
-                          when={j.tail.trim()}
-                          fallback={
-                            <Show when={j.detached}>
-                              <div class="muted bgjob-detached">
-                                this job outlived a harness restart, so its output is no longer captured
-                                here. it is still running as pid {j.pid ?? "?"} — read its own log, or
-                                stop it yourself.
-                              </div>
-                            </Show>
-                          }
-                        >
-                          <pre class="mono bgjob-tail">{j.tail}</pre>
-                        </Show>
-                      </div>
-                    )}
-                  </For>
-                </Show>
-              </div>
-            </Show>
+            <BgJobsPanel open={showBg()} jobs={bgJobs()} onClose={() => setShowBg(false)} onKill={killBgJob} />
           </header>
 
           <div class="feed" ref={(el) => attachFeedObserver(el)} onscroll={(e) => {

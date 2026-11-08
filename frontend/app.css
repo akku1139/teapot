@@ -1115,6 +1115,14 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 /* ---- channel ---- */
 .channel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
 .chan-head {
+  /**
+   * The anchor for `.bgjobs-pop` (and any future popover in the header).
+   *
+   * Without it the nearest positioned ancestor was `.channel`, so `top: calc(100% + 6px)` measured from the bottom of the
+   * whole channel: the panel opened far outside the viewport and, being absolutely positioned inside a flex row, dragged
+   * the layout around — "謎の場所に生成された background shells パネルがタイムラインのボックスごと持ち上げる".
+   */
+  position: relative;
   display: flex; align-items: center; gap: var(--space-3);
   /**
    * `min-width: 0` + `flex-wrap`: a flex container refuses to go below its content's min-content

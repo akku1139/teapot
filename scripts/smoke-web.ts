@@ -4188,6 +4188,56 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
 
 
 
+
+{
+  /**
+   * The background-shells badge must actually open its panel (#bgjobs).
+   *
+   * Reported: "タイムライン上の ⚙️ 1 のことね、これ押しても何も開かない". Two causes: the badge's ⚙️ is the settings glyph (a
+   * different meaning entirely), and the panel was anchored to `.channel` — `top: calc(100% + 6px)` measured from the
+   * bottom of the whole timeline column, so it opened outside the viewport and, being absolutely positioned inside a flex
+   * row, dragged the layout with it. The header is the anchor now (test/bgjobs-anchor.test.ts pins the CSS) and this pins
+   * the wiring: press it and a dialog appears inside the header; press ✕ and it goes.
+   */
+  const sock = MockWS.instances.at(-1);
+  sock?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "idle", bgRunning: 2 } }),
+  });
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  const badge = w.document.querySelector(".badge.bgjobs") as HTMLElement | null;
+  if (!badge) {
+    console.error("#bgjobs check: the shells badge is missing with bgRunning=2 — vacuous");
+    process.exit(1);
+  }
+  if (/⚙/.test(badge.textContent ?? "")) {
+    console.error(`#bgjobs REGRESSION: the badge still uses the settings gear (${badge.textContent?.trim()})`);
+    process.exit(1);
+  }
+  badge.click();
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  const panel = w.document.querySelector(".bgjobs-pop") as HTMLElement | null;
+  if (!panel) {
+    console.error("#bgjobs REGRESSION: pressing the shells badge opened nothing");
+    process.exit(1);
+  }
+  if (!panel.closest(".chan-head")) {
+    console.error("#bgjobs REGRESSION: the panel is not inside the header, so nothing anchors it");
+    process.exit(1);
+  }
+  const close = [...panel.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("✕"));
+  if (!close) {
+    console.error("#bgjobs check: no close button in the panel — vacuous");
+    process.exit(1);
+  }
+  close.click();
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  if (w.document.querySelector(".bgjobs-pop")) {
+    console.error("#bgjobs REGRESSION: ✕ did not close the panel");
+    process.exit(1);
+  }
+  console.log("deep render ok: the shells badge opens its panel inside the header, and ✕ closes it (#bgjobs)");
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);
