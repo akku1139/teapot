@@ -423,6 +423,18 @@ export default function App() {
    * anchor.
    */
   let intentFollowing = true;
+  /**
+   * ONE writer for the follow state.
+   *
+   * It lived in two variables (`atBottom` signal and `intentFollowing`) that were updated in different places: a gesture
+   * set `atBottom(false)` but left the intent true, and a programmatic pin did the reverse. Code that asked one of them
+   * ("was the operator following when they opened the terminal?") then got the other one's answer — MEASURED as a reader
+   * being dragged to the tail by the terminal drawer, the composer's maximize button, or a session switch.
+   */
+  const setFollow = (following: boolean) => {
+    intentFollowing = following;
+    if (atBottom() !== following) setAtBottom(following);
+  };
   let tailWatchRaf = 0;
   /**
    * While a tail-seek is active, pin the feed on every frame — from ONE watchdog, not from per-switch closures.
@@ -584,11 +596,11 @@ export default function App() {
     const up = (e: Event) => {
       if (!wheelReleasesFollow((e as WheelEvent).deltaY)) return;
       readerUntil = performance.now() + READER_LOCK_MS;
-      if (atBottom()) setAtBottom(false);
+      setFollow(false);
     };
     const taken = () => {
       readerUntil = performance.now() + READER_LOCK_MS;
-      if (atBottom()) setAtBottom(false);
+      setFollow(false);
     };
     const onKey = (e: KeyboardEvent) => {
       /**
@@ -601,6 +613,17 @@ export default function App() {
       const t = e.target as HTMLElement | null;
       if (t && typeof t.closest === "function" && t.closest("textarea, input, select, [contenteditable=''], [contenteditable='true']"))
         return;
+      /**
+       * Reading keys count for the FEED, not for whatever happens to be focused.
+       *
+       * The listener is on `window`, so PageUp pressed in the terminal, in a settings input, or in the drawer used to
+       * release the timeline's follow — then the timeline stopped following for no reason the operator could see.
+       * The feed itself (or the page background) is the only place where a reading key means "the operator is scrolling
+       * this timeline now".
+       */
+      const inFeed = !!t && typeof f.contains === "function" && f.contains(t);
+      const onBackground = !t || t === document.body || t === document.documentElement;
+      if (!inFeed && !onBackground) return;
       if (keyReleasesFollow(e.key)) taken();
     };
     f.addEventListener("wheel", up, { passive: true });
@@ -2083,7 +2106,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const settleUntil = performance.now() + 3000;
     const settleAtTail = () => {
       if (selected() !== id || settleGen !== feedGeneration) return;
-      if (Date.now() < readerUntil) return;
+      /**
+       * `performance.now()`, like every other reader-lock comparison.
+       *
+       * MEASURED: this one used `Date.now()` (UNIX epoch, ~1.7e12) against a `readerUntil` built from
+       * `performance.now()` (page uptime), so the comparison was always false and the 3s settle pinned the tail THROUGH a
+       * reader's gesture — the switch dragged a reader who had started scrolling back to the bottom. One clock, one
+       * meaning.
+       */
+      if (performance.now() < readerUntil) return;
       const f = feedEl();
       if (f) pinTailAndRebaseline(f);
       if (performance.now() < settleUntil) requestAnimationFrame(settleAtTail);
@@ -2581,6 +2612,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   };
 
   const toggleTerm = () => {
+    const wasFollowing = intentFollowing || atBottom();
     const next = !termOpen();
     setTermOpen(next);
     localStorage.setItem("teapot.term", next ? "1" : "0");
@@ -2590,8 +2622,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * "ターミナルを開いたときにスクロール追従の基準がターミナルの上辺にならないことがある" — the box changes over a couple
      * of frames (the drawer animates and xterm fits), so a single pin used a stale height. `seekTail` keeps pinning
      * through the transition wherever the content's bottom actually is.
+     *
+     * …but only for a reader who was FOLLOWING. The drawer's button is outside the feed, so no gesture listener protects
+     * this path: opening the terminal while reading history yanked the view to the bottom ("ターミナルやcomposerの開閉で、
+     * 過去ログを読んでいても末尾へ飛ばされる").
      */
-    seekTail(900);
+    if (wasFollowing) seekTail(900);
   };
 
   type TermTab = { key: string; agentId: string; title: string; cwd?: string };
@@ -4113,8 +4149,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 : performance.now() < readerUntil
                   ? false
                   : nextFollowing(wasFollowing, cause, now, prevTop);
-            intentFollowing = follow;
-            if (follow !== wasFollowing) setAtBottom(follow);
+            // the scroll classifier is the third writer — route it through the same setter so the two cannot diverge
+            if (follow !== wasFollowing) setFollow(follow);
+            else intentFollowing = follow;
             if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow && cause !== "reader") {
               if (missed()) setMissed(0);
@@ -4537,9 +4574,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 class="iconbtn maxbtn"
                 title={composerMaximized() ? "restore composer (hide timeline)" : "maximize composer — hide the timeline and fill the main column"}
                 onclick={() => {
+                  // same rule as the terminal drawer: this button is outside the feed, so only a follower gets pulled to
+                  // the tail — a reader keeps the message they were looking at
+                  const wasFollowing = intentFollowing || atBottom();
                   const next = !composerMaximized();
                   setComposerMaximized(next);
-                  seekTail(900);
+                  if (wasFollowing) seekTail(900);
                   requestAnimationFrame(() => autosizeComposer());
                 }}
               >{composerMaximized() ? "⤡" : "⤢"}</button>

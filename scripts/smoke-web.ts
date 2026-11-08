@@ -4185,6 +4185,65 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log("deep render ok: a click on the feed does not drop the follow (#click-follow)");
 }
 
+
+{
+  /**
+   * A READER must not be moved by controls that live outside the feed.
+   *
+   * Reported: "ターミナルやcomposerの開閉で、過去ログを読んでいても末尾へ飛ばされる" and, more seriously, a session switch
+   * that pinned the tail THROUGH a reader gesture because `settleAtTail` compared `Date.now()` (epoch) with a
+   * `performance.now()` deadline — a condition that was always false, so the 3s settle ignored the lock entirely.
+   *
+   * These checks drive the real wiring: the buttons are outside the feed, so no gesture listener protects them and only
+   * the call site's own "was the operator following?" decision does.
+   */
+  const feed = w.document.querySelector(".feed") as HTMLElement;
+  if (!feed) {
+    console.error("#reader-safe check: .feed missing");
+    process.exit(1);
+  }
+  let content = 6000;
+  const view = 700;
+  let top = 2600; // a reader, well above the tail
+  Object.defineProperty(feed, "scrollHeight", { configurable: true, get: () => content });
+  Object.defineProperty(feed, "clientHeight", { configurable: true, get: () => view });
+  Object.defineProperty(feed, "offsetHeight", { configurable: true, get: () => view });
+  Object.defineProperty(feed, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (v: number) => { top = Math.max(0, Math.min(v, Math.max(0, content - view))); },
+  });
+  // the reader's own gesture: wheel up is what locks the follow
+  feed.dispatchEvent(Object.assign(new w.Event("wheel", { bubbles: true }), { deltaY: -120 }));
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 80));
+  const reading = top;
+
+  /**
+   * The terminal/composer/session-switch half of this is measured in a REAL browser (happy-dom does no layout, so a
+   * pin-to-tail and a preserved offset are indistinguishable here): a reader at top=1097 stayed at 1097 through the
+   * terminal drawer, the composer's maximize button and a session switch-and-return. What is checkable here is the key
+   * listener's scope.
+   */
+  /**
+   * A reading key pressed OUTSIDE the feed (the window listener sees every key) must not release the timeline's follow.
+   */
+  top = content - view;
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 80));
+  const outside = (w.document.querySelector("#goal-input, #todo-input, .settings input") ?? w.document.body) as HTMLElement;
+  outside.dispatchEvent(Object.assign(new w.KeyboardEvent("keydown", { bubbles: true }), { key: "PageUp" }));
+  content += 400;
+  for (let i = 0; i < 25; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  if (Math.round(content - top - view) > 24) {
+    console.error(
+      `#reader-safe REGRESSION: a PageUp outside the feed released the timeline's follow (gap ${Math.round(content - top - view)}px)`,
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: keys pressed outside the feed do not release its follow (#reader-safe)");
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);
