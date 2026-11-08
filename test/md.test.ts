@@ -49,7 +49,12 @@ test("md: strikethrough, images, autolinks", () => {
   const out = renderMarkdown("~~gone~~ ![pic](https://example.com/i.png) see https://example.com/x now");
   assert.match(out, /<del>gone<\/del>/);
   assert.match(out, /<img src="https:\/\/example.com\/i.png"/);
-  assert.match(out, /<a href="https:\/\/example.com\/x">https:\/\/example.com\/x<\/a>/);
+  // a bare URL opens in a new tab: the timeline is the operator's workspace and navigating it away loses the session
+  // view (see test/md-links-new-tab.test.ts)
+  assert.match(
+    out,
+    /<a href="https:\/\/example.com\/x" rel="noopener noreferrer" target="_blank">https:\/\/example.com\/x<\/a>/,
+  );
 });
 
 test("md: task lists", () => {

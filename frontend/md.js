@@ -309,10 +309,13 @@ function renderEscaped(lines) {
         return `\ue000${codes.length - 1}\uE001`;
       },
     );
-    // bare autolinks (skip anything already inside an attribute/text)
+    // bare autolinks (skip anything already inside an attribute/text).
+    // `target`/`rel` matter here too: a pasted URL in a timeline row must not
+    // navigate the harness away in the same tab — the timeline is the operator's
+    // workspace, and losing it to a link click loses the session view (#link-tab).
     s = s.replace(
       /(?<!["'=\w])(https?:\/\/[^\s<>"')\]]*[^\s<>"')\].,;:!?"')\]])/g,
-      '<a href="$1">$1</a>',
+      '<a href="$1" rel="noopener noreferrer" target="_blank">$1</a>',
     );
     // emphasis — triple first, then bold, then italic; permissive about inner
     // spaces so half-written streaming text and "** spaced **" both work
