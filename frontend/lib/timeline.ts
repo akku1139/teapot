@@ -176,7 +176,14 @@ export function markAwaitingPrompts(
     const pid = String(e.data?.promptId ?? "");
     if (_lifecycle.deliveredIds.has(pid)) return e;
     if (_lifecycle.cancelledNotes.has(pid)) return e;
-    if (livePendingIds && livePendingIds.size > 0 && !livePendingIds.has(pid)) return e;
+    /**
+     * The server's list decides whenever it EXISTS — including when it is EMPTY.
+     *
+     * `livePendingIds.size > 0` skipped the check for an empty queue, which is exactly the reported case: nothing is
+     * waiting, so every harness row stayed "queued…" for ever (they have no delivery note, since they predate v0.37.172).
+     * An empty list means "nothing is waiting", not "no information" — `undefined` is what "no information" looks like.
+     */
+    if (livePendingIds && !livePendingIds.has(pid)) return e;
     if (e.data?.pending) return e;
     /**
      * Cached, because a row's OBJECT IDENTITY is what keeps Solid from re-creating it (and the suite names that
@@ -306,7 +313,11 @@ export function buildTimelineWithCount(input: TimelineInput): {
     if (!id || lifecycle.deliveredIds.has(id)) continue;
     if (input.pending.some((p) => p.promptId === id)) stillPendingIds.add(id);
   }
-  const awaiting = markAwaitingPrompts(deduped, lifecycle, new Set(input.serverPendingIds ?? []));
+  const awaiting = markAwaitingPrompts(
+    deduped,
+    lifecycle,
+    input.serverPendingIds ? new Set(input.serverPendingIds) : undefined,
+  );
   /**
    * ONE owner per prompt: the log row if the server has logged it, the optimistic echo if it has not.
    *

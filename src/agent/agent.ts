@@ -8,6 +8,7 @@ import { createCatalog, SEARCH_TOOL, RUN_TOOL } from "./tool-catalog.ts";
 import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
+import { isBareAcknowledgement } from "./ack.ts";
 import { claimsContextLimit, claimsOwnLimit, usageLine } from "./context-claim.ts";
 import { compactionNotice } from "./compaction-notice.ts";
 import { isDegenerateRepeat } from "./loop-guard.ts";
@@ -288,8 +289,10 @@ Most session state is not injected into prompts — fetch it with tools instead:
   missing auth header"), never as alarm ("uh oh", "there seems to be a problem").
 - When you make meaningful progress, call report_progress. Its output is
   shown to the operator directly (rendered as markdown in the progress
-  panel) — do NOT also repeat the same content as a chat message; end the
-  turn right after the call (a short "reported." is fine).
+  panel) — do NOT also repeat the same content as a chat message, and do NOT
+  end the round with a bare acknowledgement ("reported.", "報告済み。", "done"):
+  a report is not a stopping point, so keep working on the goal and call
+  finish() only when it is genuinely met or you are concretely blocked.
 - Be frugal: prefer small precise edits, avoid runaway loops.
 - **Two failures on the same cause is the signal to change approach, not to try
   a third time.** Reread the error, list what you have already ruled out, and
@@ -1761,6 +1764,15 @@ export class Agent {
   private reportedNudges = 0;
   /** consecutive forced continues that produced no work at all: the model is repeating, not progressing */
   private stalledReportContinues = 0;
+  /**
+   * Did this round call a WORK tool?
+   *
+   * The bare-acknowledgement rule below must not fire for a round that did something: MEASURED as a runaway — a model
+   * that writes a file and then answers "ok" was treated as "acknowledged and stopped", so the loop forced another turn
+   * for ever. The stall guard did not stop it either, because that counter is RESET by work tools — which is exactly what
+   * this round had. It wrote 8GB of chat.jsonl in one test before anything noticed.
+   */
+  private workedThisRound = false;
   /** the stream was aborted because the model looped on the same characters (#209) */
   private degenerateOutput = false;
   private degenerateStops = 0;
@@ -1868,7 +1880,30 @@ export class Agent {
          * that into "the third interval is ignored". What actually needs guarding is the case where the model answers
          * and does NOTHING — that is the stall counter below, which measures progress instead of counting reports.
          */
-        if (!finished && this.reportedThisRound &&
+        /**
+         * …and it fires for a bare TEXT acknowledgement too.
+         *
+         * "報告済み。" (or "reported.", "done") with no tool call left `reportedThisRound` false, so a round that ended
+         * on an acknowledgement was treated as an ordinary stop — the work halted mid-task with no note explaining it.
+         * The prompt no longer invites that phrasing, but the loop must not depend on the model having read it.
+         */
+        /**
+         * …and for a bare TEXT acknowledgement, but only where one is an answer to the harness.
+         *
+         * The rule is deliberately narrow, because widening it is catastrophic in both directions:
+         *  - a model that did WORK and then wrote "ok" has simply finished its round; forcing another turn there is an
+         *    infinite loop (the stall guard resets on work), MEASURED as 8GB of chat.jsonl and two OOM kills;
+         *  - a plain chat turn that answers "ok" is a legitimate final answer, so nudging it makes every conversation
+         *    with a short reply gain an extra round (seven test suites noticed immediately).
+         *
+         * What is left is the case that was actually reported: the harness asked for progress (or the model filed one) and
+         * the model answered "報告済み。" — an acknowledgement of a request it did not act on.
+         */
+        const bareAck =
+          !this.workedThisRound &&
+          (this.reportedThisRound || this.progressRequestedThisRound) &&
+          isBareAcknowledgement(this.lastAssistantText);
+        if (!finished && (this.reportedThisRound || bareAck) &&
           // a PAUSED goal means the operator parked this agent; forcing another turn would fight that
           this.goal.status !== "paused"
         ) {
@@ -2516,6 +2551,7 @@ export class Agent {
      * never fired (MEASURED: the #215 test failed with the per-turn reset).
      */
     this.reportedThisRound = false;
+    this.workedThisRound = false;
     /**
      * …and the nudge BUDGET resets per round too.
      *
@@ -2678,6 +2714,7 @@ export class Agent {
        * forever instead of once.
        */
       if (m.tool_calls?.some((c) => !NON_WORK_TOOLS.has(c.function.name))) {
+        this.workedThisRound = true;
         this.contextClaimNudges = 0;
         this.blockerAsks = 0;
         this.reportedNudges = 0;

@@ -1330,7 +1330,14 @@ const isTimelineLive = (): boolean => {
        * 一瞬queuedにならずに確定状態になる".
        */
       pending: pendingMsgs().map((p) => ({ ...p, promptId: p.promptId ?? p.id })) as PendingEchoLike[],
-      serverPendingIds: sel()?.pendingPromptIds ?? [],
+      /**
+       * `undefined` when the snapshot does not say — NOT `[]`.
+       *
+       * An empty list means "the server reports nothing waiting", which settles every old row that has no delivery note.
+       * A snapshot that simply lacks the field says nothing at all, and collapsing the two settled a prompt that was
+       * still queued.
+       */
+      serverPendingIds: sel()?.pendingPromptIds,
       echo: echoEv as (p: PendingEchoLike) => TimelineEvent,
       feedTypes: FEED_TYPES,
       renderedTypes: RENDERED_TYPES,

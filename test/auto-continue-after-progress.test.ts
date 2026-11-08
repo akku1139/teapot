@@ -198,3 +198,46 @@ test("a model that only reports is stopped as STALLED, not pinged for ever", asy
     }
   });
 });
+
+test("answering a progress request with only '報告済み。' does not stop the round", async () => {
+  /**
+   * The reported wording: the harness asks for progress and the model answers with an acknowledgement and no tool call.
+   * What must hold is that the round does not END on that acknowledgement — the agent keeps going until it decides
+   * (here: calls finish). The rule that enforces it is narrow on purpose, because widening it was catastrophic:
+   * a round that did WORK and then said "ok" is a finished round, and nudging it wrote 8GB of chat.jsonl in one test
+   * (the loop's stall guard resets on work, so nothing bounded it).
+   */
+  await useTempDirs(["ac217a-", "ac217b-"], async ([ws, sd]) => {
+    let calls = 0;
+    const a = new Agent({
+      id: "t",
+      workspace: ws!,
+      sessionDir: sd!,
+      llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+      chatFn: async (): Promise<LlmResult> => {
+        calls += 1;
+        if (calls === 1) return reply("報告済み。"); // no tool call whatsoever
+        return reply("", [tc("f1", "finish", { goalComplete: false, summary: "blocked: nothing to do" })]);
+      },
+      autoContinue: false,
+      progressIntervalMs: 0,
+      progressMinChars: 0,
+      progressMaxQuietTurns: 1,
+    } as never) as InstanceType<typeof Agent>;
+    await a.init();
+    a.enqueuePrompt("do the thing", "user");
+    a.start("t");
+    try {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline && calls < 2) await new Promise((r) => setTimeout(r, 25));
+      assert.ok(calls >= 2, `the round must not end on the acknowledgement (llm calls: ${calls})`);
+      const events = await readEvents(`${sd}/chat.jsonl`);
+      assert.ok(
+        events.some((e) => e.type === "tool_call"),
+        "and it must keep doing real work — here the finish() call",
+      );
+    } finally {
+      a.stop("test done");
+    }
+  });
+});

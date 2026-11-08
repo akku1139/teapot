@@ -154,7 +154,8 @@ test("the pending count is the number of rows that SAY queued — an idle send i
   const busySend = [ev("e1", 1, "prompt", { source: "user", text: "go", promptId: "p1", ahead: 1 })];
   assert.equal(
     buildTimelineWithCount({
-      events: busySend as never, consumed: new Set(), pending: [], serverPendingIds: [],
+      // the server agrees it is still queued — an EMPTY list now means "nothing is waiting", which settles the row
+      events: busySend as never, consumed: new Set(), pending: [], serverPendingIds: ["p1"],
       echo: (p: { id: string; text: string; at: number }) =>
         ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: { text: p.text, pending: true } }) as never,
       feedTypes: FEED, renderedTypes: RENDERED, renderedNoteEvents: new Set(),
@@ -200,4 +201,29 @@ test("a row from an OLD log (no delivery note) stops saying queued once the serv
     }).rows as unknown as { data?: { pending?: boolean } }[];
   assert.equal(withServerList(["h1"])[0]?.data?.pending, true, "still queued on the server ⇒ still queued on screen");
   assert.equal(withServerList(["other"])[0]?.data?.pending, undefined, "gone from the server's queue ⇒ settled");
+});
+
+test("an EMPTY server queue settles old harness rows (the reported 'forever queued' case)", () => {
+  /**
+   * MEASURED on the operator's session on v0.37.176: two harness "tasks updated" rows stayed "queued…" although the agent
+   * had long since consumed them. Those prompts predate the delivery note, so nothing could settle them — and the guard
+   * that consults the server's list skipped itself when the list was EMPTY ("size > 0"), which is exactly the state a
+   * finished queue is in. Empty means "nothing is waiting"; `undefined` is what "no information" looks like.
+   */
+  const events = [ev("e1", 1, "prompt", { source: "harness", text: "tasks", promptId: "h1", ahead: 1 })];
+  const rowsWith = (ids: string[] | undefined) =>
+    buildTimelineWithCount({
+      events: events as never,
+      consumed: new Set(),
+      pending: [],
+      serverPendingIds: ids,
+      echo: (p: { id: string; text: string; at: number }) =>
+        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: {} }) as never,
+      feedTypes: FEED,
+      renderedTypes: RENDERED,
+      renderedNoteEvents: new Set(),
+    }).rows as unknown as { data?: { pending?: boolean } }[];
+  assert.equal(rowsWith([])[0]?.data?.pending, undefined, "an empty queue means nothing is waiting");
+  assert.equal(rowsWith(["h1"])[0]?.data?.pending, true, "still queued on the server ⇒ still queued on screen");
+  assert.equal(rowsWith(undefined)[0]?.data?.pending, true, "no information is not evidence of anything — keep the note rule");
 });
