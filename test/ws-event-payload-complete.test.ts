@@ -93,11 +93,23 @@ test("the client's merge is viable against a real frame (#141)", async () => {
   bus.on("update", handler);
   try {
     await a.enqueuePrompt("first");
-    await new Promise((r) => setTimeout(r, 30));
     await a.enqueuePrompt("second");
-    await new Promise((r) => setTimeout(r, 30));
+    /**
+     * Wait for the FRAMES, not for a fixed number of milliseconds.
+     *
+     * The prompt event is appended asynchronously (the log write, then the bus emit), so a fixed 30 ms sleep is a bet on
+     * the machine: on the Windows CI runner only one of the two frames had arrived when the assertion ran, and the test
+     * failed with "precondition: two prompt frames (#141); got 1" while nothing was wrong. Bounded polling removes the
+     * bet without weakening the assertion.
+     */
+    const promptFrames = () =>
+      seen.filter((s) => s.kind === "event" && s.event?.type === "prompt");
+    const deadline = Date.now() + 5_000;
+    while (promptFrames().length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
 
-    const frames = seen.filter((s) => s.kind === "event" && s.event?.type === "prompt");
+    const frames = promptFrames();
     assert.ok(frames.length >= 2, `precondition: two prompt frames (#141); got ${frames.length}`);
     const ids = frames.map((f) => f.event!.id as string);
     const seqs = frames.map((f) => f.event!.seq as number);
