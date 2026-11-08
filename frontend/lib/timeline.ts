@@ -315,5 +315,16 @@ export function buildTimelineWithCount(input: TimelineInput): {
   const visible = dropInvisibleRows(awaiting, input, EMPTY_IDS);
   const resequenced = resequencePrompts(visible, lifecycle);
   const echoes = drawnEchoes.map(input.echo);
-  return { rows: placeEchoesBelow(resequenced, echoes), pendingCount: echoes.length };
+  const rows = placeEchoesBelow(resequenced, echoes);
+  /**
+   * How many rows SAY "queued…" — not how many prompts have not been delivered yet.
+   *
+   * MEASURED: the badge counted "not delivered yet", so a prompt sent to an IDLE agent made it flash for the few
+   * milliseconds between enqueue and dispatch — "一瞬queuedになってる" with both the client's and the server's status
+   * correctly idle. A prompt that is about to start is not a queue.
+   */
+  const pendingCount = rows.filter(
+    (r) => (r.data?.pending || (r.data as { echo?: boolean } | undefined)?.echo) && r.data?.queued !== false,
+  ).length;
+  return { rows, pendingCount };
 }

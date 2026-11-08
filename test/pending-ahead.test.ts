@@ -110,3 +110,18 @@ test("the enqueued prompt event records the queue position it had (no inference 
     }
   });
 });
+
+test("a compaction (status waiting) blocks the first prompt too", async () => {
+  await useTempDirs(["ahead-w-", "ahead-sd-"], async ([ws, sd]) => {
+    const a = await agent(sd, ws);
+    try {
+      (a as unknown as { status: string }).status = "waiting";
+      const first = a.enqueuePrompt("one", "user");
+      const second = a.enqueuePrompt("two", "user");
+      assert.equal(a.pendingAheadOf(first), 1, "the compaction must finish before this can run");
+      assert.equal(a.pendingAheadOf(second), 1, "the second waits behind the first");
+    } finally {
+      a.stop("test done");
+    }
+  });
+});

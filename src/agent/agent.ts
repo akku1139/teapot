@@ -363,8 +363,15 @@ export class Agent {
     const idx = this.pendingPrompts.findIndex((p) => p.id === id);
     if (idx < 0) return 0;
     const queuedAhead = idx;
-    const turnRunning = this.status === "running" ? 1 : 0;
-    return queuedAhead + (queuedAhead === 0 ? turnRunning : 0);
+    /**
+     * What BLOCKS dispatch, not just "is a turn running".
+     *
+     * MEASURED: during a compaction the status is `waiting`, and a compaction runs on the same chain, so a prompt
+     * enqueued then cannot start — but `ahead` said 0 (nothing ahead, no turn running) and the row showed a timestamp:
+     * "queuedのメッセージの1つ目が queued じゃなくて時刻が表示される". A parked tool call blocks the same way.
+     */
+    const blocked = this.status === "running" || this.status === "waiting" || this.parkedByTool;
+    return queuedAhead + (queuedAhead === 0 && blocked ? 1 : 0);
   }
   private stopRequested = false;
   private windDownRequested = false;

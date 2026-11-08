@@ -604,16 +604,19 @@ export default function App() {
       if (keyReleasesFollow(e.key)) taken();
     };
     f.addEventListener("wheel", up, { passive: true });
+    /**
+     * MOVEMENT releases the follow, not the mere presence of a finger or a click.
+     *
+     * `touchstart` and `pointerdown` also fire when the operator simply clicks a message, so the follow was dropped
+     * without any scrolling at all — and the next send then did not scroll: "プロンプト送信したときにスクロール追従がされない
+     * 場合がある", which is exactly the "sometimes" shape of a click-then-send. A drag (including the scrollbar's) moves
+     * the feed, and the geometry classifier already treats an upward move as a reading gesture.
+     */
     f.addEventListener("touchmove", taken, { passive: true });
-    f.addEventListener("touchstart", taken, { passive: true });
-    // a scrollbar drag and a text selection both start here; fluxer's `useScrollAnchor` cancels on the same event
-    f.addEventListener("pointerdown", taken, { passive: true });
     window.addEventListener("keydown", onKey, { capture: true });
     detachedGestureListeners = () => {
       f.removeEventListener("wheel", up);
       f.removeEventListener("touchmove", taken);
-      f.removeEventListener("touchstart", taken);
-      f.removeEventListener("pointerdown", taken);
       window.removeEventListener("keydown", onKey, { capture: true } as never);
       detachedGestureListeners = null;
     };
@@ -1079,7 +1082,7 @@ export default function App() {
   });
   const queuedCount = () => {
     const mine = sel()?.session === pendingKey() || !sel()?.session;
-    return queuedBadgeCount({ sameSession: !!mine, agent: sel(), echoCount: pendingCount() });
+    return queuedBadgeCount({ sameSession: !!mine, echoCount: pendingCount() });
   };
   const isSelLive = (): boolean => {
     const a = sel();

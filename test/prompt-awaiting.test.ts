@@ -134,3 +134,32 @@ test("the harness row lands in the queue block the moment its event arrives — 
   assert.deepEqual(stateA, ["e1", "e2", "e3", "e4"], "history, then the queue in enqueue order");
   assert.deepEqual(stateB, stateA, "the snapshot must not reorder or duplicate what the event already drew");
 });
+
+test("the pending count is the number of rows that SAY queued — an idle send is not a queue", () => {
+  /**
+   * The badge read "not delivered yet", so an idle send flashed it for the few milliseconds between enqueue and
+   * dispatch: "一瞬queuedになってる" with the client's and the server's status both correctly idle.
+   */
+  const idleSend = [ev("e1", 1, "prompt", { source: "user", text: "go", promptId: "p1", ahead: 0 })];
+  assert.equal(
+    buildTimelineWithCount({
+      events: idleSend as never, consumed: new Set(), pending: [], serverPendingIds: [],
+      echo: (p: { id: string; text: string; at: number }) =>
+        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: { text: p.text, pending: true } }) as never,
+      feedTypes: FEED, renderedTypes: RENDERED, renderedNoteEvents: new Set(),
+    }).pendingCount,
+    0,
+    "a prompt that starts the agent is not queued",
+  );
+  const busySend = [ev("e1", 1, "prompt", { source: "user", text: "go", promptId: "p1", ahead: 1 })];
+  assert.equal(
+    buildTimelineWithCount({
+      events: busySend as never, consumed: new Set(), pending: [], serverPendingIds: [],
+      echo: (p: { id: string; text: string; at: number }) =>
+        ({ id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt", data: { text: p.text, pending: true } }) as never,
+      feedTypes: FEED, renderedTypes: RENDERED, renderedNoteEvents: new Set(),
+    }).pendingCount,
+    1,
+    "one that waits is",
+  );
+});

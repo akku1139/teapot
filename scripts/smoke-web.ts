@@ -4131,6 +4131,60 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log('deep render ok: the todo divider says operator, legacy "human" included (#todo-by)');
 }
 
+
+{
+  /**
+   * Two reports that only a click separates: a queued BADGE over nothing, and a send that does not follow.
+   *
+   * "idle (+waiting?) からプロンプトを送ると一瞬queuedになる" — the badge counted "not delivered yet", so an idle send
+   * flashed it for the few milliseconds before dispatch. It now counts the rows that SAY "queued…", so it cannot.
+   *
+   * "プロンプト送信したときにスクロール追従がされない場合がある" — `pointerdown` on the feed (a plain click on a message)
+   * dropped the follow, and the next send then had nothing to restore. Movement releases the follow now; a click does not.
+   */
+  const sock = MockWS.instances.at(-1);
+  const feed = w.document.querySelector(".feed") as HTMLElement;
+  const ta = w.document.querySelector(".composer textarea") as HTMLTextAreaElement;
+  const form = ta?.closest("form") as HTMLFormElement;
+  if (!sock || !feed || !ta || !form) {
+    console.error("#click-follow check: setup missing — the check would be vacuous");
+    process.exit(1);
+  }
+  let content = 4000;
+  const view = 600;
+  let top = content - view;
+  Object.defineProperty(feed, "scrollHeight", { configurable: true, get: () => content });
+  Object.defineProperty(feed, "clientHeight", { configurable: true, get: () => view });
+  Object.defineProperty(feed, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (v: number) => { top = Math.max(0, Math.min(v, Math.max(0, content - view))); },
+  });
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 80));
+
+  // a CLICK on the feed is not a reading gesture
+  feed.dispatchEvent(new w.PointerEvent("pointerdown", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40));
+  content += 300;
+  for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  if (Math.round(content - top - view) > 24) {
+    console.error(
+      `#click-follow REGRESSION: a pointerdown on the feed dropped the follow (gap ${Math.round(content - top - view)}px) — ` +
+        "a click is not a scroll, and the next send then fails to follow",
+    );
+    process.exit(1);
+  }
+
+  /**
+   * The badge half of this report is pinned by test/queued-badge-matches-rows.test.ts and
+   * test/prompt-awaiting.test.ts (the count is the rows that SAY "queued…"), and measured in a real browser: this
+   * fixture mints its own prompt ids instead of honouring `clientId`, so a server queue entry looks unknown here and a
+   * clone appears — an artefact of the stub, not of the app.
+   */
+  console.log("deep render ok: a click on the feed does not drop the follow (#click-follow)");
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);
