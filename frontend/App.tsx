@@ -4696,13 +4696,32 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           </div>
 
 
-          <h3 title="what the agent is working toward. Stored with the session; the agent reads it via get_goal(). Auto-continue keeps looping while the status is 'active' and stops when marked done.">🎯 goal
+          <h3 class="goalhead" title="what the agent is working toward. Stored with the session; the agent reads it via get_goal(). Auto-continue keeps looping while the status is 'active' and stops when marked done.">🎯 goal
             <Show
               when={!!sel()!.goal.text.trim()}
               fallback={<span class="badge" title="no goal set yet">no goal</span>}
             >
               <span class={`badge ${sel()!.goal.status === "active" ? "running" : sel()!.goal.status}`}>{sel()!.goal.status}</span>
             </Show>
+            {/* a property of THIS card, not of the save button — and the header has room where the status row does not */}
+            <label
+              class="goalauto"
+              title="keep looping toward the goal after each round — fires only while the goal is 'working' and the round ended cleanly; ■ stop or marking it done ends it"
+            >
+              <input
+                type="checkbox"
+                checked={sel()!.autoContinue ?? true}
+                onchange={(e) => {
+                  if (!selected()) return;
+                  api(`/api/agents/${selected()}/auto-continue`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ value: e.currentTarget.checked }),
+                  }).then(refreshAgents);
+                }}
+              />
+              auto
+            </label>
           </h3>
           <div class="statrow" style="margin-bottom:6px">
             <span class="k">status</span>
@@ -4729,24 +4748,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 >{s === "active" ? "▶ working" : s === "done" ? "✓ done" : "⏸ paused"}</button>
               )}
             </For>
-            <label
-              class="goalauto"
-              title="keep looping toward the goal after each round — fires only while the goal is 'working' and the round ended cleanly; ■ stop or marking it done ends it"
-            >
-              <input
-                type="checkbox"
-                checked={sel()!.autoContinue ?? true}
-                onchange={(e) => {
-                  if (!selected()) return;
-                  api(`/api/agents/${selected()}/auto-continue`, {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ value: e.currentTarget.checked }),
-                  }).then(refreshAgents);
-                }}
-              />
-              auto-continue
-            </label>
           </div>
           <Show
             when={sel()!.goal.text}

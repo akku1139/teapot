@@ -3785,10 +3785,25 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
  * The controls used to sit in one strip under a permanently-open form, so "auto-continue" read as if it needed "save goal"
  * to take effect. It is a property of the loop and now lives with the status buttons; editing is a link under the text.
  */
+/**
+ * The goal header holds the title, the status badge and the auto-continue toggle.
+ *
+ * MEASURED in the details panel (~360px wide): a fourth item in the STATUS row below overflowed the card, and a
+ * non-wrapping header pushes the toggle off the right edge just as easily. So the header wraps and may shrink, exactly
+ * like `.chan-head` does for the same reason.
+ */
+.goalhead {
+  display: flex; align-items: center; gap: var(--space-2);
+  flex-wrap: wrap; min-width: 0;
+}
 .goalauto {
-  display: flex; align-items: center; gap: var(--space-1);
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  /* the goal header is a flex row with the title and the status badge; the toggle takes the slack and may wrap under it
+     rather than widening the panel — MEASURED in the details panel at ~360px, where a fourth item in the STATUS row
+     overflowed the card */
   margin-left: auto; font-size: var(--text-xs); color: var(--dim); cursor: pointer; white-space: nowrap;
 }
+.goalauto input { margin: 0; }
 .goalauto:hover { color: var(--fg); }
 .goalpane-edit-btn {
   align-self: flex-start;

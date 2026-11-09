@@ -4296,6 +4296,10 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     console.error("#goal-pane check: the auto-continue control is missing — vacuous");
     process.exit(1);
   }
+  if (!auto.closest(".goalhead")) {
+    console.error("#goal-pane REGRESSION: the auto-continue toggle is not in the goal header");
+    process.exit(1);
+  }
   if (auto.closest("form")) {
     console.error("#goal-pane REGRESSION: auto-continue is still inside the save form, which is what confused #206");
     process.exit(1);
