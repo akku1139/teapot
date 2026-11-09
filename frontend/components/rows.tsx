@@ -734,6 +734,13 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
             <Show when={e.type !== "tool_call"}>
               <CopyBtn text={rawOf(e)} label="⧉ copy" title="copy the RAW text of this message (no markdown rendering)" />
             </Show>
+            <Show when={e.data?.final && typeof e.data?.reasoning === "string" && String(e.data.reasoning).trim()}>
+              <CopyBtn
+                text={String(e.data?.content ?? "")}
+                label="⧉ summary"
+                title="copy just the finished summary (without the reasoning above it)"
+              />
+            </Show>
             <Show when={props.onEdit}>
               <button
                 class="editbtn"
@@ -836,9 +843,12 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
           <Show when={e.data.interrupted}>
             <div class="interrupted">⚠ interrupted — partial output kept</div>
           </Show>
-          <Show when={e.data.final}>
-            <div class="msgfoot"><CopyBtn text={String(e.data.content ?? "")} /><span>copy summary</span></div>
-          </Show>
+          {/**
+            * The finish summary used to get its own copy button BELOW the message, while every other row keeps one in the
+            * header next to the author — "コピー系ボタンの一貫性がない … finishのサマリー: メッセージの下" (#202). One place
+            * per row now; when the message also carries reasoning, the header offers a second button that copies just the
+            * summary, so the capability is kept without moving the affordance.
+            */}
         </>
       );
     case "tool_call":

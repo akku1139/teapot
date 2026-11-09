@@ -4238,6 +4238,50 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log("deep render ok: the shells badge opens its panel inside the header, and ✕ closes it (#bgjobs)");
 }
 
+
+{
+  /**
+   * ONE copy affordance per row, and always in the header (#202).
+   *
+   * The operator's list: "エージェントからのメッセージ: 名前の右 / bash: タイトル行の右 / finishのサマリー: メッセージの下" — the
+   * finish summary was the odd one out, with its own copy button below the text. The header carries it now (plus a
+   * "summary-only" button when the message also has reasoning), so every row is the same shape.
+   */
+  const sock = MockWS.instances.at(-1);
+  sock?.onmessage?.({
+    data: JSON.stringify({
+      kind: "event",
+      agentId: AGENT.id,
+      event: {
+        agent: AGENT.id, id: "e-copy-final", seq: 9500, ts: "2026-01-01T11:00:00Z",
+        session: AGENT.session, branch: "br0", parent: null, type: "message",
+        data: { role: "assistant", content: "the final summary", reasoning: "hidden thinking", final: true },
+      },
+    }),
+  });
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  const row = [...w.document.querySelectorAll(".feed .msg")].find((n) => (n.textContent ?? "").includes("the final summary"));
+  if (!row) {
+    console.error("#copy-place check: the final message row is missing — vacuous");
+    process.exit(1);
+  }
+  if (row.querySelector(".msgfoot")) {
+    console.error("#copy-place REGRESSION: a copy button is still rendered below the message (.msgfoot)");
+    process.exit(1);
+  }
+  const head = row.querySelector(".msg-head");
+  const inHead = head ? [...head.querySelectorAll("button")].filter((b) => (b.textContent ?? "").includes("⧉")) : [];
+  if (inHead.length === 0) {
+    console.error(`#copy-place REGRESSION: no copy button in the header (${row.innerHTML.slice(0, 200)})`);
+    process.exit(1);
+  }
+  if (!inHead.some((b) => (b.textContent ?? "").includes("summary"))) {
+    console.error("#copy-place REGRESSION: a final message with reasoning must still offer a summary-only copy");
+    process.exit(1);
+  }
+  console.log("deep render ok: copy buttons live in the header, one shape per row (#copy-place)");
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);

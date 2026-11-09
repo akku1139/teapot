@@ -1087,6 +1087,32 @@ export class Agent {
     return [...prefix, ...own.filter((e) => e !== header)];
   }
 
+  /**
+   * Attach a re-context message to the live conversation AND to the log.
+   *
+   * These three (memory, goal/todo, recently-read files) are spliced into `messages` right after a compaction so the model
+   * does not lose what drives the work. They used to be spliced ONLY — never logged — which meant a restore rebuilt the
+   * conversation from the log and silently omitted them: the prompt the model resumed with differed from the one it last
+   * saw, so the prefix cache was dead from that point on and the operator paid for the whole conversation again (#227).
+   */
+  private async attachContextNote(text: string): Promise<void> {
+    /**
+     * APPENDED, not spliced in after the checkpoint.
+     *
+     * The log records it at the moment it happens, so the rebuilt conversation can only reproduce the same ORDER if the
+     * message went to the end too — splicing it at index 1 put it before turns that were logged earlier, and a restore
+     * then produced `[checkpoint, note, …]` where the live conversation had `[checkpoint, …, note]`. Same content, different
+     * prefix, prefix cache dead (#227). Appending also reads better: the freshest instructions come last, right before the
+     * model's next turn.
+     */
+    this.messages.push({ role: "user", content: text });
+    await this.log.append("prompt", this.currentSession, this.currentBranch, {
+      source: "harness",
+      text,
+      ahead: 0,
+    });
+  }
+
   private async restoreFromLog(): Promise<void> {
     const own = await readEvents(this.log.filePath);
     if (own.length === 0) return;
@@ -1150,14 +1176,31 @@ export class Agent {
     }
   }
 
+  /**
+   * Compact once, however many times the button is pressed.
+   *
+   * `enqueue` is a SERIAL queue, so every press queued another job and they all ran in turn — MEASURED as "compact を連打
+   * すると compact がキューに溜まって compact された後に compact され続ける": the operator pressed it three times and watched
+   * the agent keep compacting afterwards. `force` does not make a repeat harmless either: the compaction itself appends
+   * the summary exchange, so the next forced pass can find new messages to cut.
+   *
+   * Coalescing is the right shape because the requests are IDENTICAL — nothing is lost by answering "already running".
+   */
+  private compactInFlight: Promise<{ ran: boolean }> | null = null;
+
   async compactNow(): Promise<{ ran: boolean }> {
-    const ran = await this.enqueue(async () => {
+    if (this.compactInFlight) return { ran: false };
+    this.compactInFlight = this.enqueue(async () => {
       await this.ensureReady();
       const before = this.stats.compactions;
       await this.maybeCompact(true);
-      return this.stats.compactions > before;
+      return { ran: this.stats.compactions > before };
     });
-    return { ran };
+    try {
+      return await this.compactInFlight;
+    } finally {
+      this.compactInFlight = null;
+    }
   }
 
   /**
@@ -3610,12 +3653,10 @@ export class Agent {
         try {
           const notes = (await fs.readFile(this.memoryFile, "utf8")).trim();
           if (notes) {
-            this.messages.splice(1, 0, {
-              role: "user",
-              content:
-                `[harness] Your durable notes (memory.md), re-attached after compaction — ` +
+            await this.attachContextNote(
+              `[harness] Your durable notes (memory.md), re-attached after compaction — ` +
                 `this is what earlier you chose to remember:\n\n${notes.slice(0, 8_000)}`,
-            });
+            );
           }
         } catch {
         }
@@ -3645,16 +3686,14 @@ export class Agent {
         const todoText = allDone ? "" : this.todo.trim();
         const goalText = this.goal.text.trim();
         if (goalText || todoText) {
-          this.messages.splice(1, 0, {
-            role: "user",
-            content:
-              `[harness] Your goal and TODO list, re-attached after compaction:\n` +
+          await this.attachContextNote(
+            `[harness] Your goal and TODO list, re-attached after compaction:\n` +
               `goal (${this.goal.status}): ${goalText ? goalText.slice(0, 2_000) : "(none set)"}\n` +
               (todoText
                 ? `todo.md (verbatim):\n${todoText.slice(0, 8_000)}\n` +
                   `Update the list as you finish work (set_todo), so this list and reality cannot drift.`
                 : `no task is open in todo.md right now — if work remains, write it there`),
-          });
+          );
         }
       }
       if (this.recentReads.length && mode === "summarize") {
@@ -3671,12 +3710,10 @@ export class Agent {
           }
         }
         if (restored.length) {
-          this.messages.splice(1, 0, {
-            role: "user",
-            content:
-              `[harness] These files were recently read and are re-attached for continuity ` +
+          await this.attachContextNote(
+            `[harness] These files were recently read and are re-attached for continuity ` +
               `(they may have changed — re-read if precision matters):\n\n${restored.join("\n\n")}`,
-          });
+          );
           this.recentReads = this.recentReads.filter((rel) => restoredPaths.has(rel));
         }
       }

@@ -82,6 +82,18 @@ export function rawOf(e: Ev): string {
   if (e.type === "tool_call") {
     return "";
   }
+  /**
+   * A compaction row is copyable, and what it copies is the CHECKPOINT — the summary plus the usage line it was recorded
+   * with. `rawOf` returned "" for it, so the ⧉ copy button existed and copied nothing: "実バグ: compactionのcopyが不発"
+   * (#202).
+   */
+  if (e.type === "compaction") {
+    const head = `🗜 context compacted · ${String(d.mode ?? "summarize")} · ` +
+      `${fmtK(Number(d.tokensBefore ?? 0))} → ${fmtK(Number(d.tokensAfter ?? 0))} tok`;
+    const line = typeof d.contextLine === "string" && d.contextLine.trim() ? `\n${d.contextLine}` : "";
+    const body = typeof d.summary === "string" && d.summary.trim() ? `\n\n${d.summary}` : "";
+    return `${head}${line}${body}`;
+  }
   return "";
 }
 
