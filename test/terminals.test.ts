@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -24,6 +24,25 @@ import {
   writeTerminal,
 } from "../src/server/terminals.ts";
 import { resolvePtySlave } from "../src/server/term-size.ts";
+
+/**
+ * These tests TYPE INTO A REAL SHELL, so they must not share the operator's HOME.
+ *
+ * MEASURED as issue #229: `.bash_history` on the operator's machine collected
+ * `echo teapot-$((6*7))` and `stty size` — the exact lines a couple of these tests type — because the spawned shell
+ * inherited `process.env.HOME`. Tests may write history; they may not write the operator's.
+ */
+const realHome = process.env.HOME;
+const realHistfile = process.env.HISTFILE;
+const sandboxHome = mkdtempInRootSync("term-home-");
+process.env.HOME = sandboxHome;
+process.env.HISTFILE = `${sandboxHome}/.bash_history`;
+after(() => {
+  if (realHome === undefined) delete process.env.HOME;
+  else process.env.HOME = realHome;
+  if (realHistfile === undefined) delete process.env.HISTFILE;
+  else process.env.HISTFILE = realHistfile;
+});
 
 /** record what the registry asked the pty to do */
 function spyResize() {
@@ -335,4 +354,19 @@ test("the pty environment does not compete with the terminal's real size (#172)"
   assert.equal(env.LINES, undefined, "nor LINES");
   assert.equal(env.TERM, "xterm-256color", "but the terminal type still is");
   assert.equal(env.HOME, "/home/x", "and the rest of the environment is passed through");
+});
+
+/**
+ * The terminal's environment must not invite commands into the operator's history (#229).
+ *
+ * The reported `.bash_history` had `echo teapot-$((6*7))` and `stty size` in it — lines only the TESTS ever typed, because
+ * the spawned shell inherited the real HOME. The tests are isolated now, and the shell is told that a space-prefixed line
+ * is a harness probe rather than the operator's typing.
+ */
+test("the pty environment keeps harness commands out of history (#229)", async () => {
+  const { terminalEnv } = await import("../src/server/terminals.ts");
+  const env = terminalEnv({ ...process.env, HOME: process.env.HOME });
+  assert.equal(env.HISTCONTROL, "ignorespace", "a space-prefixed line (a harness probe) must not be recorded");
+  assert.equal(env.HOME, process.env.HOME, "and the shell still uses the HOME it was given");
+  assert.notEqual(process.env.HOME, realHome, "the test file must run with a sandbox HOME, not the operator's");
 });

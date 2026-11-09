@@ -85,6 +85,14 @@ export function terminalEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, TERM: "xterm-256color" };
   delete env.COLUMNS;
   delete env.LINES;
+  /**
+   * A command the HARNESS types must not end up in the operator's history.
+   *
+   * `HISTCONTROL=ignorespace` is the standard way to say that: a line starting with a space is not recorded. Teapot writes
+   * to the pty only for its own probing (the macOS resize fallback), and those lines are prefixed with a space because of
+   * this. The operator's own typing is untouched (issue #229 is about history filling up with things they never typed).
+   */
+  if (!env.HISTCONTROL) env.HISTCONTROL = "ignorespace";
   return env;
 }
 

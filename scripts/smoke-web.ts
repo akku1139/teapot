@@ -4282,6 +4282,42 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log("deep render ok: copy buttons live in the header, one shape per row (#copy-place)");
 }
 
+
+{
+  /**
+   * The goal is READ-first, and auto-continue is not part of "save goal" (#206).
+   *
+   * "goal自体をtasksのようなedit方式にしたい" and "save goal しないと auto-continue されないようにも見えなくもない" — the card
+   * was a permanently-open form whose bottom strip held the auto-continue checkbox, so the loop setting read as if saving
+   * the goal switched it on.
+   */
+  const auto = w.document.querySelector(".goalauto") as HTMLElement | null;
+  if (!auto) {
+    console.error("#goal-pane check: the auto-continue control is missing — vacuous");
+    process.exit(1);
+  }
+  if (auto.closest("form")) {
+    console.error("#goal-pane REGRESSION: auto-continue is still inside the save form, which is what confused #206");
+    process.exit(1);
+  }
+  if (w.document.querySelector("#goal-input")) {
+    console.error("#goal-pane REGRESSION: the goal editor is open even though a goal is set — it must be read-first");
+    process.exit(1);
+  }
+  const edit = w.document.querySelector(".goalpane-edit-btn") as HTMLElement | null;
+  if (!edit) {
+    console.error("#goal-pane REGRESSION: there is no way to edit the goal from the card");
+    process.exit(1);
+  }
+  edit.click();
+  for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  if (!w.document.querySelector("#goal-input")) {
+    console.error("#goal-pane REGRESSION: ✎ edit did not open the editor");
+    process.exit(1);
+  }
+  console.log("deep render ok: the goal reads as a card and edits on demand, with auto-continue outside the form (#goal-pane)");
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);

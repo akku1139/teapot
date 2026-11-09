@@ -3778,3 +3778,21 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
 .composer textarea:placeholder-shown {
   text-overflow: ellipsis;
 }
+
+/**
+ * 🎯 goal: read-first card, edited on demand (#206).
+ *
+ * The controls used to sit in one strip under a permanently-open form, so "auto-continue" read as if it needed "save goal"
+ * to take effect. It is a property of the loop and now lives with the status buttons; editing is a link under the text.
+ */
+.goalauto {
+  display: flex; align-items: center; gap: var(--space-1);
+  margin-left: auto; font-size: var(--text-xs); color: var(--dim); cursor: pointer; white-space: nowrap;
+}
+.goalauto:hover { color: var(--fg); }
+.goalpane-edit-btn {
+  align-self: flex-start;
+  background: none; border: none; padding: 0; margin: var(--space-1) 0 var(--space-2);
+  color: var(--dim); font: inherit; font-size: var(--text-xs); cursor: pointer;
+}
+.goalpane-edit-btn:hover { color: var(--acc); text-decoration: underline; }

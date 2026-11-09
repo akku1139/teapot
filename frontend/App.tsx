@@ -3538,6 +3538,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   };
   const [goalVerifyDraft, setGoalVerifyDraft] = createSignal("");
   const [_goalDirty, setGoalDirty] = createSignal(false);
+  /**
+   * The goal is READ-first and edited on demand, like the ✅ tasks pane (#206).
+   *
+   * "goal自体をtasksのようなedit方式にしたい" — the card used to be a permanently-open form, so the goal showed as an empty
+   * box to write into instead of the text to read.
+   */
+  const [goalEditing, setGoalEditing] = createSignal(false);
   const [goalNotify, setGoalNotify] = createSignal(true);
   let goalSeededFor = "";
   createEffect(() => {
@@ -3568,6 +3575,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       setGoalDraft("");
       setGoalVerifyDraft("");
       setGoalDirty(false);
+      setGoalEditing(false);
       refreshAgents();
     } catch (ex) {
       flashHint(`goal save failed: ${(ex as Error).message}`);
@@ -4721,6 +4729,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 >{s === "active" ? "▶ working" : s === "done" ? "✓ done" : "⏸ paused"}</button>
               )}
             </For>
+            <label
+              class="goalauto"
+              title="keep looping toward the goal after each round — fires only while the goal is 'working' and the round ended cleanly; ■ stop or marking it done ends it"
+            >
+              <input
+                type="checkbox"
+                checked={sel()!.autoContinue ?? true}
+                onchange={(e) => {
+                  if (!selected()) return;
+                  api(`/api/agents/${selected()}/auto-continue`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ value: e.currentTarget.checked }),
+                  }).then(refreshAgents);
+                }}
+              />
+              auto-continue
+            </label>
           </div>
           <Show
             when={sel()!.goal.text}
@@ -4752,6 +4778,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             </Show>
           </Show>
           {}
+          <Show
+            when={goalEditing() || !sel()!.goal.text.trim()}
+            fallback={
+              <button
+                type="button"
+                class="goalpane-edit-btn"
+                title="edit the goal and its verification contract"
+                onclick={() => {
+                  // seed from what is stored, so editing always starts from the truth
+                  setGoalDraft(sel()!.goal.text);
+                  setGoalVerifyDraft(String(sel()!.goal.verify ?? ""));
+                  setGoalDirty(false);
+                  setGoalEditing(true);
+                }}
+              >
+                ✎ edit goal
+              </button>
+            }
+          >
           <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-top:8px;margin-bottom:6px">
             <textarea
               id="goal-input"
@@ -4780,32 +4825,25 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <label
                 class="muted"
                 style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
-                title="auto-continue acts on the GOAL above: it fires after a round ONLY when all hold — ① this toggle is on ② a goal is set and its status is 'active' ③ the round ended cleanly (no error / not stopped). It stops when the goal is marked done, or if you press ■ stop."
-              >
-                <input
-                  type="checkbox"
-                  checked={sel()!.autoContinue ?? true}
-                  onchange={(e) => {
-                    if (!selected()) return;
-                    api(`/api/agents/${selected()}/auto-continue`, {
-                      method: "POST",
-                      headers: { "content-type": "application/json" },
-                      body: JSON.stringify({ value: e.currentTarget.checked }),
-                    }).then(refreshAgents);
-                  }}
-                />
-                auto-continue
-              </label>
-              <label
-                class="muted"
-                style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
                 title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
               >
                 <input id="goal-notify" type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} /> notify agent
               </label>
+              <button
+                type="button"
+                class="iconbtn"
+                title="discard these edits"
+                onclick={() => {
+                  setGoalEditing(false);
+                  setGoalDirty(false);
+                  setGoalDraft("");
+                  setGoalVerifyDraft("");
+                }}
+              >cancel</button>
               <button type="submit" class="primarybtn">✓ save goal</button>
             </div>
           </form>
+          </Show>
 
 
           <h3 title="todo.md — a shared checklist in the session dir. Write tasks like '- [ ] fix login'; the agent ticks them off via set_todo, you edit here. With notify on, it's told at its next turn boundary.">
