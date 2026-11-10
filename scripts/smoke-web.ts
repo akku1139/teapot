@@ -4285,11 +4285,12 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
 
 {
   /**
-   * The goal is READ-first, and auto-continue is not part of "save goal" (#206).
+   * The goal pane mirrors the tasks pane, and auto-continue is not part of "save goal" (#206).
    *
-   * "goal自体をtasksのようなedit方式にしたい" and "save goal しないと auto-continue されないようにも見えなくもない" — the card
-   * was a permanently-open form whose bottom strip held the auto-continue checkbox, so the loop setting read as if saving
-   * the goal switched it on.
+   * Reported twice: first the checkbox sat in the save form ("save goal しないと auto-continue されないように見えなくもない"),
+   * then the first fix used a bespoke "✎ edit goal" link and dropped the verification contract from the rendered view
+   * ("tasks と同じ編集構造にする", "verification contractどこ行った?"). So: one box, one ✎/👁 toggle in the footer (exactly the
+   * tasks shape), and the preview shows BOTH the goal and its contract.
    */
   const auto = w.document.querySelector(".goalauto") as HTMLElement | null;
   if (!auto) {
@@ -4304,23 +4305,35 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     console.error("#goal-pane REGRESSION: auto-continue is still inside the save form, which is what confused #206");
     process.exit(1);
   }
+  if (!/auto-continue/.test(auto.textContent ?? "")) {
+    console.error(`#goal-pane REGRESSION: the toggle must say "auto-continue", got "${auto.textContent?.trim()}"`);
+    process.exit(1);
+  }
   if (w.document.querySelector("#goal-input")) {
-    console.error("#goal-pane REGRESSION: the goal editor is open even though a goal is set — it must be read-first");
+    console.error("#goal-pane REGRESSION: the goal editor is open even though a goal is set — it must render first");
     process.exit(1);
   }
-  const edit = w.document.querySelector(".goalpane-edit-btn") as HTMLElement | null;
-  if (!edit) {
-    console.error("#goal-pane REGRESSION: there is no way to edit the goal from the card");
+  const preview = [...w.document.querySelectorAll(".goalpane .content")].map((n) => n.textContent ?? "");
+  if (!preview.some((t) => t.includes("demo goal"))) {
+    console.error(`#goal-pane REGRESSION: the rendered goal is missing (${JSON.stringify(preview)})`);
     process.exit(1);
   }
-  edit.click();
+  const toggle = [...w.document.querySelectorAll("button")].find((b) =>
+    /edit the goal/i.test(b.getAttribute("title") ?? ""),
+  ) as HTMLElement | undefined;
+  if (!toggle) {
+    console.error("#goal-pane REGRESSION: there is no ✎/👁 toggle for the goal, unlike the tasks pane");
+    process.exit(1);
+  }
+  toggle.click();
   for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
-  if (!w.document.querySelector("#goal-input")) {
-    console.error("#goal-pane REGRESSION: ✎ edit did not open the editor");
+  if (!w.document.querySelector("#goal-input") || !w.document.querySelector("#goal-verify-input")) {
+    console.error("#goal-pane REGRESSION: edit mode must show the goal AND the verification contract");
     process.exit(1);
   }
-  console.log("deep render ok: the goal reads as a card and edits on demand, with auto-continue outside the form (#goal-pane)");
+  console.log("deep render ok: the goal mirrors the tasks pane and auto-continue sits in the header (#goal-pane)");
 }
+
 
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);

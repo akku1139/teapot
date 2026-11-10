@@ -19,6 +19,7 @@ import { buildTimelineWithCount, type TimelineEvent, type PendingEchoLike } from
 import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
 import { Card } from "./components/card";
 import { BgJobsPanel, type BgJob } from "./components/bg-jobs";
+import { GoalEditor } from "./components/goal-pane";
 import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
 import { pickInitialAgent } from "./lib/session-restore";
 import { outputLang } from "./lib/tool-output-lang";
@@ -3544,7 +3545,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * "goal自体をtasksのようなedit方式にしたい" — the card used to be a permanently-open form, so the goal showed as an empty
    * box to write into instead of the text to read.
    */
-  const [goalEditing, setGoalEditing] = createSignal(false);
+  /** view/edit toggle, the same shape as the tasks pane (#206) */
+  const [goalViewMode, setGoalViewMode] = createSignal(true);
   const [goalNotify, setGoalNotify] = createSignal(true);
   let goalSeededFor = "";
   createEffect(() => {
@@ -3560,7 +3562,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
   });
   const setGoal = async (e: Event) => {
-    e.preventDefault();
+    e.preventDefault?.();
     if (!selected() || !goalDraft().trim()) return;
     try {
       await api(`/api/agents/${selected()}/goal`, {
@@ -3575,7 +3577,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       setGoalDraft("");
       setGoalVerifyDraft("");
       setGoalDirty(false);
-      setGoalEditing(false);
+      setGoalViewMode(true); // back to the rendered view, like saving the task list
       refreshAgents();
     } catch (ex) {
       flashHint(`goal save failed: ${(ex as Error).message}`);
@@ -4720,7 +4722,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   }).then(refreshAgents);
                 }}
               />
-              auto
+              auto-continue
             </label>
           </h3>
           <div class="statrow" style="margin-bottom:6px">
@@ -4749,104 +4751,51 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               )}
             </For>
           </div>
-          <Show
-            when={sel()!.goal.text}
-            fallback={<div class="card muted">no goal yet — write one below and press ✓ save. Then ▶ start (or any message) sets it in motion.</div>}
-          >
-            <div class="card goalcard" ref={trackGoalPreviewHeight} style={goalPreviewStyle()}>
-              <div class="content" innerHTML={renderMarkdown(String(sel()!.goal.text))} />
-            </div>
-            <Show when={sel()!.goal.verify}>
-              <Card
-                title="🔍️ verification contract"
-                tone="tool"
-                body={String(sel()!.goal.verify)}
-              />
-            </Show>
-            <Show when={sel()!.goal.audit}>
-              {(a) => (
-                <Card
-                  title={a().verdict === "approved" ? "✅ audit: approved" : "⚠ audit: changes required"}
-                  meta={relTime(a().at)}
-                  tone={a().verdict === "approved" ? "ok" : "warn"}
-                  body={
-                    isPlaceholderDetail(a().feedback)
-                      ? "_the auditor returned a verdict with no detail_"
-                      : a().feedback
-                  }
-                />
-              )}
-            </Show>
-          </Show>
-          {}
-          <Show
-            when={goalEditing() || !sel()!.goal.text.trim()}
-            fallback={
-              <button
-                type="button"
-                class="goalpane-edit-btn"
-                title="edit the goal and its verification contract"
-                onclick={() => {
-                  // seed from what is stored, so editing always starts from the truth
-                  setGoalDraft(sel()!.goal.text);
+          <GoalEditor
+            goal={goalViewMode() ? String(sel()!.goal.text ?? "") : goalDraft()}
+            verify={goalViewMode() ? String(sel()!.goal.verify ?? "") : goalVerifyDraft()}
+            preview={goalViewMode()}
+            onGoal={(v) => { setGoalDraft(v); setGoalDirty(true); }}
+            onVerify={(v) => { setGoalVerifyDraft(v); setGoalDirty(true); }}
+          />
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:4px;margin-bottom:6px">
+            <IconBtn
+              icon={goalViewMode() ? "✎" : "👁"}
+              title={goalViewMode() ? "edit the goal and its verification contract" : "rendered goal"}
+              onClick={() => {
+                if (goalViewMode()) {
+                  // entering edit: seed from what is stored, so editing always starts from the truth
+                  setGoalDraft(String(sel()!.goal.text ?? ""));
                   setGoalVerifyDraft(String(sel()!.goal.verify ?? ""));
                   setGoalDirty(false);
-                  setGoalEditing(true);
-                }}
-              >
-                ✎ edit goal
-              </button>
-            }
-          >
-          <form onsubmit={setGoal} style="display:flex;flex-direction:column;gap:6px;margin-top:8px;margin-bottom:6px">
-            <textarea
-              id="goal-input"
-              ref={trackGoalHeight}
-              rows={3}
-              placeholder="set new goal…"
-              value={goalDraft()}
-              oninput={(e) => { setGoalDraft(e.currentTarget.value); setGoalDirty(true); }}
-              style={{
-                background: "var(--bg-darkest)", border: "none", "border-radius": "6px",
-                padding: "6px 8px", color: "var(--fg)", font: "inherit",
-                width: "100%", resize: "vertical",
+                }
+                setGoalViewMode(!goalViewMode());
               }}
-              title="drag the bottom edge to make this taller — the height is remembered"
             />
-            <textarea
-              id="goal-verify-input"
-              rows={2}
-              placeholder="verification contract (optional) — e.g. 'npm test passes; endpoint documented'. finish(goalComplete=true) is then audited against this."
-              title="pi-goal-x-style verification contract — an independent reviewer checks the agent's finish against these requirements"
-              value={goalVerifyDraft()}
-              oninput={(e) => { setGoalVerifyDraft(e.currentTarget.value); setGoalDirty(true); }}
-              style="background:var(--bg-darkest);border:1px solid var(--bg-light);border-radius:6px;padding:6px 8px;color:var(--fg);font:inherit;font-size:12.5px;width:100%;resize:vertical"
-            />
-            <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
-              <label
-                class="muted"
-                style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
-                title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
-              >
-                <input id="goal-notify" type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} /> notify agent
-              </label>
-              <button
-                type="button"
-                class="iconbtn"
-                title="discard these edits"
-                onclick={() => {
-                  setGoalEditing(false);
-                  setGoalDirty(false);
-                  setGoalDraft("");
-                  setGoalVerifyDraft("");
-                }}
-              >cancel</button>
-              <button type="submit" class="primarybtn">✓ save goal</button>
-            </div>
-          </form>
+            <label
+              class="muted"
+              style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
+              title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
+            >
+              <input type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} />
+              notify agent
+            </label>
+            <button type="button" class="okbtn" onclick={(e) => void setGoal(e)}>✓ save goal</button>
+          </div>
+          <Show when={sel()!.goal.audit}>
+            {(a) => (
+              <Card
+                title={a().verdict === "approved" ? "✅ audit: approved" : "⚠ audit: changes required"}
+                meta={relTime(a().at)}
+                tone={a().verdict === "approved" ? "ok" : "warn"}
+                body={
+                  isPlaceholderDetail(a().feedback)
+                    ? "_the auditor returned a verdict with no detail_"
+                    : a().feedback
+                }
+              />
+            )}
           </Show>
-
-
           <h3 title="todo.md — a shared checklist in the session dir. Write tasks like '- [ ] fix login'; the agent ticks them off via set_todo, you edit here. With notify on, it's told at its next turn boundary.">
             ✅ tasks
             <Show when={todoStats().total > 0}>
