@@ -119,7 +119,7 @@ export function usageLine(used: number, budget: number, window?: number): string
    * read as "82% used" at 615k and the denominator was a number the model could not see anywhere else. Reported as
    * "生のサイズじゃなくてcompactボーダーまでにしたのはなぜ? 消費/フルサイズ とcompactまでの残り値にすべきでは?".
    *
-   *     context 68% used (615k/900k tokens, 135k until compaction)
+   *     context 68% used (615k/900k tokens, 135k until auto-compaction)
      *
    * When the window is unknown the budget is the only denominator available, and the line says so by omitting the
    * window entirely rather than pretending they are the same thing.
@@ -132,7 +132,9 @@ export function usageLine(used: number, budget: number, window?: number): string
   const size = full ? `${fmt(used)}/${fmt(full)} tokens` : `${fmt(used)}/${fmt(budget)} tokens (compaction threshold; full window unknown)`;
   return until === null
     ? `context ${pct}% used (${size})`
-    : `context ${pct}% used (${size}, ${fmt(until)} until compaction)`;
+    // "until auto-compaction" — the mechanism that acts on this number is automatic; plain "compaction" read as
+    // something the model had to trigger itself
+    : `context ${pct}% used (${size}, ${fmt(until)} until auto-compaction)`;
 }
 
 /**

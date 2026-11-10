@@ -64,3 +64,29 @@ test("a job that has finished stays listed with its exit code (#bgjobs)", async 
   assert.equal(job!.code, 3, "with its exit code");
   assert.match(job!.tail, /done-now/, "and its output");
 });
+
+/**
+ * The result of `bash background=true` must say HOW waiting works, and what else is already running.
+ *
+ * Two reports from the same gap (#231, #235):
+ *   - "モデルがバックエンドbashを待つために止まるってことを知らない / ポーリングしたり、余計な作業をし続けたり" — the wake was
+ *     mentioned but not as an instruction, so models polled or kept busy-working while a build ran;
+ *   - "バックグラウンドbashを起動したときに動作中のジョブ一覧も返す / そうじゃないと起動したこと忘れるモデルがある" — a model
+ *     that starts three builds forgets the first two.
+ */
+test("a background start explains the wake and lists what is already running", async () => {
+  const ws = mkdtempInRootSync("bglist-");
+  const ctx = ctxFor(ws);
+  const first = await executeTool("bash", JSON.stringify({ command: "sleep 30", background: true }), ctx);
+  assert.match(String(first.result), /already|running background jobs/, "the first start still reports the list header");
+
+  const second = await executeTool("bash", JSON.stringify({ command: "sleep 31", background: true }), ctx);
+  const text = String(second.result);
+  assert.match(text, /WOKEN when it exits/, "the wake is an instruction, not a footnote");
+  assert.match(text, /do not poll/i, "…and polling is explicitly ruled out");
+  assert.match(text, /end your turn/, "waiting is done by ending the turn, which is what models got wrong");
+  assert.match(text, /running background jobs for this workspace \(2\)/, "both jobs are listed");
+  assert.match(text, /sleep 30/, "including the one started earlier — that is the whole point");
+  assert.match(text, /just started/, "and the new one is marked");
+  assert.match(text, /Do not start a duplicate/, "so a duplicate start is discouraged");
+});

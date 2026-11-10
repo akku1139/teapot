@@ -34,6 +34,7 @@ import { mergeQueued, queuedOnSend, reconcilePending, type PendingEcho } from ".
 import { resolveTimelineSession } from "./lib/session-index";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
+import { terminalOptions } from "./lib/terminal-options";
 import { shellOutcome, shellHint, outcomeMarker } from "./lib/shell-outcome";
 import {
   treeRowsOf,
@@ -1209,6 +1210,14 @@ const isTimelineLive = (): boolean => {
     if (ev.type === "system_note" && ev.data?.event === "background-exit") {
       const who = agents().find((a) => a.id === agentId)?.id ?? agentId;
       const failed = ev.data.failed === true;
+      /**
+       * Only a FAILED job rings the bell.
+       *
+       * The wake is what the agent needs, and the feed already shows the row — so a successful background job was a
+       * notification about something that needed no attention: "バックグラウンドbashが通知欄に来るようになって邪魔" (#233). A
+       * failure is worth interrupting for, because the agent may keep working on a broken assumption.
+       */
+      if (!failed) return;
       const secs = Math.round(Number(ev.data.durationMs ?? 0) / 1000);
       addNotif({
         agentId,
@@ -2377,6 +2386,22 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             prev.map((a, j) => (j === i ? msg.snapshot : a)),
           );
         });
+        /**
+         * A snapshot that says the agent is NOT live ends the streamed buffer.
+         *
+         * Only a turn boundary did that before, so a status change that happened while the page was asleep (a compaction
+         * parking the agent as `waiting`, a question parking it as `needs_operator`) left the buffered reasoning on screen
+         * under a `waiting` header: "スリープから復帰したときに waiting ステータスなのに (thinking) が出たまま" (#234). The
+         * snapshot is authoritative about "is work in flight", so it is the right trigger.
+         */
+        const snap = msg.snapshot as { id: string; status?: string; live?: boolean };
+        // ONLY `running` keeps the stream: `waiting` is a compaction and `needs_operator` is a parked question — neither is
+        // producing tokens, and both are exactly the states the operator found "(thinking)" stuck under.
+        const alive = snap.live ?? snap.status === "running";
+        if (!alive) {
+          setLiveByAgent((prev) => clearLive(prev, snap.id));
+          if (snap.id === selected()) setThinkStartedAt(0);
+        }
         return; 
       }
       if (msg.kind === "metrics" && msg.metrics) {
@@ -2806,23 +2831,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const el = document.createElement("div");
       el.className = "termsession";
       host.appendChild(el);
-      const t = new Terminal({
-        cursorBlink: true,
-        fontSize: 12.5,
-        /**
-         * Three lines per wheel notch.
-         *
-         * The default is ONE line per notch, which on a 40-row drawer is 40 notches for a screenful — reported as
-         * "スクロールが1行ずつで遅い" (#172). (Shift+wheel already jumps a page through xterm's built-in
-         * `fastScrollModifier` handling; the option itself is not in this version's option type, so only the
-         * sensitivity is set here.)
-         */
-        scrollSensitivity: 3,
-        fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
-        // xterm only honours a translucent theme background with this on
-        allowTransparency: true,
-        theme: themeColors(termAlpha()),
-      });
+      const t = new Terminal(terminalOptions(themeColors(termAlpha())));
       /**
        * Ctrl+Shift+C copies the selection (#198 "ターミナルで Ctrl+Shift+C でコピーできるように").
        *

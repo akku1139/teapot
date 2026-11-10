@@ -1654,11 +1654,35 @@ export const TOOLS: ToolDef[] = [
     async run(args, ctx) {
       if (args.background === true) {
         const id = startBackgroundShell(str(args.command), ctx);
+        /**
+         * The result has to say two things the model kept getting wrong (#231, #235).
+         *
+         *  - "you are woken when it exits" was already there, but models still polled or kept busy-working while a long
+         *    build ran ("モデルがバックエンドbashを待つために止まるってことを知らない / ポーリングしたり、余計な作業をし続けたり").
+         *    So the WAKE is stated as an instruction: stopping the round is how you wait, and you do not need to poll.
+         *  - and it lists the other jobs still running, because a model that starts three builds forgets the first two
+         *    ("そうじゃないと起動したこと忘れるモデルがある").
+         */
+        const running = [...bgMapFor(ctx.cwd).values()].filter((j) => !j.exited);
+        const others = running.filter((j) => j.id !== id);
+        const list = running
+          .map((j) => {
+            const secs = Math.round((Date.now() - j.startedAt) / 1000);
+            const when = secs >= 60 ? `${Math.round(secs / 60)}m` : `${secs}s`;
+            const cmd = j.cmd.replace(/\s+/g, " ").slice(0, 90);
+            return `  ${j.id}${j.id === id ? " (just started)" : ""} · ${when} · ${cmd}`;
+          })
+          .join("\n");
         return {
           ok: true,
           result:
-            `started in background (job ${id}) — you are notified when it exits (code + output tail); ` +
-            `do NOT poll it. Output: bash_output(job_id="${id}"). Stop: bash_output(job_id="${id}", action="kill").`,
+            `started in background (job ${id}). ` +
+            `You are WOKEN when it exits (exit code + output tail), so waiting is not your job: do not poll it, do not ` +
+            `sleep, and do not start another round just to check — end your turn (or do other work) and the harness will ` +
+            `call you when it finishes.\n` +
+            `Output mid-run: bash_output(job_id="${id}"). Stop: bash_output(job_id="${id}", action="kill").\n` +
+            `running background jobs for this workspace (${running.length}):\n${list}` +
+            (others.length ? `\nDo not start a duplicate of a job that is already here.` : ""),
         };
       }
       const explicit = args.timeout_ms !== undefined && args.timeout_ms !== null;

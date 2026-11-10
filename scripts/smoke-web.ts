@@ -4335,6 +4335,39 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
 }
 
 
+
+{
+  /**
+   * A snapshot that says "not running" must end the streamed reasoning (#234).
+   *
+   * "スリープから復帰したときに waiting ステータスなのに thinking… が出たまま" — the streamed buffer was only cleared on a turn
+   * boundary (or on a fresh `hello`), so a status change that happened while the page was asleep left a `thinking…` row
+   * under a `waiting` header. The snapshot is authoritative about "is work in flight".
+   */
+  const sock = MockWS.instances.at(-1);
+  sock?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "running", live: true } }),
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  sock?.onmessage?.({
+    data: JSON.stringify({ kind: "llm-delta", agentId: AGENT.id, sessionId: AGENT.session, reasoning: "deep thought in progress" }),
+  });
+  for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  if (!bodyText().includes("deep thought in progress")) {
+    console.error("#thinking-residue check: the live reasoning never rendered — the check would be vacuous");
+    process.exit(1);
+  }
+  sock?.onmessage?.({
+    data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "waiting", live: false } }),
+  });
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  if (bodyText().includes("deep thought in progress")) {
+    console.error("#thinking-residue REGRESSION: the streamed reasoning survived a `waiting` snapshot — it is stale");
+    process.exit(1);
+  }
+  console.log("deep render ok: a not-running snapshot clears the streamed reasoning (#thinking-residue)");
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);

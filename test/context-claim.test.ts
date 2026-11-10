@@ -123,13 +123,13 @@ test("the usage line is measured against the WINDOW, with the compaction room st
   const line = usageLine(615_000, 750_000, 900_000);
   assert.match(line, /context 68% used/, line);
   assert.match(line, /615k\/900k tokens/, "the full window is the denominator");
-  assert.match(line, /135k until compaction/, "and the compaction threshold is stated as room left");
-  assert.match(line, /roomy|until compaction/, line);
+  assert.match(line, /135k until auto-compaction/, "and the compaction threshold is stated as room left");
+  assert.match(line, /roomy|until auto-compaction/, line);
 
   // no window known: fall back to the budget and SAY that it is the threshold, not the window
   const fallback = usageLine(615_000, 750_000);
   assert.match(fallback, /compaction threshold; full window unknown/, fallback);
-  assert.match(fallback, /135k until compaction/, fallback);
+  assert.match(fallback, /135k until auto-compaction/, fallback);
 
   // nothing known at all
   assert.match(usageLine(1234, 0), /1k tokens used/);
