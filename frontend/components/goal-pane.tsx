@@ -1,4 +1,4 @@
-import { Show } from "solid-js";
+import { Show, createSignal, onCleanup } from "solid-js";
 import { renderMarkdownCached } from "../lib/markdown";
 
 /**
@@ -20,6 +20,28 @@ export function GoalEditor(props: {
   onGoal: (v: string) => void;
   onVerify: (v: string) => void;
 }) {
+  /**
+   * The same resizable box the tasks pane has, remembered under its own key.
+   *
+   * Reported: "goalの表示欄がリサイズできない (tasksがうまく出来てるのに)" — `.todopane` gets `resize: vertical` plus a
+   * ResizeObserver that stores the height in localStorage, and the goal pane had neither, so its box was fixed.
+   */
+  const stored = Number(localStorage.getItem("teapot.goalH") ?? "");
+  const [goalHeight, setGoalHeight] = createSignal<number>(Number.isFinite(stored) && stored > 0 ? stored : 0);
+  const heightStyle = () => (goalHeight() > 0 ? { height: `${goalHeight()}px` } : undefined);
+  const trackHeight = (el: HTMLElement) => {
+    const ro = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      if (h <= 0) return;
+      setGoalHeight((cur) => {
+        if (Math.abs(cur - h) < 1) return cur;
+        localStorage.setItem("teapot.goalH", String(h));
+        return h;
+      });
+    });
+    ro.observe(el);
+    onCleanup(() => ro.disconnect());
+  };
   return (
     <Show
       when={!props.preview}
@@ -29,9 +51,7 @@ export function GoalEditor(props: {
             when={props.goal.trim()}
             fallback={<div class="card muted">no goal yet — press ✎ to write one</div>}
           >
-            <div class="card goalcard">
-              <div class="content" innerHTML={renderMarkdownCached(props.goal)} />
-            </div>
+            <div class="content mdpreview goalbox" style={heightStyle()} ref={trackHeight} innerHTML={renderMarkdownCached(props.goal)} />
           </Show>
           <Show when={props.verify.trim()}>
             <div class="card goalverify">
@@ -45,8 +65,10 @@ export function GoalEditor(props: {
       <div class="goalpane">
         <textarea
           id="goal-input"
-          class="mono todopane-edit"
+          class="mono todopane-edit goalbox"
           rows={3}
+          style={heightStyle()}
+          ref={trackHeight}
           placeholder="set a goal…"
           title="what the agent should work toward — it reads this with get_goal()"
           value={props.goal}

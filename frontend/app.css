@@ -3472,7 +3472,8 @@ input[type="number"] {
  * so the two agree.
  */
 .todopane,
-.todopane-edit {
+.todopane-edit,
+.goalbox {
   /* every property the removed inline style carried, so nothing was lost when
      the styling moved into the sheet — checked one by one */
   height: 11.5em;

@@ -4780,7 +4780,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <input type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} />
               notify agent
             </label>
-            <button type="button" class="okbtn" onclick={(e) => void setGoal(e)}>✓ save goal</button>
+            <button type="button" class="primarybtn" onclick={(e) => void setGoal(e)}>✓ save goal</button>
           </div>
           <Show when={sel()!.goal.audit}>
             {(a) => (
