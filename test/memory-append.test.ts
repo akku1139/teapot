@@ -159,13 +159,17 @@ test("the shipped prompt does not claim memory.md is injected (#48)", async () =
   }
 });
 
-test("a compaction re-attaches the notes, because the history holding them is gone (#48)", async () => {
-  // This is the ONE place re-injecting is free: the prompt moves anyway (compaction
-  // rewrites the history), and the notes had just been summarised out of existence.
-  //
-  // Driven through `compactNow()`, the same public path the /compact command uses, so
-  // this asserts the real behaviour rather than re-implementing the trigger in a
-  // fixture.
+test("a compaction does NOT paste memory.md — the digest in the system prompt carries it (#48)", async () => {
+  /**
+   * This used to paste the whole file into the conversation after every compaction. The operator caught what that does in
+   * practice: in mediapad-t5-root-attempt-2 the pasted block was one line — `<!-- migrated from session solidocs-9d8ebb6e
+   * -->` — and it landed ABOVE the "context compacted" row because the notes were logged before the compaction event
+   * ("なんでmemoryをほぼ全注入してるの?", "これ何故かタイムライン的にはcompactより前に表示されてるよ").
+   *
+   * memory.md is already carried by the SYSTEM PROMPT as a digest (headings plus one line each, with "call
+   * read_memory(query) to search the rest"), and that prompt is rebuilt on every request, so a compaction cannot lose it.
+   * So the notes reach the model without being pasted, which is what this asserts — plus `read_memory` for the rest.
+   */
   const ws = mkdtempInRootSync("memc-");
   const sd = mkdtempInRootSync("memcs-");
   fs.writeFileSync(path.join(sd, "memory.md"), "REMEMBER: the key lives in env, not config\n");
@@ -177,12 +181,10 @@ test("a compaction re-attaches the notes, because the history holding them is go
     sessionDir: sd,
     llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
     chatFn: async (_c: unknown, msgs: { role: string; content?: unknown }[]): Promise<LlmResult> => {
-      // the summarizer is the request whose LAST message carries the directive
       const last = String(msgs[msgs.length - 1]?.content ?? "");
       if (/compress|summar|You are an? .*summar/i.test(last)) {
         return { message: { role: "assistant", content: "## Current work\n- notes" } };
       }
-      // record what an ordinary turn is handed
       for (const m of msgs) promptsSeen.push(String(m.content ?? ""));
       return { message: { role: "assistant", content: "x".repeat(400) } };
     },
@@ -190,24 +192,23 @@ test("a compaction re-attaches the notes, because the history holding them is go
   } as never) as Agent;
   await agent.init();
   try {
-    // build enough history that a compaction has something to summarise
     agent.enqueuePrompt("first prompt " + "y".repeat(3_000));
     agent.start("t");
     await agent.settled().catch(() => {});
     const before = promptsSeen.length;
     const { ran } = await agent.compactNow();
     assert.ok(ran, "precondition: the compaction actually ran");
-    // the re-attached notes are part of the history the NEXT request carries
+
     agent.enqueuePrompt("after compaction");
     agent.start("t");
     await agent.settled().catch(() => {});
     const after = promptsSeen.slice(before).join("\n");
-    assert.match(
+    assert.doesNotMatch(
       after,
       /durable notes \(memory\.md\), re-attached/,
-      "after compaction the notes must come back — otherwise they are write-only",
+      "the file must not be pasted into the conversation",
     );
-    assert.match(after, /the key lives in env/, "and the note's TEXT must be there, not just a header");
+    assert.match(after, /the key lives in env/, "the notes still reach the model — through the system prompt's digest");
   } finally {
     await agent.dispose();
   }

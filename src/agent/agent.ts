@@ -3649,18 +3649,48 @@ export class Agent {
       this.stats.compactions++;
       if (mode === "summarize") this.consecutiveCompactFailures = 0;
       this.compactedAtLen = this.messages.length;
-      if (mode === "summarize") {
-        try {
-          const notes = (await fs.readFile(this.memoryFile, "utf8")).trim();
-          if (notes) {
-            await this.attachContextNote(
-              `[harness] Your durable notes (memory.md), re-attached after compaction — ` +
-                `this is what earlier you chose to remember:\n\n${notes.slice(0, 8_000)}`,
-            );
-          }
-        } catch {
-        }
+      /**
+       * memory.md is NOT re-attached here.
+       *
+       * It used to be pasted in almost whole (up to 8,000 characters) after every compaction, which the operator caught:
+       * "なんでmemoryをほぼ全注入してるの?" — and in one session what got pasted was a single HTML comment
+       * (`<!-- migrated from session solidocs-9d8ebb6e -->`), i.e. pure noise in the transcript. The system prompt already
+       * carries a DIGEST of memory.md (headings plus one line each, with "call read_memory(query) to search the rest"),
+       * and that digest survives a compaction because the system prompt is rebuilt on every call. Pasting the file again
+       * added nothing the model could not already see or fetch, and it made the post-compaction prompt differ from run to
+       * run — the prefix cache paid for it.
+       */
+      const refreshed = this.reloadAgentsMd();
+      if (refreshed) {
+        await this.log.append("system_note", this.currentSession, this.currentBranch, {
+          event: "agents-md-reloaded",
+          bytes: refreshed.length,
+        });
       }
+
+      await this.log.append("compaction", this.currentSession, this.currentBranch, {
+        tokensBefore: before,
+        tokensAfter: after,
+        summarized: summarizedCount,
+        dropped: droppedCount,
+        mode,
+        ...(summary ? { summary: String(summary).slice(0, 20_000) } : {}),
+        /**
+         * The usage line the notice carries, recorded HERE because this is the event `restoreFromLog` replays.
+         *
+         * The notice sits at the front of every request, so the restored text must be byte-identical to the live one or
+         * the prefix cache misses for the whole session. Recomputing the line at restore would be a second owner of a
+         * fact about a moment in time; recording it here makes the notice reproducible, and an older log without it gets
+         * exactly the notice it always had.
+         */
+        contextLine: noticeLine,
+      });
+
+      /**
+       * The re-context notes are logged AFTER the compaction event, so the timeline reads in the order the conversation
+       * actually has: checkpoint, then the notes. They used to be appended first, which put them ABOVE the "context
+       * compacted" row in the feed — reported as "これ何故かタイムライン的にはcompactより前に表示されてるよ".
+       */
       /**
        * The GOAL and the open TODO list, re-attached as facts — not left to the summary.
        *
@@ -3717,31 +3747,6 @@ export class Agent {
           this.recentReads = this.recentReads.filter((rel) => restoredPaths.has(rel));
         }
       }
-      const refreshed = this.reloadAgentsMd();
-      if (refreshed) {
-        await this.log.append("system_note", this.currentSession, this.currentBranch, {
-          event: "agents-md-reloaded",
-          bytes: refreshed.length,
-        });
-      }
-
-      await this.log.append("compaction", this.currentSession, this.currentBranch, {
-        tokensBefore: before,
-        tokensAfter: after,
-        summarized: summarizedCount,
-        dropped: droppedCount,
-        mode,
-        ...(summary ? { summary: String(summary).slice(0, 20_000) } : {}),
-        /**
-         * The usage line the notice carries, recorded HERE because this is the event `restoreFromLog` replays.
-         *
-         * The notice sits at the front of every request, so the restored text must be byte-identical to the live one or
-         * the prefix cache misses for the whole session. Recomputing the line at restore would be a second owner of a
-         * fact about a moment in time; recording it here makes the notice reproducible, and an older log without it gets
-         * exactly the notice it always had.
-         */
-        contextLine: noticeLine,
-      });
       if (summary) this.lastCompactSummary = summary;
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-compacted",
