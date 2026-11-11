@@ -2384,12 +2384,13 @@ export function repairToolInput(name: string, rawArgs: string): RepairResult {
  * `resetToolCatalog(ctx)` runs at each turn boundary: discovery is per-turn, so a stale tool_id from
  * three turns ago cannot be executed, and the search budget cannot grow without bound.
  */
-const catalogs = new WeakMap<ToolContext, Catalog>();
+const catalogs = new WeakMap<ToolContext, { version: number; catalog: Catalog }>();
 
 function catalogFor(ctx: ToolContext): Catalog {
-  let c = catalogs.get(ctx);
-  if (!c) {
-    c = createCatalog(
+  const version = mcp.stateVersion();
+  const hit = catalogs.get(ctx);
+  if (hit && hit.version === version) return hit.catalog;
+  const c = createCatalog(
       mcp.states().map((st) => ({
         id: st.config.name,
         name: st.config.name,
@@ -2399,10 +2400,9 @@ function catalogFor(ctx: ToolContext): Catalog {
         tools: st.tools ?? [],
       })),
       // the built-ins are already in the request, so the catalog must know how much room is left
-      { builtInCount: TOOLS.length },
-    );
-    catalogs.set(ctx, c);
-  }
+    { builtInCount: TOOLS.length },
+  );
+  catalogs.set(ctx, { version, catalog: c });
   return c;
 }
 

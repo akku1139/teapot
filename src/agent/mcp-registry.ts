@@ -47,12 +47,31 @@ export class McpRegistry {
   private auths = new Map<string, ServerAuth>();
   private store: McpAuthStore | null = null;
   private flows = new Map<string, PendingFlow>();
+  /**
+   * A counter that changes whenever the tool set can have changed.
+   *
+   * The deferred catalogue (`search_tools`/`run_tool`) is cached per ToolContext, and a cache keyed only by that context
+   * cannot see the registry change underneath it: after re-authorising a server the tools were populated here but
+   * `search_tools` kept serving the catalogue built before the grant — "MCP再認証してもsearch_toolsで出てこない、叩けない"
+   * (#243). A version is the smallest thing the cache can compare.
+   */
+  private version = 0;
+
+  /** the current tool-set version; see `version` */
+  stateVersion(): number {
+    return this.version;
+  }
+
+  private bump(): void {
+    this.version++;
+  }
 
   init(dataDir: string): void {
     this.store = new McpAuthStore(dataDir);
   }
 
   apply(configs: McpServerConfig[]): void {
+    this.bump();
     const wanted = new Set(configs.map((c) => c.name));
     for (const [name, st] of this.servers) {
       if (!wanted.has(name)) {
@@ -89,6 +108,7 @@ export class McpRegistry {
   }
 
   recordSuccess(name: string, tools: McpServerState["tools"]): void {
+    this.bump();
     const st = this.servers.get(name);
     if (!st) return; 
     st.status = "connected";
@@ -257,6 +277,7 @@ export class McpRegistry {
       const conn = await connectMcp(st.config, { provider: auth });
       st.connection = conn;
       st.tools = await conn.tools();
+      this.bump();
       st.status = "connected";
       st.oauthRequired = false;
       await this.finishFlow(name, pending);
@@ -280,6 +301,7 @@ export class McpRegistry {
           await conn.close().catch(() => {});
           st.connection = live;
           st.tools = await live.tools();
+          this.bump();
           st.status = "connected";
           st.oauthRequired = false;
           st.lastError = undefined;
