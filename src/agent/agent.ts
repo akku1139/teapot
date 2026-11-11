@@ -1297,22 +1297,52 @@ export class Agent {
     }
   }
 
+  /**
+   * goal.md is `body` + a metadata block, and the block is found by POSITION-INDEPENDENT parsing.
+   *
+   * The reader used to strip `status:`/`updated:` only when they sat at the very END. The writer appends `verify:` AFTER
+   * them, so on any goal with a verification contract the strip loop could not remove anything and the metadata lines
+   * became part of the goal TEXT — reported as "セッションリストアするとgoalが汚染される" with a goal that ended in
+   * `status: paused / updated: …` (#253).
+   *
+   * The block is the LAST run of metadata lines in the file: find the last `status:` line and keep it only if everything
+   * after it is metadata (`updated:`, `verify:` and the contract's own lines). A goal whose prose mentions "status:" stays
+   * intact, because prose is not followed by an `updated:` line.
+   */
   private parseGoalFile(text: string): GoalState {
-    const all = [...text.matchAll(/status:\s*(\w+)/gi)];
-    const last = all[all.length - 1]?.[1];
-    const status = last === "done" ? "done" : last === "paused" ? "paused" : "active";
-    let body = text.trim();
-    for (let i = 0; i < 4; i++) {
-      const stripped = body.replace(/\n+(?:status|updated):[^\n]*$/i, "").trimEnd();
-      if (stripped === body) break;
-      body = stripped;
+    const lines = text.replace(/\r\n/g, "\n").split("\n");
+    let blockAt = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^status:\s*\w+\s*$/i.test(lines[i]!)) {
+        // everything below must be metadata, or this "status:" belongs to the prose
+        let ok = true;
+        let inVerify = false;
+        for (let j = i + 1; j < lines.length; j++) {
+          const l = lines[j]!;
+          if (!l.trim()) continue;
+          if (/^verify:/i.test(l)) {
+            inVerify = true; // the contract's own lines are arbitrary text
+            continue;
+          }
+          if (inVerify) continue;
+          if (/^(updated|status):/i.test(l)) continue;
+          ok = false;
+          break;
+        }
+        if (ok) blockAt = i;
+        break;
+      }
     }
+    const bodyLines = blockAt === -1 ? lines : lines.slice(0, blockAt);
+    const meta = blockAt === -1 ? [] : lines.slice(blockAt);
+    const metaText = meta.join("\n");
+    const statusWord = /status:\s*(\w+)/i.exec(metaText)?.[1]?.toLowerCase();
+    const status: GoalState["status"] =
+      statusWord === "done" ? "done" : statusWord === "paused" ? "paused" : "active";
+    let body = bodyLines.join("\n").trimEnd();
     let verify = "";
-    const vm = body.match(/\nverify:\s*\n([\s\S]+)$/i) ?? body.match(/^verify:\s*(.+)$/im);
-    if (vm) {
-      verify = vm[1]!.trim();
-      body = (body.slice(0, vm.index).trimEnd());
-    }
+    const vm = /\nverify:\s*\n([\s\S]+)$/i.exec(metaText) ?? /^verify:\s*(.+)$/im.exec(metaText);
+    if (vm) verify = vm[1]!.trim();
     const out: GoalState = { text: body, status, updatedAt: new Date().toISOString() };
     if (verify) out.verify = verify;
     return out;
