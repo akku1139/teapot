@@ -380,13 +380,17 @@ export class Agent {
     if (idx < 0) return 0;
     const queuedAhead = idx;
     /**
-     * What BLOCKS dispatch, not just "is a turn running".
+     * "Queued" means ONE thing: the agent is generating a turn right now.
      *
-     * MEASURED: during a compaction the status is `waiting`, and a compaction runs on the same chain, so a prompt
-     * enqueued then cannot start — but `ahead` said 0 (nothing ahead, no turn running) and the row showed a timestamp:
-     * "queuedのメッセージの1つ目が queued じゃなくて時刻が表示される". A parked tool call blocks the same way.
+     * The operator's contract, stated after the third round of this bug: `idle`, `waiting`, `error`, `needs_operator`,
+     * `stopped` — and `running` while it is NOT between LLM calls — all take the prompt immediately and must render as
+     * SETTLED; only `running` with a turn in flight makes it wait, and only then does the row say "queued…" and the badge
+     * count it.
+     *
+     * An earlier version also treated `waiting` (a compaction) and a parked tool as blocking, which made those states show
+     * "queued…" — and the operator's answer to that was the list above.
      */
-    const blocked = this.status === "running" || this.status === "waiting" || this.parkedByTool;
+    const blocked = this.status === "running";
     return queuedAhead + (queuedAhead === 0 && blocked ? 1 : 0);
   }
   private stopRequested = false;

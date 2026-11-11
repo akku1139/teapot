@@ -287,3 +287,38 @@ test("the pending count is the number of rows that SAY queued — an idle send i
 });
 
 
+
+test("an in-flight send that waits behind nothing is drawn as a normal row (#224)", () => {
+  /**
+   * MEASURED in a real browser: the echo row carried the pending class (dim text + ✕ cancel) AND a timestamp for the few
+   * milliseconds before the server logged it — "タイムラインヘッダーにはqueuedが出ない / メッセージには時刻がついてる … 変なパスを
+   * 踏んでるっぽい". The operator's verdict: "sendingは一瞬なので表示されるべきではない". Only a prompt that WAITS gets the
+   * pending treatment; everything else looks like the delivered row it is about to become.
+   */
+  const echo = (queued: boolean) => ({
+    id: "@p1", text: "hi", at: 1, promptId: "@p1", ...(queued ? { queued: true as const } : {}),
+  });
+  const build1 = (queued: boolean) =>
+    buildTimelineWithCount({
+      events: [] as never,
+      consumed: new Set(),
+      pending: [echo(queued)] as never,
+      serverPendingIds: undefined,
+      echo: (p: { id: string; text: string; at: number; promptId?: string; queued?: boolean }) =>
+        ({
+          id: p.id, seq: 1, ts: "2026-01-01T00:00:00Z", session: "s", branch: "br0", parent: null, type: "prompt",
+          data: { text: p.text, pending: p.queued === true, queued: p.queued === true },
+        }) as never,
+      feedTypes: FEED,
+      renderedTypes: RENDERED,
+      renderedNoteEvents: new Set(),
+    }) as unknown as { rows: { data?: { pending?: boolean; queued?: boolean } }[]; pendingCount: number };
+
+  const idle = build1(false);
+  assert.equal(idle.rows[0]?.data?.pending, false, "no pending look for a send that waits behind nothing");
+  assert.equal(idle.pendingCount, 0, "and the badge must not count it either");
+
+  const queued = build1(true);
+  assert.equal(queued.rows[0]?.data?.pending, true, "a waiting prompt keeps the pending look");
+  assert.equal(queued.pendingCount, 1, "and the badge counts exactly those");
+});

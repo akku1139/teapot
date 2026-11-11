@@ -1392,7 +1392,15 @@ const isTimelineLive = (): boolean => {
       data: {
         source: p.source ?? "user",
         text: p.text,
-        pending: !p.sent,
+        /**
+         * A row is "pending" (dim, ✕ cancel) ONLY when it is actually queued.
+         *
+         * `pending` used to mean "the server has not confirmed it yet", which for an idle send lasts a few milliseconds and
+         * drew a dim row with a ✕ cancel and a timestamp — three signals at once, none of them true by the time it was read
+         * ("sendingは一瞬なので表示されるべきではない"). An idle send now looks like the delivered row it is about to become;
+         * only a prompt that WAITS gets the pending treatment.
+         */
+        pending: !p.sent && p.queued === true,
         /**
          * …but the row only SAYS "queued" when the agent was busy when the prompt was sent.
          *
@@ -1401,6 +1409,7 @@ const isTimelineLive = (): boolean => {
          * behind nothing.
          */
         queued: !p.sent && p.queued === true,
+
         ...(p.images?.length ? { images: p.images } : {}),
         ...(p.promptId ? { promptId: p.promptId } : {}),
       },
@@ -4324,7 +4333,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">🫖</div>
                   <div class="msg-body">
                     <div class="msg-head">
-                      <span class="author" style="color:var(--acc)">agent</span>
+                      {/**
+                        * The live row's author is the AGENT tone (blue), like every settled agent row.
+                        *
+                        * It was hardcoded to `var(--acc)` — the accent, which is pink in the sakura theme — while the avatar
+                        * beside it was drawn in the agent blue: one row, two identities. Reported as "ライブバッファのagentの
+                        * 名前行がピンク(sakura dark)、本来は青" (#224 follow-up).
+                        */}
+                      <span class="author tone-agent">agent</span>
                       <span class="ts">streaming…</span>
                     </div>
                     {}

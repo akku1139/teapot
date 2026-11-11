@@ -716,8 +716,18 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
               <span class="actor">@{String(e.data.actor)}</span>
             </Show>
             <span class="ts">
-              {/* "queued…" only when the agent really had work in front of it — see `queued` in `echoEv` */}
-              {e.data?.pending && e.data?.queued !== false && !e.data?.sent ? "queued…" : e.data?.cancelled ? "withdrawn" : fmtTs(e.ts)}
+              {/**
+                * Two labels, because there are two states that last long enough to read (#224).
+                *
+                * A prompt that WAITS says "queued…" (the badge counts exactly these); everything else shows its timestamp —
+                * including the few milliseconds an idle send spends in flight, which is too short to label and used to be
+                * drawn as a dim row with a ✕ cancel, i.e. as if it were queued.
+                */}
+              {e.data?.pending && e.data?.queued === true && !e.data?.sent
+                ? "queued…"
+                : e.data?.cancelled
+                  ? "withdrawn"
+                  : fmtTs(e.ts)}
             </span>
             {}
             <Show when={props.showBranch}>

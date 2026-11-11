@@ -111,17 +111,23 @@ test("the enqueued prompt event records the queue position it had (no inference 
   });
 });
 
-test("a compaction (status waiting) blocks the first prompt too", async () => {
+test("a compaction (status waiting) does NOT queue the prompt — the contract is `running` only", async () => {
+  /**
+   * The operator's list, after three rounds of this bug: idle / waiting / error / needs_operator / stopped (and `running`
+   * between LLM calls) all take the prompt immediately and must look SETTLED; only `running` with a turn in flight makes
+   * it wait. `waiting` is a compaction, which is not generating tokens for the prompt to wait behind.
+   */
   await useTempDirs(["ahead-w-", "ahead-sd-"], async ([ws, sd]) => {
     const a = await agent(sd, ws);
     try {
       (a as unknown as { status: string }).status = "waiting";
       const first = a.enqueuePrompt("one", "user");
       const second = a.enqueuePrompt("two", "user");
-      assert.equal(a.pendingAheadOf(first), 1, "the compaction must finish before this can run");
-      assert.equal(a.pendingAheadOf(second), 1, "the second waits behind the first");
+      assert.equal(a.pendingAheadOf(first), 0, "waiting does not queue: the row must render settled");
+      assert.equal(a.pendingAheadOf(second), 1, "though it still waits behind the first prompt");
     } finally {
       a.stop("test done");
     }
   });
 });
+

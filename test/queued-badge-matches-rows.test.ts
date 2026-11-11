@@ -13,7 +13,14 @@ import { buildTimelineWithCount } from "../frontend/lib/timeline.ts";
  * The fix is not "also check the log" in a second place — that is how they drifted. Both come out
  * of ONE pipeline run, so the disagreement is unrepresentable. These tests drive the real pipeline.
  */
-const echo = (p: { id: string; text: string; at: number; promptId?: string }) => ({
+/**
+ * The badge counts rows that SAY "queued…" — which is `queued: true` on the row, not "an echo exists".
+ *
+ * MEASURED in a real browser (#224 follow-up): an idle send is in flight for a few milliseconds, its row showed a
+ * timestamp, and the badge lit up anyway because it counted "not delivered yet". One predicate now drives both the row's
+ * label and the badge.
+ */
+const echo = (p: { id: string; text: string; at: number; promptId?: string; queued?: boolean }) => ({
   type: "message",
   seq: 1e9 + p.at,
   id: `echo-${p.id}`,
@@ -21,7 +28,7 @@ const echo = (p: { id: string; text: string; at: number; promptId?: string }) =>
   agent: "a1",
   session: "s1",
   branch: "br0",
-  data: { role: "user", content: p.text, echo: true },
+  data: { role: "user", content: p.text, echo: true, queued: p.queued !== false },
 });
 
 const input = (events: any[], pending: any[]) => ({

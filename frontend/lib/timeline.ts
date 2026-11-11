@@ -352,8 +352,12 @@ export function buildTimelineWithCount(input: TimelineInput): {
    * milliseconds between enqueue and dispatch — "一瞬queuedになってる" with both the client's and the server's status
    * correctly idle. A prompt that is about to start is not a queue.
    */
-  const pendingCount = rows.filter(
-    (r) => (r.data?.pending || (r.data as { echo?: boolean } | undefined)?.echo) && r.data?.queued !== false,
-  ).length;
+  /**
+   * The badge counts rows that SAY "queued…", and nothing else.
+   *
+   * Counting `pending` (or any echo) made an in-flight idle send flash a badge while the row itself showed a timestamp —
+   * the two disagreed, which is how the operator noticed (#224). One predicate, used by the row and the badge.
+   */
+  const pendingCount = rows.filter((r) => r.data?.queued === true && !r.data?.sent).length;
   return { rows, pendingCount };
 }
