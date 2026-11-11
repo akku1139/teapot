@@ -2242,6 +2242,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           requestAnimationFrame(restoreTries);
           return;
         }
+        /**
+         * "give up" means the tail is the answer — and landing there must be FOLLOWING.
+         *
+         * It was not: the switch computed a tail position without saying so, so the incoming session kept whatever `atBottom`
+         * the outgoing one left. A session the operator was following then stopped following after one switch — "セッション
+         * 移動時のスクロール復元で、追従状態だったら追従で戻す契約が出来てない" (#248).
+         */
+        if (verdict === "give-up") {
+          setFollow(true);
+          readerUntil = 0;
+        }
         requestAnimationFrame(settleAtTail);
       };
       requestAnimationFrame(restoreTries);

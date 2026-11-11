@@ -3225,6 +3225,7 @@ console.log("deep render ok: feed rows present");
       process.exit(1);
     }
     console.log("deep render ok: a session switch returns the reader to their place (#205)");
+
   }
 }
 
@@ -4161,7 +4162,14 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     set: (v: number) => { top = Math.max(0, Math.min(v, Math.max(0, content - view))); },
   });
   feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  // PRECONDITION: following, and no reader lock (an earlier check may have armed one for 400ms)
+  await new Promise((r) => setTimeout(r, 600));
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 80));
+  if (Math.round(content - top - view) > 24) {
+    console.error("#click-follow check: the feed is not following before the test — the check would be vacuous");
+    process.exit(1);
+  }
 
   // a CLICK on the feed is not a reading gesture
   feed.dispatchEvent(new w.PointerEvent("pointerdown", { bubbles: true }));
@@ -4398,6 +4406,46 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     process.exit(1);
   }
   console.log("deep render ok: the wake path shows the same timeline loading state as a switch (#wake-loading)");
+}
+
+
+{
+  /**
+   * A session the operator was FOLLOWING comes back at the TAIL (#248).
+   *
+   * "セッション移動時のスクロール復元で、追従状態だったら追従で戻す契約が出来てない" — the switch pin is gated on `atBottom()`,
+   * and the incoming session had never been told either way, so a followed session returned to whatever position the
+   * outgoing one left behind. Self-contained: it uses whatever geometry the feed has at this point.
+   */
+  const feed = w.document.querySelector(".feed") as HTMLElement;
+  const st = feed as unknown as { scrollTop: number; scrollHeight: number; clientHeight: number };
+  const pick = (name: string) =>
+    [...w.document.querySelectorAll(".agent-item")].find((el) => new RegExp(`\\b${name}\\b`).test(el.textContent ?? "")) as
+      | HTMLElement
+      | undefined;
+  st.scrollTop = st.scrollHeight; // following: at the tail
+  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 600));
+  if (st.scrollHeight - st.scrollTop - st.clientHeight > 24) {
+    console.error("#248 check: the feed is not at the tail before the test — the check would be vacuous");
+    process.exit(1);
+  }
+  pick("beta")?.click();
+  await new Promise((r) => setTimeout(r, 250));
+  pick("alpha")?.click();
+  for (let i = 0; i < 150; i++) {
+    if (st.scrollHeight - st.scrollTop <= st.clientHeight + 2) break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const gap = st.scrollHeight - st.scrollTop - st.clientHeight;
+  if (gap > 24) {
+    console.error(
+      `#248 REGRESSION: a FOLLOWED session came back ${Math.round(gap)}px from the tail — following must win over any ` +
+        "saved anchor",
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: a followed session returns at the tail (#248)");
 }
 
 await new Promise((r) => setTimeout(r, 120));
