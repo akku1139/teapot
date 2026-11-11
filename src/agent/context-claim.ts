@@ -113,28 +113,30 @@ export function claimsContextLimit(text: string | null | undefined): boolean {
 export function usageLine(used: number, budget: number, window?: number): string {
   const fmt = (n: number) => (n >= 1_000 ? `${Math.round(n / 1_000)}k` : String(Math.max(0, Math.round(n))));
   /**
-   * The percentage is of the WINDOW, and the compaction threshold is stated separately.
+   * EVERY number, named once.
    *
-   * It used to be `used / budget`, where `budget` is the compaction threshold — so a 900k window that compacts at 750k
-   * read as "82% used" at 615k and the denominator was a number the model could not see anywhere else. Reported as
-   * "生のサイズじゃなくてcompactボーダーまでにしたのはなぜ? 消費/フルサイズ とcompactまでの残り値にすべきでは?".
+   * The line used to mix two denominators without naming either: the percentage was of the WINDOW while "until
+   * auto-compaction" was measured from the BUDGET (the compaction threshold). A model reading
+   * "context 1% used (15k/1000k tokens, 735k until compaction)" had three different numbers in front of it and concluded it
+   * could not tell what they meant — "compact後のコンテキストウィンドウ残量報告が間違っている?" (#249). So the line states the
+   * percentage with its window, the threshold as its own figure, and the room left before that threshold:
    *
-   *     context 68% used (615k/900k tokens, 135k until auto-compaction)
-     *
-   * When the window is unknown the budget is the only denominator available, and the line says so by omitting the
-   * window entirely rather than pretending they are the same thing.
+   *     context 1% used (15k/1000k tokens) · auto-compacts at 750k · 735k until auto-compaction
+   *
+   * When the window is unknown the budget is the only denominator there is, and the line says so rather than pretending.
    */
   const full = Number.isFinite(window) && (window ?? 0) > 0 ? window! : 0;
-  const denom = full || (Number.isFinite(budget) && budget > 0 ? budget : 0);
+  const hasBudget = Number.isFinite(budget) && budget > 0;
+  const denom = full || (hasBudget ? budget : 0);
   if (!denom) return `context ${fmt(used)} tokens used`;
   const pct = Math.max(0, Math.min(100, Math.round((used / denom) * 100)));
-  const until = Number.isFinite(budget) && budget > 0 ? Math.max(0, budget - used) : null;
-  const size = full ? `${fmt(used)}/${fmt(full)} tokens` : `${fmt(used)}/${fmt(budget)} tokens (compaction threshold; full window unknown)`;
-  return until === null
-    ? `context ${pct}% used (${size})`
-    // "until auto-compaction" — the mechanism that acts on this number is automatic; plain "compaction" read as
-    // something the model had to trigger itself
-    : `context ${pct}% used (${size}, ${fmt(until)} until auto-compaction)`;
+  const size = full
+    ? `${fmt(used)}/${fmt(full)} tokens`
+    : `${fmt(used)}/${fmt(budget)} tokens — the compaction threshold; full window unknown`;
+  if (!hasBudget) return `context ${pct}% used (${size})`;
+  const until = Math.max(0, budget - used);
+  const threshold = full ? ` · auto-compacts at ${fmt(budget)}` : "";
+  return `context ${pct}% used (${size})${threshold} · ${fmt(until)} until auto-compaction`;
 }
 
 /**

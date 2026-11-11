@@ -163,3 +163,25 @@ test("talking about a budget without giving up is not a stop claim", () => {
     assert.equal(claimsContextLimit(text), false, text);
   }
 });
+
+/**
+ * Every number in the usage line is named (#249).
+ *
+ * "compact後のコンテキストウィンドウ残量報告が間違っている?" — the model was handed "context 1% used (15k/1000k tokens, 735k
+ * until compaction)" and could not tell which denominator each figure belonged to (it saw 1000k, 750k and 735k with no
+ * labels). The percentage now states its window, the threshold is its own figure, and the room left belongs to the
+ * threshold.
+ */
+test("the usage line names the window, the threshold and the room left (#249)", () => {
+  const line = usageLine(15_000, 750_000, 1_000_000);
+  assert.match(line, /context 2% used/, `percentage is of the WINDOW; got ${line}`);
+  assert.match(line, /15k\/1000k tokens/, "and says which window it divided by");
+  assert.match(line, /auto-compacts at 750k/, "the threshold is a named figure, not a silent denominator");
+  assert.match(line, /735k until auto-compaction/, "and the room left is measured from that threshold");
+});
+
+test("without a window it says the denominator IS the threshold (#249)", () => {
+  const line = usageLine(615_000, 750_000);
+  assert.match(line, /compaction threshold; full window unknown/, line);
+  assert.match(line, /135k until auto-compaction/, line);
+});
