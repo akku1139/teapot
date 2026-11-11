@@ -3075,6 +3075,20 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     onCleanup(() => {});
   });
 
+  /**
+   * A shell's name follows its WORKING DIRECTORY, and the directory only changes when the operator `cd`s — so the label
+   * has to be refreshed while the drawer is open.
+   *
+   * It used to be read only when the terminal list was fetched (on open, and on a tab click), which is why a title looked
+   * frozen until the operator clicked the tab: "タブクリックしないとタイトル更新されない?" (#238). Two seconds is short
+   * enough to feel live and long enough that a `/proc`-based cwd read per shell costs nothing.
+   */
+  createEffect(() => {
+    if (!termOpen()) return;
+    const timer = setInterval(() => void refreshTermTabs(), 2_000);
+    onCleanup(() => clearInterval(timer));
+  });
+
   const SLASH_COMMANDS = [
     { cmd: "/start", desc: "start working toward the goal" },
     { cmd: "/stop", desc: "interrupt the running agent" },
