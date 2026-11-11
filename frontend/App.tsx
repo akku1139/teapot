@@ -2714,6 +2714,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      * 過去ログを読んでいても末尾へ飛ばされる").
      */
     if (wasFollowing) seekTail(900);
+    if (next) focusPane();
   };
 
   type TermTab = { key: string; agentId: string; title: string; cwd?: string; ptyTitle?: string };
@@ -2796,6 +2797,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       return;
     }
     if (mineIdx !== i) setMine(i);
+    focusPane(focused);
   }
 
   const addFromSelected = () => addTab();
@@ -2822,6 +2824,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       setTermTabs((list) => [...list, { key: t.id, agentId: t.agentId, title: t.title, cwd: t.cwd }]);
       if (focusedPane() === 0) setPaneL(at);
       else setPaneR(at);
+      focusPane(focusedPane());
     } catch (ex) {
       flashHint(`could not open a shell: ${(ex as Error).message}`);
     }
@@ -3018,11 +3021,32 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     requestAnimationFrame(() => {
       if (s.el.parentElement !== host) host.appendChild(s.el);
       try { s.fit(); } catch {  }
-      if (focusedPane() === (idx === 0 ? 0 : 1)) {
-        try { s.term.focus(); } catch {  }
-      }
+      /**
+       * NO focus() here.
+       *
+       * This runs from an effect that re-evaluates whenever the tab LIST, the split, the pane index or the term height
+       * changes — so every one of those stole the keyboard: the operator typed into the composer (or a settings field) and
+       * the characters went to the shell instead. Reported as "フォーカス外しててもスペース以外の入力がターミナルに吸われる"
+       * (#256); a pushed tab title (#238) made it worse by re-running the list effect on every prompt.
+       *
+       * The terminal is focused by the operator's own actions instead — `focusPane()`, which the tab click, the new-tab
+       * button, opening the drawer and clicking the pane call.
+       */
     });
   }
+
+  /** focus the terminal for the pane the operator is working in — only from an explicit action (#256) */
+  const focusPane = (idx = focusedPane()) => {
+    const host = paneHosts[idx === 0 ? 0 : 1];
+    if (!host) return;
+    const tab = termTabs()[idx === 0 ? paneL() : paneR()];
+    if (!tab) return;
+    const s = liveTerms.get(tab.key);
+    try {
+      s?.term.focus();
+    } catch {
+    }
+  };
 
   createEffect(() => {
     void termTabs();
@@ -4451,14 +4475,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 </div>
               </div>
               <div class="termbody" classList={{ split: splitView() }}>
-                <div class="termpane" classList={{ focused: focusedPane() === 0 }} onpointerdown={() => setFocusedPane(0)} ref={setPaneHost(0)}>
+                <div class="termpane" classList={{ focused: focusedPane() === 0 }} onpointerdown={() => { setFocusedPane(0); focusPane(0); }} ref={setPaneHost(0)}>
                   <Show when={paneL() < 0 || paneL() >= termTabs().length}>
                     <div class="termempty muted">no shell here — ＋ opens one, tabs fill the focused pane</div>
                   </Show>
                 </div>
                 <Show when={splitView()}>
                   <div class="termsplit" />
-                  <div class="termpane" classList={{ focused: focusedPane() === 1 }} onpointerdown={() => setFocusedPane(1)} ref={setPaneHost(1)}>
+                  <div class="termpane" classList={{ focused: focusedPane() === 1 }} onpointerdown={() => { setFocusedPane(1); focusPane(1); }} ref={setPaneHost(1)}>
                     <Show when={paneR() < 0 || paneR() >= termTabs().length}>
                       <div class="termempty muted">no shell here — click a tab or ＋ to add</div>
                     </Show>
