@@ -904,14 +904,20 @@ export class Master {
       const parent = this.agents.get(ac.parent);
       if (!parent) return;
       this.wakeAncestorWaiters(ac.parent);
-      if (this.reportedRunning.has(agentId) && SETTLED.has(status))
+      /**
+       * An `error` child is NOT announced twice.
+       *
+       * The child's own `error` event already reaches the parent as "Sub-agent X hit an error: …" (see `onChildEvent`),
+       * so the generic "settled without having called finish()" note only repeated it with weaker wording — reported as
+       * "サブエージェントがエラー落ちしたときの親への通知がびみょい" (#245). The generic note exists for statuses that have
+       * no event of their own (`idle`, `stopped`, `waiting`).
+       */
+      if (this.reportedRunning.has(agentId) && SETTLED.has(status) && status !== "error")
         parent.enqueuePrompt(
           `[harness] Sub-agent @${agentId} is now ${status} without having called finish(), so it has not reported a result.` +
-            (status === "error"
-              ? ` Check its last output before deciding whether to re-spawn it.`
-              : status === "stopped"
-                ? ` It may have been stopped mid-task; message it to resume, or re-spawn it.`
-                : ` If you expected a result, message it or re-spawn it.`),
+            (status === "stopped"
+              ? ` It may have been stopped mid-task; message it to resume, or re-spawn it.`
+              : ` If you expected a result, message it or re-spawn it.`),
           "harness",
         );
       if (status === "running") this.reportedRunning.add(agentId);

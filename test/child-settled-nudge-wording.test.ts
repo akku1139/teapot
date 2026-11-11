@@ -120,8 +120,8 @@ test("it is prefixed and names the sub-agent (#135)", async () => {
 test("each status gets advice that fits it (#135)", async () => {
   const stopped = await nudgeFor("stopped");
   assert.match(stopped, /stopped mid-task/, `stopped means resume-or-respawn (#135); got ${stopped}`);
-  const error = await nudgeFor("error");
-  assert.match(error, /Check its last output/, `error means look first (#135); got ${error}`);
+  // an `error` child is announced by its own error event instead (#245) — see the check below
+
   // and neither contradicts itself: no "stopped" phrasing on a waiting child
   const waiting = await nudgeFor("waiting");
   assert.doesNotMatch(
@@ -131,3 +131,26 @@ test("each status gets advice that fits it (#135)", async () => {
   );
 });
 
+
+/**
+ * An `error` child is announced ONCE (#245).
+ *
+ * "サブエージェントがエラー落ちしたときの親への通知がびみょい" — the parent received BOTH "Sub-agent X hit an error: AiError: …"
+ * (from the child's error event) and the generic "is now error without having called finish()" note. The second adds
+ * nothing: the error text is the useful part, and the generic note is for statuses that have no event of their own.
+ */
+test("a child that died with an error does not also get the generic settled note (#245)", async () => {
+  const nudge = await nudgeFor("error");
+  assert.doesNotMatch(
+    nudge,
+    /without having called finish\(\)/,
+    `the error event is the notification; the generic note only repeats it (#245) — got ${nudge}`,
+  );
+});
+
+test("stopped and idle still get it, because nothing else announces them (#245)", async () => {
+  for (const status of ["idle", "stopped"]) {
+    const nudge = await nudgeFor(status);
+    assert.match(nudge, /without having called finish\(\)/, `${status} has no event of its own; got ${nudge}`);
+  }
+});
