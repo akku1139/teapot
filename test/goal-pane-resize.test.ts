@@ -13,20 +13,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { cssRuleBodies } from "./helpers/css.ts";
 
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 const goal = readFileSync(new URL("../frontend/components/goal-pane.tsx", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
-test("the goal box is resizable through the same class the tasks pane uses", () => {
-  const bodies = cssRuleBodies(css, ".goalbox");
-  const shared = bodies.find((b) => /resize:/.test(b)) ?? "";
-  assert.match(shared, /resize:\s*vertical/, "a dragged edge is what the operator expects from the tasks pane");
-  assert.match(shared, /overflow-y:\s*auto/);
-  assert.match(goal, /class="content mdpreview goalbox"/, "the rendered goal uses it");
-  assert.match(goal, /class="mono todopane-edit goalbox"/, "and so does the editor");
-});
+
 
 test("the dragged height is remembered under the goal's own key", () => {
   assert.match(goal, /teapot\.goalH/, "the goal must not overwrite the tasks height (teapot.todoH)");

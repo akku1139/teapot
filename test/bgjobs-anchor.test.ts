@@ -13,19 +13,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { cssRuleBody } from "./helpers/css.ts";
 
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
 const panel = readFileSync(new URL("../frontend/components/bg-jobs.tsx", import.meta.url), "utf8");
 const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
-test("the header is the popover's positioning context", () => {
-  const head = cssRuleBody(css, ".chan-head");
-  assert.match(head, /position:\s*relative/, "without this the anchor becomes .channel and the panel opens off-screen");
-  const pop = cssRuleBody(css, ".bgjobs-pop");
-  assert.match(pop, /position:\s*absolute/, "the panel floats over the feed");
-  assert.match(pop, /top:\s*calc\(100% \+ 6px\)/, "…anchored under the header's own height");
-});
+
 
 test("the panel is rendered inside the header, and is a component", () => {
   assert.match(app, /<header class="chan-head">/, "the header exists");

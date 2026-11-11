@@ -2372,6 +2372,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         }
         return;
       }
+      /**
+       * The SHELL renamed itself (OSC 0/2) — no polling, and the tab follows what the program says it is.
+       *
+       * #238: the tab title only moved when the list happened to be fetched (open, or a tab click), so a `cd` looked frozen
+       * until the operator clicked. A two-second poll would have been the lazy answer ("2秒間隔のポーリングはコスパ悪い").
+       */
+      if (msg.kind === "terminal-title" && msg.terminalId) {
+        const id = String(msg.terminalId);
+        const title = String(msg.title ?? "");
+        const cwd = String(msg.cwd ?? "");
+        setTermTabs((list) => list.map((t) => (t.key === id ? { ...t, title: title || t.title, cwd: cwd || t.cwd } : t)));
+        return;
+      }
       if (msg.kind === "terminal-closed" && msg.terminalId) {
         /**
          * The pty is gone (reaped while nothing was attached, or it exited). Drop the tab so the strip does not keep
@@ -2703,7 +2716,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (wasFollowing) seekTail(900);
   };
 
-  type TermTab = { key: string; agentId: string; title: string; cwd?: string };
+  type TermTab = { key: string; agentId: string; title: string; cwd?: string; ptyTitle?: string };
   type TermSession = {
     el: HTMLDivElement;
     term: any;
@@ -2720,19 +2733,37 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * The basename is short enough for a tab and the full path is in the tooltip.
    */
   const tabLabel = (t: TermTab) => {
+    /**
+     * What the SHELL says wins; the working directory is the fallback.
+     *
+     * A program that sets a title (`vim notes.md`, an `ssh` host, a `bash` prompt that prints the cwd) is telling the tab
+     * what it is, and that is what every terminal shows. A shell that says nothing gets the cwd basename (#238).
+     */
+    const pty = (t.ptyTitle ?? "").trim();
+    /**
+     * A plain `bash` prompt announces `user@host:/the/cwd` on every prompt, and showing that whole string in a tab is worse
+     * than the directory it contains — so that shape is reduced to its basename. Anything else (`vim notes.md`, an `ssh`
+     * host, a test runner) is exactly what the tab should say.
+     */
+    const promptish = /^[^@\s]+@[^:\s]+:(.+)$/.exec(pty);
+    if (promptish) {
+      const dir = (promptish[1] ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+      if (dir) return dir.length <= 26 ? dir : `${dir.slice(0, 25)}…`;
+    }
+    if (pty) return pty.length <= 26 ? pty : `${pty.slice(0, 25)}…`;
     const base = (t.cwd ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
     return base && base.length <= 24 ? base : t.title;
   };
   const refreshTermTabs = async () => {
     const r = (await api("/api/terminals").catch(() => null)) as {
-      terminals?: { id: string; agentId: string; title: string; cwd?: string }[];
+      terminals?: { id: string; agentId: string; title: string; cwd?: string; ptyTitle?: string }[];
     } | null;
     const list = r?.terminals ?? [];
     if (!list.length) return;
     setTermTabs((prev) =>
       prev.map((t) => {
         const hit = list.find((x) => x.id === t.key);
-        return hit ? { ...t, title: hit.title, cwd: hit.cwd } : t;
+        return hit ? { ...t, title: hit.title, cwd: hit.cwd, ptyTitle: hit.ptyTitle } : t;
       }),
     );
   };
@@ -3094,10 +3125,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     loadPersonas();
     connectWs();
     void api("/api/terminals")
-      .then((r: { terminals?: { id: string; agentId: string; title: string; cwd?: string }[] }) => {
+      .then((r: { terminals?: { id: string; agentId: string; title: string; cwd?: string; ptyTitle?: string }[] }) => {
         const list = r.terminals ?? [];
         if (!list.length) return;
-        setTermTabs(list.map((t) => ({ key: t.id, agentId: t.agentId, title: t.title, cwd: t.cwd })));
+        setTermTabs(list.map((t) => ({ key: t.id, agentId: t.agentId, title: t.title, cwd: t.cwd, ptyTitle: t.ptyTitle })));
         if (termOpen()) {
           setPaneL(0);
           setPaneR(-1);
@@ -3106,20 +3137,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       .catch(() => {
       });
     onCleanup(() => {});
-  });
-
-  /**
-   * A shell's name follows its WORKING DIRECTORY, and the directory only changes when the operator `cd`s — so the label
-   * has to be refreshed while the drawer is open.
-   *
-   * It used to be read only when the terminal list was fetched (on open, and on a tab click), which is why a title looked
-   * frozen until the operator clicked the tab: "タブクリックしないとタイトル更新されない?" (#238). Two seconds is short
-   * enough to feel live and long enough that a `/proc`-based cwd read per shell costs nothing.
-   */
-  createEffect(() => {
-    if (!termOpen()) return;
-    const timer = setInterval(() => void refreshTermTabs(), 2_000);
-    onCleanup(() => clearInterval(timer));
   });
 
   const SLASH_COMMANDS = [

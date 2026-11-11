@@ -33,12 +33,18 @@ const TEST_DIR = path.join(ROOT, "test");
 /** reading implementation code — `.ts`/`.tsx` under `frontend/` or `src/` — is the banned thing */
 const BANNED = [
   /readSource\(\s*["'`](?:src|frontend)\/[^"'`]*\.tsx?["'`]\s*\)/,
+  /**
+   * A STYLESHEET is source text too.
+   *
+   * `app.css` used to be the one allowed read, on the theory that happy-dom does no layout so geometry had to be asserted
+   * as CSS. What that produced was 19 files of `cssRuleBody(...)` assertions: they break on renames that fix nothing and stay
+   * green while the UI is broken, exactly the failure `readSource` was banned for. The property they were really protecting
+   * is a LAYOUT outcome, which belongs in a real browser (`scripts/harness`) or nowhere.
+   */
+  /readSource\(\s*["'`][^"'`]*\.css["'`]\s*\)/,
   // the same read through the helper, imported dynamically
   /import\(\s*["'`]\.\/helpers\/source\.ts["'`]\s*\)\s*\)\s*\.readSource\(\s*["'`](?:src|frontend)\/[^"'`]*\.tsx?["'`]/,
 ];
-
-/** `frontend/app.css` and any other stylesheet: allowed, see the note above */
-const CSS_OK = /readSource\(\s*["'`][^"'`]*\.css["'`]\s*\)/;
 
 const testFiles = readdirSync(TEST_DIR).filter((f) => f.endsWith(".test.ts"));
 
@@ -68,23 +74,7 @@ test("no test asserts on implementation source (#meta)", () => {
   );
 });
 
-test("stylesheets are the only source a test may read (#meta)", () => {
-  /**
-   * The allow-list is enforced, not assumed: every `readSource` in `test/` must name a `.css` file,
-   * or this fails. Without this, adding a new `readSource("src/agent.ts")` in a form the BANNED
-   * patterns above happen not to match would slip through.
-   */
-  const offenders: string[] = [];
-  for (const file of testFiles) {
-    if (file === "no-source-text-tests.test.ts") continue;
-    const src = readFileSync(path.join(TEST_DIR, file), "utf8");
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/[^\n]*/gm, "");
-    for (const m of code.matchAll(/readSource\(\s*(["'`][^"'`]+["'`])/g)) {
-      if (!CSS_OK.test(`readSource(${m[1]})`)) offenders.push(`${file}: readSource(${m[1]})`);
-    }
-  }
-  assert.deepEqual(offenders, [], `readSource may only read a stylesheet:\n  ${offenders.join("\n  ")}`);
-});
+
 
 test("the guard would actually catch a source-comparing test (#meta)", () => {
   /**
@@ -106,7 +96,9 @@ test("the guard would actually catch a source-comparing test (#meta)", () => {
       `the guard must refuse this shape, or it cannot catch the tests it exists for: ${line}`,
     );
   }
-  // and it must NOT refuse the CSS contract, which is the one legitimate read
-  assert.ok(!BANNED.some((re) => re.test(`readSource("frontend/app.css")`)), "a stylesheet read is allowed");
-  assert.ok(CSS_OK.test(`readSource("frontend/app.css")`), "and recognised as the allowed kind");
+  // and a stylesheet read is refused like any other source text now
+  assert.ok(
+    BANNED.some((re) => re.test(`readSource("frontend/app.css")`)),
+    "a stylesheet read is source-matching too, and must be refused",
+  );
 });

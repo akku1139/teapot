@@ -219,7 +219,27 @@
  * the glyph, which is cheap insurance for emoji and CJK labels even though it was not the cause
  * here. This applies to EVERY button, so the fix does not have to be remembered per call site.
  */
-button {
+/**
+ * ONE control height, for every button in the app.
+ *
+ * Heights used to come from each rule's own padding, so the same row held a 22px goal-status button, a 26px icon button and a
+ * 28px "save goal" — reported repeatedly as "ボタンの高さが違う" (#254: "settings の providers にあるボタンとか、save goalとかは
+ * ちゃんとした高さになってるのでCSS全体で統一すべき", plus the header's ▶ start against its neighbours, and the archive /
+ * live-update buttons being a mystery).
+ *
+ * `--ctl-h` is 26px because that is what the SQUARE icon buttons already are: they must stay square (a one-character button
+ * 2px wider than it is tall reads as lopsided), so the standard height is theirs and everything else meets it.
+ */
+:root { --ctl-h: 26px; }
+
+button,
+/**
+ * The same height at a specificity that beats the per-row rules (`.cfgrow button`, the settings modal's
+ * `button:not(.iconbtn):not([class])`), which set their own padding and were winning on the `height` the plain `button`
+ * rule declares. The two families that are deliberately NOT this height opt out below.
+ */
+button:not(.goalstate):not(.tabx) {
+  height: var(--ctl-h);
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -1038,11 +1058,11 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 .agent-item.sel { background: var(--bg-mid); }
 /* A sub-agent is a child of the chat above it, and once the parent's name is
    full-brightness the only remaining cue that this row is subordinate is its
-   indent — which is easy to miss when scanning. Mute it slightly so the
-   parent/child relationship reads at a glance, and keep the selected sub-agent
-   at full brightness so it never looks disabled. */
-.agent-item.sub-row { color: var(--dim); }
-.agent-item.sub-row.sel { color: var(--fg); }
+   indent — which is easy to miss when scanning.
+   Reported: "左パネルでサブエージェントを色などで特別扱いしないように (階層構造や閉じたりできるのは維持)" (#241). The
+   hierarchy is carried by the INDENT and the GROUPING (taken from the parent row), so muting a child's text only made it
+   harder to read: a sub-agent is an agent, and its name is the most important thing about it. */
+.agent-item.sub-row { color: inherit; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .dot.running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 /**
@@ -1217,7 +1237,8 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
    every time the label flips between "▶ start" and "■ stop" (the same trap the model apply
    button had) */
 .chan-head .runbtn {
-  min-width: 74px; height: 24px; padding: 0 var(--space-4);
+  /* the standard control height: ▶ start sat 2px shorter than the icon buttons beside it (#254) */
+  min-width: 74px; height: var(--ctl-h); padding: 0 var(--space-4);
   background: var(--ok); color: #fff; border: none;
   border-radius: var(--radius-md); cursor: pointer;
   font-size: var(--text-sm); font-weight: 700; line-height: 1;
@@ -1915,6 +1936,9 @@ html[data-bg-image="on"] .termpane {
  * 背景に角丸が効いてない"). Rounding the element is enough; the blanket rule then paints a shape that fits.
  */
 .tabx {
+  /* deliberately 16px, not `--ctl-h`: it lives inside a 2px-padded tab strip, where a 26px square would make the tab taller
+     than the strip (#254 keeps it) */
+  height: 16px;
   /* SQUARE (#207, "正方形なボタンの縦横の長さを揃える"). It used to size to its glyph, so a ✕ sat in a slightly
      rectangular box that drifted when the tab's line-height changed. 16px is the square small enough for a tab
      strip and big enough to click; `line-height: 1` keeps the glyph centred, as with `.iconbtn`. */
@@ -2149,7 +2173,11 @@ html[data-bg-image="on"] .composer form {
 .cmdrow.active { background: var(--acc); color: #fff; }
 .cmdrow.active .muted { color: #e6e9ff; }
 .cmdrow .muted { font-size: var(--text-xs); }
-.composer button { background: var(--acc); border: none; color: white; border-radius: var(--radius-lg); padding: 7px 14px; cursor: pointer; font-weight: 600; }
+.composer button {
+  background: var(--acc); border: none; color: white; border-radius: var(--radius-lg);
+  /* the send button is the one action in the composer, and it too took its height from padding (28px) */
+  height: var(--ctl-h); padding: 0 14px; cursor: pointer; font-weight: 600;
+}
 .composer button:hover { opacity: .9; }
 .composer label { color: var(--dim); font-size: var(--text-xs); display: flex; gap: var(--space-2); align-items: center; white-space: nowrap; }
 .hint { color: var(--dim); font-size: var(--text-xs); margin-top: 5px; }
@@ -2507,7 +2535,8 @@ html[data-bg-image="on"] .composer form {
 .skillbody th, .skillbody td { border: 1px solid var(--line); padding: 2px 6px; }
 
 /* goal status segmented buttons */
-.goalstate { background: var(--bg-light); color: var(--fg); border: none; border-radius: var(--radius-md); padding: 3px 10px; cursor: pointer; font-size: var(--text-xs); }
+/* deliberately shorter than `--ctl-h`: a status row of three small chips, not a row of actions (#254 keeps it) */
+.goalstate { background: var(--bg-light); color: var(--fg); border: none; border-radius: var(--radius-md); padding: 3px 10px; cursor: pointer; font-size: var(--text-xs); height: auto; }
 .goalstate.on.active { background: var(--ok); color: #fff; font-weight: 600; }
 .goalstate.on.done { background: var(--acc); color: #fff; font-weight: 600; }
 .goalstate.on.paused { background: var(--warn); color: #fff; font-weight: 600; }
@@ -3215,7 +3244,6 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
  * centred the same way.
  */
 .notifhead .editbtn {
-  height: 26px;
   padding: 0 var(--space-2);
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-light); border: none; border-radius: var(--radius-md);

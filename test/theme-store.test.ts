@@ -12,8 +12,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { cssRuleBody } from "./helpers/css.ts";
 import {
   applyCustomTheme,
   DEFAULT_PALETTE,
@@ -77,24 +75,6 @@ function withStorage(fn: () => void, opts: { failWrite?: boolean; succeedAfter?:
 }
 
 /* ---------- validation ---------- */
-
-test("every palette key app.css relies on is covered by the token table (#theme)", () => {
-  // PRECONDITION for everything below: if the table missed a variable, a custom theme would
-  // silently leave that one at the preset's value and the UI would be half one theme and half
-  // another — the exact failure the sanitizer exists to prevent.
-  const vars = PALETTE_KEYS.map((k) => k.cssVar);
-  assert.deepEqual(
-    [...vars].sort(),
-    [
-      "--acc", "--bg-dark", "--bg-darkest", "--bg-light", "--bg-mid", "--dim", "--err",
-      "--fg", "--line", "--ok", "--term-bg", "--term-fg", "--tool", "--warn",
-    ].sort(),
-    "the palette must define exactly the variables the themes in app.css define",
-  );
-  for (const k of PALETTE_KEYS) {
-    assert.equal(typeof DEFAULT_PALETTE[k.key], "string", `${k.key} must have a default`);
-  }
-});
 
 test("a valid theme round-trips (#theme)", () => {
   const t = sanitizeTheme(theme({ backgroundImage: "data:image/png;base64,AAA", backgroundDim: 0.4 }));
@@ -279,55 +259,6 @@ test("a new id cannot collide with a preset or an existing custom theme (#theme)
   assert.match(id, /^custom-[a-z0-9-]+$/);
 });
 
-test("PRESET_PALETTES matches the [data-theme] blocks in app.css (#theme)", () => {
-  // The preview needs each preset's colours as DATA, and a bundled stylesheet cannot be read
-  // back — so the table duplicates app.css. That duplication is the risk: retune a preset in
-  // CSS and the picker keeps showing the OLD palette, silently, until someone notices the
-  // preview does not match the theme it applies. This test is the guard.
-  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-
-  /** the declarations inside `selector { … }` */
-  const blockOf = (selector: string): string => {
-    const i = css.indexOf(selector);
-    assert.notEqual(i, -1, `app.css must contain ${selector}`);
-    const open = css.indexOf("{", i);
-    const close = css.indexOf("}", open);
-    return css.slice(open + 1, close);
-  };
-  const colourIn = (body: string, cssVar: string): string | null => {
-    const m = new RegExp(`\\${cssVar}:\\s*(#[0-9a-fA-F]{3,8})`).exec(body);
-    return m ? normalizeColour(m[1]!) : null;
-  };
-
-  // :root IS the dark theme (the stylesheet says so), and every preset is a [data-theme] block
-  const sources: Record<string, string> = {
-    dark: blockOf(":root {"),
-    ...Object.fromEntries(
-      Object.keys(PRESET_PALETTES)
-        .filter((k) => k !== "dark")
-        .map((k) => [k, blockOf(`[data-theme="${k}"]`)]),
-    ),
-  };
-
-  assert.deepEqual(
-    Object.keys(PRESET_PALETTES).sort(),
-    Object.keys(sources).sort(),
-    "every preset in the table must have a stylesheet block, and vice versa",
-  );
-
-  for (const [key, body] of Object.entries(sources)) {
-    for (const { key: pk, cssVar } of PALETTE_KEYS) {
-      const want = colourIn(body, cssVar);
-      assert.equal(
-        PRESET_PALETTES[key]![pk],
-        want,
-        `${key}.${pk} (${cssVar}) is ${PRESET_PALETTES[key]![pk]} in theme-store.ts but ${want} ` +
-          `in app.css — the preview would draw a palette the theme does not apply`,
-      );
-    }
-  }
-});
-
 test("a stored id naming a DELETED theme falls back instead of blanking the UI (#theme)", () => {
   // A dead id matches neither `:root` nor any `[data-theme]` block, so `data-theme` pointed at
   // nothing and every surface went transparent — unreadable, with no visible way back except
@@ -397,118 +328,3 @@ test("the retry strips ONLY the background, never the palette (#theme)", () => {
   assert.equal(stripped.mode, t.mode);
 });
 
-test("the wallpaper layer is an <img> that cannot intercept anything (#theme)", () => {
-  /**
-   * The image moved from a `body` CSS background to a dedicated `<img srcset>` layer, because only
-   * an element can carry `srcset` — and `srcset` is what lets the browser fetch the width its
-   * display area actually needs instead of a 6000px photo. Reported as
-   * "背景画像が大きいとブラウザがリサイズでかなり重くなっちゃう".
-   *
-   * Three properties keep that layer safe, and all three are easy to lose in a refactor:
-   *   - it covers the viewport like `background-size: cover` did, and stays put while the feed
-   *     scrolls (`position: fixed`);
-   *   - `pointer-events: none` — a full-screen element above the app would otherwise swallow every
-   *     click;
-   *   - the DIM value keeps a fallback, or `filter: brightness(calc(1 - var(--bg-image-dim)))` is
-   *     invalid at computed-value time and the whole declaration is dropped, silently losing the
-   *     dimming.
-   *
-   * A CSS contract, which is the one case where reading the stylesheet is legitimate: happy-dom
-   * does no layout and cannot compute `calc`/`color-mix`.
-   */
-  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-  const photo = cssRuleBody(css, ".bgphoto");
-  assert.ok(photo, "app.css must define the .bgphoto layer");
-  assert.match(photo, /position:\s*fixed/, "fixed, so the photo does not scroll with the feed");
-  assert.match(photo, /pointer-events:\s*none/, "it must never swallow a click");
-  // the IMAGE is a child now: a replaced element cannot host a `::after`, and the dim veil has to
-  // be a separate layer ABOVE the pixels (a `background` on an img paints behind them)
-  const inner = cssRuleBody(css, ".bgphoto > img");
-  assert.ok(inner, "the image itself must be a child of the dim wrapper");
-  assert.match(inner, /object-fit:\s*cover/, "cover, to match what background-size did");
-  /**
-   * The dim lives on its own element ABOVE the image, not on the wrapper.
-   *
-   * A `background` on the wrapper paints BEHIND the image (invisible — that shipped, and the dim
-   * did nothing), and the image cannot dim itself: `filter: brightness()` below 1 darkens but above
-   * 1 does not brighten (MEASURED: black stays 0 at 1.55), so it cannot produce a pale veil on a
-   * light theme.
-   */
-  const veil = cssRuleBody(css, ".bgphoto-veil");
-  assert.ok(veil, "the dim veil must be its own element");
-  assert.match(
-    veil,
-    /var\(--bg-image-dim,\s*0?\.\d+\)/,
-    "the dim value needs a fallback or the color-mix is invalid at computed-value time",
-  );
-  /**
-   * The wallpaper must be BEHIND the app.
-   *
-   * Reported: "背景色があるときにUIのほぼすべてが透明になってほぼ何も見えない". Nothing was
-   * transparent — the photo was ON TOP. `.layout` is a stacking context, so an image placed inside
-   * it at `z-index: 0` painted over every static child, and the faint text showing through read as
-   * transparency.
-   *
-   * The invariant is negative z-index on the layer — it must sit behind `.layout`'s context, not
-   * merely "below the content" within it. `z-index: 0` here is the bug, not a neutral default.
-   */
-  assert.match(
-    cssRuleBody(css, ".bgphoto"),
-    /z-index:\s*-1/,
-    "the wallpaper must sit behind the app's stacking context, or it covers the UI",
-  );
-  assert.doesNotMatch(
-    cssRuleBody(css, ".bgphoto"),
-    /z-index:\s*0\s*;/,
-    "zero is painted above static siblings — that is how the image covered the sidebar",
-  );
-});
-
-test("a LIGHT theme gets light native widgets, custom themes included (#theme)", () => {
-  /**
-   * Reported: "ramuneは未チェックのチェックボックスの背景色が黒系で微妙".
-   *
-   * `color-scheme` is what tells the browser to paint its OWN controls — the unchecked checkbox
-   * box, number spinners, scrollbars, the select popup. Only the three built-in LIGHT preset
-   * blocks set `light`, so any custom light theme (a ramune copy) fell back to `:root`'s `dark`
-   * and those widgets were painted dark on a pale panel.
-   *
-   * Keyed on `data-appearance`, which carries the resolved mode for presets AND custom themes, so
-   * this fixes the class rather than one palette at a time.
-   */
-  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-  assert.match(
-    cssRuleBody(css, 'html[data-appearance="light"]'),
-    /color-scheme:\s*light/,
-    "a light appearance must ask the UA for light widgets",
-  );
-  assert.match(cssRuleBody(css, 'html[data-appearance="dark"]'), /color-scheme:\s*dark/);
-
-  // and the unchecked box must not be painted with the deepest surface in a light theme: that is
-  // the specific smudge the report was about
-  const box = cssRuleBody(css, 'input[type="checkbox"]');
-  assert.match(box, /background-color:\s*var\(--bg-darkest\)/, "the box takes the theme's own surface");
-});
-
-test("with a wallpaper, `body` must NOT paint its own background (#ui)", () => {
-  /**
-   * Reported: "インラインコードブロックに透明度が効いてなさそう".
-   *
-   * The code WAS rendered at the configured alpha — MEASURED in headless Firefox,
-   * `color(srgb 0.101 0.109 0.133 / 0.5)` — so the alpha was never the problem. The problem was
-   * what lay BEHIND it: the image is at `z-index: -1`, which is behind `body`'s own background, and
-   * a body fill (even a translucent one) hides it. Every translucent surface was therefore
-   * revealing the body's fill rather than the photo, which reads as "transparency does nothing".
-   *
-   * So the invariant is negative: with an image set, `body` must not paint a background at all.
-   */
-  const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-  const rule = cssRuleBody(css, 'html[data-bg-image="on"] body');
-  assert.match(
-    rule,
-    /background:\s*transparent/,
-    "the photo is the page background; a body fill sits in front of it and hides it",
-  );
-  // and the plain case must still paint, or a theme with no image would show the UA default
-  assert.match(cssRuleBody(css, "body"), /background:\s*var\(--bg-dark\)/);
-});

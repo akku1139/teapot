@@ -15,6 +15,8 @@ export interface TerminalInfo {
   id: string;
   agentId: string;
   title: string;
+  /** what the SHELL says its title is (OSC 0/2), if it ever says anything — see `noteTitle` */
+  ptyTitle?: string;
   /** the shell's working directory — the tab label uses its basename */
   cwd?: string;
   clients: number;
@@ -25,6 +27,8 @@ interface Term {
   id: string;
   agentId: string;
   title: string;
+  /** what the shell said its title is (OSC 0/2) — see noteTitle */
+  ptyTitle?: string;
   /** the directory the shell started in — the fallback label when /proc cannot be read */
   workspace: string;
   child: ChildProcess;
@@ -130,11 +134,13 @@ export function createTerminal(
   child.stdout?.on("data", (b: Buffer) => {
     const s = b.toString("utf8");
     append(t, s);
+    noteTitle(t);
     emit(id, { kind: "data", data: s });
   });
   child.stderr?.on("data", (b: Buffer) => {
     const s = b.toString("utf8");
     append(t, s);
+    noteTitle(t);
     emit(id, { kind: "data", data: s });
   });
   child.on("close", (code) => {
@@ -153,6 +159,47 @@ export function createTerminal(
   setTimeout(() => seed(10), 30);
   console.log(`[teapot] ⌨ terminal open: ${id} ${agentId} @ ${workspace} (${hasScript ? "pty" : "pipe"})`);
   return { ok: true, terminal: infoOf(t) };
+}
+
+/**
+ * The tab title comes from the SHELL, not from a poll.
+ *
+ * A program tells the terminal what to call it with `ESC ] 0 ; text BEL` (or `ESC ] 2 ; …`, or the ST-terminated
+ * `ESC ] 0 ; text ESC \\`): that is what every real terminal shows in its title bar, and what `vim`, `ssh`, `htop` and a
+ * plain `bash` prompt use to say where you are. Reading it out of the pty stream costs nothing and needs no timer — the
+ * alternative was the client asking for the tab list every two seconds, which is exactly the "2秒間隔のポーリングはコスパ悪い"
+ * (#238).
+ *
+ * A tab is pushed to the clients through the same bus every other update uses, and only when the text actually changed.
+ */
+const OSC_TITLE = /\x1b\](?:0|2);([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+
+export function oscTitleFrom(text: string): string | null {
+  let last: string | null = null;
+  for (const m of text.matchAll(OSC_TITLE)) last = m[1] ?? null;
+  if (last === null) return null;
+  const clean = last.replace(/\s+/g, " ").trim().slice(0, 60);
+  return clean || null;
+}
+
+function noteTitle(t: Term): void {
+  /**
+   * Scan the ACCUMULATED tail, not the chunk.
+   *
+   * MEASURED: a pty hands over arbitrary slices, so `ESC ] 0 ; …` and its BEL routinely arrive in different chunks — the
+   * shell's own prompt writes a title on every prompt, and every one of those was missed because the regex was applied to
+   * one chunk at a time. The last 4KB is enough for any sane title sequence.
+   */
+  const clean = oscTitleFrom(t.buffer.slice(-4096));
+  if (!clean || clean === t.ptyTitle) return;
+  t.ptyTitle = clean;
+  bus.emit("update", {
+    kind: "terminal-title",
+    agentId: t.agentId,
+    terminalId: t.id,
+    title: clean,
+    cwd: shellCwd(t),
+  } satisfies BusEvent);
 }
 
 /**
@@ -181,6 +228,7 @@ function infoOf(t: Term): TerminalInfo {
     id: t.id,
     agentId: t.agentId,
     title: t.title,
+    ...(t.ptyTitle ? { ptyTitle: t.ptyTitle } : {}),
     cwd: shellCwd(t),
     clients: sinks.get(t.id)?.size ?? 0,
     createdAt: t.createdAt,
