@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
 import { IconBtn, Modal } from "./chrome";
+import { Loading } from "./loading";
 import { CodePreview } from "./settings-parts";
 import { renderMarkdown } from "../md";
 import { highlightChunks } from "../lib/shiki";
@@ -20,6 +21,13 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
   const [viewMode, setViewModeRaw] = createSignal(ui.viewMode);
   const setViewMode = (v: FileUiState["viewMode"]) => { ui.viewMode = v; setViewModeRaw(v); };
   const [err, setErr] = createSignal("");
+  /**
+   * "empty" and "not fetched yet" are different states.
+   *
+   * Reported: "ファイルツリー読み込み中にemptyになる / UX悪い / loading状態をコンポーネント化すべき" (#239) — the tree fell
+   * back to "empty workspace" for the whole first fetch, which reads as "this workspace has nothing in it".
+   */
+  const [loading, setLoading] = createSignal(true);
   const [ignoreMode, setIgnoreMode] = createSignal(
     localStorage.getItem("teapot.ignoreMode") ?? "dim",
   );
@@ -99,8 +107,11 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     setPreview(null);
     setMedia(null);
     setKids(new Map());
+    setLoading(true);
     void fetchDir("").then((rows) => {
-      if (rows && kidsFor === id) setKids(new Map([[ "", rows ]]));
+      if (kidsFor !== id) return;
+      if (rows) setKids(new Map([["", rows]]));
+      setLoading(false);
     });
   });
 
@@ -281,8 +292,15 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
       </h3>
       <div class="filebox">
         <Show
-          when={(kids().get("") ?? []).length > 0}
-          fallback={<div class="muted" style="padding:6px">{err() || "empty workspace"}</div>}
+          when={!loading() && (kids().get("") ?? []).length > 0}
+          fallback={
+            <Show
+              when={!loading()}
+              fallback={<Loading what="files" class="muted" />}
+            >
+              <div class="muted" style="padding:6px">{err() || "empty workspace"}</div>
+            </Show>
+          }
         >
           <For each={(kids().get("") ?? []).filter(ignoreFilter)}>
             {(node) => row(node, 0)}
