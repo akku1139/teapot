@@ -2506,6 +2506,19 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         }
     };
     runFeedRefreshRef = runFeedRefresh;
+    /**
+     * The same "loading timeline…" the session switch shows, for the wake path too.
+     *
+     * Returning from sleep refetches through `catchUpAfterReconnect`, which merged silently: the operator saw a stale
+     * timeline with no sign that anything was in flight ("スリープから復帰したときのタイムラインロードで loading timeline... が
+     * 出ない / セッション移動と同じ経路を通るようにしてどっちでも出るように" — #246). One helper, both paths.
+     */
+    const busyTimeline = (fn: () => Promise<void>) => {
+      setSwitchingFeed(true);
+      void fn()
+        .catch(() => {})
+        .finally(() => setSwitchingFeed(false));
+    };
     onTabVisible = () => {
       if (document.visibilityState !== "visible") return;
       void refreshMetrics();
@@ -2514,16 +2527,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       if (!id) return;
       if (pendingRefresh) {
         pendingRefresh = false;
-        void runFeedRefresh();
+        busyTimeline(() => runFeedRefresh());
         return;
       }
       const cursor = events().at(-1)?.id;
       if (!cursor) {
         pendingRefresh = true;
-        void runFeedRefresh();
+        busyTimeline(() => runFeedRefresh());
         return;
       }
-      void catchUpAfterReconnect();
+      busyTimeline(() => catchUpAfterReconnect());
     };
   }
 

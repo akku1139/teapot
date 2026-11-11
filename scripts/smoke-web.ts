@@ -4368,6 +4368,38 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log("deep render ok: a not-running snapshot clears the streamed reasoning (#thinking-residue)");
 }
 
+
+{
+  /**
+   * Returning from sleep shows the same "loading timeline…" a session switch does (#246).
+   *
+   * "スリープから復帰したときのタイムラインロードで loading timeline... がでない / セッション移動と同じ経路を通るようにしてどっ
+   * ちでも出るように". The wake path merged silently, so a slow catch-up looked like a stale timeline.
+   */
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((r) => { release = r as () => void; });
+  const origFetch = globalThis.fetch;
+  setGlobal("fetch", async (url: string, init?: unknown) => {
+    const u = String(url);
+    if (u.includes("/events") && u.includes("after=")) await gate; // hold the catch-up open
+    return origFetch(url as never, init as never);
+  });
+  w.document.dispatchEvent(new w.Event("visibilitychange"));
+  let sawLoading = false;
+  for (let i = 0; i < 40; i++) {
+    if (bodyText().includes("loading") && w.document.querySelector(".feedloading, .loadingrow")) sawLoading = true;
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+  }
+  (release as (() => void) | null)?.();
+  await new Promise((r) => setTimeout(r, 120));
+  setGlobal("fetch", origFetch);
+  if (!sawLoading) {
+    console.error("#wake-loading REGRESSION: coming back did not show a loading state while the catch-up ran");
+    process.exit(1);
+  }
+  console.log("deep render ok: the wake path shows the same timeline loading state as a switch (#wake-loading)");
+}
+
 await new Promise((r) => setTimeout(r, 120));
 console.log(`first render survived (${fetchCount} api calls served)`);
 process.exit(0);
