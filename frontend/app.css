@@ -3208,6 +3208,20 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
   padding: 8px 12px; border-bottom: 1px solid var(--line);
   font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--dim);
 }
+/**
+ * "clear all" sits beside a 26px `.iconbtn` (✕) and had NO rule of its own — only the message-row
+ * `.msg-head .editbtn`, which does not apply here — so the browser drew a default button with its own padding and height.
+ * Reported as "通知の clear all ボタンのかたちが違う / 高さ保証すべき" (#254). It is the same height as its neighbour and
+ * centred the same way.
+ */
+.notifhead .editbtn {
+  height: 26px;
+  padding: 0 var(--space-2);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-light); border: none; border-radius: var(--radius-md);
+  color: var(--dim); font: inherit; font-size: var(--text-xs); cursor: pointer; white-space: nowrap;
+}
+.notifhead .editbtn:hover { color: var(--fg); }
 .notiflist { max-height: 46vh; overflow-y: auto; }
 .notifitem { padding: 8px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .notifitem:last-child { border-bottom: none; }
