@@ -4175,7 +4175,16 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   feed.dispatchEvent(new w.PointerEvent("pointerdown", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 40));
   content += 300;
-  for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  /**
+   * WAIT FOR THE PIN, not for twenty frames.
+   *
+   * The follow pin is throttled, so on a slow runner the twenty frames elapsed before it fired and the check reported a
+   * dropped follow that had not been dropped — MEASURED as the Windows CI failing this check on every commit while Linux
+   * passed. A dropped follow never pins at all, so a bounded wait cannot hide the bug it exists for.
+   */
+  for (let i = 0; i < 100 && Math.round(content - top - view) > 24; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
   if (Math.round(content - top - view) > 24) {
     console.error(
       `#click-follow REGRESSION: a pointerdown on the feed dropped the follow (gap ${Math.round(content - top - view)}px) — ` +

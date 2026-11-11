@@ -797,6 +797,8 @@ html[data-bg-image="on"] body { background: transparent; }
   margin-top: var(--space-3);
 }
 .themecard {
+  /* its own size: a CARD that happens to be a button (swatches + label). The standard control height cropped it (#254) */
+  height: auto;
   display: flex; flex-direction: column; gap: var(--space-2);
   padding: 0; background: none; border: none; cursor: pointer;
   color: var(--fg); font-size: var(--text-xs); text-align: left; min-width: 0;
@@ -934,6 +936,8 @@ html[data-bg-image="on"] body { background: transparent; }
  * engines (the same reason `.bgphoto` uses a sibling veil).
  */
 .bgpick {
+  /* its own size: an image slot whose height comes from the thumbnail, not from a control height (#254) */
+  height: auto;
   position: relative;
   display: block;
   width: 100%;
@@ -1252,6 +1256,11 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 .chan-head .runbtn:hover { filter: brightness(1.12); }
 .chan-head .runbtn.danger { background: var(--err); }
 .badge {
+  /**
+   * A badge is a LABEL that may also be a button (the 🐚 shells count). It is sized by its own text, not by the control
+   * height — 26px made the header badge as tall as the ▶ start button beside it (#254).
+   */
+  height: auto;
   font-size: var(--text-xs);
   border-radius: var(--radius-pill);
   padding: 1px var(--space-4);
@@ -2330,6 +2339,9 @@ html[data-bg-image="on"] .composer form {
 .prog .progrow.warn span { color: var(--err); }
 /* edit affordance on user prompts */
 .msg-head .editbtn {
+  /* its own size: a text-sized link inside a message header — the standard 26px made ✕ cancel and ✎ edit tower over the
+     line they belong to (#254) */
+  height: auto;
   background: none; border: none; color: var(--dim); cursor: pointer;
   font-size: var(--text-xs); padding: 0 2px; opacity: 0; transition: opacity .12s;
 }
