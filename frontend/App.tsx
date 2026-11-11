@@ -5477,7 +5477,7 @@ function NewAgentModal(props: {
           <div style="display:flex;gap:6px">
             <input type="text" class="w100 mono" value={dir()} oninput={(e) => setDir(e.currentTarget.value)} />
             <button type="button" onclick={() => browse(dir())}>go</button>
-            <button type="button" title="parent directory" onclick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
+            <button type="button" class="iconbtn" title="parent directory" onclick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
           </div>
         </label>
         <div class="dirlist">

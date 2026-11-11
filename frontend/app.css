@@ -232,13 +232,15 @@
  */
 :root { --ctl-h: 26px; }
 
-button,
-/**
- * The same height at a specificity that beats the per-row rules (`.cfgrow button`, the settings modal's
- * `button:not(.iconbtn):not([class])`), which set their own padding and were winning on the `height` the plain `button`
- * rule declares. The two families that are deliberately NOT this height opt out below.
- */
-button:not(.goalstate):not(.tabx) {
+button {
+  /**
+   * ONE height for every button, declared at the LOWEST specificity on purpose.
+   *
+   * A blanket rule is what keeps a new button from inventing its own padding-derived height (the report that started
+   * #254), and keeping it at `button` means any class may still opt out by declaring `height` itself — the settings menu
+   * row, a skill header, the small copy chip and the two square families below all do. A `:not(…)` chain here would beat
+   * those opt-outs and recreate the same bug from the other side.
+   */
   height: var(--ctl-h);
   line-height: 1;
   display: inline-flex;
@@ -1721,6 +1723,8 @@ html[data-bg-image="on"] .embed {
 
 /* copy buttons */
 .copybtn {
+  /* its own size: a small inline chip in a tool card's footer, where 26px would grow the whole card (#254) */
+  height: auto;
   background: none; border: 1px solid var(--bg-light); color: var(--dim);
   border-radius: var(--radius-sm); font-size: var(--text-xs); cursor: pointer; padding: 0 5px;
   line-height: 16px; flex-shrink: 0;
@@ -2173,9 +2177,10 @@ html[data-bg-image="on"] .composer form {
 .cmdrow.active { background: var(--acc); color: #fff; }
 .cmdrow.active .muted { color: #e6e9ff; }
 .cmdrow .muted { font-size: var(--text-xs); }
-.composer button {
+/* `:not(.iconbtn)`: the composer also holds icon buttons (📎, ⤢), and a padding meant for the send button made them
+   28x26 — a one-glyph button that is not square (#254) */
+.composer button:not(.iconbtn) {
   background: var(--acc); border: none; color: white; border-radius: var(--radius-lg);
-  /* the send button is the one action in the composer, and it too took its height from padding (28px) */
   height: var(--ctl-h); padding: 0 14px; cursor: pointer; font-weight: 600;
 }
 .composer button:hover { opacity: .9; }
@@ -2430,6 +2435,9 @@ html[data-bg-image="on"] .composer form {
 /* the header is a BUTTON: expanding is the only interaction, and a div would not be reachable
    by keyboard. Grid so the caret/name/description stay aligned whether open or closed. */
 .skillhead {
+  /* its own height: a two-row GRID (caret + name, description under it), which a fixed 26px row squeezed into a centred
+     strip and made scroll sideways (#254) */
+  height: auto;
   /**
    * `minmax(0, 1fr)` for the text column, not `auto`.
    *
@@ -2622,6 +2630,8 @@ html[data-bg-image="on"] .composer form {
   overflow-y: auto;
 }
 .cfgmenu-item {
+  /* its own height: a full-width menu row sized by its padding, and a fixed 26px shrank it to a centred strip (#254) */
+  height: auto;
   display: block; width: 100%; text-align: left;
   background: transparent; border: 1px solid transparent; border-radius: var(--radius-md);
   color: var(--dim); font: inherit; font-size: var(--text-sm); padding: 7px 9px; cursor: pointer;
@@ -2862,7 +2872,10 @@ html[data-bg-image="on"] .composer form {
 .cfgrow .cfgkeyrow input { flex: 1; }
 .cfgrow .cfgkeyrow button, .cfgrow .cfgkeys > button { flex: none; }
 .cfgrow .cfgkeys > button { align-self: flex-start; }
-.cfgrow button { background: var(--bg-mid); border: 1px solid var(--bg-light); color: var(--fg); border-radius: var(--radius-md); padding: 4px 8px; cursor: pointer; font-size: var(--text-xs); }
+.cfgrow button {
+  background: var(--bg-mid); border: 1px solid var(--bg-light); color: var(--fg); border-radius: var(--radius-md);
+  height: var(--ctl-h); padding: 0 10px; cursor: pointer; font-size: var(--text-xs);
+}
 .cfgrow button:hover { background: var(--bg-light); }
 .cfgrow button.danger { background: var(--err); border-color: var(--err); color: #fff; }
 .cfggrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-4); }
@@ -3010,12 +3023,14 @@ html[data-bg-image="on"] .composer form {
  */
 .primarybtn {
   background: var(--acc); border: none; color: #fff; border-radius: var(--radius-md);
-  padding: 5px 14px; cursor: pointer; font-weight: 600; font-size: var(--text-sm);
+  /* the standard control height — a blanket `button { height }` also shrank the small inline ones (`.copybtn`, the settings
+     menu, a skill header), so the token is applied to the ACTION families instead (#254) */
+  height: var(--ctl-h); padding: 0 14px; cursor: pointer; font-weight: 600; font-size: var(--text-sm);
 }
 .primarybtn:disabled { opacity: .4; cursor: default; }
 .okbtn {
   background: var(--ok); border: none; color: #fff; border-radius: var(--radius-md);
-  padding: 5px 14px; cursor: pointer; font-weight: 600; font-size: var(--text-sm);
+  height: var(--ctl-h); padding: 0 14px; cursor: pointer; font-weight: 600; font-size: var(--text-sm);
 }
 .okbtn:disabled { opacity: .4; cursor: default; }
 /* rendered markdown inside the file preview modal */
@@ -3244,6 +3259,7 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
  * centred the same way.
  */
 .notifhead .editbtn {
+  height: var(--ctl-h);
   padding: 0 var(--space-2);
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-light); border: none; border-radius: var(--radius-md);
@@ -3495,7 +3511,8 @@ input[type="number"] {
      the fill); it is the boundary that needs to read as a control. */
   border: 1px solid var(--dim);
   border-radius: var(--radius-md);
-  padding: 6px 10px;
+  height: var(--ctl-h);
+  padding: 0 10px;
   font: inherit;
   cursor: pointer;
 }

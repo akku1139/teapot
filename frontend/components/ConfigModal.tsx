@@ -814,7 +814,7 @@ export function ConfigModal(props: {
                 <input class="cfgname" placeholder="name" value={p().name} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, name: e.currentTarget.value } : x)))} />
                 <input placeholder="https://…/v1" value={p().baseUrl} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
                 <input placeholder="default model" value={p().model} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, model: e.currentTarget.value } : x)))} />
-                <button type="button" class="danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i))}>✕</button>
+                <button type="button" class="iconbtn danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i))}>✕</button>
                 {}
                 <div class="cfgkeys">
                   <For each={p().apiKeys}>
@@ -1147,7 +1147,8 @@ export function ConfigModal(props: {
                       </label>
                       <button
                         type="button"
-                        class="danger"
+                        class="iconbtn danger"
+                        title="remove this MCP server"
                         onclick={() => setMcpServers(mcpServers().filter((_, j) => j !== i))}
                       >✕</button>
                     </div>
@@ -1439,7 +1440,7 @@ export function ConfigModal(props: {
                     <label style="display:flex;gap:3px;align-items:center;white-space:nowrap;color:var(--dim);font-size:11px">
                       <input type="checkbox" checked={!!t().forked} onchange={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, forked: e.currentTarget.checked } : x)))} />fork
                     </label>
-                    <button type="button" class="danger" onclick={() => setTasks(tasks().filter((_, j) => j !== i))}>✕</button>
+                    <button type="button" class="iconbtn danger" onclick={() => setTasks(tasks().filter((_, j) => j !== i))}>✕</button>
                   </div>
                   <textarea rows={2} placeholder="prompt to send" value={t().prompt} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, prompt: e.currentTarget.value } : x)))} />
                 </div>
