@@ -2673,7 +2673,15 @@ html[data-bg-image="on"] .composer form {
 .mcptools { list-style: none; margin: 3px 0 0; padding: 0 0 0 2px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mcptools li { display: flex; gap: var(--space-3); align-items: baseline; min-width: 0; color: var(--dim); flex-wrap: wrap; }
 .mcptools code { color: var(--fg); font-size: 11px; min-width: 0; overflow-wrap: anywhere; }
-.mcptool-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; min-width: 0; flex: 1 1 10ch; }
+/**
+ * The description WRAPS — it cannot ellipsise.
+ *
+ * `white-space: nowrap` + `flex: 1 1 10ch` was supposed to shrink the text, but a single description here can be thousands
+ * of characters of prose with no break opportunity (a Notion tool's description is a page), and `nowrap` makes that one
+ * unbreakable line: the whole settings panel then scrolls sideways — "MCP serversの show 77 tools で横スクロール" (#242).
+ * Wrapping costs a few lines inside a collapsed <details> and removes the scroll entirely.
+ */
+.mcptool-desc { font-size: 11px; min-width: 0; flex: 1 1 100%; white-space: normal; overflow-wrap: anywhere; }
 /* live connection state — a coloured dot reads faster than the word does */
 .mcpstate { font-size: var(--text-xs); white-space: nowrap; color: var(--dim); }
 .mcpstate.connected { color: var(--ok); }
@@ -3651,7 +3659,7 @@ html[data-bg-image="on"] .content pre code {
 html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-solid, var(--bg-darkest)); }
 /* the tool list is collapsible: a server can expose dozens, and an always-open list pushed every
    other row off the panel */
-.mcptools-wrap { margin-top: 3px; }
+.mcptools-wrap { margin-top: 3px; min-width: 0; }
 .mcptools-wrap > summary { cursor: pointer; color: var(--dim); font-size: 11px; }
 .mcptools-wrap > summary:hover { color: var(--fg); }
 /* the TAIL loading row: a refresh is in flight while the cached rows stay readable */
