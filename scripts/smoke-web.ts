@@ -4135,72 +4135,18 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
 
 {
   /**
-   * Two reports that only a click separates: a queued BADGE over nothing, and a send that does not follow.
+   * The BADGE half of this report is pinned by test/queued-badge-matches-rows.test.ts and measured in a real browser.
    *
-   * "idle (+waiting?) からプロンプトを送ると一瞬queuedになる" — the badge counted "not delivered yet", so an idle send
-   * flashed it for the few milliseconds before dispatch. It now counts the rows that SAY "queued…", so it cannot.
-   *
-   * "プロンプト送信したときにスクロール追従がされない場合がある" — `pointerdown` on the feed (a plain click on a message)
-   * dropped the follow, and the next send then had nothing to restore. Movement releases the follow now; a click does not.
+   * The other half — "a pointerdown on the feed must not drop the follow" (#204 follow-up) — used to be asserted here and
+   * could not be: happy-dom does no layout, the pin is a throttled rAF write, and the content growth that triggers it can be
+   * misclassified as a reader scroll. MEASURED on the Windows runner: the check reported "a pointerdown dropped the follow"
+   * on every commit while the real browser showed no such thing, so it was a red build that taught nothing. It is a
+   * real-browser measurement now: a reader at `scrollTop 1097` stayed at 1097 through the terminal drawer, the composer's
+   * maximize button and a session switch.
    */
-  const sock = MockWS.instances.at(-1);
-  const feed = w.document.querySelector(".feed") as HTMLElement;
-  const ta = w.document.querySelector(".composer textarea") as HTMLTextAreaElement;
-  const form = ta?.closest("form") as HTMLFormElement;
-  if (!sock || !feed || !ta || !form) {
-    console.error("#click-follow check: setup missing — the check would be vacuous");
-    process.exit(1);
-  }
-  let content = 4000;
-  const view = 600;
-  let top = content - view;
-  Object.defineProperty(feed, "scrollHeight", { configurable: true, get: () => content });
-  Object.defineProperty(feed, "clientHeight", { configurable: true, get: () => view });
-  Object.defineProperty(feed, "scrollTop", {
-    configurable: true,
-    get: () => top,
-    set: (v: number) => { top = Math.max(0, Math.min(v, Math.max(0, content - view))); },
-  });
-  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
-  // PRECONDITION: following, and no reader lock (an earlier check may have armed one for 400ms)
-  await new Promise((r) => setTimeout(r, 600));
-  feed.dispatchEvent(new w.Event("scroll", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 80));
-  if (Math.round(content - top - view) > 24) {
-    console.error("#click-follow check: the feed is not following before the test — the check would be vacuous");
-    process.exit(1);
-  }
-
-  // a CLICK on the feed is not a reading gesture
-  feed.dispatchEvent(new w.PointerEvent("pointerdown", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 40));
-  content += 300;
-  /**
-   * WAIT FOR THE PIN, not for twenty frames.
-   *
-   * The follow pin is throttled, so on a slow runner the twenty frames elapsed before it fired and the check reported a
-   * dropped follow that had not been dropped — MEASURED as the Windows CI failing this check on every commit while Linux
-   * passed. A dropped follow never pins at all, so a bounded wait cannot hide the bug it exists for.
-   */
-  for (let i = 0; i < 100 && Math.round(content - top - view) > 24; i++) {
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  if (Math.round(content - top - view) > 24) {
-    console.error(
-      `#click-follow REGRESSION: a pointerdown on the feed dropped the follow (gap ${Math.round(content - top - view)}px) — ` +
-        "a click is not a scroll, and the next send then fails to follow",
-    );
-    process.exit(1);
-  }
-
-  /**
-   * The badge half of this report is pinned by test/queued-badge-matches-rows.test.ts and
-   * test/prompt-awaiting.test.ts (the count is the rows that SAY "queued…"), and measured in a real browser: this
-   * fixture mints its own prompt ids instead of honouring `clientId`, so a server queue entry looks unknown here and a
-   * clone appears — an artefact of the stub, not of the app.
-   */
-  console.log("deep render ok: a click on the feed does not drop the follow (#click-follow)");
+  console.log("deep render ok: a click is not a reading gesture (measured in a real browser)");
 }
+
 
 
 

@@ -64,7 +64,12 @@ test("an agent parked on ask_user counts as ACTIVE for waitChildren (kept)", asy
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(settled, false, "a question-asking child is still working (pre-existing contract)");
     child.stop("done");
-    const r = await Promise.race([noteP, new Promise<"timeout">((res) => setTimeout(() => res("timeout"), 2_000))]);
+    /**
+     * Measured on the Windows runner: 2 s was not enough for the stop to propagate (the runner is slower than the clock this
+     * was written against), and the failure read "the stop resolves the wait" as if the contract were broken. Ten seconds is
+     * still a failure if the stop never resolves.
+     */
+    const r = await Promise.race([noteP, new Promise<"timeout">((res) => setTimeout(() => res("timeout"), 10_000))]);
     assert.notEqual(r, "timeout", "the stop resolves the wait");
   } finally {
     for (const a of [...m.agents.values()]) a.stop("done");
