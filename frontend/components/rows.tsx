@@ -629,17 +629,30 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
   if (e.type === "system_note") {
     const ev = String(e.data?.event ?? "");
     if (ev === "runaway-detected") {
+      /**
+       * The same surface as a goal card, not a full-width bar.
+       *
+       * A `.embed` is an inline aside inside a message body; the runaway note has no message around it, so it stretched across
+       * the whole timeline and read as a different kind of thing from every other note — "タイムライン幅いっぱい、 goal set の
+       * 時のカードと同じになるべき".
+       */
       return (
-        <div class="embed fail" title={`${e.data?.failures} consecutive tool failures hit the configured limit (${e.data?.limit})`}>
-          <div class="mono">🛑 runaway: {String(e.data?.failures)} tool failures in a row (limit {String(e.data?.limit)})</div>
-          <div class="meta">last: {String(e.data?.lastTool)} — {String(e.data?.lastError ?? "").slice(0, 200)}</div>
+        <div class="goalline err">
+          <div class="goalline-label">🛑 runaway: {String(e.data?.failures)} tool failures in a row (limit {String(e.data?.limit)})</div>
+          <Card
+            tone="warn"
+            markdown={false}
+            body={`last: ${String(e.data?.lastTool)} — ${String(e.data?.lastError ?? "").slice(0, 200)}`}
+          />
         </div>
       );
     }
     if (ev === "error-retry") {
       return (
-        <div class="embed warn-embed" title="a round-fatal API error occurred; auto-retry is waiting, then a fresh round starts (onError: retry)">
-          <div class="mono">↻ API error — retrying (attempt {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…</div>
+        <div class="goalline warn">
+          <div class="goalline-label">
+            ↻ API error — retrying (attempt {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…
+          </div>
         </div>
       );
     }

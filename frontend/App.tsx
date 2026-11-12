@@ -59,6 +59,7 @@ import {
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
 import { keyReleasesFollow, keyTargetsTimeline, wheelReleasesFollow } from "./lib/scroll-gesture";
+import { scrollSensitivityFor } from "./lib/terminal-options";
 import { restoreTop, spotFromRows, type RowGeom, type SavedSpot } from "./lib/scroll-return";
 import { bindStoredHeight } from "./lib/resizable-height";
 import { agentLabel, agentLabelWithId } from "./lib/agent-label";
@@ -2806,6 +2807,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       el.className = "termsession";
       host.appendChild(el);
       const t = new Terminal(terminalOptions(themeColors(termAlpha())));
+      /**
+       * A full-screen program (nano, vim, less) reads the wheel as key presses, so the scrollback sensitivity must not apply
+       * there — `onWriteParsed` is the hook that sees the buffer switch, and the assignment is a no-op unless it changed.
+       */
+      t.onWriteParsed?.(() => {
+        const want = scrollSensitivityFor(t.buffer.active.type);
+        if (t.options.scrollSensitivity !== want) t.options.scrollSensitivity = want;
+      });
       /**
        * Ctrl+Shift+C copies the selection (#198 "ターミナルで Ctrl+Shift+C でコピーできるように").
        *

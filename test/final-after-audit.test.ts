@@ -146,12 +146,11 @@ test("the rejection is still recorded for the operator (#89)", async () => {
     assert.ok(
       events.some(
         (e) =>
-          e.type === "message" &&
-          String((e.data as { operatorFacing?: boolean; content?: string })?.content ?? "").includes(
-            "CHANGES REQUIRED",
-          ),
+          e.type === "goal" &&
+          (e.data as { event?: string; verdict?: string })?.event === "audit" &&
+          (e.data as { verdict?: string })?.verdict === "changes-required",
       ),
-      "and the verdict shown, operator-facing (#89)",
+      "and the verdict recorded where the timeline renders it (#89/#210)",
     );
     await agent.dispose();
   });

@@ -154,11 +154,19 @@ test("a verdict WITH a reason still gets its card (#51)", () => {
 });
 
 test("unknown goal events still render (#41)", () => {
-  const line = goalLine({ event: "verify-set", verify: "x" });
-  assert.ok(line.label.includes("verify-set"), "unknown events must not vanish");
+  const line = goalLine({ event: "some-future-event", text: "" });
+  assert.ok(line.label.includes("some-future-event"), "unknown events must not vanish");
+  assert.ok(line.detail.trim().length > 0, "and it must say something");
   assert.equal(auditPhase({ event: "verify-set" }), "other");
   assert.equal(isAuditLifecycle({ event: "verify-set" }), false);
   assert.equal(isAuditLifecycle({ event: "audit" }), true);
+});
+
+test("a verification contract renders as the contract it is (#210)", () => {
+  const line = goalLine({ event: "verify-set", verify: "npm test passes" });
+  assert.equal(line.hasCard, true);
+  assert.match(line.detail, /npm test passes/);
+  assert.doesNotMatch(line.detail, /carried no further detail/);
 });
 
 test("a non-audit goal event keeps its text (#41)", () => {

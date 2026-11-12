@@ -177,13 +177,19 @@ test("a NEW goal must not inherit the previous goal's rejection lineage (#A2)", 
   });
 });
 
-test("an UNAUDITED final carries no audit metadata", async () => {
+test("a completion claim is audited even when no verification contract was written", async () => {
+  /**
+   * This case used to assert the opposite: with `goal.verify` unset the audit never ran, so an agent could complete a goal
+   * on its own claim alone. Reported as "verification contract 書いてないとgoal auditされないw". The objective is the
+   * contract of last resort, and the audit prompt says so when the contract is empty.
+   */
   await useTempDirs(["al5-", "al6-"], async ([ws, sd]) => {
-    const r = await runLineage(ws!, sd!, [], false);
+    const r = await runLineage(ws!, sd!, ["APPROVED: the objective itself is met"], false);
     assert.equal(r.finals.length, 1);
     const f = r.finals[0]!;
-    assert.equal(f.audited, undefined, "no audit ran — the final must not claim one (#91)");
-    assert.equal(f.auditVerdict, undefined, "#91");
+    assert.equal(f.audited, true, "the audit runs without a verification contract (#210)");
+    assert.equal(f.auditVerdict, "approved", "#91");
+    assert.equal(f.auditAttempt, 1, "#94");
   });
 });
 

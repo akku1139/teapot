@@ -30,7 +30,22 @@ export interface TimelineInput {
   renderedNoteEvents: ReadonlySet<string>;
 }
 
-const META_TOOLS_HIDDEN = new Set(["report_progress", "ask_operator", "ask_user", "record_decision"]);
+/**
+ * Meta tools whose RESULT is already a row of its own.
+ *
+ * `set_goal` writes a goal event that renders as the goal card, so its tool call only repeats the arguments; `set_todo`
+ * renders "✅ tasks updated"; `report_progress`/`ask_operator`/`record_decision` have their own surfaces. Showing both is the
+ * duplication the operator reported as "set_goal はgoal cardsによって表示されるのでツールログは出さなくていい".
+ */
+const META_TOOLS_HIDDEN = new Set([
+  "report_progress",
+  "ask_operator",
+  "ask_user",
+  "record_decision",
+  "set_goal",
+  "set_goal_verify",
+  "set_todo",
+]);
 
 export function feedCandidates(input: TimelineInput): TimelineEvent[] {
   const { events, consumed, feedTypes } = input;

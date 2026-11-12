@@ -79,6 +79,11 @@ test("system prompt stays byte-identical across turns even if AGENTS.md appears"
   const seen: string[] = [];
   let n = 0;
   const chat: ChatFn = async (_c, messages) => {
+    // the completion audit is a separate, tools-less call whose first message is the auditor prompt (#210: it now runs even
+    // without a verification contract), so it must not be sampled as a worker turn
+    if (String(messages.at(-1)?.content ?? "").includes("independent completion AUDITOR")) {
+      return reply("APPROVED: nothing to check, the objective is met");
+    }
     seen.push(String(messages[0]?.content ?? ""));
     return n++ === 0 ? reply("go") : reply("done", [tc("f", "finish", { goalComplete: true })]);
   };

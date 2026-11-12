@@ -11,6 +11,18 @@
  */
 export const TERMINAL_LINE_HEIGHT = 1.2;
 
+/**
+ * Lines per wheel notch: three when reading scrollback, ONE for a full-screen program.
+ *
+ * `scrollSensitivity` is the only knob xterm exposes, and it applies to BOTH buffers: in the alt buffer (nano, vim, less) the
+ * wheel is translated into cursor-up/down sequences, so three lines per notch became three LINES PER KEY in the editor — the
+ * wheel jumps three lines at a time and the file cannot be positioned precisely. Reported as "ターミナルでnanoだけ3行刻みで
+ * スクロールできない" (#172): 3 is right for reading output, 1 is right for a program that treats a notch as a key press.
+ */
+export function scrollSensitivityFor(bufferType: string): number {
+  return bufferType === "alternate" ? 1 : 3;
+}
+
 export function terminalOptions<T>(theme: T): {
   cursorBlink: boolean;
   fontSize: number;

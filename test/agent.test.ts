@@ -1217,17 +1217,32 @@ test("verification contract: auditor approval marks the goal done", async () => 
     // the audit outcome is visible in the timeline
     const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
     assert.ok(events.some((e) => e.type === "goal" && (e.data as any).event === "audit"));
-    assert.ok(events.some((e) => e.type === "message" && String((e.data as any).content).includes("APPROVED")));
+    // the verdict has ONE surface now: the goal event, which the timeline renders as a card (#210 — it was duplicated)
+    assert.ok(
+      events.some((e) => e.type === "goal" && (e.data as any).event === "audit" && /zero failures/.test(String((e.data as any).feedback))),
+    );
+    assert.equal(
+      events.filter((e) => e.type === "message" && String((e.data as any).content).includes("completion audit")).length,
+      0,
+      "and no second row repeating it (#210)",
+    );
     await agent.dispose();
   });
 });
 
-test("no verification contract: finish(goalComplete) marks done without audit", async () => {
+test("no verification contract: the audit still runs, and an auditor that cannot answer does not block the finish", async () => {
+  /**
+   * The audit used to be skipped entirely without a contract, so an agent completed a goal on its own claim — reported as
+   * "verification contract 書いてないとgoal auditされないw" (#210). Now the objective is the contract of last resort.
+   *
+   * What an unusable auditor may NOT do is refuse a completion it could not evaluate: with no contract there is nothing to
+   * refuse, so the completion stands and the final carries no verdict (#128 still holds when a contract exists).
+   */
   let n = 0;
   const chat: ChatFn = async (_c, messages) => {
     const i = n++;
     if (i === 0) return reply("done!", [tc("f1", "finish", { goalComplete: true, summary: "did it" })]);
-    throw new Error("auditor should not run without a verify contract");
+    throw new Error("the auditor is unreachable");
   };
   await withAgent({ chatFn: chat, autoContinue: false }, async (agent) => {
     await agent.setGoal("simple task"); // no verify
@@ -1235,7 +1250,9 @@ test("no verification contract: finish(goalComplete) marks done without audit", 
     agent.start("t");
     await agent.settled();
     assert.equal(agent.goal.status, "done");
-    assert.equal(agent.goal.audit, undefined);
+    assert.equal(agent.goal.audit, undefined, "no verdict — nothing may claim approval (#128)");
+    const events = await readEvents(path.join(agent.snapshot().sessionDir, "chat.jsonl"));
+    assert.ok(events.some((e) => e.type === "goal" && (e.data as any).event === "audit-started"), "the audit ran (#210)");
     await agent.dispose();
   });
 });

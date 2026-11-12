@@ -41,6 +41,17 @@ export function cardDetail(raw: string, fallback: string): string {
 }
 
 export function goalLine(d: GoalEventData): GoalLine {
+  if (d.event === "verify-set") {
+    const verify = String(d.verify ?? "").trim();
+    return {
+      label: verify ? "🔍️ verification contract set" : "🔍️ verification contract cleared",
+      detail: verify || "no contract — the objective itself is what the audit checks",
+      tone: "",
+      markdown: true,
+      hasCard: !!verify,
+    };
+  }
+
   switch (auditPhase(d)) {
     case "audit-started":
       return {

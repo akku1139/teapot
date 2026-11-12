@@ -118,16 +118,20 @@ test("a restarted session does not replay the completion audit into the conversa
     await first.dispose();
 
     const logged = await readEvents(first.log.filePath);
+    /**
+     * The verdict is a GOAL event, not an assistant message (#210: it was rendered twice, so the message duplicate went
+     * away). The fixture must still produce exactly one verdict, or the leak check below would pass vacuously.
+     */
     const auditEvents = logged.filter(
-      (e) => e.type === "message" && String((e.data as any).content ?? "").includes(AUDIT_MARK),
+      (e) => e.type === "goal" && (e.data as any)?.event === "audit",
     );
     assert.equal(
       auditEvents.length,
       1,
-      `fixture must produce one audit message event, got ${auditEvents.length}`,
+      `fixture must produce one audit verdict, got ${auditEvents.length}`,
     );
     assert.equal(
-      (first.conversation as ChatMessage[]).some((m) => String(m.content ?? "").includes(AUDIT_MARK)),
+      (first.conversation as ChatMessage[]).some((m) => String(m.content ?? "").includes("genuinely complete")),
       false,
       "the live history must NOT carry the audit verdict (it was a side conversation)",
     );
@@ -140,7 +144,7 @@ test("a restarted session does not replay the completion audit into the conversa
     await second.settled();
 
     const leaked = (second.conversation as ChatMessage[]).filter((m) =>
-      String(m.content ?? "").includes(AUDIT_MARK),
+      String(m.content ?? "").includes("genuinely complete"),
     );
     assert.deepEqual(
       leaked.map((m) => m.role),

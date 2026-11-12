@@ -111,11 +111,13 @@ test("the enqueued prompt event records the queue position it had (no inference 
   });
 });
 
-test("a compaction (status waiting) does NOT queue the prompt — the contract is `running` only", async () => {
+test("a compaction (status waiting) DOES queue the prompt", async () => {
   /**
-   * The operator's list, after three rounds of this bug: idle / waiting / error / needs_operator / stopped (and `running`
-   * between LLM calls) all take the prompt immediately and must look SETTLED; only `running` with a turn in flight makes
-   * it wait. `waiting` is a compaction, which is not generating tokens for the prompt to wait behind.
+   * This used to assert the opposite. The earlier contract was about a send from an IDLE agent ("sendingは一瞬なので表示される
+   * べきではない"); a compaction is different — it holds the queue for seconds while the context is rewritten, so the prompt
+   * genuinely waits. Reported as "compact中に送ったメッセージがqueuedにならない (waitingステータスだから即確定)".
+   *
+   * The other statuses keep the old rule: idle / error / needs_operator / stopped take the prompt immediately.
    */
   await useTempDirs(["ahead-w-", "ahead-sd-"], async ([ws, sd]) => {
     const a = await agent(sd, ws);
@@ -123,8 +125,8 @@ test("a compaction (status waiting) does NOT queue the prompt — the contract i
       (a as unknown as { status: string }).status = "waiting";
       const first = a.enqueuePrompt("one", "user");
       const second = a.enqueuePrompt("two", "user");
-      assert.equal(a.pendingAheadOf(first), 0, "waiting does not queue: the row must render settled");
-      assert.equal(a.pendingAheadOf(second), 1, "though it still waits behind the first prompt");
+      assert.equal(a.pendingAheadOf(first), 1, "a compaction makes the first prompt wait for it");
+      assert.equal(a.pendingAheadOf(second), 1, "and the second waits behind the first prompt");
     } finally {
       a.stop("test done");
     }

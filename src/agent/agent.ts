@@ -390,7 +390,17 @@ export class Agent {
      * An earlier version also treated `waiting` (a compaction) and a parked tool as blocking, which made those states show
      * "queued…" — and the operator's answer to that was the list above.
      */
-    const blocked = this.status === "running";
+    /**
+     * A compaction is a WAIT, and the operator asked for it to read as one.
+     *
+     * `waiting` was excluded by the earlier contract, which was about a send from an IDLE agent ("sendingは一瞬なので表示される
+     * べきではない"). A compaction is not that: it holds the queue for seconds while the context is rewritten, so a prompt sent
+     * during it really does wait — reported as "compact中に送ったメッセージがqueuedにならない (waitingステータスだから即確定)".
+     * The display status is set only for a compaction (`compacting the context — resumes by itself`), so the two cannot be
+     * confused.
+     */
+    const compacting = this.status === "waiting";
+    const blocked = this.status === "running" || compacting;
     return queuedAhead + (queuedAhead === 0 && blocked ? 1 : 0);
   }
   private stopRequested = false;
@@ -3178,20 +3188,43 @@ export class Agent {
         await this.appendFinalMessage(args);
         return;
       }
-      if (this.goal.verify?.trim()) {
+      {
+        /**
+         * The audit runs whether or not a verification contract was written.
+         *
+         * It used to be gated on `goal.verify`, so a goal without one was completed by the agent's own claim and nothing
+         * checked it — reported as "verification contract 書いてないとgoal auditされない". The objective is the contract of
+         * last resort, and `auditPrompt` says so when the contract is empty.
+         */
         await this.log.append("goal", this.currentSession, this.currentBranch, {
           event: "audit-started",
-          verify: this.goal.verify.slice(0, 2000),
+          verify: (this.goal.verify ?? "").slice(0, 2000),
         });
         this.auditAttempts++;
         try {
           const evidence = this.auditEvidence(args.summary);
           const auditMessages: ChatMessage[] = [
-            { role: "user", content: auditPrompt({ goal: this.goal.text, verify: this.goal.verify, summary: String(args.summary ?? ""), evidence }) },
+            { role: "user", content: auditPrompt({ goal: this.goal.text, verify: this.goal.verify ?? "", summary: String(args.summary ?? ""), evidence }) },
           ];
           const text = await this.runAuditor(auditMessages);
           const verdict = parseAuditVerdict(text);
           if (verdict.kind === "none") {
+            /**
+             * With NO verification contract there is nothing an auditor could have refused, so an auditor that cannot answer
+             * cannot hold the completion either — the objective is the contract, and the agent's claim is all anyone has.
+             *
+             * This is the one case where an unusable verdict still completes. With a contract written, #128 stands: an
+             * unusable audit is NOT an approval, the goal stays active, and the cap says so loudly.
+             */
+            if (!(this.goal.verify ?? "").trim()) {
+              await this.log.append("system_note", this.currentSession, this.currentBranch, {
+                event: "audit-skipped-no-contract",
+                detail: "no verification contract was written, so there is nothing to audit — completing without a verdict",
+              });
+              await this.setGoalStatus("done", "agent");
+              await this.appendFinalMessage(args);
+              return;
+            }
             this.auditUnavailableStreak++;
             await this.log.append("system_note", this.currentSession, this.currentBranch, {
               event: "audit-failed",
@@ -3231,13 +3264,11 @@ export class Agent {
               this.preRejectionTurns = await this.captureRecentTurns();
             }
           }
-          await this.log.append("message", this.currentSession, this.currentBranch, {
-            role: "assistant",
-            operatorFacing: true,
-            content: approved
-              ? `✅ completion audit: APPROVED — ${feedback}`
-              : `🔍️ completion audit: CHANGES REQUIRED — ${feedback}`,
-          });
+          /**
+           * The verdict has ONE surface: the goal event `setGoalAudit` just appended, which the timeline renders as a card with
+           * its reason. An extra assistant message said the same thing a second time, immediately below it — reported as
+           * "audit resultがagentとharnessで二重に出てる".
+           */
           if (!approved) {
             this.consecutiveAuditRejects++;
             this.lastRejectedAudit = { feedback, attempt: this.auditAttempts };
@@ -3256,6 +3287,15 @@ export class Agent {
             return;
           }
         } catch (err) {
+          if (!(this.goal.verify ?? "").trim()) {
+            await this.log.append("system_note", this.currentSession, this.currentBranch, {
+              event: "audit-skipped-no-contract",
+              detail: "no verification contract was written and the auditor could not run — completing without a verdict",
+            });
+            await this.setGoalStatus("done", "agent");
+            await this.appendFinalMessage(args);
+            return;
+          }
           this.auditUnavailableStreak++;
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "audit-failed",
@@ -3275,8 +3315,6 @@ export class Agent {
           await this.captureRecentTurns();
           return;
         }
-      } else {
-        await this.setGoalStatus("done", "agent");
       }
     }
     await this.appendFinalMessage(args);
