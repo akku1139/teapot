@@ -392,6 +392,16 @@ export class Master {
   }[] = [];
   private childWaiters = new Map<string, Set<(note: string) => void>>();
   private reportedRunning = new Set<string>();
+
+  /**
+   * Children that have already delivered a final report.
+   *
+   * `finish` logs its final message BEFORE the loop ends and the status turns `idle`, so by the time
+   * `onControlStatusChange` sees `idle` the parent has the result. Announcing "idle without having called finish()" on top
+   * of it is a contradiction the parent cannot resolve. Cleared when the child starts a new task, so a later silent exit is
+   * still reported.
+   */
+  private finishedChildren = new Set<string>();
   private startedAt = Date.now();
   readonly config: TeapotConfig;
   readonly configPath: string;
@@ -899,8 +909,16 @@ export class Master {
       bus.emit("update", { kind: "event", agentId: e.agent, event: e } satisfies BusEvent);
       this.onChildEvent(ac, e);
     };
-    agent.onControlStatusChange = (agentId, status) => {
+    agent.onControlStatusChange = (_agentId, status) => {
       if (!ac.parent) return;
+      /**
+       * The id comes from the closure, not from the callback argument.
+       *
+       * `Agent.setStatus` passes `this.opts.id`, which the master does not set, so the argument is `undefined` — the note
+       * said "@undefined is now idle" and the reported/finished bookkeeping below keyed on `undefined`, which made every
+       * child share one entry.
+       */
+      const agentId = ac.id;
       const parent = this.agents.get(ac.parent);
       if (!parent) return;
       this.wakeAncestorWaiters(ac.parent);
@@ -912,7 +930,12 @@ export class Master {
        * "サブエージェントがエラー落ちしたときの親への通知がびみょい" (#245). The generic note exists for statuses that have
        * no event of their own (`idle`, `stopped`, `waiting`).
        */
-      if (this.reportedRunning.has(agentId) && SETTLED.has(status) && status !== "error")
+      if (
+        this.reportedRunning.has(agentId) &&
+        SETTLED.has(status) &&
+        status !== "error" &&
+        !this.finishedChildren.has(agentId)
+      )
         parent.enqueuePrompt(
           `[harness] Sub-agent @${agentId} is now ${status} without having called finish(), so it has not reported a result.` +
             (status === "stopped"
@@ -920,8 +943,10 @@ export class Master {
               : ` If you expected a result, message it or re-spawn it.`),
           "harness",
         );
-      if (status === "running") this.reportedRunning.add(agentId);
-      else if (SETTLED.has(status)) this.reportedRunning.delete(agentId);
+      if (status === "running") {
+        this.reportedRunning.add(agentId);
+        this.finishedChildren.delete(agentId);
+      } else if (SETTLED.has(status)) this.reportedRunning.delete(agentId);
     };
     if (myDepth < this.maxSpawnDepth()) {
       const self = agent;
@@ -1230,6 +1255,7 @@ if (active().length === 0) wake();
     if (!parent) return;
 
     if (e.type === "message" && (e.data as { final?: boolean; content?: string }).final) {
+      this.finishedChildren.add(ac.id);
       const d = e.data as { content?: string; recentContext?: string[] };
       const summary = String(d.content ?? "").trim();
       let report = summary;

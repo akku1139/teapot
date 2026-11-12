@@ -154,3 +154,34 @@ test("stopped and idle still get it, because nothing else announces them (#245)"
     assert.match(nudge, /without having called finish\(\)/, `${status} has no event of its own; got ${nudge}`);
   }
 });
+
+/**
+ * A child that DID call `finish()` must not also be announced as "idle without having called finish()".
+ *
+ * MEASURED (#259): `finish` logs its final message and then the loop ends, so the parent received
+ * "Sub-agent X finished. Final report: …" and, one status change later, "[harness] Sub-agent @X is now idle without having
+ * called finish(), so it has not reported a result." The parent cannot act on a contradiction: it has the report.
+ *
+ * The neighbouring case matters just as much — a child that RESUMES, works, and stops silently is exactly who the note is
+ * for, so finishing once must not silence it forever.
+ */
+test("a finished child is not reported as having never finished, but a resumed one still is", async () => {
+  const { kid, got, stop } = await tree();
+  try {
+    // what the agent calls when its own status changes; the parent's callback is wired in addAgent
+    const st = (s: string) => kid.onControlStatusChange?.("p1-sub", s as never);
+    st("running");
+    // the child's own finish: the final message arrives while it is still running
+    kid.log.onEvent?.({ type: "message", agent: "p1-sub", data: { role: "assistant", final: true, content: "done" } } as never);
+    st("idle");
+    assert.ok(!got.some((t) => /without having called finish/.test(t)), "a report was delivered, so the note must not fire");
+
+    // resumed, then stopped silently — the note is for THIS case
+    got.length = 0;
+    st("running");
+    st("stopped");
+    assert.match(got.join("\n"), /without having called finish/, "a resumed child that stops silently is still reported");
+  } finally {
+    await stop();
+  }
+});

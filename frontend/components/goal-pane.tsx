@@ -1,5 +1,6 @@
 import { Show, createSignal, onCleanup } from "solid-js";
 import { renderMarkdownCached } from "../lib/markdown";
+import { attachRowHeightCompensation } from "../lib/row-height-compensation";
 
 /**
  * The goal editor, in the SAME shape as the ✅ tasks pane: one box that toggles between a rendered view and its markdown,
@@ -29,7 +30,16 @@ export function GoalEditor(props: {
   const stored = Number(localStorage.getItem("teapot.goalH") ?? "");
   const [goalHeight, setGoalHeight] = createSignal<number>(Number.isFinite(stored) && stored > 0 ? stored : 0);
   const heightStyle = () => (goalHeight() > 0 ? { height: `${goalHeight()}px` } : undefined);
+  /**
+   * The box scrolls its own content, and a block ABOVE the read position changing height slides the reader for the same
+   * reason the timeline does: the box opts out of engine anchoring nowhere, so nothing compensates.
+   */
+  const compensate = (el: HTMLElement) => {
+    const detach = attachRowHeightCompensation({ container: el });
+    onCleanup(detach);
+  };
   const trackHeight = (el: HTMLElement) => {
+    compensate(el);
     const ro = new ResizeObserver(() => {
       const h = el.offsetHeight;
       if (h <= 0) return;

@@ -1,6 +1,7 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
+import { attachRowHeightCompensation } from "./lib/row-height-compensation";
 import { jumpTargetMatches } from "./lib/jump-target";
 import { closeLightbox, lightboxSrc, openLightbox } from "./lib/lightbox";
 import { evictOver, weighJson } from "./lib/retention";
@@ -372,6 +373,10 @@ export default function App() {
       unskipAnchorAt = performance.now();
       return;
     }
+    /**
+     * A row height change above the viewport has already been compensated by the row observer (`aboveViewportShift`), and
+     * correcting toward an anchor row on top of that measures the same change twice.
+     */
     if (!anchorStillDescribesView(f)) return;
     const before = f.scrollHeight;
     resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_CONTENT_DELTA_PX);
@@ -648,6 +653,28 @@ export default function App() {
     };
   };
 
+  /**
+   * A row above the viewport changing height slides the reader, because `.feed` opts out of engine anchoring.
+   *
+   * The mutation path can see that the content size changed but not WHERE, so it corrects toward a saved anchor row — which
+   * is skipped whenever the anchor is stale. This knows the row and its delta: MEASURED, collapsing a tool card above the
+   * read position (412px -> 30px) slid the anchor row by 382px with nothing compensating.
+   */
+  let detachRowCompensation: (() => void) | null = null;
+  const attachRowRows = (f: HTMLElement) => {
+    detachRowCompensation?.();
+    detachRowCompensation = attachRowHeightCompensation({
+      container: f,
+      isFollowing: () => intentFollowing || atBottom(),
+      onShift: () => {
+        lastSampleHeight = f.scrollHeight;
+        unskipAnchor = firstVisibleRow(f);
+        unskipAnchorAt = performance.now();
+        ledger = { top: f.scrollTop, height: f.scrollHeight };
+      },
+    });
+  };
+
   const attachFeedObserver = (f: HTMLElement | null) => {
     if (!f) return;
     attachGestureLatch(f);
@@ -682,6 +709,7 @@ export default function App() {
       feedMoEl = f;
       feedMo.observe(f, { childList: true, subtree: true, attributes: true, characterData: true });
       f.addEventListener("load", scheduleReanchor, true);
+      attachRowRows(f);
     }
   };
   onMount(() => {
@@ -693,6 +721,8 @@ export default function App() {
       feedRoEl = undefined;
       feedMo?.disconnect();
       feedMo = undefined;
+      detachRowCompensation?.();
+      detachRowCompensation = null;
       if (feedMoEl) feedMoEl.removeEventListener("load", scheduleReanchor, true);
       feedMoEl = undefined;
       if (feedMoRaf) cancelAnimationFrame(feedMoRaf);
