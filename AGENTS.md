@@ -509,6 +509,17 @@ out with only five unresolved names because everything it called had already mov
   read as sparse while the embed itself was flush. Scope such a reset to the state
   that needs it (`.msg.grouped`), never to the bare class — `avghost` is on every
   row's avatar, so unscoped it collapses the icon everywhere.
+- **Leave scroll anchoring to the engine; `overflow-anchor: none` is a debt you pay four times.**
+  `.feed` carried `none` and, to replace it, four hand-written corrections with four staleness
+  windows (`resyncAfterUnskip`, a mutation re-anchor, a box-change re-anchor, a row-height
+  observer). MEASURED in a real browser with `auto` and all four removed: a tool card collapsing
+  ABOVE the read position, the composer growing under a reader, the same growth while following,
+  and a width change that re-wraps every row — 0px drift in all four. The condition that made
+  `none` look necessary (the engine's adjustment arriving as a scroll event and being read as the
+  reader leaving) is answered by the gesture latch listening to `wheel`/`touch`/`pointerdown`/
+  `keydown` instead of geometry. So: keep the ENGINE's anchoring, and keep script for the
+  decisions the engine does not make — the follow policy and the tail pin.
+
 - **`content-visibility: auto` moves the scroll unless the placeholder equals the
   real height.** `contain-intrinsic-size: auto 140px` is a guess, and row heights
   here span three orders of magnitude, so `frontend/feed-reserve.ts` writes each
