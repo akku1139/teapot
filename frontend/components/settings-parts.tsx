@@ -1,6 +1,5 @@
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { renderMarkdownCached } from "../lib/markdown";
-import { attachRowHeightCompensation } from "../lib/row-height-compensation";
 import { BG_SMALL } from "../lib/bg-srcset";
 import { previewLayers, veilColour, backgroundImageValue } from "../lib/theme-preview";
 import type { ThemePalette } from "../lib/theme-store";
@@ -51,10 +50,7 @@ export function TodoEditor(props: {
       <div
         class="content mdpreview todopane"
         style={heightStyle()}
-        ref={(el) => {
-          trackHeight(el);
-          onCleanup(attachRowHeightCompensation({ container: el }));
-        }}
+        ref={trackHeight}
         innerHTML={renderMarkdownCached(props.draft)}
       />
     </Show>

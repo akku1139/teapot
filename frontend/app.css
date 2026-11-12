@@ -1304,29 +1304,18 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 /* symmetric vertical padding: 14/8 was asymmetric for no reason and left the
    last row hugging the composer while the first had room */
 /**
- * NATIVE scroll anchoring is OFF on the feed — it fights our own anchoring.
+ * NATIVE scroll anchoring is ON: the browser holds the reader's place, and this feed does not.
  *
- * This flipped twice, so the reasoning and the measurements are both recorded.
+ * It was `none` for two reasons, both now gone. The engine's adjustment arrived as an ordinary scroll event and the follow
+ * policy read it as the reader leaving (the gesture latch answers that now: `wheel`/`touch`/`pointerdown`/`keydown`, never
+ * geometry). And a hand-written correction looked more precise than the engine's — MEASURED, it was not: with `none` a tool
+ * card collapsing ABOVE the read position slid the anchor row 382px, and it took four separate corrections
+ * (`resyncAfterUnskip`, a mutation re-anchor, a box-change re-anchor, a row-height observer) with four separate staleness
+ * windows to approximate what the engine does for free.
  *
- * OFF first (v0.33): Firefox moved `scrollTop` when the composer resized.
- * ON later (v0.35.11): disabling it seemed to make CHROME drift through a loaded timeline.
- * OFF again (v0.36): MEASURED, and the Chrome attribution was wrong.
- *
- * The measurement, in headless Firefox: grow a row that is ABOVE the read position (the real
- * trigger — changing content below the viewport moves nothing) while the composer also grows:
- *
- *     overflow-anchor: auto  →  scrollTop 4712 → 4785   (+73px, the viewport is pushed)
- *     overflow-anchor: none  →  scrollTop 4712 → 4712   (0)
- *
- * That +73 is exactly the reported "2行以上だと入力時にタイムラインのスクロールが戻る" in Firefox:
- * the engine shifts the viewport, the shift arrives as a normal scroll event, and the follow policy
- * reads it as the READER scrolling away. Chrome does not do the same adjustment here, which is why
- * the symptom was Firefox-only in both directions.
- *
- * The job the engine was doing is already done in script: `resyncAfterUnskip()` re-applies the
- * anchored row's position after layout, and `restoreAfterBoxChange()` pins or re-anchors on every
- * box change. So native anchoring is not a second line of defence — it is a second writer moving
- * the viewport behind the policy's back.
+ * With `auto`, all four reported cases measure 0px drift: a card toggled above the reader, the composer growing under them
+ * and while following, and a width change that re-wraps every row. Anything that reaches for `none` here is opting out of
+ * that and buying the corrections back.
  */
 .feed {
   flex: 1;
@@ -1336,7 +1325,7 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
   overscroll-behavior: contain;
   /* see the long note above: the engine's anchoring moves the viewport and our policy reads that
      as the reader scrolling, so this feed does its own */
-  overflow-anchor: none;
+  overflow-anchor: auto;
 }
 .msg {
   display: flex; gap: var(--space-6); padding: var(--space-2) var(--space-6);

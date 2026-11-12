@@ -1,7 +1,6 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
-import { attachRowHeightCompensation } from "./lib/row-height-compensation";
 import { jumpTargetMatches } from "./lib/jump-target";
 import { closeLightbox, lightboxSrc, openLightbox } from "./lib/lightbox";
 import { evictOver, weighJson } from "./lib/retention";
@@ -50,7 +49,6 @@ import {
   atTail,
   AT_TAIL_PX,
   classifyScroll,
-  correctionAllowed,
   distanceToTail,
   gapToTail,
   nextFollowing,
@@ -342,63 +340,16 @@ export default function App() {
       if (f0) pinTailAndRebaseline(f0);
       return;
     }
-    if (atBottom()) return; // following the tail: the pin owns the position
-    if (!unskipAnchor) return; // nothing has been read yet, so there is no anchor to hold
-    const f = feedEl();
-    if (!f) return;
     /**
-     * A live session mutates the feed every frame (streaming tokens, tool rows), so a correction is scheduled
-     * every frame — including while the reader is scrolling. Then the saved anchor is one or two frames old and
-     * "correcting" toward it moves the viewport by the distance scrolled since: MEASURED as +154/+188/+407/+656
-     * px during an upward scroll, and never in an idle session because nothing scheduled a correction there.
+     * Everything else is the BROWSER's job.
      *
-     * So a correction is only allowed once the reader has stopped, and until then the anchor is RE-BASELINED to
-     * where they actually are, so the next correction is measured from the right place.
+     * `.feed` used to set `overflow-anchor: none`, which is why this function had to measure and correct: nothing else moved
+     * `scrollTop` when a row above the reader changed height. Engine anchoring does exactly that, and MEASURED it does it
+     * correctly in all four reported cases — a tool card collapsing above the read position (drift 0px), the composer
+     * growing under a reader (0px) and while following (the tail stayed at gap 0), and a width change that re-wraps every
+     * row (0px). Each of those used to be a hand-written correction with its own staleness to defend against.
      */
-    if (!correctionAllowed(performance.now(), lastScrollAt)) {
-      unskipAnchor = firstVisibleRow(f);
-      unskipAnchorAt = performance.now();
-      return;
-    }
-    /**
-     * Only a change in the CONTENT'S SIZE moves what is on screen, and only that difference is worth correcting.
-     *
-     * The mutation observer fires for every streaming token and every tool row repaint — most of which change
-     * nothing above the viewport, so the honest delta is zero. Correcting anyway used the saved anchor's stale
-     * position and moved the viewport by the difference. "タイムラインに新しいイベントが届いた時だけその差分が
-     * 補正されればいい" is exactly the rule: measure, and correct only what actually changed.
-     */
-    if (f.scrollHeight === lastSampleHeight) {
-      unskipAnchor = firstVisibleRow(f);
-      unskipAnchorAt = performance.now();
-      return;
-    }
-    /**
-     * A row height change above the viewport has already been compensated by the row observer (`aboveViewportShift`), and
-     * correcting toward an anchor row on top of that measures the same change twice.
-     */
-    if (!anchorStillDescribesView(f)) return;
-    const before = f.scrollHeight;
-    resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_CONTENT_DELTA_PX);
-    lastSampleHeight = f.scrollHeight;
-    if (before !== lastSampleHeight) ledger = { top: f.scrollTop, height: f.scrollHeight };
-  };
-  /**
-   * Is the saved anchor still the row at the top of the viewport?
-   *
-   * `unskipAnchor` is only refreshed by a scroll, so after anything else moved the content it can describe a
-   * row that is no longer at the top. Correcting toward such an anchor moves the view by exactly the
-   * staleness — an arbitrary jump that looks random and happens "sometimes".
-   */
-  const anchorStillDescribesView = (f: HTMLElement): boolean => {
-    if (!unskipAnchor) return false;
-    const first = firstVisibleRow(f);
-    if (!first) return false;
-    if (first.sel === unskipAnchor.sel) return true;
-    // re-baseline instead of correcting toward a row the reader is not looking at
-    unskipAnchor = first;
-    unskipAnchorAt = performance.now();
-    return false;
+    // following the tail: the pin owns the position
   };
   const scheduleReanchor = () => {
     if (feedMoRaf) return;
@@ -492,8 +443,6 @@ export default function App() {
   };
   /** the feed's client width at the last box sample — a change means every row re-wrapped */
   let lastFeedWidth = 0;
-  /** a width change can move the anchor much further than a scroll correction ever should */
-  const RESYNC_MAX_DELTA_PX_RESIZE = 1200;
   const restoreAfterBoxChange = () => {
     feedRoRaf = 0;
     const f = feedEl();
@@ -538,50 +487,14 @@ export default function App() {
       publishGap(tailSample());
       return;
     }
-    if (!contentChanged) {
-      /**
-       * Keep an anchor warm even when nothing needs correcting.
-       *
-       * A width change can only be held if SOME row was recorded before it: a page that has not been scrolled yet had
-       * none, so the first re-wrap of the window moved the viewport by however much the rows grew ("画面横幅でズレるの
-       * はセッション移動した時以外も"). Refreshing it here means the first resize already has one.
-       */
-      if (!unskipAnchor) {
-        unskipAnchor = firstVisibleRow(f);
-        unskipAnchorAt = performance.now();
-      }
-      publishGap(tailSample());
-      return;
-    }
-    if (!correctionAllowed(performance.now(), lastScrollAt)) {
-      unskipAnchor = firstVisibleRow(f);
-      unskipAnchorAt = performance.now();
-      publishGap(tailSample());
-      return;
-    }
-    if (!anchorStillDescribesView(f)) {
-      publishGap(tailSample());
-      return;
-    }
-    // the same cap the scroll path uses: an uncapped correction is how a 445px jump got through
-    resyncAfterUnskip(f, unskipAnchor, RESYNC_MAX_DELTA_PX);
+    /**
+     * A reader's place through a box change is the BROWSER's job too: engine anchoring re-adjusts `scrollTop` when a
+     * re-wrap changes the height of what is above the anchor, which is the same mechanism that holds a card toggle.
+     * MEASURED with this correction removed: narrowing the feed from 740px to 634px (every row re-wraps) left the anchor
+     * row at drift 0 and `scrollTop` untouched.
+     */
     publishGap(tailSample());
   };
-
-  function resyncAfterUnskip(
-    f: HTMLElement,
-    anchor: { sel: string; top: number } | null,
-    maxDelta = RESYNC_MAX_DELTA_PX,
-  ): void {
-    if (!anchor) return;
-    const el = f.querySelector<HTMLElement>(anchor.sel);
-    if (!el) return;
-    const delta = el.getBoundingClientRect().top - anchor.top;
-    if (Math.abs(delta) < 1) return;
-    if (Math.abs(delta) > maxDelta) return;
-    f.scrollTop += delta;
-    ledger = { top: f.scrollTop, height: f.scrollHeight };
-  }
   const scheduleRestore = () => {
     if (feedRoRaf) return;
     feedRoRaf = requestAnimationFrame(restoreAfterBoxChange);
@@ -653,28 +566,6 @@ export default function App() {
     };
   };
 
-  /**
-   * A row above the viewport changing height slides the reader, because `.feed` opts out of engine anchoring.
-   *
-   * The mutation path can see that the content size changed but not WHERE, so it corrects toward a saved anchor row — which
-   * is skipped whenever the anchor is stale. This knows the row and its delta: MEASURED, collapsing a tool card above the
-   * read position (412px -> 30px) slid the anchor row by 382px with nothing compensating.
-   */
-  let detachRowCompensation: (() => void) | null = null;
-  const attachRowRows = (f: HTMLElement) => {
-    detachRowCompensation?.();
-    detachRowCompensation = attachRowHeightCompensation({
-      container: f,
-      isFollowing: () => intentFollowing || atBottom(),
-      onShift: () => {
-        lastSampleHeight = f.scrollHeight;
-        unskipAnchor = firstVisibleRow(f);
-        unskipAnchorAt = performance.now();
-        ledger = { top: f.scrollTop, height: f.scrollHeight };
-      },
-    });
-  };
-
   const attachFeedObserver = (f: HTMLElement | null) => {
     if (!f) return;
     attachGestureLatch(f);
@@ -709,7 +600,6 @@ export default function App() {
       feedMoEl = f;
       feedMo.observe(f, { childList: true, subtree: true, attributes: true, characterData: true });
       f.addEventListener("load", scheduleReanchor, true);
-      attachRowRows(f);
     }
   };
   onMount(() => {
@@ -721,8 +611,6 @@ export default function App() {
       feedRoEl = undefined;
       feedMo?.disconnect();
       feedMo = undefined;
-      detachRowCompensation?.();
-      detachRowCompensation = null;
       if (feedMoEl) feedMoEl.removeEventListener("load", scheduleReanchor, true);
       feedMoEl = undefined;
       if (feedMoRaf) cancelAnimationFrame(feedMoRaf);
@@ -3318,14 +3206,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let lastSample: TailSample | undefined;
   let ledger: { top: number; height: number } | null = null;
   let lastSampleHeight: number | undefined;
-  const RESYNC_BUDGET_PER_GESTURE = 4;
-  const RESYNC_MAX_DELTA_PX = 240;
   /**
    * A content growth may move things further than an engine-initiated scroll tweak, and it is still safe to
    * correct: this path only runs on a DOM change, never on a gesture, so there is no reader intent to fight.
    */
-  const RESYNC_MAX_CONTENT_DELTA_PX = 1_200;
-  let resyncBudget = RESYNC_BUDGET_PER_GESTURE;
   let lastSampleViewport: number | undefined;
   createEffect(() => {
     const v = draft(); 
@@ -4243,7 +4127,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             // the scroll classifier is the third writer — route it through the same setter so the two cannot diverge
             if (follow !== wasFollowing) setFollow(follow);
             else intentFollowing = follow;
-            if (cause === "reader") resyncBudget = RESYNC_BUDGET_PER_GESTURE;
             if (follow && cause !== "reader") {
               if (missed()) setMissed(0);
               markReadIfFollowing();
