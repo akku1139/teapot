@@ -341,15 +341,9 @@ export default function App() {
       return;
     }
     /**
-     * Everything else is the BROWSER's job.
-     *
-     * `.feed` used to set `overflow-anchor: none`, which is why this function had to measure and correct: nothing else moved
-     * `scrollTop` when a row above the reader changed height. Engine anchoring does exactly that, and MEASURED it does it
-     * correctly in all four reported cases — a tool card collapsing above the read position (drift 0px), the composer
-     * growing under a reader (0px) and while following (the tail stayed at gap 0), and a width change that re-wraps every
-     * row (0px). Each of those used to be a hand-written correction with its own staleness to defend against.
+     * Everything else is the BROWSER's job: `.feed` keeps engine scroll anchoring, which holds a reader's place when a row
+     * above them changes height. Script is left with the decisions the engine does not make — the follow policy and the pin.
      */
-    // following the tail: the pin owns the position
   };
   const scheduleReanchor = () => {
     if (feedMoRaf) return;
@@ -582,16 +576,11 @@ export default function App() {
     feedRoLastBox = "";
     feedRo.observe(f);
     /**
-     * Watch the CONTENT, not just the box.
+     * Watch the CONTENT as well as the box.
      *
-     * `.feed` sets `overflow-anchor: none`, so when something above the viewport grows the browser does not
-     * compensate and `scrollTop` does not change — which means no `onscroll` either, and the re-anchor
-     * (`resyncAfterUnskip`) never ran. A late shiki highlight or an image finishing its load therefore slid
-     * what you were reading: "セッション移動後のスクロール追従は確実にバグがある / 数秒後に `v0.37.95 を
-     * 公開中` までスクロールが戻る".
-     *
-     * A mutation covers the highlighting and row insertion; the capture-phase `load` is what catches media
-     * that only acquires its height later, since `load` does not bubble.
+     * Row insertion and late media change the content height without changing the feed's own box, and a tail-seek has to
+     * keep pinning through that. The capture-phase `load` is what catches media that only acquires its height later,
+     * since `load` does not bubble.
      */
     // guarded: the smoke harness renders the real bundle in happy-dom, which has no MutationObserver
     if (typeof MutationObserver !== "undefined") {
