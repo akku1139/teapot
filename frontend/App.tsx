@@ -1264,6 +1264,18 @@ const isTimelineLive = (): boolean => {
   );
   const chatEvents = () => timeline().rows as Ev[];
   const pendingCount = () => timeline().pendingCount;
+  /**
+   * The first ECHO row is where the streaming bubble belongs: above the messages waiting behind it, below everything that is
+   * already settled (#265).
+   */
+  /**
+   * A QUEUED row — the one that says "queued…" — is where the streaming bubble belongs: above the messages waiting behind it,
+   * below everything settled (#265). `data.pending` is the same predicate the row's label and the header badge use, so the three
+   * cannot disagree.
+   */
+  const isQueuedRow = (row: Ev): boolean => row.data?.pending === true;
+  const hasQueuedRows = (): boolean => chatEvents().some(isQueuedRow);
+  const isFirstQueued = (row: Ev): boolean => isQueuedRow(row) && chatEvents().find(isQueuedRow)?.id === row.id;
   const rowIndex = createMemo(() => {
     const m = new WeakMap<Ev, number>();
     chatEvents().forEach((r, i) => m.set(r, i));
@@ -3608,6 +3620,60 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
   };
 
+  const liveBubble = () => (
+    <>
+        <div class="msg live">
+          <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">🫖</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              {/**
+                * The live row's author is the AGENT tone (blue), like every settled agent row.
+                *
+                * It was hardcoded to `var(--acc)` — the accent, which is pink in the sakura theme — while the avatar
+                * beside it was drawn in the agent blue: one row, two identities. Reported as "ライブバッファのagentの
+                * 名前行がピンク(sakura dark)、本来は青" (#224 follow-up).
+                */}
+              <span class="author tone-agent">agent</span>
+              <span class="ts">streaming…</span>
+            </div>
+            {}
+            <Show when={liveReasoning().trim() !== ""}>
+              <details class="reasoning" open>
+                <summary>
+                  💭 thinking <ThinkingTimer startedAt={liveStartedAt()} />
+                </summary>
+                {}
+                <div
+                  class="mono thinkscroll"
+                  ref={(el) => {
+                    let stick = true;
+                    el.addEventListener("scroll", () => {
+                      stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+                    });
+                    createEffect(() => {
+                      liveReasoning(); 
+                      if (stick) el.scrollTop = el.scrollHeight;
+                    });
+                  }}
+                >
+                  {liveReasoning()}
+                </div>
+              </details>
+            </Show>
+            <Show
+              when={liveText()}
+              fallback={<div class="content muted">thinking…</div>}
+            >
+              <Show when={liveIsCompact()} fallback={<div class="content" innerHTML={renderMarkdown(liveText() + "▍")} />}>
+                <div class="muted" style="font-size:11.5px;margin-bottom:4px">🗜 summarizing older context…</div>
+                <div class="content" innerHTML={renderMarkdown(liveBody() + "▍")} />
+              </Show>
+            </Show>
+          </div>
+        </div>
+    </>
+  );
+
   return (
     <>
     <Show when={authLocked()}>
@@ -4180,6 +4246,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               {}
               <For each={chatEvents()}>
                 {(row) => (
+                  <>
+                  <Show when={isFirstQueued(row) && isTimelineLive() && live()}>{liveBubble()}</Show>
                   <MessageRow
                     e={row}
                     prev={() => neighbourOf(row, -1)}
@@ -4280,9 +4348,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         : undefined
                     }
                   />
+                  </>
                 )}
               </For>
               {}
+              {/* nothing queued: the streaming bubble is simply the last thing in the feed */}
+              <Show when={!hasQueuedRows() && isTimelineLive() && live()}>{liveBubble()}</Show>
               {}
               <Show when={switchingFeed()}>
                 <div class="feedloading">
@@ -4292,58 +4363,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <Show when={loadingFeed() && !switchingFeed()}>
                 <div class="feedloading">
                   <span class="spinner" aria-hidden="true" /> loading newer events…
-                </div>
-              </Show>
-              {}
-              <Show when={isTimelineLive() && live()}>
-                <div class="msg live">
-                  <div class="avatar" style="background:#5865f233;border:1px solid #5865f266">🫖</div>
-                  <div class="msg-body">
-                    <div class="msg-head">
-                      {/**
-                        * The live row's author is the AGENT tone (blue), like every settled agent row.
-                        *
-                        * It was hardcoded to `var(--acc)` — the accent, which is pink in the sakura theme — while the avatar
-                        * beside it was drawn in the agent blue: one row, two identities. Reported as "ライブバッファのagentの
-                        * 名前行がピンク(sakura dark)、本来は青" (#224 follow-up).
-                        */}
-                      <span class="author tone-agent">agent</span>
-                      <span class="ts">streaming…</span>
-                    </div>
-                    {}
-                    <Show when={liveReasoning().trim() !== ""}>
-                      <details class="reasoning" open>
-                        <summary>
-                          💭 thinking <ThinkingTimer startedAt={liveStartedAt()} />
-                        </summary>
-                        {}
-                        <div
-                          class="mono thinkscroll"
-                          ref={(el) => {
-                            let stick = true;
-                            el.addEventListener("scroll", () => {
-                              stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-                            });
-                            createEffect(() => {
-                              liveReasoning(); 
-                              if (stick) el.scrollTop = el.scrollHeight;
-                            });
-                          }}
-                        >
-                          {liveReasoning()}
-                        </div>
-                      </details>
-                    </Show>
-                    <Show
-                      when={liveText()}
-                      fallback={<div class="content muted">thinking…</div>}
-                    >
-                      <Show when={liveIsCompact()} fallback={<div class="content" innerHTML={renderMarkdown(liveText() + "▍")} />}>
-                        <div class="muted" style="font-size:11.5px;margin-bottom:4px">🗜 summarizing older context…</div>
-                        <div class="content" innerHTML={renderMarkdown(liveBody() + "▍")} />
-                      </Show>
-                    </Show>
-                  </div>
                 </div>
               </Show>
             </Show>
