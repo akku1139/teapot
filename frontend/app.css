@@ -2025,6 +2025,14 @@ html[data-bg-image="on"] .termpane {
    sit to the right of its label with a left edge that lined up with nothing.
    This stacks: label, then card beneath, both flush with the feed's cards. */
 .goalline { padding: 4px 18px; color: var(--dim); font-size: var(--text-xs); }
+/**
+ * An audit step lines up with the goal/audit rows it belongs to.
+ *
+ * `.embed` insets its content by `border-left: 3px` + `padding-left: 10px` = 13px, while `.goalline` uses 18px, so a run of
+ * "🔍️ auditor …" rows started 5px left of the "🔍️ completion audit started" row directly above them — reported as "audit started
+ * とかと左右のパディングが違う". One inset for the whole audit block.
+ */
+.embed.auditstep { border-left: none; padding: 4px 18px; background: none; }
 .goalline-label { display: block; color: var(--dim); }
 .goalline.warn .goalline-label { color: var(--warn); }
 .goalline.err .goalline-label { color: var(--err); }
