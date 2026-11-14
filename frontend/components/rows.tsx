@@ -584,28 +584,30 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
      * as the same complaint that produced the compaction fix: "中身が空なのに展開してちょっと縦に伸びる".
      */
     const expandable = (st === "reply" && !!e.data?.text) || (st === "tool" && !!e.data?.args);
+    /**
+     * The SAME rendering path as a goal or audit card: `.goalline` + `<Card>`.
+     *
+     * These rows were `.embed`s — a different container with its own border, background and inset — so a run of "🔍️ auditor →"
+     * steps did not line up with the "🔍️ completion audit started" row above them and did not share its card surface. The
+     * operator's diagnosis: "auditとかgoal setとかのカードと、auditorのカードのレンダリング経路が違うからこうなってるのであって、
+     * それらを統一すれば済む話". One path, so there is nothing to keep in step.
+     */
     if (!expandable) {
       return (
-        <div class="embed auditstep">
-          <span class="meta">{label}</span>
+        <div class="goalline">
+          <div class="goalline-label">{label}</div>
         </div>
       );
     }
     return (
-      <details class="embed auditstep">
-        <summary>
-          <span class="meta">{label}</span>
-          <Show when={st === "tool" && e.data?.args}>
-            <span class="meta muted">{truncate(String(e.data?.args ?? ""), 120)}</span>
-          </Show>
-        </summary>
-        <Show when={st === "reply" && e.data?.text}>
-          <pre class="mono toolbody">{String(e.data?.text ?? "")}</pre>
-        </Show>
-        <Show when={st === "tool" && e.data?.args}>
-          <pre class="mono toolbody">{String(e.data?.args ?? "")}</pre>
-        </Show>
-      </details>
+      <div class="goalline">
+        <Card
+          tone="tool"
+          markdown={false}
+          title={label}
+          body={st === "reply" ? String(e.data?.text ?? "") : String(e.data?.args ?? "")}
+        />
+      </div>
     );
   }
   if (e.type === "todo") {
