@@ -3881,7 +3881,14 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
 .goalauto input { margin: 0; }
 .goalpane { display: flex; flex-direction: column; gap: var(--space-2); }
 .goalpane textarea { min-height: 62px; }
-.goalverify { border-color: var(--line); }
+.goalverify {
+  border-color: var(--line);
+  /* the same handle the goal box and the task list have (#210) */
+  resize: vertical;
+  overflow-y: auto;
+  min-height: 4em;
+  max-height: 40vh;
+}
 .goalverify-head {
   font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--dim);
   margin-bottom: var(--space-1);

@@ -29,6 +29,27 @@ export function GoalEditor(props: {
   const stored = Number(localStorage.getItem("teapot.goalH") ?? "");
   const [goalHeight, setGoalHeight] = createSignal<number>(Number.isFinite(stored) && stored > 0 ? stored : 0);
   const heightStyle = () => (goalHeight() > 0 ? { height: `${goalHeight()}px` } : undefined);
+  /**
+   * The verification contract gets the same resize handle, under its own key (#210: "verification contractがリサイズできない").
+   * It is a separate box because the two are read for different reasons — the goal says what to do, the contract says how it will
+   * be judged — and the operator sizes them independently.
+   */
+  const storedVerify = Number(localStorage.getItem("teapot.verifyH") ?? "");
+  const [verifyHeight, setVerifyHeight] = createSignal<number>(Number.isFinite(storedVerify) && storedVerify > 0 ? storedVerify : 0);
+  const verifyStyle = () => (verifyHeight() > 0 ? { height: `${verifyHeight()}px` } : undefined);
+  const trackVerify = (el: HTMLElement) => {
+    const ro = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      if (h <= 0) return;
+      setVerifyHeight((cur) => {
+        if (Math.abs(cur - h) < 1) return cur;
+        localStorage.setItem("teapot.verifyH", String(h));
+        return h;
+      });
+    });
+    ro.observe(el);
+    onCleanup(() => ro.disconnect());
+  };
   const trackHeight = (el: HTMLElement) => {
     const ro = new ResizeObserver(() => {
       const h = el.offsetHeight;
@@ -54,7 +75,7 @@ export function GoalEditor(props: {
             <div class="content mdpreview goalbox" style={heightStyle()} ref={trackHeight} innerHTML={renderMarkdownCached(props.goal)} />
           </Show>
           <Show when={props.verify.trim()}>
-            <div class="card goalverify">
+            <div class="card goalverify" style={verifyStyle()} ref={trackVerify}>
               <div class="goalverify-head">🔍️ verification contract</div>
               <div class="content" innerHTML={renderMarkdownCached(props.verify)} />
             </div>
