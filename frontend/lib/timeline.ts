@@ -55,6 +55,11 @@ export function feedCandidates(input: TimelineInput): TimelineEvent[] {
     const metaToolName =
       e.type === "tool_call" || e.type === "tool_result" ? String(e.data?.name ?? "") : "";
     if (META_TOOLS_HIDDEN.has(metaToolName)) return false;
+    /**
+     * A prompt the server marked `hidden` is conversation, not timeline: the re-context notes restate the goal and task list
+     * the model already had, and drawing them made a compaction look like the operator typing (#263).
+     */
+    if (e.type === "prompt" && (e.data as { hidden?: boolean })?.hidden === true) return false;
     if (e.type === "tool_result") return !consumed.has(e.id);
     if (e.type === "message") {
       const content = String(e.data?.content ?? "");

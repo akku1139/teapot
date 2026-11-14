@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { isSummarizerRequest } from "./helpers/summarizer-request.ts";
 import { Agent } from "../src/agent/agent.ts";
+import { feedCandidates } from "../frontend/lib/timeline.ts";
 import type { ChatMessage, LlmResult } from "../src/agent/llm.ts";
 
 const tc = (id: string, name: string, args: unknown) => ({
@@ -67,4 +68,44 @@ test("compaction re-attaches the goal and the OPEN tasks, not just the summary",
     assert.match(attached!, /already done/, "done items are kept: they are what makes the open ones legible");
     await agent.dispose();
   });
+});
+
+/**
+ * The re-attached note is for the MODEL: it must not be drawn in the timeline (#263).
+ *
+ * It restates the goal and the task list the model already had, so as a harness message it read like the operator had typed
+ * something during compaction. The log keeps the row (a restart rebuilds the conversation from it); the feed drops it.
+ */
+test("the re-attach note is logged hidden, so the feed skips it while the conversation keeps it", () => {
+  const note = {
+    id: "e1",
+    seq: 1,
+    type: "prompt" as const,
+    agent: "a",
+    session: "s",
+    branch: "main",
+    ts: "2026-01-01T00:00:00.000Z",
+    data: { source: "harness", text: "re-attached after compaction", hidden: true },
+  };
+  const visible = feedCandidates({
+    events: [note] as never,
+    pending: [],
+    consumed: new Set<string>(),
+    feedTypes: new Set(["prompt"]),
+    renderedTypes: new Set(["prompt"]),
+    renderedNoteEvents: new Set<string>(),
+    echo: (p) => p as never,
+  });
+  assert.equal(visible.length, 0, "a hidden prompt is not a feed row");
+
+  const shown = feedCandidates({
+    events: [{ ...note, data: { source: "harness", text: "visible note" } }] as never,
+    pending: [],
+    consumed: new Set<string>(),
+    feedTypes: new Set(["prompt"]),
+    renderedTypes: new Set(["prompt"]),
+    renderedNoteEvents: new Set<string>(),
+    echo: (p) => p as never,
+  });
+  assert.equal(shown.length, 1, "a normal harness prompt still renders — the flag is what hides, not the source");
 });

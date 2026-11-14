@@ -1109,6 +1109,13 @@ export class Agent {
    * conversation from the log and silently omitted them: the prompt the model resumed with differed from the one it last
    * saw, so the prefix cache was dead from that point on and the operator paid for the whole conversation again (#227).
    */
+  /**
+   * A re-context note is for the MODEL, not for the timeline.
+   *
+   * These notes restate the goal and the task list the model already had; showing them as harness messages made compaction look
+   * like the operator had typed something — reported as "タイムラインの harnessメッセージじゃなくて隠してほしい
+   * (context windowと同じように)". The payload lives in the conversation and the log; the `hidden` flag keeps it out of the feed.
+   */
   private async attachContextNote(text: string): Promise<void> {
     /**
      * APPENDED, not spliced in after the checkpoint.
@@ -1124,6 +1131,7 @@ export class Agent {
       source: "harness",
       text,
       ahead: 0,
+      hidden: true,
     });
   }
 
@@ -3797,11 +3805,21 @@ export class Agent {
         const items = lines.filter((l) => /^\s*-/.test(l));
         const allDone = items.length > 0 && items.every((l) => /^\s*-\s*\[x\]/i.test(l));
         const todoText = allDone ? "" : this.todo.trim();
-        const goalText = this.goal.text.trim();
+        /**
+         * A `done` goal is not re-attached: there is nothing to work on, and restating it invites the agent to redo it. A
+         * `paused` one IS re-attached but says who owns it — the operator took it off the agent's hands, so "continue" would be
+         * the wrong instruction (#263).
+         */
+        const status = this.goal.status;
+        const goalText = status === "done" ? "" : this.goal.text.trim();
+        const goalLine =
+          status === "paused"
+            ? `goal (PAUSED — the operator owns this goal; do not work on it unless they ask): ${goalText.slice(0, 2_000)}\n`
+            : `goal (${status}): ${goalText ? goalText.slice(0, 2_000) : "(none set)"}\n`;
         if (goalText || todoText) {
           await this.attachContextNote(
             `[harness] Your goal and TODO list, re-attached after compaction:\n` +
-              `goal (${this.goal.status}): ${goalText ? goalText.slice(0, 2_000) : "(none set)"}\n` +
+              goalLine +
               (todoText
                 ? `todo.md (verbatim):\n${todoText.slice(0, 8_000)}\n` +
                   `Update the list as you finish work (set_todo), so this list and reality cannot drift.`
