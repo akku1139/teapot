@@ -1535,7 +1535,7 @@ export class Agent {
     const title = this.opts.sessionTitleOf?.(this.currentSession) || this.currentSession;
     return {
       id: this.opts.id,
-      status: this.status === "idle" && this.isLive() ? "waiting" : this.status,
+      status: this.shownStatus(),
       statusReason: this.statusReason,
       live: this.isLive(),
       workspace: this.workspace,
@@ -1867,6 +1867,17 @@ export class Agent {
 
   onControlStatusChange: ((agentId: string, status: AgentStatus) => void) | null = null;
 
+  /**
+   * The status to SHOW: an idle agent that still has work in flight reads as `waiting`.
+   *
+   * One function, because two writers disagreed: `snapshot()` translated idle+live to `waiting` while the `state` event logged
+   * the raw `idle`, so the panel said "waiting" and the timeline said "→ idle" for the same moment — reported as
+   * "フロントエンドとサーバーでステータスの表示が違う".
+   */
+  private shownStatus(s: AgentStatus = this.status): AgentStatus {
+    return s === "idle" && this.isLive() ? "waiting" : s;
+  }
+
   private setStatus(s: AgentStatus, reason = ""): void {
     const prev = this.status;
     this.status = s;
@@ -1877,8 +1888,8 @@ export class Agent {
       } catch {
       }
       void this.log.append("state", this.currentSession, this.currentBranch, {
-        from: prev,
-        to: s,
+        from: this.shownStatus(prev),
+        to: this.shownStatus(s),
         reason,
       });
     }
