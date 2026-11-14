@@ -1208,15 +1208,34 @@ export class Agent {
    *
    * Coalescing is the right shape because the requests are IDENTICAL — nothing is lost by answering "already running".
    */
-  private compactInFlight: Promise<{ ran: boolean }> | null = null;
+  private compactInFlight: Promise<{ ran: boolean; queued: boolean }> | null = null;
 
-  async compactNow(): Promise<{ ran: boolean }> {
-    if (this.compactInFlight) return { ran: false };
+  /**
+   * "A compaction has been ASKED for", as a flag — not a queued job.
+   *
+   * `/compact` used to enqueue an item on the same chain as the agent's turns, so its effect landed at an arbitrary later
+   * point with nothing recording that a compaction was pending: a second `/compact` reported "did not run", the operator
+   * could not tell a manual compaction from an automatic one in the log, and a request issued while a turn was still
+   * streaming could be reported as fired when nothing had compacted. One boolean, consumed at the next turn boundary.
+   */
+  private compactRequested = false;
+
+  async compactNow(): Promise<{ ran: boolean; queued: boolean }> {
+    if (this.compactInFlight || this.compactRequested) return { ran: false, queued: true };
+    if (this.status === "running" || this.parkedByTool) {
+      this.compactRequested = true;
+      await this.log.append("prompt", this.currentSession, this.currentBranch, {
+        source: "harness",
+        text: "[compact] a compaction was requested; it runs at the next turn boundary",
+        hidden: true,
+      });
+      return { ran: false, queued: true };
+    }
     this.compactInFlight = this.enqueue(async () => {
       await this.ensureReady();
       const before = this.stats.compactions;
       await this.maybeCompact(true);
-      return { ran: this.stats.compactions > before };
+      return { ran: this.stats.compactions > before, queued: false };
     });
     try {
       return await this.compactInFlight;
@@ -2674,7 +2693,12 @@ export class Agent {
       await this.refreshSkills();
       this.progressRequestedThisRound = false;
       await this.maybeRequestProgress();
-      await this.maybeCompact();
+      if (this.compactRequested) {
+        this.compactRequested = false;
+        await this.maybeCompact(true);
+      } else {
+        await this.maybeCompact();
+      }
 
       await this.log.append("state", this.currentSession, this.currentBranch, {
         from: this.status,
@@ -3573,7 +3597,19 @@ export class Agent {
      * "その数ターン後にcompactされて、更にその数ターン後にまたcompactされた". Growth, not the clock, is the gate.
      */
     if (!force && this.messages.length <= this.compactedAtLen + 2) return;
-    if (force && this.messages.length <= this.compactedAtLen) return;
+    if (force && this.messages.length <= this.compactedAtLen) {
+      /**
+       * A requested compaction with nothing new to compact says so.
+       *
+       * Silently returning is what made `/compact` look broken ("`/compact` して、何も変化がなくて"): the request WAS honoured,
+       * the history was already compacted at this size.
+       */
+      await this.log.append("system_note", this.currentSession, this.currentBranch, {
+        event: "compact-nothing-new",
+        detail: "the history has not grown since the last compaction, so there is nothing to compact",
+      });
+      return;
+    }
     this.lastUsage = undefined; 
 
     const keepTokens = keepFraction !== undefined
@@ -3774,6 +3810,8 @@ export class Agent {
       }
 
       await this.log.append("compaction", this.currentSession, this.currentBranch, {
+        // which asked for it — the log could not tell a manual compaction from an automatic one
+        trigger: force ? "forced" : "auto",
         tokensBefore: before,
         tokensAfter: after,
         summarized: summarizedCount,
