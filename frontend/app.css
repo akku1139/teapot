@@ -3420,7 +3420,14 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 .notifitem { opacity: 1; }
 .notifitem.read { opacity: .55; }
 .notifitem.read .ntitle { font-weight: 400; }
-.nreadbtn { font-size: var(--text-xs); width: auto; padding: 0 6px; flex-shrink: 0; }
+/**
+ * Square, because `.iconbtn` says so and this rule used to undo it.
+ *
+ * `width: auto; padding: 0 6px` overrode the square box, so the per-notification ✓/○ was a rectangle next to square buttons
+ * everywhere else — reported as "通知単体の ✓ と ○ が正方形じゃない". The one-glyph rule (`test/single-glyph-buttons.test.ts`)
+ * catches a MISSING class; this was a class whose own rule took the shape back.
+ */
+.nreadbtn { font-size: var(--text-xs); flex-shrink: 0; }
 /* highlight for the row a notification jumped to */
 .flash-target { outline: 2px solid var(--acc); border-radius: var(--radius-lg); transition: outline-color .6s; }
 .msg.flash-target { background: color-mix(in srgb, var(--acc) 12%, transparent); }
@@ -3435,10 +3442,18 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 h3 .filetoggle { margin-left: 0; }
 
 /* per-session notification badge in the sidebar tree */
+/**
+ * A 10px DOT, not a pill.
+ *
+ * A pill with `padding: 1px 6px` rounds to an ellipse whose axes depend on the digit, so it read as "真円じゃない" (#254). Equal
+ * width and height make it a circle whatever the count is.
+ */
 .notifbadge {
   margin-left: auto; font-size: var(--text-xs); color: var(--acc);
-  background: var(--bg-light); border-radius: var(--radius-pill); padding: 1px 6px;
-  white-space: nowrap; flex-shrink: 0;
+  background: var(--bg-light); border-radius: 50%;
+  width: 10px; height: 10px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  overflow: hidden; white-space: nowrap; flex-shrink: 0;
 }
 .agent-item.sel .notifbadge { background: var(--bg-darkest); }
 

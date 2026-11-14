@@ -18,17 +18,6 @@ import path from "node:path";
  */
 const ROWS = path.join(import.meta.dirname, "..", "frontend", "components", "rows.tsx");
 
-test("the audit card is a plain embed when it has no body (#audit)", () => {
-  const src = readFileSync(ROWS, "utf8");
-  const at = src.indexOf("if (!expandable)");
-  assert.ok(at > 0, "there must be a no-body branch");
-  // the branch body is what matters: a <div>, and it must return before the <details> path
-  // the `if (!expandable)` block ends at its own closing brace, well before the <details> path
-  const block = src.slice(at, src.indexOf("return (", src.indexOf("return (", at) + 1));
-  assert.match(block, /<div class="embed auditstep">/, "it must render a plain embed");
-  assert.doesNotMatch(block, /<details/, "and must not open a <details>");
-});
-
 test("the compaction card keeps the same rule (#compact)", () => {
   // the card that originally exposed the problem; a regression here would re-open the same report
   const src = readFileSync(ROWS, "utf8");

@@ -21,6 +21,41 @@ import { langForPath } from "../lib/shiki";
 import { formatToolOutput, outputLang } from "../lib/tool-output-lang";
 import { effectiveBashTimeout } from "../lib/bash-timeout";
 
+/**
+ * One renderer for the timeline's small notes — a label, optionally with a card under it.
+ *
+ * The same kind of row was drawn four different ways (`.divider-msg`, `.embed`, `.goalline`+`<Card>`, a bare `<div>`), so a
+ * made-up example like "goal and todo are the same thing" rendered as two different shapes and the audit's own steps did not
+ * line up with the audit's header. Every note now comes through here: the geometry (18px inset, card surface, left border) is
+ * decided ONCE.
+ */
+function Note(props: {
+  label: string;
+  body?: string;
+  tone?: "ok" | "warn" | "err";
+  markdown?: boolean;
+  /** a one-line note with no body: a divider rather than a box */
+  divider?: boolean;
+}) {
+  return (
+    <Show
+      when={!props.divider}
+      fallback={<div class={"divider-msg" + (props.tone === "err" ? " err" : "")}>{props.label}</div>}
+    >
+      <div class={"goalline " + (props.tone ?? "")}>
+        <div class="goalline-label">{props.label}</div>
+        <Show when={props.body}>
+          <Card
+            tone={props.tone === "err" ? "warn" : props.tone ?? "tool"}
+            markdown={props.markdown ?? false}
+            body={props.body ?? ""}
+          />
+        </Show>
+      </div>
+    </Show>
+  );
+}
+
 export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => void }) {
   const [val, setVal] = createSignal("");
   const submit = () => {
@@ -592,29 +627,19 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
      * operator's diagnosis: "auditとかgoal setとかのカードと、auditorのカードのレンダリング経路が違うからこうなってるのであって、
      * それらを統一すれば済む話". One path, so there is nothing to keep in step.
      */
-    if (!expandable) {
-      return (
-        <div class="goalline">
-          <div class="goalline-label">{label}</div>
-        </div>
-      );
-    }
     return (
-      <div class="goalline">
-        <Card
-          tone="tool"
-          markdown={false}
-          title={label}
-          body={st === "reply" ? String(e.data?.text ?? "") : String(e.data?.args ?? "")}
-        />
-      </div>
+      <Note
+        label={label}
+        body={expandable ? (st === "reply" ? String(e.data?.text ?? "") : String(e.data?.args ?? "")) : undefined}
+      />
     );
   }
   if (e.type === "todo") {
     // one word for one person: the server says "operator" (agent.ts setGoalStatus/setTodo), so the row must not say
     // "human" for the same actor — the operator asked for consistency, and "human" was the only place it appeared
     const by = String(e.data?.by ?? "operator");
-    return <div class="divider-msg">✅ tasks updated ({by === "human" ? "operator" : by})</div>;
+    // the same shape as the goal row: a label on its own line, not a full-width divider
+    return <Note label={`✅ tasks updated (${by === "human" ? "operator" : by})`} divider={false} />;
   }
   if (e.type === "state") {
     if (e.data.from === e.data.to) return null;
@@ -639,34 +664,34 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
        * 時のカードと同じになるべき".
        */
       return (
-        <div class="goalline err">
-          <div class="goalline-label">🛑 runaway: {String(e.data?.failures)} tool failures in a row (limit {String(e.data?.limit)})</div>
-          <Card
-            tone="warn"
-            markdown={false}
-            body={`last: ${String(e.data?.lastTool)} — ${String(e.data?.lastError ?? "").slice(0, 200)}`}
-          />
-        </div>
+        <Note
+          tone="err"
+          label={`🛑 runaway: ${String(e.data?.failures)} tool failures in a row (limit ${String(e.data?.limit)})`}
+          body={`last: ${String(e.data?.lastTool)} — ${String(e.data?.lastError ?? "").slice(0, 200)}`}
+        />
       );
     }
     if (ev === "error-retry") {
       return (
-        <div class="goalline warn">
-          <div class="goalline-label">
-            ↻ API error — retrying (attempt {String(e.data?.attempt)}) in {Math.round(Number(e.data?.waitMs) / 1000)}s…
-          </div>
-        </div>
+        <Note
+          tone="warn"
+          label={`↻ API error — retrying (attempt ${String(e.data?.attempt)}) in ${Math.round(Number(e.data?.waitMs) / 1000)}s…`}
+        />
       );
     }
     if (ev === "background-exit") {
       const failed = e.data?.failed === true;
       const secs = Math.round(Number(e.data?.durationMs ?? 0) / 1000);
       return (
-        <div class={"divider-msg" + (failed ? " err" : "")} title={String(e.data?.cmd ?? "")}>
-          {(failed ? "⚠ background job " : "✓ background job ") +
+        <Note
+          divider
+          tone={failed ? "err" : "ok"}
+          label={
+            (failed ? "⚠ background job " : "✓ background job ") +
             String(e.data?.jobId ?? "?") + " " +
-            (failed ? `FAILED (exit ${String(e.data?.code ?? "?")})` : `finished (${secs}s)`)}
-        </div>
+            (failed ? `FAILED (exit ${String(e.data?.code ?? "?")})` : `finished (${secs}s)`)
+          }
+        />
       );
     }
     if (ev === "context-compacted") {
