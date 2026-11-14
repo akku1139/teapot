@@ -583,6 +583,11 @@ out with only five unresolved names because everything it called had already mov
 - One logical change per commit. Message: `fix(#NNN): <what was wrong>`, with a
   body explaining the **mechanism** and the evidence (a measurement, a test, a
   reproduction) — not just "fixed the bug".
+- **One fix per commit, even when several fixes are ready at once.** Work through the reported
+  issues one at a time and commit each separately; a batch commit covering five issues makes it
+  impossible to follow which change came from which report, to revert one without the others, or
+  to answer "did this release fix #262?" without reading the whole diff. A release may of course
+  contain several such commits — the tag is not the unit of review, the commit is.
 - Keep the trailer area clean: no `Co-Authored-By`, no generated-by lines.
 - Releases are tag-driven (`.github/workflows/publish.yml`). Bumping
   `package.json` and pushing the matching `vX.Y.Z` tag publishes to npm; the
