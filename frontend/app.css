@@ -1076,7 +1076,8 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
    hierarchy is carried by the INDENT and the GROUPING (taken from the parent row), so muting a child's text only made it
    harder to read: a sub-agent is an agent, and its name is the most important thing about it. */
 .agent-item.sub-row { color: inherit; }
-.dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+/* 8px, the same step as `.conn` — two status marks in the UI should not be one pixel apart */
+.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .dot.running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 /**
  * Two states, two marks — because only one of them needs the operator.
@@ -3241,10 +3242,21 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 /* notification center (pops above the sidebar footer) */
 .notifbtn { position: relative; }
 .notifbtn.has-unread { color: var(--acc); }
+/**
+ * The bell's count: a 13px circle that GROWS SIDEWAYS for a second digit.
+ *
+ * `padding: 2px 4px` around a text line made the box however tall the glyph happened to be and left the digit off-centre
+ * ("文字の中央揃えも実装が不足"); at 10px the glyph did not fit at all ("10x10 だと明らかに小さくて文字が溢れる"). A fixed height with
+ * `min-width` and `justify-content: center` is a circle for one digit and a pill for two, with the number centred either way.
+ */
 .notifdot {
   position: absolute; top: -4px; right: -4px;
-  background: var(--err); color: #fff; border-radius: var(--radius-pill);
-  font-size: var(--text-xs); line-height: 1; padding: 2px 4px; font-style: normal; font-weight: 700;
+  box-sizing: border-box;
+  height: 13px; min-width: 13px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--err); color: #fff; border-radius: 999px;
+  font-size: var(--text-xs); line-height: 1; font-style: normal; font-weight: 700;
+  white-space: nowrap;
 }
 .brand-row { display: flex; align-items: center; margin-top: 2px; }
 /* invisible click-catcher that sits UNDER the panel but OVER everything else,
@@ -3448,12 +3460,19 @@ h3 .filetoggle { margin-left: 0; }
  * A pill with `padding: 1px 6px` rounds to an ellipse whose axes depend on the digit, so it read as "真円じゃない" (#254). Equal
  * width and height make it a circle whatever the count is.
  */
+/**
+ * A 10px circle for one digit that grows for a count with more of them.
+ *
+ * Same construction as `.notifdot` (fixed height, `min-width`, centred), because `overflow: hidden` on a fixed 10px box would
+ * clip "12" instead of widening.
+ */
 .notifbadge {
   margin-left: auto; font-size: var(--text-xs); color: var(--acc);
-  background: var(--bg-light); border-radius: 50%;
-  width: 10px; height: 10px; padding: 0;
+  background: var(--bg-light); border-radius: 999px;
+  box-sizing: border-box;
+  height: 10px; min-width: 10px; padding: 0 3px;
   display: inline-flex; align-items: center; justify-content: center;
-  overflow: hidden; white-space: nowrap; flex-shrink: 0;
+  white-space: nowrap; flex-shrink: 0;
 }
 .agent-item.sel .notifbadge { background: var(--bg-darkest); }
 
