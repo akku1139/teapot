@@ -992,7 +992,14 @@ html[data-bg-image="on"] button.bgpick.has { border-style: solid; }
 }
 .bgpreview .btnrow { margin-top: var(--space-2); align-items: center; }
 .swdots i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-shadow: inset 0 0 0 1px #0004; }
-.agent-list { flex: 1; overflow-y: auto; min-height: 0; min-width: 0; }
+/**
+ * The scroll container reaches the sidebar's EDGES, its rows do not.
+ *
+ * `.sidebar` pads 8px each side, so a scroll container inside that padding box puts its scrollbar 8px in from the panel edge —
+ * reported as "左パネルのスクロールバーの位置が右端からズレてる / どうやらpaddingの8px分っぽい". The negative margin cancels
+ * the padding for the BOX (where the scrollbar is drawn) and the padding puts it back for the CONTENT.
+ */
+.agent-list { flex: 1; overflow-y: auto; min-height: 0; min-width: 0; margin: 0 -8px; padding: 0 8px; }
 /* workspace header: which project the chats below belong to (#18). The sidebar
    grouped by parent/child agent only, so chats from unrelated projects
    interleaved in one undifferentiated list. */
