@@ -3297,9 +3297,15 @@ export class Agent {
             const retryText = `[harness] The completion audit REJECTED this finish. Address these gaps, then finish again with goalComplete=true:\n\n${gaps}`;
             if (this.consecutiveAuditRejects < (this.opts.maxAuditRejects ?? 3)) {
               this.pendingPrompts.push({ source: "harness", text: retryText, id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` });
+              /**
+               * Logged HIDDEN: the verdict and its reason are already a row (the audit goal event renders as a card), so a
+               * harness prompt repeating "REJECTED this finish …" directly under it read as a duplicate — reported as
+               * "audit resultがagentとharnessで二重に出てる". The text still reaches the model and survives a restart.
+               */
               await this.log.append("prompt", this.currentSession, this.currentBranch, {
                 source: "harness",
                 text: retryText,
+                hidden: true,
               });
             }
             await this.captureRecentTurns();
