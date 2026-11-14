@@ -3565,6 +3565,14 @@ export class Agent {
       return;
     }
     if (!force && this.consecutiveCompactFailures >= MAX_AUTO_COMPACT_FAILURES) return;
+    /**
+     * A compaction needs a couple of turns of new material before it can be worth running again.
+     *
+     * The token estimate is rebuilt from the log right after a compaction (`lastUsage` is dropped), and re-estimating a
+     * freshly-compacted history can still land over the budget — so the next two turns each compacted again, reported as
+     * "その数ターン後にcompactされて、更にその数ターン後にまたcompactされた". Growth, not the clock, is the gate.
+     */
+    if (!force && this.messages.length <= this.compactedAtLen + 2) return;
     if (force && this.messages.length <= this.compactedAtLen) return;
     this.lastUsage = undefined; 
 
