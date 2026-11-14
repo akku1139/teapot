@@ -3547,7 +3547,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     onCleanup(bindStoredHeight(el, "goal"));
   };
   const [goalVerifyDraft, setGoalVerifyDraft] = createSignal("");
-  const [_goalDirty, setGoalDirty] = createSignal(false);
+  const [goalDirty, setGoalDirty] = createSignal(false);
   /**
    * The goal is READ-first and edited on demand, like the ✅ tasks pane (#206).
    *
@@ -3569,6 +3569,21 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       setGoalVerifyDraft("");
       void g; 
     }
+  });
+  /**
+   * An edit form must FOLLOW the agent while the operator has not typed.
+   *
+   * The drafts were only ever seeded when entering edit mode, so a goal the agent rewrote in the meantime left the form showing
+   * the old text — reported as "goalの編集画面にいるときにエージェントからgoalが更新されるとフロントのgoalが変わらない".
+   * Once the operator has typed (`goalDirty`), their text wins: overwriting it mid-sentence would be worse than stale.
+   */
+  createEffect(() => {
+    const g = sel()?.goal;
+    if (goalViewMode() || goalDirty() || !g) return;
+    const text = String(g.text ?? "");
+    const verify = String(g.verify ?? "");
+    if (text !== goalDraft()) setGoalDraft(text);
+    if (verify !== goalVerifyDraft()) setGoalVerifyDraft(verify);
   });
   const setGoal = async (e: Event) => {
     e.preventDefault?.();
