@@ -415,8 +415,6 @@ export class Agent {
   private workspaceMissing = false;
   private lastProgressAt = Date.now();
   private lastUsage?: { input: number; output: number; cached?: number };
-  /** until the provider reports again, the usage figure is OUR estimate, and the line says so (#249) */
-  private usageIsEstimated = false;
   modelPricing?: { prompt: number; completion: number; cacheRead?: number };
   private compactedAtLen = 0;
   private pendingSubReport = "";
@@ -513,14 +511,7 @@ export class Agent {
      * time and task size. Telling it the real percentage each turn costs nothing (this line is already
      * per-message) and removes the inference.
      */
-    return (
-      `${clock} · ${usageLine(this.contextSizeForBudgeting(), this.opts.contextTokenBudget, this.opts.contextWindowTokens)}` +
-      /**
-       * An estimate is labelled, because a model that is told "3% used" right after a compaction it cannot see the numbers for
-       * will fill the gap with the impression it had BEFORE the pass — that is the reported behaviour, not a shortage of tokens.
-       */
-      (this.usageIsEstimated ? " · estimated, not the provider's count" : "")
-    );
+    return `${clock} · ${usageLine(this.contextSizeForBudgeting(), this.opts.contextTokenBudget, this.opts.contextWindowTokens)}`;
   }
   private activityChars = 0;
   private turnsSinceProgress = 0;
@@ -1182,7 +1173,6 @@ export class Agent {
       if (own[i]!.type === "usage") {
         const u = own[i]!.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
         if (typeof u.inputTokens === "number") {
-          this.usageIsEstimated = false;
           this.lastUsage = {
             input: u.inputTokens,
             output: u.outputTokens ?? 0,
@@ -3629,17 +3619,7 @@ export class Agent {
       });
       return;
     }
-    /**
-     * The provider's own count is dropped here because it described the OLD history — but a dropped count is replaced by an
-     * ESTIMATE, and the estimate is what the model then reads in its usage line. MEASURED (#249): after a compaction the line
-     * reported a far smaller figure than the provider would have charged, and the model reasoned "context is near compaction"
-     * from the stale impression it had before the pass — "compact後にサボる原因これじゃね? / まだ勘違いされてそう".
-     *
-     * So the estimate is marked as one. `contextSizeForBudgeting` keeps reporting the estimate for the compaction DECISION (it
-     * must, the old count is gone), and the USAGE LINE says which of the two it is showing.
-     */
-    this.lastUsage = undefined;
-    this.usageIsEstimated = true;
+    this.lastUsage = undefined; 
 
     const keepTokens = keepFraction !== undefined
       ? Math.max(1, Math.floor(this.opts.contextTokenBudget * keepFraction))
