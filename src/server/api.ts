@@ -908,7 +908,16 @@ const MAX_WS_CLIENTS = 64;
      * stays for the API's older callers but is not what the row uses any more.
      */
     const ahead = a.pendingAheadOf(promptId);
-    if (body.start !== false && a.status !== "running") a.start("prompt");
+    /**
+     * "running" does not mean "this prompt will be picked up".
+     *
+     * A `finish(goalComplete)` holds the run inside its own handler for as long as the completion audit takes, and the loop
+     * then ENDS when it returns `end` — so a prompt that arrived during the audit sat in the queue with nothing left to drain
+     * it, and the agent reported `waiting` for ever. Skipping `start()` because the status happened to be `running` is what
+     * kept it there. `start()` is a no-op while a round really is in flight (it returns early when `status === "running"`
+     * without a pending stop), so calling it is safe: it only bites when the round has already ended underneath us.
+     */
+    if (body.start !== false) a.start("prompt");
     return c.json({ ok: true, promptId, ahead, queued: a.snapshot().pendingPrompts });
   });
 
