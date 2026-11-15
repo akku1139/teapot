@@ -3935,8 +3935,18 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
  * "this is what the panel contains" rather than "the panel is not ready" — reported as "パネルの中央に表示してほしい" (#239).
  * `flex: 1` lets it take whatever room its container gives it; a container that does not flex falls back to the padding box.
  */
+/**
+ * Centred in the panel it fills — BOTH axes, without needing its parent to be a flex box.
+ *
+ * The top-left line read as content rather than as "not ready yet" ("パネルの中央に表示してほしい", #239). `flex: 1` alone only
+ * centres inside a flex parent; the file panel's `.filebox` is a plain block with a definite height, so this needs its own
+ * `min-height` to reach the middle. `100%` against an auto-height parent resolves to auto, i.e. a container that cannot say how
+ * tall it is keeps the compact line, which is what the timeline's grid wrapper (`place-items: center`) already centres.
+ */
 .loadingrow {
-  display: flex; flex: 1; align-items: center; justify-content: center; gap: var(--space-2);
+  display: flex; flex: 1; box-sizing: border-box;
+  min-height: 100%;
+  align-items: center; justify-content: center; gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   color: var(--dim); font-size: var(--text-xs);
 }
