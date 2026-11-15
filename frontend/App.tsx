@@ -5192,6 +5192,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     <Show when={showNew()}>
       <NewAgentModal
         providers={Object.keys(cfg().providers ?? {})}
+        defaultProvider={cfg().defaultProvider ?? ""}
         onClose={() => setShowNew(false)}
         onCreated={(created) => {
           setShowNew(false);
@@ -5394,6 +5395,8 @@ function costFmt(usd: number): string {
 /* ---------- new agent ---------- */
 function NewAgentModal(props: {
   providers: string[];
+  /** the configured default; `providers[0]` is not the operator's choice (#237) */
+  defaultProvider?: string;
   onClose: () => void;
   /** the server's own view of the new agent — its `session` is authoritative and the local index is not */
   onCreated: (agent: { id: string; session?: string }) => void;
@@ -5401,8 +5404,15 @@ function NewAgentModal(props: {
   const [dir, setDir] = createSignal("~");
   const [entries, setEntries] = createSignal<string[]>([]);
   const [name, setName] = createSignal("");
-  const [provider, setProvider] = createSignal(props.providers[0] ?? "");
-  const [model, setModel] = createSignal("");
+  /**
+   * The DEFAULT provider, not the first one in the list (#237).
+   *
+   * `providers[0]` is whatever the config happens to list first, so a new agent silently took a provider the operator never
+   * chose — reported as "デフォルトプロバイダが適用できてないっぽいのはバグ".
+   */
+  const [provider, setProvider] = createSignal(
+    props.defaultProvider || props.providers[0] || "",
+  );
   const [err, setErr] = createSignal("");
 
   async function browse(p?: string) {
@@ -5420,7 +5430,7 @@ function NewAgentModal(props: {
       const r = await api("/api/agents", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace: dir(), id: name(), provider: provider() || undefined, model: model() || undefined, start: false }),
+        body: JSON.stringify({ workspace: dir(), id: name(), provider: provider() || undefined, start: false }),
       });
       props.onCreated(r.agent as { id: string; session?: string });
     } catch (ex) { setErr(String((ex as Error).message)); }
@@ -5448,7 +5458,7 @@ function NewAgentModal(props: {
               <For each={props.providers}>{(p) => <option>{p}</option>}</For>
             </select>
           </label>
-          <label style="flex:1">model <input type="text" placeholder="(provider default)" value={model()} oninput={(e) => setModel(e.currentTarget.value)} /></label>
+          {/* the model is the provider's default at creation and is chosen in the settings once the agent exists (#237) */}
         </div>
         <Show when={err()}><span style="color:var(--err);font-size:13px">{err()}</span></Show>
         <button type="submit" style="align-self:flex-end">create</button>
