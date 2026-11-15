@@ -3147,7 +3147,15 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
 .toolbody.ansi .ansi-bg-ext { background: color-mix(in srgb, var(--acc) 22%, transparent); }
 
 .toolbody.shiki {
-  margin: 0;
+  /**
+   * The margin must not depend on which renderer won.
+   *
+   * This said `margin: 0` while the plain `<pre class="toolbody">` keeps `.toolbody`'s `4px 0`, so a tool whose result happened
+   * to be highlighted sat flush against the argument block above it — reported as "tool resultにshikiが当たっていると(?)
+   * ツール引数との間の空間がなくなる". The surface (background, radius, padding) is the shiki wrapper's job; the SPACE between
+   * blocks is the row's, and both renderers now get it from the same place.
+   */
+  margin: 4px 0;
   padding: 10px 12px;
   font-size: var(--text-sm);
   white-space: pre-wrap;
