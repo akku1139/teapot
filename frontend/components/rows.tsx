@@ -141,15 +141,14 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
         ) : (
           <HighlightedCode text={formatToolOutput(out())} lang={outputLang(out())} />
         )}
-        <div class="meta">
-          {fmtDur(r.data?.durationMs)}
-          {}
-          {name === "bash"
-            ? outcomeMarker(shellOutcome(r.data?.ok, String(r.data?.result ?? "")))
-            : r.data?.ok === false
-              ? " · FAILED"
-              : ""}
-        </div>
+        {/**
+          * No footer: the row is a header (label + hint) and its output, nothing else.
+          *
+          * The duration was printed HERE for every tool while some headers already carried it (`bash` via `shellHint`,
+          * `run_tool` and `mcp__…` via `fmtDur`), so those rows said the time twice — reported as "全ツールフッターにも出てて
+          * 冗長". The header is the row's summary line and the one place a figure belongs; what is left in the body is the
+          * result itself.
+          */}
         <ToolImages data={r.data} agentId={props.agentId} />
       </>
     ) : (
