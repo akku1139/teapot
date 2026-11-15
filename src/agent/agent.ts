@@ -2927,20 +2927,7 @@ export class Agent {
         if (meta) {
           if ((await meta(call, m)) === "end") {
             finished = true;
-            /**
-             * `end` finishes the ROUND unless something arrived while the handler ran.
-             *
-             * A `finish(goalComplete)` spends a long time inside its own handler (the completion audit runs there), and a
-             * prompt sent during that window is queued in `pendingPrompts`. Returning straight away left it queued for ever:
-             * the loop ended, nothing drained it, and the agent stayed `waiting` with work outstanding — "audit中にプロンプトを
-             * 送るとaudit完了してもwaitingステータスが切れずにデッドロックしてそう". The remaining calls of this batch are answered
-             * first (a tool call must never be left without a result), then the round continues only if there is something
-             * to do.
-             */
-            if (this.pendingPrompts.length === 0 && !this.parkedByTool) return true;
-            await this.answerUnansweredToolCalls(m);
-            finished = false;
-            return false;
+            return true;
           }
           continue;
         }
@@ -3019,17 +3006,7 @@ export class Agent {
         }
       }
       await this.answerUnansweredToolCalls(m);
-      /**
-       * `finish` ends the BATCH, not the round — if something arrived while it was being handled.
-       *
-       * A `finish(goalComplete)` can take a long time (the completion audit runs inside it), and a prompt sent during that
-       * window is queued in `pendingPrompts`. Returning here ended the loop with that prompt still queued, so it was never
-       * delivered and the agent sat looking `waiting` with work outstanding — reported as "audit中にプロンプトを送るとaudit完了
-       * してもwaitingステータスが切れずにデッドロックしてそう". The batch is over either way; the ROUND continues whenever there is
-       * something to do, which is the same rule the top of the loop applies.
-       */
-      if (finished && this.pendingPrompts.length === 0 && !this.parkedByTool) return true;
-      if (finished) finished = false;
+      if (finished) return true;
     }
     return finished;
   }
