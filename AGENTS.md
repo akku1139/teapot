@@ -869,6 +869,14 @@ Rules that came out of it:
   three lines, and it also shows a leaked internal field (`content_parts`) that a
   strict server rejects. `test/tool-image-wire-payload.test.ts` does exactly this
   rather than re-implementing `sanitize()`, so it fails on the bytes actually sent.
+- **A claim about the MODEL's behaviour is diagnosed from `chat.jsonl`, not from the code.** "compact後にサボる" turned into
+  two wrong diagnoses in a row (an estimate being shown as fact; a missing number) before the log answered it in one pass:
+  `grep -l "75%" ~/.local/share/teapot-coding-agent/sessions/*/chat.jsonl`, then read the `usage`, `compaction` and `message`
+  events around the hit. It showed the progress request at 09:37:19 carrying a TRUE `context 75% used (787k/1049k)`, the
+  compaction at 09:37:56 (786,697 -> 24,036), and the model's next reasoning at 09:37:58 still saying 75% — while the notice in
+  the same conversation said 1%. The stale fact was a message the compaction KEPT, which no amount of reading `usageLine`
+  would reveal. Read the operator's session log first; it is a recording, not a hypothesis.
+
 - **Drive the artefact, do not read it.** Dump the BUILT bundle's DOM
   (`scripts/smoke-web.mjs`) to see what a user sees. Reading `App.tsx` produced
   three plausible-and-wrong diagnoses in one session; a DOM dump produced the
