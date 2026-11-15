@@ -1228,7 +1228,29 @@ export class Agent {
 
   async compactNow(): Promise<{ ran: boolean; queued: boolean }> {
     if (this.compactInFlight || this.compactRequested) return { ran: false, queued: true };
-    if (this.status === "running" || this.parkedByTool) {
+    /**
+     * A compaction already running is not a turn in flight — nothing to defer to.
+     */
+    if (this.compactPhase !== "") return { ran: false, queued: true };
+    /**
+     * PARKED on a tool (`wait_children`, a background bash) — run it NOW.
+     *
+     * The flag-and-wait path below is for a turn that is GENERATING: the compaction has to wait for a boundary because
+     * rewriting `this.messages` mid-request would corrupt the call in flight. A parked tool is the opposite situation — the
+     * run loop is suspended inside `executeTool`, no request is open, and the next boundary may be minutes away (a
+     * `wait_children` timeout is 5 minutes by default, an hour at most). Reported as "wait_children 中に /compact をしても
+     * 発火しない". Nothing else may be compacting here (checked above), and the tool's own result is appended to the tail
+     * afterwards, so `safeCut`'s "never cut before a tool result" rule still holds.
+     *
+     * `parkedByTool` is the signal, NOT `status === "waiting"`: that status also covers a compaction in progress and the
+     * display translation of an idle-but-live agent, and neither of those is a suspended run.
+     */
+    if (this.parkedByTool) {
+      const before = this.stats.compactions;
+      await this.maybeCompact(true);
+      return { ran: this.stats.compactions > before, queued: false };
+    }
+    if (this.status === "running") {
       this.compactRequested = true;
       await this.log.append("prompt", this.currentSession, this.currentBranch, {
         source: "harness",
