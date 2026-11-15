@@ -3214,7 +3214,16 @@ export class Agent {
 
   private async handleFinish(argsJson: string): Promise<void> {
     const args = safeParse(argsJson);
-    if (args.goalComplete === true && this.goal.status !== "done") {
+    /**
+     * A finish that omits `goalComplete` claims completion, so it is audited.
+     *
+     * `=== true` treated an omitted argument as "not completing" — so the monitor saw a `finish` with no false claim (and
+     * nothing to warn about) while the audit never ran, and the goal could be done on the agent's own say-so. Reported as
+     * "goalComplete が渡されなかった場合にgoal doneになるのにauditされないっぽい / goalComplete が undefined だった場合にこの経路に
+     * 落ちてそう". Only an EXPLICIT `false` means "I am stopping without completing".
+     */
+    const completesGoal = args.goalComplete !== false;
+    if (completesGoal && this.goal.status !== "done") {
       /**
        * A PAUSED goal is not the agent's to complete.
        *

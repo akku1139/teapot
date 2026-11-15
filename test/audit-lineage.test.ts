@@ -281,3 +281,56 @@ test("an APPROVED final after a rejection reports the work BEFORE it too (#94)",
     assert.match(joined, /work/i, "the pre-rejection activity must be present");
   });
 });
+
+/**
+ * A `finish` with NO `goalComplete` argument claims completion (#210).
+ *
+ * It used to be audited only for `goalComplete === true`, so an omitted argument skipped the audit entirely while the rest of
+ * the system read the call as a finish — "goalComplete が渡されなかった場合にgoal doneになるのにauditされないっぽい". Only an
+ * explicit `false` means "stopping without completing".
+ */
+test("a finish that omits goalComplete is audited; an explicit false is not", async () => {
+  for (const [args, wantAudit] of [
+    [{ summary: "no flag" }, true],
+    [{ goalComplete: false, summary: "stopping" }, false],
+  ] as const) {
+    await useTempDirs(["al11-", "al12-"], async ([ws, sd]) => {
+      let call = 0;
+      const agent = new Agent({
+        id: "c",
+        workspace: ws,
+        sessionDir: sd,
+        llm: { baseUrl: "http://x", apiKey: "k", model: "m" } as never,
+        chatFn: async (_c: unknown, messages: unknown[]) => {
+          call++;
+          if (String((messages.at(-1) as { content?: string })?.content ?? "").includes("independent completion AUDITOR"))
+            return { message: { role: "assistant", content: "APPROVED: objective met" } } as never;
+          return {
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [{ id: "f1", type: "function", function: { name: "finish", arguments: JSON.stringify(args) } }],
+            },
+          } as never;
+        },
+        autoContinue: false,
+      } as never) as Agent;
+      try {
+        await agent.init();
+        await agent.setGoal("g");
+        (agent as unknown as { goal: { verify?: string } }).goal.verify = "must hold";
+        agent.enqueuePrompt("go", "user");
+        agent.start("t");
+        await Promise.race([agent.settled(), wait(8000)]);
+        await wait(150);
+        const events = await readEvents(agent.log.filePath);
+        const audited = events.some((e) => e.type === "goal" && (e.data as { event?: string })?.event === "audit-started");
+        assert.equal(audited, wantAudit, `goalComplete=${JSON.stringify((args as { goalComplete?: boolean }).goalComplete)}`);
+      } finally {
+        agent.stop("end");
+        await Promise.race([agent.settled().catch(() => {}), wait(1000)]);
+        await agent.dispose().catch(() => {});
+      }
+    });
+  }
+});
