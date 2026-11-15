@@ -2855,6 +2855,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         ev.preventDefault();
         return false;
       });
+      /**
+       * Chrome claims Ctrl+Shift+C for "inspect element" BEFORE the page sees it, so the handler above never runs there — the
+       * report is "Chromeで Ctrl+Shift+C でコピーできない? Firefoxでは問題ない". The selection is copied here as well, on
+       * `keydown` at the CAPTURE phase on the terminal element, so the copy happens even when xterm is not the one receiving the
+       * event; `stopPropagation` is deliberately NOT called, because the chord must still not reach the shell as Ctrl+C.
+       */
+      const chromeCopy = (ev: KeyboardEvent) => {
+        if (!(ev.ctrlKey && ev.shiftKey) || ev.altKey) return;
+        if (ev.key !== "C" && ev.key !== "c") return;
+        const sel = t.getSelection();
+        if (sel) {
+          void navigator.clipboard?.writeText(sel).catch(() => {});
+          ev.preventDefault();
+        }
+      };
+      el.addEventListener("keydown", chromeCopy, { capture: true });
+      onCleanup(() => el.removeEventListener("keydown", chromeCopy, { capture: true } as never));
       const f = new FitAddon();
       t.loadAddon(f);
       t.open(el);
