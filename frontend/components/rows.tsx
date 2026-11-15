@@ -992,6 +992,20 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
     case "progress":
       return (
         <div class="embed progembed">
+          <div class="meta" style="float:right">
+            {/* a progress report could not be copied at all (#202) */}
+            <CopyBtn
+              text={[
+                `doing: ${String(e.data.doing ?? "")}`,
+                e.data.goalStatus ? `goal: ${String(e.data.goalStatus)}` : "",
+                e.data.recent ? `recent: ${String(e.data.recent)}` : "",
+                e.data.problems ? `problems: ${String(e.data.problems)}` : "",
+                e.data.next ? `next: ${String(e.data.next)}` : "",
+              ].filter(Boolean).join("\n")}
+              label="⧉"
+              title="copy this progress report"
+            />
+          </div>
           {}
           <div>📈 <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data.doing ?? ""))} /></div>
           <Show when={e.data.goalStatus}><div class="progrow"><b>goal</b><span>{String(e.data.goalStatus)}</span></div></Show>
@@ -1037,6 +1051,9 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
               {" · "}{e.data.summarized ? `${e.data.summarized} summarized` : `${e.data.dropped} dropped`}
             </span>
           </summary>
+          <div class="meta" style="margin-bottom:4px">
+            <CopyBtn text={String(e.data.summary ?? "")} label="⧉ summary" title="copy the compaction summary" />
+          </div>
           <Show when={e.data.summary}>
             <div class="vtitle compactkept">what the agent kept</div>
             <MdContent html={renderMarkdownCached(String(e.data.summary))} />
