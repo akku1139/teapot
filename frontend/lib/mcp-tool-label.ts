@@ -28,7 +28,14 @@ export function mcpToolLabel(raw: unknown): string | null {
     if (Array.isArray(pair) && pair.length >= 2) return `${String(pair[0])}/${String(pair[1])}`;
   }
 
-  for (const sep of ["__", "/", "::"]) {
+  /**
+   * `Ghidra,get_xrefs_to` is a shape the model writes too.
+   *
+   * MEASURED in the operator's sessions: cards rendered as "Ghidra,get_function_xrefs" — a comma pair, which is what a model
+   * falls back to when it wants to name server and tool together and does not remember the flat form. The server accepts the
+   * same alias (see `resolveEntry`), so the label must read it as a pair rather than printing the raw string.
+   */
+  for (const sep of ["__", "/", "::", ","]) {
     const at = text.lastIndexOf(sep);
     if (at <= 0) continue;
     return `${text.slice(0, at).replace(/^mcp__/, "")}/${text.slice(at + sep.length)}`;

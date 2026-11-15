@@ -348,8 +348,8 @@ function resolveEntry(entries: readonly CatalogEntry[], raw: string): CatalogEnt
     }
   }
 
-  // 2. the flat forms the registry already uses
-  for (const sep of ["__", "/", "::", ":"]) {
+  // 2. the flat forms the registry already uses — and the COMMA pair a model writes by habit
+  for (const sep of ["__", "/", "::", ":", ","]) {
     const at = text.lastIndexOf(sep);
     if (at <= 0) continue;
     const hit = byPair(text.slice(0, at).replace(/^mcp__/, ""), text.slice(at + sep.length));
