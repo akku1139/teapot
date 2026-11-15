@@ -3530,8 +3530,29 @@ export class Agent {
     return Math.ceil(ascii / 4 + wide * 1.2 + msgs.length * 8);
   }
 
+  /**
+   * Never cut a call away from its result.
+   *
+   * A compaction keeps `messages[cut..]`, so a call whose RESULT has not arrived yet must not be summarised away: the tool
+   * result is appended afterwards by the running loop, and an orphan `role:"tool"` message makes the next request invalid
+   * ("tool message not directly after its assistant turn"). That used to be impossible — a compaction only ran at a turn
+   * boundary — but `/compact` now runs WHILE the agent is parked on a tool (`wait_children`), so the pending call is exactly
+   * the last assistant message at that moment.
+   */
   private safeCut(maxCut: number): number {
-    for (let i = Math.min(maxCut, this.messages.length - 1); i >= 1; i--) {
+    const answered = new Set<string>();
+    for (const m of this.messages) if (m.role === "tool" && m.tool_call_id) answered.add(m.tool_call_id);
+    let pendingAt = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < this.messages.length; i++) {
+      const calls = (this.messages[i] as { tool_calls?: { id?: string }[] }).tool_calls;
+      if (!calls?.length) continue;
+      if (calls.some((c) => c.id && !answered.has(c.id))) {
+        pendingAt = i;
+        break;
+      }
+    }
+    const limit = Math.min(maxCut, this.messages.length - 1, pendingAt);
+    for (let i = limit; i >= 1; i--) {
       if (this.messages[i]!.role !== "tool") return i;
     }
     return -1;
