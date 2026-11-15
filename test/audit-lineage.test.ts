@@ -290,10 +290,11 @@ test("an APPROVED final after a rejection reports the work BEFORE it too (#94)",
  * explicit `false` means "stopping without completing".
  */
 test("a finish that omits goalComplete is audited; an explicit false is not", async () => {
-  for (const [args, wantAudit] of [
+  const cases: [Record<string, unknown>, boolean][] = [
     [{ summary: "no flag" }, true],
     [{ goalComplete: false, summary: "stopping" }, false],
-  ] as const) {
+  ];
+  for (const [args, wantAudit] of cases) {
     await useTempDirs(["al11-", "al12-"], async ([ws, sd]) => {
       let call = 0;
       const agent = new Agent({
