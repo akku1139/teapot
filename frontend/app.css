@@ -1765,6 +1765,9 @@ html[data-bg-image="on"] .embed {
 .embed summary { display: flex; align-items: center; gap: var(--space-3); }
 /* per-tool copy cluster pushed to the row's right edge */
 .toolcopy { margin-left: auto; display: flex; gap: var(--space-2); flex-shrink: 0; }
+/* a copy affordance floating in its card's corner, and one under a header */
+.copyrow { float: right; }
+.copyrow.below { float: none; margin-bottom: 4px; }
 .msgfoot { display: flex; align-items: center; gap: var(--space-3); margin-top: 4px; color: var(--dim); font-size: var(--text-xs); }
 /* composer image staging + timeline thumbnails */
 /**

@@ -992,7 +992,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
     case "progress":
       return (
         <div class="embed progembed">
-          <div class="meta" style="float:right">
+          <div class="meta copyrow">
             {/* a progress report could not be copied at all (#202) */}
             <CopyBtn
               text={[
@@ -1051,7 +1051,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
               {" · "}{e.data.summarized ? `${e.data.summarized} summarized` : `${e.data.dropped} dropped`}
             </span>
           </summary>
-          <div class="meta" style="margin-bottom:4px">
+          <div class="meta copyrow below">
             <CopyBtn text={String(e.data.summary ?? "")} label="⧉ summary" title="copy the compaction summary" />
           </div>
           <Show when={e.data.summary}>
