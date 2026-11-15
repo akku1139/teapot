@@ -2185,8 +2185,16 @@ html[data-bg-image="on"] .composer form {
 .cmdrow .muted { font-size: var(--text-xs); }
 /* `:not(.iconbtn)`: the composer also holds icon buttons (📎, ⤢), and a padding meant for the send button made them
    28x26 — a one-glyph button that is not square (#254) */
+/**
+ * The send button is an ACTION button, so it takes the same corner as every other one.
+ *
+ * It set `--radius-lg` (12px) while `.primarybtn`/`.okbtn`/`.runbtn` and the rest use `--radius-md` (8px), which made the one
+ * button the operator presses most the only round thing in the composer — reported as "プロンプト send ボタンが何故か他より
+ * 圧倒的に角丸、基本ボタンのスタイルオーバーライドはやらないほうがいい". The exception list stays small and explicit: one-glyph
+ * buttons (`.iconbtn`), the theme/background pickers and the goal status chips.
+ */
 .composer button:not(.iconbtn) {
-  background: var(--acc); border: none; color: white; border-radius: var(--radius-lg);
+  background: var(--acc); border: none; color: white; border-radius: var(--radius-md);
   height: var(--ctl-h); padding: 0 14px; cursor: pointer; font-weight: 600;
 }
 .composer button:hover { opacity: .9; }

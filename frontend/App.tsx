@@ -2083,6 +2083,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       // content coordinates: the feed still holds the outgoing session's scrollTop
       const rows = rowGeometry(f, f.scrollTop);
       if (!rows.length) return "wait";
+      /**
+       * Rows are on screen but the anchor is not among them yet: WAIT, do not give up.
+       *
+       * `restoreTop` answers `null` for an anchor it cannot find, and the caller treats that as "this timeline does not
+       * contain it — land at the tail". MEASURED on a switch back into a 22-row session: the restore ran at 32ms with ZERO rows,
+       * read as give-up, and the feed ended at scrollTop 372 where the reader had left it at 148 — reported as "#248 ができて
+       *ない、タイムラインのコンテンツがロードされる前にスクロール戻してる?". A restore must wait for its anchor, bounded by the
+       * deadline below.
+       */
+      const anchorLoaded = rows.some((r) => r.eid === spot.eid);
+      if (!anchorLoaded) return "wait";
       const top = restoreTop(spot, rows, f.scrollHeight - f.clientHeight);
 
       if (top === null) {

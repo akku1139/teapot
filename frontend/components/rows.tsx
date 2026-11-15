@@ -149,8 +149,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
             : r.data?.ok === false
               ? " · FAILED"
               : ""}
-          {}
-          <CopyBtn text={hasAnsi(out()) ? stripAnsi(out()) : formatToolOutput(out())} />
         </div>
         <ToolImages data={r.data} agentId={props.agentId} />
       </>
