@@ -335,6 +335,14 @@ export default function App() {
      * because the rows landed after the switch's frame-count settle and nothing looked at the feed again.
      */
     if (performance.now() < tailSeekingUntil) {
+      /**
+       * A seek is armed by an ACTION (a send, a switch), and it belongs to the follow that action set up. If the follow has
+       * been released since — a gesture, or the geometry classifier seeing a real upward move — the seek is over, not pending.
+       */
+      if (!intentFollowing) {
+        tailSeekingUntil = 0;
+        return;
+      }
       if (performance.now() < readerUntil) return;
       const f0 = feedEl();
       // unconditionally: during a tail-seek the target IS the bottom, and the measurement can be taken before the
@@ -346,6 +354,18 @@ export default function App() {
      * Everything else is the BROWSER's job: `.feed` keeps engine scroll anchoring, which holds a reader's place when a row
      * above them changes height. Script is left with the decisions the engine does not make — the follow policy and the pin.
      */
+    /**
+     * Following means "keep the tail in view while it moves", not "pin once when this batch of rows lands".
+     *
+     * `pinToTail()`'s settle loop stops as soon as `atBottom()` is false, and a frame in which a row has been inserted but not
+     * yet laid out is exactly that — so one unlucky frame ended the follow for good. Reported as "askに答えた後にスクロール追従
+     * されない? / される時もあるけど、なんか挙動が怪しい", and diagnosed by the operator as "本質的な問題: 新しい要素を追加したあと
+     * にスクロールを直してる".
+     *
+     * `fluxer`'s `useScrollAnchor` keeps re-asserting the position for a 400ms window after a change and lets a user gesture
+     * cancel it; this is the same shape for the tail, using the gesture latch we already have (`readerUntil` cancels).
+     */
+    if (intentFollowing) seekTail(400);
   };
   const scheduleReanchor = () => {
     if (feedMoRaf) return;
@@ -408,6 +428,17 @@ export default function App() {
      * the "マウスホイールでスクロールできない" bug again. The gesture latch (`readerUntil`) is the same signal every other
      * correction uses.
      */
+    /**
+     * The watch belongs to the FOLLOW, not to the seek that armed it.
+     *
+     * It used to keep pinning for its whole window whatever the follow said — the only veto was a gesture — so a follow that
+     * had been released by the geometry classifier was dragged back to the tail. `fluxer` (`useScrollAnchor`) has the same
+     * contract from the other side: re-assert while the state says so, and let a user gesture be the thing that cancels it.
+     */
+    if (!intentFollowing) {
+      tailSeekingUntil = 0;
+      return;
+    }
     if (performance.now() < readerUntil) {
       tailWatchRaf = requestAnimationFrame(tailWatch);
       return;
