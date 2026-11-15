@@ -20,6 +20,7 @@ import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
 import { Card } from "./components/card";
 import { BgJobsPanel, type BgJob } from "./components/bg-jobs";
 import { GoalEditor } from "./components/goal-pane";
+import { Loading } from "./components/loading";
 import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
 import { pickInitialAgent } from "./lib/session-restore";
 import { outputLang } from "./lib/tool-output-lang";
@@ -4250,7 +4251,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                */
               loadingFeed() || switchingFeed()
                 ? <div style="display:grid;place-items:center;height:100%" class="muted">
-                    <span><span class="spinner" aria-hidden="true" /> loading timeline…</span>
+                    <Loading what="timeline" />
                   </div>
                 : <div style="display:grid;place-items:center;height:100%" class="muted">no events yet — say something or press ▶ start</div>
             }>

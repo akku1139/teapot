@@ -3928,8 +3928,15 @@ html[data-bg-image="on"] .bgpreview img { background-color: var(--bg-darkest-sol
  * It is a component (`components/loading.tsx`) so the file tree, the timeline and anything else that fetches cannot describe
  * the same state three different ways.
  */
+/**
+ * Centred in the space it occupies, not pinned to the top-left corner.
+ *
+ * A loading state in a panel is the whole content of that panel while it lasts, so a line hugging the top-left corner reads as
+ * "this is what the panel contains" rather than "the panel is not ready" — reported as "パネルの中央に表示してほしい" (#239).
+ * `flex: 1` lets it take whatever room its container gives it; a container that does not flex falls back to the padding box.
+ */
 .loadingrow {
-  display: flex; align-items: center; gap: var(--space-2);
+  display: flex; flex: 1; align-items: center; justify-content: center; gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   color: var(--dim); font-size: var(--text-xs);
 }
