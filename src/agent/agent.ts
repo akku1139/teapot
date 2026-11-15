@@ -160,6 +160,12 @@ const SUMMARIZE_SHRINK = 0.6;
 
 const MAX_AUTO_COMPACT_FAILURES = 3;
 
+/**
+ * The usage segment a harness message carries (`context 75% used (787k/1049k tokens) · auto-compacts at 786k · 0 until
+ * auto-compaction`), matched so it can be neutralised when a compaction keeps the message alive with a newer truth.
+ */
+const STALE_USAGE_LINE = /context \d+% used \([^)]*\)(?: · auto-compacts at [^·]*)?(?: · \d+ until auto-compaction)?|context \d+ tokens used/;
+
 const OVERFLOW_SHRINK_STEPS = [0.5, 0.35, 0.2] as const;
 
 const COMPACT_INSTRUCTION = [
@@ -3778,12 +3784,29 @@ export class Agent {
          * or the front of every request changes after a restart and the provider's prefix cache misses for the whole
          * session. The line is therefore a recorded fact, and `compactionNotice()` is the single builder both paths use.
          */
+        /**
+         * A usage line that survives INTO the compacted context is a stale fact, so it is rewritten.
+         *
+         * MEASURED in prismrv-2-9bb8660a: a harness progress request logged at 09:37:19 read "context 75% used
+         * (787k/1049k tokens) · auto-compacts at 786k · 0 until auto-compaction" — true at that moment — and the compaction
+         * ran 40s later. The kept TAIL still held that message, so the model's next reasoning said "The context is at 75%,
+         * near auto-compaction" while the notice at the front of the same conversation said 1%. The model read the number
+         * nearest the end of its history, which was the one from before the pass.
+         *
+         * The notice is the single owner of "how much is used NOW", so every usage line in the retained messages is replaced
+         * with a pointer to it rather than left to contradict it.
+         */
+        const kept = this.messages.slice(cut).map((m) =>
+          typeof m.content === "string" && m.content.includes("until auto-compaction")
+            ? { ...m, content: m.content.replace(STALE_USAGE_LINE, "(context usage: see the compaction notice at the top)") }
+            : m,
+        );
         this.messages = [
           {
             role: "user",
             content: compactionNotice({ summarized: oldCount, summary, contextLine: noticeLine }),
           },
-          ...this.messages.slice(cut),
+          ...kept,
         ];
       }
       const after = this.estimateTokens();
