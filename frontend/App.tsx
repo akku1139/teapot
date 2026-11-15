@@ -2221,34 +2221,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         mergeEvents(got);
         setEventsTotal((n) => n + got.length);
       }
-      /**
-       * A `tool_result` this client never saw leaves its row spinning for ever.
-       *
-       * The socket is the only carrier of `tool_result`, so a result written while the tab was asleep is simply missing:
-       * `pairInfo()` finds no result for the call, the row renders `running`, and `staleDone()` (`!agentActive && !result`)
-       * only rescues it once the agent is idle — which it is NOT while more work is in flight. Reported as "bashの終了が
-       * フロントエンドに通知されずに、runningが消えないことがある", recurring exactly on wake.
-       *
-       * So a catch-up read REPLACES the timeline when the server's tail has moved past ours AND this client holds a call
-       * without its result — the only way to be sure the missing result is picked up.
-       */
-      const unanswered = () => {
-        const live = new Set<string>();
-        for (const e of events()) {
-          if (e.type === "tool_call") live.add(String(e.data?.callId ?? ""));
-          else if (e.type === "tool_result") live.delete(String(e.data?.callId ?? ""));
-        }
-        return live.size;
-      };
-      const full = (await api(eventsUrl(id, {}, tid, branchFilter()))) as { events?: Ev[] };
-      const all = full.events ?? [];
-      if (unanswered() > 0) {
-        const known = new Set(all.map((e) => e.id));
-        if (events().some((e) => e.type === "tool_call" && !known.has(e.id)) || all.length > events().length) {
-          setEvents(stabilize(all));
-          setEventsTotal(all.length);
-        }
-      }
       await refreshAgents();
       if (got.length && !hidden) void refreshMetrics();
     } catch {
