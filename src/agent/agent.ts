@@ -1977,6 +1977,15 @@ export class Agent {
             detail: "the completion audit rejected the same goal repeatedly ? stopping to avoid an unbounded retry loop",
           });
           this.consecutiveAuditRejects = 0;
+          /**
+           * …but a prompt that arrived DURING the audit is still owed an answer.
+           *
+           * This break sits before the `pendingPrompts` check below, so ending the loop here left a prompt queued with nothing
+           * to drain it: `isLive()` reads `pendingPrompts.length > 0`, so the agent showed `waiting` for ever and the operator's
+           * message was never delivered — "audit中にプロンプトを送るとaudit完了してもwaitingステータスが切れずにデッドロック
+           * してそう". The cap is about the AUDIT loop, not about ignoring the operator.
+           */
+          if (this.pendingPrompts.length) continue;
           break;
         }
         if (this.pendingPrompts.length) continue;
