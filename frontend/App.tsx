@@ -470,10 +470,15 @@ export default function App() {
   };
   /** the feed's client width at the last box sample — a change means every row re-wrapped */
   let lastFeedWidth = 0;
+  /** the feed's top relative to the viewport at the last box sample — a change means the page above it moved */
+  let lastFeedTop = -1;
   const restoreAfterBoxChange = () => {
     feedRoRaf = 0;
     const f = feedEl();
     if (!f) return;
+    const feedTop = f.getBoundingClientRect().top;
+    const topDelta = lastFeedTop < 0 ? 0 : feedTop - lastFeedTop;
+    lastFeedTop = feedTop;
 
     const contentChanged = f.scrollHeight !== lastSampleHeight;
     lastSampleHeight = f.scrollHeight;
@@ -514,6 +519,13 @@ export default function App() {
       publishGap(tailSample());
       return;
     }
+    /**
+     * The engine only anchors rows INSIDE the feed; the header sits outside it, so a header that grew moves
+     * the feed's top while `scrollTop` stays put — every row under the reader jumped by the growth (#271).
+     * Shift the view by the feed's own top movement to keep the same message in the same place. Skipped at
+     * `scrollTop === 0`, where scrolling up is impossible.
+     */
+    if (topDelta !== 0 && f.scrollTop > 0) f.scrollTop += topDelta;
     /**
      * A reader's place through a box change is the BROWSER's job too: engine anchoring re-adjusts `scrollTop` when a
      * re-wrap changes the height of what is above the anchor, which is the same mechanism that holds a card toggle.
