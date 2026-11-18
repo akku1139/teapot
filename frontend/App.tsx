@@ -2569,6 +2569,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   window.addEventListener("keydown", (e) => {
     const t = e.target as HTMLElement | null;
+    /**
+     * The terminal is a full-screen application's keyboard (vim, less, a REPL), not the page's: everything
+     * it receives — Escape included — belongs to the shell, never to the app chrome. Without this, Esc in
+     * the drawer leaked into the page handler, blurred the terminal and then (with focus back on the body)
+     * hit the stop-the-agent branch (#272).
+     */
+    if (t && typeof t.closest === "function" && t.closest(".termdrawer")) return;
     const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
     if (typing) {
       if (e.key === "Escape") (t as HTMLElement).blur();
