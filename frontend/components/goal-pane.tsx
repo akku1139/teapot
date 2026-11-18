@@ -1,5 +1,6 @@
-import { Show, createSignal, onCleanup } from "solid-js";
+import { Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { renderMarkdownCached } from "../lib/markdown";
+import { composerValueChanged, shouldWriteComposerValue } from "../lib/composer-ime";
 
 /**
  * The goal editor, in the SAME shape as the ✅ tasks pane: one box that toggles between a rendered view and its markdown,
@@ -63,6 +64,37 @@ export function GoalEditor(props: {
     ro.observe(el);
     onCleanup(() => ro.disconnect());
   };
+  /**
+   * The textareas are UNCONTROLLED on purpose: a `value={…}` binding rewrites the node on every signal change,
+   * which moves the caret to the end mid-sentence and ends an in-flight IME composition. The DOM is the source
+   * of truth while typing; the signal is only written back when it genuinely diverges (an external update).
+   */
+  let imeInProgress = false;
+  let goalEl: HTMLTextAreaElement | undefined;
+  let verifyEl: HTMLTextAreaElement | undefined;
+  const trackGoalInput = (el: HTMLTextAreaElement) => {
+    goalEl = el;
+    el.value = props.goal;
+    trackHeight(el);
+  };
+  const trackVerifyInput = (el: HTMLTextAreaElement) => {
+    verifyEl = el;
+    el.value = props.verify;
+  };
+  createEffect(() => {
+    const v = props.goal;
+    const el = goalEl;
+    if (el?.isConnected && shouldWriteComposerValue(imeInProgress) && composerValueChanged(el.value, v)) {
+      el.value = v;
+    }
+  });
+  createEffect(() => {
+    const v = props.verify;
+    const el = verifyEl;
+    if (el?.isConnected && shouldWriteComposerValue(imeInProgress) && composerValueChanged(el.value, v)) {
+      el.value = v;
+    }
+  });
   return (
     <Show
       when={!props.preview}
@@ -89,10 +121,15 @@ export function GoalEditor(props: {
           class="mono todopane-edit goalbox"
           rows={3}
           style={heightStyle()}
-          ref={trackHeight}
+          ref={trackGoalInput}
           placeholder="set a goal…"
           title="what the agent should work toward — it reads this with get_goal()"
-          value={props.goal}
+          oncompositionstart={() => {
+            imeInProgress = true;
+          }}
+          oncompositionend={() => {
+            imeInProgress = false;
+          }}
           oninput={(e) => props.onGoal(e.currentTarget.value)}
         />
         <textarea
@@ -101,7 +138,13 @@ export function GoalEditor(props: {
           rows={2}
           placeholder="verification contract (optional) — e.g. 'npm test passes; endpoint documented'. finish(goalComplete=true) is then audited against this."
           title="an independent reviewer checks finish(goalComplete=true) against these requirements"
-          value={props.verify}
+          ref={trackVerifyInput}
+          oncompositionstart={() => {
+            imeInProgress = true;
+          }}
+          oncompositionend={() => {
+            imeInProgress = false;
+          }}
           oninput={(e) => props.onVerify(e.currentTarget.value)}
         />
       </div>
