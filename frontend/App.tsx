@@ -772,6 +772,17 @@ export default function App() {
   });
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
+  /**
+   * The model field is UNCONTROLLED on purpose: a `value={…}` binding rewrites the node on every
+   * keystroke, which teleports the caret to the end when the operator edits mid-string (a fix in the
+   * middle of an id scrambles the tail). The DOM is the source of truth while typing; the signal is
+   * written back only when it genuinely diverges (a provider switch or an agent switch).
+   */
+  let modelInputEl: HTMLInputElement | undefined;
+  createEffect(() => {
+    const v = modelDraft();
+    if (modelInputEl && composerValueChanged(modelInputEl.value, v)) modelInputEl.value = v;
+  });
   const [effortDraft, setEffortDraft] = createSignal("");
   createEffect(() => {
     const id = selected();
@@ -4763,7 +4774,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 type="text"
                 list="model-list"
                 placeholder={modelPlaceholderFor(cfg().providers, modelProvider(), sel(), effectiveProviderOf(sel(), cfg().providers, cfg().defaultProvider))}
-                value={modelDraft()}
+                ref={(el) => {
+                  modelInputEl = el;
+                  el.value = modelDraft();
+                }}
                 oninput={(e) => setModelDraft(e.currentTarget.value)}
                 style="flex:1;min-width:0"
               />

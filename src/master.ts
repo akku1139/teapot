@@ -1725,12 +1725,19 @@ if (active().length === 0) wake();
     if (providerName) {
       const prov = this.config.providers?.[providerName];
       if (!prov?.baseUrl) throw new Error(`unknown provider: ${providerName}`);
-      llm = {
-        baseUrl: prov.baseUrl,
-        apiKey: prov.apiKey ?? "",
-        model: model || prov.model || "",
-        timeoutMs: 120_000,
-      };
+      /**
+       * Re-derive like every other path that builds an agent's llm (`llmFor`, used at boot and by provider
+       * edits), so the applied config carries the provider's key pool and its CURRENT pool index — a raw
+       * `prov.apiKey` froze the agent on the first key with no way to rotate on a 429. An operator's model
+       * pick overrides the provider default; the previous agent model does not carry over to a provider switch.
+       */
+      const acFor = this.config.agents.find((a) => a.id === id);
+      llm = this.llmFor({
+        id,
+        workspace: acFor?.workspace ?? "",
+        provider: providerName,
+        model: model || undefined,
+      });
     } else {
       llm = { ...agent.llm };
       if (model) llm.model = model;
