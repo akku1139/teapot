@@ -1,10 +1,11 @@
 // common tsconfig
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "esnext",
     "strict": true,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "esModuleInterop": true,
+    "verbatimModuleSyntax": true,
     "allowJs": false,
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
@@ -18,5 +19,8 @@
     "noImplicitOverride": true,
     "erasableSyntaxOnly": true,
     "noImplicitAny": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    // "noPropertyAccessFromIndexSignature": true,
   }
 }

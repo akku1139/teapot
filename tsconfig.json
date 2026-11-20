@@ -3,11 +3,13 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "types": ["node"],
     "outDir": "dist",
     "rootDir": "src",
     "declaration": false,
     "sourceMap": false,
-    "rewriteRelativeImportExtensions": true
+    "rewriteRelativeImportExtensions": true,
+    // "noEmitOnError": true,
   },
   "include": ["src/**/*.ts"]
 }
