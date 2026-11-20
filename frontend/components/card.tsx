@@ -1,5 +1,5 @@
 import { Show } from "solid-js";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import { renderMarkdown } from "../md";
 
 export function Card(props: {

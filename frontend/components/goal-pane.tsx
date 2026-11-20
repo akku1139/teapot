@@ -124,13 +124,13 @@ export function GoalEditor(props: {
           ref={trackGoalInput}
           placeholder="set a goal…"
           title="what the agent should work toward — it reads this with get_goal()"
-          oncompositionstart={() => {
+          onCompositionStart={() => {
             imeInProgress = true;
           }}
-          oncompositionend={() => {
+          onCompositionEnd={() => {
             imeInProgress = false;
           }}
-          oninput={(e) => props.onGoal(e.currentTarget.value)}
+          onInput={(e) => props.onGoal(e.currentTarget.value)}
         />
         <textarea
           id="goal-verify-input"
@@ -139,13 +139,13 @@ export function GoalEditor(props: {
           placeholder="verification contract (optional) — e.g. 'npm test passes; endpoint documented'. finish(goalComplete=true) is then audited against this."
           title="an independent reviewer checks finish(goalComplete=true) against these requirements"
           ref={trackVerifyInput}
-          oncompositionstart={() => {
+          onCompositionStart={() => {
             imeInProgress = true;
           }}
-          oncompositionend={() => {
+          onCompositionEnd={() => {
             imeInProgress = false;
           }}
-          oninput={(e) => props.onVerify(e.currentTarget.value)}
+          onInput={(e) => props.onVerify(e.currentTarget.value)}
         />
       </div>
     </Show>

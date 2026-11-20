@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onSettled } from "solid-js";
 import { ansiRuns, hasAnsi } from "../lib/ansi";
 import { fmtDur } from "../lib/format";
 import { cacheHighlighted, highlightedHtml } from "../lib/highlight-cache";
@@ -6,7 +6,7 @@ import { cacheHighlighted, highlightedHtml } from "../lib/highlight-cache";
 export function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number | undefined }) {
   const start = new Date(props.startedAt).getTime();
   const [now, setNow] = createSignal(Date.now());
-  onMount(() => {
+  onSettled(() => {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
@@ -23,14 +23,14 @@ export function BashElapsed(props: { startedAt: string; inline?: boolean; timeou
 
 export function ThinkingTimer(props: { startedAt: number }) {
   const [now, setNow] = createSignal(Date.now());
-  onMount(() => {
+  onSettled(() => {
     const t = setInterval(() => setNow(Date.now()), 500);
     onCleanup(() => clearInterval(t));
   });
   const txt = () => {
     if (!props.startedAt) return null;
     const elapsed = Math.max(0, now() - props.startedAt);
-    if (elapsed > 24 * 60 * 60 * 1000) return null; 
+    if (elapsed > 24 * 60 * 60 * 1000) return null;
     return fmtDur(elapsed);
   };
   return (

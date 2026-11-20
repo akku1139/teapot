@@ -5,7 +5,7 @@
     "moduleResolution": "Bundler",
     "lib": ["ESNext", "DOM"],
     "jsx": "preserve",
-    "jsxImportSource": "solid-js",
+    "jsxImportSource": "@solidjs/web",
     "types": ["vite/client"],
     "noEmit": true,
   }

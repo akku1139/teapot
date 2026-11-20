@@ -35,7 +35,7 @@ export function BgJobsPanel(props: {
       <div class="bgjobs-pop" role="dialog" aria-label="background shells">
         <div class="bgjobs-head">
           <span>background shells</span>
-          <button type="button" class="iconbtn" title="close" onclick={() => props.onClose()}>✕</button>
+          <button type="button" class="iconbtn" title="close" onClick={() => props.onClose()}>✕</button>
         </div>
         <Show
           when={props.jobs.length > 0}
@@ -65,7 +65,7 @@ export function BgJobsPanel(props: {
                           ? "kill this job (whole process group)"
                           : "forget this finished job"
                     }
-                    onclick={() => void props.onKill(j)}
+                    onClick={() => void props.onKill(j)}
                   >{j.detached ? "forget" : j.running ? "kill" : "clear"}</button>
                 </div>
                 <Show

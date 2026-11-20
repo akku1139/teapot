@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
 import { IconBtn, Modal } from "./chrome";
@@ -104,7 +104,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
   let kidsFor = "";
   createEffect(() => {
     const id = props.agentId;
-    if (id === kidsFor) return; 
+    if (id === kidsFor) return;
     kidsFor = id;
     setExpanded(new Set<string>());
     setPreview(null);
@@ -150,7 +150,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
         setHlHtml((prev) => prev + chunk);
       }
     } catch {
-      if (hlRun === run) setHlHtml(""); 
+      if (hlRun === run) setHlHtml("");
     } finally {
       if (hlRun === run) setHlPending(false);
     }
@@ -194,7 +194,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: editBuf(), baseContent: pv.content }),
       });
-      setPreview({ ...pv, content: editBuf() }); 
+      setPreview({ ...pv, content: editBuf() });
       flashHint(`saved ${pv.path}`);
     } catch (ex) {
       const raw = (ex as { payload?: unknown }).payload;
@@ -234,7 +234,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
           (node.ignored && ignoreMode() === "dim" ? " gitignored" : "")
         }
         style={`padding-left:${depth * 13 + 8}px`}
-        onclick={() => (node.dir ? void toggleDir(node) : void openFileWith(node, "code"))}
+        onClick={() => (node.dir ? void toggleDir(node) : void openFileWith(node, "code"))}
         title={node.dir ? `browse ${node.path}` : `preview ${node.path}`}
       >
         <span class="ficon">{node.dir ? (expanded().has(node.path) ? "▾" : "▸") : ficon(node.name)}</span>
@@ -319,11 +319,11 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
                 <>
                   <div class="filetoolbar">
                     <Show when={isMd(pv().path) && !pv().binary}>
-                      <button class={viewMode() === "md" ? "on" : ""} onclick={() => setViewMode("md")} title="rendered markdown">👁 preview</button>
+                      <button class={viewMode() === "md" ? "on" : ""} onClick={() => setViewMode("md")} title="rendered markdown">👁 preview</button>
                     </Show>
-                    <button class={viewMode() === "code" ? "on" : ""} onclick={() => { setViewMode("code"); if (!hlHtml()) startHighlighting({ path: pv().path, content: pv().content, truncated: pv().truncated }); }} title="syntax-highlighted source">{"</>"} code</button>
+                    <button class={viewMode() === "code" ? "on" : ""} onClick={() => { setViewMode("code"); if (!hlHtml()) startHighlighting({ path: pv().path, content: pv().content, truncated: pv().truncated }); }} title="syntax-highlighted source">{"</>"} code</button>
                     <Show when={isEditable(pv())}>
-                      <button class={viewMode() === "edit" ? "on" : ""} onclick={() => setViewMode("edit")} title="edit and save back to the workspace">✎ edit</button>
+                      <button class={viewMode() === "edit" ? "on" : ""} onClick={() => setViewMode("edit")} title="edit and save back to the workspace">✎ edit</button>
                     </Show>
                   </div>
                   <Show
@@ -351,12 +351,12 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
                         <textarea
                           class="mono"
                           value={editBuf()}
-                          oninput={(e) => setEditBuf(e.currentTarget.value)}
+                          onInput={(e) => setEditBuf(e.currentTarget.value)}
                           spellcheck={false}
                         />
                         <div class="filerow-actions">
                           <span class="muted">{fmtK(editBuf().length)} bytes</span>
-                          <button class="savebtn" disabled={saving() || editBuf() === pv().content} onclick={() => void saveFile()}>
+                          <button class="savebtn" disabled={saving() || editBuf() === pv().content} onClick={() => void saveFile()}>
                             {saving() ? "saving…" : "💾 save"}
                           </button>
                         </div>

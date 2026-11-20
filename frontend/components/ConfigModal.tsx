@@ -1,4 +1,4 @@
-import { For, Index, Show, createEffect, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal } from "solid-js";
 import { Modal } from "./chrome";
 import { NumberField, ThemePreview } from "./settings-parts";
 import { api } from "../lib/api";
@@ -119,7 +119,7 @@ export function ThemeEditor(props: {
     <div class="themeeditor">
       <h4 class="cfgsub">your themes</h4>
       <div class="btnrow">
-        <button type="button" onclick={duplicatePreset} title="copy the theme you are using into a new editable one — presets themselves are never modified">
+        <button type="button" onClick={duplicatePreset} title="copy the theme you are using into a new editable one — presets themselves are never modified">
           ＋ duplicate current
         </button>
         {}
@@ -152,13 +152,13 @@ export function ThemeEditor(props: {
                   value={editing()!.label}
                   maxlength={40}
                   placeholder="theme name"
-                  oninput={(e) => patch((cur) => ({ ...cur, label: e.currentTarget.value }))}
+                  onInput={(e) => patch((cur) => ({ ...cur, label: e.currentTarget.value }))}
                 />
               </label>
               <label class="trow">appearance
                 <select
                   value={editing()!.mode}
-                  onchange={(e) => patch((cur) => ({ ...cur, mode: e.currentTarget.value as "dark" | "light" }))}
+                  onChange={(e) => patch((cur) => ({ ...cur, mode: e.currentTarget.value as "dark" | "light" }))}
                 >
                   <option value="dark">dark</option>
                   <option value="light">light</option>
@@ -173,19 +173,19 @@ export function ThemeEditor(props: {
                     <input
                       type="color"
                       value={normalizeColour(editing()!.palette[k.key]) ?? "#000000"}
-                      oninput={(e) => setColour(k.key, e.currentTarget.value)}
+                      onInput={(e) => setColour(k.key, e.currentTarget.value)}
                     />
                     <span class="paletterow-label">{k.label}</span>
                     <input
                       class="mono paletterow-hex"
                       value={hexDraft()[k.key] ?? editing()!.palette[k.key]}
                       spellcheck={false}
-                      oninput={(e) => {
+                      onInput={(e) => {
                         const raw = e.currentTarget.value;
                         setHexDraft((d) => ({ ...d, [k.key]: raw }));
                         setColour(k.key, raw);
                       }}
-                      onblur={() =>
+                      onBlur={() =>
                         setHexDraft((d) => {
                           const next = { ...d };
                           delete next[k.key];
@@ -201,13 +201,13 @@ export function ThemeEditor(props: {
               <button
                 type="button"
                 title="put every colour back to the palette this theme was created from"
-                onclick={() => patch((cur) => ({ ...cur, palette: { ...DEFAULT_PALETTE } }))}
+                onClick={() => patch((cur) => ({ ...cur, palette: { ...DEFAULT_PALETTE } }))}
               >
                 ↺ reset palette
               </button>
               <button
                 type="button"
-                onclick={() => {
+                onClick={() => {
                   const doomed = editing()?.id;
                   if (!doomed) return;
                   props.onChange(props.themes().filter((x) => x.id !== doomed));
@@ -225,7 +225,7 @@ export function ThemeEditor(props: {
               <button
                 type="button"
                 class={"bgpick" + (editing()!.backgroundImage ? " has" : "")}
-                onclick={() => filePick?.click()}
+                onClick={() => filePick?.click()}
                 title={
                   editing()!.backgroundImage
                     ? "click to replace this background image (PNG/JPG/WebP)"
@@ -253,8 +253,8 @@ export function ThemeEditor(props: {
                 type="file"
                 accept="image/*"
                 style="display:none"
-                oninput={(e) => e.stopPropagation()}
-                onchange={(e) => {
+                onInput={(e) => e.stopPropagation()}
+                onChange={(e) => {
                   e.stopPropagation();
                   importFile(e.currentTarget.files?.[0]);
                   e.currentTarget.value = "";
@@ -284,7 +284,7 @@ export function ThemeEditor(props: {
                          */
                         step="0.01"
                         value={editing()!.backgroundDim ?? 0.55}
-                        oninput={(e) => patch((cur) => ({ ...cur, backgroundDim: Number(e.currentTarget.value) }))}
+                        onInput={(e) => patch((cur) => ({ ...cur, backgroundDim: Number(e.currentTarget.value) }))}
                       />
                       <span class="muted mono">{Math.round((editing()!.backgroundDim ?? 0.55) * 100)}%</span>
                     </label>
@@ -297,7 +297,7 @@ export function ThemeEditor(props: {
                         max="1"
                         step="0.01"
                         value={editing()!.surfaceAlpha ?? 0.82}
-                        oninput={(e) =>
+                        onInput={(e) =>
                           patch((cur) => ({ ...cur, surfaceAlpha: Number(e.currentTarget.value) }))
                         }
                       />
@@ -305,7 +305,7 @@ export function ThemeEditor(props: {
                         {Math.round((editing()!.surfaceAlpha ?? 0.82) * 100)}%
                       </span>
                     </label>
-                    <button type="button" onclick={() => patch((cur) => ({ ...cur, backgroundImage: undefined }))}>
+                    <button type="button" onClick={() => patch((cur) => ({ ...cur, backgroundImage: undefined }))}>
                       ✕ remove
                     </button>
                   </div>
@@ -470,7 +470,7 @@ export function ConfigModal(props: {
   >({});
   const urlProbeTimers: Record<number, ReturnType<typeof setTimeout> | undefined> = {};
   const probeOAuth = async (i: number, cfg: Record<string, unknown>) => {
-    if (!mcpServers()[i]) return; 
+    if (!mcpServers()[i]) return;
     const r = (await api("/api/mcp/test", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -711,7 +711,7 @@ export function ConfigModal(props: {
       const url = String(m.url ?? "").trim();
       const transport = m.transport ?? "http";
       const command = String(m.command ?? "").trim();
-      if (!name && !url && !command) continue; 
+      if (!name && !url && !command) continue;
       if (!name) return failSave("MCP: a server needs a name");
       if (seenMcp.has(name)) return failSave(`MCP: two servers are named "${name}"`);
       seenMcp.add(name);
@@ -783,7 +783,7 @@ export function ConfigModal(props: {
         );
       }
       props.theme.commitAppearance(draftOf());
-      props.theme.preview(null); 
+      props.theme.preview(null);
       setSaveState("saved");
       Object.assign(storedAppearance, draftOf());
       setTimeout(() => {
@@ -805,7 +805,7 @@ export function ConfigModal(props: {
         props.onClose();
       }}
     >
-      <form onsubmit={save} style="display:flex;flex-direction:column;gap:12px;min-height:0">
+      <form onSubmit={save} style="display:flex;flex-direction:column;gap:12px;min-height:0">
         {}
         <div class="cfgbody">
           <nav class="cfgmenu" aria-label="settings sections">
@@ -816,7 +816,7 @@ export function ConfigModal(props: {
                   class={"cfgmenu-item" + (section() === sec.key ? " on" : "")}
                   title={sec.hint}
                   aria-current={section() === sec.key ? "page" : undefined}
-                  onclick={() => setSection(sec.key)}
+                  onClick={() => setSection(sec.key)}
                 >
                   <span class="cfgmenu-label">{sec.label}</span>
                 </button>
@@ -824,16 +824,16 @@ export function ConfigModal(props: {
             </For>
           </nav>
           <div class="cfgpanel">
-        <fieldset classList={{ hide: section() !== "providers" }}>
+        <fieldset class={{ hide: section() !== "providers" }}>
           <legend>providers</legend>
           {}
-          <Index each={providers()}>
+          <For keyed={false} each={providers()}>
             {(p, i) => (
               <div class="cfgrow">
-                <input class="cfgname" placeholder="name" value={p().name} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, name: e.currentTarget.value } : x)))} />
-                <input placeholder="https://…/v1" value={p().baseUrl} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
-                <input placeholder="default model" value={p().model} oninput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, model: e.currentTarget.value } : x)))} />
-                <button type="button" class="iconbtn danger" title="remove provider" onclick={() => setProviders(providers().filter((_, j) => j !== i))}>✕</button>
+                <input class="cfgname" placeholder="name" value={p().name} onInput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, name: e.currentTarget.value } : x)))} />
+                <input placeholder="https://…/v1" value={p().baseUrl} onInput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, baseUrl: e.currentTarget.value } : x)))} />
+                <input placeholder="default model" value={p().model} onInput={(e) => setProviders(providers().map((x, j) => (j === i ? { ...x, model: e.currentTarget.value } : x)))} />
+                <button type="button" class="iconbtn danger" title="remove provider" onClick={() => setProviders(providers().filter((_, j) => j !== i))}>✕</button>
                 {}
                 <div class="cfgkeys">
                   <For each={p().apiKeys}>
@@ -843,7 +843,7 @@ export function ConfigModal(props: {
                           placeholder={ki() === 0 ? "api key" : "api key (backup)"}
                           type="password"
                           value={k}
-                          oninput={(e) =>
+                          onInput={(e) =>
                             setProviders(
                               providers().map((x, j) =>
                                 j === i
@@ -857,7 +857,7 @@ export function ConfigModal(props: {
                           <button
                             type="button"
                             title="remove this key"
-                            onclick={() =>
+                            onClick={() =>
                               setProviders(
                                 providers().map((x, j) =>
                                   j === i ? { ...x, apiKeys: x.apiKeys.filter((_, m) => m !== ki()) } : x,
@@ -872,15 +872,15 @@ export function ConfigModal(props: {
                   <button
                     type="button"
                     title="add another key for this provider — they are rotated round-robin, and a rate-limited key is skipped for a minute"
-                    onclick={() =>
+                    onClick={() =>
                       setProviders(providers().map((x, j) => (j === i ? { ...x, apiKeys: [...x.apiKeys, ""] } : x)))
                     }
                   >+ key</button>
                 </div>
               </div>
             )}
-          </Index>
-          <button type="button" onclick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKeys: [""], model: "" }])}>+ add custom</button>
+          </For>
+          <button type="button" onClick={() => setProviders([...providers(), { name: "", baseUrl: "", apiKeys: [""], model: "" }])}>+ add custom</button>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             <span class="muted" style="font-size:11.5px">quick-add:</span>
             <For each={PROVIDER_PRESETS}>
@@ -888,7 +888,7 @@ export function ConfigModal(props: {
                 <button
                   type="button"
                   title={`fill a ${p.label} row — ${p.url}${p.model ? ` (model: ${p.model})` : ""}`}
-                  onclick={() => {
+                  onClick={() => {
                     const rest = providers().filter((x) => x.name !== p.key);
                     setProviders([...rest, { name: p.key, baseUrl: p.url, apiKeys: [""], model: p.model }]);
                     if (!defaultProvider()) setDefaultProvider(p.key);
@@ -901,7 +901,7 @@ export function ConfigModal(props: {
             default provider
             <select
               value={defaultProvider()}
-              onchange={(e) => setDefaultProvider(e.currentTarget.value)}
+              onChange={(e) => setDefaultProvider(e.currentTarget.value)}
             >
               <option value="">(none — first provider wins)</option>
               <For each={providerNames()}>
@@ -922,7 +922,7 @@ export function ConfigModal(props: {
         </fieldset>
 
         {}
-        <fieldset classList={{ hide: section() !== "appearance" }}>
+        <fieldset class={{ hide: section() !== "appearance" }}>
           <legend>appearance</legend>
 
           <div class="cfggrid">
@@ -930,7 +930,7 @@ export function ConfigModal(props: {
               <input
                 type="checkbox"
                 checked={themeAuto()}
-                onchange={(e) => {
+                onChange={(e) => {
                   setThemeAuto(e.currentTarget.checked);
                 }}
               />
@@ -943,7 +943,7 @@ export function ConfigModal(props: {
                   <select
                     class="w100"
                     value={sysDarkTheme()}
-                    onchange={(e) => {
+                    onChange={(e) => {
                       setSysDarkTheme(e.currentTarget.value);
                     }}
                   >
@@ -956,7 +956,7 @@ export function ConfigModal(props: {
                   <select
                     class="w100"
                     value={sysLightTheme()}
-                    onchange={(e) => {
+                    onChange={(e) => {
                       setSysLightTheme(e.currentTarget.value);
                     }}
                   >
@@ -982,7 +982,7 @@ export function ConfigModal(props: {
                         class={"themecard" + (themeCardChosen(t.id) ? " on" : "")}
                         title={`${t.label} (custom)${t.backgroundImage ? " · with a background image" : ""}`}
                         aria-pressed={themeCardChosen(t.id)}
-                        onclick={() => pickThemeCard(t.id, t.mode)}
+                        onClick={() => pickThemeCard(t.id, t.mode)}
                       >
                         <span class="themecard-preview"><ThemePreview palette={t.palette} backgroundImage={t.backgroundImage} surfaceAlpha={t.surfaceAlpha} backgroundDim={t.backgroundDim} /></span>
                         <span class="themecard-label">{t.label} ★</span>
@@ -996,7 +996,7 @@ export function ConfigModal(props: {
                         class={"themecard" + (themeCardChosen(t.key) ? " on" : "")}
                         title={`${t.label} (${t.mode})`}
                         aria-pressed={themeCardChosen(t.key)}
-                        onclick={() => pickThemeCard(t.key, t.mode)}
+                        onClick={() => pickThemeCard(t.key, t.mode)}
                       >
                         <span class="themecard-preview">
                           <ThemePreview palette={presetPalette(t.key)} />
@@ -1066,7 +1066,7 @@ export function ConfigModal(props: {
           />
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "runtime" }}>
+        <fieldset class={{ hide: section() !== "runtime" }}>
           <legend>agent runtime</legend>
           <div class="cfgrow">
             <label style="flex:1">
@@ -1076,7 +1076,7 @@ export function ConfigModal(props: {
                 class="w100"
                 placeholder={props.cfg.hasPassword ? "(unchanged — type to replace)" : "(none — loopback only)"}
                 value={apiPassword()}
-                oninput={(e) => {
+                onInput={(e) => {
                   setApiPassword(e.currentTarget.value);
                   setApiPasswordDirty(true);
                 }}
@@ -1096,7 +1096,7 @@ export function ConfigModal(props: {
                 min="0"
                 placeholder="(derive: 75% of window)"
                 value={ctxBudgetK() ?? ""}
-                oninput={(e) => setCtxBudgetK(e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}
+                onInput={(e) => setCtxBudgetK(e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}
               />
             </label>
             <NumberField label="context window (k tok)" value={ctxWinK()} onValue={(v) => setCtxWinK(v)} hint="model's real window — 0/blank hides the % gauge" />
@@ -1107,14 +1107,14 @@ export function ConfigModal(props: {
             <input
               type="checkbox"
               checked={shortContext()}
-              onchange={(e) => setShortContext(e.currentTarget.checked)}
+              onChange={(e) => setShortContext(e.currentTarget.checked)}
             />
             short-context mode
             {}
           </label>
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "mcp" }}>
+        <fieldset class={{ hide: section() !== "mcp" }}>
           <legend>MCP servers — external tools, shared by every agent</legend>
           {}
           <div class="muted" style="font-size:11.5px;margin-bottom:8px">
@@ -1129,7 +1129,7 @@ export function ConfigModal(props: {
               </div>
             }
           >
-            <Index each={mcpServers()}>
+            <For keyed={false} each={mcpServers()}>
               {(srv, i) => {
                 const st = () => mcpStates()[srv().name ?? ""];
                 const upd = (patch: Record<string, unknown>) =>
@@ -1141,13 +1141,13 @@ export function ConfigModal(props: {
                         class="cfgname"
                         placeholder="name"
                         value={srv().name}
-                        oninput={(e) => upd({ name: e.currentTarget.value })}
+                        onInput={(e) => upd({ name: e.currentTarget.value })}
                         title="the name that appears inside mcp__<name>__ in tool names"
                       />
                       <input
                         placeholder="https://example.com/mcp  (or leave empty for a stdio command)"
                         value={srv().url ?? ""}
-                        oninput={(e) => {
+                        onInput={(e) => {
                           upd({ url: e.currentTarget.value });
                           const mine = e.currentTarget.value.trim();
                           clearTimeout(urlProbeTimers[i]);
@@ -1161,21 +1161,21 @@ export function ConfigModal(props: {
                         <input
                           type="checkbox"
                           checked={srv().enabled !== false}
-                          onchange={(e) => upd({ enabled: e.currentTarget.checked })}
+                          onChange={(e) => upd({ enabled: e.currentTarget.checked })}
                         />on
                       </label>
                       <button
                         type="button"
                         class="iconbtn danger"
                         title="remove this MCP server"
-                        onclick={() => setMcpServers(mcpServers().filter((_, j) => j !== i))}
+                        onClick={() => setMcpServers(mcpServers().filter((_, j) => j !== i))}
                       >✕</button>
                     </div>
                     <div class="cfgrow">
                       <input
                         placeholder="what this server is for — e.g. reverse engineering: decompile, disassemble"
                         value={srv().description ?? ""}
-                        oninput={(e) => upd({ description: e.currentTarget.value })}
+                        onInput={(e) => upd({ description: e.currentTarget.value })}
                         title={
                           "shown to the model when the MCP catalog is too large to send, so it can search " +
                           "for the right tool instead of guessing keywords"
@@ -1185,7 +1185,7 @@ export function ConfigModal(props: {
                     <div class="cfgrow">
                       <select
                         value={srv().transport ?? "http"}
-                        onchange={(e) => upd({ transport: e.currentTarget.value })}
+                        onChange={(e) => upd({ transport: e.currentTarget.value })}
                         title="streamable HTTP is the current spec; legacy SSE is the 2024-11-05 handshake; stdio spawns a local process"
                       >
                         <option value="http">streamable http</option>
@@ -1197,12 +1197,12 @@ export function ConfigModal(props: {
                           <input
                             placeholder="command (e.g. npx)"
                             value={srv().command ?? ""}
-                            oninput={(e) => upd({ command: e.currentTarget.value })}
+                            onInput={(e) => upd({ command: e.currentTarget.value })}
                           />
                           <input
                             placeholder="args, space separated"
                             value={(srv().args ?? []).join(" ")}
-                            oninput={(e) =>
+                            onInput={(e) =>
                               upd({ args: e.currentTarget.value.split(" ").filter(Boolean) })
                             }
                           />
@@ -1213,7 +1213,7 @@ export function ConfigModal(props: {
                     <div class="cfgrow">
                       <select
                         value={oauthState(String(srv().name ?? "")) ? "oauth" : (mcpAuthKind()[i] ?? "none")}
-                        onchange={(e) => {
+                        onChange={(e) => {
                           const kind = e.currentTarget.value as "none" | "bearer" | "header" | "json";
                           setMcpAuthKind((m) => ({ ...m, [i]: kind }));
                           if (kind === "none") upd({ headers: undefined });
@@ -1246,7 +1246,7 @@ export function ConfigModal(props: {
                           type="password"
                           placeholder="paste the token"
                           value={mcpAuthValue()[i] ?? ""}
-                          oninput={(e) => {
+                          onInput={(e) => {
                             const v = e.currentTarget.value;
                             setMcpAuthValue((m) => ({ ...m, [i]: v }));
                             upd({ headers: v ? { Authorization: `Bearer ${v}` } : undefined });
@@ -1259,7 +1259,7 @@ export function ConfigModal(props: {
                         <input
                           placeholder="header name"
                           value={mcpHeaderName()[i] ?? ""}
-                          oninput={(e) => {
+                          onInput={(e) => {
                             const hname = e.currentTarget.value;
                             setMcpHeaderName((m) => ({ ...m, [i]: hname }));
                             const v = mcpAuthValue()[i] ?? "";
@@ -1271,7 +1271,7 @@ export function ConfigModal(props: {
                           type="password"
                           placeholder="value"
                           value={mcpAuthValue()[i] ?? ""}
-                          oninput={(e) => {
+                          onInput={(e) => {
                             const v = e.currentTarget.value;
                             setMcpAuthValue((m) => ({ ...m, [i]: v }));
                             const hname = mcpHeaderName()[i] ?? "";
@@ -1288,7 +1288,7 @@ export function ConfigModal(props: {
                           rows={2}
                           placeholder={'{"Authorization": "Bearer …", "X-Team": "infra"}'}
                           value={mcpHeadersText()[i] ?? ""}
-                          oninput={(e) => {
+                          onInput={(e) => {
                             const t = e.currentTarget.value;
                             setMcpHeadersText((m) => ({ ...m, [i]: t }));
                             if (!t.trim()) upd({ headers: undefined });
@@ -1313,7 +1313,7 @@ export function ConfigModal(props: {
                     <div class="cfgrow">
                       <button
                         type="button"
-                        onclick={async () => {
+                        onClick={async () => {
                           const patch = mcpServers()[i]!;
                           if (!patch.name) {
                             setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "give it a name first" } }));
@@ -1355,7 +1355,7 @@ export function ConfigModal(props: {
                         <button
                           type="button"
                           class="mcpauthorize"
-                          onclick={() => void startMcpOAuth(i, srv())}
+                          onClick={() => void startMcpOAuth(i, srv())}
                           title="start the OAuth flow: a browser tab opens, and the tools appear when you finish"
                         >🔑 authorize</button>
                       </Show>
@@ -1418,7 +1418,7 @@ export function ConfigModal(props: {
                               <button
                                 type="button"
                                 class="mcpdisconnect"
-                                onclick={async () => {
+                                onClick={async () => {
                                   if (!confirm(`Disconnect ${srv().name}?\n\nThe stored OAuth grant is deleted and you will have to authorize again in a browser.`)) return;
                                   await api("/api/mcp/oauth/disconnect", {
                                     method: "POST",
@@ -1438,38 +1438,38 @@ export function ConfigModal(props: {
                   </div>
                 );
               }}
-            </Index>
+            </For>
           </Show>
           <button
             type="button"
-            onclick={() => setMcpServers([...mcpServers(), { name: "", url: "", transport: "http", enabled: true }])}
+            onClick={() => setMcpServers([...mcpServers(), { name: "", url: "", transport: "http", enabled: true }])}
           >+ add MCP server</button>
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "tasks" }}>
+        <fieldset class={{ hide: section() !== "tasks" }}>
           <legend>scheduled tasks</legend>
           <Show when={tasks().length > 0}>
-            <Index each={tasks()}>
+            <For keyed={false} each={tasks()}>
               {(t, i) => (
                 <div class="cfgcol">
                   <div class="cfgrow">
-                    <input placeholder="id" value={t().id} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, id: e.currentTarget.value } : x)))} />
-                    <input placeholder="agent id" value={t().agent} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, agent: e.currentTarget.value } : x)))} />
-                    <input placeholder="every 30m / cron" value={t().schedule} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, schedule: e.currentTarget.value } : x)))} />
+                    <input placeholder="id" value={t().id} onInput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, id: e.currentTarget.value } : x)))} />
+                    <input placeholder="agent id" value={t().agent} onInput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, agent: e.currentTarget.value } : x)))} />
+                    <input placeholder="every 30m / cron" value={t().schedule} onInput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, schedule: e.currentTarget.value } : x)))} />
                     <label style="display:flex;gap:3px;align-items:center;white-space:nowrap;color:var(--dim);font-size:11px">
-                      <input type="checkbox" checked={!!t().forked} onchange={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, forked: e.currentTarget.checked } : x)))} />fork
+                      <input type="checkbox" checked={!!t().forked} onChange={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, forked: e.currentTarget.checked } : x)))} />fork
                     </label>
-                    <button type="button" class="iconbtn danger" onclick={() => setTasks(tasks().filter((_, j) => j !== i))}>✕</button>
+                    <button type="button" class="iconbtn danger" onClick={() => setTasks(tasks().filter((_, j) => j !== i))}>✕</button>
                   </div>
-                  <textarea rows={2} placeholder="prompt to send" value={t().prompt} oninput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, prompt: e.currentTarget.value } : x)))} />
+                  <textarea rows={2} placeholder="prompt to send" value={t().prompt} onInput={(e) => setTasks(tasks().map((x, j) => (j === i ? { ...x, prompt: e.currentTarget.value } : x)))} />
                 </div>
               )}
-            </Index>
+            </For>
           </Show>
-          <button type="button" onclick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ add task</button>
+          <button type="button" onClick={() => setTasks([...tasks(), { id: "", agent: agentIds()[0] ?? "", schedule: "every 30m", prompt: "" }])}>+ add task</button>
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "archive" }}>
+        <fieldset class={{ hide: section() !== "archive" }}>
           <legend>archived agents — restore, or delete for good</legend>
           {}
           <Show
@@ -1498,7 +1498,7 @@ export function ConfigModal(props: {
                   <button
                     type="button"
                     class="archrestore"
-                    onclick={async () => {
+                    onClick={async () => {
                       const r = (await api(`/api/agents/${a.id}/restore`, { method: "POST" }).catch(
                         () => null,
                       )) as { live?: boolean; ids?: string[] } | null;
@@ -1517,7 +1517,7 @@ export function ConfigModal(props: {
                   <button
                     type="button"
                     class="danger"
-                    onclick={async () => {
+                    onClick={async () => {
                       if (
                         !confirm(
                           `PERMANENTLY DELETE ${a.id}?\n\n` +
@@ -1540,7 +1540,7 @@ export function ConfigModal(props: {
           </Show>
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "agents" }}>
+        <fieldset class={{ hide: section() !== "agents" }}>
           <legend>agents (read-only — edit config file or use +)</legend>
           <For each={props.cfg.agents ?? []}>
             {(a) => (
@@ -1552,13 +1552,13 @@ export function ConfigModal(props: {
           </For>
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "update" }}>
+        <fieldset class={{ hide: section() !== "update" }}>
           <legend>live update</legend>
           <div class="cfgrow">
             <span class="muted">current version: {props.cfg.version ?? "unknown"}</span>
             <button
               type="button"
-              onclick={async (e) => {
+              onClick={async (e) => {
                 try {
                   setErr("");
                   const btn = e.currentTarget as HTMLButtonElement;
@@ -1606,7 +1606,7 @@ export function ConfigModal(props: {
           </div>
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "skills" }}>
+        <fieldset class={{ hide: section() !== "skills" }}>
           <legend>skills</legend>
           {}
           <Show
@@ -1642,8 +1642,8 @@ export function ConfigModal(props: {
                     }
                   };
                   return (
-                    <div classList={{ skillrow: true, open: open() }}>
-                      <button type="button" class="skillhead" onclick={toggle} title="show the playbook">
+                    <div class={{ skillrow: true, open: open() }}>
+                      <button type="button" class="skillhead" onClick={toggle} title="show the playbook">
                         <span class="skillcaret">{open() ? "▾" : "▸"}</span>
                         <b class="mono">{s.name}</b>
                         <span class="muted">{s.description}</span>
@@ -1666,7 +1666,7 @@ export function ConfigModal(props: {
           </Show>
         </fieldset>
 
-        <fieldset classList={{ hide: section() !== "help" }}>
+        <fieldset class={{ hide: section() !== "help" }}>
           <legend>help</legend>
           {}
           <div class="helpsec">
@@ -1750,7 +1750,7 @@ export function ConfigModal(props: {
           {}
           <button
             type="submit"
-            classList={{
+            class={{
               cfgsave: true,
               saved: saveState() === "saved",
               error: saveState() === "error",

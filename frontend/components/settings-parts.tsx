@@ -20,7 +20,7 @@ export function TodoEditor(props: {
       const h = el.offsetHeight;
       if (h <= 0) return;
       setTodoHeight((cur) => {
-        if (Math.abs(cur - h) < 1) return cur; 
+        if (Math.abs(cur - h) < 1) return cur;
         localStorage.setItem("teapot.todoH", String(h));
         return h;
       });
@@ -41,7 +41,7 @@ export function TodoEditor(props: {
           ref={trackHeight}
           placeholder={"- [ ] task one\n- [ ] task two"}
           value={props.draft}
-          oninput={(e) => props.onDraft(e.currentTarget.value)}
+          onInput={(e) => props.onDraft(e.currentTarget.value)}
           title="shared with the agent \u2014 it may check items off via set_todo; your unsaved edits win until you save"
         />
       }
@@ -97,7 +97,7 @@ export function NumberField(props: {
         type="number"
         min="0"
         value={props.value}
-        oninput={(e) => props.onValue(Number(e.currentTarget.value))}
+        onInput={(e) => props.onValue(Number(e.currentTarget.value))}
       />
     </label>
   );

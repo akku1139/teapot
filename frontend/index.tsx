@@ -1,5 +1,5 @@
 import "./app.css";
-import { render } from "solid-js/web";
+import { render } from "@solidjs/web";
 import App from "./App";
 
 render(() => <App />, document.getElementById("root")!);

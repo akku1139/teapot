@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import { AnsiText, BashElapsed, HighlightedCode } from "./code";
 import { Card } from "./card";
 import { CopyBtn } from "./chrome";
@@ -72,12 +72,12 @@ export function FreeTextAnswer(props: { answered: boolean; onOption?: ((t: strin
         placeholder={props.answered ? "answered" : "or type your own answer…"}
         disabled={props.answered}
         value={val()}
-        oninput={(e) => setVal(e.currentTarget.value)}
-        onkeydown={(e: KeyboardEvent) => {
+        onInput={(e) => setVal(e.currentTarget.value)}
+        onKeydown={(e: KeyboardEvent) => {
           if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }
         }}
       />
-      <button disabled={props.answered || !val().trim()} onclick={submit}>reply</button>
+      <button disabled={props.answered || !val().trim()} onClick={submit}>reply</button>
     </div>
   );
 }
@@ -239,7 +239,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
           ? isBg
             ? `background job${bgJob ? ` ${bgJob}` : ""}${timeoutMs ? ` · timeout ${Math.round(timeoutMs / 1000)}s` : ""}`
             : shellHint({ outcome, durationMs: r.data?.durationMs, timeoutMs, fmtDur })
-          : null; 
+          : null;
         body = (
           <>
             {isBg ? (
@@ -369,7 +369,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
                 when={/^https?:/i.test(argStr("url"))}
                 fallback={<span class="muted">{oneLine(argStr("url"), 80)}</span>}
               >
-                <a href={argStr("url")} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">open ↗</a>
+                <a href={argStr("url")} target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">open ↗</a>
               </Show>
             </div>
             {resultBlock()}
@@ -387,7 +387,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
       }
       case "load_skill": {
         label = `skill: ${argStr("name")}`;
-        const mdBody = out().replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ""); 
+        const mdBody = out().replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
         body = res() ? (
           <>
             <div class="content" innerHTML={renderMarkdown(mdBody)} />
@@ -517,7 +517,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
             : staleDone()
               ? "(result missed)"
               : name === "bash" || effTimeout()
-                ? 
+                ?
                   <BashElapsed startedAt={e.ts} inline timeoutMs={effTimeout()} /> // visible while folded
                 : "running…"}
         </span>
@@ -775,7 +775,7 @@ export function MessageRow(props: { e: Ev; prev?: Ev | undefined; next?: Ev | un
               <button
                 class="editbtn"
                 title="withdraw this message — it has not reached the model yet; the text goes back to the input box"
-                onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onCancel!(); }}
+                onClick={(ev: MouseEvent) => { ev.stopPropagation(); props.onCancel!(); }}
               >✕ cancel</button>
             </Show>
             {}
@@ -793,7 +793,7 @@ export function MessageRow(props: { e: Ev; prev?: Ev | undefined; next?: Ev | un
               <button
                 class="editbtn"
                 title="edit this prompt — forks the conversation here (later events are dropped or summarized)"
-                onclick={(ev: MouseEvent) => { ev.stopPropagation(); props.onEdit!(); }}
+                onClick={(ev: MouseEvent) => { ev.stopPropagation(); props.onEdit!(); }}
               >✎ edit</button>
             </Show>
           </div>
@@ -829,7 +829,7 @@ function ToolImages(props: { data?: { images?: unknown }; agentId?: string | und
               alt="tool image"
               loading="lazy"
               title="click to enlarge"
-              onclick={() => openLightbox(src)}
+              onClick={() => openLightbox(src)}
             />
           )}
         </For>
@@ -869,7 +869,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev | undefined; res?: (() =
             <div class="promptimgs">
               <For each={imgs}>
               {(src) => (
-                <img src={src} class="promptimg" alt="attachment" title="click to enlarge" onclick={() => openLightbox(src)} />
+                <img src={src} class="promptimg" alt="attachment" title="click to enlarge" onClick={() => openLightbox(src)} />
               )}
             </For>
             </div>
@@ -969,7 +969,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev | undefined; res?: (() =
                   <button
                     class="qopt"
                     disabled={answered()}
-                    onclick={() => {
+                    onClick={() => {
                       props.onAnswered?.(callId);
                       const actor = e.data?.actor;
                       if (actor) {

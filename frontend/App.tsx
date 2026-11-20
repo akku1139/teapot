@@ -1,5 +1,5 @@
-import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack } from "solid-js";
-import type { JSX } from "solid-js";
+import { createSignal, onSettled, onCleanup, For, Show, createMemo, createEffect, untrack } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
 import { jumpTargetMatches } from "./lib/jump-target";
@@ -217,7 +217,7 @@ export default function App() {
           byId.set(s.id, s.agentId);
           if (typeof s.title === "string" && s.title) titles.set(s.id, s.title);
           const list = byAgent.get(s.agentId) ?? [];
-          list.push(s.id); 
+          list.push(s.id);
           byAgent.set(s.agentId, list);
         }
         setMasterSessionIndex(byId);
@@ -235,7 +235,7 @@ export default function App() {
     }
   }
   const [events, setEvents] = createSignal<Ev[]>([]);
-  const [eventsTotal, setEventsTotal] = createSignal(0); 
+  const [eventsTotal, setEventsTotal] = createSignal(0);
   const [branches, setBranches] = createSignal<BranchInfo[]>([]);
   const [metrics, setMetrics] = createSignal<Metrics | null>(null);
   const drafts = new Map<string, string>();
@@ -245,7 +245,7 @@ export default function App() {
     const id = selected();
     if (id) {
       if (v) drafts.set(id, v);
-      else drafts.delete(id); 
+      else drafts.delete(id);
     }
   };
   const [cfg, setCfg] = createSignal<FeConfig>({ providers: {} });
@@ -299,7 +299,7 @@ export default function App() {
   const announcedOAuth = new Set<string>();
   const isNarrow = () => window.innerWidth <= NARROW_PX;
   const [narrow, setNarrow] = createSignal(isNarrow());
-  onMount(() => {
+  onSettled(() => {
     const onResize = () => {
       const now = isNarrow();
       if (now === narrow()) return;
@@ -317,7 +317,7 @@ export default function App() {
     };
     window.addEventListener("resize", onResize);
     onCleanup(() => window.removeEventListener("resize", onResize));
-    onResize(); 
+    onResize();
   });
 
   let lastContentHeight = 0;
@@ -338,7 +338,7 @@ export default function App() {
   /**
    * Re-anchor the view after the feed's content changed size above the viewport.
    *
-   * `resyncAfterUnskip` already knows how to do this — it was simply only reachable from `onscroll`, and a
+   * `resyncAfterUnskip` already knows how to do this — it was simply only reachable from `onScroll`, and a
    * content growth is precisely the case where no scroll event fires.
    */
   const reanchorAfterContentChange = () => {
@@ -612,11 +612,11 @@ export default function App() {
   const attachFeedObserver = (f: HTMLElement | null) => {
     if (!f) return;
     attachGestureLatch(f);
-    if (f === feedRoEl) return; 
+    if (f === feedRoEl) return;
     feedRo ??= new ResizeObserver((entries) => {
       const box = entries[0]?.contentRect;
       const key = box ? `${Math.round(box.width)}x${Math.round(box.height)}` : "";
-      if (key === feedRoLastBox) return; 
+      if (key === feedRoLastBox) return;
       feedRoLastBox = key;
       scheduleRestore();
     });
@@ -640,7 +640,7 @@ export default function App() {
       f.addEventListener("load", scheduleReanchor, true);
     }
   };
-  onMount(() => {
+  onSettled(() => {
     window.addEventListener("resize", scheduleRestore);
     onCleanup(() => {
       window.removeEventListener("resize", scheduleRestore);
@@ -701,7 +701,7 @@ export default function App() {
   );
   const [previewTheme, setPreviewTheme] = createSignal<string | null>(null);
   const [customThemes, setCustomThemes] = createSignal<CustomTheme[]>(loadCustomThemes());
-  onMount(() => {
+  onSettled(() => {
     void loadCustomThemesFromServer().then((remote) => {
       if (remote === null) return;
       const merged = mergeThemes(customThemes(), remote);
@@ -717,7 +717,7 @@ export default function App() {
       ? window.matchMedia("(prefers-color-scheme: light)")
       : null;
   const [sysPrefersLight, setSysPrefersLight] = createSignal(sysMql?.matches ?? false);
-  onMount(() => {
+  onSettled(() => {
     const onChange = (e: MediaQueryListEvent) => setSysPrefersLight(e.matches);
     sysMql?.addEventListener("change", onChange);
     /**
@@ -796,7 +796,7 @@ export default function App() {
     if (!m) return "";
     const parts: string[] = [];
     const badge = modalityBadge(m);
-    if (badge && badge !== "📄 → 📄") parts.push(badge); 
+    if (badge && badge !== "📄 → 📄") parts.push(badge);
     if (m.contextLength) parts.push(`ctx ${fmtK(m.contextLength)} tok`);
     const price = (p?: number) =>
       p === undefined ? "" : `${p * 1e6 >= 10 ? Math.round(p * 1e6) : +(p * 1e6).toFixed(1)}/M`;
@@ -818,7 +818,7 @@ export default function App() {
     if (!a) return;
     if (id !== _prevModelAgent) {
       _prevModelAgent = id;
-      providerTouched = false; 
+      providerTouched = false;
       if (untrack(() => modelProvider()) !== prov) {
         setModelProvider(prov);
         loadModels(prov);
@@ -833,7 +833,7 @@ export default function App() {
       }
     }
   });
-  const MAX_COMPOSER_H = 360; 
+  const MAX_COMPOSER_H = 360;
   const [composerMaximized, setComposerMaximized] = createSignal(false);
 
   const [atBottom, setAtBottom] = createSignal(true);
@@ -925,7 +925,7 @@ export default function App() {
       setLiveReasoning("");
       return;
     }
-    if (liveRenderTimer) return; 
+    if (liveRenderTimer) return;
     liveRenderTimer = setTimeout(() => {
       liveRenderTimer = undefined;
       setLiveText(live()?.text ?? "");
@@ -1074,7 +1074,7 @@ const isTimelineLive = (): boolean => {
       const p = next[i]!;
       const id = p.promptId;
       if (!id) {
-        deduped.push(p); 
+        deduped.push(p);
         continue;
       }
       if (seen.has(id)) continue;
@@ -1111,7 +1111,7 @@ const isTimelineLive = (): boolean => {
         changed = true;
         return { ...n, read: true };
       });
-      return changed ? next : list; 
+      return changed ? next : list;
     });
   };
   const markReadIfFollowing = () => {
@@ -1249,7 +1249,7 @@ const isTimelineLive = (): boolean => {
       }
     }
     return { resFor, consumed, orphanCalls };
-  });  
+  });
   const [locallyAnswered, setLocallyAnswered] = createSignal<Set<string>>(new Set());
   const markAnswered = (callId: string) => {
     if (!callId) return;
@@ -1366,7 +1366,7 @@ const isTimelineLive = (): boolean => {
   }
   const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
   const [authLocked, setAuthLocked] = createSignal(false);
-  onMount(() => {
+  onSettled(() => {
     const onUnauthorized = () => setAuthLocked(true);
     window.addEventListener("teapot:unauthorized", onUnauthorized);
     onCleanup(() => window.removeEventListener("teapot:unauthorized", onUnauthorized));
@@ -1384,7 +1384,7 @@ const isTimelineLive = (): boolean => {
       setTodoDirty(false);
       setTodoDraft(serverTodo);
     } else if (id && !todoDirty()) {
-      setTodoDraft(serverTodo); 
+      setTodoDraft(serverTodo);
     }
   });
   const saveTodo = async () => {
@@ -1645,7 +1645,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     let guard = 0;
     while (guard++ < 20 && !olderDone() && selected() === id) {
       const f = measurable();
-      if (f && f.scrollHeight > f.clientHeight + 40) return; 
+      if (f && f.scrollHeight > f.clientHeight + 40) return;
       if (events().length >= eventsTotal()) {
         setOlderDone(true);
         return;
@@ -1738,7 +1738,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           : Promise.resolve({ branches: branches() }),
       ]);
       if (needsBranches) lastBranchesGen = genAtStart;
-      if (genAtStart !== feedGeneration || selected() !== id) return; 
+      if (genAtStart !== feedGeneration || selected() !== id) return;
       if (replaceEventsOnLoad) {
         replaceEventsOnLoad = false;
         evCache.clear();
@@ -1920,7 +1920,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const prevEvents = events();
     const prevTotal = eventsTotal();
     feedGeneration++;
-    if (!sessionsByAgent().size) void refreshSessionIndex(); 
+    if (!sessionsByAgent().size) void refreshSessionIndex();
     const resolved = latestSessionOf(id, forceSession);
     const requested = forceSession && masterSessionIndex().has(forceSession) ? forceSession : null;
     // "" means "no session resolved", which is NOT the agent id: an agent id in the URL resolves to that
@@ -2006,14 +2006,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
     setSelected(id);
     setTimelineId(tid);
-    saveDraft(drafts.get(id) ?? ""); 
+    saveDraft(drafts.get(id) ?? "");
     setBranchFilter(null);
     setOlderDone(false);
     setLoadingOlder(false);
     writePending(prevTid || prevId || "?", pendingMsgs());
     setPendingMsgs(pendingFor(tid || id));
     localStorage.setItem("teapot.session", id);
-    navigate(tid, push); 
+    navigate(tid, push);
     const cached = timelineCache.get(tid);
     if (cached?.events.length) {
       setEvents(stabilize(cached.events));
@@ -2025,7 +2025,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
     api(`/api/agents/${id}/load`, { method: "POST" }).then(refreshAgents).catch(() => {});
     await loadEvents(id, tid);
-    if (selected() !== id) return; 
+    if (selected() !== id) return;
     setLiveByAgent((prev) => {
       const cur = prev.get(id) ?? null;
       const next = reconcileLiveBuffer(cur, events(), sel()?.status);
@@ -2280,7 +2280,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     };
     sock.onclose = () => {
       setConnected(false);
-      setTimeout(connectWs, 1500); 
+      setTimeout(connectWs, 1500);
     };
     sock.onerror = () => sock.close();
     const FEED_IRRELEVANT = new Set(["state", "usage", "session_start"]);
@@ -2392,7 +2392,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           setLiveByAgent((prev) => clearLive(prev, snap.id));
           if (snap.id === selected()) setThinkStartedAt(0);
         }
-        return; 
+        return;
       }
       if (msg.kind === "metrics" && msg.metrics) {
         setMetrics(msg.metrics);
@@ -2639,7 +2639,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     setRenaming(true);
   };
   const commitRename = async () => {
-    if (!renaming()) return; 
+    if (!renaming()) return;
     const a = sel();
     setRenaming(false);
     const next = renameDraft().replace(/\s+/g, " ").trim();
@@ -2930,12 +2930,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           }
         };
         sock.onclose = () => {
-          if (permanent || !liveTerms.has(tab.key)) return; 
+          if (permanent || !liveTerms.has(tab.key)) return;
           if (reconnectTimer) return;
           t.write(`\r\n\x1b[2m[connection lost — reconnecting…]\x1b[0m\r\n`);
           reconnectTimer = setTimeout(function again() {
             reconnectTimer = undefined;
-            if (!liveTerms.has(tab.key)) return; 
+            if (!liveTerms.has(tab.key)) return;
             const next = new WebSocket(termUrl());
             w = next;
             wire(next);
@@ -2983,12 +2983,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         resizeTimer[0] = setTimeout(pushResize, 250);
       });
       ro.observe(measureEl);
-      if (measureEl !== el) ro.observe(el); 
+      if (measureEl !== el) ro.observe(el);
       setTimeout(pushResize, 60);
       s = { el, term: t, fit: () => f.fit(), ws: w, ro };
       liveTerms.set(tab.key, s);
     } else if (s.el.parentElement !== host) {
-      host.appendChild(s.el); 
+      host.appendChild(s.el);
       setTimeout(() => { try { s!.fit(); } catch {  } }, 30);
     }
     return s;
@@ -3114,7 +3114,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     });
   };
 
-  onMount(() => {
+  onSettled(() => {
     const onLightboxKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && lightboxSrc()) closeLightbox();
     };
@@ -3273,13 +3273,13 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    */
   let lastSampleViewport: number | undefined;
   createEffect(() => {
-    const v = draft(); 
+    const v = draft();
     if (!composerEl) return;
     if (!shouldWriteComposerValue(imeInProgress)) return;
     if (composerValueChanged(composerEl.value, v)) composerEl.value = v;
     autosizeComposer();
   });
-  onMount(() => {
+  onSettled(() => {
     let pending = 0;
     const onResize = () => {
       if (pending) return;
@@ -3478,7 +3478,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       const sp = text.indexOf(" ");
       const name = (sp === -1 ? text.slice(1) : text.slice(1, sp)).toLowerCase();
       const arg = sp === -1 ? "" : text.slice(sp + 1).trim();
-      if (name === "goal" && !arg) { saveDraft("/goal "); return; } 
+      if (name === "goal" && !arg) { saveDraft("/goal "); return; }
       if (name === "skill" && !arg) { saveDraft("/skill "); return; }
       saveDraft("");
       try {
@@ -3533,7 +3533,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   let rightbarEl: HTMLDivElement | undefined;
   let rightbarTop = 0;
   createEffect(() => {
-    agents(); 
+    agents();
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!rightbarEl) return;
@@ -3615,11 +3615,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (!id) return;
     const g = sel()?.goal;
     if (id !== goalSeededFor) {
-      goalSeededFor = id; 
+      goalSeededFor = id;
       setGoalDirty(false);
       setGoalDraft("");
       setGoalVerifyDraft("");
-      void g; 
+      void g;
     }
   });
   /**
@@ -3691,7 +3691,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
                     });
                     createEffect(() => {
-                      liveReasoning(); 
+                      liveReasoning();
                       if (stick) el.scrollTop = el.scrollHeight;
                     });
                   }}
@@ -3721,7 +3721,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         <div class="modal" style="max-width:360px">
           <div class="modal-head"><b>🔒️ sign in</b><span /></div>
           <form
-            onsubmit={(e) => {
+            onSubmit={(e) => {
               e.preventDefault();
               const el = document.getElementById("pw-input") as HTMLInputElement;
               localStorage.setItem("teapot.token", el.value);
@@ -3754,7 +3754,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     <div class={"layout" + (showRight() ? "" : " right-hidden") + (showLeft() ? " left-open" : "")}>
       {}
       <Show when={narrow() && showLeft()}>
-        <div class="leftbarbackdrop" onclick={closeLeft} />
+        <div class="leftbarbackdrop" onClick={closeLeft} />
       </Show>
       {}
       <nav class={"sidebar" + (showLeft() ? " open" : "")}>
@@ -3762,7 +3762,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         <Show when={narrow()}>
           <div class="sidehead">
             <b>agents</b>
-            <button class="iconbtn" title="close the agent list" onclick={closeLeft}>✕</button>
+            <button class="iconbtn" title="close the agent list" onClick={closeLeft}>✕</button>
           </div>
         </Show>
         <div class="agent-list">
@@ -3780,7 +3780,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         ? `${row.wsHeader} — ${wsCountLabel(row.wsHeader!)} in this directory`
                         : row.wsHeader || ""
                   }
-                  onclick={() => toggleWsGroup(`ws:${row.wsHeader}`, basenameOf(row.wsHeader!), row.wsCollapsedGroup === true, row.collapsedVia)}
+                  onClick={() => toggleWsGroup(`ws:${row.wsHeader}`, basenameOf(row.wsHeader!), row.wsCollapsedGroup === true, row.collapsedVia)}
                 ><span class="wscaret">{row.wsCollapsedGroup ? "▸" : "▾"}</span>
                 {/* a flex item needs min-width: 0 for its text to be able to shrink, otherwise a long directory name
                     stretches the row and the whole left panel scrolls sideways — the chat name already has this */}
@@ -3816,10 +3816,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 // sub-agent list impossible to keep out of the way. Clicking the
                 // row now only selects; the CARET is the control that expands,
                 // and both directions remain reversible.
-                onclick={() => select(row.a.id)}
+                onClick={() => select(row.a.id)}
                 title={
                   row.a.parent
-                    ? 
+                    ?
                       (() => {
                         const named = subAgentDisplayName(row.a.id, personas().map((p) => p.key));
                         return named
@@ -3856,7 +3856,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                               ? "expand sub-agents"
                               : "collapse sub-agents"
                         }
-                        onclick={(e: MouseEvent) => {
+                        onClick={(e: MouseEvent) => {
                           e.stopPropagation();
                           if (isChat) {
                             if (off) {
@@ -3952,7 +3952,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <button
               class={"iconbtn notifbtn" + (unreadCount() > 0 ? " has-unread" : "")}
               title={unreadCount() > 0 ? `${unreadCount()} unread notifications` : "notifications"}
-              onclick={(e: MouseEvent) => {
+              onClick={(e: MouseEvent) => {
                 e.stopPropagation();
                 setShowNotifs(!showNotifs());
                 if (!showNotifs()) setNotifs((l) => l.map((n) => ({ ...n, read: true })));
@@ -4026,15 +4026,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 class="iconbtn ham"
                 title="agent list"
                 aria-expanded={showLeft()}
-                onclick={() => setShowLeft(!showLeft())}
+                onClick={() => setShowLeft(!showLeft())}
               >☰</button>
             </Show>
-            <span class="hash" title="rename this chat" onclick={() => beginRename()}>#</span>
+            <span class="hash" title="rename this chat" onClick={() => beginRename()}>#</span>
             {}
             <Show
               when={renaming()}
               fallback={
-                <span class="title" title={`${agentLabelWithId(sel(), sel()!.session)} — click to rename`} onclick={() => beginRename()}>
+                <span class="title" title={`${agentLabelWithId(sel(), sel()!.session)} — click to rename`} onClick={() => beginRename()}>
                   {agentLabel(sel())}
                 </span>
               }
@@ -4048,8 +4048,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     el.select();
                   });
                 }}
-                oninput={(e) => setRenameDraft(e.currentTarget.value)}
-                onkeydown={(e) => {
+                onInput={(e) => setRenameDraft(e.currentTarget.value)}
+                onKeydown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
                     void commitRename();
@@ -4107,7 +4107,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 type="button"
                 class="badge bgjobs"
                 aria-expanded={showBg()}
-                onclick={() => {
+                onClick={() => {
                   setShowBg(!showBg());
                   if (showBg()) void refreshBg();
                 }}
@@ -4136,7 +4136,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     ? "interrupt: aborts the current LLM call; the running tool finishes first"
                     : "run toward the goal (starts the loop)"
                 }
-                onclick={() => (isSelLive() ? act("/stop") : act("/start"))()}
+                onClick={() => (isSelLive() ? act("/stop") : act("/start"))()}
               >
                 {isSelLive() ? "■ stop" : "▶ start"}
               </button>
@@ -4156,7 +4156,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <BgJobsPanel open={showBg()} jobs={bgJobs()} onClose={() => setShowBg(false)} onKill={killBgJob} />
           </header>
 
-          <div class="feed" ref={(el) => attachFeedObserver(el)} onscroll={(e) => {
+          <div class="feed" ref={(el) => attachFeedObserver(el)} onScroll={(e) => {
             const el = e.currentTarget;
             const now: TailSample = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
             const cause = classifyScroll(now, ledger, lastSampleHeight, lastSampleViewport);
@@ -4409,23 +4409,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 role="dialog"
                 aria-modal="true"
                 aria-label="enlarged image"
-                onclick={closeLightbox}
+                onClick={closeLightbox}
                 title="click to close"
               >
-                <img src={src()} alt="" onclick={(e) => e.stopPropagation()} />
+                <img src={src()} alt="" onClick={(e) => e.stopPropagation()} />
               </div>
             )}
           </Show>
           <Show when={termOpen()}>
             <div class="termdrawer" style={{ height: `${termHeight()}px` }}>
-              <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
+              <div class="termgrip" onPointerDown={startGrip} onDblClick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
               <div class="termbar">
                 <div class="termtabs">
                   <For each={termTabs()}>
                     {(t, i) => (
                       <span
                         class={"termtab" + (focusedPane() === 0 && paneL() === i() ? " active" : "") + (splitView() && focusedPane() === 1 && paneR() === i() ? " active" : "")}
-                        onclick={() => {
+                        onClick={() => {
                           focusTab(i());
                           // the shell's cwd moves with `cd`, so the label is refreshed when the operator looks at
                           // it rather than on a poll (#198 follow-up: "ワーキングディレクトリをタイトルにするでもいい")
@@ -4434,7 +4434,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         title={`${t.cwd ? `${t.cwd}\n` : ""}${t.title} — click to show in focused pane`}
                       >
                         ⌨ {tabLabel(t)}
-                        <button class="tabx" onclick={(e) => { e.stopPropagation(); closeTab(i()); }} title="close this shell">✕</button>
+                        <button class="tabx" onClick={(e) => { e.stopPropagation(); closeTab(i()); }} title="close this shell">✕</button>
                       </span>
                     )}
                   </For>
@@ -4470,7 +4470,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             <Show when={gapToTailPx() > 32 && !atBottom()}>
               <button
                 class="jump"
-                onclick={() => {
+                onClick={() => {
                   scrollBottom(true);
                   markReadIfFollowing();
                 }}
@@ -4485,7 +4485,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     <div
                       class={"cmdrow" + (i() === cmdIdx() ? " active" : "")}
                       title={s.title}
-                      onclick={() => { saveDraft(s.insert); setCmdIdx(-1); }}
+                      onClick={() => { saveDraft(s.insert); setCmdIdx(-1); }}
                     >
                       <b class="mono">{s.insert.trim()}</b>
                       <span class="muted">{s.title}</span>
@@ -4498,7 +4498,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <div class="cmds">
                 <For each={mentionMatches()}>
                   {(m) => (
-                    <div class="cmdrow" title={m.label} onclick={() => { saveDraft(`@${m.key} `); setCmdIdx(-1); }}>
+                    <div class="cmdrow" title={m.label} onClick={() => { saveDraft(`@${m.key} `); setCmdIdx(-1); }}>
                       <b>@{m.key}</b>
                       <span class="muted">{m.label}</span>
                     </div>
@@ -4519,12 +4519,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <For each={pendingImages()}>
                   {(im, i) => (
                     <span class="imgchip" title={im.name}>
-                      <img src={im.url} alt={im.name} title="click to enlarge" onclick={() => openLightbox(im.url)} />
+                      <img src={im.url} alt={im.name} title="click to enlarge" onClick={() => openLightbox(im.url)} />
                       <button
                         type="button"
                         class="imgx"
                         title="remove"
-                        onclick={() => setPendingImages((l) => l.filter((_, j) => j !== i()))}
+                        onClick={() => setPendingImages((l) => l.filter((_, j) => j !== i()))}
                       >✕</button>
                     </span>
                   )}
@@ -4533,11 +4533,11 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   type="button"
                   class="attachclear"
                   title="remove every attachment"
-                  onclick={() => setPendingImages([])}
+                  onClick={() => setPendingImages([])}
                 >clear</button>
               </div>
             </Show>
-            <form onsubmit={send}>
+            <form onSubmit={send}>
               {}
               <textarea
                 ref={(el) => {
@@ -4546,28 +4546,28 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 }}
                 rows={1}
                 placeholder={`message #${sel()!.id} — / for commands · paste or 📎 to attach images`}
-                oncompositionstart={() => {
+                onCompositionStart={() => {
                   imeInProgress = true;
                 }}
-                oncompositionend={() => {
+                onCompositionEnd={() => {
                   requestAnimationFrame(() => {
                     imeInProgress = false;
                   });
                   saveDraft(composerEl?.value ?? "");
                 }}
-                onpaste={(e) => {
+                onPaste={(e) => {
                   const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
                   if (imgs.length) {
                     e.preventDefault();
                     addImages(imgs);
                   }
                 }}
-                oninput={(e) => {
+                onInput={(e) => {
                   saveDraft(e.currentTarget.value);
-                  setCmdIdx(0); 
+                  setCmdIdx(0);
                   autosizeComposer();
                 }}
-                onkeydown={(e) => {
+                onKeydown={(e) => {
                   const sugg = suggestions();
                   if (sugg.length > 0 && e.key === "ArrowDown") {
                     e.preventDefault();
@@ -4586,7 +4586,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     return;
                   }
                   if (e.key === "Escape" && sugg.length > 0) {
-                    setCmdIdx(-1); 
+                    setCmdIdx(-1);
                     return;
                   }
                   if (
@@ -4607,7 +4607,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   class="forkchip"
                   title="inherit the conversation prefix byte-exactly — the sub-agent's provider prefix cache starts warm"
                 >
-                  <input type="checkbox" checked={mentionFork()} onchange={(e) => setMentionFork(e.currentTarget.checked)} />
+                  <input type="checkbox" checked={mentionFork()} onChange={(e) => setMentionFork(e.currentTarget.checked)} />
                   fork ctx
                 </label>
               </Show>
@@ -4615,7 +4615,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 type="button"
                 class="iconbtn maxbtn"
                 title={composerMaximized() ? "restore composer (hide timeline)" : "maximize composer — hide the timeline and fill the main column"}
-                onclick={() => {
+                onClick={() => {
                   // same rule as the terminal drawer: this button is outside the feed, so only a follower gets pulled to
                   // the tail — a reader keeps the message they were looking at
                   const wasFollowing = intentFollowing || atBottom();
@@ -4638,9 +4638,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 accept="image/*"
                 multiple
                 style="display:none"
-                onchange={(e) => {
+                onChange={(e) => {
                   if (e.currentTarget.files?.length) addImages(e.currentTarget.files);
-                  e.currentTarget.value = ""; 
+                  e.currentTarget.value = "";
                 }}
               />
             </form>
@@ -4657,12 +4657,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       {}
       {}
       <Show when={narrow() && showRight()}>
-        <div class="rightbarbackdrop" onclick={() => setRight(false)} />
+        <div class="rightbarbackdrop" onClick={() => setRight(false)} />
       </Show>
       <aside
         class={"rightbar" + (showRight() ? " open" : "")}
         ref={rightbarEl}
-        onscroll={(e) => { rightbarTop = (e.currentTarget as HTMLDivElement).scrollTop; }}
+        onScroll={(e) => { rightbarTop = (e.currentTarget as HTMLDivElement).scrollTop; }}
       >
         {}
         <div class="rightbarhead">
@@ -4691,7 +4691,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <div class="modelbox">
             <select
               value={modelProvider()}
-              onchange={(e) => {
+              onChange={(e) => {
                 const next = e.currentTarget.value;
                 providerTouched = true;
                 setModelProvider(next);
@@ -4717,7 +4717,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   modelInputEl = el;
                   el.value = modelDraft();
                 }}
-                oninput={(e) => setModelDraft(e.currentTarget.value)}
+                onInput={(e) => setModelDraft(e.currentTarget.value)}
                 style="flex:1;min-width:0"
               />
               <datalist id="model-list">
@@ -4731,7 +4731,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <select
                   style="flex:1;min-width:0"
                   value={effortDraft()}
-                  onchange={(e) => setEffortDraft(e.currentTarget.value)}
+                  onChange={(e) => setEffortDraft(e.currentTarget.value)}
                 >
                   <option value="">provider default</option>
                   {}
@@ -4746,7 +4746,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <button
                 title="apply the provider, model and effort above to this session — takes effect from the agent's next turn"
                 style="flex:1"
-                onclick={async (e) => {
+                onClick={async (e) => {
                   if (!selected()) return;
                   const btn = e.currentTarget as HTMLButtonElement;
                   btn.disabled = true;
@@ -4794,7 +4794,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <input
                 type="checkbox"
                 checked={sel()!.autoContinue ?? true}
-                onchange={(e) => {
+                onChange={(e) => {
                   if (!selected()) return;
                   api(`/api/agents/${selected()}/auto-continue`, {
                     method: "POST",
@@ -4820,7 +4820,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         ? "mark achieved — auto-continue stops"
                         : "parked on purpose — resume by setting active again"
                   }
-                  onclick={() => {
+                  onClick={() => {
                     if (!selected()) return;
                     api(`/api/agents/${selected()}/goal`, {
                       method: "POST",
@@ -4858,10 +4858,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               style="display:flex;align-items:center;gap:4px;font-size:11.5px;white-space:nowrap;cursor:pointer"
               title="queue a harness prompt telling the agent about the new goal at its next turn boundary"
             >
-              <input type="checkbox" checked={goalNotify()} onchange={(e) => setGoalNotify(e.currentTarget.checked)} />
+              <input type="checkbox" checked={goalNotify()} onChange={(e) => setGoalNotify(e.currentTarget.checked)} />
               notify agent
             </label>
-            <button type="button" class="primarybtn" onclick={(e) => void setGoal(e)}>✓ save goal</button>
+            <button type="button" class="primarybtn" onClick={(e) => void setGoal(e)}>✓ save goal</button>
           </div>
           <Show when={sel()!.goal.audit}>
             {(a) => (
@@ -4915,7 +4915,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <input id="todo-notify" type="checkbox" checked /> notify agent
             </label>
             <button
-              onclick={saveTodo}
+              onClick={saveTodo}
               class="okbtn"
             >✓ save tasks</button>
           </div>
@@ -5017,7 +5017,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         <input
                           type="checkbox"
                           checked={sel()!.autoCompact !== false}
-                          onchange={(e) => {
+                          onChange={(e) => {
                             if (!selected()) return;
                             api(`/api/agents/${selected()}/auto-compact`, {
                               method: "POST",
@@ -5097,7 +5097,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <div
                 class={"branch-row" + (b.branch === sel()!.branch || b.branch === branchFilter() ? " cur" : "")}
                 title={b.branch === branchFilter() ? "click to show all branches again" : `show only ${b.branch}`}
-                onclick={() => {
+                onClick={() => {
                   const next = branchFilter() === b.branch ? null : b.branch;
                   const changing = next !== branchFilter();
                   setBranchFilter(next);
@@ -5133,7 +5133,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <div
                   class={"sched-row" + (t.agent === selected() ? " cur" : "")}
                   title={`${oneLine(t.prompt, 200)}\nclick to open #${t.agent}`}
-                  onclick={() => select(t.agent ?? "")}
+                  onClick={() => select(t.agent ?? "")}
                 >
                   <div class="sched-top">
                     <b>{t.id}</b>
@@ -5157,15 +5157,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     <Show when={showNotifs()}>
       {}
       {}
-      <div class="notifbackdrop" onclick={() => setShowNotifs(false)} />
+      <div class="notifbackdrop" onClick={() => setShowNotifs(false)} />
       <div class="notifpanel">
         <div class="notifhead">
           notifications
           <span style="display:flex;gap:8px;align-items:center">
             <Show when={notifs().length > 0}>
-              <button class="editbtn" onclick={() => setNotifs([])}>clear all</button>
+              <button class="editbtn" onClick={() => setNotifs([])}>clear all</button>
             </Show>
-            <button class="iconbtn" title="close notifications" onclick={() => setShowNotifs(false)}>✕</button>
+            <button class="iconbtn" title="close notifications" onClick={() => setShowNotifs(false)}>✕</button>
           </span>
         </div>
         <Show
@@ -5178,7 +5178,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <div
                   class={"notifitem " + n.kind + (n.read ? " read" : "")}
                   title={`from ${n.agentId}`}
-                  onclick={() => {
+                  onClick={() => {
                     setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
                     if (selected() !== n.agentId && agents().some((a) => a.id === n.agentId)) select(n.agentId);
                     setShowNotifs(false);
@@ -5194,7 +5194,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     <button
                       class="iconbtn nreadbtn"
                       title={n.read ? "already read" : "mark as read"}
-                      onclick={(e: MouseEvent) => {
+                      onClick={(e: MouseEvent) => {
                         e.stopPropagation();
                         setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
                       }}
@@ -5291,7 +5291,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return (
           <Modal title="edit prompt — forks the conversation" onClose={() => setEditing(null)}>
             <form
-              onsubmit={async (ev) => {
+              onSubmit={async (ev) => {
                 ev.preventDefault();
                 const ta = document.getElementById("edit-text") as HTMLTextAreaElement;
                 try {
@@ -5318,7 +5318,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 </div>
               </Show>
               <div style="display:flex;justify-content:flex-end;gap:8px">
-                <button type="button" onclick={() => setEditing(null)}>cancel</button>
+                <button type="button" onClick={() => setEditing(null)}>cancel</button>
                 <button type="submit" class="primarybtn">
                   ⑂ fork & resend
                 </button>
@@ -5442,7 +5442,7 @@ function NewAgentModal(props: {
     setParent(d.parent ?? "");
     setEntries(d.entries ?? []);
   }
-  onMount(() => browse(dir()));
+  onSettled(() => browse(dir()));
   const [parent, setParent] = createSignal("");
 
   const create = async (e: Event) => {
@@ -5459,23 +5459,23 @@ function NewAgentModal(props: {
 
   return (
     <Modal title="new agent" onClose={props.onClose}>
-      <form onsubmit={create} style="display:flex;flex-direction:column;gap:10px">
+      <form onSubmit={create} style="display:flex;flex-direction:column;gap:10px">
         <label>workspace directory
           <div style="display:flex;gap:6px">
-            <input type="text" class="w100 mono" value={dir()} oninput={(e) => setDir(e.currentTarget.value)} />
-            <button type="button" onclick={() => browse(dir())}>go</button>
-            <button type="button" class="iconbtn" title="parent directory" onclick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
+            <input type="text" class="w100 mono" value={dir()} onInput={(e) => setDir(e.currentTarget.value)} />
+            <button type="button" onClick={() => browse(dir())}>go</button>
+            <button type="button" class="iconbtn" title="parent directory" onClick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
           </div>
         </label>
         <div class="dirlist">
           <For each={entries()}>{(n) =>
-            <div class="direntry" onclick={() => browse(`${dir()}/${n}`.replace(/\/+/g, "/"))}>📁 {n}</div>
+            <div class="direntry" onClick={() => browse(`${dir()}/${n}`.replace(/\/+/g, "/"))}>📁 {n}</div>
           }</For>
         </div>
         <div style="display:flex;gap:10px">
-          <label style="flex:1">agent name <input type="text" placeholder="(directory name)" value={name()} oninput={(e) => setName(e.currentTarget.value)} /></label>
+          <label style="flex:1">agent name <input type="text" placeholder="(directory name)" value={name()} onInput={(e) => setName(e.currentTarget.value)} /></label>
           <label style="flex:0 1 auto;min-width:0">provider
-            <select value={provider()} onchange={(e) => setProvider(e.currentTarget.value)}>
+            <select value={provider()} onChange={(e) => setProvider(e.currentTarget.value)}>
               <For each={props.providers}>{(p) => <option>{p}</option>}</For>
             </select>
           </label>

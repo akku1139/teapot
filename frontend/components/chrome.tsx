@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import { copyText } from "../lib/clipboard";
 
 export function IconBtn(props: {
@@ -15,7 +15,7 @@ export function IconBtn(props: {
       type="button"
       class={"iconbtn" + (props.active ? " active" : "") + (props.class ? " " + props.class : "")}
       title={props.title}
-      onclick={props.onClick}
+      onClick={props.onClick}
       style={props.style}
     >
       <span class="iconbtn-glyph">{props.icon}</span>
@@ -27,11 +27,11 @@ export function CopyBtn(props: { text: string; label?: string; title?: string })
   const [done, setDone] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
   const copy = (e: MouseEvent) => {
-    e.preventDefault(); 
+    e.preventDefault();
     e.stopPropagation();
     void copyText(props.text ?? "").then((result) => {
       if (result === "unsupported" || result === "failed") {
-        setFailed(true); 
+        setFailed(true);
         setTimeout(() => setFailed(false), 1200);
         return;
       }
@@ -43,18 +43,18 @@ export function CopyBtn(props: { text: string; label?: string; title?: string })
     <button
       class="copybtn"
       title={props.title ?? "copy to clipboard"}
-      onclick={copy}
+      onClick={copy}
     >{done() ? "✓" : failed() ? "✗" : props.label ?? "⧉"}</button>
   );
 }
 
 export function Modal(props: { title: string; onClose: () => void; children: JSX.Element }) {
   return (
-    <div class="overlay" onclick={(e: Event) => e.target === e.currentTarget && props.onClose()}>
+    <div class="overlay" onClick={(e: Event) => e.target === e.currentTarget && props.onClose()}>
       <div class="modal">
         <div class="modal-head">
           <b>{props.title}</b>
-          <button class="iconbtn" onclick={props.onClose}>✕</button>
+          <button class="iconbtn" onClick={props.onClose}>✕</button>
         </div>
         {props.children}
       </div>
