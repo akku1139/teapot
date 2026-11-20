@@ -51,12 +51,12 @@ export interface LlmConfig {
 
 export interface LlmResult {
   message: ChatMessage;
-  reasoning?: string;
+  reasoning?: string | undefined;
   usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-  };
+    inputTokens?: number | undefined;
+    outputTokens?: number | undefined;
+    cachedInputTokens?: number | undefined;
+  } | undefined;
 }
 
 const clients = new WeakMap<LlmConfig, OpenAI>();

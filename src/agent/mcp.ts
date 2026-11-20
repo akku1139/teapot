@@ -38,16 +38,16 @@ export interface McpServerConfig {
    * engineering" tells it to search "decompile" rather than "binary". ChatGPT does the same thing, and
    * the server's own instructions are the cheapest possible index.
    */
-  description?: string;
-  url?: string;
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string;
-  headers?: Record<string, string>;
-  transport?: "http" | "sse" | "stdio";
-  enabled?: boolean;
-  timeoutMs?: number;
+  description?: string | undefined;
+  url?: string | undefined;
+  command?: string | undefined;
+  args?: string[] | undefined;
+  env?: Record<string, string> | undefined;
+  cwd?: string | undefined;
+  headers?: Record<string, string> | undefined;
+  transport?: "http" | "sse" | "stdio" | undefined;
+  enabled?: boolean | undefined;
+  timeoutMs?: number | undefined;
 }
 
 export interface McpAuth {

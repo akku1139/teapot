@@ -292,7 +292,7 @@ export async function readEvents(filePath: string): Promise<TeapotEvent[]> {
  */
 export async function readEventsWindow(
   filePath: string,
-  opts: { before?: string; after?: string; limit: number; branch?: string },
+  opts: { before?: string | undefined; after?: string | undefined; limit: number; branch?: string | undefined },
 ): Promise<{ events: TeapotEvent[]; total: number; found: boolean }> {
   const limit = Math.max(0, opts.limit);
   const empty = { events: [] as TeapotEvent[], total: 0, found: false };

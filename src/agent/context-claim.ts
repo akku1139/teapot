@@ -110,7 +110,7 @@ export function claimsContextLimit(text: string | null | undefined): boolean {
  * that comment is just "解釈が逆". A number with no direction is a coin flip, so the direction is now a word, and the
  * remaining room is spelled out in the unit the model actually spends.
  */
-export function usageLine(used: number, budget: number, window?: number): string {
+export function usageLine(used: number, budget: number | undefined, window?: number): string {
   const fmt = (n: number) => (n >= 1_000 ? `${Math.round(n / 1_000)}k` : String(Math.max(0, Math.round(n))));
   /**
    * EVERY number, named once.
@@ -126,16 +126,16 @@ export function usageLine(used: number, budget: number, window?: number): string
    * When the window is unknown the budget is the only denominator there is, and the line says so rather than pretending.
    */
   const full = Number.isFinite(window) && (window ?? 0) > 0 ? window! : 0;
-  const hasBudget = Number.isFinite(budget) && budget > 0;
+  const hasBudget = Number.isFinite(budget ?? 0) && (budget ?? 0) > 0;
   const denom = full || (hasBudget ? budget : 0);
   if (!denom) return `context ${fmt(used)} tokens used`;
   const pct = Math.max(0, Math.min(100, Math.round((used / denom) * 100)));
   const size = full
     ? `${fmt(used)}/${fmt(full)} tokens`
-    : `${fmt(used)}/${fmt(budget)} tokens — the compaction threshold; full window unknown`;
+    : `${fmt(used)}/${fmt(budget ?? 0)} tokens — the compaction threshold; full window unknown`;
   if (!hasBudget) return `context ${pct}% used (${size})`;
-  const until = Math.max(0, budget - used);
-  const threshold = full ? ` · auto-compacts at ${fmt(budget)}` : "";
+  const until = Math.max(0, (budget ?? 0) - used);
+  const threshold = full ? ` · auto-compacts at ${fmt(budget ?? 0)}` : "";
   return `context ${pct}% used (${size})${threshold} · ${fmt(until)} until auto-compaction`;
 }
 

@@ -27,10 +27,10 @@ export function splitToolName(flat: string): { server: string; tool: string } | 
 
 export interface McpServerState {
   config: McpServerConfig;
-  connection?: McpConnection;
+  connection?: McpConnection | undefined;
   tools: McpTool[];
   status: "disconnected" | "connecting" | "connected" | "error" | "disabled" | "authorizing";
-  lastError?: string;
+  lastError?: string | undefined;
   lastChecked?: number;
   oauthRequired?: boolean;
 }

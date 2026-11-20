@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { serve, upgradeWebSocket } from "@hono/node-server";
+import { serve, upgradeWebSocket, type WebSocketServerLike } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -646,7 +646,7 @@ const MAX_WS_CLIENTS = 64;
   app.get("/api/config", (c) => {
     const maskKey = (k: string | undefined) => (k ? "•••" + String(k).slice(-4) : undefined);
     const mask = (
-      p: Record<string, { baseUrl: string; apiKey?: string; apiKeys?: string[]; model?: string }> | undefined,
+      p: Record<string, { baseUrl: string; apiKey?: string | undefined; apiKeys?: string[]; model?: string }> | undefined,
     ) =>
       Object.fromEntries(
         Object.entries(p ?? {}).map(([k, v]) => [
@@ -723,7 +723,8 @@ const MAX_WS_CLIENTS = 64;
         shortContext: patch.shortContext,
         tasks: patch.tasks,
         mcpServers: patch.mcpServers,
-        ...(patch.password !== undefined ? { password: patch.password } : {}),
+        pluginsDir: master.config.pluginsDir,
+        password: patch.password,
       });
       if (patch.mcpServers) {
         mcp.apply(patch.mcpServers);
@@ -1163,7 +1164,7 @@ const MAX_WS_CLIENTS = 64;
     }
     master.config.customThemes = body.themes;
     if (body.prefs && typeof body.prefs === "object" && !Array.isArray(body.prefs))
-      master.config.themePrefs = body.prefs as typeof master.config.themePrefs;
+      master.config.themePrefs = body.prefs as { fixed?: string | undefined; auto?: boolean | undefined; dark?: string | undefined; light?: string | undefined };
     master.saveConfig();
     return c.json({ ok: true, themes: master.config.customThemes });
   });
@@ -1625,7 +1626,12 @@ export function serveApp(app: Hono, port: number, host?: string): { close: () =>
   const wss = new WebSocketServer({ noServer: true });
   const bindHost = dualStackHost(host);
   const server = serve(
-    { fetch: app.fetch, port, hostname: bindHost, websocket: { server: wss } },
+    {
+      fetch: app.fetch,
+      port,
+      hostname: bindHost,
+      websocket: { server: wss as unknown as WebSocketServerLike },
+    } as any,
     (info) => {
       const shown =
         host && host !== "0.0.0.0" && host !== "::"

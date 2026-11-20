@@ -126,7 +126,7 @@ export const SUB_PERSONAS: Record<
 
 export interface ProviderConfig {
   baseUrl: string;
-  apiKey?: string;
+  apiKey?: string | undefined;
   apiKeys?: string[];
   model?: string;
 }
@@ -135,11 +135,11 @@ export interface AgentConfig {
   id: string;
   workspace: string;
   sessionTitle?: string;
-  provider?: string;
-  model?: string;
+  provider?: string | undefined;
+  model?: string | undefined;
   baseUrl?: string;
   apiKey?: string;
-  contextWindowTokens?: number;
+  contextWindowTokens?: number | undefined;
   parent?: string;
   archived?: boolean;
   archivedAt?: number;
@@ -148,7 +148,7 @@ export interface AgentConfig {
   autoContinue?: boolean;
   autoCompact?: boolean;
   shortContext?: boolean;
-  reasoningEffort?: string;
+  reasoningEffort?: string | undefined;
   session?: string;
 };
 
@@ -157,7 +157,7 @@ export interface TaskConfig {
   agent: string;
   schedule: string;
   prompt: string;
-  forked?: boolean;
+  forked?: boolean | undefined;
   lastRunMin?: number;
 }
 
@@ -186,18 +186,18 @@ export interface TeapotConfig {
   mcpServers?: McpServerConfig[];
   shortContext?: boolean;
   pluginsDir?: string | false;
-  progressIntervalMs?: number;
-  progressMinChars?: number;
-  contextTokenBudget?: number;
-  contextWindowTokens?: number;
+  progressIntervalMs?: number | undefined;
+  progressMinChars?: number | undefined;
+  contextTokenBudget?: number | undefined;
+  contextWindowTokens?: number | undefined;
   maxSpawnDepth?: number;
   defaultSubagentReasoningEffort?: ReasoningEffort;
   maxTurnsPerRound?: number;
   onError?: "stop" | "retry";
   retryDelayMs?: number;
-  password?: string;
+  password?: string | undefined;
   customThemes?: unknown[];
-  themePrefs?: { fixed?: string; auto?: boolean; dark?: string; light?: string };
+  themePrefs?: { fixed?: string | undefined; auto?: boolean | undefined; dark?: string | undefined; light?: string | undefined };
   resumeAfterUpdate?: string[];
 }
 
@@ -566,21 +566,21 @@ export class Master {
   private raw: Record<string, unknown> = loadedRaw();
 
   updateConfig(patch: {
-    providers?: Record<string, ProviderConfig>;
-    defaultProvider?: string;
-    progressIntervalMs?: number;
-    progressMinChars?: number;
-    contextTokenBudget?: number | null;
-    contextWindowTokens?: number | null;
-    maxSpawnDepth?: number;
-    maxTurnsPerRound?: number;
-    onError?: "stop" | "retry";
-    retryDelayMs?: number;
-    tasks?: TaskConfig[];
-    mcpServers?: McpServerConfig[];
-  shortContext?: boolean;
-  pluginsDir?: string | false;
-  password?: string;
+    providers: Record<string, ProviderConfig>;
+    defaultProvider: string | undefined;
+    progressIntervalMs: number | undefined;
+    progressMinChars: number | undefined;
+    contextTokenBudget: number | null | undefined;
+    contextWindowTokens: number | null | undefined;
+    maxSpawnDepth: number | undefined;
+    maxTurnsPerRound: number | undefined;
+    onError: "stop" | "retry" | undefined;
+    retryDelayMs: number | undefined;
+    tasks: TaskConfig[] | undefined;
+    mcpServers: McpServerConfig[] | undefined;
+    shortContext: boolean | undefined;
+    pluginsDir: string | false | undefined;
+    password: string | undefined;
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
     if (patch.password !== undefined) this.config.password = patch.password || undefined;
@@ -748,8 +748,8 @@ export class Master {
     defaultProvider?: string;
     workspace?: string;
     agentName?: string;
-    password?: string;
-  }): Promise<{ ok: true; agentId?: string }> {
+    password?: string | undefined;
+  }): Promise<{ ok: true; agentId?: string | undefined }> {
     if (this.configFileExists)
       throw new Error("setup already completed — edit the config file instead");
 
@@ -1058,9 +1058,9 @@ export class Master {
     o: {
       task: string;
       context: "none" | "fork";
-      name?: string;
-      persona?: string;
-      reasoning_effort?: string;
+      name?: string | undefined;
+      persona?: string | undefined;
+      reasoning_effort?: string | undefined;
     },
   ): Promise<{ id: string }> {
     const parentId = parent.opts_id();
@@ -1741,7 +1741,7 @@ if (active().length === 0) wake();
     const effortList = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => [] as ModelMeta[]);
     const meta = effortList.find((m) => m.id === (model || llm.model));
     const opts = agent as unknown as {
-      opts: { reasoningEffort: string; supportedParameters?: string[]; supportedEfforts?: string[] };
+      opts: { reasoningEffort: string; supportedParameters?: string[] | undefined; supportedEfforts?: string[] | undefined };
     };
     if (reasoningEffort !== undefined) {
       opts.opts.reasoningEffort = isReasoningEffort(reasoningEffort) ? reasoningEffort : "";

@@ -5,9 +5,9 @@ import { loadConfig, resolveConfigPath, Master } from "./master.ts";
 import { buildApp, serveApp } from "./server/api.ts";
 
 export function parseArgs(argv: string[]): {
-  cfgArg?: string;
-  portOverride?: number;
-  hostOverride?: string;
+  cfgArg?: string | undefined;
+  portOverride?: number | undefined;
+  hostOverride?: string | undefined;
   help: boolean;
 } {
   let cfgArg: string | undefined;

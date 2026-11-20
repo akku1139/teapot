@@ -89,7 +89,7 @@ export function createCatalog(
     id: string;
     name: string;
     /** what this server is for — becomes the search index the model has to work from */
-    description?: string;
+    description?: string | undefined;
     enabled?: boolean;
     status?: string;
     tools?: readonly { name: string; description?: string; inputSchema?: unknown }[];

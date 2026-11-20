@@ -23,7 +23,7 @@ const runTaskkill: TreeRunner = (file, args) => {
 };
 
 export function killTree(
-  child: { pid?: number | null } | null | undefined,
+  child: { pid?: number | null | undefined } | null | undefined,
   platform: NodeJS.Platform = process.platform,
   run: TreeRunner = runTaskkill,
 ): KillOutcome {

@@ -19,7 +19,7 @@ export interface CompactionNoticeInput {
   summarized: number;
   summary: string;
   /** the usage line recorded WITH the compaction, if this build wrote one */
-  contextLine?: string;
+  contextLine?: string | undefined;
 }
 
 export function compactionNotice(input: CompactionNoticeInput): string {

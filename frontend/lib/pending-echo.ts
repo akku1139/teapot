@@ -92,7 +92,7 @@ export function mergeQueued(mine: PendingEcho[], queue: readonly QueuedPrompt[])
       promptId: id,
       // it came from the server's queue, so it IS queued — otherwise its row would lose its ✕ cancel
       queued: true,
-      images: q.images?.map((i) => i.url),
+      ...(q.images ? { images: q.images.map((i) => i.url) } : {}),
       ...(q.source ? { source: q.source } : {}),
     });
   }

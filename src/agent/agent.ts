@@ -75,8 +75,8 @@ export interface ProgressReport {
   doing: string;
   goalStatus: string;
   recent: string;
-  problems?: string;
-  next?: string;
+  problems?: string | undefined;
+  next?: string | undefined;
   ts: string;
 }
 
@@ -85,20 +85,20 @@ export interface AgentOptions {
   workspace: string;
   llm: LlmConfig;
   sessionDir: string;
-  progressIntervalMs?: number;
-  progressMinChars?: number;
-  progressMaxQuietTurns?: number;
-  autoContinue?: boolean;
-  continueDelayMs?: number;
-  autoCompact?: boolean;
-  shortContext?: boolean;
-  reasoningEffort?: string;
-  supportedParameters?: string[];
-  supportedEfforts?: string[];
-  maxConsecutiveToolErrors?: number;
-  contextTokenBudget?: number;
-  contextWindowTokens?: number;
-  restoreSession?: boolean;
+  progressIntervalMs?: number | undefined;
+  progressMinChars?: number | undefined;
+  progressMaxQuietTurns?: number | undefined;
+  autoContinue?: boolean | undefined;
+  continueDelayMs?: number | undefined;
+  autoCompact?: boolean | undefined;
+  shortContext?: boolean | undefined;
+  reasoningEffort?: string | undefined;
+  supportedParameters?: string[] | undefined;
+  supportedEfforts?: string[] | undefined;
+  maxConsecutiveToolErrors?: number | undefined;
+  contextTokenBudget?: number | undefined;
+  contextWindowTokens?: number | undefined;
+  restoreSession?: boolean | undefined;
   /**
    * Do NOT read the session directory during `init()` — defer it to `ensureReady()`.
    *
@@ -370,7 +370,7 @@ export class Agent {
   get providerName(): string {
     return this.opts.provider;
   }
-  private pendingPrompts: { source: string; text: string; images?: { url: string; name?: string }[]; id?: string }[] = [];
+  private pendingPrompts: { source: string; text: string; images?: { url: string; name?: string }[] | undefined; id?: string }[] = [];
 
   /**
    * Will this prompt WAIT, and behind how much? The server's answer, because only the server knows.
@@ -419,8 +419,8 @@ export class Agent {
   private manualCompactBudget = false;
   private workspaceMissing = false;
   private lastProgressAt = Date.now();
-  private lastUsage?: { input: number; output: number; cached?: number };
-  modelPricing?: { prompt: number; completion: number; cacheRead?: number };
+  private lastUsage?: { input: number; output: number; cached?: number | undefined };
+  modelPricing: { prompt: number; completion: number; cacheRead?: number | undefined } | undefined;
   private compactedAtLen = 0;
   private pendingSubReport = "";
   private compactPhase = "";
@@ -704,7 +704,7 @@ export class Agent {
     this.compactedAtLen = 0;
   }
 
-  async setModelPricing(p?: { prompt: number; completion: number; cacheRead?: number }): Promise<void> {
+  async setModelPricing(p?: { prompt: number; completion: number; cacheRead?: number | undefined }): Promise<void> {
     const wasUndefined = !this.modelPricing;
     this.modelPricing = p;
     if (!p || !wasUndefined) return; 
@@ -899,7 +899,7 @@ export class Agent {
    * background (so a spawned child's "running" transition is not delayed, which is why it was deferred at all), and
    * `load()` can wait for it without re-reading.
    */
-  private sessionStatePromise?: Promise<void>;
+  private sessionStatePromise?: Promise<void> | undefined;
   private loadSessionState(): Promise<void> {
     this.sessionStatePromise ??= (async () => {
       await this.migrateMemoryToAgentScope();
@@ -3001,7 +3001,7 @@ export class Agent {
             : {}),
         });
         this.consecutiveToolErrors = result.ok ? 0 : this.consecutiveToolErrors + 1;
-        if (this.consecutiveToolErrors >= this.opts.maxConsecutiveToolErrors) {
+        if (this.consecutiveToolErrors >= (this.opts.maxConsecutiveToolErrors ?? 0)) {
           await this.log.append("system_note", this.currentSession, this.currentBranch, {
             event: "runaway-detected",
             failures: this.consecutiveToolErrors,
@@ -3464,10 +3464,10 @@ export class Agent {
   }
 
   private async maybeRequestProgress(): Promise<void> {
-    const elapsedOk = Date.now() - this.lastProgressAt >= this.opts.progressIntervalMs;
+    const elapsedOk = Date.now() - this.lastProgressAt >= (this.opts.progressIntervalMs ?? 0);
     const activityOk =
-      this.activityChars >= this.opts.progressMinChars ||
-      this.turnsSinceProgress >= this.opts.progressMaxQuietTurns;
+      this.activityChars >= (this.opts.progressMinChars ?? 0) ||
+      this.turnsSinceProgress >= (this.opts.progressMaxQuietTurns ?? 0);
     if (!elapsedOk || !activityOk) return; 
     if (this.nudgedAtTurn === this.stats.turns) return;
     this.progressRequestedThisRound = true;
@@ -3643,10 +3643,10 @@ export class Agent {
   private async maybeCompact(force = false, keepFraction?: number): Promise<void> {
     const before = this.contextSizeForBudgeting(); 
     if (this.opts.shortContext) await this.maybePrune();
-    if (!force && before < this.opts.contextTokenBudget) return;
+    if (!force && before < (this.opts.contextTokenBudget ?? 0)) return;
     if (!force && this.opts.autoCompact === false) return;
     const pruned = await this.maybePrune(true);
-    if (pruned > 0 && !force && this.contextSizeForBudgeting() < this.opts.contextTokenBudget) {
+    if (pruned > 0 && !force && this.contextSizeForBudgeting() < (this.opts.contextTokenBudget ?? 0)) {
       await this.log.append("system_note", this.currentSession, this.currentBranch, {
         event: "context-pruned-enough",
         outputs: pruned,
@@ -3678,11 +3678,11 @@ export class Agent {
       });
       return;
     }
-    this.lastUsage = undefined; 
+    delete this.lastUsage; 
 
     const keepTokens = keepFraction !== undefined
-      ? Math.max(1, Math.floor(this.opts.contextTokenBudget * keepFraction))
-      : Math.min(KEEP_RECENT_TOKENS, Math.max(1, Math.floor(this.opts.contextTokenBudget / 4)));
+      ? Math.max(1, Math.floor((this.opts.contextTokenBudget ?? 0) * keepFraction))
+      : Math.min(KEEP_RECENT_TOKENS, Math.max(1, Math.floor((this.opts.contextTokenBudget ?? 0) / 4)));
     let cut = -1;
     for (let i = this.messages.length - 1; i >= 1; i--) {
       if (this.estimateTokens(this.messages.slice(i)) > keepTokens) break;
@@ -3703,7 +3703,7 @@ export class Agent {
     let summarizedCount = oldCount;
     let droppedCount = 0;
     const oldTokens = Math.max(this.estimateTokens(old), oldShareOfBefore);
-    const summarizeBar = Math.max(SUMMARIZE_MIN_TOKENS, this.opts.contextTokenBudget * SUMMARIZE_MIN_SHARE);
+    const summarizeBar = Math.max(SUMMARIZE_MIN_TOKENS, (this.opts.contextTokenBudget ?? 0) * SUMMARIZE_MIN_SHARE);
     const worthSummarizing = force || oldTokens >= summarizeBar;
     const previousSummary = this.lastCompactSummary;
     /**
@@ -4071,13 +4071,13 @@ export class Agent {
     bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent);
   }
 
-  private sleepInterruptible(ms: number): Promise<void> {
+  private sleepInterruptible(ms: number | undefined): Promise<void> {
     return new Promise((resolve) => {
       if (this.stopRequested) return resolve();
       const timer = setTimeout(() => {
         this.wake = null;
         resolve();
-      }, ms);
+      }, ms ?? 0);
       this.wake = () => {
         clearTimeout(timer);
         this.wake = null;

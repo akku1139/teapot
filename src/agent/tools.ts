@@ -31,7 +31,7 @@ export interface ToolContext {
     spawn(o: {
       task: string;
       context: "none" | "fork";
-      name?: string;
+      name?: string | undefined;
       reasoning_effort?: string;
     }): Promise<{ id: string }>;
     list(): { id: string; status: string; goal: string; parent: string; nested: boolean }[];
@@ -428,7 +428,7 @@ export function listBgShells(cwd: string, stateDir?: string): Array<{
   owner: string;
   running: boolean;
   detached?: boolean;
-  pid?: number | null;
+  pid?: number | null | undefined;
   code: number | null;
   startedAt: number;
   tail: string;

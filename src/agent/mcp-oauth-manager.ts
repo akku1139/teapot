@@ -13,10 +13,10 @@ interface StoredAuth {
   clientId?: string;
   clientSecret?: string;
   clientInformation?: Record<string, unknown>;
-  refreshToken?: string;
-  accessToken?: string;
-  expiresAt?: number;
-  codeVerifier?: string;
+  refreshToken?: string | undefined;
+  accessToken?: string | undefined;
+  expiresAt?: number | undefined;
+  codeVerifier?: string | undefined;
   scope?: string;
   discoveryState?: OAuthDiscoveryState;
 }
@@ -40,9 +40,9 @@ export interface OAuthStatus {
 export const FLOW_TIMEOUT_MS = 5 * 60_000;
 
 export class ServerAuth implements OAuthClientProvider {
-  private verifier?: string;
+  private verifier?: string | undefined;
   private flow: OAuthPhase = { phase: "idle" };
-  private lastError?: string;
+  private lastError?: string | undefined;
   private store: StoredAuth = {};
   readonly server: string;
   readonly redirectUrl: string;

@@ -4,8 +4,8 @@ export interface AnsiRun {
 }
 
 interface SgrState {
-  fg?: string;
-  bg?: string;
+  fg?: string | undefined;
+  bg?: string | undefined;
   bold: boolean;
   dim: boolean;
   italic: boolean;
