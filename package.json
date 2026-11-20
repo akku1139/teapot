@@ -30,7 +30,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm typecheck:server && pnpm typecheck-web && vite build",
+    "build": "tsc && pnpm typecheck-web && vite build",
     "build-server": "tsc -p tsconfig.json",
     "build-web": "vite build",
     "typecheck:server": "tsc -p tsconfig.json --noEmit",

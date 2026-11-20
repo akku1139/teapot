@@ -49,9 +49,7 @@ you) — no hand-editing required.
 ```
 
 Save it at `~/.config/teapot-coding-agent/config.json` (or pass a path as
-the first CLI arg / `$TEAPOT_CONFIG`). A full template lives in
-[`teapot.config.example.json`](teapot.config.example.json). With a config
-present the wizard is skipped and your agents start immediately.
+the first CLI arg / `$TEAPOT_CONFIG`).
 
 </details>
 
