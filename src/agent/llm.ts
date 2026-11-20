@@ -39,14 +39,14 @@ export interface LlmConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
-  timeoutMs?: number;
-  sessionId?: string;
-  reasoningEffort?: string;
-  supportedParameters?: string[];
-  supportedEfforts?: string[];
-  oneOff?: boolean;
-  maxRetries?: number;
-  keyPool?: KeyPoolState;
+  timeoutMs?: number | undefined;
+  sessionId?: string | undefined;
+  reasoningEffort?: string | undefined;
+  supportedParameters?: string[] | undefined;
+  supportedEfforts?: string[] | undefined;
+  oneOff?: boolean | undefined;
+  maxRetries?: number | undefined;
+  keyPool?: KeyPoolState | undefined;
 }
 
 export interface LlmResult {

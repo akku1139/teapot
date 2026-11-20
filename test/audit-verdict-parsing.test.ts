@@ -36,7 +36,7 @@ async function auditWith(
   sd: string,
   reply: string,
 ): Promise<{
-  verdict?: string;
+  verdict?: string | undefined;
   feedback: string;
   auditFailed: number;
   finals: number;

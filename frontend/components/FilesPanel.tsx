@@ -135,7 +135,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
   const [saving, setSaving] = createSignal(false);
   const isMd = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
   let hlRun = 0;
-  const startHighlighting = async (p: { path: string; content: string; truncated?: boolean }) => {
+  const startHighlighting = async (p: { path: string; content: string; truncated?: boolean | undefined }) => {
     const run = ++hlRun;
     setHlHtml("");
     setHlPending(true);

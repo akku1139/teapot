@@ -20,10 +20,10 @@ export interface CustomTheme {
   label: string;
   mode: "dark" | "light";
   palette: ThemePalette;
-  backgroundImage?: string;
-  backgroundDim?: number;
-  surfaceAlpha?: number;
-  backgroundImageBytes?: number;
+  backgroundImage?: string | undefined;
+  backgroundDim?: number | undefined;
+  surfaceAlpha?: number | undefined;
+  backgroundImageBytes?: number | undefined;
 }
 
 export const PALETTE_KEYS: { key: keyof ThemePalette; cssVar: string; label: string }[] = [

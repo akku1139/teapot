@@ -2,10 +2,10 @@ export type PendingEcho = {
   id: string;
   text: string;
   at: number;
-  promptId?: string;
-  sent?: boolean;
-  images?: string[];
-  source?: string;
+  promptId?: string | undefined;
+  sent?: boolean | undefined;
+  images?: string[] | undefined;
+  source?: string | undefined;
   /**
    * Was the agent BUSY when this was sent?
    *

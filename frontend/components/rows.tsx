@@ -31,7 +31,7 @@ import { effectiveBashTimeout } from "../lib/bash-timeout";
  */
 function Note(props: {
   label: string;
-  body?: string;
+  body?: string | undefined;
   tone?: "ok" | "warn" | "err";
   markdown?: boolean;
   /** a one-line note with no body: a divider rather than a box */
@@ -56,7 +56,7 @@ function Note(props: {
   );
 }
 
-export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string) => void }) {
+export function FreeTextAnswer(props: { answered: boolean; onOption?: ((t: string) => void) | undefined }) {
   const [val, setVal] = createSignal("");
   const submit = () => {
     const t = val().trim();
@@ -81,7 +81,7 @@ export function FreeTextAnswer(props: { answered: boolean; onOption?: (t: string
   );
 }
 
-export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; agentActive?: boolean; onResize?: () => void; agentId?: string }) {
+export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | undefined; orphan?: boolean | undefined; agentActive?: boolean | undefined; onResize?: (() => void) | undefined; agentId?: string | undefined }) {
   const e = props.e;
   const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
   const resEv = createMemo(() => props.res?.(), undefined, {
@@ -554,12 +554,12 @@ function MdContent(props: { html: string }) {
   return <div class="content" ref={el} innerHTML={props.html} />;
 }
 
-export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: () => Ev | undefined; res?: () => Ev | undefined; orphan?: boolean; showBranch?: boolean; onEdit?: () => void; onCancel?: () => void; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void; agentId?: string }) {
+export function MessageRow(props: { e: Ev; prev?: Ev | undefined; next?: Ev | undefined; res?: () => Ev | undefined; orphan?: boolean | undefined; showBranch?: boolean | undefined; onEdit?: (() => void) | undefined; onCancel?: (() => void) | undefined; onOption?: ((text: string) => void) | undefined; answeredIds?: (() => Set<string>) | undefined; onAnswered?: ((callId: string) => void) | undefined; agentActive?: boolean | undefined; onResize?: (() => void) | undefined; agentId?: string | undefined }) {
   const e = props.e;
   const a = authorOf(e);
-  const grouped = () => groupedWith(props.prev?.() as RowLike | undefined, e as RowLike);
+  const grouped = () => groupedWith(props.prev as RowLike | undefined, e as RowLike);
   const nextGrouped = () => {
-    const n = props.next?.();
+    const n = props.next;
     return !!n && groupedWith(e as RowLike, n as RowLike);
   };
 
@@ -798,7 +798,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
           </div>
         </Show>
 
-        <SwitchContent e={e} prev={props.prev?.()} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} agentId={props.agentId} />
+        <SwitchContent e={e} prev={props.prev} res={props.res} orphan={props.orphan} onOption={props.onOption} answeredIds={props.answeredIds} onAnswered={props.onAnswered} agentActive={props.agentActive} onResize={props.onResize} agentId={props.agentId} />
       </div>
     </div>
   );
@@ -811,7 +811,7 @@ export function MessageRow(props: { e: Ev; prev?: () => Ev | undefined; next?: (
  * the timeline showed only the explanatory text ("the image itself is attached…") and the operator
  * could not see what the agent was told it was looking at.
  */
-function ToolImages(props: { data?: { images?: unknown }; agentId?: string }) {
+function ToolImages(props: { data?: { images?: unknown }; agentId?: string | undefined }) {
   const srcs = (): string[] =>
     (Array.isArray(props.data?.images) ? props.data!.images : [])
       .map((i: unknown) => (typeof i === "string" ? i : (i as { url?: unknown })?.url))
@@ -837,7 +837,7 @@ function ToolImages(props: { data?: { images?: unknown }; agentId?: string }) {
   );
 }
 
-export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; orphan?: boolean; onOption?: (text: string) => void; answeredIds?: () => Set<string>; onAnswered?: (callId: string) => void; agentActive?: boolean; onResize?: () => void; agentId?: string }) {
+export function SwitchContent(props: { e: Ev; prev?: Ev | undefined; res?: (() => Ev | undefined) | undefined; orphan?: boolean | undefined; onOption?: ((text: string) => void) | undefined; answeredIds?: (() => Set<string>) | undefined; onAnswered?: ((callId: string) => void) | undefined; agentActive?: boolean | undefined; onResize?: (() => void) | undefined; agentId?: string | undefined }) {
   const e = props.e;
   switch (e.type) {
     case "prompt": {
@@ -902,7 +902,9 @@ export function SwitchContent(props: { e: Ev; prev?: Ev; res?: () => Ev | undefi
       // `prev` must be FORWARDED (grouping #75): without it ToolRow cannot know it
       // continues the previous actor's run, which is what made every consecutive
       // bash row render its own icon + label.
-      return <ToolRow e={e} prev={props.prev} res={props.res} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} agentId={props.agentId} />;
+      const prevFromSwitch = props.prev;
+      const resFromSwitch = props.res;
+      return <ToolRow e={e} {...(prevFromSwitch !== undefined ? { prev: prevFromSwitch } : {})} {...(resFromSwitch !== undefined ? { res: resFromSwitch } : {})} orphan={props.orphan} agentActive={props.agentActive} onResize={props.onResize} agentId={props.agentId} />;
     case "tool_result": {
       const out = String(e.data.result ?? "");
       const name = String(e.data.name ?? "tool");

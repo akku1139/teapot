@@ -1,7 +1,7 @@
 export type QueueViews = {
-  pendingPromptQueue?: readonly unknown[];
-  pendingPromptIds?: readonly unknown[];
-  pendingPrompts?: number;
+  pendingPromptQueue?: readonly unknown[] | undefined;
+  pendingPromptIds?: readonly unknown[] | undefined;
+  pendingPrompts?: number | undefined;
 };
 
 export const serverQueuedCount = (a: QueueViews | undefined | null): number => {

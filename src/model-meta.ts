@@ -330,7 +330,7 @@ export function isReasoningEffort(v: unknown): v is ReasoningEffort {
  * (`isEffortUnsupported`), so an optimistic default costs one retry at worst, while a pessimistic one
  * silently removes a feature the model does have.
  */
-export function effortSupportedFor(opts: { list?: ModelMeta[]; model?: string }): boolean {
+export function effortSupportedFor(opts: { list?: ModelMeta[] | undefined; model?: string | undefined }): boolean {
   const meta = opts.list?.find((m) => m.id === opts.model);
   if (!meta) return true; // not in models.dev → unknown, not "unsupported"
   return meta.reasoning === true || !!meta.supportedEfforts?.length;

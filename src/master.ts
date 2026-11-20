@@ -566,21 +566,21 @@ export class Master {
   private raw: Record<string, unknown> = loadedRaw();
 
   updateConfig(patch: {
-    providers: Record<string, ProviderConfig>;
-    defaultProvider: string | undefined;
-    progressIntervalMs: number | undefined;
-    progressMinChars: number | undefined;
-    contextTokenBudget: number | null | undefined;
-    contextWindowTokens: number | null | undefined;
-    maxSpawnDepth: number | undefined;
-    maxTurnsPerRound: number | undefined;
-    onError: "stop" | "retry" | undefined;
-    retryDelayMs: number | undefined;
-    tasks: TaskConfig[] | undefined;
-    mcpServers: McpServerConfig[] | undefined;
-    shortContext: boolean | undefined;
-    pluginsDir: string | false | undefined;
-    password: string | undefined;
+    providers?: Record<string, ProviderConfig> | undefined;
+    defaultProvider?: string | undefined;
+    progressIntervalMs?: number | undefined;
+    progressMinChars?: number | undefined;
+    contextTokenBudget?: number | null | undefined;
+    contextWindowTokens?: number | null | undefined;
+    maxSpawnDepth?: number | undefined;
+    maxTurnsPerRound?: number | undefined;
+    onError?: "stop" | "retry" | undefined;
+    retryDelayMs?: number | undefined;
+    tasks?: TaskConfig[] | undefined;
+    mcpServers?: McpServerConfig[] | undefined;
+    shortContext?: boolean | undefined;
+    pluginsDir?: string | false | undefined;
+    password?: string | undefined;
   }): void {
     if (patch.providers) this.config.providers = patch.providers;
     if (patch.password !== undefined) this.config.password = patch.password || undefined;

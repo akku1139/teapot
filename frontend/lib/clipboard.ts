@@ -8,9 +8,9 @@ export interface StagingTextarea {
 }
 
 export interface CopyDeps {
-  clipboard?: { writeText(text: string): Promise<void> } | null;
-  execCommand?: (cmd: string) => boolean;
-  makeTextarea?: () => StagingTextarea;
+  clipboard?: { writeText(text: string): Promise<void> } | null | undefined;
+  execCommand?: ((cmd: string) => boolean) | undefined;
+  makeTextarea?: (() => StagingTextarea) | undefined;
 }
 
 export async function copyText(text: string, deps: CopyDeps = {}): Promise<CopyResult> {

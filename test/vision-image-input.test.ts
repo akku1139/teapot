@@ -42,7 +42,7 @@ const JSON_HEADERS = { "content-type": "application/json" };
 async function withAgent(
   fn: (
     post: (body: unknown) => Promise<Response> | Response,
-    prompts: () => { text: string; images?: { url: string }[] }[],
+    prompts: () => { text: string; images?: { url: string }[] | undefined }[],
   ) => Promise<void>,
 ): Promise<void> {
   const dataDir = mkdtempInRootSync("v125d-");
@@ -50,7 +50,7 @@ async function withAgent(
   const m = new Master({ port: 0, dataDir, llm: LLM, providers: {}, agents: [] }, `${dataDir}/config.json`);
   const app = buildApp(m);
   const agent = await m.addAgent({ id: "a1", workspace: ws }, { persist: false });
-  const seen: { text: string; images?: { url: string }[] }[] = [];
+  const seen: { text: string; images?: { url: string }[] | undefined }[] = [];
   const orig = agent.enqueuePrompt.bind(agent);
   agent.enqueuePrompt = (text: string, source?: string, images?: { url: string; name?: string }[]) => {
     seen.push({ text: String(text), images: images as { url: string }[] | undefined });

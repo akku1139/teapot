@@ -2637,7 +2637,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (next) focusPane();
   };
 
-  type TermTab = { key: string; agentId: string; title: string; cwd?: string; ptyTitle?: string };
+  type TermTab = { key: string; agentId: string; title: string; cwd?: string | undefined; ptyTitle?: string | undefined };
   type TermSession = {
     el: HTMLDivElement;
     term: any;
@@ -4239,8 +4239,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   <Show when={isFirstQueued(row) && isTimelineLive() && live()}>{liveBubble()}</Show>
                   <MessageRow
                     e={row}
-                    prev={() => neighbourOf(row, -1)}
-                    next={() => neighbourOf(row, 1)}
+                    prev={neighbourOf(row, -1)}
+                    next={neighbourOf(row, 1)}
                     // only worth labelling when the session HAS more than one
                     // branch (a fork). With a single branch every row repeated the
                     // same constant.

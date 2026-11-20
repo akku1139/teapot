@@ -37,7 +37,7 @@ export function withAlpha(colour: string, alpha: number): string {
   return colour;
 }
 
-export function themeColors(alpha = 1): XtermTheme {
+export function themeColors(alpha = 1): Required<XtermTheme> {
   let bg = "";
   let fg = "";
   let cursor = "";

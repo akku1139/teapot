@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 type Row = { id: string; data?: Record<string, unknown> };
-type Pair = { row: Row; prev?: Row; next?: Row };
+type Pair = { row: Row; prev?: Row | undefined; next?: Row | undefined };
 
 /**
  * The pairing rule, mirroring `pairCache`/`rowsWithPrev` in App.tsx.

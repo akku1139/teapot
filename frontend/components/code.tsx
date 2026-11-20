@@ -3,7 +3,7 @@ import { ansiRuns, hasAnsi } from "../lib/ansi";
 import { fmtDur } from "../lib/format";
 import { cacheHighlighted, highlightedHtml } from "../lib/highlight-cache";
 
-export function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number }) {
+export function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number | undefined }) {
   const start = new Date(props.startedAt).getTime();
   const [now, setNow] = createSignal(Date.now());
   onMount(() => {
@@ -56,7 +56,7 @@ export function AnsiText(props: { text: string }) {
   );
 }
 
-export function HighlightedCode(props: { text: string; lang?: string }) {
+export function HighlightedCode(props: { text: string; lang?: string | undefined }) {
   const key = () => (props.lang ? `${props.lang}::${props.text.length}::${props.text}` : "");
   const cached = () => (props.lang ? highlightedHtml(key()) : undefined);
   const [html, setHtml] = createSignal(cached() ?? "");

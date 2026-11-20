@@ -31,7 +31,7 @@ interface Echo {
   id: string;
   text: string;
   at: number;
-  promptId?: string;
+  promptId?: string | undefined;
 }
 
 /** the dedupe as implemented in App.tsx's writePending */

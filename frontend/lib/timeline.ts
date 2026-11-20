@@ -22,8 +22,13 @@ export interface TimelineInput {
   events: readonly TimelineEvent[];
   consumed: ReadonlySet<string>;
   pending: readonly PendingEchoLike[];
-  /** ids the server still lists in its pending queue — their log rows must not render as settled */
-  serverPendingIds?: readonly string[];
+  /** ids the server still lists in its pending queue — their log rows must not render as settled.
+   *
+   * `undefined` means "the snapshot does not say" — NOT `[]`. An empty array means "nothing waiting"
+   * and settles every old row without a delivery note; `undefined` leaves them as-is. Collapsing the
+   * two settled a prompt that was still queued.
+   */
+  serverPendingIds?: readonly string[] | undefined;
   echo: (p: PendingEchoLike) => TimelineEvent;
   feedTypes: ReadonlySet<string>;
   renderedTypes: ReadonlySet<string>;

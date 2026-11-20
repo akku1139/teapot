@@ -21,7 +21,7 @@ export function eventBelongsOnTimeline(
 }
 
 export function deltaBelongsToTimeline(
-  d: { agentId?: string; sessionId?: string | null } | null | undefined,
+  d: { agentId?: string | undefined; sessionId?: string | null | undefined } | null | undefined,
   selectedAgent: string | null,
   timelineSession: string | null,
 ): boolean {

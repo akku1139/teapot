@@ -1,6 +1,6 @@
 export type LabelSource = {
   id: string;
-  sessionTitle?: string;
+  sessionTitle?: string | undefined;
 };
 
 export const agentLabel = (a: LabelSource | undefined | null): string =>

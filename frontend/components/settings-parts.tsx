@@ -57,7 +57,7 @@ export function TodoEditor(props: {
   );
 }
 
-export function CodePreview(props: { path: string; content: string; html: string; pending: boolean; truncated: boolean }) {
+export function CodePreview(props: { path: string; content: string; html: string; pending: boolean; truncated?: boolean | undefined }) {
   return (
     <>
       <Show
@@ -105,9 +105,9 @@ export function NumberField(props: {
 
 export function ThemePreview(props: {
   palette: ThemePalette;
-  backgroundImage?: string;
-  surfaceAlpha?: number;
-  backgroundDim?: number;
+  backgroundImage?: string | undefined;
+  surfaceAlpha?: number | undefined;
+  backgroundDim?: number | undefined;
 }) {
   const p = () => props.palette;
   const layers = () => previewLayers(props.surfaceAlpha, props.backgroundDim);

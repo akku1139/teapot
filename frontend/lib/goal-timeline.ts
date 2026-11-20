@@ -1,14 +1,14 @@
 export type AuditPhase = "status" | "audit-started" | "audit" | "audit-failed" | "other";
 
 export interface GoalEventData {
-  event?: string;
-  status?: string;
-  by?: string;
-  verify?: string;
-  verdict?: string;
-  feedback?: string;
-  detail?: string;
-  text?: string;
+  event?: string | undefined;
+  status?: string | undefined;
+  by?: string | undefined;
+  verify?: string | undefined;
+  verdict?: string | undefined;
+  feedback?: string | undefined;
+  detail?: string | undefined;
+  text?: string | undefined;
 }
 
 export function auditPhase(d: GoalEventData): AuditPhase {
