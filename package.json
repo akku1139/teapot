@@ -30,12 +30,13 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.frontend.json && vite build",
+    "build": "pnpm typecheck:server && pnpm typecheck-web && vite build",
     "build-server": "tsc -p tsconfig.json",
     "build-web": "vite build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "typecheck-web": "tsc -p tsconfig.frontend.json",
-    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
+    "typecheck:server": "tsc -p tsconfig.json --noEmit",
+    "typecheck:web": "cd frontend && tsc",
+    "typecheck:scripts": "cd scripts && tsc",
+    "typecheck:test": "cd test && tsc",
     "lint": "oxlint src frontend test scripts",
     "lint:comments": "node scripts/find-stacked-comments.ts",
     "lint:comments:strict": "node scripts/find-stacked-comments.ts --strict",
@@ -47,7 +48,7 @@
     "test:clean": "node scripts/clean-test-tmp.ts --apply",
     "test:tmp": "node scripts/clean-test-tmp.ts",
     "release:wait": "node scripts/wait-npm-version.ts",
-    "pre-release": "pnpm typecheck && pnpm typecheck-web && pnpm typecheck:scripts && pnpm lint && pnpm build && pnpm test && pnpm test:portable && node scripts/smoke-web.ts"
+    "pre-release": "pnpm typecheck:server && pnpm typecheck:web && pnpm typecheck:scripts && pnpm typecheck:test && pnpm lint && pnpm build && pnpm test && pnpm test:portable && node scripts/smoke-web.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.4",
