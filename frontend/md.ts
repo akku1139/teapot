@@ -33,7 +33,7 @@
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 
 /** Public entry: escape everything up front, then structure the lines. */
-export function renderMarkdown(src) {
+export function renderMarkdown(src: string): string {
   return renderEscaped(escapeHtml(src.replace(/\r\n/g, "\n")).split("\n"));
 }
 
@@ -41,7 +41,7 @@ export function renderMarkdown(src) {
  * Structure already-escaped lines into HTML. Blockquote recursion calls this
  * directly so inner content is never double-escaped.
  */
-function renderEscaped(lines) {
+function renderEscaped(lines: string[]): string {
   const out = [];
   let i = 0;
   while (i < lines.length) {
@@ -73,7 +73,7 @@ function renderEscaped(lines) {
        * the original string is kept for a title.
        */
       const token = info ? info.split(/\s+/)[0] : "";
-      const lang = token ? token.split("/").pop().split(".").pop().replace(/[^\w+#-]/g, "") : "";
+      const lang = token ? token.split("/").pop()!.split(".").pop()!.replace(/[^\w+#-]/g, "") : "";
       const cls = lang ? ` class="language-${lang}"` : "";
       // NO extra attribute on <pre>: the info string is already HTML-escaped by this point, so echoing
       // it as a title produced `aquotbgtltscriptgt` for `a&b>c<script>` — and the renderer's contract is
@@ -114,7 +114,7 @@ function renderEscaped(lines) {
         rows.push(splitRow(lines[i]));
         i++;
       }
-      const cell = (c, idx, tag) => {
+      const cell = (c: string, idx: number, tag: string) => {
         const a = align[idx];
         const style = a && a !== "left" ? ` style="text-align:${a}"` : "";
         return `<${tag}${style}>${inline(c)}</${tag}>`;
@@ -137,8 +137,9 @@ function renderEscaped(lines) {
       continue;
     }
     // list (ul/ol, task items, one level of nesting via indentation)
-    if (LIST_ITEM.test(line)) {
-      out.push(parseList(indentOf(line.match(LIST_ITEM)[1])));
+    const listMatch = line.match(LIST_ITEM);
+    if (listMatch) {
+      out.push(parseList(indentOf(listMatch[1])));
       continue;
     }
     // blank line
@@ -180,12 +181,12 @@ function renderEscaped(lines) {
   }
   return out.join("\n");
 
-  function indentOf(ws) {
+  function indentOf(ws: string) {
     return ws.replace(/\t/g, "  ").length;
   }
 
   /** Consumes list lines from i onward; returns HTML. One nesting level. */
-  function parseList(minIndent) {
+  function parseList(minIndent: number) {
     let ordered = null;
     /** the first item's number, so `<ol start="3">` survives (it used to be dropped) */
     let start = 1;
@@ -273,12 +274,12 @@ function renderEscaped(lines) {
       : `<ol start="${start}">${items.join("")}</ol>`;
   }
 
-  function inline(s) {
+  function inline(s: string): string {
     // protect code spans from further processing. The placeholder uses a
     // private-use char + sentinel pair; literal NULs in the source were a
     // collision (user text containing \u0000<digits>\u0000 swapped in another
     // span's HTML). escapeHtml keeps them, so strip before placeholdering.
-    const codes = [];
+    const codes: string[] = [];
     s = s.replace(/\u0000/g, "");
     s = s.replace(/`([^`]+)`/g, (_, c) => {
       codes.push(`<code>${c}</code>`);
@@ -347,7 +348,7 @@ function renderEscaped(lines) {
  * documented way to write a pipe in code, and the backslash there is the
  * author's, not markup.
  */
-function splitRow(line) {
+function splitRow(line: string): string[] {
   let s = line.trim();
   if (s.startsWith("|")) s = s.slice(1);
   const cells = [];
@@ -393,14 +394,14 @@ function splitRow(line) {
 }
 
 /** `| --- | :--: |` — the second row of a GFM table. */
-function isSeparatorRow(line) {
+function isSeparatorRow(line: string): boolean {
   const s = line.trim();
   if (!s.includes("|") || !s.includes("-")) return false;
   const cells = splitRow(s);
   return cells.every((c) => /^:?-+:?$/.test(c)) && cells.some((c) => c !== "");
 }
 
-function escapeHtml(s) {
+function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
