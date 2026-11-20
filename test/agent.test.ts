@@ -444,7 +444,7 @@ test("progress prompts wait for real output, not just elapsed time", { timeout: 
   let big = false;
   let sawAsk = false;
   let harnessedAt = Infinity;
-  const mock: ChatFn = async (_cfg, _messages, tools) => {
+  const mock: ChatFn = async (_cfg, _messages, _tools) => {
     // the harness's dedicated progress-report ask: its prompt is the LAST
     // user message (it now carries tools too — the model answers by calling
     // report_progress, which keeps its tool ledger consistent)
@@ -875,7 +875,7 @@ test("restart rebuilds conversation (incl. tool args/results) from the log", asy
       ["user", "assistant", "tool", "assistant"],
     );
     // tool arguments were recovered from the logged tool_call event
-    assert.match(msgs[1]!.tool_calls![0].function.arguments, /hello\.txt/);
+    assert.match(msgs[1]!.tool_calls![0]!.function.arguments, /hello\.txt/);
     assert.match(msgs[2]!.content ?? "", /wrote/);
 
     // restored agent can keep working without breaking the sequence
@@ -1199,7 +1199,7 @@ test("verification contract: finish(goalComplete) is audited before done", async
 
 test("verification contract: auditor approval marks the goal done", async () => {
   let n = 0;
-  const chat: ChatFn = async (_c, messages) => {
+  const chat: ChatFn = async (_c, _messages) => {
     const i = n++;
     if (i === 0) return reply("finishing", [tc("f1", "finish", { goalComplete: true, summary: "all green" })]);
     if (i === 1) return reply("APPROVED: test output shows zero failures and docs updated");
@@ -1239,7 +1239,7 @@ test("no verification contract: the audit still runs, and an auditor that cannot
    * refuse, so the completion stands and the final carries no verdict (#128 still holds when a contract exists).
    */
   let n = 0;
-  const chat: ChatFn = async (_c, messages) => {
+  const chat: ChatFn = async (_c, _messages) => {
     const i = n++;
     if (i === 0) return reply("done!", [tc("f1", "finish", { goalComplete: true, summary: "did it" })]);
     throw new Error("the auditor is unreachable");
@@ -1394,7 +1394,7 @@ test("auto-continue is suppressed while a background bash runs; its exit wakes t
     }
     throw new Error(`too many llm calls (n=${req.n})`);
   });
-  await withAgent({ chatFn: mock.chat }, async (agent, ws) => {
+  await withAgent({ chatFn: mock.chat }, async (agent, _ws) => {
     await agent.setGoal("keep the dev server alive");
     agent.enqueuePrompt("start it and wait");
     agent.start("test");

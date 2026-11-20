@@ -201,7 +201,6 @@ test("sub-agent finish forwards the summary PLUS recent conversation context", a
     // burn llmCall's own retry ladder (5s+5s+30s) before the finish lands
     const deadline = Date.now() + 45_000;
     let reportText = "";
-    let lastErr = "";
     while (Date.now() < deadline) {
       try {
         const events = await readEvents(pAgent.log.filePath);
@@ -213,7 +212,7 @@ test("sub-agent finish forwards the summary PLUS recent conversation context", a
           break;
         }
       } catch (err) {
-        lastErr = String((err as Error).message);
+        void err;
       }
       await new Promise((r) => setTimeout(r, 50));
     }

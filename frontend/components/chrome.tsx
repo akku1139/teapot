@@ -1,4 +1,4 @@
-import { Show, createSignal } from "solid-js";
+import { createSignal } from "solid-js";
 import { copyText } from "../lib/clipboard";
 
 export function IconBtn(props: {

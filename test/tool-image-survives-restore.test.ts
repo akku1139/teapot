@@ -22,8 +22,6 @@ const PNG = Buffer.from(
   "hex",
 );
 
-const ctx = { defaultTimeoutMs: 30_000, maxOutputBytes: 100_000 };
-
 test("a tool image is written to the log, not just described in the text (#images)", async () => {
   await useTempDirs(["imglog-", "imglogd-"], async ([ws, sd]) => {
     await fs.writeFile(path.join(ws!, "red.png"), PNG);

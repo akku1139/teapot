@@ -11,7 +11,7 @@ const CFG = path.join(HOME, ".config", "teapot-coding-agent", "config.json");
 const cfg = JSON.parse(fs.readFileSync(CFG, "utf8"));
 const dirs = fs.readdirSync(ROOT);
 
-function inspect(d) {
+function inspect(d: string) {
   const log = path.join(ROOT, d, "chat.jsonl");
   let bytes = 0;
   let mtime = 0;
@@ -61,6 +61,7 @@ for (const a of cfg.agents) {
     continue;
   }
   const best = withLog.slice().sort((x, y) => stat(y).mtime - stat(x).mtime)[0];
+  if (!best) continue;
   choices.push({
     id: a.id,
     from: a.session,
@@ -108,7 +109,7 @@ for (const d of dirs) {
   fixedManifests++;
 }
 
-const byId = new Map<string, (typeof cfg.agents)[number]>(cfg.agents.map((a) => [a.id, a]));
+const byId = new Map<string, (typeof cfg.agents)[number]>(cfg.agents.map((a: { id: string; session: string }) => [a.id, a]));
 let fixedPointers = 0;
 for (const c of choices) {
   const a = byId.get(c.id);

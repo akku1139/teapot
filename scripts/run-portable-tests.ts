@@ -11,7 +11,7 @@ function testDir() {
   return path.resolve(import.meta.dirname, "..", "test");
 }
 
-function isPosixOnly(file) {
+function isPosixOnly(file: string) {
   try {
     const src = readFileSync(path.join(testDir(), file), "utf8");
     return new RegExp(`\\b${MARKER}\\s*\\(`).test(stripSourceComments(src));

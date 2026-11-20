@@ -110,7 +110,7 @@ test("internal session ids: /sessions lists owned ids; /events?session= reads th
 test("live-update: /api/version and /api/update/restart endpoints exist", async () => {
   // the restart endpoint spawns a child process and kills the server —
   // this test only verifies the endpoint is wired (no actual restart).
-  await useTempDirs(["upd-root-", "upd-ws-"], async ([dataDir, ws]) => {
+  await useTempDirs(["upd-root-", "upd-ws-"], async ([dataDir, _ws]) => {
     const m = mkMaster(dataDir);
     const app = buildApp(m);
     const v = await app.request("/api/version");

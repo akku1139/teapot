@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { AnsiText, BashElapsed, HighlightedCode } from "./code";
 import { Card } from "./card";
-import { CopyBtn, IconBtn } from "./chrome";
+import { CopyBtn } from "./chrome";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
 import { openLightbox } from "../lib/lightbox";
@@ -195,7 +195,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev; res?: () => Ev | undefined; o
    * two copies meant they drifted — the direct path showed `[MCP: server]` while the deferred one
    * prefixed the name with an icon, which reads as a different kind of event.
    */
-  const mcpCard = (server: string, tool: string, toolArgs: unknown) => {
+  const mcpCard = (_server: string, _tool: string, toolArgs: unknown) => {
     const bare = (toolArgs ?? {}) as Record<string, unknown>;
     const keys = Object.keys(bare);
     /**

@@ -24,8 +24,8 @@ test("archivedAgents reports each entry's session count and parent link (#perf)"
     ["shelved-a", "shelved"],
     ["shelved-b", "shelved"],
   ]) {
-    mkdirSync(path.join(sessions, session), { recursive: true });
-    writeFileSync(path.join(sessions, session, "chat.jsonl"), JSON.stringify({ type: "user", seq: 1, agent, session, branch: "br0", data: { content: "hi" } }) + "\n");
+    mkdirSync(path.join(sessions, session!), { recursive: true });
+    writeFileSync(path.join(sessions, session!, "chat.jsonl"), JSON.stringify({ type: "user", seq: 1, agent, session, branch: "br0", data: { content: "hi" } }) + "\n");
   }
   const master = new Master(
     {

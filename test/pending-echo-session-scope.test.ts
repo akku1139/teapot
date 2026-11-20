@@ -14,8 +14,6 @@
  *
  * Now keyed by the same handle the timeline uses.
  */
-import { test } from "node:test";
-import assert from "node:assert/strict";
 
 // #126: normalises CRLF so source anchors behave the same on Windows
 

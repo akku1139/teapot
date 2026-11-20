@@ -1,5 +1,3 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import type { Migration } from "./index.ts";
 
 export const sessionTitles: Migration = {
@@ -63,56 +61,3 @@ export const sessionTitles: Migration = {
     return changed;
   },
 };
-
-let scanBuffer: Buffer | undefined;
-
-function firstUserPromptText(file: string): string | null {
-  let fd: number | undefined;
-  try {
-    fd = openSync(file, "r");
-    const CHUNK = 16 * 1024;
-    const CAP = 256 * 1024;
-    scanBuffer ??= Buffer.alloc(CHUNK);
-    const buf = scanBuffer;
-    let offset = 0;
-    let carry = "";
-    while (offset < CAP) {
-      const n = readSync(fd, buf, 0, CHUNK, offset);
-      if (n <= 0) break;
-      offset += n;
-      const lines = (carry + buf.subarray(0, n).toString("utf8")).split("\n");
-      carry = lines.pop() ?? "";
-      for (const l of lines) {
-        if (!l) continue;
-        let e: { type?: unknown; data?: { source?: unknown; text?: unknown } };
-        try {
-          e = JSON.parse(l) as typeof e;
-        } catch {
-          continue; 
-        }
-        if (e.type !== "prompt") continue;
-        if (e.data?.source !== "user") return null; 
-        return titleOf(typeof e.data.text === "string" ? e.data.text : null);
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-      }
-    }
-  }
-}
-
-function titleOf(text: string | null): string | null {
-  const line = (text ?? "")
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  if (!line) return null;
-  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
-}

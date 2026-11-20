@@ -17,7 +17,7 @@ const tests = fs.readdirSync("test").filter((f) => f.endsWith(".test.ts")).map((
 const helpers = fs.existsSync("test/helpers") ? walk("test/helpers") : [];
 const testSrc = [...tests, ...helpers].map((f) => fs.readFileSync(f, "utf8")).join("\n");
 
-function resolveImport(fromFile, spec) {
+function resolveImport(fromFile: string, spec: string) {
   if (!spec.startsWith(".")) return null;
   const base = path.join(path.dirname(fromFile), spec).replace(/\\/g, "/");
   const cands = /\.(ts|tsx|js|mjs)$/.test(base)
@@ -31,7 +31,7 @@ const reachable = new Set<string>();
 const queue: [string, string][] = [];
 for (const t of tests) {
   const src = fs.readFileSync(t, "utf8");
-  for (const m of src.matchAll(/from\s+"([^"]+)"/g)) queue.push([t, m[1]]);
+  for (const m of src.matchAll(/from\s+"([^"]+)"/g)) queue.push([t, m[1]!]);
 }
 while (queue.length) {
   const next = queue.pop();
@@ -41,7 +41,7 @@ while (queue.length) {
   if (!target || reachable.has(target)) continue;
   reachable.add(target);
   const src = fs.readFileSync(target, "utf8");
-  for (const m of src.matchAll(/from\s+"([^"]+)"/g)) queue.push([target, m[1]]);
+  for (const m of src.matchAll(/from\s+"([^"]+)"/g)) queue.push([target, m[1]!]);
 }
 
 console.log("=== production modules NO test reaches (directly or transitively) ===");
@@ -59,8 +59,8 @@ let dead = 0;
 for (const f of prod.filter((x) => reachable.has(x))) {
   const src = fs.readFileSync(f, "utf8");
   const names = new Set<string>();
-  for (const m of src.matchAll(/export (?:async )?function ([A-Za-z_]\w*)/g)) names.add(m[1]);
-  for (const m of src.matchAll(/export const ([A-Za-z_]\w*)/g)) names.add(m[1]);
+  for (const m of src.matchAll(/export (?:async )?function ([A-Za-z_]\w*)/g)) names.add(m[1]!);
+  for (const m of src.matchAll(/export const ([A-Za-z_]\w*)/g)) names.add(m[1]!);
   const unused = [...names].filter((n) => !new RegExp(`\\b${n}\\b`).test(testSrc));
   if (unused.length) {
     dead += unused.length;

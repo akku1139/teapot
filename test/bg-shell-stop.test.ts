@@ -33,7 +33,6 @@ import { useTempDirs } from "./helpers/tmp.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 import { Agent } from "../src/agent/agent.ts";
 import { executeTool, killBgShells, listBgShells } from "../src/agent/tools.ts";
-import { bus } from "../src/bus.ts";
 import { waitFor } from "./helpers/wait-for.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 

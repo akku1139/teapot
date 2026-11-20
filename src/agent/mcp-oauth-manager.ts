@@ -40,7 +40,6 @@ export interface OAuthStatus {
 export const FLOW_TIMEOUT_MS = 5 * 60_000;
 
 export class ServerAuth implements OAuthClientProvider {
-  private authUrl?: URL;
   private verifier?: string;
   private flow: OAuthPhase = { phase: "idle" };
   private lastError?: string;
@@ -152,7 +151,6 @@ export class ServerAuth implements OAuthClientProvider {
   }
 
   redirectToAuthorization(url: URL): void {
-    this.authUrl = url;
     this.flow = { phase: "authorizing", url: url.toString(), startedAt: Date.now() };
   }
 
@@ -198,7 +196,6 @@ export class ServerAuth implements OAuthClientProvider {
   async clear(): Promise<void> {
     this.store = {};
     this.verifier = undefined;
-    this.authUrl = undefined;
     this.flow = { phase: "idle" };
     this.lastError = undefined;
     await this.persist(this.server, this.store);

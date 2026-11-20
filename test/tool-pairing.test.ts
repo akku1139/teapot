@@ -141,12 +141,7 @@ test("an orphaned result is still rendered, not dropped (#54)", () => {
 
 /* ---------- what the shipped code must do ---------- */
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/server/api.ts", import.meta.url), "utf8");
-
-function srcHas(label: string, re: RegExp): void {
-  if (!re.test(app)) assert.fail(`${label}\n  expected source to match: ${re}`);
-}
 
 test("the events endpoint must default to a window that fits a pair (#54)", () => {
   const m = api.match(/const limit = Math\.min\(Number\(c\.req\.query\("limit"\) \?\? (\d+)\), (\d+)\)/);

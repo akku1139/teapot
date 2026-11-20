@@ -32,13 +32,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Agent } from "../src/agent/agent.ts";
 
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
-
-const _here = path.dirname(fileURLToPath(import.meta.url));
 
 /* ---------- 1. live during compaction ---------- */
 

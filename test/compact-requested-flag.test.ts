@@ -7,7 +7,6 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
 import { Agent } from "../src/agent/agent.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 

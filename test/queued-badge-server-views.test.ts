@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTimelineWithCount } from "../frontend/lib/timeline.ts";
-import { queuedBadgeCount, serverQueuedCount } from "../frontend/lib/queued-count.ts";
+import { serverQueuedCount } from "../frontend/lib/queued-count.ts";
 
 /**
  * The ⏳ badge must count the server's queue however the server chooses to express it.
@@ -39,16 +38,3 @@ test("all-empty is genuinely zero (#queue)", () => {
  * or in the window between draining the queue and starting the request (server reports
  * `pendingPrompts: 0`, no note written yet). Returning then showed ⏳ for a message already sent.
  */
-const echo = (pid: string, text = "hi") => ({ id: `e-${pid}`, promptId: pid, text, at: 1, sent: false });
-const input = (events: any[], pending: any[]) => ({
-  events,
-  consumed: new Set<string>(),
-  pending: pending.map((p) => ({ sent: false, ...p })),
-  echo: (p: any) => ({ type: "message", id: p.id, seq: 1e9, ts: "", agent: "a", session: "s1", branch: "b", data: { echo: true, content: p.text } }),
-  feedTypes: new Set(["prompt", "system_note", "message"]),
-  renderedTypes: new Set(["prompt", "message"]),
-  renderedNoteEvents: new Set<string>(),
-});
-const loggedPrompt = (pid: string) => ({ type: "prompt", seq: 1, id: `p-${pid}`, ts: "", agent: "a", session: "s1", branch: "b", data: { source: "user", text: "hi", promptId: pid } });
-const note = (pid: string) => ({ type: "system_note", seq: 2, id: `n-${pid}`, ts: "", agent: "a", session: "s1", branch: "b", data: { event: "prompt-delivered", promptId: pid } });
-

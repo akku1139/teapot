@@ -16,17 +16,17 @@ function localAssertHelpers(src: string): string[] {
       i++;
     }
     const body = src.slice(start, i);
-    if (/assert\.\w+/.test(body)) names.push(m[1]);
+    if (/assert\.\w+/.test(body)) names.push(m[1]!);
   }
   return names;
 }
 
-export function blankLiterals(src) {
+export function blankLiterals(src: string) {
   let out = "";
   let i = 0;
   let lastMeaningful = "";
   while (i < src.length) {
-    const c = src[i];
+    const c = src[i]!;
     if (c === '"' || c === "'" || c === "`") {
       const quote = c;
       out += c;

@@ -28,7 +28,7 @@ const TONE_OF: Record<string, AuthorTone> = {
 
 export const toneOf = (color: string): AuthorTone => TONE_OF[color] ?? "agent";
 
-export const authorOf = (e: Ev) => {
+export const authorOf = (e: Ev): { name: string; icon: string; color: string } => {
   if (e.data?.actor) return { name: `@${String(e.data.actor)}`, icon: "🧩", color: "#3ba0c9" };
   if (e.type === "tool_call" || e.type === "tool_result") {
     const name = String(e.data?.name ?? "tool");
@@ -59,7 +59,7 @@ export const authorOf = (e: Ev) => {
   }
   if (e.type === "prompt") {
     const src = String(e.data?.source ?? "user");
-    if (src === "user") return AUTHORS.prompt;
+    if (src === "user") return AUTHORS.prompt!;
     return src.startsWith("scheduler:") ? { name: src.slice(10), icon: "📣", color: "#3ba55d" } : HARNESS_AUTH;
   }
   return AUTHORS[e.type] ?? { name: e.type, icon: "•", color: "#9298a5" };

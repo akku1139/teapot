@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup } from "solid-js";
+import { Show, createSignal, onCleanup } from "solid-js";
 import { renderMarkdownCached } from "../lib/markdown";
 import { BG_SMALL } from "../lib/bg-srcset";
 import { previewLayers, veilColour, backgroundImageValue } from "../lib/theme-preview";

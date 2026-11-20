@@ -14,8 +14,6 @@
  * The editor is also its own component with primitive props, giving Solid a
  * stable element to keep.
  */
-import { test } from "node:test";
-import assert from "node:assert/strict";
 // #126: normalises CRLF so source anchors behave the same on Windows
 
 /* ---------- the gate ---------- */

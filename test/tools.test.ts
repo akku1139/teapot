@@ -646,8 +646,8 @@ test("a background shell that forks an inheriting child still reports its exit (
       await new Promise((r) => setTimeout(r, 25));
     }
     assert.equal(exits.length, 1, "exactly one exit notification");
-    assert.equal(exits[0].code, 0);
-    assert.match(exits[0].cmd, /sleep 3/);
+    assert.equal(exits[0]!.code, 0);
+    assert.match(exits[0]!.cmd, /sleep 3/);
 
     // and it must no longer count as a running background shell, or the
     // auto-continue loop would suppress its nudge forever
@@ -692,7 +692,6 @@ test("a background job makes ONLY its own agent live, not its workspace siblings
     );
     const base = { cwd: dir, defaultTimeoutMs: 5_000, maxOutputBytes: 10_000 };
     const alice = { ...base, agentId: "alice" } as never;
-    const bob = { ...base, agentId: "bob" } as never;
 
     const r = await executeTool("bash", JSON.stringify({ command: "sleep 30", background: true }), alice);
     assert.ok(r.ok, r.result);

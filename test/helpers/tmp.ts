@@ -26,9 +26,9 @@ export async function useTempDir<T>(
 }
 
 /** Several unique temp dirs; ALL are removed once `fn` settles. */
-export async function useTempDirs<T>(
-  prefixes: readonly string[],
-  fn: (dirs: string[]) => Promise<T> | T,
+export async function useTempDirs<const P extends readonly string[], T>(
+  prefixes: P,
+  fn: (dirs: { [K in keyof P]: string }) => Promise<T> | T,
 ): Promise<T> {
   const dirs: string[] = [];
   try {
@@ -36,7 +36,7 @@ export async function useTempDirs<T>(
       const dir = await mkdtempInRoot(p);
       dirs.push(dir);
     }
-    return await fn(dirs);
+    return await fn(dirs as unknown as { [K in keyof P]: string });
   } finally {
     for (const d of dirs.reverse()) {
       // never follow a bad registration outside the root we create in

@@ -34,12 +34,10 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Master } from "../src/master.ts";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 
 // #126: URL.pathname yields "/D:/a/…" on Windows, which does not resolve
-const _here = path.dirname(fileURLToPath(import.meta.url));
 
 let SHARED: Awaited<ReturnType<typeof buildTree>> | null = null;
 

@@ -20,7 +20,6 @@ import {
   newThemeId,
   normalizeColour,
   PALETTE_KEYS,
-  PRESET_PALETTES,
   resolveActiveTheme,
   sanitizeTheme,
   saveCustomThemes,

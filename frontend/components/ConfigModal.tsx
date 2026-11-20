@@ -1,6 +1,6 @@
-import { For, Index, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
-import { IconBtn, Modal } from "./chrome";
-import { CodePreview, NumberField, ThemePreview, TodoEditor } from "./settings-parts";
+import { For, Index, Show, createEffect, createSignal } from "solid-js";
+import { Modal } from "./chrome";
+import { NumberField, ThemePreview } from "./settings-parts";
 import { api } from "../lib/api";
 import { bgSrc, bgSrcSet } from "../lib/bg-srcset";
 import { flashHint } from "../lib/flash";
@@ -8,16 +8,13 @@ import { oauthStateFrom } from "../lib/mcp-oauth-key";
 import { relTime } from "../lib/format";
 import { renderMarkdownCached } from "../lib/markdown";
 import { PROVIDER_PRESETS } from "../lib/provider-presets";
-import { paintedIdFor, slotForSelection } from "../lib/theme-slots";
+import { slotForSelection } from "../lib/theme-slots";
 import {
   DEFAULT_PALETTE,
   PALETTE_KEYS,
   PRESET_PALETTES,
-  applyCustomTheme,
   newThemeId,
   normalizeColour,
-  opaque,
-  sanitizeTheme,
   saveCustomThemes,
   themeBeingEdited,
   type CustomTheme,
@@ -138,7 +135,7 @@ export function ThemeEditor(props: {
           </div>
         }
       >
-        {(t) => (
+        {(_t) => (
           <>
             <div class="cfggrid" style="margin-top:8px">
               {/*
@@ -551,7 +548,7 @@ export function ConfigModal(props: {
   createEffect(() => {
     if (section() !== "mcp") return;
     void refreshMcpStates();
-    mcpServers().forEach((m, i) => {
+    mcpServers().forEach((m) => {
       if (m.name) void refreshMcpOAuth(m.name);
     });
   });
@@ -738,11 +735,11 @@ export function ConfigModal(props: {
       });
       await refreshMcpStates();
       await Promise.all(
-        cleanMcp.map((m, i) => (m.name ? refreshMcpOAuth(m.name) : Promise.resolve())),
+        cleanMcp.map((m) => (m.name ? refreshMcpOAuth(m.name) : Promise.resolve())),
       );
       setTimeout(() => {
         void refreshMcpStates();
-        cleanMcp.forEach((m, i) => {
+        cleanMcp.forEach((m) => {
           if (m.name) void refreshMcpOAuth(m.name);
         });
       }, 1200);
@@ -1607,7 +1604,10 @@ export function ConfigModal(props: {
                   const [body, setBody] = createSignal<string | null>(null);
                   const [err, setErr] = createSignal("");
                   const toggle = async () => {
-                    if (open()) return setOpen(false);
+                    if (open()) {
+                      setOpen(false);
+                      return;
+                    }
                     setOpen(true);
                     if (body() !== null || !props.agentId) return;
                     try {

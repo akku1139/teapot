@@ -251,7 +251,7 @@ export class McpRegistry {
     else this.servers.set(cfg.name, { config: cfg, status: "disconnected", tools: [] } as never);
   }
 
-  async startOAuth(name: string, opts: { scopes?: string[] } = {}): Promise<{ url: string }> {
+  async startOAuth(name: string, _opts: { scopes?: string[] } = {}): Promise<{ url: string }> {
     const st = this.servers.get(name);
     if (!st) throw new Error(`no such MCP server: ${name}`);
     if (!st.config.url) throw new Error("OAuth needs an http(s) url; a stdio server has no authorizer");

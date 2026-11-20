@@ -102,7 +102,6 @@ test("ask_user parks only after answering the batch (#54)", async () => {
     await a.settled().catch(() => {});
     const events = await readEvents(a.log.filePath);
     const calls = events.filter((e) => e.type === "tool_call").map((e) => String((e.data as { callId?: string }).callId));
-    const results = new Set(events.filter((e) => e.type === "tool_result").map((e) => String((e.data as { callId?: string }).callId)));
     // The interrupted call is logged; the one after it never is (the throw precedes it), so
     // the LOG has no orphan to check. The hazard is in the MESSAGE HISTORY, which is what
     // the provider validates: a `tool_calls: [p1, p2]` assistant message followed by only
@@ -136,7 +135,7 @@ test("ask_user parks only after answering the batch (#54)", async () => {
 test("stopping mid-batch leaves no unanswered tool_call (#54)", async () => {
   await useTempDirs(["h54a-", "h54b-"], async ([ws, sd]) => {
     let release: () => void = () => {};
-    const _gate = new Promise<void>((r) => {
+    new Promise<void>((r) => {
       release = r;
     });
     const a = new Agent({

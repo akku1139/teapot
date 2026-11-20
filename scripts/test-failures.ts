@@ -60,7 +60,7 @@ const handleLine = (line: string): void => {
       passing++;
       current = null;
     } else {
-      current = { name: name.trim(), detail: [] };
+      current = { name: name!.trim(), detail: [] };
       failures.push(current);
     }
     inErrorBlock = false;

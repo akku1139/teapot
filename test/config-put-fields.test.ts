@@ -131,7 +131,7 @@ test("PUT /api/config persists the whole apiKeys pool, not just the first key (#
         /^•••/,
         `key ${i} must be masked — the UI must never receive a plaintext credential`,
       );
-      assert.ok(k.endsWith(pool[i].slice(-3)), `key ${i} must still identify WHICH stored key it is`);
+      assert.ok(k.endsWith((pool[i] ?? "").slice(-3)), `key ${i} must still identify WHICH stored key it is`);
     }
 
     // saving that masked view back UNCHANGED must keep the real values

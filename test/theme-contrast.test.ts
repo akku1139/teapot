@@ -15,9 +15,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { PRESET_PALETTES } from "../frontend/lib/theme-store.ts";
-import { cssRuleBody } from "./helpers/css.ts";
 
 const luminance = (hex: string): number => {
   const ch = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);

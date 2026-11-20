@@ -92,7 +92,7 @@ test("system prompt stays byte-identical across turns even if AGENTS.md appears"
     agent.enqueuePrompt("go");
     agent.start("t");
     await agent.settled();
-    assert.ok(!seen[0].includes("CONVENTION_MARKER"));
+    assert.ok(!seen[0]!.includes("CONVENTION_MARKER"));
 
     // project knowledge appearing mid-session must NOT change the prompt
     await writeFile(path.join(ws, "AGENTS.md"), "# Conventions\nCONVENTION_MARKER keep tests fast\n");
@@ -143,7 +143,7 @@ test("system prompt no longer claims session state is never injected (#13)", asy
     agent.enqueuePrompt("go");
     agent.start("t");
     await agent.settled();
-    const sys = String((agent as unknown as { buildMessages(): { content?: unknown }[] }).buildMessages()[0].content ?? "");
+    const sys = String((agent as unknown as { buildMessages(): { content?: unknown }[] }).buildMessages()[0]?.content ?? "");
     assert.match(sys, /AGENTS\.md/);
     assert.doesNotMatch(sys, /Session state is not injected into prompts/);
     await agent.dispose();
@@ -591,7 +591,7 @@ test("legacy flat <id>.jsonl is migrated into sessions/<id>/chat.jsonl", async (
     assert.equal(path.basename(dir), "s");
     assert.ok(existsSync(path.join(dir, "chat.jsonl")));
     await a.load(); // lazy: history is rebuilt on first interaction
-    assert.ok(a.conversation.length === 1 && a.conversation[0].content === "old");
+    assert.ok(a.conversation.length === 1 && a.conversation[0]?.content === "old");
     assert.ok(!existsSync(path.join(dataDir, "s.jsonl"))); // moved
     await a.dispose();
   });

@@ -64,7 +64,7 @@ export function isValidSkillName(name: string): boolean {
 export function parseSkillMd(text: string): ParsedSkill {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return { meta: {}, body: text.trim() };
-  const lines = m[1].split(/\r?\n/);
+  const lines = (m[1] ?? "").split(/\r?\n/);
   const meta: Record<string, string> = {};
   for (let i = 0; i < lines.length; i++) {
     const kv = lines[i]!.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
@@ -91,7 +91,7 @@ export function parseSkillMd(text: string): ParsedSkill {
     if (raw === "") continue; 
     meta[key] = unquote(raw);
   }
-  return { meta, body: m[2].trim() };
+  return { meta, body: (m[2] ?? "").trim() };
 }
 
 function unquote(v: string): string {

@@ -28,7 +28,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // #126: normalises CRLF so source anchors behave the same on Windows
-import { readSource } from "./helpers/source.ts";
 import { HARNESS_ACK, PLACEHOLDER_TEXT } from "../src/agent/agent.ts";
 
 // NOTE: a `readSource()` of agent.ts lived here and was never read. Deleted rather than

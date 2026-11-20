@@ -26,7 +26,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
-import { readSourceUrl } from "./helpers/source.ts";
 import { Agent } from "../src/agent/agent.ts";
 import type { LlmResult } from "../src/agent/llm.ts";
 
@@ -57,7 +56,7 @@ test("a parked agent is LIVE even though its status reads idle (#59)", async () 
     let release: (() => void) | undefined;
     const gate = new Promise<void>((r) => (release = r));
     let parkedSeen = false;
-    const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
+    const chatFn = async (_c: unknown, _messages: any): Promise<LlmResult> => {
       if (!parkedSeen) {
         parkedSeen = true;
         // wait_children with no ids parks until woken; poll until the agent has

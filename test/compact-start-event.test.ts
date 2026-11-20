@@ -58,7 +58,6 @@ function compactingAgent(
    */
   onSummarize?: () => Promise<void> | void,
 ) {
-  const _big = "x".repeat(12_000);
   let n = 0;
   const chatFn = async (_c: unknown, messages: any): Promise<LlmResult> => {
     n++;

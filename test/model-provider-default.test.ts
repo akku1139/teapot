@@ -14,7 +14,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mayResyncProvider,
   modelOnProviderSwitch,
   modelPlaceholderFor,
   providerDefaultModel,

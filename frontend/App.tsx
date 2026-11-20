@@ -1,11 +1,10 @@
-import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack, Index } from "solid-js";
+import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack } from "solid-js";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
 import { jumpTargetMatches } from "./lib/jump-target";
 import { closeLightbox, lightboxSrc, openLightbox } from "./lib/lightbox";
 import { evictOver, weighJson } from "./lib/retention";
 import { renderMarkdownCached } from "./lib/markdown";
-import { fmtDur } from "./lib/format";
 import {
   applyDelta,
   clearLive,
@@ -16,31 +15,24 @@ import {
   reconcileLiveBuffer,
 } from "./lib/live-buffer";
 import { buildTimelineWithCount, type TimelineEvent, type PendingEchoLike } from "./lib/timeline";
-import { goalLine, isPlaceholderDetail } from "./lib/goal-timeline";
+import { isPlaceholderDetail } from "./lib/goal-timeline";
 import { Card } from "./components/card";
 import { BgJobsPanel, type BgJob } from "./components/bg-jobs";
 import { GoalEditor } from "./components/goal-pane";
 import { Loading } from "./components/loading";
-import { slotForSelection, paintedIdFor } from "./lib/theme-slots";
 import { pickInitialAgent } from "./lib/session-restore";
-import { outputLang } from "./lib/tool-output-lang";
 import { mergeThemes } from "./lib/theme-merge";
-import { previewLayers, veilColour, backgroundImageValue } from "./lib/theme-preview";
 import { BG_WIDTHS, bgSrc, bgSrcSet } from "./lib/bg-srcset";
 import { descendantsOf, shouldShowCollapseCaret, subAgentDisplayName } from "./lib/sidebar-tree";
-import { copyText } from "./lib/clipboard";
-import { groupedWith, type RowLike } from "./lib/row-grouping";
 import { answeredQuestionIdsOf, type QuestionEvent } from "./lib/question-answered";
 import { mergeQueued, queuedOnSend, reconcilePending, type PendingEcho } from "./lib/pending-echo";
 import { resolveTimelineSession } from "./lib/session-index";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { terminalOptions } from "./lib/terminal-options";
-import { shellOutcome, shellHint, outcomeMarker } from "./lib/shell-outcome";
 import {
   treeRowsOf,
   sidebarRowsOf,
-  workspaceOf as workspaceOfPure,
   chatGroupKeyOf,
   wsChatCountsOf,
 } from "./lib/sidebar-tree";
@@ -48,38 +40,27 @@ import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPla
 import { composerValueChanged, shouldWriteComposerValue } from "./lib/composer-ime";
 import {
   atTail,
-  AT_TAIL_PX,
   classifyScroll,
   distanceToTail,
   gapToTail,
   nextFollowing,
   shouldPin,
-  shouldShowJumpToPresent,
-  type ScrollCause,
   type TailSample,
 } from "./lib/scroll-policy";
 import { composerHeight } from "./lib/composer-size";
 import { keyReleasesFollow, keyTargetsTimeline, wheelReleasesFollow } from "./lib/scroll-gesture";
 import { scrollSensitivityFor } from "./lib/terminal-options";
 import { restoreTop, spotFromRows, type RowGeom, type SavedSpot } from "./lib/scroll-return";
-import { bindStoredHeight } from "./lib/resizable-height";
 import { agentLabel, agentLabelWithId } from "./lib/agent-label";
 import { queuedBadgeCount } from "./lib/queued-count";
 import {
   applyCustomTheme,
   loadCustomThemes,
   loadCustomThemesFromServer,
-  newThemeId,
-  normalizeColour,
   saveCustomThemes,
-  DEFAULT_PALETTE,
-  MAX_BACKGROUND_BYTES,
-  PALETTE_KEYS,
-  PRESET_PALETTES,
   resolveActiveTheme,
   themeWant,
   type CustomTheme,
-  type ThemePalette,
 } from "./lib/theme-store";
 
 import "@xterm/xterm/css/xterm.css";
@@ -88,26 +69,18 @@ import { FitAddon } from "@xterm/addon-fit";
 import { clampPaneIndex, indexAfterAppend, paneIndexAfterClose, rightPaneSeed } from "./lib/term-tabs";
 import { pickAfterArchive } from "./lib/archive-target";
 import { shouldSendOnKey, shouldRestoreAfterSend } from "./lib/composer-keys";
-import { IconBtn, CopyBtn, Modal } from "./components/chrome";
-import { AnsiText, BashElapsed, HighlightedCode, ThinkingTimer } from "./components/code";
-import { hasAnsi, stripAnsi } from "./lib/ansi";
-import { THEMES, type ThemeMeta } from "./lib/themes-presets";
-import { PROVIDER_PRESETS } from "./lib/provider-presets";
-import { ficon, fileUiFor, mediaKindOf, type FileUiState, type TreeNode } from "./lib/file-tree";
+import { IconBtn, Modal } from "./components/chrome";
+import { ThinkingTimer } from "./components/code";
+import { THEMES } from "./lib/themes-presets";
 import { relTime } from "./lib/format";
 import { api } from "./lib/api";
-import { CodePreview, NumberField, ThemePreview, TodoEditor } from "./components/settings-parts";
-import { FreeTextAnswer, MessageRow, SwitchContent, ToolRow } from "./components/rows";
+import { TodoEditor } from "./components/settings-parts";
+import { MessageRow } from "./components/rows";
 import { ConfigModal } from "./components/ConfigModal";
 import { FilesPanel } from "./components/FilesPanel";
 import {
-  AUTHORS,
-  HARNESS_AUTH,
-  authorOf,
   fmtK,
-  fmtTs,
   oneLine,
-  rawOf,
   type Ev,
 } from "./lib/timeline-row";
 
@@ -169,7 +142,7 @@ const RENDERED_NOTE_EVENTS = new Set([
 
 const hashTok = location.hash.match(/[#&]token=([^&]+)/);
 if (hashTok) {
-  localStorage.setItem("teapot.token", decodeURIComponent(hashTok[1]));
+  localStorage.setItem("teapot.token", decodeURIComponent(hashTok[1] ?? ""));
   history.replaceState(null, "", location.pathname + location.search);
 }
 const wsTokenQuery = () => {
@@ -303,8 +276,6 @@ export default function App() {
   });
 
   let lastContentHeight = 0;
-  let unskipAnchor: { sel: string; top: number } | null = null;
-  let unskipAnchorAt = 0;
   let feedMo: MutationObserver | undefined;
   let feedMoEl: HTMLElement | undefined;
   let feedMoRaf = 0;
@@ -316,8 +287,6 @@ export default function App() {
    * `attachFeedObserver`, which runs exactly when the new feed mounts.
    */
 
-  /** when the viewport last moved by the reader's hand — corrections are refused while this is recent (#192) */
-  let lastScrollAt = 0;
   /** while now < this, a layout-classified sample may not re-enable the follow (#212) */
   let readerUntil = 0;
   const READER_LOCK_MS = 400;
@@ -453,20 +422,11 @@ export default function App() {
     tailSeekingUntil = performance.now() + ms;
     if (!tailWatchRaf) tailWatchRaf = requestAnimationFrame(tailWatch);
   };
-  /**
-   * Pin, and RE-BASELINE the anchor the layout corrections measure against.
-   *
-   * A pin that leaves an old `unskipAnchor` behind is undone later: MEASURED, coming back to a session that had gained
-   * rows sat at a constant 631px above the tail, because after the seek window expired `reanchorAfterContentChange`
-   * "corrected" toward a row captured before the growth and moved the viewport back up.
-   */
   const pinTailAndRebaseline = (f: HTMLElement): void => {
     f.scrollTop = f.scrollHeight;
     ledger = { top: f.scrollTop, height: f.scrollHeight };
     setAtBottom(true);
     setMissed(0);
-    unskipAnchor = firstVisibleRow(f);
-    unskipAnchorAt = performance.now();
   };
   /** the feed's client width at the last box sample — a change means every row re-wrapped */
   let lastFeedWidth = 0;
@@ -480,7 +440,6 @@ export default function App() {
     const topDelta = lastFeedTop < 0 ? 0 : feedTop - lastFeedTop;
     lastFeedTop = feedTop;
 
-    const contentChanged = f.scrollHeight !== lastSampleHeight;
     lastSampleHeight = f.scrollHeight;
     lastSampleViewport = f.clientHeight;
     const widthChanged = f.clientWidth !== lastFeedWidth;
@@ -663,29 +622,6 @@ export default function App() {
     const esc = (globalThis as { CSS?: { escape?: (v: string) => string } }).CSS?.escape?.(eid) ?? eid.replace(/["\\]/g, "\\$&");
     return `[data-eid="${esc}"]`;
   };
-  function firstVisibleRow(
-    f: HTMLElement,
-  ): { sel: string; top: number } | null {
-    const rows = f.querySelectorAll<HTMLElement>("[data-eid]");
-    if (!rows.length) return null;
-    const feedTop = f.getBoundingClientRect().top;
-    const at = (i: number) => rows[i]!.getBoundingClientRect();
-    let lo = 0;
-    let hi = rows.length - 1;
-    let found = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (at(mid).bottom > feedTop) {
-        found = mid;
-        hi = mid - 1; 
-      } else {
-        lo = mid + 1; 
-      }
-    }
-    if (found < 0) return null;
-    const eid = rows[found]!.dataset.eid ?? "";
-    return eid ? { sel: eidSelector(eid), top: at(found).top } : null;
-  }
   /**
    * The details panel has ONE preference per width mode, and its DEFAULT is per mode too.
    *
@@ -1082,15 +1018,6 @@ const isTimelineLive = (): boolean => {
     return timelineIsLive(sel() as { id: string; session?: string } | undefined, timelineId(), isSelLive());
   };
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
-  const _answeredIds = createMemo(() => {
-    const set = new Set<string>();
-    for (const e of events()) {
-      // both names: `ask_operator` is the current one, `ask_user` is pre-rename and still in old logs
-      if (e.type === "tool_result" && (e.data?.name === "ask_operator" || e.data?.name === "ask_user"))
-        set.add(String(e.data.callId));
-    }
-    return set;
-  });
   const pendingBySession = new Map<string, PendingEcho[]>();
   const [pendingMsgs, setPendingMsgs] = createSignal<PendingEcho[]>([]);
   const pendingKey = (): string => timelineId() || selected() || "?";
@@ -1499,7 +1426,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
   };
 
-  const _workspaceOf = (id: string): string => workspaceOfPure(agents(), id);
   const chatGroupKey = (a: Agent): string => chatGroupKeyOf(agents(), a);
 
   const [wsCollapsed, setWsCollapsed] = createSignal<Set<string>>((() => {
@@ -1712,7 +1638,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     finally { setLoadingOlder(false); }
   }
 
-  function sessionQuery(agentId: string, tid: string): string {
+  function sessionQuery(_agentId: string, tid: string): string {
     if (!tid) return "";
     return masterSessionIndex().has(tid) ? `&session=${encodeURIComponent(tid)}` : "";
   }
@@ -2630,7 +2556,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       e.preventDefault();
       const idx = list.findIndex((a) => a.id === selected());
       const next = e.key === "ArrowDown" ? Math.min(idx + 1, list.length - 1) : Math.max(idx - 1, 0);
-      if (next !== idx) select(list[next].id);
+      const target = list[next];
+      if (target && next !== idx) select(target.id);
     }
   });
 
@@ -2770,7 +2697,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       Math.max(220, Math.round(window.innerHeight * 0.35)),
   );
   const liveTerms = new Map<string, TermSession>();
-  let termSeq = 0;
   const paneHosts: (HTMLDivElement | null)[] = [null, null];
 
   const activeTab = () =>
@@ -3208,13 +3134,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     ];
     return list.filter((x) => x.key.toLowerCase().startsWith(q));
   };
-  // oxlint-disable-next-line no-unused-vars
-  const filteredCmds = () => {
-    const d = draft();
-    if (!d.startsWith("/") || d.includes(" ") || d.includes("\n")) return [];
-    return SLASH_COMMANDS.filter((c) => c.cmd.slice(1).startsWith(d.slice(1).toLowerCase()));
-  };
-
   type Suggest = { insert: string; title: string };
   const NO_ARG_COMMANDS = new Set(["start", "stop", "fork", "compact"]);
   const [agentSkills, setAgentSkills] = createSignal<{ name: string; description: string }[]>([]);
@@ -3289,19 +3208,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
     return composerMirror.scrollHeight;
   }
-  let lastAppliedContentH = 0;
   const autosizeComposer = () => {
     if (!composerEl) return;
     const maximized = composerMaximized();
     if (!composerEl.value && !maximized) {
       composerEl.style.height = "";
-      lastAppliedContentH = 0;
       return;
     }
     const contentH = measureComposerContent(composerEl);
     const wanted = maximized ? -1 : composerHeight(contentH, MAX_COMPOSER_H);
     composerEl.style.height = wanted === -1 ? "" : `${wanted}px`;
-    lastAppliedContentH = contentH;
   };
   let lastSample: TailSample | undefined;
   let ledger: { top: number; height: number } | null = null;
@@ -3637,17 +3553,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * 尊重されずに…デフォルトの高さになる場合がある". That is why a repro was hard to pin down: the value was still in
    * `localStorage`, so a reload sometimes brought the height back.
    */
-  const goalPreviewStyle = (): Record<string, string> => ({
-    "max-height": "none",
-    "overflow-y": "auto",
-    resize: "vertical",
-  });
-  const trackGoalPreviewHeight = (el: HTMLElement) => {
-    onCleanup(bindStoredHeight(el, "goalPreview"));
-  };
-  const trackGoalHeight = (el: HTMLTextAreaElement) => {
-    onCleanup(bindStoredHeight(el, "goal"));
-  };
   const [goalVerifyDraft, setGoalVerifyDraft] = createSignal("");
   const [goalDirty, setGoalDirty] = createSignal(false);
   /**
@@ -4224,7 +4129,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             void cause;
             ledger = null;
-            lastScrollAt = performance.now();
             /**
              * The PREVIOUS top has to be read before `lastSample` is overwritten.
              *
@@ -4243,11 +4147,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             lastSample = now;
             publishGap(now);
             const wasFollowing = atBottom();
-            const t = performance.now();
-            if (t - unskipAnchorAt > 100) {
-              unskipAnchorAt = t;
-              unskipAnchor = firstVisibleRow(el);
-            }
             /**
              * The previous top is what lets a READER's upward gesture be told from a layout shift (#188).
              *
@@ -4411,12 +4310,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                                  * "queuedなメッセージをcancelしたときにスクロールが必要以上に押し戻される". A follower
                                  * goes back to the tail; a reader keeps the row they were looking at.
                                  */
-                                const f = feedEl();
                                 if (wasFollowing) seekTail(400);
-                                else if (f) {
-                                  unskipAnchor = firstVisibleRow(f);
-                                  unskipAnchorAt = performance.now();
-                                }
                                 flashHint("message withdrawn — draft restored");
                               })
                               .catch(() => flashHint("withdraw failed — it may have already been sent"));

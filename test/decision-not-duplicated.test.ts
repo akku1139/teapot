@@ -15,9 +15,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-
-const agent = readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
 
 /**
  * Driven through the REAL pipeline instead of reading App.tsx for a regex.

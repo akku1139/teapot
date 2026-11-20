@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import { ServerAuth } from "../src/agent/mcp-oauth-manager.ts";
 
 /**
@@ -37,13 +36,6 @@ const STALE = {
     // the shape teapot itself writes from the placeholder provider: no port
     redirect_uris: ["http://127.0.0.1/callback"],
   },
-};
-
-const mk = async (redirectUrl: string) => {
-  const saved: unknown[] = [];
-  const auth = new ServerAuth("srv", redirectUrl, async (_n, d) => void saved.push(d));
-  await auth.hydrate(structuredClone(STALE));
-  return { auth, saved };
 };
 
 test("a placeholder reconnect KEEPS the grant; a real mismatch declines it (#mcp)", async () => {

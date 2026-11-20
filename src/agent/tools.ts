@@ -766,11 +766,6 @@ ${body}` : body;
 … [truncated at ${end} of ${s.length} chars — call again with offset=${end}]`;
 }
 
-function clipText(s: string, max: number): string {
-  const n = Math.max(1000, Math.min(max, 80_000));
-  return s.length <= n ? s : `${s.slice(0, n)}\n… [truncated, ${s.length} chars total]`;
-}
-
 const BACKTRACKING_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /\([^()]*[+*}][^()]*\)\s*[+*{]/, why: "a quantifier nested inside another quantifier" },
   { re: /\(([^()|]*)\|\1\)\s*[+*{]/, why: "an alternation with identical branches inside a quantifier" },
@@ -878,24 +873,25 @@ function parsePatch(patch: string): PatchOp[] | string {
       const body: string[] = [];
       i++;
       while (i < lines.length && lines[i]!.startsWith("+")) body.push(lines[i++]!.slice(1));
-      if (body.length === 0) return `invalid patch: Add File hunk for '${m[1].trim()}' has no + lines`;
-      ops.push({ kind: "add", path: m[1].trim(), contents: body.join("\n") + "\n" });
+      const addPath = (m[1] ?? "").trim();
+      if (body.length === 0) return `invalid patch: Add File hunk for '${addPath}' has no + lines`;
+      ops.push({ kind: "add", path: addPath, contents: body.join("\n") + "\n" });
       continue;
     }
     m = t.match(/^\*\*\* Delete File: (.+)$/);
     if (m) {
-      ops.push({ kind: "delete", path: m[1].trim() });
+      ops.push({ kind: "delete", path: (m[1] ?? "").trim() });
       i++;
       continue;
     }
     m = t.match(/^\*\*\* Update File: (.+)$/);
     if (m) {
-      const filePath = m[1].trim();
+      const filePath = (m[1] ?? "").trim();
       let movePath: string | null = null;
       i++;
       const mv = lines[i]?.trim().match(/^\*\*\* Move to: (.+)$/);
       if (mv) {
-        movePath = mv[1].trim();
+        movePath = (mv[1] ?? "").trim();
         i++;
       }
       const chunks: UpdateChunk[] = [];
@@ -1144,7 +1140,7 @@ export function renderGutter(lines: string[], startLine = 1): string {
 export function parseAnchor(anchor: string): { line: number; hash: string } | null {
   const m = /^\s*(\d+):([0-9a-z]{4,8}| {4})\s*$/.exec(anchor);
   if (!m) return null;
-  return { line: Number(m[1]), hash: m[2] };
+  return { line: Number(m[1]), hash: m[2] ?? "" };
 }
 
 export function resolveAnchor(
@@ -2076,6 +2072,7 @@ export const TOOLS: ToolDef[] = [
       const content = str(args.content);
       if (!content.trim()) return { ok: false, result: "content required" };
       const globalRoot = roots.find((r) => r.source === "global") ?? roots[0];
+      if (!globalRoot) return { ok: false, result: "no writable skill root" };
       const filePath = await saveSkill(globalRoot.dir, name, description, content.slice(0, 64_000));
       let note = "";
       for (const r of roots) {

@@ -18,9 +18,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
-const app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 /**
  * #75 — this file re-implemented MessageRow's grouping predicate locally, and

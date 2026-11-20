@@ -4,8 +4,8 @@ import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { storeImage, resolveImages } from "../log/image-store.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
-import { createCatalog, SEARCH_TOOL, RUN_TOOL } from "./tool-catalog.ts";
-import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShells, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
+import { createCatalog } from "./tool-catalog.ts";
+import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { isBareAcknowledgement } from "./ack.ts";
@@ -13,10 +13,9 @@ import { claimsContextLimit, claimsOwnLimit, usageLine } from "./context-claim.t
 import { compactionNotice } from "./compaction-notice.ts";
 import { isDegenerateRepeat } from "./loop-guard.ts";
 import { namesBlocker } from "./blocker.ts";
-import { sessionTitleFrom } from "../session-title.ts";
 import { mcp } from "./mcp-registry.ts";
 import { flattenToolName } from "./mcp-registry.ts";
-import { metaToolSpecs, META_TOOL_NAMES, type MetaToolName } from "./meta-tools.ts";
+import { metaToolSpecs, type MetaToolName } from "./meta-tools.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { extractRules, enforceRules, type Rule, RULES_HEADING } from "./compact-rules.ts";
 import { bus, type BusEvent } from "../bus.ts";
@@ -1103,7 +1102,7 @@ export class Agent {
       prefix.push(cur);
     }
     prefix.reverse();
-    while (prefix.length && prefix[0].type === "fork") prefix.shift();
+    while (prefix.length && prefix[0]!.type === "fork") prefix.shift();
     return [...prefix, ...own.filter((e) => e !== header)];
   }
 
@@ -1147,7 +1146,7 @@ export class Agent {
     const events = await this.spliceSubForkPrefix(own);
     const lineage = lineageOf(events);
     if (!lineage.length) return;
-    const last = lineage[lineage.length - 1];
+    const last = lineage[lineage.length - 1]!;
     const msgs = await rebuildMessagesFrom(lineage, this.imagesDir);
 
     for (const e of own) {
@@ -1751,6 +1750,7 @@ export class Agent {
     const i = this.pendingPrompts.findIndex((p) => p.id === promptId);
     if (i === -1) return null; 
     const [p] = this.pendingPrompts.splice(i, 1);
+    if (!p) return null;
     void this.log
       .append("system_note", this.currentSession, this.currentBranch, {
         event: "prompt-cancelled",
@@ -2389,13 +2389,13 @@ export class Agent {
       await this.answerUnansweredToolCalls(m);
       return "end";
     },
-    report_progress: async (call, m) => {
+    report_progress: async (call, _m) => {
       await this.recordProgress(call.function.arguments);
       this.reportedThisRound = true;
       await this.answerMeta(call, "progress recorded");
       return "next";
     },
-    set_goal: async (call, m) => {
+    set_goal: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const text = String(a.text ?? "").trim();
       if (text) await this.setGoal(text);
@@ -2407,7 +2407,7 @@ export class Agent {
       );
       return "next";
     },
-    get_goal: async (call, m) => {
+    get_goal: async (call, _m) => {
       await this.answerMeta(
         call,
         JSON.stringify(
@@ -2457,14 +2457,14 @@ export class Agent {
       await this.answerUnansweredToolCalls(m);
       throw Object.assign(new Error("waiting for user"), { name: "WaitForUser" });
     },
-    get_todo: async (call, m) => {
+    get_todo: async (call, _m) => {
       await this.answerMeta(
         call,
         this.todo.trim() || "(todo.md is empty — no task list yet)",
       );
       return "next";
     },
-    set_todo: async (call, m) => {
+    set_todo: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const ACTIONS = new Set(["done", "reopen", "add", "remove"] as const);
       const updates = Array.isArray(a.updates)
@@ -2501,7 +2501,7 @@ export class Agent {
       await this.answerMeta(call, "task list replaced (visible to the operator)");
       return "next";
     },
-    get_feedback: async (call, m) => {
+    get_feedback: async (call, _m) => {
       const fb = await fs.readFile(this.feedbackFile, "utf8").catch(() => "");
       this.messages.push({
         role: "tool",
@@ -2510,7 +2510,7 @@ export class Agent {
       });
       return "next";
     },
-    add_feedback: async (call, m) => {
+    add_feedback: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const rule = String(a.rule ?? "").trim().slice(0, 500);
       if (!rule) {
@@ -2521,9 +2521,10 @@ export class Agent {
       const lines = existing.split("\n");
       const idx = lines.findIndex((l) => l.includes(rule.slice(0, 60)));
       if (idx !== -1 && /^\s*- /.test(lines[idx]!)) {
-        const m = lines[idx].match(/\[x(\d+)\]/);
+        const current = lines[idx] ?? "";
+        const m = current.match(/\[x(\d+)\]/);
         const count = m ? Number(m[1]) + 1 : 2;
-        lines[idx] = lines[idx].replace(/\[x\d+\]\s*/, "").replace(/- /, `- [x${count}] `);
+        lines[idx] = current.replace(/\[x\d+\]\s*/, "").replace(/- /, `- [x${count}] `);
         await fs.writeFile(this.feedbackFile, lines.join("\n"), "utf8");
         this.messages.push({
           role: "tool",
@@ -2537,7 +2538,7 @@ export class Agent {
       }
       return "next";
     },
-    record_decision: async (call, m) => {
+    record_decision: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const decision = String(a.decision ?? "").trim().slice(0, 500);
       const rationale = String(a.rationale ?? "").trim().slice(0, 2000);
@@ -2565,7 +2566,7 @@ export class Agent {
       await this.answerMeta(call, "decision recorded to decisions.md");
       return "next";
     },
-    get_decisions: async (call, m) => {
+    get_decisions: async (call, _m) => {
       const dec = await fs.readFile(this.decisionsFile, "utf8").catch(() => "");
       this.messages.push({
         role: "tool",
@@ -2574,7 +2575,7 @@ export class Agent {
       });
       return "next";
     },
-    read_memory: async (call, m) => {
+    read_memory: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const query = String(a.query ?? "").trim();
       const mem = await fs.readFile(this.memoryFile, "utf8").catch(() => "");
@@ -2631,7 +2632,7 @@ export class Agent {
       );
       return "next";
     },
-    list_skills: async (call, m) => {
+    list_skills: async (call, _m) => {
       await this.refreshSkills();
       const list = this.skillsCache.length
         ? this.skillsCache.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n")
@@ -2639,7 +2640,7 @@ export class Agent {
       await this.answerMeta(call, list);
       return "next";
     },
-    set_memory: async (call, m) => {
+    set_memory: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const content = String(a.content ?? "").slice(0, 32_000);
       await fs.writeFile(this.memoryFile, content, "utf8");
@@ -2649,7 +2650,7 @@ export class Agent {
       );
       return "next";
     },
-    forget_memory: async (call, m) => {
+    forget_memory: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const query = String(a.query ?? "").trim();
       if (!query) {
@@ -2684,7 +2685,7 @@ export class Agent {
       );
       return "next";
     },
-    add_memory: async (call, m) => {
+    add_memory: async (call, _m) => {
       const a = safeParse(call.function.arguments);
       const text = String(a.text ?? "").trim().slice(0, 8_000);
       if (!text) {
@@ -4251,7 +4252,7 @@ function lineageOf(events: TeapotEvent[]): TeapotEvent[] {
     lineage.push(cur);
   }
   lineage.reverse();
-  while (lineage.length && lineage[0].type === "fork") lineage.shift();
+  while (lineage.length && lineage[0]!.type === "fork") lineage.shift();
   return lineage;
 }
 

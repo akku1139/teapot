@@ -24,10 +24,5 @@
  * (2) and (3) are the more serious half: the UI was offering actions that either
  * fail or do the wrong thing.
  */
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const _here = path.dirname(fileURLToPath(import.meta.url));
 

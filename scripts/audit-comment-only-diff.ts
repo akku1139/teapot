@@ -6,7 +6,7 @@ const files = execFileSync("git", ["diff", "--name-only", base, "--", "src", "fr
   .split("\n")
   .filter((f) => /\.(ts|tsx)$/.test(f));
 
-function codeLines(src) {
+function codeLines(src: string) {
   return stripSourceComments(src)
     .replace(/\r\n/g, "\n")
     .replace(/\s+/g, "");

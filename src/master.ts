@@ -21,9 +21,8 @@ import { currentKey, makeKeyPool, resetPool, type KeyPoolState } from "./agent/k
 import { sessionTitleFrom } from "./session-title.ts";
 import path from "node:path";
 import os from "node:os";
-import { expandTilde, homeDir } from "./home.ts";
+import { expandTilde } from "./home.ts";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { Agent } from "./agent/agent.ts";
 import { parseSchedule, matches, nextFireAt, type Schedule } from "./scheduler/cron.ts";
 import type { LlmConfig, ChatFn } from "./agent/llm.ts";
@@ -1075,7 +1074,8 @@ export class Master {
     while (this.agents.has(id) || this.config.agents.some((a) => a.id === id))
       id = `${base.slice(0, 56)}-${n++}`;
 
-    const directive = persona ? `${SUB_PERSONAS[persona].label}\n${SUB_PERSONAS[persona].directive}\n\n` : "";
+    const personaDef = persona ? SUB_PERSONAS[persona] : undefined;
+    const directive = personaDef ? `${personaDef.label}\n${personaDef.directive}\n\n` : "";
     const pcfg = this.config.agents.find((a) => a.id === parentId);
     let forkTip: string | null | undefined;
     let forkBranch: string | undefined;
@@ -1332,12 +1332,6 @@ if (active().length === 0) wake();
         }
       }
     }
-  }
-
-  private titleFor(agentId: string, sessionId: string): string | undefined {
-    const a = this.config.agents.find((x) => x.id === agentId);
-    if (!a || a.session !== sessionId) return undefined;
-    return this.readSessionTitle(sessionId) ?? undefined;
   }
 
   /** The session's own name, from its manifest. One place, so it cannot go stale in another. */
@@ -1868,7 +1862,7 @@ if (active().length === 0) wake();
       // a session that has been read into memory: this is the count that makes "messagesInMemory" interpretable
       loadedSessions: [...this.agents.values()].filter((a) => a.conversation.length > 0).length,
       cpuMsTotal: Math.round((cu.user + cu.system) / 1000),
-      loadavg1: +(os.loadavg()[0]).toFixed(2),
+      loadavg1: +(os.loadavg()[0] ?? 0).toFixed(2),
       agents: [...this.agents.values()].map((a) => ({
         id: a.opts_id(),
         turns: a.stats.turns,

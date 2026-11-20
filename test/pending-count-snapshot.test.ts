@@ -15,8 +15,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 test("snapshot.pendingPrompts stays the DELIVERY counter (harness included) (#141 contract)", async () => {
   await useTempDirs(["d3a-", "d3b-"], async ([ws, sd]) => {

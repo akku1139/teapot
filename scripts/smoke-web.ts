@@ -82,7 +82,7 @@ const EVENTS = [
     type: "goal", data: { event: "audit", verdict: "approved", feedback: "" } },
 ];
 
-function apiResponse(url) {
+function apiResponse(url: string) {
   const u = url.split("?")[0];
   if (u === "/api/config")
     return {
@@ -158,7 +158,7 @@ function apiResponse(url) {
 let fetchCount = 0;
 const requestedUrls: string[] = [];
 
-const WS_EVENTS = []; 
+const WS_EVENTS: any[] = []; 
 class MockWS {
   static instances: MockWS[] = [];
   url: string;
@@ -210,7 +210,7 @@ w.document.body.innerHTML = `<div id="root"></div>`;
   }
 }
 try { Object.defineProperty(w.document, "visibilityState", { value: "visible", configurable: true }); } catch {}
-const setGlobal = (name, value) => {
+const setGlobal = (name: string, value: any) => {
   try {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
   } catch {
@@ -221,15 +221,15 @@ setGlobal("document", w.document);
 setGlobal("getComputedStyle", (el: Element, pseudo?: string) => w.getComputedStyle(el, pseudo));
 setGlobal("localStorage", {
   store: {},
-  getItem(k) { return this.store[k] ?? null; },
-  setItem(k, v) { this.store[k] = String(v); },
-  removeItem(k) { delete this.store[k]; },
+  getItem(k: string) { return this.store[k] ?? null; },
+  setItem(k: string, v: string) { this.store[k] = String(v); },
+  removeItem(k: string) { delete this.store[k]; },
 });
 setGlobal("navigator", w.navigator);
 setGlobal("location", w.location);
 setGlobal("history", w.history);
 setGlobal("CustomEvent", w.CustomEvent);
-setGlobal("requestAnimationFrame", (cb) => setTimeout(() => cb(Date.now()), 16));
+setGlobal("requestAnimationFrame", (cb: (timestamp: number) => void) => setTimeout(() => cb(Date.now()), 16));
 const resizeObservers: { check: () => void }[] = [];
 const pumpResize = () => {
   for (const ro of resizeObservers) ro.check();
@@ -305,9 +305,9 @@ localStorage.setItem("teapot.theme.light", "light");
 
 const requests: { url: string; method: string; body: any }[] = [];
 let baseFetch: typeof fetch | undefined;
-setGlobal("fetch", async (url, init) => {
+setGlobal("fetch", async (url: string, init?: RequestInit) => {
   fetchCount++;
-  const u0 = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+  const u0 = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0]!;
   let body = null;
   if (typeof init?.body === "string") {
     try {
@@ -318,11 +318,11 @@ setGlobal("fetch", async (url, init) => {
   }
   requests.push({ url: u0, method: (init?.method ?? "GET").toUpperCase(), body });
   requestedUrls.push(String(url));
-  return { ok: true, status: 200, json: async () => apiResponse(u0) };
+  return { ok: true, status: 200, json: async () => apiResponse(u0!) };
 });
 baseFetch = globalThis.fetch;
 
-const briefStack = (err) => String(err?.stack ?? "").split("\n").slice(0, 6).join("\n");
+const briefStack = (err: any) => String(err?.stack ?? "").split("\n").slice(0, 6).join("\n");
 process.on("uncaughtException", (e) => {
   console.error(`UNCAUGHT ${e?.constructor?.name}: ${e?.message}\n${briefStack(e)}`);
   process.exit(1);
@@ -333,7 +333,6 @@ process.on("unhandledRejection", (e) => {
   process.exit(1);
 });
 
-let _failed = false;
 try {
   await import(pathToFileURL(path.join(pub, asset)).href);
   console.log("bundle imported:", asset);
@@ -343,7 +342,7 @@ try {
   process.exit(1);
 }
 
-async function waitFor(label, predicate, deadlineMs = 8000) {
+async function waitFor(label: string, predicate: () => boolean | Promise<boolean>, deadlineMs = 8000) {
   const start = Date.now();
   while (Date.now() - start < deadlineMs) {
     try {
@@ -529,9 +528,9 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const fail = (msg) => { console.error(`#51 REGRESSION: ${msg}`); process.exit(1); };
-  const css = (el, prop) => w.document.defaultView.getComputedStyle(el).getPropertyValue(prop);
-  const text = (el) => el?.textContent ?? "";
+  const fail = (msg: string) => { console.error(`#51 REGRESSION: ${msg}`); process.exit(1); };
+  const css = (el: Element, prop: string) => w.document.defaultView.getComputedStyle(el).getPropertyValue(prop);
+  const text = (el: Element) => el?.textContent ?? "";
 
   const lines = [...w.document.querySelectorAll(".goalline")];
   if (!lines.length) {
@@ -587,8 +586,8 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fail = (msg) => { console.error(`#55 REGRESSION: ${msg}`); process.exit(1); };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg: string) => { console.error(`#55 REGRESSION: ${msg}`); process.exit(1); };
   const opts = () => [...w.document.querySelectorAll(".qopt")];
   const btns = opts();
   if (btns.length < 2) fail(`the open question's options did not render (#55): ${btns.length}`);
@@ -719,9 +718,9 @@ console.log("deep render ok: feed rows present");
     },
   ];
   let liveToolVisible = false;
-  setGlobal("fetch", async (url) => {
+  setGlobal("fetch", async (url: string) => {
     const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
-    const u = raw.split("?")[0];
+    const u = raw.split("?")[0]!;
     if (u === "/api/agents")
       return {
         ok: true,
@@ -832,7 +831,7 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const fail = (msg) => { console.error(`#reasoning REGRESSION: ${msg}`); process.exit(1); };
+  const fail = (msg: string) => { console.error(`#reasoning REGRESSION: ${msg}`); process.exit(1); };
   const sock = MockWS.instances.at(-1);
   if (!sock?.onmessage) {
     fail("no app socket to drive");
@@ -893,8 +892,8 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fail = (msg) => { console.error(`#58 REGRESSION: ${msg}`); process.exit(1); };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg: string) => { console.error(`#58 REGRESSION: ${msg}`); process.exit(1); };
 
   const want = "alpha-s9";
   history.replaceState(null, "", `/session/${want}`);
@@ -918,13 +917,13 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fail = (msg) => { console.error(`#52 REGRESSION: ${msg}`); process.exit(1); };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg: string) => { console.error(`#52 REGRESSION: ${msg}`); process.exit(1); };
 
   const copied: string[] = [];
   let execCommandCalls = 0;
   const realExec = w.document.execCommand;
-  w.document.execCommand = (cmd) => {
+  w.document.execCommand = (cmd: string) => {
     if (cmd === "copy") {
       execCommandCalls++;
       const ta = w.document.querySelector("textarea[style*='fixed']");
@@ -1004,10 +1003,10 @@ console.log("deep render ok: feed rows present");
       data: { source: "user", text: "queued while running", promptId: "upending1", ahead: 1 } },
   ];
   const origFetch = globalThis.fetch;
-  setGlobal("fetch", async (url, init) => {
+  setGlobal("fetch", async (url: string, init?: RequestInit) => {
     fetchCount++;
     const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
-    const u = raw.split("?")[0];
+    const u = raw.split("?")[0]!;
     if (u === "/api/agents")
       return {
         ok: true,
@@ -1287,12 +1286,6 @@ console.log("deep render ok: feed rows present");
       set: (v: number) => { top2 = Math.max(0, Math.min(v, Math.max(0, content - view))); },
     });
 
-    const labels = () =>
-      [...w.document.querySelectorAll(".feed .msg")].map((n) => {
-        const ts = n.querySelector(".msg-head .ts")?.textContent?.trim() ?? "";
-        const text = n.textContent ?? "";
-        return text.includes("queuedlabel") || ts.includes("queued") ? `${text.slice(0, 30)}|${ts}` : null;
-      }).filter((v): v is string => v !== null);
     const sendIt = async (text: string) => {
       ta2.value = text;
       ta2.dispatchEvent(new w.Event("input", { bubbles: true }));
@@ -1534,7 +1527,7 @@ console.log("deep render ok: feed rows present");
   PENDING_EVENTS.push({ id: "e7", seq: 7, ts: "2026-01-01T10:00:30Z", session: "alpha-s1",
     branch: "br0", parent: null, type: "message",
     data: { content: "answering the queued question", final: true } });
-  pushEvent(PENDING_EVENTS[PENDING_EVENTS.length - 1]);
+  pushEvent(PENDING_EVENTS[PENDING_EVENTS.length - 1]!);
   flushRefreshes();
   const orderOk = await waitFor("context-order rows", () => {
     flushRefreshes();
@@ -1549,7 +1542,7 @@ console.log("deep render ok: feed rows present");
   }
   {
     const feed = [...w.document.querySelectorAll(".msg")];
-    const idxOf = (needle) => feed.findIndex((r) => r.textContent.includes(needle));
+    const idxOf = (needle: string) => feed.findIndex((r) => r.textContent.includes(needle));
     const userRow = idxOf("queued while running");
     const replyRow = idxOf("answering the queued question");
     if (userRow === -1 || replyRow === -1) {
@@ -1617,7 +1610,7 @@ console.log("deep render ok: feed rows present");
     flushRefreshes();
     await new Promise((r) => setTimeout(r, 400));
 
-    const headFor = (needle) => {
+    const headFor = (needle: string) => {
       for (const d of w.document.querySelectorAll(".embed")) {
         if (!d.textContent.includes(needle)) continue;
         const sum = d.querySelector("summary");
@@ -1655,7 +1648,7 @@ console.log("deep render ok: feed rows present");
     console.log("deep render ok: consecutive tool rows group under one head (#75)");
 
     {
-      const cssOf = (el) => w.document.defaultView.getComputedStyle(el);
+      const cssOf = (el: Element) => w.document.defaultView.getComputedStyle(el);
       const groupedRows = [...w.document.querySelectorAll(".msg.grouped")];
       const feedRows = [...w.document.querySelectorAll(".msg")];
       if (groupedRows.length === 0) {
@@ -1787,7 +1780,6 @@ console.log("deep render ok: feed rows present");
   }
 
   {
-    const _sockB = MockWS.instances.at(-1);
     pushEvent({ id: "gb0", seq: 601, ts: "2026-01-01T16:00:00Z", session: "alpha-s1", branch: "br0",
       parent: null, type: "message", data: { role: "assistant", content: "boundary before the run" } });
     pushEvent({ id: "gb1", seq: 602, ts: "2026-01-01T16:00:01Z", session: "alpha-s1", branch: "br0",
@@ -1809,7 +1801,7 @@ console.log("deep render ok: feed rows present");
     flushRefreshes();
     await new Promise((r) => setTimeout(r, 500));
 
-    const rowFor = (needle) => {
+    const rowFor = (needle: string) => {
       for (const d of w.document.querySelectorAll(".embed")) {
         const sm = d.querySelector("summary");
         if (sm && sm.textContent.includes(needle)) return { cls: d.className, head: sm.textContent.trim() };
@@ -1852,7 +1844,7 @@ console.log("deep render ok: feed rows present");
   {
     const posted: string[] = [];
     const origFetchToggle = globalThis.fetch;
-    setGlobal("fetch", async (u, init) => {
+    setGlobal("fetch", async (u: string, init?: RequestInit) => {
       if (typeof u === "string" && /\/stop|\/start$/.test(u) && init?.method === "POST") {
         posted.push(u.slice(u.lastIndexOf("/")));
       }
@@ -2013,7 +2005,7 @@ console.log("deep render ok: feed rows present");
       parent: null, type: "tool_result", data: { callId: "cx2", name: "bash", result: "SEPARATE", ok: true, durationMs: 3 } });
     flushRefreshes();
     await new Promise((r) => setTimeout(r, 400));
-    const rowFor = (needle) => {
+    const rowFor = (needle: string) => {
       for (const d of w.document.querySelectorAll(".embed")) {
         const sm = d.querySelector("summary");
         const row = d.closest(".msg");
@@ -2318,7 +2310,7 @@ console.log("deep render ok: feed rows present");
     }
 
     {
-      const cssOf = (sel) => {
+      const cssOf = (sel: string) => {
         const el = w.document.querySelector(sel);
         return el ? w.document.defaultView.getComputedStyle(el) : null;
       };
@@ -3284,7 +3276,7 @@ console.log("deep render ok: feed rows present");
   await new Promise((r) => setTimeout(r, 60));
 
   const origFetch = globalThis.fetch;
-  setGlobal("fetch", async (url, init) => {
+  setGlobal("fetch", async (url: string, init?: RequestInit) => {
     fetchCount++;
     const u = String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
     if (u === "/api/agents")
@@ -3411,8 +3403,8 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg: string) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
   const headers = () => [...w.document.querySelectorAll(".wsheader")];
   const itemIds = () =>
     [...w.document.querySelectorAll(".agent-item")]
@@ -3421,7 +3413,7 @@ console.log("deep render ok: feed rows present");
 
   const before = itemIds();
   if (before.length !== 2) fail(`fixture should start with 2 chats, got ${before.length}`);
-  const headerFor = (ws) => headers().find((h) => h.getAttribute("title")?.startsWith(ws));
+  const headerFor = (ws: string) => headers().find((h) => h.getAttribute("title")?.startsWith(ws));
   const target = headerFor(AGENT.workspace);
   if (!target) fail(`no header for ${AGENT.workspace}: ${headers().map((h) => h.getAttribute("title"))}`);
   const wasCollapsed = /▸/.test(target.querySelector(".wscaret")?.textContent ?? "");
@@ -3453,16 +3445,16 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg: string) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
   const origFetch = globalThis.fetch;
   const THIRD = { ...AGENT, id: "gamma", workspace: AGENT.workspace }; 
   const GAMMA_SUB = { ...AGENT, id: "gamma-sub", parent: "gamma", workspace: AGENT.workspace };
   const DELTA = { ...AGENT, id: "delta", workspace: "/tmp/ws" };
   const DELTA_SUB = { ...AGENT, id: "delta-sub", parent: "delta", workspace: "/tmp/other-project" };
-  setGlobal("fetch", async (url, init) => {
+  setGlobal("fetch", async (url: string, init?: RequestInit) => {
     const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
-    const u = raw.split("?")[0];
+    const u = raw.split("?")[0]!;
     if (u === "/api/agents")
       return {
         ok: true,
@@ -3495,7 +3487,7 @@ console.log("deep render ok: feed rows present");
   });
   await sleep(300);
 
-  const headerFor = (ws) =>
+  const headerFor = (ws: string) =>
     [...w.document.querySelectorAll(".wsheader")].find((h) => h.getAttribute("title")?.startsWith(ws));
   const sharedHeader = headerFor(AGENT.workspace);
   if (!sharedHeader) fail("the shared workspace lost its header entirely (#18)");
@@ -3508,14 +3500,14 @@ console.log("deep render ok: feed rows present");
       fail(`consecutive identical workspace headers: ${JSON.stringify(wsTitles)}`);
   }
 
-  const rowText = (el) =>
+  const rowText = (el: Element) =>
     el.textContent.replace(/[▾▸🔔🧩✓]/g, "").replace(/\d+/g, "").trim();
-  const rowFor = (id) =>
+  const rowFor = (id: string) =>
     [...w.document.querySelectorAll(".agent-item")].find((el) => {
       const parts = rowText(el).split(/\s+/);
       return parts.includes(id) || rowText(el) === id;
     });
-  const caretIn = (el) => el?.querySelector(".caret");
+  const caretIn = (el: Element) => el.querySelector<HTMLElement>(".caret");
   for (const id of ["alpha", "beta"]) {
     if (caretIn(rowFor(id)))
       fail(`${id} has no sub-agents, so it must not offer a collapse caret (#106)`);
@@ -3562,7 +3554,7 @@ console.log("deep render ok: feed rows present");
   const reopenCaret = caretIn(alphaAfter);
   if (!reopenCaret)
     fail("a collapsed chat MUST keep its caret — it is the only control that can reopen it (#106)");
-  reopenCaret.click();
+  reopenCaret!.click();
   await sleep(200);
   const reopened = [...w.document.querySelectorAll(".agent-item")]
     .map((el) => el.textContent.match(/\b(alpha|beta|gamma)\b/)?.[1])
@@ -3615,10 +3607,10 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fail = (msg) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const fail = (msg: string) => { console.error(`#18 REGRESSION: ${msg}`); process.exit(1); };
   const headers = () => [...w.document.querySelectorAll(".wsheader")];
-  const headerFor = (ws) => headers().find((h) => h.getAttribute("title")?.startsWith(ws));
+  const headerFor = (ws: string) => headers().find((h) => h.getAttribute("title")?.startsWith(ws));
 
   const soloHeader = headerFor("/tmp/other-project");
   if (!soloHeader) fail("the single-chat project lost its header (#18)");
@@ -3650,8 +3642,8 @@ console.log("deep render ok: feed rows present");
 }
 
 {
-  const sleepW = (ms) => new Promise((r) => setTimeout(r, ms));
-  const failW = (msg) => { console.error(`#50 WIDE REGRESSION: ${msg}`); process.exit(1); };
+  const sleepW = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const failW = (msg: string) => { console.error(`#50 WIDE REGRESSION: ${msg}`); process.exit(1); };
   if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
     const bar = () => w.document.querySelector(".rightbar");
     const toggle = [...w.document.querySelectorAll(".iconbtn")].find(
@@ -3676,10 +3668,10 @@ console.log("deep render ok: feed rows present");
 }
 
 if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const drawer = () => w.document.querySelector(".rightbar");
   const drawerOpen = () => drawer()?.classList.contains("open") ?? false;
-  const fail = (msg) => { console.error(`#50 REGRESSION: ${msg}`); process.exit(1); };
+  const fail = (msg: string) => { console.error(`#50 REGRESSION: ${msg}`); process.exit(1); };
 
   const toggle = [...w.document.querySelectorAll(".iconbtn")].find(
     (b) => /toggle details panel/.test(b.getAttribute("title") ?? ""),
@@ -3742,9 +3734,9 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   const stopCalls: string[] = [];
   const realFetch = globalThis.fetch;
   const RUNNING_FOR_ESC = { ...AGENT, status: "running" };
-  setGlobal("fetch", async (url, init) => {
+  setGlobal("fetch", async (url: string, init?: RequestInit) => {
     const raw = String(url).replace(/^https?:\/\/[^/]+/, "");
-    const u = raw.split("?")[0];
+    const u = raw.split("?")[0]!;
     if (u.endsWith("/stop")) {
       stopCalls.push(u);
       return { ok: true, status: 200, json: async () => ({ ok: true }) };
@@ -3781,11 +3773,11 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
   console.log("deep render ok: Escape still interrupts a running agent when no drawer is open (#50)");
 
   {
-    const cs = (sel, prop) => {
+    const cs = (sel: string, prop: string) => {
       const el = w.document.querySelector(sel);
       return el ? w.document.defaultView.getComputedStyle(el).getPropertyValue(prop) : null;
     };
-    const isNone = (v) => !v || v === "none" || v === "0px" || v === "";
+    const isNone = (v: string | null) => !v || v === "none" || v === "0px" || v === "";
 
     const shadowClosed = cs(".rightbar", "box-shadow");
     if (!isNone(shadowClosed))
@@ -3818,8 +3810,8 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
 }
 
 if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
-  const sleepR = (ms) => new Promise((r) => setTimeout(r, ms));
-  const failR = (msg) => { console.error(`#50 RESIZE REGRESSION: ${msg}`); process.exit(1); };
+  const sleepR = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const failR = (msg: string) => { console.error(`#50 RESIZE REGRESSION: ${msg}`); process.exit(1); };
   const barOpen = () => w.document.querySelector(".rightbar")?.classList.contains("open") ?? false;
   const detailToggle = () =>
     [...w.document.querySelectorAll(".iconbtn")].find(

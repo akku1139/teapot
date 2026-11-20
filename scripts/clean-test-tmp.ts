@@ -8,7 +8,7 @@ const override = process.env.TEAPOT_TEST_TMP;
 const root = override || DEFAULT_ROOT;
 const apply = process.argv.includes("--apply");
 
-async function measure(dir) {
+async function measure(dir: string) {
   let total = 0;
   let files = 0;
   for (const e of await readdir(dir)) {

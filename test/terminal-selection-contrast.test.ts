@@ -19,7 +19,7 @@ import { selectionFor, themeColors, retintTerminal } from "../frontend/lib/termi
 const lum = (hex: string): number => {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex);
   if (!m) return NaN;
-  const [r, g, b] = [1, 2, 3].map((i) => parseInt(m[i]!, 16) / 255);
+  const [r, g, b] = [1, 2, 3].map((i) => parseInt(m[i]!, 16) / 255) as [number, number, number];
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 };
 

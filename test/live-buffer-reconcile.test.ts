@@ -31,8 +31,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   reconcileLiveBuffer,
   isCoveredByLog,
@@ -41,7 +39,6 @@ import {
   type LiveBuf,
 } from "../frontend/lib/live-buffer.ts";
 
-const _here = path.dirname(fileURLToPath(import.meta.url));
 
 // The shape is `LiveBuf`: `text` and `reasoning` are the two streamed parts, and `at` is
 // when the stretch started. `streaming` was a field this fixture invented — nothing in

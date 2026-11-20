@@ -114,6 +114,7 @@ test("a table documenting a pipe-delimited format survives", () => {
   const rows = [...body.matchAll(/<tr>(.*?)<\/tr>/g)];
   assert.equal(rows.length, 2, `both rows must survive: ${out}`);
   for (const [, row] of rows) {
+    assert.ok(row !== undefined, "the row group must exist");
     assert.equal(
       [...row.matchAll(/<td[^>]*>/g)].length,
       3,

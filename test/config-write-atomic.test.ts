@@ -129,7 +129,6 @@ test("no temp files are left behind (#144)", async () => {
 
 test("booting N agents performs ONE write, not N (#144)", async () => {
   const dataDir = mkdtempInRootSync("t144d-");
-  const _ws = mkdtempInRootSync("t144w-");
   const { path: p, agents } = cfg(dataDir, 6);
   const m = master(p, dataDir, agents);
 
@@ -161,7 +160,6 @@ test("the flushed config still describes this boot (#144)", async () => {
   // a deferred write that never flushes would leave config.json describing the
   // PREVIOUS boot — silent data loss of a different kind
   const dataDir = mkdtempInRootSync("t144e-");
-  const _ws = mkdtempInRootSync("t144x-");
   const { path: p, agents } = cfg(dataDir, 3);
   const m = master(p, dataDir, agents);
   await m.start();
@@ -173,7 +171,7 @@ test("the flushed config still describes this boot (#144)", async () => {
   const live = [...m.agents.keys()];
   assert.equal(parsed.agents?.length, live.length, `config must list every agent (#144): ${JSON.stringify(parsed.agents?.map((a) => a.id))}`);
   for (const id of live) {
-    const entry = parsed.agents?.find((a) => a.id === id);
+    const entry: { id?: string } | undefined = parsed.agents?.find((a) => a.id === id);
     assert.ok(entry, `${id} must be in the flushed config (#144)`);
   }
 });

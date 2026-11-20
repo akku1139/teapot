@@ -19,12 +19,14 @@ function parseField(part: string, min: number, max: number): Set<number> {
     return v;
   };
   for (const piece of part.split(",")) {
-    const [range, stepStr] = piece.split("/");
+    const [range = "", stepStr] = piece.split("/");
     const step = Math.max(1, Number(stepStr ?? 1) || 1);
     if (range === "*" || range === "*/" + step) {
       for (let i = min; i <= max; i += step) out.add(i);
     } else if (range.includes("-")) {
-      const [a, b] = range.split("-").map(Number);
+      const [aRaw, bRaw] = range.split("-").map(Number);
+      const a = aRaw ?? min;
+      const b = bRaw ?? max;
       clampOrThrow(a);
       clampOrThrow(b);
       if (a > b) throw new Error(`bad cron field: ${part} (inverted range)`);
@@ -46,7 +48,7 @@ export function parseSchedule(spec: string): Schedule {
   let effective = spec.trim();
   if (every) {
     const n = Number(every[1]);
-    const unit = every[2].toLowerCase();
+    const unit = (every[2] ?? "").toLowerCase();
     if (unit === "s") {
       const m = Math.max(1, Math.round(n / 60));
       effective = `*/${m} * * * *`;
@@ -60,15 +62,22 @@ export function parseSchedule(spec: string): Schedule {
   if (parts.length !== 5) throw new Error(`bad schedule: ${spec}`);
   return {
     raw: spec,
-    fields: parts.map((p, i) => parseField(p, BOUNDS[i][0], BOUNDS[i][1])) as Schedule["fields"],
+    fields: parts.map((p, i) => {
+      const bounds = BOUNDS[i];
+      if (!bounds) throw new Error(`bad schedule: ${spec}`);
+      return parseField(p, bounds[0], bounds[1]);
+    }) as Schedule["fields"],
   };
 }
 
 export function matches(schedule: Schedule, d: Date): boolean {
   const values = [d.getMinutes(), d.getHours(), d.getDate(), d.getMonth() + 1, d.getDay()];
   for (let i = 0; i < 5; i++) {
-    if (!schedule.fields[i].has(values[i])) {
-      if (i === 4 && values[i] === 0 && schedule.fields[i].has(7)) continue;
+    const field = schedule.fields[i];
+    const value = values[i];
+    if (!field || value === undefined) return false;
+    if (!field.has(value)) {
+      if (i === 4 && value === 0 && field.has(7)) continue;
       return false;
     }
   }

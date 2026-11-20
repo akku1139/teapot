@@ -18,7 +18,7 @@ async function withUpstream(
   body: unknown,
   fn: (baseUrl: string) => Promise<void>,
 ): Promise<void> {
-  const srv = http.createServer((req, res) => {
+  const srv = http.createServer((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   });

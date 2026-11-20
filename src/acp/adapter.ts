@@ -122,7 +122,6 @@ export function updateForEvent(
       };
     }
     case "tool_result": {
-      const _name = String(d.name ?? "tool");
       return {
         sessionUpdate: "tool_call_update",
         toolCallId: String(d.callId ?? e.type),

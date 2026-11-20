@@ -74,7 +74,7 @@ async function runAudit(
      * whole scenario collapsed. The audit request is identifiable by its system-free single user
      * turn containing the auditor's own instructions, which is stable by construction.
      */
-    chatFn: async (cfg: unknown, messages: { role?: string; content?: string }[]) => {
+    chatFn: async (_cfg: unknown, messages: { role?: string; content?: string }[]) => {
       call++;
       /**
        * The audit conversation is identified by its OWN instructions, wherever they sit.

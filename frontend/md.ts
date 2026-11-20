@@ -32,6 +32,16 @@
  */
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 
+/**
+ * A capture group as a string.
+ *
+ * `noUncheckedIndexedAccess` types every `match()` group as `string | undefined` even though the
+ * pattern guarantees it, so the renderer would otherwise spell `?? ""` at ~20 call sites.
+ */
+function g(m: RegExpMatchArray, index: number): string {
+  return m[index] ?? "";
+}
+
 /** Public entry: escape everything up front, then structure the lines. */
 export function renderMarkdown(src: string): string {
   return renderEscaped(escapeHtml(src.replace(/\r\n/g, "\n")).split("\n"));
@@ -44,25 +54,33 @@ export function renderMarkdown(src: string): string {
 function renderEscaped(lines: string[]): string {
   const out = [];
   let i = 0;
+  /**
+   * The line at `n`, as a string.
+   *
+   * Every read below is guarded by `i < lines.length`, so the empty fallback is only ever the
+   * "past the end" render — and having it here keeps `lines[n]` from carrying `undefined` into
+   * every string operation in this function.
+   */
+  const at = (n: number): string => lines[n] ?? "";
   while (i < lines.length) {
-    const line = lines[i];
+    const line = at(i);
     // fenced code block. The info string may be any non-whitespace run
     // (`js`, `/subject/why-qa`, `text .txt`…) — the old /\w*/ pattern rejected
     // slash-y pseudo-paths, which made the line fall through to paragraph
     // handling and HANGED the renderer on such chats.
     const fence = line.match(/^(`{3,})([^\n]*)$/);
     if (fence && !/^```.+\`\`\`/.test(line)) {
-      const ticks = fence[1].length;
+      const ticks = g(fence, 1).length;
       // The INFO STRING is kept as a class, which is what makes syntax highlighting
       // possible at all — it used to be discarded, so every block rendered unhighlighted.
-      const info = fence[2].trim().split(/\s+/)[0] ?? "";
+      const info = g(fence, 2).trim().split(/\s+/)[0] ?? "";
       const buf = [];
       i++;
       // A fence closes with AT LEAST as many backticks as opened it. Matching exactly
       // three meant a four-backtick fence never closed and ran to EOF — and the case
       // people write it for is nesting a ``` block inside one.
       const close = new RegExp("^`{" + ticks + ",}\\s*$");
-      while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
+      while (i < lines.length && !close.test(at(i))) buf.push(at(i++));
       i++; // closing fence (may be missing — unclosed fence just runs to EOF)
       /**
        * The LANGUAGE is the last path/extension segment of the info string.
@@ -90,7 +108,7 @@ function renderEscaped(lines: string[]): string {
     // heading (# through ###### → h1–h6)
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) {
-      out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`);
+      out.push(`<h${g(h, 1).length}>${inline(g(h, 2))}</h${g(h, 1).length}>`);
       i++;
       continue;
     }
@@ -98,20 +116,20 @@ function renderEscaped(lines: string[]): string {
     // escapeHtml turned ">" into "&gt;", so match the escaped marker
     if (/^\s*&gt;/.test(line)) {
       const buf = [];
-      while (i < lines.length && /^\s*&gt;/.test(lines[i])) buf.push(lines[i++].replace(/^\s*&gt;\s?/, ""));
+      while (i < lines.length && /^\s*&gt;/.test(at(i))) buf.push(at(i++).replace(/^\s*&gt;\s?/, ""));
       out.push(`<blockquote>${renderEscaped(buf)}</blockquote>`);
       continue;
     }
     // table (GFM): header row containing |, then a --- separator row
-    if (line.includes("|") && i + 1 < lines.length && isSeparatorRow(lines[i + 1])) {
-      const align = splitRow(lines[i + 1]).map((c) =>
+    if (line.includes("|") && i + 1 < lines.length && isSeparatorRow(at(i + 1))) {
+      const align = splitRow(at(i + 1)).map((c) =>
         c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : "left",
       );
       const head = splitRow(line);
       i += 2;
       const rows = [];
-      while (i < lines.length && /\S/.test(lines[i]) && lines[i].includes("|")) {
-        rows.push(splitRow(lines[i]));
+      while (i < lines.length && /\S/.test(at(i)) && at(i).includes("|")) {
+        rows.push(splitRow(at(i)));
         i++;
       }
       const cell = (c: string, idx: number, tag: string) => {
@@ -139,7 +157,7 @@ function renderEscaped(lines: string[]): string {
     // list (ul/ol, task items, one level of nesting via indentation)
     const listMatch = line.match(LIST_ITEM);
     if (listMatch) {
-      out.push(parseList(indentOf(listMatch[1])));
+      out.push(parseList(indentOf(g(listMatch, 1))));
       continue;
     }
     // blank line
@@ -166,17 +184,17 @@ function renderEscaped(lines: string[]): string {
     const para = [];
     while (
       i < lines.length &&
-      !/^\s*$/.test(lines[i]) &&
-      !/^#{1,6}\s/.test(lines[i]) &&
-      !lines[i].startsWith("```") &&
-      !/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
-      !/^\s*&gt;/.test(lines[i]) &&
-      !LIST_ITEM.test(lines[i]) &&
-      !(lines[i].includes("|") && i + 1 < lines.length && isSeparatorRow(lines[i + 1]))
+      !/^\s*$/.test(at(i)) &&
+      !/^#{1,6}\s/.test(at(i)) &&
+      !at(i).startsWith("```") &&
+      !/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(at(i)) &&
+      !/^\s*&gt;/.test(at(i)) &&
+      !LIST_ITEM.test(at(i)) &&
+      !(at(i).includes("|") && i + 1 < lines.length && isSeparatorRow(at(i + 1)))
     ) {
-      para.push(lines[i++]);
+      para.push(at(i++));
     }
-    if (i === startLine) para.push(lines[i++]);
+    if (i === startLine) para.push(at(i++));
     out.push(`<p>${para.map(inline).join("<br>")}</p>`);
   }
   return out.join("\n");
@@ -192,21 +210,21 @@ function renderEscaped(lines: string[]): string {
     let start = 1;
     const items = [];
     while (i < lines.length) {
-      const m = lines[i].match(LIST_ITEM);
+      const m = at(i).match(LIST_ITEM);
       if (!m) break;
-      const ind = indentOf(m[1]);
+      const ind = indentOf(g(m, 1));
       if (ind < minIndent) break;
-      const ol = /^\d/.test(m[2]);
+      const ol = /^\d/.test(g(m, 2));
       if (ordered === null) ordered = ol;
       else if (ol !== ordered) break; // marker type changed → close this list
       if (ordered && items.length === 0) {
-        const n = Number.parseInt(m[2], 10);
+        const n = Number.parseInt(g(m, 2), 10);
         // CommonMark: the list starts at the first item's number (any other numbers are
         // ignored, which is why only the FIRST is read)
         if (Number.isFinite(n)) start = n;
       }
       i++;
-      let body = m[3];
+      let body = g(m, 3);
       // folded continuation lines (wrapped text belonging to this item)
       //
       // Every BLOCK-STARTING construct must end the item, or the block is swallowed as
@@ -215,13 +233,13 @@ function renderEscaped(lines: string[]): string {
       // fences and quotes were already excluded — these two were the hole.
       while (
         i < lines.length &&
-        /\S/.test(lines[i]) &&
-        !LIST_ITEM.test(lines[i]) &&
-        !/^#{1,6}\s/.test(lines[i]) &&
-        !lines[i].startsWith("```") &&
-        !/^\s*&gt;/.test(lines[i]) &&
+        /\S/.test(at(i)) &&
+        !LIST_ITEM.test(at(i)) &&
+        !/^#{1,6}\s/.test(at(i)) &&
+        !at(i).startsWith("```") &&
+        !/^\s*&gt;/.test(at(i)) &&
         // a thematic break (the same predicate the block loop uses, so they agree)
-        !/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
+        !/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(at(i)) &&
         /**
          * A `=====` fence line ends the item too.
          *
@@ -235,23 +253,23 @@ function renderEscaped(lines: string[]): string {
          * fences are decoration around a value, and turning a trailing `=====` into an <h1> would
          * be a worse rendering of the same input.
          */
-        !/^ {0,3}={3,}\s*$/.test(lines[i]) &&
+        !/^ {0,3}={3,}\s*$/.test(at(i)) &&
         // a table START: this line has a pipe and the NEXT is a separator row
-        !(lines[i].includes("|") && i + 1 < lines.length && isSeparatorRow(lines[i + 1]))
+        !(at(i).includes("|") && i + 1 < lines.length && isSeparatorRow(at(i + 1)))
       ) {
-        body += " " + lines[i].trim();
+        body += " " + at(i).trim();
         i++;
       }
       // nested list deeper-indented than this item?
       let sub = "";
       const n = lines[i]?.match(LIST_ITEM);
-      if (n && indentOf(n[1]) > ind) sub = parseList(indentOf(n[1]));
+      if (n && indentOf(g(n, 1)) > ind) sub = parseList(indentOf(g(n, 1)));
       // task-list checkbox
       const task = body.match(/^\[( |x|X)\]\s+(.*)$/);
       const box = task
-        ? `<input type="checkbox" disabled${task[1].toLowerCase() === "x" ? " checked" : ""}> `
+        ? `<input type="checkbox" disabled${g(task, 1).toLowerCase() === "x" ? " checked" : ""}> `
         : "";
-      items.push(`<li>${box}${inline(task ? task[2] : body)}${sub}</li>`);
+      items.push(`<li>${box}${inline(task ? g(task, 2) : body)}${sub}</li>`);
       // A BLANK line between items makes a LOOSE list — still one list. Without this the
       // list ended at the blank line and the next item started a second one, and (because
       // the blank line was then consumed as an empty paragraph) the FIRST item was lost
@@ -260,9 +278,9 @@ function renderEscaped(lines: string[]): string {
       // Only skip the blanks when the next non-blank line is another item at this depth;
       // otherwise the list really has ended and the blank line belongs to what follows.
       let look = i;
-      while (look < lines.length && !/\S/.test(lines[look])) look++;
+      while (look < lines.length && !/\S/.test(at(look))) look++;
       const nextItem = lines[look]?.match(LIST_ITEM);
-      if (look > i && nextItem && indentOf(nextItem[1]) === ind && /^\d/.test(nextItem[2]) === ordered) {
+      if (look > i && nextItem && indentOf(g(nextItem, 1)) === ind && /^\d/.test(g(nextItem, 2)) === ordered) {
         i = look;
       }
     }

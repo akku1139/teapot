@@ -5,7 +5,6 @@ import { IconBtn, Modal } from "./chrome";
 import { Loading } from "./loading";
 import { CodePreview } from "./settings-parts";
 import { renderMarkdown } from "../md";
-import { highlightChunks } from "../lib/shiki";
 import { ficon, fileUiFor, mediaKindOf, type FileUiState, type TreeNode } from "../lib/file-tree";
 import { fmtK } from "../lib/timeline-row";
 
@@ -33,7 +32,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
   );
   const cycleIgnoreMode = () => {
     const order = ["dim", "hide", "show"] as const;
-    const next = order[(order.indexOf(ignoreMode() as any) + 1) % 3];
+    const next = order[(order.indexOf(ignoreMode() as (typeof order)[number]) + 1) % order.length] ?? "dim";
     setIgnoreMode(next);
     localStorage.setItem("teapot.ignoreMode", next);
   };

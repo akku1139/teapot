@@ -8,7 +8,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { Agent } from "../src/agent/agent.ts";
-import type { LlmResult } from "../src/agent/llm.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
 // #110: POSIX-only — runs POSIX commands through the bash tool.

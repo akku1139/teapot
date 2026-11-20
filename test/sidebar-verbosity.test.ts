@@ -25,15 +25,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
   treeRowsOf,
   sidebarRowsOf,
   wsChatCountsOf,
   type TreeAgent,
 } from "../frontend/lib/sidebar-tree.ts";
-
-const _app = readFileSync(new URL("../frontend/App.tsx", import.meta.url), "utf8");
 
 const a = (id: string, workspace: string, parent = ""): TreeAgent => ({ id, workspace, parent });
 

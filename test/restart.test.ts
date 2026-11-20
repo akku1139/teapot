@@ -21,8 +21,8 @@ test("stopAllAgents: gracefully stops all running agents", async () => {
         defaultProvider: "p", agents: [] } as any,
       "/dev/null",
     );
-    const _a = await m.addAgent({ id: "x", workspace: ws, provider: "p" });
-    const _b = await m.addAgent({ id: "y", workspace: ws, provider: "p" });
+    await m.addAgent({ id: "x", workspace: ws, provider: "p" });
+    await m.addAgent({ id: "y", workspace: ws, provider: "p" });
     assert.equal(m.agents.size, 2);
     await m.stopAllAgents(5_000);
     assert.equal(m.agents.size, 0, "all agents disposed");
@@ -41,7 +41,7 @@ test("getVersion: returns the real version from package.json (#33)", async () =>
     }
   ).version;
   assert.equal(Master.VERSION, expected, "matches package.json");
-  await useTempDirs(["ver-root-", "ver-ws-"], async ([dataDir, ws]) => {
+  await useTempDirs(["ver-root-", "ver-ws-"], async ([dataDir, _ws]) => {
     const m = new Master(
       { port: 0, dataDir, llm: { baseUrl: "http://x", apiKey: "k", model: "m" },
         providers: {}, agents: [] } as any,

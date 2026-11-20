@@ -27,7 +27,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { readFileSync } from "node:fs";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { chat, chatStream, type ChatMessage, type LlmConfig } from "../src/agent/llm.ts";
 import { isContextOverflow } from "../src/agent/tools.ts";
@@ -129,7 +128,7 @@ test("a 400 from the stream request DOES fall back (#50)", async () => {
   // survive the tightening, or those providers break. A 400 is the shape a
   // provider uses to say "I don't do that".
   const { error, shapes } = await serve(
-    (req, res, body) => {
+    (_req, res, body) => {
       if (JSON.parse(body || "{}").stream === true) {
         json(res, 400, { error: { message: "streaming is not supported by this endpoint" } });
         return;
@@ -258,11 +257,6 @@ test("a restored session re-applies pruning, so the prompt does not grow (#50)",
   // ones outside that guard.
   await useTempDirs(["p50a-", "p50b-"], async ([ws, sessionDir]) => {
     const bigOut = "Z".repeat(20_000);
-    const _tc = (id: string, name: string, args: unknown) => ({
-      id,
-      type: "function" as const,
-      function: { name, arguments: JSON.stringify(args) },
-    });
     const reply = (content: string, calls?: any[]): LlmResult => ({
       message: { role: "assistant", content, ...(calls ? { tool_calls: calls } : {}) },
     });

@@ -79,7 +79,7 @@ const MUTATIONS = [
 
 const only = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1] : null;
 
-function relevantTests(file) {
+function relevantTests(file: string) {
   const all = fs.readdirSync("test").filter((f) => f.endsWith(".test.ts")).map((f) => `test/${f}`);
   const direct = all.filter((t) => {
     const src = fs.readFileSync(t, "utf8");
@@ -93,7 +93,7 @@ function relevantTests(file) {
   return [...new Set([...direct, ...srcAsserters])];
 }
 
-const run = (files) => {
+const run = (files: string[]) => {
   try {
     execFileSync("node", ["--test", ...files], {
       encoding: "utf8",
@@ -104,7 +104,7 @@ const run = (files) => {
   } catch (e) {
     const err = e as { stdout?: unknown; stderr?: unknown };
     const out = String(err.stdout ?? "") + String(err.stderr ?? "");
-    const names = [...out.matchAll(/^✖ (.+?) \(\d/gm)].map((m) => m[1]);
+    const names = [...out.matchAll(/^✖ (.+?) \(\d/gm)].map((m) => m[1]!);
     return { failed: names.length, names };
   }
 };

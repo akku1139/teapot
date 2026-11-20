@@ -92,7 +92,7 @@ test("discover collects bundled files next to SKILL.md", async () => {
 
     const skills = await discoverSkills([{ dir: ws, source: "workspace" }]);
     assert.equal(skills.length, 1);
-    assert.deepEqual(skills[0].files, ["notes.md", "rollback.sh"]);
+    assert.deepEqual(skills[0]!.files, ["notes.md", "rollback.sh"]);
   });
 });
 
@@ -108,7 +108,7 @@ test("saveSkill writes frontmatter file and it is rediscoverable", async () => {
     assert.match(text, /^---\nname: coffee\ndescription: how to brew\n---/);
     const skills = await discoverSkills([{ dir: wsRoot, source: "workspace" }]);
     assert.equal(skills.length, 1);
-    assert.equal(skills[0].name, "coffee");
+    assert.equal(skills[0]!.name, "coffee");
   });
 });
 
@@ -292,7 +292,7 @@ test("load_skill delivers instructions in the SAME turn (#25)", async () => {
   // Any instruction the model wanted to attach had to go through enqueuePrompt
   // and arrive at the NEXT turn boundary — an extra full round-trip for
   // something the model already knows when it calls the tool.
-  await useTempDirs(["sk25a-", "sk25b-"], async ([ws, sessionDir]) => {
+  await useTempDirs(["sk25a-", "sk25b-"], async ([ws, _sessionDir]) => {
     const skillsDir = path.join(ws, "skills", "demo-skill");
     await mkdir(skillsDir, { recursive: true });
     await writeFile(path.join(skillsDir, "SKILL.md"), "# Demo skill\n\nDo the thing carefully.\n");

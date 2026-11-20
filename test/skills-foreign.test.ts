@@ -33,13 +33,13 @@ test("a folded description scalar is read, not truncated to '>-' (#28)", () => {
   );
   assert.equal(p.meta.name, "a2a-protocol");
   assert.notEqual(p.meta.description, ">-", "folded scalar must not be read literally (#28)");
-  assert.match(p.meta.description, /Builds A2A servers and clients\./);
-  assert.match(p.meta.description, /Use when the user wants X\./, "folded lines are joined (#28)");
+  assert.match(p.meta.description ?? "", /Builds A2A servers and clients\./);
+  assert.match(p.meta.description ?? "", /Use when the user wants X\./, "folded lines are joined (#28)");
 });
 
 test("a literal block scalar keeps its line breaks (#28)", () => {
   const p = parseSkillMd(`---\nname: z\ndescription: |\n  line one\n  line two\n---\nbody`);
-  assert.match(p.meta.description, /line one\nline two/);
+  assert.match(p.meta.description ?? "", /line one\nline two/);
 });
 
 test("quoted values are unquoted so a colon inside survives (#28)", () => {

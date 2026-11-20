@@ -43,25 +43,6 @@ function noisy(ws: string, sd: string) {
   } as never) as Agent;
 }
 
-const isHarness = (t: string) => t.includes("[harness]") || t.startsWith("Continue working toward");
-
-/** the longest run of consecutive harness user messages */
-function worstRun(messages: readonly unknown[]): number {
-  let run = 0;
-  let worst = 0;
-  for (const m of messages as { role?: string; content?: string }[]) {
-    if (m.role !== "user") {
-      run = 0;
-      continue;
-    }
-    if (isHarness(String(m.content ?? ""))) {
-      run++;
-      worst = Math.max(worst, run);
-    }
-  }
-  return worst;
-}
-
 test("the harness never sends two prompts back to back (#95)", { timeout: 30_000 }, async () => {
   await useTempDirs(["h95a-", "h95b-"], async ([ws, sd]) => {
     const agent = noisy(ws!, sd!);
