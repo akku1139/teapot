@@ -12,6 +12,5 @@
     "types": [
       "node"
     ],
-    "noImplicitAny": false
   }
 }

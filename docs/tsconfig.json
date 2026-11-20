@@ -7,5 +7,16 @@
     "esModuleInterop": true,
     "allowJs": false,
     "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    // "isolatedDeclarations": true,
+    "forceConsistentCasingInFileNames": true, // Windows
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noUncheckedSideEffectImports": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "erasableSyntaxOnly": true,
+    "noImplicitAny": true,
   }
 }
