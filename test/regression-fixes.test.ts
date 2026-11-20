@@ -135,15 +135,20 @@ test("regression: ConfigModal no longer loses focus — uses Index not For for e
   // uses, so it has to read the file that actually renders the rows
   const src = await readFile("frontend/components/ConfigModal.tsx", "utf8");
   // providers and tasks editable rows must be rendered with Index (keyed by position)
-  assert.match(src, /Index each=\{providers\(\)\}/, "providers rows should use Index");
-  assert.match(src, /Index each=\{tasks\(\)\}/, "tasks rows should use Index");
+  /**
+   * Solid 2 removed `<Index>`; `<For keyed={false}>` is its replacement and has the same contract (the child receives an
+   * ACCESSOR for the item at a POSITION, so the row is not rebuilt when only the contents change — which is what keeps the
+   * caret in an editable row). #291
+   */
+  assert.match(src, /<For keyed=\{false\} each=\{providers\(\)\}>/, "providers rows should use For keyed={false} (Index's successor)");
+  assert.match(src, /<For keyed=\{false\} each=\{tasks\(\)\}>/, "tasks rows should use For keyed={false} (Index's successor)");
   // ensure we didn't keep the old For pattern for those rows (would recreate DOM and lose focus)
   // The old pattern was `For each={providers()}` with `value={p.name}` directly — now p is accessor
   // Check that the providers input uses p().name (accessor) not p.name
   assert.ok(src.includes("value={p().name}"), "providers input should use accessor p().name via Index");
   assert.ok(src.includes("value={t().id}"), "tasks input should use accessor t().id via Index");
-  // also check that we import Index and untrack
-  assert.ok(src.includes("Index") && src.includes("from \"solid-js\""), "Index must be imported");
+  // Solid 2 has no `Index`; `For keyed={false}` is the same primitive, so there is nothing to import for it.
+  assert.ok(!src.includes("Index,"), "Index no longer exists in Solid 2 — a lingering import would fail at build time");
   /**
    * `untrack` belongs to the RIGHT PANEL's model switcher, which still lives in App.tsx — asserting
    * it here mixed two files into one test once the modal was extracted. Each file is checked for the

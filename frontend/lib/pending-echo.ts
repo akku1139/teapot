@@ -35,13 +35,22 @@ export const reconcilePending = (
   liveIds: readonly string[] | undefined,
 ): PendingEcho[] => {
   if (queued >= list.length) return list;
+  /**
+   * The server named the prompts it still holds — trust the NAMES, not the count.
+   *
+   * `queued` is a snapshot taken a moment earlier than `liveIds`, so the two can disagree; trimming to the number then drops an
+   * echo the server's own id list still contains, and its row vanishes mid-flight. Solid 2 also changed the ORDER these two
+   * effects commit in, which made the mismatch reachable from the `#tone` fixture (#291).
+   */
   if (liveIds?.length) {
     const live = new Set(liveIds);
     const matched = list.filter((p) => p.promptId && live.has(p.promptId));
     if (matched.length) {
       const unidentifiable = list.filter((p) => !p.promptId);
-      return unidentifiable.length ? [...matched, ...unidentifiable].slice(0, queued) : matched;
+      return unidentifiable.length ? [...matched, ...unidentifiable] : matched;
     }
+    // ids were given and NONE of ours match: the list is stale in a way the ids know about, so drop it
+    return list.filter((p) => !p.promptId);
   }
   return list.slice(0, queued);
 };

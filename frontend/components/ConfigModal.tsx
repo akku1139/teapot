@@ -567,17 +567,27 @@ export function ConfigModal(props: {
     }
     setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "authorization timed out" } }));
   };
-  createEffect(() => {
-    if (section() !== "mcp") return;
-    void refreshMcpStates();
-    mcpServers().forEach((m) => {
-      if (m.name) void refreshMcpOAuth(m.name);
-    });
-  });
   const [err, setErr] = createSignal("");
 
   type Section = "providers" | "runtime" | "appearance" | "mcp" | "tasks" | "archive" | "agents" | "update" | "skills" | "help";
   const [section, setSection] = createSignal<Section>("providers");
+  /**
+   * The MCP panel asks the server for its state when it is the visible section.
+   *
+   * Declared AFTER `section`, because Solid 2 runs an effect's compute phase while the component body is still executing — a
+   * read of a `createSignal` declared further down is in its temporal dead zone and the effect dies at bind time (the pill
+   * disappeared after the migration, #291). Solid 1 deferred the body, which hid the ordering.
+   */
+  createEffect(
+    () => ({ section: section(), servers: mcpServers() }),
+    ({ section: sec, servers }) => {
+      if (sec !== "mcp") return;
+      void refreshMcpStates();
+      servers.forEach((m) => {
+        if (m.name) void refreshMcpOAuth(m.name);
+      });
+    },
+  );
   const pickThemeCard = (id: string, mode: "dark" | "light") => {
     const { slot } = slotForSelection(props.theme.auto(), mode);
     if (slot === "dark") setSysDarkTheme(id);
@@ -612,9 +622,12 @@ export function ConfigModal(props: {
     setArchived(r?.agents ?? []);
   };
   const archivedTop = () => archived().filter((a) => !a.parent);
-  createEffect(() => {
-    if (section() === "archive") void refreshArchived();
-  });
+  createEffect(
+    () => section(),
+    (sec) => {
+      if (sec === "archive") void refreshArchived();
+    },
+  );
   const SECTIONS: { key: Section; label: string; hint: string }[] = [
     { key: "providers", label: "🧦 providers", hint: "endpoints, API keys, default models" },
     { key: "appearance", label: "🎨 appearance", hint: "theme, custom palettes, background image" },
@@ -981,7 +994,7 @@ export function ConfigModal(props: {
                         type="button"
                         class={"themecard" + (themeCardChosen(t.id) ? " on" : "")}
                         title={`${t.label} (custom)${t.backgroundImage ? " · with a background image" : ""}`}
-                        aria-pressed={themeCardChosen(t.id)}
+                        aria-pressed={themeCardChosen(t.id) ? "true" : "false"}
                         onClick={() => pickThemeCard(t.id, t.mode)}
                       >
                         <span class="themecard-preview"><ThemePreview palette={t.palette} backgroundImage={t.backgroundImage} surfaceAlpha={t.surfaceAlpha} backgroundDim={t.backgroundDim} /></span>
@@ -995,7 +1008,7 @@ export function ConfigModal(props: {
                         type="button"
                         class={"themecard" + (themeCardChosen(t.key) ? " on" : "")}
                         title={`${t.label} (${t.mode})`}
-                        aria-pressed={themeCardChosen(t.key)}
+                        aria-pressed={themeCardChosen(t.key) ? "true" : "false"}
                         onClick={() => pickThemeCard(t.key, t.mode)}
                       >
                         <span class="themecard-preview">
@@ -1677,8 +1690,12 @@ export function ConfigModal(props: {
                 <b>image downscaling</b>
                 <span class="muted">
                   {props.features
-                    ? props.features.imageResize.available
-                      ? `on — ${props.features.imageResize.tool}, long edge ≤ ${props.features.imageResize.maxEdge}px`
+                    ? /*
+                       * A features payload from an OLDER server has no `imageResize`; reading `.available` off it threw inside a
+                       * memo and, under Solid 2, that halts the reactive queue instead of just breaking this one line (#291).
+                       */
+                      (props.features.imageResize?.available ?? false)
+                      ? `on — ${props.features.imageResize?.tool}, long edge ≤ ${props.features.imageResize?.maxEdge}px`
                       : "off — no ffmpeg / ImageMagick found; uploads are served as-is"
                     : "checking…"}
                 </span>
@@ -1687,7 +1704,7 @@ export function ConfigModal(props: {
                 <b>terminal pty</b>
                 <span class="muted">
                   {props.features
-                    ? props.features.pty.available
+                    ? (props.features.pty?.available ?? false)
                       ? `on — ${props.features.pty.provider}`
                       : "off — no pty provider; terminals run on plain pipes (no resize)"
                     : "checking…"}

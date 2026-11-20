@@ -137,6 +137,7 @@ test("sidebarRows reads the collapsed set (the click was a no-op) (#18)", () => 
 });
 
 test("the header row is clickable and toggles the group (#18)", () => {
-  srcHas("the header must toggle its group (#18)", /class="wsheader"[\s\S]{0,600}onclick=/);
+  // Solid 2 renamed the DOM handlers to camelCase (`onClick`), so the contract is "a click handler is bound", not its spelling.
+  srcHas("the header must toggle its group (#18)", /class="wsheader"[\s\S]{0,900}onClick=/);
   srcHas("toggling should go through one named helper (#18)", /toggleWsGroup\(/);
 });

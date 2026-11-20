@@ -36,11 +36,20 @@ test("echoes are filed under the prompted agent's session, never the viewed time
   assert.match(sendBlock, /writePending\(echoKey,/, "and the send path must write under it");
   assert.doesNotMatch(sendBlock, /writePending\(pendingKey\(\)/, "writing under the viewed timeline is the reported bug");
 
-  // The queue-rebuild effect reads `sel()`, so it must write under that agent's session too.
-  const rebuildAt = app.indexOf("const queue = sel()?.pendingPromptQueue;");
+  /**
+   * The queue-rebuild effect reads `sel()`, so it must write under that agent's session too.
+   *
+   * Pinned by BEHAVIOUR of the expression, not by the exact source layout: Solid 2 runs an effect's compute phase at creation,
+   * so the shape around this line changed with the migration (#291) while the rule did not.
+   */
+  const rebuildAt = app.indexOf("queue: sel()?.pendingPromptQueue");
   assert.ok(rebuildAt > 0, "the queue-rebuild effect must exist");
-  const rebuildBlock = app.slice(rebuildAt, rebuildAt + 700);
-  assert.match(rebuildBlock, /const key = sel\(\)\?\.session \|\| pendingKey\(\);/, "the rebuild must be filed by the queue's OWNER");
+  const rebuildBlock = app.slice(rebuildAt, rebuildAt + 300);
+  assert.match(
+    rebuildBlock,
+    /key: sel\(\)\?\.session \|\| pendingKey\(\)/,
+    "the rebuild must be filed by the queue's OWNER",
+  );
 
   // The badge compares two counts; both must describe the same feed.
   const countAt = app.indexOf("const queuedCount = () =>");

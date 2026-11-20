@@ -198,6 +198,14 @@ const wsTokenQuery = () => {
 export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [selected, setSelected] = createSignal<string | null>(null);
+  /**
+   * The selected agent, DERIVED — and declared before anything that reads it.
+   *
+   * Solid 2 runs an effect's compute phase synchronously when the effect is CREATED, so a `sel()` read from an effect declared
+   * above this line hit the temporal dead zone and threw: the effect died at bind time and never ran again, which is how the
+   * queued-prompt echo stopped rendering after the migration (#291). Solid 1 deferred the body, which hid the ordering.
+   */
+  const sel = createMemo(() => agents().find((a) => a.id === selected()));
   const [timelineId, setTimelineId] = createSignal<string>("");
   const [masterSessionIndex, setMasterSessionIndex] = createSignal<Map<string, string>>(new Map());
   const [sessionsByAgent, setSessionsByAgent] = createSignal<Map<string, string[]>>(new Map());
@@ -282,20 +290,26 @@ export default function App() {
 
   const [showCfg, setShowCfg] = createSignal(false);
   let setupNudged = false;
-  createEffect(() => {
-    if (setupNudged || !cfg()?.needsSetup) return;
-    setupNudged = true;
-    requestAnimationFrame(() => {
-      loadCfg();
-      setShowCfg(true);
-    });
-  });
-  createEffect(() => {
-    if (!showCfg() || features()) return;
-    api("/api/features")
-      .then((f) => setFeatures(f as never))
-      .catch(() => setFeatures(null));
-  });
+  createEffect(
+    () => !!cfg()?.needsSetup,
+    (needsSetup) => {
+      if (setupNudged || !needsSetup) return;
+      setupNudged = true;
+      requestAnimationFrame(() => {
+        loadCfg();
+        setShowCfg(true);
+      });
+    },
+  );
+  createEffect(
+    () => (showCfg() ? features() : undefined),
+    (already) => {
+      if (already) return;
+      api("/api/features")
+        .then((f) => setFeatures(f as never))
+        .catch(() => setFeatures(null));
+    },
+  );
   const announcedOAuth = new Set<string>();
   const isNarrow = () => window.innerWidth <= NARROW_PX;
   const [narrow, setNarrow] = createSignal(isNarrow());
@@ -642,7 +656,7 @@ export default function App() {
   };
   onSettled(() => {
     window.addEventListener("resize", scheduleRestore);
-    onCleanup(() => {
+    return () => {
       window.removeEventListener("resize", scheduleRestore);
       feedRo?.disconnect();
       feedRo = undefined;
@@ -653,7 +667,7 @@ export default function App() {
       feedMoEl = undefined;
       if (feedMoRaf) cancelAnimationFrame(feedMoRaf);
       if (feedRoRaf) cancelAnimationFrame(feedRoRaf);
-    });
+    };
   });
 
   /**
@@ -734,23 +748,28 @@ export default function App() {
       if (now !== sysPrefersLight()) setSysPrefersLight(now);
     };
     document.addEventListener("visibilitychange", onWake);
-    onCleanup(() => {
+    return () => {
       sysMql?.removeEventListener("change", onChange);
       document.removeEventListener("visibilitychange", onWake);
-    });
+    };
   });
-  createEffect(() => {
-    const { active, repaired } = resolvedPainted();
-    const custom = customThemes().find((t) => t.id === active) ?? null;
-    if (repaired) {
-      if (themeAuto()) localStorage.setItem(sysPrefersLight() ? "teapot.theme.light" : "teapot.theme.dark", active);
-      else localStorage.setItem("teapot.theme", active);
-    }
-    document.documentElement.dataset.theme = active;
-    applyCustomTheme(document.documentElement, custom);
-    document.documentElement.dataset.appearance =
-      custom?.mode ?? THEMES.find((t) => t.key === active)?.mode ?? "dark";
-  });
+  createEffect(
+    () => {
+      const { active, repaired } = resolvedPainted();
+      const custom = customThemes().find((t) => t.id === active) ?? null;
+      return { active, repaired, custom, auto: themeAuto(), light: sysPrefersLight() };
+    },
+    ({ active, repaired, custom, auto, light }) => {
+      if (repaired) {
+        if (auto) localStorage.setItem(light ? "teapot.theme.light" : "teapot.theme.dark", active);
+        else localStorage.setItem("teapot.theme", active);
+      }
+      document.documentElement.dataset.theme = active;
+      applyCustomTheme(document.documentElement, custom);
+      document.documentElement.dataset.appearance =
+        custom?.mode ?? THEMES.find((t) => t.key === active)?.mode ?? "dark";
+    },
+  );
   const [modelProvider, setModelProvider] = createSignal("");
   const [modelDraft, setModelDraft] = createSignal("");
   /**
@@ -760,15 +779,19 @@ export default function App() {
    * written back only when it genuinely diverges (a provider switch or an agent switch).
    */
   let modelInputEl: HTMLInputElement | undefined;
-  createEffect(() => {
-    const v = modelDraft();
-    if (modelInputEl && composerValueChanged(modelInputEl.value, v)) modelInputEl.value = v;
-  });
+  createEffect(
+    () => modelDraft(),
+    (v) => {
+      if (modelInputEl && composerValueChanged(modelInputEl.value, v)) modelInputEl.value = v;
+    },
+  );
   const [effortDraft, setEffortDraft] = createSignal("");
-  createEffect(() => {
-    const id = selected();
-    setEffortDraft(untrack(() => agents().find((a) => a.id === id)?.reasoningEffort ?? ""));
-  });
+  createEffect(
+    () => selected(),
+    (id) => {
+      setEffortDraft(untrack(() => agents().find((a) => a.id === id)?.reasoningEffort ?? ""));
+    },
+  );
   const [models, setModels] = createSignal<
     { id: string; contextLength?: number; pricing?: { prompt: number; completion: number }; modalities?: { input: string[]; output: string[] } }[]
   >([]);
@@ -810,12 +833,16 @@ export default function App() {
   };
   let _prevModelAgent: string | null = null;
   let providerTouched = false;
-  createEffect(() => {
-    const id = selected();
-    if (!id) return;
-    const a = agents().find((x) => x.id === id);
-    const prov = a?.provider || cfg().defaultProvider || providerList()[0] || "";
-    if (!a) return;
+  createEffect(
+    () => {
+      const id = selected();
+      const a = agents().find((x) => x.id === id);
+      const prov = a?.provider || cfg().defaultProvider || providerList()[0] || "";
+      return id && a ? { id, prov } : null;
+    },
+    (cur) => {
+    if (!cur) return;
+    const { id, prov } = cur;
     if (id !== _prevModelAgent) {
       _prevModelAgent = id;
       providerTouched = false;
@@ -832,7 +859,8 @@ export default function App() {
         loadModels(prov);
       }
     }
-  });
+    },
+  );
   const MAX_COMPOSER_H = 360;
   const [composerMaximized, setComposerMaximized] = createSignal(false);
 
@@ -848,52 +876,23 @@ export default function App() {
     const CAP = 1200;
     return body.length > CAP ? "…" + body.slice(-CAP) : body;
   };
-  createEffect(() => {
-    if (!compacting()) setLive((l) => (l?.text.startsWith("[compact] ") ? null : l));
-  });
-  createEffect(() => {
-    void events().length;
-    void eventsTotal();
-    void compacting();
-    void chatEvents().length;
-    void olderDone();
-    void loadingFeed();
-    void loadingOlder();
-    const f = feedEl();
-    if (!f) return;
-    const height = f.scrollHeight;
-    if (height === lastContentHeight) return;
-    lastContentHeight = height;
-    /**
-     * Two frames is not always enough, and the residual gap is what #188 reports.
-     *
-     * This effect re-runs when the events change, which is BEFORE images and shiki finish laying out —
-     * a picture that decodes a frame later makes the feed taller AFTER the pin, leaving the operator
-     * 1-3px short of the bottom with no second pin. So pin again on the next frame if the height moved
-     * while we were waiting, and keep the follow decision honest by only doing it while at bottom.
-     */
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (!atBottom()) return;
-        pinToTail();
-        // a late layout pass (image decode, font swap, shiki) can grow the feed again
-        requestAnimationFrame(() => {
-          if (!atBottom()) return;
-          const h = f.scrollHeight;
-          if (h !== lastContentHeight) {
-            lastContentHeight = h;
-            pinToTail();
-          }
-        });
-      }),
-    );
-  });
+  createEffect(
+    () => !!compacting(),
+    (isCompacting) => {
+      if (!isCompacting) setLive((l) => (l?.text.startsWith("[compact] ") ? null : l));
+    },
+  );
   const [liveByAgent, setLiveByAgent] = createSignal<Map<string, { text: string; reasoning: string; at: number }>>(new Map());
   const live = () => {
     const id = selected();
     return id ? liveByAgent().get(id) ?? null : null;
   };
-  const setLive = (patch: { text: string; reasoning: string } | null | ((cur: { text: string; reasoning: string } | null) => { text: string; reasoning: string } | null)) => {
+  function setLive(
+    patch:
+      | { text: string; reasoning: string }
+      | null
+      | ((cur: { text: string; reasoning: string } | null) => { text: string; reasoning: string } | null),
+  ): void {
     const id = selected();
     if (!id) return;
     setLiveByAgent((prev) => {
@@ -916,8 +915,9 @@ export default function App() {
   const liveStartedAt = () => thinkStartedAt();
   const [liveReasoning, setLiveReasoning] = createSignal("");
   let liveRenderTimer: ReturnType<typeof setTimeout> | undefined;
-  createEffect(() => {
-    const l = live();
+  createEffect(
+    () => live(),
+    (l) => {
     if (!l) {
       clearTimeout(liveRenderTimer);
       liveRenderTimer = undefined;
@@ -931,39 +931,49 @@ export default function App() {
       setLiveText(live()?.text ?? "");
       setLiveReasoning(live()?.reasoning ?? "");
     }, (live()?.text.length ?? 0) > 20_000 ? 250 : (live()?.text.length ?? 0) > 6_000 ? 120 : 60);
-  });
+    },
+  );
   onCleanup(() => clearTimeout(liveRenderTimer));
 
-  createEffect(() => {
-    const list = agents();
-    setLiveByAgent((prev) =>
-      pruneDeadLiveBuffers(prev, (id) => list.find((x) => x.id === id)?.status),
-    );
-    setThinkStartedAt((cur) => clearThinkClockIfDone(cur, list, selected(), live()));
-  });
+  createEffect(
+    () => ({ list: agents(), selected: selected(), live: live() }),
+    ({ list, selected: selId, live: buf }) => {
+      setLiveByAgent((prev) =>
+        pruneDeadLiveBuffers(prev, (id) => list.find((x) => x.id === id)?.status),
+      );
+      setThinkStartedAt((cur) => clearThinkClockIfDone(cur, list, selId, buf));
+    },
+  );
 
-  createEffect(() => {
-    const txt = liveText();
-    const rsn = live()?.reasoning ?? "";
-    if (!txt && !rsn) return;
-    requestAnimationFrame(() => {
-      if (atBottom()) pinToTail();
-    });
-  });
+  createEffect(
+    () => ({ txt: liveText(), rsn: live()?.reasoning ?? "" }),
+    ({ txt, rsn }) => {
+      if (!txt && !rsn) return;
+      requestAnimationFrame(() => {
+        if (atBottom()) pinToTail();
+      });
+    },
+  );
 
-  createEffect(() => {
-    const queued = sel()?.pendingPrompts ?? 0;
-    const liveIds = sel()?.pendingPromptIds;
-    const key = pendingKey();
-    const mine = pendingFor(key);
-    const next = reconcilePending(mine, queued, liveIds);
-    if (next !== mine) writePending(key, next);
-  });
+  createEffect(
+    () => {
+      const key = pendingKey();
+      return { key, queued: sel()?.pendingPrompts ?? 0, liveIds: sel()?.pendingPromptIds };
+    },
+    ({ key, queued, liveIds }) => {
+      const mine = pendingFor(key);
+      const next = reconcilePending(mine, queued, liveIds);
+      if (next !== mine) writePending(key, next);
+    },
+  );
 
-  createEffect(() => {
-    const queue = sel()?.pendingPromptQueue;
+  createEffect(
+    () => {
+      const d = { queue: sel()?.pendingPromptQueue, key: sel()?.session || pendingKey() };
+      return d;
+    },
+    ({ queue, key }) => {
     if (!queue?.length) return;
-    const key = sel()?.session || pendingKey();
     /**
      * Add what the server knows and this client does not — at the END, never in front.
      *
@@ -978,10 +988,12 @@ export default function App() {
     }
     const next = mergeQueued(pendingFor(key), queue.filter((q) => !withdrawnPids.has(String(q.id ?? ""))));
     if (next !== pendingFor(key)) writePending(key, next);
-  });
+    },
+  );
 
-  createEffect(() => {
-    const id = selected();
+  createEffect(
+    () => selected(),
+    (id) => {
     if (!id) return;
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
@@ -995,9 +1007,9 @@ export default function App() {
       });
     };
     document.addEventListener("visibilitychange", onVisible);
-    onCleanup(() => document.removeEventListener("visibilitychange", onVisible));
-  });
-  const sel = createMemo(() => agents().find((a) => a.id === selected()));
+    return () => document.removeEventListener("visibilitychange", onVisible);
+    },
+  );
   /**
    * A parked question must be ON SCREEN, whatever page of the log it was asked on.
    *
@@ -1006,8 +1018,9 @@ export default function App() {
    * してたら出てきた". The snapshot carries the question's event id, so the page that contains it is fetched here (bounded —
    * a session whose question is hundreds of pages back must not hold the UI hostage).
    */
-  createEffect(() => {
-    const qid = (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId;
+  createEffect(
+    () => (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId,
+    (qid) => {
     if (!qid) return;
     if (events().some((e) => e.id === qid)) return;
     /**
@@ -1032,7 +1045,8 @@ export default function App() {
         if (events().length === before) return;
       }
     })();
-  });
+    },
+  );
   /**
    * …and SHOW it.
    *
@@ -1043,13 +1057,17 @@ export default function App() {
   let lastQuestionJump = "";
   /** question ids already re-fetched: one attempt each, or a stale id would poll for ever */
   const questionRefetched = new Set<string>();
-  createEffect(() => {
-    const qid = (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId;
-    if (!qid || qid === lastQuestionJump) return;
-    if (!events().some((e) => e.id === qid)) return;
-    lastQuestionJump = qid;
-    void jumpToEvent(qid, 0);
-  });
+  createEffect(
+    () => {
+      const qid = (sel() as { pendingQuestionId?: string } | undefined)?.pendingQuestionId;
+      return qid && events().some((e) => e.id === qid) ? qid : null;
+    },
+    (qid) => {
+      if (!qid || qid === lastQuestionJump) return;
+      lastQuestionJump = qid;
+      void jumpToEvent(qid, 0);
+    },
+  );
   const queuedCount = () => {
     const mine = sel()?.session === pendingKey() || !sel()?.session;
     return queuedBadgeCount({ sameSession: !!mine, echoCount: pendingCount() });
@@ -1065,9 +1083,13 @@ const isTimelineLive = (): boolean => {
   const [editing, setEditing] = createSignal<{ eventId: string; text: string } | null>(null);
   const pendingBySession = new Map<string, PendingEcho[]>();
   const [pendingMsgs, setPendingMsgs] = createSignal<PendingEcho[]>([]);
-  const pendingKey = (): string => timelineId() || selected() || "?";
-  const pendingFor = (key: string): PendingEcho[] => pendingBySession.get(key) ?? [];
-  const writePending = (key: string, next: PendingEcho[]): void => {
+  function pendingKey(): string {
+    return timelineId() || selected() || "?";
+  }
+  function pendingFor(key: string): PendingEcho[] {
+    return pendingBySession.get(key) ?? [];
+  }
+  function writePending(key: string, next: PendingEcho[]): void {
     const seen = new Set<string>();
     const deduped: PendingEcho[] = [];
     for (let i = next.length - 1; i >= 0; i--) {
@@ -1085,7 +1107,7 @@ const isTimelineLive = (): boolean => {
     if (deduped.length === 0) pendingBySession.delete(key);
     else pendingBySession.set(key, deduped);
     if (pendingKey() === key) setPendingMsgs(deduped);
-  };
+  }
 
   type Notif = {
     id: string;
@@ -1114,12 +1136,12 @@ const isTimelineLive = (): boolean => {
       return changed ? next : list;
     });
   };
-  const markReadIfFollowing = () => {
+  function markReadIfFollowing() {
     const id = selected();
     if (!id) return;
     if (!notifs().some((n) => !n.read && n.agentId === id)) return;
     markSessionRead(id);
-  };
+  }
   const subtreeUnread = (agentId: string): number => {
     let total = notifs().filter((n) => !n.read && n.agentId === agentId).length;
     for (const child of agents()) {
@@ -1202,19 +1224,7 @@ const isTimelineLive = (): boolean => {
       });
     }
   };
-  /**
-   * Scroll to one event, and only to the one on screen.
-   *
-   * `data-eid` is not an identity: ids are per-session counters, so looking one up while the feed still renders the
-   * PREVIOUS session finds a row with the same id there and scrolls to it. Reported as a session switch that "flew to
-   * `<div class="msg withdrawn" data-eid="e90468" data-session="teapot-10-16854917">`" — a row from the session that
-   * was on screen a moment earlier.
-   *
-   * So the row must match the timeline being shown, and it is waited for (bounded) rather than jumped to after a
-   * guessed delay: the notification calls this 350ms/60ms after selecting, and those numbers were the whole
-   * synchronisation.
-   */
-  const jumpToEvent = (eventId: string, tries = 0) => {
+  function jumpToEvent(eventId: string, tries = 0) {
     const want = timelineId();
     const el = document.querySelector<HTMLElement>(eidSelector(eventId));
     const ok = !!el && jumpTargetMatches(el.dataset.session, want);
@@ -1225,7 +1235,7 @@ const isTimelineLive = (): boolean => {
       return;
     }
     if (tries < 30) requestAnimationFrame(() => jumpToEvent(eventId, tries + 1));
-  };
+  }
 
   const pairInfo = createMemo(() => {
     const resFor = new Map<string, Ev>();
@@ -1289,7 +1299,9 @@ const isTimelineLive = (): boolean => {
       renderedNoteEvents: RENDERED_NOTE_EVENTS,
     }),
   );
-  const chatEvents = () => timeline().rows as Ev[];
+  function chatEvents(): Ev[] {
+    return timeline().rows as Ev[];
+  }
   const pendingCount = () => timeline().pendingCount;
   /**
    * The first ECHO row is where the streaming bubble belongs: above the messages waiting behind it, below everything that is
@@ -1364,7 +1376,9 @@ const isTimelineLive = (): boolean => {
     echoCache.set(key, ev);
     return ev;
   }
-  const loadCfg = () => api("/api/config").then(setCfg).catch(() => {});
+  function loadCfg(): void {
+    void api("/api/config").then(setCfg).catch(() => {});
+  }
   const [authLocked, setAuthLocked] = createSignal(false);
   onSettled(() => {
     const onUnauthorized = () => setAuthLocked(true);
@@ -1376,17 +1390,21 @@ const isTimelineLive = (): boolean => {
   const [todoViewMode, setTodoViewMode] = createSignal(true);
   const [todoDirty, setTodoDirty] = createSignal(false);
   let todoSeededFor = "";
-  createEffect(() => {
-    const id = selected();
-    const serverTodo = agents().find((a) => a.id === id)?.todo ?? "";
-    if (id && id !== todoSeededFor) {
-      todoSeededFor = id;
-      setTodoDirty(false);
-      setTodoDraft(serverTodo);
-    } else if (id && !todoDirty()) {
-      setTodoDraft(serverTodo);
-    }
-  });
+  createEffect(
+    () => {
+      const id = selected();
+      return { id, serverTodo: agents().find((a) => a.id === id)?.todo ?? "" };
+    },
+    ({ id, serverTodo }) => {
+      if (id && id !== todoSeededFor) {
+        todoSeededFor = id;
+        setTodoDirty(false);
+        setTodoDraft(serverTodo);
+      } else if (id && !todoDirty()) {
+        setTodoDraft(serverTodo);
+      }
+    },
+  );
   const saveTodo = async () => {
     const notify = (document.getElementById("todo-notify") as HTMLInputElement)?.checked ?? true;
     if (!selected()) return;
@@ -1783,6 +1801,59 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   }
 
   function feedEl() { return document.querySelector<HTMLElement>(".feed"); }
+  createEffect(
+    () => {
+      /**
+       * The dependencies are declared ONCE, in the compute phase — the listing that used to sit at the top of the body as a
+       * row of `void x()` reads (the Solid 1 way of subscribing without using a value).
+       */
+      const watched = {
+        events: events().length,
+        total: eventsTotal(),
+        compacting: !!compacting(),
+        /*
+         * `chatEvents()` (the derived timeline) is deliberately NOT read here: it is a memo declared further down, and Solid 2
+         * runs this compute function while the component body is still executing — the reference is in its temporal dead zone and
+         * the effect dies at bind time. Everything the timeline derives from is already listed above, so the subscription is
+         * identical without the forward reference.
+         */
+        olderDone: olderDone(),
+        loadingFeed: loadingFeed(),
+        loadingOlder: loadingOlder(),
+      };
+      return { watched, feed: feedEl() };
+    },
+    ({ feed }) => {
+    const f = feed;
+    if (!f) return;
+    const height = f.scrollHeight;
+    if (height === lastContentHeight) return;
+    lastContentHeight = height;
+    /**
+     * Two frames is not always enough, and the residual gap is what #188 reports.
+     *
+     * This effect re-runs when the events change, which is BEFORE images and shiki finish laying out —
+     * a picture that decodes a frame later makes the feed taller AFTER the pin, leaving the operator
+     * 1-3px short of the bottom with no second pin. So pin again on the next frame if the height moved
+     * while we were waiting, and keep the follow decision honest by only doing it while at bottom.
+     */
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!atBottom()) return;
+        pinToTail();
+        // a late layout pass (image decode, font swap, shiki) can grow the feed again
+        requestAnimationFrame(() => {
+          if (!atBottom()) return;
+          const h = f.scrollHeight;
+          if (h !== lastContentHeight) {
+            lastContentHeight = h;
+            pinToTail();
+          }
+        });
+      }),
+    );
+    },
+  );
   function tailSample(): TailSample | null {
     const f = feedEl();
     if (!f) return null;
@@ -2551,13 +2622,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     if (owner && (owner !== selected() || sid !== timelineId())) select(owner, false, sid || null);
   });
 
-  createEffect(() => {
-    const a = sel();
-    const base = a
-      ? `${isSelLive() ? "▶ " : a.status === "error" ? "⚠ " : ""}${agentLabel(a)} · teapot`
-      : "teapot";
-    document.title = unreadCount() > 0 ? `(${unreadCount()}) ${base}` : base;
-  });
+  createEffect(
+    () => {
+      const a = sel();
+      return { a, live: isSelLive(), unread: unreadCount() };
+    },
+    ({ a, live, unread }) => {
+      const base = a
+        ? `${live ? "▶ " : a.status === "error" ? "⚠ " : ""}${agentLabel(a)} · teapot`
+        : "teapot";
+      document.title = unread > 0 ? `(${unread}) ${base}` : base;
+    },
+  );
   const anyOverlayOpen = (): boolean =>
     showNew() || showCfg() || editing() !== null || (isNarrow() && showRight());
 
@@ -2620,15 +2696,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const r = (await api(`/api/agents/${encodeURIComponent(id)}/bg-jobs`).catch(() => null)) as { jobs?: BgJobRow[] } | null;
     if (r?.jobs) setBgJobs(r.jobs);
   };
-  createEffect(() => {
-    void selected();
-    void refreshBg();
-  });
-  createEffect(() => {
-    if (!showBg()) return;
-    const t = setInterval(() => void refreshBg(), 2000);
-    onCleanup(() => clearInterval(t));
-  });
+  createEffect(
+    () => selected(),
+    () => void refreshBg(),
+  );
+  createEffect(
+    () => showBg(),
+    (open) => {
+      if (!open) return;
+      const t = setInterval(() => void refreshBg(), 2000);
+      return () => clearInterval(t);
+    },
+  );
 
   const [renaming, setRenaming] = createSignal(false);
   const [renameDraft, setRenameDraft] = createSignal("");
@@ -2834,17 +2913,26 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
      */
     return 0;
   };
-  createEffect(() => {
-    void themeAuto();
-    void fixedTheme();
-    void sysPrefersLight();
-    void sysLightTheme();
-    void sysDarkTheme();
-    // the wallpaper is what decides the alpha, so it has to be a dependency of this retint
-    void activeBgImage();
-    const alpha = termAlpha();
-    for (const [, s] of liveTerms) retintTerminal(s.term, alpha);
-  });
+  createEffect(
+    () => {
+      /**
+       * Every input of the retint, read once here: the theme resolution, the wallpaper (it decides the alpha) and the alpha
+       * itself. In Solid 1 the body listed them as `void x()` calls; the compute phase is that list.
+       */
+      const inputs = {
+        auto: themeAuto(),
+        fixed: fixedTheme(),
+        light: sysPrefersLight(),
+        sysLight: sysLightTheme(),
+        sysDark: sysDarkTheme(),
+        wallpaper: activeBgImage(),
+      };
+      return { inputs, alpha: termAlpha() };
+    },
+    ({ alpha }) => {
+      for (const [, s] of liveTerms) retintTerminal(s.term, alpha);
+    },
+  );
 
   function disposeAllTerms() {
     for (const [, s] of liveTerms) {
@@ -3037,42 +3125,42 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
   };
 
-  createEffect(() => {
-    void termTabs();
-    void splitView();
-    void paneL();
-    void paneR();
-    void termHeight();
-    requestAnimationFrame(() => {
-      mountPane(0);
-      if (splitView()) mountPane(1);
-    });
-  });
+  createEffect(
+    () => {
+      const view = { tabs: termTabs(), split: splitView(), l: paneL(), r: paneR(), h: termHeight() };
+      return view;
+    },
+    (view) => {
+      requestAnimationFrame(() => {
+        mountPane(0);
+        if (view.split) mountPane(1);
+      });
+    },
+  );
 
   let _termFollowAgent: string | null = null;
-  createEffect(() => {
-    if (!termOpen()) return;
-    const id = selected();
-    if (!id) return;
-    if (id === _termFollowAgent) return;
-    _termFollowAgent = id;
-    const mine = termTabs()
-      .map((t, i) => ({ t, i }))
-      .filter((x) => x.t.agentId === id);
-    if (mine.length) {
-      focusTab(mine[mine.length - 1]!.i);
-    }
-  });
+  createEffect(
+    () => ({ open: termOpen(), id: selected(), tabs: termTabs() }),
+    ({ open, id, tabs }) => {
+      if (!open || !id) return;
+      if (id === _termFollowAgent) return;
+      _termFollowAgent = id;
+      const mine = tabs.map((t, i) => ({ t, i })).filter((x) => x.t.agentId === id);
+      if (mine.length) focusTab(mine[mine.length - 1]!.i);
+    },
+  );
 
-  createEffect(() => {
-    const n = termTabs().length;
-    const l = clampPaneIndex(paneL(), n);
-    if (l !== paneL()) setPaneL(l);
-    if (splitView()) {
-      const r = clampPaneIndex(paneR(), n);
-      if (r !== paneR()) setPaneR(r);
-    }
-  });
+  createEffect(
+    () => ({ n: termTabs().length, left: paneL(), right: paneR(), split: splitView() }),
+    ({ n, left, right, split }) => {
+      const l = clampPaneIndex(left, n);
+      if (l !== left) setPaneL(l);
+      if (split) {
+        const r = clampPaneIndex(right, n);
+        if (r !== right) setPaneR(r);
+      }
+    },
+  );
 
   const startGrip = (e: PointerEvent) => {
     e.preventDefault();
@@ -3149,7 +3237,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       })
       .catch(() => {
       });
-    onCleanup(() => {});
+    return () => {};
   });
 
   const SLASH_COMMANDS = [
@@ -3272,13 +3360,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * correct: this path only runs on a DOM change, never on a gesture, so there is no reader intent to fight.
    */
   let lastSampleViewport: number | undefined;
-  createEffect(() => {
-    const v = draft();
-    if (!composerEl) return;
-    if (!shouldWriteComposerValue(imeInProgress)) return;
-    if (composerValueChanged(composerEl.value, v)) composerEl.value = v;
-    autosizeComposer();
-  });
+  createEffect(
+    () => draft(),
+    (v) => {
+      if (!composerEl) return;
+      if (!shouldWriteComposerValue(imeInProgress)) return;
+      if (composerValueChanged(composerEl.value, v)) composerEl.value = v;
+      autosizeComposer();
+    },
+  );
   onSettled(() => {
     let pending = 0;
     const onResize = () => {
@@ -3289,10 +3379,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       });
     };
     window.addEventListener("resize", onResize);
-    onCleanup(() => {
+    return () => {
       window.removeEventListener("resize", onResize);
       if (pending) cancelAnimationFrame(pending);
-    });
+    };
   });
 
   const [pendingImages, setPendingImages] = createSignal<{ url: string; name: string }[]>([]);
@@ -3532,16 +3622,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
 
   let rightbarEl: HTMLDivElement | undefined;
   let rightbarTop = 0;
-  createEffect(() => {
-    agents();
-    requestAnimationFrame(() => {
+  createEffect(
+    () => agents(),
+    () => {
       requestAnimationFrame(() => {
-        if (!rightbarEl) return;
-        const target = Math.min(rightbarTop, rightbarEl.scrollHeight);
-        if (Math.abs(rightbarEl.scrollTop - target) > 1) rightbarEl.scrollTop = target;
+        requestAnimationFrame(() => {
+          if (!rightbarEl) return;
+          const target = Math.min(rightbarTop, rightbarEl.scrollHeight);
+          if (Math.abs(rightbarEl.scrollTop - target) > 1) rightbarEl.scrollTop = target;
+        });
       });
-    });
-  });
+    },
+  );
   const act = (path: string) =>
     () => selected() && api(`/api/agents/${selected()}${path}`, { method: "POST" }).then(refreshAgents);
 
@@ -3610,18 +3702,18 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const [goalViewMode, setGoalViewMode] = createSignal(true);
   const [goalNotify, setGoalNotify] = createSignal(true);
   let goalSeededFor = "";
-  createEffect(() => {
-    const id = selected();
-    if (!id) return;
-    const g = sel()?.goal;
-    if (id !== goalSeededFor) {
-      goalSeededFor = id;
-      setGoalDirty(false);
-      setGoalDraft("");
-      setGoalVerifyDraft("");
-      void g;
-    }
-  });
+  createEffect(
+    () => selected(),
+    (id) => {
+      if (!id) return;
+      if (id !== goalSeededFor) {
+        goalSeededFor = id;
+        setGoalDirty(false);
+        setGoalDraft("");
+        setGoalVerifyDraft("");
+      }
+    },
+  );
   /**
    * An edit form must FOLLOW the agent while the operator has not typed.
    *
@@ -3629,14 +3721,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
    * the old text — reported as "goalの編集画面にいるときにエージェントからgoalが更新されるとフロントのgoalが変わらない".
    * Once the operator has typed (`goalDirty`), their text wins: overwriting it mid-sentence would be worse than stale.
    */
-  createEffect(() => {
-    const g = sel()?.goal;
-    if (goalViewMode() || goalDirty() || !g) return;
-    const text = String(g.text ?? "");
-    const verify = String(g.verify ?? "");
-    if (text !== goalDraft()) setGoalDraft(text);
-    if (verify !== goalVerifyDraft()) setGoalVerifyDraft(verify);
-  });
+  createEffect(
+    () => ({ g: sel()?.goal, editing: !goalViewMode(), dirty: goalDirty() }),
+    ({ g, editing, dirty }) => {
+      if (editing || dirty || !g) return;
+      const text = String(g.text ?? "");
+      const verify = String(g.verify ?? "");
+      if (text !== goalDraft()) setGoalDraft(text);
+      if (verify !== goalVerifyDraft()) setGoalVerifyDraft(verify);
+    },
+  );
   const setGoal = async (e: Event) => {
     e.preventDefault?.();
     if (!selected() || !goalDraft().trim()) return;
@@ -3690,10 +3784,12 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     el.addEventListener("scroll", () => {
                       stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
                     });
-                    createEffect(() => {
-                      liveReasoning();
-                      if (stick) el.scrollTop = el.scrollHeight;
-                    });
+                    createEffect(
+                      () => liveReasoning(),
+                      () => {
+                        if (stick) el.scrollTop = el.scrollHeight;
+                      },
+                    );
                   }}
                 >
                   {liveReasoning()}
@@ -4025,7 +4121,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <button
                 class="iconbtn ham"
                 title="agent list"
-                aria-expanded={showLeft()}
+                aria-expanded={showLeft() ? "true" : "false"}
                 onClick={() => setShowLeft(!showLeft())}
               >☰</button>
             </Show>
@@ -4049,7 +4145,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   });
                 }}
                 onInput={(e) => setRenameDraft(e.currentTarget.value)}
-                onKeydown={(e) => {
+                onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
                     void commitRename();
@@ -4058,7 +4154,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                     setRenaming(false);
                   }
                 }}
-                onblur={() => void commitRename()}
+                onBlur={() => void commitRename()}
                 spellcheck={false}
               />
             </Show>
@@ -4106,7 +4202,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <button
                 type="button"
                 class="badge bgjobs"
-                aria-expanded={showBg()}
+                aria-expanded={showBg() ? "true" : "false"}
                 onClick={() => {
                   setShowBg(!showBg());
                   if (showBg()) void refreshBg();
@@ -4448,15 +4544,15 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   <IconBtn icon="▾" title="hide the terminal (shells keep running; reopen with t) — close individual shells with their ✕ tab buttons" onClick={toggleTerm} />
                 </div>
               </div>
-              <div class="termbody" classList={{ split: splitView() }}>
-                <div class="termpane" classList={{ focused: focusedPane() === 0 }} onpointerdown={() => { setFocusedPane(0); focusPane(0); }} ref={setPaneHost(0)}>
+              <div class={`termbody${splitView() ? " split" : ""}`}>
+                <div class={`termpane${focusedPane() === 0 ? " focused" : ""}`} onPointerDown={() => { setFocusedPane(0); focusPane(0); }} ref={setPaneHost(0)}>
                   <Show when={paneL() < 0 || paneL() >= termTabs().length}>
                     <div class="termempty muted">no shell here — ＋ opens one, tabs fill the focused pane</div>
                   </Show>
                 </div>
                 <Show when={splitView()}>
                   <div class="termsplit" />
-                  <div class="termpane" classList={{ focused: focusedPane() === 1 }} onpointerdown={() => { setFocusedPane(1); focusPane(1); }} ref={setPaneHost(1)}>
+                  <div class={`termpane${focusedPane() === 1 ? " focused" : ""}`} onPointerDown={() => { setFocusedPane(1); focusPane(1); }} ref={setPaneHost(1)}>
                     <Show when={paneR() < 0 || paneR() >= termTabs().length}>
                       <div class="termempty muted">no shell here — click a tab or ＋ to add</div>
                     </Show>
@@ -4567,7 +4663,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                   setCmdIdx(0);
                   autosizeComposer();
                 }}
-                onKeydown={(e) => {
+                onKeyDown={(e) => {
                   const sugg = suggestions();
                   if (sugg.length > 0 && e.key === "ArrowDown") {
                     e.preventDefault();
@@ -5442,7 +5538,9 @@ function NewAgentModal(props: {
     setParent(d.parent ?? "");
     setEntries(d.entries ?? []);
   }
-  onSettled(() => browse(dir()));
+  onSettled(() => {
+    void browse(dir());
+  });
   const [parent, setParent] = createSignal("");
 
   const create = async (e: Event) => {

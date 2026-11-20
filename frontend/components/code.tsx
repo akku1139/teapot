@@ -60,10 +60,9 @@ export function HighlightedCode(props: { text: string; lang?: string | undefined
   const key = () => (props.lang ? `${props.lang}::${props.text.length}::${props.text}` : "");
   const cached = () => (props.lang ? highlightedHtml(key()) : undefined);
   const [html, setHtml] = createSignal(cached() ?? "");
-  createEffect(() => {
-    const k = key();
-    const text = props.text;
-    const lang = props.lang;
+  createEffect(
+    () => ({ k: key(), text: props.text, lang: props.lang }),
+    ({ k, text, lang }) => {
     if (!lang || !text.trim()) { setHtml(""); return; }
     const hit = highlightedHtml(k);
     if (hit !== undefined) { setHtml(hit); return; }
@@ -78,7 +77,8 @@ export function HighlightedCode(props: { text: string; lang?: string | undefined
       } catch {
       }
     })();
-  });
+    },
+  );
   return (
     <Show when={!!html()} fallback={<pre class="mono toolbody">{props.text}</pre>}>
       {}

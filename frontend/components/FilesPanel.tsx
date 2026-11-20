@@ -102,8 +102,9 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     });
 
   let kidsFor = "";
-  createEffect(() => {
-    const id = props.agentId;
+  createEffect(
+    () => props.agentId,
+    (id) => {
     if (id === kidsFor) return;
     kidsFor = id;
     setExpanded(new Set<string>());
@@ -116,7 +117,8 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
       if (rows) setKids(new Map([["", rows]]));
       setLoading(false);
     });
-  });
+    },
+  );
 
   const toggleDir = async (node: TreeNode) => {
     const next = new Set<string>(expanded());

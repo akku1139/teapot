@@ -81,20 +81,24 @@ export function GoalEditor(props: {
     verifyEl = el;
     el.value = props.verify;
   };
-  createEffect(() => {
-    const v = props.goal;
-    const el = goalEl;
-    if (el?.isConnected && shouldWriteComposerValue(imeInProgress) && composerValueChanged(el.value, v)) {
-      el.value = v;
-    }
-  });
-  createEffect(() => {
-    const v = props.verify;
-    const el = verifyEl;
-    if (el?.isConnected && shouldWriteComposerValue(imeInProgress) && composerValueChanged(el.value, v)) {
-      el.value = v;
-    }
-  });
+  createEffect(
+    () => props.goal,
+    (v) => {
+      const el = goalEl;
+      if (el?.isConnected && shouldWriteComposerValue(imeInProgress) && composerValueChanged(el.value, v)) {
+        el.value = v;
+      }
+    },
+  );
+  createEffect(
+    () => props.verify,
+    (v) => {
+      const el = verifyEl;
+      if (el?.isConnected && shouldWriteComposerValue(imeInProgress) && composerValueChanged(el.value, v)) {
+        el.value = v;
+      }
+    },
+  );
   return (
     <Show
       when={!props.preview}

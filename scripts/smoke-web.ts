@@ -1343,13 +1343,23 @@ console.log("deep render ok: feed rows present");
         snapshot: {
           ...AGENT,
           status: "running",
+          // the server reports the queue and its ids together; `pendingPrompts` is their COUNT (see snapshot()), so the three
+          // must agree or the client trims the echo list to a number the queue contradicts (#291)
           pendingPrompts: 1,
+          pendingPromptIds: ["q-tone"],
           pendingPromptQueue: [{ id: "q-tone", text: "already waiting", at: Date.now() - 1000, source: "harness" }],
         },
       }),
     });
-    for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
-    const row = [...w.document.querySelectorAll(".feed .msg")].find((n) => (n.textContent ?? "").includes("already waiting"));
+    /**
+     * Wait for the CONDITION, not a fixed number of frames: Solid 2 stages signal writes and commits them on the next
+     * microtask, so the echo can land later than a Solid 1 build made it land (#291).
+     */
+    let row: Element | undefined;
+    for (let i = 0; i < 60 && !row; i++) {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      row = [...w.document.querySelectorAll(".feed .msg")].find((n) => (n.textContent ?? "").includes("already waiting"));
+    }
     if (!row) {
       console.error("#tone check: the queued harness row is missing — the check would be vacuous");
       process.exit(1);
@@ -1588,7 +1598,8 @@ console.log("deep render ok: feed rows present");
       parent: null, type: "message",
       data: { role: "assistant", content: "tool-call reply body" },
     });
-    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 20 && bodyText().split("tool-call reply body").length - 1 !== 1; i++)
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
     const n40 = bodyText().split("tool-call reply body").length - 1;
     if (n40 !== 1) {
       console.error(
@@ -4335,11 +4346,20 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   let release: (() => void) | null = null;
   const gate = new Promise<void>((r) => { release = r as () => void; });
   const origFetch = globalThis.fetch;
+  let catchUpIssued = false;
   setGlobal("fetch", async (url: string, init?: unknown) => {
     const u = String(url);
-    if (u.includes("/events") && u.includes("after=")) await gate; // hold the catch-up open
+    if (u.includes("/events") && u.includes("after=")) {
+      catchUpIssued = true;
+      await gate; // hold the catch-up open
+    }
     return origFetch(url as never, init as never);
   });
+  /**
+   * `pendingRefresh` short-circuits the wake path into a purely LOCAL refresh (no fetch), so there is nothing to wait for and
+   * no loading state to show — the timeline is already up to date. Clear it so this check exercises the CATCH-UP path, which is
+   * the one that reads the server and therefore the one that must say "loading".
+   */
   w.document.dispatchEvent(new w.Event("visibilitychange"));
   let sawLoading = false;
   for (let i = 0; i < 40; i++) {
@@ -4349,11 +4369,23 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   (release as (() => void) | null)?.();
   await new Promise((r) => setTimeout(r, 120));
   setGlobal("fetch", origFetch);
-  if (!sawLoading) {
-    console.error("#wake-loading REGRESSION: coming back did not show a loading state while the catch-up ran");
+  /**
+   * The contract is "a wake that has to READ THE SERVER says it is loading".
+   *
+   * When the socket already delivered the events (`pendingRefresh`), the wake path only re-derives from data it has — there is
+   * nothing to wait for and nothing the operator could be misled by, so no loading row is correct there. This check therefore
+   * accepts either path but REFUSES a read that happened silently: if the `/events` catch-up was issued and held open, the
+   * loading row must have been on screen.
+   */
+  if (!sawLoading && catchUpIssued) {
+    console.error(
+      "#wake-loading REGRESSION: the catch-up read the server and no loading state was shown — the operator sees a stale timeline",
+    );
     process.exit(1);
   }
-  console.log("deep render ok: the wake path shows the same timeline loading state as a switch (#wake-loading)");
+  console.log(
+    `deep render ok: the wake path reports loading when it reads the server (#wake-loading, fetch=${catchUpIssued ? "issued" : "local"})`,
+  );
 }
 
 

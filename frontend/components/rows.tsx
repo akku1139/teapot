@@ -73,7 +73,7 @@ export function FreeTextAnswer(props: { answered: boolean; onOption?: ((t: strin
         disabled={props.answered}
         value={val()}
         onInput={(e) => setVal(e.currentTarget.value)}
-        onKeydown={(e: KeyboardEvent) => {
+        onKeyDown={(e: KeyboardEvent) => {
           if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }
         }}
       />
@@ -85,8 +85,8 @@ export function FreeTextAnswer(props: { answered: boolean; onOption?: ((t: strin
 export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | undefined; orphan?: boolean | undefined; agentActive?: boolean | undefined; onResize?: (() => void) | undefined; agentId?: string | undefined }) {
   const e = props.e;
   const grouped = groupedWith(props.prev as RowLike | undefined, e as RowLike);
-  const resEv = createMemo(() => props.res?.(), undefined, {
-    equals: (a, b) => a?.id === b?.id,
+  const resEv = createMemo(() => props.res?.(), {
+    equals: (a: { id?: string } | undefined, b: { id?: string } | undefined) => a?.id === b?.id,
   });
   const res = () => resEv();
 
@@ -491,7 +491,6 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
     // discarded and its scroll offset with it.
     return { label, hint, body, key: `${res()?.id ?? "none"}|${label}|${hint ?? ""}` };
     },
-    undefined,
     {
       equals: (a, b) => (a as { key?: string }).key === (b as { key?: string }).key,
     },
@@ -547,11 +546,13 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
  */
 function MdContent(props: { html: string }) {
   let el: HTMLDivElement | undefined;
-  createEffect(() => {
-    void props.html; // re-run when the body changes
-    // the attribute is written during reconciliation; the highlight reads the DOM after that
-    queueMicrotask(() => highlightMessageCode(el));
-  });
+  createEffect(
+    () => props.html,
+    () => {
+      // the attribute is written during reconciliation; the highlight reads the DOM after that
+      queueMicrotask(() => highlightMessageCode(el));
+    },
+  );
   return <div class="content" ref={el} innerHTML={props.html} />;
 }
 
