@@ -1631,7 +1631,7 @@ export function serveApp(app: Hono, port: number, host?: string): { close: () =>
       port,
       hostname: bindHost,
       websocket: { server: wss as unknown as WebSocketServerLike },
-    } as any,
+    } as unknown as Parameters<typeof serve>[0],
     (info) => {
       const shown =
         host && host !== "0.0.0.0" && host !== "::"

@@ -96,7 +96,7 @@ export function updateForEvent(
   e: { type: string; data: unknown },
   opts: { workspace: string },
 ): { sessionUpdate: string; [k: string]: unknown } | null {
-  const d = (e.data ?? {}) as Record<string, any>;
+  const d = (e.data ?? {}) as Record<string, unknown>;
   switch (e.type) {
     case "message": {
       if (d.final === true || d.operatorFacing === true) return null;

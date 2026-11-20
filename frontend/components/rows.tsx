@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import type { JSX } from "solid-js";
 import { AnsiText, BashElapsed, HighlightedCode } from "./code";
 import { Card } from "./card";
 import { CopyBtn } from "./chrome";
@@ -186,7 +187,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
   void r;
   let label = name;
   let hint: string | null = "";
-  let body: any = argsBlock();
+  let body: JSX.Element = argsBlock();
   /**
    * ONE rendering for "we ran an MCP tool", whichever route got us here.
    *
@@ -400,7 +401,7 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
       case "save_skill": {
         label = `skill: ${argStr("name")}`;
         hint = oneLine(argStr("description"), 60);
-        const files = Array.isArray(d.args?.files) ? d.args.files.map((f: any) => f?.name).filter(Boolean) : [];
+        const files = Array.isArray(d.args?.files) ? d.args.files.map((f: unknown) => (f as { name?: unknown })?.name).filter(Boolean) : [];
         body = (
           <>
             {files.length ? <div class="meta">bundled: {files.join(", ")}</div> : null}

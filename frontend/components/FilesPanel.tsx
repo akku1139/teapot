@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
+import type { JSX } from "solid-js";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
 import { IconBtn, Modal } from "./chrome";
@@ -51,14 +52,17 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
       });
   };
 
-  const parseEntries = (parentPath: string, list: any[]): TreeNode[] =>
-    list.map((e) => ({
-      name: String(e.name),
-      path: parentPath ? `${parentPath}/${e.name}` : String(e.name),
-      dir: !!e.dir,
-      ...(typeof e.size === "number" ? { size: e.size } : {}),
-      ...(e.ignored ? { ignored: true } : {}),
-    }));
+  const parseEntries = (parentPath: string, list: unknown[]): TreeNode[] =>
+    list.map((raw) => {
+      const e = (raw ?? {}) as { name?: unknown; dir?: unknown; size?: unknown; ignored?: unknown };
+      return {
+        name: String(e.name),
+        path: parentPath ? `${parentPath}/${e.name}` : String(e.name),
+        dir: !!e.dir,
+        ...(typeof e.size === "number" ? { size: e.size } : {}),
+        ...(e.ignored ? { ignored: true } : {}),
+      };
+    });
 
   async function fetchDir(path: string): Promise<TreeNode[] | null> {
     return fetchDirWith(path, showHidden());
@@ -195,7 +199,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     } catch (ex) {
       const raw = (ex as { payload?: unknown }).payload;
       const conflict =
-        raw && typeof raw === "object" && (raw as any).error === "file changed on disk"
+        raw && typeof raw === "object" && (raw as { error?: unknown }).error === "file changed on disk"
           ? (raw as { current?: string })
           : null;
       if (conflict?.current !== undefined) {
@@ -222,7 +226,7 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
   const isEditable = (pv: { binary?: boolean; truncated?: boolean }) =>
     !pv.binary && !pv.truncated;
 
-  const row = (node: TreeNode, depth: number): any => (
+  const row = (node: TreeNode, depth: number): JSX.Element => (
     <>
       <div
         class={

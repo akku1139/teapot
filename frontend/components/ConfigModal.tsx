@@ -4,7 +4,7 @@ import { NumberField, ThemePreview } from "./settings-parts";
 import { api } from "../lib/api";
 import { bgSrc, bgSrcSet } from "../lib/bg-srcset";
 import { flashHint } from "../lib/flash";
-import { oauthStateFrom } from "../lib/mcp-oauth-key";
+import { oauthStateFrom, type OAuthStateLike } from "../lib/mcp-oauth-key";
 import { relTime } from "../lib/format";
 import { renderMarkdownCached } from "../lib/markdown";
 import { PROVIDER_PRESETS } from "../lib/provider-presets";
@@ -323,8 +323,31 @@ export function ThemeEditor(props: {
   );
 }
 
+type McpSrv = {
+  name?: string; transport?: string; command?: string; url?: string; description?: string;
+  enabled?: boolean; args?: string[]; env?: Record<string, string>; headers?: Record<string, string>;
+  [k: string]: unknown;
+};
+type TaskRow = { id?: string; agent?: string; prompt?: string; schedule?: string; next?: string; last?: string; forked?: boolean; [k: string]: unknown };
+type McpState = { name?: string; authorized?: boolean; required?: boolean; lastError?: string; status?: string; tools?: unknown[]; [k: string]: unknown };
+type McpOAuthStatus = OAuthStateLike & { error?: string; lastError?: string; flow?: { phase: string; url?: string; message?: string } };
+interface CfgShape {
+  providers?: Record<string, unknown>;
+  defaultProvider?: string;
+  agents?: { id?: string; workspace?: string; parent?: string }[];
+  tasks?: TaskRow[];
+  mcpServers?: McpSrv[];
+  version?: string;
+  shortContext?: boolean;
+  progressMinChars?: number;
+  progressIntervalMs?: number;
+  contextTokenBudget?: number | null;
+  contextWindowTokens?: number | null;
+  maxSpawnDepth?: number;
+  hasPassword?: boolean;
+}
 export function ConfigModal(props: {
-  cfg: any;
+  cfg: CfgShape;
   onClose: () => void;
   onSaved: () => void;
   announcedOAuth: Set<string>;
@@ -352,16 +375,17 @@ export function ConfigModal(props: {
   };
 }) {
   type PRow = { name: string; baseUrl: string; apiKeys: string[]; model: string };
-  const rowOf = (name: string, v: any): PRow => {
-    const keys: string[] = Array.isArray(v?.apiKeys) && v.apiKeys.length
-      ? v.apiKeys.filter((k: unknown) => typeof k === "string" && k.trim())
-      : v?.apiKey
+  const rowOf = (name: string, v: Record<string, unknown>): PRow => {
+    const apiKeys = v.apiKeys;
+    const keys: string[] = Array.isArray(apiKeys) && apiKeys.length
+      ? apiKeys.filter((k: unknown) => typeof k === "string" && k.trim())
+      : v.apiKey
         ? [String(v.apiKey)]
         : [""];
-    return { name, baseUrl: v?.baseUrl ?? "", apiKeys: keys.length ? keys : [""], model: v?.model ?? "" };
+    return { name, baseUrl: String(v.baseUrl ?? ""), apiKeys: keys.length ? keys : [""], model: String(v.model ?? "") };
   };
   const [providers, setProviders] = createSignal<PRow[]>(
-    Object.entries(props.cfg.providers ?? {}).map(([name, v]: [string, any]) => rowOf(name, v)),
+    Object.entries(props.cfg.providers ?? {}).map(([name, v]) => rowOf(name, (v ?? {}) as Record<string, unknown>)),
   );
   const [defaultProvider, setDefaultProvider] = createSignal(props.cfg.defaultProvider ?? "");
   const cfgDefaultProvider = () => props.cfg.defaultProvider ?? "";
@@ -386,13 +410,13 @@ export function ConfigModal(props: {
   const [shortContext, setShortContext] = createSignal(Boolean(props.cfg.shortContext));
   const [apiPassword, setApiPassword] = createSignal("");
   const [apiPasswordDirty, setApiPasswordDirty] = createSignal(false);
-  const [tasks, setTasks] = createSignal<any[]>((props.cfg.tasks ?? []).map((t: any) => ({ ...t })));
-  const [mcpServers, setMcpServers] = createSignal<any[]>(
-    (props.cfg.mcpServers ?? []).map((m: any) => ({ ...m })),
+  const [tasks, setTasks] = createSignal<TaskRow[]>((props.cfg.tasks ?? []).map((t) => ({ ...t })));
+  const [mcpServers, setMcpServers] = createSignal<McpSrv[]>(
+    (props.cfg.mcpServers ?? []).map((m) => ({ ...m })),
   );
   const [mcpHeadersText, setMcpHeadersText] = createSignal<Record<number, string>>(
     Object.fromEntries(
-      (props.cfg.mcpServers ?? []).map((m: any, i: number) => [
+      (props.cfg.mcpServers ?? []).map((m, i) => [
         i,
         m.headers ? JSON.stringify(m.headers) : "",
       ]),
@@ -403,8 +427,8 @@ export function ConfigModal(props: {
     Record<number, "none" | "bearer" | "header" | "json">
   >(
     Object.fromEntries(
-      (props.cfg.mcpServers ?? []).map((m: any, i: number) => {
-        const h = (m.headers ?? {}) as Record<string, string>;
+      (props.cfg.mcpServers ?? []).map((m, i) => {
+        const h = m.headers ?? {};
         const keys = Object.keys(h);
         if (!keys.length) return [i, "none"];
         const only = keys.length === 1 ? keys[0]! : "";
@@ -415,8 +439,8 @@ export function ConfigModal(props: {
   );
   const [mcpAuthValue, setMcpAuthValue] = createSignal<Record<number, string>>(
     Object.fromEntries(
-      (props.cfg.mcpServers ?? []).map((m: any, i: number) => {
-        const h = (m.headers ?? {}) as Record<string, string>;
+      (props.cfg.mcpServers ?? []).map((m, i) => {
+        const h = m.headers ?? {};
         const keys = Object.keys(h);
         if (keys.length !== 1) return [i, ""];
         const only = keys[0]!;
@@ -426,8 +450,8 @@ export function ConfigModal(props: {
   );
   const [mcpHeaderName, setMcpHeaderName] = createSignal<Record<number, string>>(
     Object.fromEntries(
-      (props.cfg.mcpServers ?? []).map((m: any, i: number) => {
-        const keys = Object.keys((m.headers ?? {}) as Record<string, string>);
+      (props.cfg.mcpServers ?? []).map((m, i) => {
+        const keys = Object.keys(m.headers ?? {});
         const only = keys.length === 1 ? keys[0]! : "";
         return [i, only && only !== "Authorization" ? only : ""];
       }),
@@ -465,17 +489,15 @@ export function ConfigModal(props: {
           },
     }));
   };
-  const [mcpStates, setMcpStates] = createSignal<Record<string, any>>({});
-  const [mcpOAuth, setMcpOAuth] = createSignal<
-    Record<string, { required?: boolean; authorized?: boolean; hasRefreshToken?: boolean; flow?: { phase: string; url?: string } }>
-  >({});
+  const [mcpStates, setMcpStates] = createSignal<Record<string, McpState>>({});
+  const [mcpOAuth, setMcpOAuth] = createSignal<Record<string, McpOAuthStatus>>({});
   const oauthState = (name: string) => {
     const st = oauthStateFrom(mcpOAuth(), name);
     return st && (st.required || st.authorized) ? st : null;
   };
   const refreshMcpStates = async () => {
-    const r = (await api("/api/mcp").catch(() => null)) as { states?: any[] } | null;
-    setMcpStates(Object.fromEntries((r?.states ?? []).map((s: any) => [s.name, s])));
+    const r = (await api("/api/mcp").catch(() => null)) as { states?: McpState[] } | null;
+    setMcpStates(Object.fromEntries((r?.states ?? []).map((s) => [s.name ?? "", s])));
   };
   const refreshMcpOAuth = async (name: string) => {
     const key = String(name ?? "").trim();
@@ -483,10 +505,10 @@ export function ConfigModal(props: {
 
     const r = (await api(`/api/mcp/oauth/status?name=${encodeURIComponent(key)}`).catch(
       () => null,
-    )) as any;
+    )) as McpOAuthStatus | null;
     if (r && !r.error) setMcpOAuth((m) => ({ ...m, [key]: r }));
   };
-  const startMcpOAuth = async (i: number, srv: any) => {
+  const startMcpOAuth = async (i: number, srv: McpSrv) => {
     if (!srv.name) {
       setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "give it a name first" } }));
       return;
@@ -523,9 +545,9 @@ export function ConfigModal(props: {
       await new Promise((res) => setTimeout(res, 1000));
       const st = (await api(`/api/mcp/oauth/status?name=${encodeURIComponent(srv.name)}`).catch(
         () => null,
-      )) as any;
+      )) as McpOAuthStatus | null;
       if (!st || st.error) continue;
-      setMcpOAuth((m) => ({ ...m, [srv.name]: st }));
+      setMcpOAuth((m) => ({ ...m, [String(srv.name)]: st }));
       if (st.authorized) {
         setMcpStatus((m) => ({
           ...m,
@@ -538,7 +560,7 @@ export function ConfigModal(props: {
       if (st.flow?.phase === "error") {
         setMcpStatus((m) => ({
           ...m,
-          [i]: { kind: "err", text: st.flow.message ?? st.lastError ?? "authorization failed" },
+          [i]: { kind: "err", text: st.flow?.message ?? st.lastError ?? "authorization failed" },
         }));
         return;
       }
@@ -606,7 +628,7 @@ export function ConfigModal(props: {
     { key: "help", label: "❔️ help", hint: "keyboard shortcuts and what each toggle does" },
   ];
 
-  const agentIds = () => (props.cfg.agents ?? []).map((a: any) => a.id);
+  const agentIds = () => (props.cfg.agents ?? []).map((a) => a.id);
 
   const customThemes = () => props.theme.themes();
   const fixedTheme = () => props.theme.activeId();
@@ -648,8 +670,8 @@ export function ConfigModal(props: {
 
   const presetPalette = (key: string): ThemePalette => PRESET_PALETTES[key] ?? DEFAULT_PALETTE;
 
-  const saveProviders = (): Record<string, any> | null => {
-    const out: Record<string, any> = {};
+  const saveProviders = (): Record<string, Record<string, unknown>> | null => {
+    const out: Record<string, Record<string, unknown>> = {};
     for (const p of providers()) {
       if (!p.name.trim()) { setErr("provider name is required"); return null; }
       if (p.baseUrl && !/^https?:\/\//.test(p.baseUrl)) { setErr(`provider ${p.name}: baseUrl must start with http(s)://`); return null; }
@@ -682,7 +704,7 @@ export function ConfigModal(props: {
       if (!t.agent) return failSave(`task "${t.id}": agent is required`);
       if (!t.schedule?.trim()) return failSave(`task "${t.id}": schedule is required`);
     }
-    const cleanMcp: any[] = [];
+    const cleanMcp: McpSrv[] = [];
     const seenMcp = new Set<string>();
     for (const m of mcpServers()) {
       const name = String(m.name ?? "").trim();
@@ -1109,8 +1131,8 @@ export function ConfigModal(props: {
           >
             <Index each={mcpServers()}>
               {(srv, i) => {
-                const st = () => mcpStates()[srv().name];
-                const upd = (patch: Record<string, any>) =>
+                const st = () => mcpStates()[srv().name ?? ""];
+                const upd = (patch: Record<string, unknown>) =>
                   setMcpServers(mcpServers().map((x, j) => (j === i ? { ...x, ...patch } : x)));
                 return (
                   <div class="cfgcol mcpcard">
@@ -1292,7 +1314,7 @@ export function ConfigModal(props: {
                       <button
                         type="button"
                         onclick={async () => {
-                          const patch = mcpServers()[i];
+                          const patch = mcpServers()[i]!;
                           if (!patch.name) {
                             setMcpStatus((m) => ({ ...m, [i]: { kind: "err", text: "give it a name first" } }));
                             return;
@@ -1403,7 +1425,7 @@ export function ConfigModal(props: {
                                     headers: { "content-type": "application/json" },
                                     body: JSON.stringify({ name: srv().name }),
                                   }).catch(() => {});
-                                  await refreshMcpOAuth(srv().name);
+                                  await refreshMcpOAuth(String(srv().name));
                                   setMcpStatus((m) => ({ ...m, [i]: { kind: "ok", text: "disconnected" } }));
                                 }}
                                 title="forget the stored grant (the refresh token is deleted, so authorizing again needs a browser)"
@@ -1521,7 +1543,7 @@ export function ConfigModal(props: {
         <fieldset classList={{ hide: section() !== "agents" }}>
           <legend>agents (read-only — edit config file or use +)</legend>
           <For each={props.cfg.agents ?? []}>
-            {(a: any) => (
+            {(a) => (
               <div class="cfgrow">
                 <b>{a.id}</b><span class="muted">{a.workspace}</span>
                 <Show when={a.parent}><span class="muted">🧩 sub of @{a.parent}</span></Show>

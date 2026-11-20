@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import type { JSX } from "solid-js";
 import { copyText } from "../lib/clipboard";
 
 export function IconBtn(props: {
@@ -47,7 +48,7 @@ export function CopyBtn(props: { text: string; label?: string; title?: string })
   );
 }
 
-export function Modal(props: { title: string; onClose: () => void; children: any }) {
+export function Modal(props: { title: string; onClose: () => void; children: JSX.Element }) {
   return (
     <div class="overlay" onclick={(e: Event) => e.target === e.currentTarget && props.onClose()}>
       <div class="modal">

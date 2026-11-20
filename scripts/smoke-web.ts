@@ -158,7 +158,7 @@ function apiResponse(url: string) {
 let fetchCount = 0;
 const requestedUrls: string[] = [];
 
-const WS_EVENTS: any[] = []; 
+const WS_EVENTS: unknown[] = []; 
 class MockWS {
   static instances: MockWS[] = [];
   url: string;
@@ -210,7 +210,7 @@ w.document.body.innerHTML = `<div id="root"></div>`;
   }
 }
 try { Object.defineProperty(w.document, "visibilityState", { value: "visible", configurable: true }); } catch {}
-const setGlobal = (name: string, value: any) => {
+const setGlobal = (name: string, value: unknown) => {
   try {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
   } catch {
@@ -219,12 +219,13 @@ const setGlobal = (name: string, value: any) => {
 setGlobal("window", w);
 setGlobal("document", w.document);
 setGlobal("getComputedStyle", (el: Element, pseudo?: string) => w.getComputedStyle(el, pseudo));
-setGlobal("localStorage", {
-  store: {},
-  getItem(k: string) { return this.store[k] ?? null; },
+const localStorageMock = {
+  store: {} as Record<string, string>,
+  getItem(k: string): string | null { return this.store[k] ?? null; },
   setItem(k: string, v: string) { this.store[k] = String(v); },
   removeItem(k: string) { delete this.store[k]; },
-});
+};
+setGlobal("localStorage", localStorageMock);
 setGlobal("navigator", w.navigator);
 setGlobal("location", w.location);
 setGlobal("history", w.history);
@@ -238,12 +239,12 @@ setGlobal(
   "ResizeObserver",
   class {
     cb: (entries: unknown[]) => void;
-    targets: { el: any; last: number }[] = [];
+    targets: { el: HTMLElement; last: number }[] = [];
     constructor(cb: (entries: unknown[]) => void) {
       this.cb = cb;
       resizeObservers.push(this);
     }
-    observe(el: any) {
+    observe(el: HTMLElement) {
       this.targets.push({ el, last: -1 });
       this.check();
     }
@@ -303,7 +304,7 @@ localStorage.setItem("teapot.theme.auto", "1");
 localStorage.setItem("teapot.theme.dark", "dark");
 localStorage.setItem("teapot.theme.light", "light");
 
-const requests: { url: string; method: string; body: any }[] = [];
+const requests: { url: string; method: string; body: unknown }[] = [];
 let baseFetch: typeof fetch | undefined;
 setGlobal("fetch", async (url: string, init?: RequestInit) => {
   fetchCount++;
@@ -322,7 +323,7 @@ setGlobal("fetch", async (url: string, init?: RequestInit) => {
 });
 baseFetch = globalThis.fetch;
 
-const briefStack = (err: any) => String(err?.stack ?? "").split("\n").slice(0, 6).join("\n");
+const briefStack = (err: unknown) => String((err as { stack?: unknown } | null | undefined)?.stack ?? "").split("\n").slice(0, 6).join("\n");
 process.on("uncaughtException", (e) => {
   console.error(`UNCAUGHT ${e?.constructor?.name}: ${e?.message}\n${briefStack(e)}`);
   process.exit(1);
@@ -994,7 +995,7 @@ console.log("deep render ok: feed rows present");
     branch: string;
     parent: string | null;
     type: string;
-    data: any;
+    data: unknown;
   }[] = [
     ...EVENTS,
     { id: "e5", seq: 5, ts: "2026-01-01T10:00:20Z", session: "alpha-s1", branch: "br0",
@@ -1054,7 +1055,7 @@ console.log("deep render ok: feed rows present");
     branch: string;
     parent: string | null;
     type: string;
-    data: any;
+    data: unknown;
   }) =>
     appOnMessage({
       data: JSON.stringify({
@@ -2576,7 +2577,7 @@ console.log("deep render ok: feed rows present");
       const putsBefore = requests.filter((c) => c.url === "/api/config" && c.method === "PUT").length;
       saveBtn.click();
       const saveDeadline = Date.now() + 4000;
-      let put: { url: string; method: string; body: any } | undefined;
+      let put: { url: string; method: string; body: unknown } | undefined;
       while (Date.now() < saveDeadline) {
         const puts = requests.filter((c) => c.url === "/api/config" && c.method === "PUT");
         if (puts.length > putsBefore) {
@@ -2592,9 +2593,9 @@ console.log("deep render ok: feed rows present");
         );
         process.exit(1);
       }
-      if (put.body?.shortContext !== true) {
+      if ((put.body as { shortContext?: unknown } | null | undefined)?.shortContext !== true) {
         console.error(
-          `#161 REGRESSION: the saved config does not carry shortContext:true (got ${JSON.stringify(put.body?.shortContext)})`,
+          `#161 REGRESSION: the saved config does not carry shortContext:true (got ${JSON.stringify((put.body as { shortContext?: unknown } | null | undefined)?.shortContext)})`,
         );
         process.exit(1);
       }

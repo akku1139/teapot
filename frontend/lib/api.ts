@@ -8,7 +8,7 @@ export async function api(path: string, opts?: RequestInit) {
     let body: unknown = null;
     try { body = await res.json(); } catch {  }
     const detail =
-      (body && typeof body === "object" && "error" in body ? String((body as any).error) : "") ||
+      (body && typeof body === "object" && "error" in body ? String((body as { error?: unknown }).error) : "") ||
       `${path}: HTTP ${res.status}`;
     throw Object.assign(new Error(detail), { payload: body });
   }

@@ -1,4 +1,5 @@
 import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect, untrack } from "solid-js";
+import type { JSX } from "solid-js";
 import { renderMarkdown } from "./md";
 import { needsSettlePin } from "./lib/scroll-policy";
 import { jumpTargetMatches } from "./lib/jump-target";
@@ -36,7 +37,7 @@ import {
   chatGroupKeyOf,
   wsChatCountsOf,
 } from "./lib/sidebar-tree";
-import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor } from "./lib/model-selection";
+import { effectiveProviderOf, mayResyncProvider, modelOnProviderSwitch, modelPlaceholderFor, type ProviderLike } from "./lib/model-selection";
 import { composerValueChanged, shouldWriteComposerValue } from "./lib/composer-ime";
 import {
   atTail,
@@ -90,6 +91,50 @@ const REASONING_EFFORT_OPTIONS = ["minimal", "low", "medium", "high"] as const;
 
 const NARROW_PX = 1100;
 
+type AgentStats = {
+  turns: number;
+  toolCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+  costUsd?: number;
+  compactions?: number;
+};
+type LatestProgress = {
+  doing: string;
+  recent?: string;
+  problems?: string;
+  next?: string;
+  goalStatus?: string;
+  ts: string;
+};
+type BranchInfo = { branch: string; events: number };
+type Metrics = {
+  rssMb: number;
+  heapUsedMb: number;
+  heapTotalMb?: number;
+  externalMb?: number;
+  arrayBuffersMb?: number;
+  messagesInMemory?: number;
+  loadedSessions: number;
+  loadavg1: number;
+  uptimeSec: number;
+};
+type TaskInfo = {
+  id: string;
+  agent?: string;
+  prompt: string;
+  schedule: string;
+  next?: string;
+  last?: string;
+  forked?: boolean;
+};
+interface FeConfig {
+  providers: Record<string, ProviderLike>;
+  defaultProvider?: string;
+  needsSetup?: boolean;
+  [k: string]: unknown;
+}
 interface Agent {
   id: string; status: string; statusReason: string; workspace: string;
   live?: boolean;
@@ -97,7 +142,7 @@ interface Agent {
   sessionTitle?: string;
   workspaceMissing?: boolean;
   bgRunning?: number;
-  latestProgress: any; stats: any; model: string; provider?: string;
+  latestProgress?: LatestProgress; stats: AgentStats; model: string; provider?: string;
   reasoningEffort?: string; effortSupported?: boolean; effortOptions?: string[];
   pendingPrompts?: number;
   pendingPromptIds?: string[];
@@ -191,8 +236,8 @@ export default function App() {
   }
   const [events, setEvents] = createSignal<Ev[]>([]);
   const [eventsTotal, setEventsTotal] = createSignal(0); 
-  const [branches, setBranches] = createSignal<any[]>([]);
-  const [metrics, setMetrics] = createSignal<any>(null);
+  const [branches, setBranches] = createSignal<BranchInfo[]>([]);
+  const [metrics, setMetrics] = createSignal<Metrics | null>(null);
   const drafts = new Map<string, string>();
   const [draft, setDraft] = createSignal(drafts.get(selected() ?? "") ?? "");
   const saveDraft = (v: string) => {
@@ -203,7 +248,7 @@ export default function App() {
       else drafts.delete(id); 
     }
   };
-  const [cfg, setCfg] = createSignal<any>({ providers: {} });
+  const [cfg, setCfg] = createSignal<FeConfig>({ providers: {} });
   const [showNew, setShowNew] = createSignal(false);
 
   /**
@@ -1050,7 +1095,7 @@ const isTimelineLive = (): boolean => {
     body: string;
     at: number;
     read: boolean;
-    eventId?: string;
+    eventId?: string | undefined;
   };
   const [notifs, setNotifs] = createSignal<Notif[]>([]);
   const [hideGhosts, setHideGhosts] = createSignal(
@@ -1089,7 +1134,7 @@ const isTimelineLive = (): boolean => {
       [{ ...n, id: `n${++notifSeq}`, at: Date.now(), read: false }, ...list].slice(0, 50),
     );
   };
-  const maybeNotify = (agentId: string, ev: any) => {
+  const maybeNotify = (agentId: string, ev: Ev) => {
     /**
      * A background job finishing is a NOTIFICATION, not a conversation turn.
      *
@@ -1394,7 +1439,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       })
       .catch(() => {});
   const refreshMetrics = () => api("/api/metrics").then(setMetrics).catch(() => {});
-  const [tasks, setTasks] = createSignal<any[]>([]);
+  const [tasks, setTasks] = createSignal<TaskInfo[]>([]);
   const loadTasks = () => api("/api/tasks").then((d) => setTasks(d.tasks)).catch(() => {});
   const agentTasks = (id: string | null) => tasks().filter((t) => t.agent === id);
 
@@ -2640,8 +2685,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   type TermTab = { key: string; agentId: string; title: string; cwd?: string | undefined; ptyTitle?: string | undefined };
   type TermSession = {
     el: HTMLDivElement;
-    term: any;
-    fit: any;
+    term: Terminal;
+    fit: () => void;
     ws: WebSocket;
     ro: ResizeObserver | null;
   };
@@ -2940,7 +2985,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       ro.observe(measureEl);
       if (measureEl !== el) ro.observe(el); 
       setTimeout(pushResize, 60);
-      s = { el, term: t, fit: f, ws: w, ro };
+      s = { el, term: t, fit: () => f.fit(), ws: w, ro };
       liveTerms.set(tab.key, s);
     } else if (s.el.parentElement !== host) {
       host.appendChild(s.el); 
@@ -3408,7 +3453,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ persona: name, task: arg, context: mentionFork() ? "fork" : "none" }),
           });
-          flashHint(`🧩 spawned ${(r as any).id}${mentionFork() ? " (forked context)" : ""}`);
+          flashHint(`🧩 spawned ${(r as { id?: unknown }).id}${mentionFork() ? " (forked context)" : ""}`);
           refreshAgents(); saveDraft("");
         } else if (knownAgent) {
           if (!arg) { flashHint(`usage: @${name} <message>`); return; }
@@ -3463,7 +3508,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       else if (name === "stop") await post("/stop");
       else if (name === "fork") { await post("/fork", {}); await select(id); }
       else if (name === "compact") {
-        const r: any = await post("/compact");
+        const r = (await post("/compact")) as unknown as { ran?: unknown } | null;
         flashHint(r?.ran ? "context compacted" : "nothing to compact yet");
       }
       else if (name === "goal") {
@@ -3528,7 +3573,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const stopChildren = async () => {
     if (!selected()) return;
     const r = await api(`/api/agents/${selected()}/stop-children`, { method: "POST" });
-    flashHint(`stopped: ${((r as any).stopped ?? []).join(", ") || "(none)"}`);
+    flashHint(`stopped: ${((r as { stopped?: unknown[] }).stopped ?? []).join(", ") || "(none)"}`);
     refreshAgents();
   };
 
@@ -3943,23 +3988,23 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
           <div class="metrics">
             <Show when={metrics()}>
               {}
-              master rss {metrics().rssMb}MB · heap {metrics().heapUsedMb}MB
-              <Show when={metrics().heapTotalMb !== undefined}> · total {metrics().heapTotalMb}MB</Show>
-              <Show when={metrics().externalMb !== undefined}> · ext {metrics().externalMb}MB</Show>
-              <Show when={metrics().arrayBuffersMb !== undefined}> · buf {metrics().arrayBuffersMb}MB</Show>
+              master rss {metrics()!.rssMb}MB · heap {metrics()!.heapUsedMb}MB
+              <Show when={metrics()!.heapTotalMb !== undefined}> · total {metrics()!.heapTotalMb}MB</Show>
+              <Show when={metrics()!.externalMb !== undefined}> · ext {metrics()!.externalMb}MB</Show>
+              <Show when={metrics()!.arrayBuffersMb !== undefined}> · buf {metrics()!.arrayBuffersMb}MB</Show>
               <br />
-              <Show when={metrics().messagesInMemory !== undefined}>
-                msgs {metrics().messagesInMemory} in {metrics().loadedSessions} loaded session(s)
+              <Show when={metrics()!.messagesInMemory !== undefined}>
+                msgs {metrics()!.messagesInMemory} in {metrics()!.loadedSessions} loaded session(s)
                 <br />
               </Show>
-              load1 {metrics().loadavg1} · up {Math.floor(metrics().uptimeSec / 60)}m
+              load1 {metrics()!.loadavg1} · up {Math.floor(metrics()!.uptimeSec / 60)}m
             </Show>
           </div>
         </div>
       </nav>
 
       {}
-      <section class="channel" style={{ "--termh": `${termHeight()}px` } as any}>
+      <section class="channel" style={{ "--termh": `${termHeight()}px` } as JSX.CSSProperties}>
         {}
         {/**
           * NOT `keyed`: switching agents must not re-create the channel.
@@ -4300,8 +4345,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                               headers: { "content-type": "application/json" },
                               body: JSON.stringify({ promptId: pid }),
                             })
-                              .then((r: any) => {
-                                const back = String(r.text ?? "");
+                              .then((r: unknown) => {
+                                const back = String((r as { text?: unknown }).text ?? "");
                                 saveDraft(draft() ? `${back}\n\n${draft()}` : back);
                                 withdrawnPids.add(pid);
                                 writePending(pendingKey(), pendingMsgs().filter((p) => p.promptId !== pid));
@@ -4372,7 +4417,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             )}
           </Show>
           <Show when={termOpen()}>
-            <div class="termdrawer" style={{ height: `${termHeight()}px` } as any}>
+            <div class="termdrawer" style={{ height: `${termHeight()}px` }}>
               <div class="termgrip" onpointerdown={startGrip} ondblclick={() => { setTermHeight(Math.max(220, Math.round(window.innerHeight * 0.35))); localStorage.setItem("teapot.termH", String(termHeight())); }} title="drag to resize · double-click to reset" />
               <div class="termbar">
                 <div class="termtabs">
@@ -4883,9 +4928,9 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
             {(p) => (
               <div class="card prog">
                 <div class="progrow"><b>doing</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().doing)} /></div>
-                <Show when={p().recent}><div class="progrow"><b>recent</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().recent)} /></div></Show>
-                <Show when={p().problems}><div class="progrow warn"><b>⚠ problems</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().problems)} /></div></Show>
-                <Show when={p().next}><div class="progrow"><b>next</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().next)} /></div></Show>
+                <Show when={p().recent}><div class="progrow"><b>recent</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().recent ?? "")} /></div></Show>
+                <Show when={p().problems}><div class="progrow warn"><b>⚠ problems</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().problems ?? "")} /></div></Show>
+                <Show when={p().next}><div class="progrow"><b>next</b><span class="content inline-md" innerHTML={renderMarkdownCached(p().next ?? "")} /></div></Show>
                 <Show when={p().goalStatus}><div class="progrow"><b>goal</b><span>{p().goalStatus}</span></div></Show>
                 <div class="meta muted">{relTime(p().ts)}</div>
               </div>
@@ -5028,10 +5073,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
               <Show when={(sel()!.stats.cachedInputTokens ?? 0) > 0}>
                 <div
                   class="rtcell"
-                  title={`${fmtK(sel()!.stats.cachedInputTokens)} input tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
+                  title={`${fmtK(sel()!.stats.cachedInputTokens ?? 0)} input tokens were served from the provider's prompt cache — billed far cheaper than fresh input`}
                 >
                   <span>cached</span>
-                  <b>{Math.round((sel()!.stats.cachedInputTokens / Math.max(1, sel()!.stats.inputTokens)) * 100)}%</b>
+                  <b>{Math.round(((sel()!.stats.cachedInputTokens ?? 0) / Math.max(1, sel()!.stats.inputTokens)) * 100)}%</b>
                   {}
                 </div>
               </Show>
@@ -5088,7 +5133,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 <div
                   class={"sched-row" + (t.agent === selected() ? " cur" : "")}
                   title={`${oneLine(t.prompt, 200)}\nclick to open #${t.agent}`}
-                  onclick={() => select(t.agent)}
+                  onclick={() => select(t.agent ?? "")}
                 >
                   <div class="sched-top">
                     <b>{t.id}</b>
