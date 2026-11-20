@@ -61,7 +61,7 @@ test("the NEWEST source is the one that decides (#75)", async () => {
     project(root, {
       bundleAge: 300_000, // built 5 min ago
       sourceAges: {
-        "frontend/md.js": 86_400_000, // a day old — irrelevant
+        "frontend/md.ts": 86_400_000, // a day old — irrelevant
         "frontend/App.tsx": 60_000, // newer than the bundle — this decides
       },
     });

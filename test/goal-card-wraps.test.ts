@@ -39,7 +39,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { Window } from "happy-dom";
-import { renderMarkdown } from "../frontend/md.js";
+import { renderMarkdown } from "../frontend/md.ts";
 import { goalLine } from "../frontend/lib/goal-timeline.ts";
 import { cssRuleBody } from "./helpers/css.ts";
 

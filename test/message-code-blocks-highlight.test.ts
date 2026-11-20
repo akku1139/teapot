@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Browser } from "happy-dom";
-import { renderMarkdown } from "../frontend/md.js";
+import { renderMarkdown } from "../frontend/md.ts";
 import { highlightMessageCode } from "../frontend/lib/highlight-message.ts";
 
 /**
  * Fenced code in a MESSAGE gets the same shiki treatment as a tool row.
  *
  * Asked for as "メッセージ内のコードブロックってshiki効かせないの?" with ```c and ```src/index.ts
- * examples. `md.js` emitted `<pre><code class="language-x">` and nothing else, so the same snippet was
+ * examples. `md.ts` emitted `<pre><code class="language-x">` and nothing else, so the same snippet was
  * flat `--fg` in a message and highlighted in a tool result.
  *
  * The body is one `innerHTML` string, so the upgrade happens on the DOM afterwards — which is what these
@@ -46,7 +46,7 @@ test("a fenced block in a message becomes a shiki surface (#shiki)", async () =>
 });
 
 test("an info string that names a FILE also highlights (#shiki)", async () => {
-  // ```src/index.ts — the reported example; `md.js` keeps `src/index.ts` as the language string and
+  // ```src/index.ts — the reported example; `md.ts` keeps `src/index.ts` as the language string and
   // shiki resolves the extension itself
   const doc = await render(renderMarkdown("```src/index.ts\nexport const test = \"\";\n```"));
   const root = doc.querySelector(".content") as unknown as HTMLElement;

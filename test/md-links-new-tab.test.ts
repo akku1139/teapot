@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown } from "../frontend/md.js";
+import { renderMarkdown } from "../frontend/md.ts";
 
 const anchors = (html: string) => html.match(/<a [^>]*>/g) ?? [];
 

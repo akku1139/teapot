@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown } from "../frontend/md.js";
+import { renderMarkdown } from "../frontend/md.ts";
 
 test("md: headings h1–h6", () => {
   const out = renderMarkdown("# one\n## two\n### three\n#### four\n##### five\n###### six");

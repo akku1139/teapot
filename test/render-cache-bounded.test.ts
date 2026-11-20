@@ -13,7 +13,7 @@ import path from "node:path";
 
 test("the cache is bounded in BYTES, not only in entries (#186)", () => {
   /**
-   * `frontend/md.js` is plain JS without an extension the node test runner resolves, so the module
+   * `frontend/md.ts` is plain JS without an extension the node test runner resolves, so the module
    * cannot be imported here. The property worth pinning is structural and reads fine as a source check:
    * a count-only cap is exactly the defect.
    */

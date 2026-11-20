@@ -50,7 +50,7 @@ loopback-only default rather than a wizard artefact.
 no CSP, so controlling an LLM response gave JavaScript execution on the local origin — and from
 there the `/pty/` endpoints gave shell access. Fixed in 1.1.10.
 
-**teapot: not vulnerable, by construction.** `frontend/md.js` escapes ALL HTML first and only then
+**teapot: not vulnerable, by construction.** `frontend/md.ts` escapes ALL HTML first and only then
 applies its own block/inline rules to the escaped text, so raw markup cannot survive as markup. It
 also refuses to build a link unless the target starts with `https:`, and adds
 `rel="noopener noreferrer"`.

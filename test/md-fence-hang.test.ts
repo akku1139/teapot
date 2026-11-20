@@ -21,12 +21,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { renderMarkdown } from "../frontend/md.js";
+import { renderMarkdown } from "../frontend/md.ts";
 
 /** render in a child process so a regression cannot hang the test runner */
 function renderIsolated(src: string, timeoutMs = 5000): { ok: true; html: string } | { ok: false } {
   const script = `
-    import { renderMarkdown } from ${JSON.stringify(new URL("../frontend/md.js", import.meta.url).href)};
+    import { renderMarkdown } from ${JSON.stringify(new URL("../frontend/md.ts", import.meta.url).href)};
     process.stdout.write(renderMarkdown(process.argv[1] ?? ""));
   `;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script, src], {

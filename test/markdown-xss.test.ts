@@ -6,7 +6,7 @@
  * response yielded JavaScript execution on the local origin — and the `/pty/` endpoints then gave
  * shell access.
  *
- * teapot is not vulnerable, and the reason is structural rather than a sanitiser: `frontend/md.js`
+ * teapot is not vulnerable, and the reason is structural rather than a sanitiser: `frontend/md.ts`
  * escapes ALL HTML first, then applies its own rules to the ESCAPED text, so raw markup cannot
  * survive as markup. Links are only built for `https:` targets, with `rel="noopener noreferrer"`.
  *
@@ -18,7 +18,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown } from "../frontend/md.js";
+import { renderMarkdown } from "../frontend/md.ts";
 
 /** no executable construct survived: no tag, no attribute, no script-capable scheme in an href */
 function assertInert(html: string, why: string): void {

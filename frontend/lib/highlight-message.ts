@@ -4,7 +4,7 @@ import { langForPath } from "./shiki.ts";
 /**
  * Upgrade fenced code blocks inside a rendered MESSAGE to shiki.
  *
- * Update: messages were rendered as an HTML string (`innerHTML`) by `md.js`, which emits
+ * Update: messages were rendered as an HTML string (`innerHTML`) by `md.ts`, which emits
  * `<pre><code class="language-x">` and nothing more — so a C snippet in a chat message stayed flat
  * `--fg` while the very same snippet in a tool row was highlighted. The two paths have to agree.
  *

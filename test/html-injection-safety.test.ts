@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { Window } from "happy-dom";
 // the SAME primitive frontend/lib/shiki.ts imports (shiki/core re-exports it)
 import { hastToHtml } from "shiki/core";
-import { renderMarkdown } from "../frontend/md.js";
+import { renderMarkdown } from "../frontend/md.ts";
 
 const PAYLOADS = [
   "<img src=x onerror=alert(1)>",
