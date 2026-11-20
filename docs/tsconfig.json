@@ -1,0 +1,11 @@
+// common tsconfig
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+  }
+}
