@@ -142,6 +142,7 @@ interface Agent {
   sessionTitle?: string;
   workspaceMissing?: boolean;
   bgRunning?: number;
+  bgJobs?: BgJob[];
   latestProgress?: LatestProgress; stats: AgentStats; model: string; provider?: string;
   reasoningEffort?: string; effortSupported?: boolean; effortOptions?: string[];
   pendingPrompts?: number;
@@ -2696,16 +2697,45 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     const r = (await api(`/api/agents/${encodeURIComponent(id)}/bg-jobs`).catch(() => null)) as { jobs?: BgJobRow[] } | null;
     if (r?.jobs) setBgJobs(r.jobs);
   };
+  /**
+   * The jobs come with the agent snapshot over the WebSocket (#290).
+   *
+   * The old version polled `/bg-jobs` every 2 seconds while the panel was open and replaced the whole array, rebuilding each
+   * row (and re-reading the panel) for no reason — while the header's "N running" badge came from the SAME snapshot and could
+   * disagree by one frame. Both now read the same fact in the same frame; there is no timer to drift.
+   */
   createEffect(
-    () => selected(),
-    () => void refreshBg(),
-  );
-  createEffect(
-    () => showBg(),
-    (open) => {
-      if (!open) return;
-      const t = setInterval(() => void refreshBg(), 2000);
-      return () => clearInterval(t);
+    () => sel()?.bgJobs,
+    (jobs) => {
+      if (!jobs) return;
+      /**
+       * Keep row identity when nothing changed: a snapshot is rebuilt on every `agent-update`, and `<For>` keys on item
+       * identity, so writing the fresh array straight in would dispose and recreate every card — the "再レンダリングが発生
+       * してる" report (#290). Rows that are unchanged (same job, same output tail, same start) keep their previous object;
+       * a running job's elapsed time is a CLOCK, not a fact in the snapshot, so it never invalidates a row.
+       */
+      setBgJobs((prev) => {
+        const before = new Map(prev.map((j) => [j.id, j]));
+        let same = prev.length === jobs.length;
+        const merged = jobs.map((j) => {
+          const old = before.get(j.id);
+          if (
+            old &&
+            old.cmd === j.cmd &&
+            old.running === j.running &&
+            old.detached === j.detached &&
+            old.pid === j.pid &&
+            old.code === j.code &&
+            old.startedAt === j.startedAt &&
+            old.tail === j.tail &&
+            old.truncated === j.truncated
+          )
+            return old;
+          same = false;
+          return j;
+        });
+        return same ? prev : merged;
+      });
     },
   );
 
@@ -2738,6 +2768,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
   const killBgJob = async (j: { id: string }) => {
     if (!selected()) return;
     await api(`/api/agents/${encodeURIComponent(selected()!)}/bg-jobs/${encodeURIComponent(j.id)}`, { method: "DELETE" }).catch(() => {});
+    /**
+     * Killing a job is an ACTION, not a subscription: pull the fresh list once so the row disappears immediately rather than
+     * waiting for the next agent snapshot. Everything after that comes over the WebSocket (#290).
+     */
     await refreshBg();
   };
 
@@ -4203,10 +4237,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 type="button"
                 class="badge bgjobs"
                 aria-expanded={showBg() ? "true" : "false"}
-                onClick={() => {
-                  setShowBg(!showBg());
-                  if (showBg()) void refreshBg();
-                }}
+                onClick={() => setShowBg(!showBg())}
                 title={`${sel()!.bgRunning} background shell(s) running — click to inspect`}
               >
                 🐚 {sel()!.bgRunning}

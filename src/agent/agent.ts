@@ -5,7 +5,7 @@ import { storeImage, resolveImages } from "../log/image-store.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
 import { createCatalog } from "./tool-catalog.ts";
-import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShellsFor, killBgShells, runningBgShellCount, type ToolContext } from "./tools.ts";
+import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShellsFor, killBgShells, runningBgShellCount, listBgShells, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { isBareAcknowledgement } from "./ack.ts";
@@ -1596,6 +1596,12 @@ export class Agent {
       workspaceMissing: this.isGhost,
       // live count for the header badge — see runningBgShellCount (#197)
       bgRunning: runningBgShellCount(this.workspace),
+      /**
+       * The bg-jobs PANEL reads this, so its rows come over the same `agent-update` frame as the count in the header badge.
+       * A second REST poll could disagree with the badge by one frame — which is exactly how a running job's row and its
+       * "N running" badge drifted apart (#290).
+       */
+      bgJobs: listBgShells(this.workspace, this.opts.sessionDir),
       session: this.currentSession,
       ...(title ? { sessionTitle: title } : {}),
       branch: this.currentBranch,

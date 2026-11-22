@@ -2445,12 +2445,17 @@ html[data-bg-image="on"] .composer form {
  * `minmax(0, 1fr)` on the header's grid track has the same requirement one level down, which is why
  * that is spelled out separately.
  */
-.skilllist { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.skilllist {
+  display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
+  /* The list is the last containment boundary: a long skill must wrap inside it, never create a panel-wide x-scrollbar. */
+  overflow-x: hidden;
+}
 .skillrow {
   display: flex; flex-direction: column; gap: 2px;
   border: 1px solid var(--line); border-radius: var(--radius-md);
   background: var(--bg-darkest);
   min-width: 0;
+  overflow-x: hidden;
 }
 /* the header is a BUTTON: expanding is the only interaction, and a div would not be reachable
    by keyboard. Grid so the caret/name/description stay aligned whether open or closed. */
