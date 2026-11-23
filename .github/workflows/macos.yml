@@ -1,0 +1,34 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # #113: pnpm/setup installs pnpm AND Node in one step, reading pnpm from
+      # `packageManager`. Node must be pinned EXPLICITLY: the action falls back to
+      # `devEngines.runtime`, then a version file, then `lts` — and this repo has
+      # none of the first two, so omitting `runtime` would silently build the
+      # release on whatever LTS happens to be, rather than the node >=24 that
+      # package.json's `engines` requires.
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck:server
+      - run: pnpm typecheck:web
+      - run: pnpm typecheck:scripts
+      - run: pnpm typecheck:test
+      - run: pnpm lint
+
+      - run: pnpm build
+
+      - run: pnpm test
