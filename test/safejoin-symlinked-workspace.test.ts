@@ -17,6 +17,10 @@ import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import path from "node:path";
 import { safeJoin } from "../src/agent/tools.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// symlinks need POSIX privileges on Windows (and are not the reported case there).
+markPosixOnly("builds a symlinked workspace");
 
 test("a path inside a symlinked workspace does not look like an escape", () => {
   const real = mkdtempInRootSync("symws-");

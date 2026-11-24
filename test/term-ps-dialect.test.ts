@@ -9,8 +9,12 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// `ps` and its flag dialects are POSIX: Windows has its own `ps` with different options.
+markPosixOnly("parses `ps` output, which only exists on POSIX hosts");
 
 const src = readFileSync(new URL("../src/server/term-size.ts", import.meta.url), "utf8");
 
@@ -19,7 +23,13 @@ test("the fallback asks for every process with the portable flag", () => {
   assert.ok(!/\["-e", "-o"/.test(src), "`-e` means the environment on BSD and would silently return nothing");
 });
 
-test("the argument this host would use actually parses into pid/ppid/tty rows", () => {
+test("the argument this host would use actually parses into pid/ppid/tty rows", (t) => {
+  /**
+   * Windows has no `ps` at all (`ps: unknown option -- A` is its `ps` rejecting the flag), and pty discovery never takes
+   * this path there — `resolvePtySlave` returns null and the caller falls back. A host without the tool is a skip with a
+   * reason, not a failure.
+   */
+  if (spawnSync("ps", ["-A"], { encoding: "utf8" }).error) return t.skip("this host has no usable `ps`");
   // the real thing, on whatever platform is running: the columns must be there and the shape must parse
   const out = execFileSync("ps", ["-A", "-o", "pid=,ppid=,tty="], { encoding: "utf8" });
   const rows = out

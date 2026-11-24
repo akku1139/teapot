@@ -14,6 +14,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { scriptArgsFor, scriptDialect } from "../src/server/terminals.ts";
+import { markPosixOnly } from "./helpers/posix-only.ts";
+
+// `script` is a POSIX tool; Windows has neither it nor these dialects.
+markPosixOnly("pins the argv dialects of script(1)");
 
 test("each dialect gets its own `script` invocation", () => {
   assert.deepEqual(scriptArgsFor("bsd", "bash"), ["-q", "/dev/null", "bash"], "BSD: script -q <file> <command>");
