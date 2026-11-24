@@ -844,6 +844,16 @@ export class Agent {
 
   setLlmConfig(llm: LlmConfig): void {
     this.opts.llm = llm;
+    /**
+     * A model switch ends a retry that was waiting because of the model it replaces.
+     *
+     * `llmCall` backs off with a sleep between attempts, and the wait is chosen from the error the OLD model produced. Left
+     * alone, picking a different model changed nothing until that wait expired — up to ten minutes after six repeated
+     * failures — so the new model sat unused while the operator waited for a decision that no longer applied
+     * ("リトライ中にモデルを切り替えたときにはリトライをキャンセルして新しいモデルを適用するように"). Waking the sleep makes the
+     * next attempt run with the model that was just chosen.
+     */
+    if (this.retrySleeping) this.wake?.();
   }
 
   async init(): Promise<void> {
