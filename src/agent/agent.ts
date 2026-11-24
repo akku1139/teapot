@@ -10,6 +10,7 @@ import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { isBareAcknowledgement } from "./ack.ts";
 import { claimsContextLimit, claimsOwnLimit, usageLine } from "./context-claim.ts";
+import { usageAfterLastCompaction } from "./restore-usage.ts";
 import { compactionNotice } from "./compaction-notice.ts";
 import { isDegenerateRepeat } from "./loop-guard.ts";
 import { namesBlocker } from "./blocker.ts";
@@ -1174,19 +1175,14 @@ export class Agent {
         if (typeof d.summary === "string" && d.summary) this.lastCompactSummary = d.summary;
       }
     }
-    for (let i = own.length - 1; i >= 0; i--) {
-      if (own[i]!.type === "usage") {
-        const u = own[i]!.data as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
-        if (typeof u.inputTokens === "number") {
-          this.lastUsage = {
-            input: u.inputTokens,
-            output: u.outputTokens ?? 0,
-            ...(u.cachedInputTokens ? { cached: u.cachedInputTokens } : {}),
-          };
-          break;
-        }
-      }
-    }
+    /**
+     * Only a `usage` at or after the newest compaction describes the context this agent has now.
+     *
+     * `contextSizeForBudgeting` prefers `lastUsage.input` over its own estimate, so a pre-compaction number restored here
+     * is inherited by the meter, the notice and the pruning gate (#298).
+     */
+    const restoredUsage = usageAfterLastCompaction(own);
+    if (restoredUsage) this.lastUsage = restoredUsage;
 
     if (msgs.length > 0) {
       this.messages = msgs;
