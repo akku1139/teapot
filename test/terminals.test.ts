@@ -4,6 +4,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
+import { ptyViaScriptAvailable } from "./helpers/pty-available.ts";
 
 // every test here spawns a real shell (and most a `script` pty): Windows has no /bin/bash and
 // no pty, so the whole file is POSIX. Without this it fails on Windows CI with
@@ -95,7 +96,14 @@ test("detaching leaves the shell ALIVE — that is what a reload does", async ()
   closeTerminal(r.terminal.id);
 });
 
-test("replay returns the output a client missed while detached", async () => {
+/**
+ * A terminal that never gets a shell cannot replay anything, and on macOS that is the HOST: `script` refuses to run when its
+ * stdin is a socketpair (`tcgetattr/ioctl: Operation not supported on socket`), which is what a Node `stdio: "pipe"` is. The
+ * tests that need a real shell skip there with that reason — see `test/helpers/pty-available.ts`.
+ */
+test("replay returns the output a client missed while detached", async (t) => {
+  const pty = ptyViaScriptAvailable();
+  if (!pty.ok) return t.skip(pty.reason);
   _resetTerminalsForTest();
   spyResize();
   const dir = mkdtempInRootSync("term-replay");
@@ -140,7 +148,9 @@ test("the pty gets the SMALLEST size across attached clients", async () => {
   closeTerminal(r.terminal.id);
 });
 
-test("input reaches the shell, so a keystroke runs a command", async () => {
+test("input reaches the shell, so a keystroke runs a command", async (t) => {
+  const pty = ptyViaScriptAvailable();
+  if (!pty.ok) return t.skip(pty.reason);
   _resetTerminalsForTest();
   spyResize();
   const dir = mkdtempInRootSync("term-input");

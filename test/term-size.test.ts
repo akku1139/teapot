@@ -7,6 +7,7 @@ import {
   TERM_RESIZE_DEBOUNCE_MS,
 } from "../src/server/term-size.ts";
 import { scriptArgsFor, scriptDialect } from "../src/server/terminals.ts";
+import { ptyViaScriptAvailable } from "./helpers/pty-available.ts";
 
 /** a stand-in for ChildProcess — the tracker only ever uses identity */
 const fakeChild = (): ChildProcess => ({}) as ChildProcess;
@@ -112,7 +113,9 @@ import { markPosixOnly } from "./helpers/posix-only.ts";
 // needs a POSIX shell, `script` and a real pty
 markPosixOnly("spawns `script` to obtain a real pty");
 
-test("resolvePtySlave finds the pty behind a `script`-wrapped shell (#20)", async () => {
+test("resolvePtySlave finds the pty behind a `script`-wrapped shell (#20)", async (t) => {
+  const pty = ptyViaScriptAvailable();
+  if (!pty.ok) return t.skip(pty.reason);
   // `script` is spawned with PIPED stdio (the server must read its output), so its
   // own fd 0 is a pipe and fd 1/2 are pipes too — the pty is only reachable via
   // the shell it forks. Reading fd 0 of the child we spawned is exactly the wrong
@@ -189,7 +192,9 @@ test("resolvePtySlave returns null for a plain pipe — never a bogus path (#20)
   }
 });
 
-test("applying a size never writes to stdin — it is stty -F on the pty device", async () => {
+test("applying a size never writes to stdin — it is stty -F on the pty device", async (t) => {
+  const pty = ptyViaScriptAvailable();
+  if (!pty.ok) return t.skip(pty.reason);
   // The reported bug: the size was applied by writing `stty rows R cols C\n` into the child's
   // stdin. That only works while a SHELL is reading; when vim/less/a REPL owns the tty the line
   // arrives as KEYSTROKES and lands in the operator's document. This pins the mechanism.

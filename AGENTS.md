@@ -588,8 +588,37 @@ out with only five unresolved names because everything it called had already mov
   issues `stty` as text. `resolvePtySlave` finds the device via /proc: `script` is
   spawned with piped stdio, so ITS OWN fd 0 is our pipe, and the pty slave is on
   the shell it FORKS — reading the spawned child's fd 0 returns nothing useful and
-  silently falls back to typing. macOS has no /proc, so the stdin write stays as
-  the fallback there.
+  silently falls back to typing. macOS has no /proc, so the `ps` path answers there
+  (`ps -A -o pid=,ppid=,tty=`; `-e` means "show the environment" on BSD, and "no
+  terminal" prints `??` rather than `?`).
+
+- **`script` refuses to run when its stdin is a socketpair, which is what a piped
+  child gets.** Apple's `script.c` checks stdin and only tolerates ENOTTY/ENODEV:
+
+  ```c
+  if (tcgetattr(STDIN_FILENO, &tt) == -1 || ioctl(STDIN_FILENO, TIOCGWINSZ, &win) == -1) {
+  #ifdef __APPLE__
+      if (errno != ENOTTY && errno != ENODEV) err(1, "tcgetattr/ioctl");
+  ```
+
+  Node's `stdio: "pipe"` is a socketpair, so on macOS `script` exits 1 with
+  `tcgetattr/ioctl: Operation not supported on socket` **before allocating a pty**.
+  MEASURED: `DIAG probe ... bsd=1 stderr="script: tcgetattr/ioctl: Operation not
+  supported on socket"` while the same argv succeeded under `stdio: "ignore"` — a
+  probe that opens a pty answers "can this process run script", not "does this
+  script understand this argv", so the dialect is probed by feeding it an option it
+  does not have and reading stderr.
+
+  A test that needs a real pty asks `ptyViaScriptAvailable()`
+  (`test/helpers/pty-available.ts`) and skips with the host's own reason. Do not
+  assert the capability: an absent one is neither a pass nor a bug.
+
+- `script`'s argv is a DIALECT, not a platform: GNU is
+  `script -qec '<command line>' <file>` with one string; BSD/macOS is
+  `script [-q] <file> <command> [args…]` with the program and its arguments as
+  separate entries. `scriptDialect()` probes; `scriptArgsFor(dialect, cmd, args)`
+  builds. A GNU `script` on a Darwin host and a BSD one on Linux are both real, so
+  `process.platform` is not the answer.
 
 ## Commits and releases
 
