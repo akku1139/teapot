@@ -1931,7 +1931,18 @@ export class Agent {
    * the raw `idle`, so the panel said "waiting" and the timeline said "→ idle" for the same moment — reported as
    * "フロントエンドとサーバーでステータスの表示が違う".
    */
+  /**
+   * What the header shows, which is not always the internal status.
+   *
+   * A round-level failure with `onError: "retry"` sets `error` and then SLEEPS before the next attempt. The agent is still
+   * live (it can be stopped, and it will resume), so the header rendered "■ stop" next to an `error` status — a control
+   * that belongs to work in flight on a header claiming the work died (#280). While the backoff sleep is running, the
+   * honest status is `waiting`: not producing, still owned.
+   *
+   * `idle` + live is the other case, the display translation of "alive but not producing".
+   */
   private shownStatus(s: AgentStatus = this.status): AgentStatus {
+    if (s === "error" && this.retrySleeping) return "waiting";
     return s === "idle" && this.isLive() ? "waiting" : s;
   }
 
