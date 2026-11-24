@@ -940,8 +940,9 @@ export function SwitchContent(props: { e: Ev; prev?: Ev | undefined; res?: (() =
       const alts = Array.isArray(e.data?.alternatives) ? (e.data.alternatives as string[]) : [];
       return (
         <details class="embed decision">
-          <summary>
-            <b>📌 <span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.decision ?? ""))} /></b>
+          <summary class="decisionhead">
+            <span class="meta">📌</span>
+            <b class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.decision ?? ""))} />
             <span class="meta">decision logged</span>
           </summary>
           {}
@@ -959,7 +960,7 @@ export function SwitchContent(props: { e: Ev; prev?: Ev | undefined; res?: (() =
       return (
         <div class={"embed question" + (answered() ? " answered" : "")}>
           {}
-          <div>❓️ <div class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
+          <div class="qhead">❓️ <span class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.question ?? ""))} /></div>
           <Show when={answered()}>
             <div class="meta answerdone">✓ answered — continuing below</div>
           </Show>

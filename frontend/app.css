@@ -1656,6 +1656,9 @@ html[data-bg-image="on"] .embed {
 
 /* ask_user question embed + tappable options */
 .embed.question { border-color: var(--acc); background: #5865f20f; }
+/* the glyph and the question are ONE line: a block child inside this row is a forced break (#283) */
+.qhead { display: flex; align-items: baseline; gap: 6px; }
+.qhead > .content { flex: 1; min-width: 0; }
 .qopts { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: 6px; }
 .qopt {
   background: var(--acc); border: none; color: #fff; border-radius: var(--radius-pill);
@@ -1694,6 +1697,16 @@ html[data-bg-image="on"] .embed {
 .bashelapsed { color: var(--warn); font-size: var(--text-xs); margin-left: 8px; }
 .embed.question .meta { margin-top: 6px; }
 .embed.decision { border-color: var(--acc); background: #5865f20f; }
+/**
+ * The decision header is ONE line: glyph, the decision, the hint.
+ *
+ * The glyph used to sit INSIDE the `<b>`, and `.embed summary > b` is a flex item with `overflow: hidden` — so the label's
+ * own box forced a break between the glyph and the text ("何故か絵文字とヘッドラインの間に改行がある"). The glyph is its
+ * own item now, and the label is the only thing that may shrink and wrap.
+ */
+.embed.decision > summary.decisionhead { display: flex; align-items: baseline; gap: 6px; }
+.embed.decision > summary.decisionhead > b { flex: 1; }
+.embed.decision > summary.decisionhead > .meta { flex-shrink: 0; }
 .embed.decision summary .meta { margin-left: 6px; }
 .embed.decision .content { font-size: var(--text-sm); margin-top: 3px; }
 .embed summary { cursor: pointer; user-select: none; list-style-position: outside; }
