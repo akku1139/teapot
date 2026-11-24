@@ -106,7 +106,19 @@ export function mergeQueued(mine: PendingEcho[], queue: readonly QueuedPrompt[])
     });
   }
   if (!added.length) return mine;
-  return [...mine, ...added];
+  /**
+   * Order by WHEN each prompt was queued, not by who noticed it first.
+   *
+   * `[...mine, ...added]` put every local echo ahead of every server-known prompt. A harness prompt queued BEFORE the
+   * operator's (an auto-nudge, a compaction note) was then drawn after it, so the queue read backwards — "harnessとyouが
+   * 同時にキューに入っている(stopでbg bashを止めてプロンプトで再始動など)ときに、メッセージの前後がズレる". `at` is the server's
+   * own timestamp for `added` and the send time for `mine`, so one sort covers both; a tie keeps the original order, which
+   * is the order the rows were created in.
+   */
+  return [...mine, ...added]
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => a.p.at - b.p.at || a.i - b.i)
+    .map((x) => x.p);
 }
 
 /**
