@@ -253,7 +253,22 @@ export function safeJoin(cwd: string, p: string): string {
       if (tail && !tail.startsWith("..")) real = path.join(real, tail);
     }
   }
-  const relReal = path.relative(cwd, real);
+  /**
+   * Both sides of the comparison must be resolved, or the check invents an escape.
+   *
+   * `abs` is resolved through `realpath` above, and `cwd` was NOT — so a workspace reached through a symlinked directory
+   * looked like it sat outside the workspace. macOS makes this the default case: `/tmp` is a symlink to `/private/tmp`, so
+   * every fixture under it failed with `path escapes workspace via symlink` (measured on the macOS job, test/tools.test.ts).
+   * The same shape appears on any Linux host with a symlinked home or a bind-mounted checkout.
+   */
+  const realCwd = ((): string => {
+    try {
+      return realpathSync(cwd);
+    } catch {
+      return cwd;
+    }
+  })();
+  const relReal = path.relative(realCwd, real);
   if (relReal.startsWith("..") || path.isAbsolute(relReal)) {
     throw new Error(`path escapes workspace via symlink: ${p}`);
   }
