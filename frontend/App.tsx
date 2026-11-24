@@ -31,6 +31,7 @@ import { resolveTimelineSession } from "./lib/session-index";
 import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "./lib/session-scope";
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { terminalOptions } from "./lib/terminal-options";
+import { compactHint, type CompactAnswer } from "./lib/compact-answer";
 import {
   treeRowsOf,
   sidebarRowsOf,
@@ -3624,8 +3625,8 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       else if (name === "stop") await post("/stop");
       else if (name === "fork") { await post("/fork", {}); await select(id); }
       else if (name === "compact") {
-        const r = (await post("/compact")) as unknown as { ran?: unknown } | null;
-        flashHint(r?.ran ? "context compacted" : "nothing to compact yet");
+        const r = (await post("/compact")) as unknown as CompactAnswer;
+        flashHint(compactHint(r));
       }
       else if (name === "goal") {
         if (!arg) { flashHint("usage: /goal <text>"); return; }
