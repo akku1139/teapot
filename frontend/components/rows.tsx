@@ -5,6 +5,7 @@ import { Card } from "./card";
 import { CopyBtn } from "./chrome";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
+import { isSentinelText } from "../lib/placeholder-text";
 import { openLightbox } from "../lib/lightbox";
 import { hasAnsi, stripAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
@@ -888,7 +889,10 @@ export function SwitchContent(props: { e: Ev; prev?: Ev | undefined; res?: (() =
               <div class="mono">{String(e.data.reasoning)}</div>
             </details>
           </Show>
-          <MdContent html={renderMarkdownCached(String(e.data.content ?? ""))} />
+          {/* a sentinel the wire needed is not a message: see placeholder-text.ts */}
+          <Show when={!isSentinelText(e.data?.content)}>
+            <MdContent html={renderMarkdownCached(String(e.data.content ?? ""))} />
+          </Show>
           <Show when={e.data.interrupted}>
             <div class="interrupted">⚠ interrupted — partial output kept</div>
           </Show>
