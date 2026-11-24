@@ -61,7 +61,14 @@ function ptySlaveOf(pid: number): string | null {
       } catch {
         continue; 
       }
-      if (target.startsWith("/dev/pts/")) return target;
+      /**
+       * A pty slave is not always under `/dev/pts`.
+       *
+       * Linux allocates `/dev/pts/N`; macOS allocates `/dev/ttysNNN` for the same thing. Matching only the Linux spelling made
+       * `/proc`-based discovery useless on any Darwin host (it would "resolve" nothing), which is why the macOS job reported
+       * `a \`script\`-wrapped shell must expose a pty slave`.
+       */
+      if (/^\/dev\/(?:pts\/\d+|ttys\d+)$/.test(target)) return target;
     }
   } catch {
   }

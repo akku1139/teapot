@@ -3,7 +3,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
-const WORKFLOWS = ["test.yml", "windows.yml", "publish.yml"];
+/**
+ * Every workflow a release must pass. macOS is here because leaving it out made this script report a green release while a
+ * platform job was still red — "適当に追加したmacOS CIが失敗してる" arrived from the RUN LIST, not from this verdict.
+ */
+const WORKFLOWS = ["test.yml", "windows.yml", "macos.yml", "publish.yml"];
 
 const args = new Set(process.argv.slice(2));
 const PER_RUN_MS = Number(process.env.RELEASE_WAIT_MS ?? 45 * 60_000);

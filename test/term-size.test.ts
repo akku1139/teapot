@@ -125,7 +125,12 @@ test("resolvePtySlave finds the pty behind a `script`-wrapped shell (#20)", asyn
       slave = resolvePtySlave(child);
     }
     assert.ok(slave, "a `script`-wrapped shell must expose a pty slave");
-    assert.match(slave!, /^\/dev\/pts\/\d+$/, `expected a pts device, got ${slave}`);
+    /**
+     * Linux names a pty slave `/dev/pts/N`; macOS names it `/dev/ttysNNN`. The discovery has to accept both, because the
+     * resolver is platform-independent (`/proc` where it exists, `ps` where it does not) and the darwin job caught the
+     * Linux-only spelling — `a \`script\`-wrapped shell must expose a pty slave`.
+     */
+    assert.match(slave!, /^\/dev\/(?:pts\/\d+|ttys\d+)$/, `expected a pty device, got ${slave}`);
     // and it must NOT be one of our pipes: `pipe:[…]` is not ioctl-able, which is
     // the failure that silently degraded this back to typing into the shell
     assert.ok(!/pipe:|\/dev\/null/.test(slave!), `resolved a non-device: ${slave}`);

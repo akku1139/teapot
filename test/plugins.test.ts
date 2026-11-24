@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile, symlink, readFile } from "node:fs/promises";
+import { mkdir, writeFile, symlink, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
 import { loadPlugin, loadPlugins, PluginError } from "../src/agent/plugins.ts";
@@ -176,11 +176,20 @@ test("${PLUGIN_ROOT} and ${PLUGIN_DATA} expand in a stdio server (#162)", async 
     assert.equal(p.mcpServers.length, 1, `warnings: ${JSON.stringify(p.warnings)}`);
     const s = p.mcpServers[0]!;
     assert.equal(s.transport, "stdio");
-    // the plugin-relative command is resolved against the root
-    assert.equal(s.command, path.join(root, "bin", "server"));
-    assert.deepEqual(s.args, ["--data", path.join(data, "store")]);
-    assert.deepEqual(s.env, { CONFIG: path.join(root, "config.json") });
-    assert.equal((s as { cwd?: string }).cwd, root);
+    /**
+     * The plugin root is used PHYSICALLY, because that is what `loadPlugin` resolves it to.
+     *
+     * A plugin is third-party code arriving as a directory — usually an extracted archive — so the loader proves every path
+     * inside its root via `realpath`; the resolved spelling is what reaches the server's `cwd` and `env`. On macOS the
+     * fixture is reached through `/var` → `/private/var`, so comparing against the unresolved temp path failed there
+     * (`Expected values to be strictly equal`). The subject is which directory, not how it is spelled.
+     */
+    const realRoot = await realpath(root);
+    const realData = await realpath(data);
+    assert.equal(s.command, path.join(realRoot, "bin", "server"));
+    assert.deepEqual(s.args, ["--data", path.join(realData, "store")]);
+    assert.deepEqual(s.env, { CONFIG: path.join(realRoot, "config.json") });
+    assert.equal((s as { cwd?: string }).cwd, realRoot);
   });
 });
 

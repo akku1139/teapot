@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { executeTool, type ToolContext } from "../src/agent/tools.ts";
 import { resolveWorkspace, loadConfig, Master } from "../src/master.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -82,6 +82,23 @@ function ctxIn(dir: string): ToolContext {
   return { cwd: dir, defaultTimeoutMs: 10_000, maxOutputBytes: 10_000 };
 }
 
+/**
+ * The PHYSICAL path of the workspace, which is what `pwd` prints.
+ *
+ * `useTempDirs` hands back the path it CREATED, and on macOS that path is reached through symlinks (`/var` → `/private/var`,
+ * `/tmp` → `/private/tmp`). `pwd` reports where the process actually is, so the two differ by the prefix and every assertion
+ * here compared a resolved path with an unresolved one — the macOS job failed three of these with
+ * `/private/var/... !== /var/...`. Resolving the expectation is the honest fix: the tool is not supposed to print a
+ * symlinked spelling, and the test is about WHICH directory, not how it is spelled.
+ */
+function realOf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 /** strip the "[took Ns]" suffix the bash result now ends with (#26) */
 function stdoutOf(result: string): string {
   return result.replace(/\n?\[took [\d.]+s\]\s*$/, "").trim();
@@ -92,7 +109,7 @@ test("bash runs with pwd == the workspace (#34)", async () => {
     const ctx = ctxIn(ws);
     const r = await executeTool("bash", JSON.stringify({ command: "pwd" }), ctx);
     assert.ok(r.ok, r.result);
-    assert.equal(stdoutOf(r.result), ws, "cwd is the workspace, not process.cwd()");
+    assert.equal(stdoutOf(r.result), realOf(ws!), "cwd is the workspace, not process.cwd()");
     void dataDir;
   });
 });
@@ -123,7 +140,7 @@ test("a login profile's cd cannot drag bash out of the workspace (#34)", async (
     );
     assert.ok(r.ok, r.result);
     assert.match(r.result, /^MARKER$/m, "relative path resolved inside the workspace");
-    assert.equal(stdoutOf(r.result).split("\n").pop(), ws, "still in the workspace");
+    assert.equal(stdoutOf(r.result).split("\n").pop(), realOf(ws!), "still in the workspace");
   });
 });
 
@@ -159,7 +176,7 @@ test("a backgrounded bash job also stays in the workspace (#34)", async () => {
       }
       if (!seen) await new Promise((res) => setTimeout(res, 50));
     }
-    assert.equal(seen, ws, "background shell ran in the workspace (never cd'd away)");
+    assert.equal(realOf(seen), realOf(ws!), "background shell ran in the workspace (never cd'd away)");
   });
 });
 
