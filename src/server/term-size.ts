@@ -14,7 +14,14 @@ export function resolvePtySlave(child: ChildProcess | null | undefined): string 
 function ptySlaveViaPs(pid: number): string | null {
   try {
     const self = process.pid;
-    const out = spawnSync("ps", ["-e", "-o", "pid=,ppid=,tty="], { encoding: "utf8" }).stdout ?? "";
+    /**
+     * `ps -A`, not `ps -e`.
+     *
+     * On Linux both print every process; on BSD/macOS `-e` means "show the ENVIRONMENT" and the field list is ignored, so the
+     * output had no pid/ppid/tty columns at all and the parse found nothing — which is why pty discovery still failed on
+     * darwin after the device names and `script` argv were fixed. `-A` is "all processes" on both.
+     */
+    const out = spawnSync("ps", ["-A", "-o", "pid=,ppid=,tty="], { encoding: "utf8" }).stdout ?? "";
     const rows = out
       .split("\n")
       .map((l) => l.trim().split(/\s+/))

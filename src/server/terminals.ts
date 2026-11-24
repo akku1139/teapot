@@ -11,6 +11,19 @@ export function terminalShellFor(
   return toolShellFor(platform, env, exists).file;
 }
 
+/**
+ * The argv that makes `script` run ONE command in a fresh pty.
+ *
+ * Two incompatible dialects, and passing the wrong one is silent: GNU util-linux is `script -q -e -c <command> <file>`, while
+ * BSD/macOS is `script -q <file> <command…>` with no `-e` and no `-c`. BSD `script` given `-qec` reads it as the typescript
+ * FILE and the shell name as something it cannot use, so the pty carries no shell at all and every terminal feature dies on
+ * macOS. Exported so the tests spawn the same thing the server does — a fixture with its own copy of the GNU form tested the
+ * fixture, not the product.
+ */
+export function scriptArgsFor(platform: NodeJS.Platform, shell: string): string[] {
+  return platform === "darwin" ? ["-q", "/dev/null", shell] : ["-qec", shell, "/dev/null"];
+}
+
 export interface TerminalInfo {
   id: string;
   agentId: string;
@@ -123,8 +136,7 @@ export function createTerminal(
    * `process.platform` decides, because the dialect follows the OS: on Linux it is util-linux unless the operator installed
    * BSD script deliberately, and a runtime probe would need a successful spawn to answer.
    */
-  const scriptArgs =
-    process.platform === "darwin" ? ["-q", "/dev/null", shell] : ["-qec", shell, "/dev/null"];
+  const scriptArgs = scriptArgsFor(process.platform, shell);
   const child = hasScript
     ? spawn("script", scriptArgs, { cwd: workspace, env, detached: true })
     : spawn(shell, [], { cwd: workspace, env: { ...env, TERM: "dumb" }, detached: true });
