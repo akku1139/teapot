@@ -126,6 +126,24 @@ test("resolvePtySlave finds the pty behind a `script`-wrapped shell (#20)", asyn
       await sleep(50);
       slave = resolvePtySlave(child);
     }
+    if (!slave) {
+      /**
+       * Make the FAILURE diagnosable. This assertion has been red on macOS three times with nothing to work from, and
+       * guessing at dialects is how the previous three attempts went. The platform's own view of the process is what
+       * decides it, so it goes in the message.
+       */
+      const { spawnSync } = await import("node:child_process");
+      const ps = spawnSync("ps", ["-A", "-o", "pid=,ppid=,tty="], { encoding: "utf8" });
+      const self = spawnSync("ps", ["-o", "pid=,ppid=,tty=", "-p", String(child.pid)], { encoding: "utf8" });
+      const kids = spawnSync("pgrep", ["-P", String(child.pid)], { encoding: "utf8" });
+      console.error(
+        `DIAG platform=${process.platform} child=${child.pid} exit=${child.exitCode}\n` +
+          `DIAG ps status=${ps.status} bytes=${ps.stdout?.length ?? 0}\n` +
+          `DIAG ps(first 400)=${JSON.stringify((ps.stdout ?? "").slice(0, 400))}\n` +
+          `DIAG self=${JSON.stringify(self.stdout)} err=${JSON.stringify(self.stderr)}\n` +
+          `DIAG children=${JSON.stringify(kids.stdout)} err=${JSON.stringify(kids.stderr)}`,
+      );
+    }
     assert.ok(slave, "a `script`-wrapped shell must expose a pty slave");
     /**
      * Linux names a pty slave `/dev/pts/N`; macOS names it `/dev/ttysNNN`. The discovery has to accept both, because the
