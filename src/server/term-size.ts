@@ -38,7 +38,11 @@ function ptySlaveViaPs(pid: number): string | null {
       if (seen.has(cur)) continue;
       seen.add(cur);
       const tty = ttyOf(cur);
-      if (tty && tty !== "??" && tty !== "-" && !inherited.has(tty)) found = tty;
+      /**
+       * "no terminal" is `?` on Linux and `??` on BSD, so both are skipped — and `-` for a process whose tty `ps` could not
+       * resolve at all.
+       */
+      if (tty && tty !== "?" && tty !== "??" && tty !== "-" && !inherited.has(tty)) found = tty;
       for (const r of rows) if (r.ppid === cur) stack.push(r.pid);
     }
     return found ? `/dev/${found}` : null;

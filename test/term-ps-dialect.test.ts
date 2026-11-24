@@ -27,8 +27,12 @@ test("the argument this host would use actually parses into pid/ppid/tty rows", 
     .map((l) => l.trim().split(/\s+/))
     .filter((c) => c.length >= 3 && Number.isInteger(Number(c[0])));
   assert.ok(rows.length > 1, `the output must contain process rows; got ${rows.length}`);
+  /**
+   * "no terminal" is printed as `?` on Linux and `??` on BSD — so both spellings must be accepted, and the discovery code
+   * already skips both. Asserting only `?` is what made this test fail on macOS while the product was fine.
+   */
   assert.ok(
-    rows.some((r) => r[2] === "?"),
-    "and a tty column that says ? when there is no terminal",
+    rows.some((r) => r[2] === "?" || r[2] === "??"),
+    "and a tty column that says ? (or ?? on BSD) when there is no terminal",
   );
 });

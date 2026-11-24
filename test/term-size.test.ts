@@ -118,7 +118,7 @@ test("resolvePtySlave finds the pty behind a `script`-wrapped shell (#20)", asyn
   // the shell it forks. Reading fd 0 of the child we spawned is exactly the wrong
   // answer, and it is what made the first attempt fall back to typing `stty`.
   // the SAME argv the server spawns: a fixture with its own GNU copy tested the fixture on macOS
-  const child = spawn("script", scriptArgsFor(process.platform, "sleep 5"), { stdio: "pipe" });
+  const child = spawn("script", scriptArgsFor(process.platform, "sleep", ["5"]), { stdio: "pipe" });
   try {
     // the pty exists only once `script` has forked
     let slave: string | null = null;
@@ -166,7 +166,7 @@ test("applying a size never writes to stdin — it is stty -F on the pty device"
   // resolution walks /proc for the device, and the whole point is that the device is what
   // receives the ioctl)
   // the SAME argv the server spawns: a fixture with its own GNU copy tested the fixture on macOS
-  const child = spawn("script", scriptArgsFor(process.platform, "sleep 5"), { stdio: "pipe" });
+  const child = spawn("script", scriptArgsFor(process.platform, "sleep", ["5"]), { stdio: "pipe" });
   try {
     let slave: string | null = null;
     for (let i = 0; i < 40 && !slave; i++) {

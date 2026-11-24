@@ -20,8 +20,15 @@ export function terminalShellFor(
  * macOS. Exported so the tests spawn the same thing the server does — a fixture with its own copy of the GNU form tested the
  * fixture, not the product.
  */
-export function scriptArgsFor(platform: NodeJS.Platform, shell: string): string[] {
-  return platform === "darwin" ? ["-q", "/dev/null", shell] : ["-qec", shell, "/dev/null"];
+export function scriptArgsFor(platform: NodeJS.Platform, command: string, args: string[] = []): string[] {
+  /**
+   * GNU takes the whole command line as ONE string (`-c "sleep 5"`); BSD takes the program and its arguments as separate
+   * argv entries after the typescript file. Passing a single `"sleep 5"` to BSD makes it exec a program with a space in its
+   * name, so the two forms cannot be built the same way.
+   */
+  return platform === "darwin"
+    ? ["-q", "/dev/null", command, ...args]
+    : ["-qec", [command, ...args].join(" "), "/dev/null"];
 }
 
 export interface TerminalInfo {
