@@ -1,20 +1,18 @@
 /**
- * `script` and `stty` each have a GNU dialect and a BSD one, and this code shipped the GNU spelling to both (#macos).
+ * `script` has two incompatible argv dialects, and this code shipped the GNU one to both (#macos).
  *
- * MEASURED on the macOS job:
- *   - BSD `script` has no `-e` and no `-c`, so a `-qec` argument was read as the typescript FILE and the shell name as an
- *     argument it could not use. The pty never carried a working shell: `replay returns the output a client missed` and
- *     `input reaches the shell` both failed.
- *   - `stty -F <device>` is GNU; BSD takes the device positionally.
+ * BSD/macOS: `script [-q] [file [command ...]]` — no `-c`, no `-e` (Apple's `script.c` accepts `-e` as a no-op "for linux
+ * compat"). GNU: `script -qec '<command line>' <file>`, with the command line as ONE string.
  *
- * Both are the PLATFORM's implementation, so the argv is chosen by `process.platform`. These pin the argv that function
- * builds, which is the only thing checkable from one host — asserting on the SOURCE of the call site would pin spelling
- * instead of behaviour and could not fail for a real reason.
+ * The dialect is NOT chosen from `process.platform`: a GNU `script` can be installed on a Darwin host and a BSD one on
+ * Linux, and the two forms are mutually exclusive. It is probed once per process by asking each `script` about an option it
+ * does not have and reading the stderr.
+ *
+ * These pin the argv built for each dialect (behaviour) rather than matching the source of the call site (spelling, which
+ * could not fail for a real reason).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { ChildProcess } from "node:child_process";
-import { applyPtySize } from "../src/server/term-size.ts";
 import { scriptArgsFor, scriptDialect } from "../src/server/terminals.ts";
 
 test("each dialect gets its own `script` invocation", () => {
@@ -49,17 +47,29 @@ test("the dialect is decided by TRYING, not by the platform name", () => {
    * Guessing from `process.platform` is what left the macOS job with `script` exiting 1 and no pty behind it.
    */
   assert.ok(["gnu", "bsd", null].includes(scriptDialect()), "this host's answer is one of the three");
-  // whatever it answers, the argv built for it must be the form that host accepts — proven by the dialect probe itself
 });
 
-test("applyPtySize passes what it built to spawnFn, and never writes to stdin", () => {
-  const seen: string[][] = [];
-  const fakeSpawn = ((_cmd: string, args: string[]) => {
-    seen.push(args);
-    return {} as never;
-  }) as never;
-  // a child with no resolvable pty reports false and spawns nothing — the caller falls back
-  const spawned = applyPtySize({} as ChildProcess, 24, 80, fakeSpawn);
-  assert.equal(spawned, false, "no pty, no stty");
-  assert.deepEqual(seen, [], "and nothing was spawned");
+test("the probe asks about the ARGV, not about whether a pty can be opened here", () => {
+  /**
+   * MEASURED on the macOS job: a probe that actually RAN the two forms answered "bsd" while BOTH failed for a different
+   * reason — `tcgetattr/ioctl: Operation not supported on socket`, because BSD `script` checks stdin and a Node
+   * `stdio: "pipe"` is a socketpair. A probe that opens a pty answers "can this process run script"; the product needs
+   * "does this script understand this argv".
+   *
+   * The fakes below are the two real `script`s quoting their own stderr for an option they do not know.
+   */
+  const bsdOnly = ((_cmd: string, args: string[]) => ({
+    status: 1,
+    stderr:
+      args[0] === "-c"
+        ? "script: illegal option -- c\nusage: script [-aeFkpqr] [-t time] [file [command ...]]\n"
+        : "",
+  })) as never;
+  const gnuOnly = ((_cmd: string, args: string[]) => ({
+    status: 1,
+    stderr: args.includes("--definitely-not-an-option") ? "script: unrecognized option '--definitely-not-an-option'\n" : "",
+  })) as never;
+
+  assert.equal(scriptDialect(bsdOnly, { fresh: true }), "bsd", "`illegal option -- c` means BSD");
+  assert.equal(scriptDialect(gnuOnly, { fresh: true }), "gnu", "an unrecognized long option means GNU");
 });

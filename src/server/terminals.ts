@@ -32,12 +32,36 @@ export function terminalShellFor(
  */
 let scriptDialectCache: "gnu" | "bsd" | null | undefined;
 
-export function scriptDialect(spawnFn: typeof spawnSync = spawnSync): "gnu" | "bsd" | null {
-  if (scriptDialectCache !== undefined) return scriptDialectCache;
-  const works = (args: string[]) => spawnFn("script", args, { stdio: "ignore" }).status === 0;
-  if (works(["-qec", "true", "/dev/null"])) scriptDialectCache = "gnu";
-  else if (works(["-q", "/dev/null", "true"])) scriptDialectCache = "bsd";
-  else scriptDialectCache = null;
+export function scriptDialect(
+  spawnFn: typeof spawnSync = spawnSync,
+  opts: { fresh?: boolean } = {},
+): "gnu" | "bsd" | null {
+  if (!opts.fresh && scriptDialectCache !== undefined) return scriptDialectCache;
+  /**
+   * The probe must answer "does this script UNDERSTAND this argv", not "can it allocate a pty in this process".
+   *
+   * A successful run needs stdin to be a terminal-ish fd: BSD `script` calls `tcgetattr(STDIN_FILENO)` and `err(1)`s unless
+   * errno is ENOTTY or ENODEV, and a Node `stdio: "pipe"` is a SOCKETPAIR — so `script` dies with
+   * `tcgetattr/ioctl: Operation not supported on socket` no matter which argv it was given. MEASURED: probing with
+   * `stdio: "ignore"` (a real /dev/null, which IS ENOTTY) reported "bsd" while the actual spawn, with pipes, failed both
+   * ways — a probe that answered a different question than the one the product asks.
+   *
+   * So the probe burns a BAD option instead. Both dialects reject an option they do not know, and they say WHICH in stderr:
+   * BSD `script` prints `illegal option -- c` for `-c`, GNU prints `invalid option -- 'q'`-style for a form it cannot parse.
+   * Neither attempt reaches the terminal setup, so the answer is the same under any stdio.
+   */
+  const stderrOf = (args: string[]): string => {
+    const r = spawnFn("script", args, { encoding: "utf8" });
+    return String(r.stderr ?? "");
+  };
+  const bsdSaid = stderrOf(["-c", "true"]);
+  if (/illegal option -- c|invalid option -- '?c/.test(bsdSaid)) {
+    // BSD: `-c` does not exist, which is the one flag the two dialects disagree about
+    scriptDialectCache = "bsd";
+    return scriptDialectCache;
+  }
+  const gnuSaid = stderrOf(["-q", "/dev/null", "--definitely-not-an-option"]);
+  scriptDialectCache = /unrecognized option|invalid option/.test(gnuSaid) ? "gnu" : null;
   return scriptDialectCache;
 }
 
