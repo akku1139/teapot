@@ -109,3 +109,13 @@ export function oneLine(s: string, n: number): string {
   const line = s.replace(/\s+/g, " ").trim();
   return truncate(line, n);
 }
+
+/**
+ * A label flattened to one line with NO length cap, for text CSS will clip.
+ *
+ * A character count is not a layout: where the box ends depends on the font and the window, so a code-side cut and a
+ * `text-overflow` cut disagree — and a cut that happens BEFORE the layout is one the stylesheet cannot undo.
+ */
+export function oneLineFull(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}

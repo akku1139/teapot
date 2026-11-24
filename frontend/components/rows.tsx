@@ -18,7 +18,7 @@ import { renderMarkdown } from "../md";
 import { renderMarkdownCached } from "../lib/markdown";
 import { groupedWith, type RowLike } from "../lib/row-grouping";
 import { outcomeMarker, shellHint, shellOutcome } from "../lib/shell-outcome";
-import { authorOf, fmtK, fmtTs, oneLine, rawOf, type Ev } from "../lib/timeline-row";
+import { authorOf, fmtK, fmtTs, oneLine, oneLineFull, rawOf, type Ev } from "../lib/timeline-row";
 import { langForPath } from "../lib/shiki";
 import { formatToolOutput, outputLang } from "../lib/tool-output-lang";
 import { effectiveBashTimeout } from "../lib/bash-timeout";
@@ -231,8 +231,15 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
          * 描画すればいいだけ". Layout is CSS's job here (`.embed summary > b` wraps), and the full text is what a tool
          * card exists to show.
          */
-        // the header keeps a SHORT label; the full command lives in the body, always
-        label = (isBg ? "⏳ " : "$ ") + oneLine(cmd, 96);
+        /**
+         * The header carries the COMMAND, and the cut is left to CSS.
+         *
+         * `oneLine(cmd, 96)` cut by character count, so whether a command looked complete depended on its length rather than
+         * on the box it was in — and at a narrow width the header wrapped to two lines instead of ellipsising, because a
+         * character cut and a pixel cut have nothing to do with each other (#275). `white-space: nowrap` + `text-overflow`
+         * on `.embed summary > b` is the one rule; the body always carries the whole command.
+         */
+        label = (isBg ? "⏳ " : "$ ") + oneLineFull(cmd);
         const timeoutMs = argStr("timeout_ms") ? Number(argStr("timeout_ms")) : undefined;
         const r = res();
         const outcome = shellOutcome(r?.data?.ok, r ? String(r.data?.result ?? "") : "");

@@ -1560,6 +1560,18 @@ html[data-bg-image="on"] .embed {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  /**
+   * A tool header is ONE line, and the cut is CSS's.
+   *
+   * Reported twice from opposite sides: "bashとかのツールのヘッダーはCSSのoverflowとかで実装すべき / そうじゃないと画面幅に
+   * よっては折り返しになる場合がある", and earlier the header vanished into `...` because the JS was truncating by a
+   * character count that no longer matched the box. `text-overflow` only applies to a single line, so without `nowrap`
+   * the properties above do nothing and the label wraps instead — the row grows to two lines at one width and one at
+   * another, decided by the command's length rather than by the layout.
+   *
+   * The full command is never lost: the body carries it.
+   */
+  white-space: nowrap;
 }
 /**
  * The label carries the FULL command and WRAPS — there is no "fits on one line" rule any more.
