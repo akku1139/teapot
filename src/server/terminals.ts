@@ -112,8 +112,21 @@ export function createTerminal(
   const shell = terminalShellFor(process.platform, process.env);
   const hasScript = process.platform !== "win32" && existsSync("/usr/bin/script");
   const env = terminalEnv(process.env);
+  /**
+   * `script` exists in two incompatible dialects, and this used the GNU one.
+   *
+   * GNU util-linux: `script -q -e -c <command> <file>`. BSD/macOS: `script -q <file> <command…>` — there is no `-e`, no
+   * `-c`, and the command is positional AFTER the typescript file. Passing `-qec` to BSD `script` makes it read `-qec` as
+   * the file name and `shell` as a command it cannot find, so the pty never carries a usable shell and every terminal test
+   * fails on macOS (`replay returns the output a client missed`, `input reaches the shell`).
+   *
+   * `process.platform` decides, because the dialect follows the OS: on Linux it is util-linux unless the operator installed
+   * BSD script deliberately, and a runtime probe would need a successful spawn to answer.
+   */
+  const scriptArgs =
+    process.platform === "darwin" ? ["-q", "/dev/null", shell] : ["-qec", shell, "/dev/null"];
   const child = hasScript
-    ? spawn("script", ["-qec", shell, "/dev/null"], { cwd: workspace, env, detached: true })
+    ? spawn("script", scriptArgs, { cwd: workspace, env, detached: true })
     : spawn(shell, [], { cwd: workspace, env: { ...env, TERM: "dumb" }, detached: true });
 
   const id = `t${++seq}-${Date.now().toString(36)}`;

@@ -136,6 +136,19 @@ export function applyPtySize(
   if (!child || rows <= 0 || cols <= 0) return false;
   const slave = resolvePtySlave(child);
   if (!slave) return false;
-  spawnFn("stty", ["-F", slave, "rows", String(rows), "cols", String(cols)], { stdio: "ignore" });
+  /**
+   * `stty -F <device>` is the GNU spelling; BSD `stty` — which is what macOS ships — takes the device as a positional
+   * argument BEFORE the settings (`stty -f <device>` is the BSD flag form, and a bare device works too). GNU `stty` reads
+   * `-F`, so the two cannot be one argv.
+   *
+   * MEASURED on the macOS job: every pty resize test failed with the device unresolved/argument rejected, while the Linux
+   * job passed. `process.platform` is the honest switch here: the difference is the `stty` implementation, which follows the
+   * platform, not a runtime probe that would need a successful spawn to answer.
+   */
+  const args =
+    process.platform === "darwin"
+      ? [slave, "rows", String(rows), "cols", String(cols)]
+      : ["-F", slave, "rows", String(rows), "cols", String(cols)];
+  spawnFn("stty", args, { stdio: "ignore" });
   return true;
 }

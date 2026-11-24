@@ -1725,7 +1725,15 @@ export class Agent {
      * event makes the row's label a fact instead of an inference.
      */
     const aheadAtEnqueue = this.pendingAheadOf(promptId);
-    void this.ensureReady()
+    /**
+     * Tracked, so `settled()` can wait for it.
+     *
+     * `void`ed, this append raced every caller that read the log after `settled()` — MEASURED on the macOS job as
+     * `images persisted to the log`, where the prompt row simply had not been written yet (the same shape shows up on a
+     * slow runner or a busy event loop, which is why the Linux job passed). Writing the queue row is part of starting the
+     * prompt, not a side effect that may land later.
+     */
+    const logged = this.ensureReady()
       .then(async () => {
         /**
          * A user's attachment is stored the same way a tool's image is: bytes in `blobs/`, a reference
@@ -1755,6 +1763,8 @@ export class Agent {
         bus.emit("update", { kind: "agent-update", agentId: this.opts.id } satisfies BusEvent),
       )
       .catch(() => {});
+    this.pendingAppends.add(logged);
+    void logged.finally(() => this.pendingAppends.delete(logged));
     return promptId;
   }
 
@@ -1868,8 +1878,16 @@ export class Agent {
     void this.log.append("prompt", this.currentSession, this.currentBranch, { source: "harness", text }).catch(() => {});
   }
 
-  settled(): Promise<void> {
-    return this.runChain.catch(() => {});
+  /** in-flight queue-row appends — see `enqueuePrompt`; `settled()` waits for these too */
+  private pendingAppends = new Set<Promise<unknown>>();
+
+  async settled(): Promise<void> {
+    await this.runChain.catch(() => {});
+    /**
+     * A prompt's own row is written by an async append, and callers read the log right after `settled()`. Waiting only on
+     * `runChain` let that append land afterwards, so the row looked missing.
+     */
+    while (this.pendingAppends.size) await Promise.allSettled([...this.pendingAppends]);
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
