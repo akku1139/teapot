@@ -5,7 +5,7 @@ import { storeImage, resolveImages } from "../log/image-store.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
 import { createCatalog } from "./tool-catalog.ts";
-import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShellsFor, killBgShells, runningBgShellCount, listBgShells, type ToolContext } from "./tools.ts";
+import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShellsFor, killBgShells, runningBgShellCount, listBgShells, clipLines, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { isBareAcknowledgement } from "./ack.ts";
@@ -2964,7 +2964,7 @@ export class Agent {
         }
         this.stats.toolCalls++;
         this.consecutiveIdleRounds = 0;
-        const capped = result.result.slice(0, 8000);
+        const capped = clipLines(result.result, 8000);
         // data URL → `blobs/<hash>` (idempotent, so re-reading the same picture costs one file)
         const imageRef = async (u: string): Promise<string> =>
           (await storeImage(this.imagesDir, u)).ref;
@@ -3245,7 +3245,7 @@ export class Agent {
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: out.result.slice(0, 20_000),
+          content: clipLines(out.result, 20_000),
         });
       }
     }

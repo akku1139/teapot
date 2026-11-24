@@ -73,9 +73,24 @@ export interface ToolDef {
 const str = (v: unknown, fallback = "") => (typeof v === "string" ? v : fallback);
 const num = (v: unknown, fallback: number) => (typeof v === "number" ? v : fallback);
 
-function clip(s: string, max: number): string {
+/**
+ * Clip to `max` on a LINE boundary, because a byte count is the wrong unit for text a human or a model reads.
+ *
+ * MEASURED (#295): a byte-offset cut landed one character into the NEXT line's gutter, so a long `read_file` output
+ * ended with a stray `18` — the line number of a line whose text was gone. The number is the part that makes the output
+ * addressable, so a cut that keeps part of it is worse than no cut at all.
+ */
+export function clipLines(s: string, max: number): string {
   if (s.length <= max) return s;
-  return s.slice(0, max) + `\n... [truncated, ${s.length} bytes total]`;
+  const head = s.slice(0, max);
+  const cut = head.lastIndexOf("\n");
+  const body = cut > 0 ? head.slice(0, cut) : head;
+  const kept = body.length ? countLines(body) + 1 : 0;
+  return `${body}\n... [truncated at ${kept} lines / ${s.length} bytes total]`;
+}
+
+function clip(s: string, max: number): string {
+  return clipLines(s, max);
 }
 
 async function readText(p: string): Promise<string> {
@@ -1369,12 +1384,13 @@ export const TOOLS: ToolDef[] = [
       if (out.length > MAX_READ_BYTES) {
         const head = out.slice(0, MAX_READ_BYTES);
         const cutAt = head.lastIndexOf("\n");
+        const body = cutAt > 0 ? head.slice(0, cutAt) : head;
         return {
           ok: true,
           result:
-            (cutAt > 0 ? head.slice(0, cutAt) : head) +
+            body +
             `\n... [output clipped at ${MAX_READ_BYTES} bytes of ${out.length}; ` +
-            `continue with offset=${off + 1 + countLines(cutAt > 0 ? head.slice(0, cutAt) : head) + 1}]`,
+            `continue with offset=${off + 1 + countLines(body) + 1}]`,
         };
       }
       return { ok: true, result: out };
