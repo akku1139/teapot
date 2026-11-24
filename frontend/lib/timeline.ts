@@ -69,8 +69,12 @@ export function feedCandidates(input: TimelineInput): TimelineEvent[] {
     if (e.type === "message") {
       const content = String(e.data?.content ?? "");
       const reasoning = String(e.data?.reasoning ?? "");
-      if (content.trim() === "" && reasoning.trim() !== "" && e.data?._prevKind === "tool")
-        return false;
+      /**
+       * A message that carries THINKING and no text is a row.
+       *
+       * That is the shape of a tool-calling turn: the model reasons, then calls a tool, so the server logs `content: ""`
+       * beside the `reasoning`. The reasoning is the only copy of that turn's thinking, so the row is kept.
+       */
       if (e.data?.progressEcho) return false;
       if (!e.data?.final && content.trim() === "(tool call)") return false;
       return content.trim() !== "" || reasoning.trim() !== "" || !!e.data?.final;

@@ -695,6 +695,24 @@ console.log("deep render ok: feed rows present");
   const TOOL_TS = new Date(Date.now() + 5000).toISOString();
   const LIVE_EVENTS = [
     ...EVENTS,
+    /**
+     * The assistant message that CARRIES the reasoning, which the server writes beside the tool call it produced.
+     *
+     * The live 💭 block is retired when the log starts carrying that text — that is the whole rule — so a fixture with only
+     * the tool call describes a state the server never produces, and asserted the wrong thing: it required the bubble to be
+     * dropped even though no row held the thinking.
+     */
+    {
+      id: "live-think-1",
+      seq: 701,
+      ts: TOOL_TS,
+      agent: AGENT.id,
+      session: "alpha-s1",
+      branch: "br0",
+      parent: null,
+      type: "message",
+      data: { role: "assistant", content: "", reasoning: "weighing which file to open" },
+    },
     {
       id: "live-tool-1",
       seq: 702,
@@ -798,7 +816,9 @@ console.log("deep render ok: feed rows present");
      * `/api/agents/:id/events` after the seq gap to discover the call. That refetch is gone — the socket
      * delivers every event — so the fixture must deliver what actually happened: a call, then a result.
      */
-    for (const ev of LIVE_EVENTS.slice(-2)) {
+    // the reasoning message, its tool call and the result: the live 💭 block is retired by the MESSAGE, so all three are
+    // what a real turn delivers
+    for (const ev of LIVE_EVENTS.slice(-3)) {
       sock.onmessage?.({ data: JSON.stringify({ kind: "event", agentId: AGENT.id, sessionId: sid, event: ev }) });
     }
   }

@@ -231,12 +231,26 @@ describe("pruneDeadLiveBuffers (#40)", () => {
 const reasoningBuf = (reasoning: string, at = 1000): LiveBuf => ({ text: "", reasoning, at });
 const toolStart = (ts: string) => ({ type: "tool_call", ts, data: {} });
 
-test("reasoning is retired once a tool call starts after it (#40)", () => {
-  const events = [toolStart(new Date(2000).toISOString())];
+test("reasoning is retired once the log carries it, tool call or not (#40, #286)", () => {
+  const text = "let me look at the config";
+  const logged = {
+    type: "message",
+    ts: new Date(2000).toISOString(),
+    data: { role: "assistant", content: "", reasoning: text },
+  };
   assert.equal(
-    isCoveredByLog(reasoningBuf("let me look at the config"), events, "running"),
+    isCoveredByLog(reasoningBuf(text), [logged, toolStart(new Date(3000).toISOString())], "running"),
     true,
-    "the model cannot be thinking and running a tool at once — the 💭 block is over (#40)",
+    "the row in the log is the copy that renders — the 💭 block is over (#40)",
+  );
+  /**
+   * And a tool call on its own is NOT enough (#286): the assistant message holding that thinking belongs to the same turn,
+   * so a `tool_call` that lands first used to drop the only copy of the thinking.
+   */
+  assert.equal(
+    isCoveredByLog(reasoningBuf(text), [toolStart(new Date(2000).toISOString())], "running"),
+    false,
+    "a tool having started does not mean the thinking was logged (#286)",
   );
 });
 
@@ -270,45 +284,21 @@ test("streaming TEXT keeps its bubble while stale reasoning is retired (#40)", (
    * could only answer one of them.
    */
   const mixed: LiveBuf = { text: "half a repl", reasoning: "thinking that is done", at: 1000 };
-  const events = [toolStart(new Date(2000).toISOString())];
+  const events = [
+    {
+      type: "message",
+      ts: new Date(2000).toISOString(),
+      data: { role: "assistant", content: "", reasoning: "thinking that is done" },
+    },
+    toolStart(new Date(3000).toISOString()),
+  ];
   const rest = reconcileLiveBuffer(mixed, events, "running");
   assert.ok(rest, "the reply is not in the log yet, so the bubble stays (#40)");
   assert.equal(rest!.text, "half a repl", "unpersisted text must be kept (#40)");
   assert.equal(rest!.reasoning, "", "and the finished thinking block dropped (#40)");
 });
 
-/**
- * The fixture must use the event type the system actually emits.
- *
- * The stale-reasoning guard looked for `tool_start`, a type that does not exist: `EventType` declares
- * `tool_call` and `tool_result`. Every test above passed because their fixtures were built with the
- * same wrong string — so the guard was always false, it was never exercised, and a 💭 block stayed on
- * the timeline after the tool row it preceded. MEASURED in a real session: the live bubble carried
- * the exact reasoning text of the settled assistant turn above it.
- *
- * A fixture is only evidence when it matches what is emitted, so this reads the SOURCE OF TRUTH and
- * fails if the guard ever names a type that is not declared there.
- */
-test("the stale-reasoning guard names a REAL event type (#40)", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const path = await import("node:path");
-  const root = path.join(import.meta.dirname, "..");
-  const declared = await readFile(path.join(root, "src/log/events.ts"), "utf8");
-  const guard = await readFile(path.join(root, "frontend/lib/live-buffer.ts"), "utf8");
 
-  const at = guard.indexOf("function startedToolCallSince");
-  const body = guard.slice(at, guard.indexOf("\n}", at));
-  const named = [...body.matchAll(/e\.type\s*!==\s*"([a-z_]+)"/g)].map((m) => m[1]!);
-  assert.ok(named.length > 0, "the guard must compare against some event type");
-  for (const t of named) {
-    assert.match(
-      declared,
-      new RegExp(`\\|\\s*"${t}"`),
-      `the guard compares against "${t}", which EventType does not declare — a guard that names a ` +
-        `type nothing emits can never fire (#40)`,
-    );
-  }
-});
 
 /**
  * Reasoning the LOG already carries is stale, whatever the timestamps say.

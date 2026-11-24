@@ -54,17 +54,21 @@ export interface LiveBufferStatus {
 export function liveBufferStatus(
   buf: LiveBuf,
   events: { type?: string; ts?: string; data?: { role?: string; content?: string } }[],
-  status: string | undefined,
+  _status?: string | undefined,
 ): LiveBufferStatus {
   const text = buf.text.trim();
   const assistant = assistantTexts(events);
-  const live = isLiveStatus(status);
   return {
     textCovered: !text || assistant.has(text),
-    reasoningStale:
-      !buf.reasoning.trim() ||
-      loggedReasoning(events).has(buf.reasoning.trim()) ||
-      (live && startedToolCallSince(events, buf.at)),
+    /**
+     * The reasoning is stale when the LOG carries it, and only then.
+     *
+     * A tool call starting after the buffer did is NOT the same fact: the assistant message holding that thinking belongs to
+     * the same turn and is written beside it, so a `tool_call` that arrives first (or whose message is still in flight) made
+     * the buffer drop the thinking with nothing to render it — "thinking -> tool call ってしたときにタイムラインからthinkingの
+     * 内容が消える". `loggedReasoning` is the question that actually decides it.
+     */
+    reasoningStale: !buf.reasoning.trim() || loggedReasoning(events).has(buf.reasoning.trim()),
   };
 }
 
@@ -89,18 +93,6 @@ export function isCoveredByLog(
 ): boolean {
   if (!buf) return false;
   return liveBufferRemainder(buf, events, status).empty;
-}
-
-function startedToolCallSince(
-  events: { type?: string; ts?: string }[],
-  at: number,
-): boolean {
-  if (!at) return false;
-  return events.some((e) => {
-    if (e.type !== "tool_call") return false;
-    const t = Date.parse(String(e.ts ?? ""));
-    return Number.isFinite(t) && t > at;
-  });
 }
 
 function loggedReasoning(
