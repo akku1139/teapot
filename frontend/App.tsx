@@ -32,6 +32,7 @@ import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { terminalOptions } from "./lib/terminal-options";
 import { compactHint, type CompactAnswer } from "./lib/compact-answer";
+import { inputForPty } from "./lib/term-input";
 import { arrivesRead } from "./lib/notif-read";
 import {
   treeRowsOf,
@@ -3073,7 +3074,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
       };
       wire(w);
       t.onData((d: string) => {
-        if (w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: d }));
+        /**
+         * A REPLY the terminal produced is not keystrokes — see `term-input.ts`.
+         *
+         * xterm answers `OSC 11;?` and friends through this same callback, and the pty echoes what it receives, so a colour
+         * report appeared at the prompt as `11;rgb:ffff/f5f5/f8f8` and `gh auth login` refused to prompt.
+         */
+        const input = inputForPty(d);
+        if (input && w.readyState === WebSocket.OPEN) w.send(JSON.stringify({ kind: "input", data: input }));
       });
       let last = { cols: 0, rows: 0 };
       let pendingRetry: ReturnType<typeof setInterval> | undefined;
