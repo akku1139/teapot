@@ -6,7 +6,7 @@ import {
   TermSizeTracker,
   TERM_RESIZE_DEBOUNCE_MS,
 } from "../src/server/term-size.ts";
-import { scriptArgsFor } from "../src/server/terminals.ts";
+import { scriptArgsFor, scriptDialect } from "../src/server/terminals.ts";
 
 /** a stand-in for ChildProcess — the tracker only ever uses identity */
 const fakeChild = (): ChildProcess => ({}) as ChildProcess;
@@ -117,8 +117,15 @@ test("resolvePtySlave finds the pty behind a `script`-wrapped shell (#20)", asyn
   // own fd 0 is a pipe and fd 1/2 are pipes too — the pty is only reachable via
   // the shell it forks. Reading fd 0 of the child we spawned is exactly the wrong
   // answer, and it is what made the first attempt fall back to typing `stty`.
-  // the SAME argv the server spawns: a fixture with its own GNU copy tested the fixture on macOS
-  const child = spawn("script", scriptArgsFor(process.platform, "sleep", ["5"]), { stdio: "pipe" });
+  /**
+   * The SAME argv the server spawns, for the dialect THIS host actually has.
+   *
+   * A fixture with its own `-qec` tested the fixture on macOS. `scriptDialect()` answers by trying both forms, which is the
+   * only answer that holds when a GNU `script` is installed on a Darwin host.
+   */
+  const dialect = scriptDialect();
+  assert.ok(dialect, "a usable `script` is a precondition for this test");
+  const child = spawn("script", scriptArgsFor(dialect, "sleep", ["5"]), { stdio: "pipe" });
   try {
     // the pty exists only once `script` has forked
     let slave: string | null = null;
@@ -136,6 +143,18 @@ test("resolvePtySlave finds the pty behind a `script`-wrapped shell (#20)", asyn
       const ps = spawnSync("ps", ["-A", "-o", "pid=,ppid=,tty="], { encoding: "utf8" });
       const self = spawnSync("ps", ["-o", "pid=,ppid=,tty=", "-p", String(child.pid)], { encoding: "utf8" });
       const kids = spawnSync("pgrep", ["-P", String(child.pid)], { encoding: "utf8" });
+      /**
+       * Ask `script` ITSELF, both ways, with stderr kept. The man page (and Apple's `script.c`) say BSD is
+       * `script [-q] file [command ...]` and that `-e` is accepted for util-linux compatibility, so the argv is not the
+       * question any more — whether this sandbox lets `script` allocate a pty at all is.
+       */
+      const gnu = spawnSync("script", ["-qec", "true", "/dev/null"], { encoding: "utf8" });
+      const bsd = spawnSync("script", ["-q", "/dev/null", "true"], { encoding: "utf8" });
+      console.error(
+        `DIAG probe gnu=${gnu.status} stderr=${JSON.stringify((gnu.stderr ?? "").slice(0, 200))} ` +
+          `bsd=${bsd.status} stderr=${JSON.stringify((bsd.stderr ?? "").slice(0, 200))} ` +
+          `dialect=${scriptDialect()}`,
+      );
       console.error(
         `DIAG platform=${process.platform} child=${child.pid} exit=${child.exitCode}\n` +
           `DIAG ps status=${ps.status} bytes=${ps.stdout?.length ?? 0}\n` +
@@ -183,8 +202,15 @@ test("applying a size never writes to stdin — it is stty -F on the pty device"
   // a REAL pty via `script`, so the slave genuinely resolves (a fake pid would prove nothing:
   // resolution walks /proc for the device, and the whole point is that the device is what
   // receives the ioctl)
-  // the SAME argv the server spawns: a fixture with its own GNU copy tested the fixture on macOS
-  const child = spawn("script", scriptArgsFor(process.platform, "sleep", ["5"]), { stdio: "pipe" });
+  /**
+   * The SAME argv the server spawns, for the dialect THIS host actually has.
+   *
+   * A fixture with its own `-qec` tested the fixture on macOS. `scriptDialect()` answers by trying both forms, which is the
+   * only answer that holds when a GNU `script` is installed on a Darwin host.
+   */
+  const dialect = scriptDialect();
+  assert.ok(dialect, "a usable `script` is a precondition for this test");
+  const child = spawn("script", scriptArgsFor(dialect, "sleep", ["5"]), { stdio: "pipe" });
   try {
     let slave: string | null = null;
     for (let i = 0; i < 40 && !slave; i++) {

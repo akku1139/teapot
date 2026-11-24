@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { toolShellFor } from "../agent/tools.ts";
 import { bus, type BusEvent } from "../bus.ts";
@@ -20,13 +20,39 @@ export function terminalShellFor(
  * macOS. Exported so the tests spawn the same thing the server does — a fixture with its own copy of the GNU form tested the
  * fixture, not the product.
  */
-export function scriptArgsFor(platform: NodeJS.Platform, command: string, args: string[] = []): string[] {
-  /**
-   * GNU takes the whole command line as ONE string (`-c "sleep 5"`); BSD takes the program and its arguments as separate
-   * argv entries after the typescript file. Passing a single `"sleep 5"` to BSD makes it exec a program with a space in its
-   * name, so the two forms cannot be built the same way.
-   */
-  return platform === "darwin"
+/**
+ * Which `script` dialect this host actually has, answered by TRYING it.
+ *
+ * The platform is not the answer: a GNU `script` can be installed on a Darwin host (and a BSD one on Linux), and the two
+ * argv forms are mutually exclusive — GNU rejects positional command arguments (`unexpected number of arguments`), BSD
+ * rejects `-c`. MEASURED: guessing from `process.platform` left the macOS job failing with `script` exiting 1 immediately
+ * and no pty behind it, which reads as "pty discovery is broken" when the shell had never started.
+ *
+ * Both candidates are cheap and run ONCE per process; the first that exits 0 wins, and a host with neither gets null.
+ */
+let scriptDialectCache: "gnu" | "bsd" | null | undefined;
+
+export function scriptDialect(spawnFn: typeof spawnSync = spawnSync): "gnu" | "bsd" | null {
+  if (scriptDialectCache !== undefined) return scriptDialectCache;
+  const works = (args: string[]) => spawnFn("script", args, { stdio: "ignore" }).status === 0;
+  if (works(["-qec", "true", "/dev/null"])) scriptDialectCache = "gnu";
+  else if (works(["-q", "/dev/null", "true"])) scriptDialectCache = "bsd";
+  else scriptDialectCache = null;
+  return scriptDialectCache;
+}
+
+/**
+ * The argv for `script` that runs ONE command in a fresh pty.
+ *
+ * GNU takes the whole command line as ONE string (`-c "sleep 5"`); BSD takes the program and its arguments as separate
+ * entries after the typescript file. Passing a single `"sleep 5"` to BSD makes it exec a program with a space in its name,
+ * so the two forms cannot be built the same way — and the dialect is decided by `scriptDialect()`, which TRIES them, not by
+ * `process.platform`.
+ *
+ * `dialect` is a parameter so a test can pin both forms without owning the host's `script`.
+ */
+export function scriptArgsFor(dialect: "gnu" | "bsd", command: string, args: string[] = []): string[] {
+  return dialect === "bsd"
     ? ["-q", "/dev/null", command, ...args]
     : ["-qec", [command, ...args].join(" "), "/dev/null"];
 }
@@ -143,10 +169,16 @@ export function createTerminal(
    * `process.platform` decides, because the dialect follows the OS: on Linux it is util-linux unless the operator installed
    * BSD script deliberately, and a runtime probe would need a successful spawn to answer.
    */
-  const scriptArgs = scriptArgsFor(process.platform, shell);
-  const child = hasScript
-    ? spawn("script", scriptArgs, { cwd: workspace, env, detached: true })
-    : spawn(shell, [], { cwd: workspace, env: { ...env, TERM: "dumb" }, detached: true });
+  const dialect = scriptDialect();
+  const scriptArgs = dialect ? scriptArgsFor(dialect, shell) : null;
+  /**
+   * No usable `script` (neither dialect) is the same situation as no `script` at all: spawn the shell directly with
+   * `TERM=dumb`, rather than handing `script` an argv it will reject and getting a pty that never carried a shell.
+   */
+  const child =
+    hasScript && scriptArgs
+      ? spawn("script", scriptArgs, { cwd: workspace, env, detached: true })
+      : spawn(shell, [], { cwd: workspace, env: { ...env, TERM: "dumb" }, detached: true });
 
   const id = `t${++seq}-${Date.now().toString(36)}`;
   const t: Term = {

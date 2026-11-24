@@ -15,19 +15,41 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { applyPtySize } from "../src/server/term-size.ts";
-import { scriptArgsFor } from "../src/server/terminals.ts";
+import { scriptArgsFor, scriptDialect } from "../src/server/terminals.ts";
 
-test("each platform gets its own `script` invocation", () => {
-  assert.deepEqual(scriptArgsFor("darwin", "bash"), ["-q", "/dev/null", "bash"], "BSD: script -q <file> <command>");
-  assert.deepEqual(scriptArgsFor("linux", "bash"), ["-qec", "bash", "/dev/null"], "GNU: script -qec <command> <file>");
+test("each dialect gets its own `script` invocation", () => {
+  assert.deepEqual(scriptArgsFor("bsd", "bash"), ["-q", "/dev/null", "bash"], "BSD: script -q <file> <command>");
+  assert.deepEqual(scriptArgsFor("gnu", "bash"), ["-qec", "bash", "/dev/null"], "GNU: script -qec <command> <file>");
   // and the two are genuinely different, so a single form is not silently serving both
-  assert.notDeepEqual(scriptArgsFor("darwin", "bash"), scriptArgsFor("linux", "bash"));
+  assert.notDeepEqual(scriptArgsFor("bsd", "bash"), scriptArgsFor("gnu", "bash"));
+});
+
+test("BSD takes the program and its arguments as SEPARATE argv", () => {
+  assert.deepEqual(
+    scriptArgsFor("bsd", "sleep", ["5"]),
+    ["-q", "/dev/null", "sleep", "5"],
+    "a single `'sleep 5'` would exec a program with a space in its name",
+  );
+  assert.deepEqual(
+    scriptArgsFor("gnu", "sleep", ["5"]),
+    ["-qec", "sleep 5", "/dev/null"],
+    "GNU takes the whole command line as one string",
+  );
 });
 
 test("the BSD form has no GNU-only flags", () => {
-  for (const a of scriptArgsFor("darwin", "bash")) {
+  for (const a of scriptArgsFor("bsd", "bash")) {
     assert.ok(!/^-[a-z]*[ec]/.test(a), `BSD script takes no -e/-c; got ${a}`);
   }
+});
+
+test("the dialect is decided by TRYING, not by the platform name", () => {
+  /**
+   * A GNU `script` can be installed on a Darwin host and a BSD one on Linux, and the two argv forms are mutually exclusive.
+   * Guessing from `process.platform` is what left the macOS job with `script` exiting 1 and no pty behind it.
+   */
+  assert.ok(["gnu", "bsd", null].includes(scriptDialect()), "this host's answer is one of the three");
+  // whatever it answers, the argv built for it must be the form that host accepts — proven by the dialect probe itself
 });
 
 test("applyPtySize passes what it built to spawnFn, and never writes to stdin", () => {
