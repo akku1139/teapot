@@ -42,6 +42,7 @@ import { composerValueChanged, shouldWriteComposerValue } from "./lib/composer-i
 import {
   atTail,
   classifyScroll,
+  layoutChanged,
   distanceToTail,
   gapToTail,
   nextFollowing,
@@ -4305,6 +4306,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              */
             const prevTop = lastSample?.top;
             const prevHeight = lastSample?.height;
+            const prevViewport = lastSample?.viewport;
             lastSampleHeight = now.height;
             lastSampleViewport = now.viewport;
             lastSample = now;
@@ -4329,8 +4331,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * Gestures latch the follow themselves now (`wheel`/`touch`/`key`/`pointerdown`), so geometry only has to
              * answer the remaining case: the viewport moved up while the content did not change at all.
              */
-            const heightChanged = prevHeight !== undefined && Math.abs(now.height - prevHeight) > 0.5;
-            const movedUp = prevTop !== undefined && now.top < prevTop - 0.5 && !heightChanged;
+            /**
+             * A layout change is not a gesture, and BOTH halves of the box count: a shrinking content clamps `scrollTop`
+             * down, and so does a growing viewport (the composer shrinking). `layoutChanged` answers that question once,
+             * here and in `classifyScroll` — asking it with only the height released the follow on the viewport half
+             * (#294: 76px short of the tail, "jump to present" showing).
+             */
+            const movedUp =
+              prevTop !== undefined &&
+              now.top < prevTop - 0.5 &&
+              !layoutChanged(now, prevHeight, prevViewport);
             if (movedUp) readerUntil = performance.now() + READER_LOCK_MS;
             /**
              * A reader's upward move LOCKS the follow for a moment, not just for this event.

@@ -41,14 +41,34 @@ export function atTail(v: Viewport | null | undefined, tolerance = AT_TAIL_PX): 
 
 export type ScrollCause = "reader" | "programmatic" | "layout";
 
+/**
+ * Did the BOX move under the reader, rather than the reader moving it?
+ *
+ * Both halves matter, and asking only one of them is what released a follow. A shrinking content clamps `scrollTop`
+ * down; so does a GROWING viewport, and the two arrive as separate samples — MEASURED (#294), one composer shrink gave
+ * `[top 62702, height 63152, viewport 450]` then `[top 62606, height 63152, viewport 546]`. The second has an unchanged
+ * `height`, so a height-only test called the 96px `top` drop a reader gesture.
+ *
+ * One function for one question, because two copies drift: `classifyScroll` and the follow decision both ask it.
+ */
+export function layoutChanged(
+  now: Viewport,
+  lastHeight: number | undefined,
+  lastViewport: number | undefined,
+  epsilon = 0.5,
+): boolean {
+  if (lastHeight !== undefined && Math.abs(now.height - lastHeight) > epsilon) return true;
+  if (lastViewport !== undefined && Math.abs(now.viewport - lastViewport) > epsilon) return true;
+  return false;
+}
+
 export function classifyScroll(
   now: Viewport,
   ledger: { top: number; height: number } | null,
   lastHeight: number | undefined,
   lastViewport?: number,
 ): ScrollCause {
-  if (lastViewport !== undefined && Math.abs(now.viewport - lastViewport) > 0.5) return "layout";
-  if (lastHeight !== undefined && Math.abs(now.height - lastHeight) > 0.5) return "layout";
+  if (layoutChanged(now, lastHeight, lastViewport)) return "layout";
   if (ledger) {
     const expected = Math.min(ledger.top, floorOf(now));
     if (Math.abs(now.top - expected) <= 0.5) return "programmatic";
