@@ -32,6 +32,7 @@ import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { terminalOptions } from "./lib/terminal-options";
 import { compactHint, type CompactAnswer } from "./lib/compact-answer";
+import { mergeBgJobs } from "./lib/bg-jobs-merge";
 import { inputForPty } from "./lib/term-input";
 import { arrivesRead } from "./lib/notif-read";
 import {
@@ -2724,33 +2725,10 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     (jobs) => {
       if (!jobs) return;
       /**
-       * Keep row identity when nothing changed: a snapshot is rebuilt on every `agent-update`, and `<For>` keys on item
-       * identity, so writing the fresh array straight in would dispose and recreate every card — the "再レンダリングが発生
-       * してる" report (#290). Rows that are unchanged (same job, same output tail, same start) keep their previous object;
-       * a running job's elapsed time is a CLOCK, not a fact in the snapshot, so it never invalidates a row.
+       * Keep row identity when nothing changed (#290): a snapshot is rebuilt on every `agent-update`, and `<For>` keys on
+       * item identity, so writing the fresh array straight in would dispose and recreate every card.
        */
-      setBgJobs((prev) => {
-        const before = new Map(prev.map((j) => [j.id, j]));
-        let same = prev.length === jobs.length;
-        const merged = jobs.map((j) => {
-          const old = before.get(j.id);
-          if (
-            old &&
-            old.cmd === j.cmd &&
-            old.running === j.running &&
-            old.detached === j.detached &&
-            old.pid === j.pid &&
-            old.code === j.code &&
-            old.startedAt === j.startedAt &&
-            old.tail === j.tail &&
-            old.truncated === j.truncated
-          )
-            return old;
-          same = false;
-          return j;
-        });
-        return same ? prev : merged;
-      });
+      setBgJobs((prev) => mergeBgJobs(prev, jobs) as BgJobRow[]);
     },
   );
 
