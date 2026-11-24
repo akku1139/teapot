@@ -14,7 +14,13 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { atTail, classifyScroll, distanceToTail, layoutChanged } from "../frontend/lib/scroll-policy.ts";
+import {
+  atTail,
+  classifyScroll,
+  distanceToTail,
+  layoutChanged,
+  layoutExplainsScroll,
+} from "../frontend/lib/scroll-policy.ts";
 
 const TAIL_SAMPLE = { top: 62702, height: 63152, viewport: 450 };
 const AFTER_SHRINK = { top: 62606, height: 63152, viewport: 546 };
@@ -34,6 +40,23 @@ test("a growing viewport is a layout change, not a reader gesture", () => {
 
 test("that sample is classified as layout, so it cannot latch the reader lock", () => {
   assert.equal(classifyScroll(AFTER_SHRINK, null, TAIL_SAMPLE.height, TAIL_SAMPLE.viewport), "layout");
+});
+
+test("the clamp accounts for the drop, so it is not read as a gesture", () => {
+  assert.equal(
+    layoutExplainsScroll(AFTER_SHRINK, TAIL_SAMPLE.top),
+    true,
+    "top is exactly where min(previousTop, height - viewport) puts it",
+  );
+});
+
+test("a nudge during growth is NOT explained by the layout", () => {
+  /**
+   * The live-session case (#212): tokens land (the feed grows) while the reader moves 3px up. The clamp would put `top`
+   * at `min(previousTop, newMax)` — 3px above it is the reader, and believing the layout here undoes their gesture.
+   */
+  const grown = { top: TAIL_SAMPLE.top - 3, height: TAIL_SAMPLE.height + 400, viewport: TAIL_SAMPLE.viewport };
+  assert.equal(layoutExplainsScroll(grown, TAIL_SAMPLE.top), false);
 });
 
 test("the shrink leaves the viewport flush with the tail", () => {

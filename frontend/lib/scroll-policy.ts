@@ -62,6 +62,23 @@ export function layoutChanged(
   return false;
 }
 
+/**
+ * Could the BOX change have produced this `scrollTop` on its own?
+ *
+ * "did the box change?" is the wrong question: a growing feed and an upward nudge arrive in the SAME sample on a live
+ * session (tokens land while the reader moves), so refusing to believe any upward move that coincides with a layout
+ * change lets a 3px gesture be undone by the next pin (#212).
+ *
+ * What a layout change can do is CLAMP the position: `min(previousTop, height - viewport)`. A viewport that grew pulls
+ * the maximum down (the composer shrank); a content that shrank lowers it too. Anywhere else the reader is the only
+ * thing that could have moved it.
+ */
+export function layoutExplainsScroll(now: Viewport, previousTop: number | undefined, epsilon = 0.5): boolean {
+  if (previousTop === undefined) return false;
+  const newMax = Math.max(0, now.height - now.viewport);
+  return Math.abs(now.top - Math.min(previousTop, newMax)) <= epsilon;
+}
+
 export function classifyScroll(
   now: Viewport,
   ledger: { top: number; height: number } | null,

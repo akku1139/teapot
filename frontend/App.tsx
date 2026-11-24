@@ -32,6 +32,7 @@ import { deltaBelongsToTimeline, eventBelongsOnTimeline, timelineIsLive } from "
 import { retintTerminal, themeColors } from "./lib/terminal-theme";
 import { terminalOptions } from "./lib/terminal-options";
 import { compactHint, type CompactAnswer } from "./lib/compact-answer";
+import { arrivesRead } from "./lib/notif-read";
 import {
   treeRowsOf,
   sidebarRowsOf,
@@ -43,7 +44,7 @@ import { composerValueChanged, shouldWriteComposerValue } from "./lib/composer-i
 import {
   atTail,
   classifyScroll,
-  layoutChanged,
+  layoutExplainsScroll,
   distanceToTail,
   gapToTail,
   nextFollowing,
@@ -1154,8 +1155,20 @@ const isTimelineLive = (): boolean => {
   };
   let notifSeq = 0;
   const addNotif = (n: Omit<Notif, "id" | "at" | "read">) => {
+    /**
+     * Arriving while the operator is watching that session's tail means it is ALREADY read.
+     *
+     * Every notification used to be added unread and cleared later by a scroll or visibility event, so following the
+     * stream flashed the unread badge for a message that was on screen the whole time.
+     */
+    const read = arrivesRead({
+      notifAgentId: n.agentId,
+      selectedAgentId: selected() ?? undefined,
+      following: intentFollowing,
+      visible: document.visibilityState === "visible",
+    });
     setNotifs((list) =>
-      [{ ...n, id: `n${++notifSeq}`, at: Date.now(), read: false }, ...list].slice(0, 50),
+      [{ ...n, id: `n${++notifSeq}`, at: Date.now(), read }, ...list].slice(0, 50),
     );
   };
   const maybeNotify = (agentId: string, ev: Ev) => {
@@ -4306,8 +4319,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * "上に行こうとすると押し戻される" survived several releases (#212).
              */
             const prevTop = lastSample?.top;
-            const prevHeight = lastSample?.height;
-            const prevViewport = lastSample?.viewport;
             lastSampleHeight = now.height;
             lastSampleViewport = now.viewport;
             lastSample = now;
@@ -4333,15 +4344,17 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
              * answer the remaining case: the viewport moved up while the content did not change at all.
              */
             /**
-             * A layout change is not a gesture, and BOTH halves of the box count: a shrinking content clamps `scrollTop`
-             * down, and so does a growing viewport (the composer shrinking). `layoutChanged` answers that question once,
-             * here and in `classifyScroll` — asking it with only the height released the follow on the viewport half
-             * (#294: 76px short of the tail, "jump to present" showing).
+             * An upward move is the READER's unless the box change ACCOUNTS for it.
+             *
+             * Asking "did the box change?" is not enough in either direction: a growing feed and a 3px nudge arrive in the
+             * same sample on a live session, so refusing every upward move that coincides with a layout change lets the
+             * next pin undo the gesture (#212); and a shrink that clamps `scrollTop` looks like an upward move unless the
+             * clamp is what you compare against (#294).
+             *
+             * `layoutExplainsScroll` asks the answerable question — is `top` exactly where a clamp would have put it?
              */
             const movedUp =
-              prevTop !== undefined &&
-              now.top < prevTop - 0.5 &&
-              !layoutChanged(now, prevHeight, prevViewport);
+              prevTop !== undefined && now.top < prevTop - 0.5 && !layoutExplainsScroll(now, prevTop);
             if (movedUp) readerUntil = performance.now() + READER_LOCK_MS;
             /**
              * A reader's upward move LOCKS the follow for a moment, not just for this event.
