@@ -1,19 +1,37 @@
 /**
- * A full-screen program must get ONE line per wheel notch (#172).
+ * One wheel notch must move three rows (#172, #284).
  *
- * `scrollSensitivity: 3` was added because one line per notch is slow when reading output. In the alt buffer (nano, vim, less)
- * xterm translates the wheel into cursor-up/down sequences, so three lines per notch became three LINES PER KEY and nano
- * jumped three lines at a time — "ターミナルでnanoだけ3行刻みでスクロールできない".
+ * xterm converts a notch as `rows = normalizedDelta × 50 × scrollSensitivity / cellHeight`, and a real notch arrives as
+ * `deltaMode: DOM_DELTA_LINE, deltaY: ±3` → `normalizedDelta` 1. With this app's cell (18px) the value 1 is already
+ * ≈2.8 rows; the 3 that was here for "three lines per notch" made it 8.3 ≈ 9 rows.
+ *
+ * The arithmetic is stated here so a future change to the number has to argue with the formula, not with a name.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { scrollSensitivityFor, terminalOptions } from "../frontend/lib/terminal-options.ts";
+import { TERMINAL_SCROLL_SENSITIVITY, terminalOptions } from "../frontend/lib/terminal-options.ts";
 
-test("a full-screen program gets one line per notch, scrollback gets three", () => {
-  assert.equal(scrollSensitivityFor("alternate"), 1, "nano/vim/less: the wheel is a key press");
-  assert.equal(scrollSensitivityFor("normal"), 3, "reading output: three lines per notch");
+/** xterm's `SCROLL_WHEEL_SENSITIVITY`, in `scrollableElement.ts`. */
+const PIXELS_PER_NORMALIZED_UNIT = 50;
+
+/** The cell height MEASURED in Firefox at `fontSize: 12.5, lineHeight: 1.2`. */
+const MEASURED_CELL_HEIGHT = 18;
+
+const rowsPerNotch = (sensitivity: number, cellHeight = MEASURED_CELL_HEIGHT): number =>
+  (PIXELS_PER_NORMALIZED_UNIT * sensitivity) / cellHeight;
+
+test("a wheel notch scrolls about three rows, not nine", () => {
+  const opts = terminalOptions({});
+
+  const rows = rowsPerNotch(opts.scrollSensitivity);
+  assert.ok(rows > 2.5 && rows < 3.5, `one notch should move about three rows; got ${rows}`);
+  assert.ok(
+    rowsPerNotch(3) > 8,
+    "and the value that was here moved more than eight rows — the reported '9行刻み'",
+  );
 });
 
-test("the option bag still starts at the scrollback value", () => {
-  assert.equal(terminalOptions({}).scrollSensitivity, 3);
+test("there is one sensitivity for both buffers", () => {
+  assert.equal(TERMINAL_SCROLL_SENSITIVITY, 1);
+  assert.equal(terminalOptions({}).scrollSensitivity, TERMINAL_SCROLL_SENSITIVITY);
 });

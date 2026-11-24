@@ -12,16 +12,23 @@
 export const TERMINAL_LINE_HEIGHT = 1.2;
 
 /**
- * Lines per wheel notch: three when reading scrollback, ONE for a full-screen program.
+ * Wheel sensitivity, in the unit xterm actually uses.
  *
- * `scrollSensitivity` is the only knob xterm exposes, and it applies to BOTH buffers: in the alt buffer (nano, vim, less) the
- * wheel is translated into cursor-up/down sequences, so three lines per notch became three LINES PER KEY in the editor — the
- * wheel jumps three lines at a time and the file cannot be positioned precisely. Reported as "ターミナルでnanoだけ3行刻みで
- * スクロールできない" (#172): 3 is right for reading output, 1 is right for a program that treats a notch as a key press.
+ * The name suggests "lines per notch", so 3 looked like the way to get three lines. It is a MULTIPLIER inside xterm's
+ * scroll conversion:
+ *
+ *     pixels = normalizedDelta × 50 × scrollSensitivity      // SCROLL_WHEEL_SENSITIVITY = 50
+ *     rows   = round(pixels / cellHeight)
+ *
+ * A real mouse notch arrives as `deltaMode: DOM_DELTA_LINE, deltaY: ±3`, which xterm normalizes to ±1; with the default
+ * cell height of 18px the default sensitivity of 1 is already **2.8 ≈ 3 rows**. Setting 3 tripled the pixels, so one notch
+ * jumped 8.3 ≈ 9 rows ("ターミナルのスクロールが9行刻みになってる").
+ *
+ * 1 therefore IS "three lines per notch" at this cell height. There is no per-buffer difference to make any more: the
+ * alt buffer scrolls by rows too, so the same value is correct there, and the sensitivity no longer has to be reassigned
+ * when the buffer switches.
  */
-export function scrollSensitivityFor(bufferType: string): number {
-  return bufferType === "alternate" ? 1 : 3;
-}
+export const TERMINAL_SCROLL_SENSITIVITY = 1;
 
 export function terminalOptions<T>(theme: T): {
   cursorBlink: boolean;
@@ -36,15 +43,7 @@ export function terminalOptions<T>(theme: T): {
     cursorBlink: true,
     fontSize: 12.5,
     lineHeight: TERMINAL_LINE_HEIGHT,
-    /**
-     * Three lines per wheel notch.
-     *
-     * The default is ONE line per notch, which on a 40-row drawer is 40 notches for a screenful — reported as
-     * "スクロールが1行ずつで遅い" (#172). (Shift+wheel already jumps a page through xterm's built-in
-     * `fastScrollModifier` handling; the option itself is not in this version's option type, so only the sensitivity is
-     * set here.)
-     */
-    scrollSensitivity: 3,
+    scrollSensitivity: TERMINAL_SCROLL_SENSITIVITY,
     fontFamily: "ui-monospace, Menlo, Consolas, monospace",
     // xterm only honours a translucent theme background with this on
     allowTransparency: true,

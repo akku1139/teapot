@@ -20,7 +20,7 @@ test("the options the terminal depends on are all still set", () => {
   const opts = terminalOptions({ background: "#000" });
   assert.equal(opts.cursorBlink, true);
   assert.ok(opts.fontSize > 0);
-  assert.equal(opts.scrollSensitivity, 3, "#172: three lines per wheel notch");
+  assert.equal(opts.scrollSensitivity, 1, "one notch is already ~3 rows; see terminal-scroll-sensitivity.test.ts");
   assert.equal(opts.allowTransparency, true, "xterm ignores a translucent theme background without it");
   assert.equal(opts.theme.background, "#000", "the caller's theme is passed through unchanged");
 });
