@@ -41,13 +41,22 @@ function expand(s: string, root: string, data: string): string {
   return s.split("${PLUGIN_ROOT}").join(root).split("${PLUGIN_DATA}").join(data);
 }
 
-export async function loadPlugin(dir: string, dataDir: string): Promise<LoadedPlugin> {
+export async function loadPlugin(dir: string, rawDataDir: string): Promise<LoadedPlugin> {
   let root: string;
   try {
     root = await realpath(dir);
   } catch {
     throw new PluginError(`plugin directory does not exist: ${dir}`);
   }
+  /**
+   * The data directory is resolved for the same reason the root is: both are pasted into a server's `cwd`, `args` and `env`,
+   * and one of them being physical while the other is spelled through a symlink makes two paths into the same tree look
+   * unrelated. macOS reaches every temp root through `/var` → `/private/var`, so `${PLUGIN_DATA}` came out unresolved while
+   * `${PLUGIN_ROOT}` did not (`/var/... !== /private/var/...` on the macOS job).
+   *
+   * A data directory that does not exist yet keeps its given spelling: `realpath` needs the target.
+   */
+  const dataDir = await realpath(rawDataDir).catch(() => rawDataDir);
   const st = await stat(root).catch(() => null);
   if (!st?.isDirectory()) throw new PluginError(`not a directory: ${dir}`);
 
