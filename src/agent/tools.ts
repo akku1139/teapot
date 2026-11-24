@@ -82,11 +82,16 @@ const num = (v: unknown, fallback: number) => (typeof v === "number" ? v : fallb
  */
 export function clipLines(s: string, max: number): string {
   if (s.length <= max) return s;
-  const head = s.slice(0, max);
+  /**
+   * The marker is INSIDE the budget. Callers treat `max` as a hard cap — the log stores 8000 bytes and the restart
+   * parity test compares against exactly that — so a result that is `max` plus a 40-byte note is a cap that leaks.
+   */
+  const marker = (bytes: number): string => `\n... [truncated at ${bytes} bytes / ${s.length} total]`;
+  const room = Math.max(0, max - marker(s.length).length);
+  const head = s.slice(0, room);
   const cut = head.lastIndexOf("\n");
   const body = cut > 0 ? head.slice(0, cut) : head;
-  const kept = body.length ? countLines(body) + 1 : 0;
-  return `${body}\n... [truncated at ${kept} lines / ${s.length} bytes total]`;
+  return body + marker(s.length);
 }
 
 function clip(s: string, max: number): string {

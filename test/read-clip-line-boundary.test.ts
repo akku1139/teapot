@@ -39,5 +39,5 @@ test("the marker says how much was kept, and a short text is untouched", () => {
   const text = "  1| short\n  2| text";
   assert.equal(clipLines(text, 100_000), text, "nothing to cut: no marker");
 
-  assert.match(clipLines(gutterText(), MAX), /\n\.\.\. \[truncated at \d+ lines \/ \d+ bytes total\]$/);
+  assert.match(clipLines(gutterText(), MAX), /\n\.\.\. \[truncated at \d+ bytes \/ \d+ total\]$/);
 });

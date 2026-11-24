@@ -109,6 +109,19 @@ FAILS (not skips) when `public/` is missing or older than the sources, because a
 stale bundle passes its own smoke tests while exercising code you have since
 changed (#75).
 
+**To find out what failed, run `node scripts/test-failures.ts` — not `node --test test/*.test.ts | grep`.**
+
+```sh
+node scripts/test-failures.ts              # whole suite, one run, only the failures
+node scripts/test-failures.ts blobs        # only files whose name matches
+```
+
+`pnpm test` prints ~1700 `✔` lines, so a failure is somewhere above the summary and the reflex is to
+re-run with a grep — two 3-minute runs to learn one fact, and the grep itself can be swallowed by a
+binary line (`grep: (standard input): binary file matches`), which is how a real failure reads as
+"nothing found". The script keeps every result in memory and prints the summary, each failing test's
+name and assertion, and the files to look at.
+
 To only run what a platform can support (Windows CI), use
 `pnpm test:portable`. POSIX-only suites opt out explicitly with
 `markPosixOnly("reason")` from `test/helpers/posix-only.ts` — never by filename.
