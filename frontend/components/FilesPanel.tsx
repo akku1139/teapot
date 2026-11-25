@@ -1,6 +1,7 @@
-import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onSettled } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import { api } from "../lib/api";
+import { watchFiles } from "../lib/workspace-events";
 import { flashHint } from "../lib/flash";
 import { IconBtn, Modal } from "./chrome";
 import { Loading } from "./loading";
@@ -271,16 +272,21 @@ export function FilesPanel(props: { agentId: string; workspace: string }) {
     }
   };
 
+  /**
+   * The tree refreshes ITSELF when the workspace changes — that is what every editor does, and it is why the ⟳ button is gone.
+   *
+   * The signal arrives on the APP's WebSocket (`frontend/lib/workspace-events.ts`), not on a socket of this panel's own: a panel
+   * that opens a connection duplicates the app's token, keep-alive and reconnect, and MEASURED it left six sockets behind in one
+   * smoke pass. The panel only says which agent it shows; the server watches that workspace and nobody else's.
+   */
+  onSettled(() => {
+    onCleanup(watchFiles(props.agentId, () => void refreshTree()));
+  });
+
   return (
     <>
       <h3 style="display:flex;align-items:center;gap:6px" title="the agent's workspace — lazy-loaded, dotfiles hidden; click a folder to expand, a file to preview">
         🗂 files <span class="muted" style="text-transform:none;letter-spacing:0">· {wsName()}</span>
-        <IconBtn
-          class="filetoggle"
-          icon={refreshing() ? "…" : "⟳"}
-          title="refresh the tree (root + expanded folders) — open popups are kept"
-          onClick={() => void refreshTree()}
-        />
         <IconBtn
           class="filetoggle"
           style="margin-left:auto"

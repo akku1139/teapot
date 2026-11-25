@@ -79,7 +79,8 @@ import { IconBtn, Modal } from "./components/chrome";
 import { ThinkingTimer } from "./components/code";
 import { THEMES } from "./lib/themes-presets";
 import { relTime } from "./lib/format";
-import { api } from "./lib/api";
+import { api, wsTokenQuery } from "./lib/api";
+import { bindFileWatchSocket, dispatchFilesChanged } from "./lib/workspace-events";
 import { TodoEditor } from "./components/settings-parts";
 import { MessageRow } from "./components/rows";
 import { ConfigModal } from "./components/ConfigModal";
@@ -196,10 +197,6 @@ if (hashTok) {
   localStorage.setItem("teapot.token", decodeURIComponent(hashTok[1] ?? ""));
   history.replaceState(null, "", location.pathname + location.search);
 }
-const wsTokenQuery = () => {
-  const t = localStorage.getItem("teapot.token");
-  return t ? `?token=${encodeURIComponent(t)}` : "";
-};
 
 export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
@@ -2353,6 +2350,16 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     ws = sock;
     sock.onopen = () => {
       setConnected(true);
+      /**
+       * The files panel subscribes through THIS socket (no socket of its own): the server watches only the workspaces somebody
+       * is looking at, and this is where the subscription is (re)announced — a reconnect means the server forgot.
+       */
+      bindFileWatchSocket((msg) => {
+        try {
+          sock.send(JSON.stringify(msg));
+        } catch {
+        }
+      });
       if (firstConnect) {
         firstConnect = false;
         return;
@@ -2361,6 +2368,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     };
     sock.onclose = () => {
       setConnected(false);
+      bindFileWatchSocket(null);
       setTimeout(connectWs, 1500);
     };
     sock.onerror = () => sock.close();
@@ -2375,6 +2383,14 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         return;
       }
       if (msg.kind === "pong") return;
+      /**
+       * A workspace changed under a files panel. The panel refetches the directories it has expanded; nothing else in the app
+       * cares, so this is a one-line hand-off to whoever subscribed.
+       */
+      if (msg.kind === "files-changed" && typeof msg.agentId === "string") {
+        dispatchFilesChanged(msg.agentId);
+        return;
+      }
       if (msg.kind === "hello" && Array.isArray(msg.agents)) {
         setAgents((prev) => mergeAgentSnapshots(prev, msg.agents as Agent[]));
         const list = agents();

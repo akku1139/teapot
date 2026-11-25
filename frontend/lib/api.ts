@@ -14,3 +14,15 @@ export async function api(path: string, opts?: RequestInit) {
   }
   return res.json();
 }
+
+/**
+ * The API token as a query parameter, for a WebSocket.
+ *
+ * A browser cannot set headers on a WebSocket handshake, so the token has to travel in the URL. Shared from here because more
+ * than one socket now needs it (the app socket, a terminal, the files watcher) and three copies of a security-relevant helper
+ * is three places to get it wrong.
+ */
+export function wsTokenQuery(): string {
+  const t = localStorage.getItem("teapot.token");
+  return t ? `?token=${encodeURIComponent(t)}` : "";
+}

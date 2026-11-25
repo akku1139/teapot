@@ -26,6 +26,7 @@ import {
 } from "./terminals.ts";
 import { listBgShells, killBgShell } from "../agent/tools.ts";
 import { applyPtySize, TermSizeTracker, resolvePtySlave } from "./term-size.ts";
+import { watchWorkspace } from "./workspace-watch.ts";
 import { expandTilde, homeDir } from "../home.ts";
 import { SUB_PERSONAS, resolveWorkspace } from "../master.ts";
 import { ConfigPatchSchema, formatZodError } from "../config-schema.ts";
@@ -153,6 +154,16 @@ const MAX_WS_CLIENTS = 64;
       let ka: ReturnType<typeof setInterval> | null = null;
       let awaitingPong = false;
       let counted = false;
+      /**
+       * Which workspaces THIS client is looking at, and how to stop watching each.
+       *
+       * Files changed is a SUBSCRIPTION, not a broadcast: a panel says which agent it shows, the server watches that workspace
+       * only (`watchWorkspace` refcounts per workspace), and the frame goes to the sockets that asked. It used to be its own
+       * socket per panel, which duplicated this socket's token, 30s ping and reconnect — MEASURED as six `files-watch` sockets in
+       * one smoke pass beside one app socket.
+       */
+      const fileWatches = new Map<string, () => void>();
+      let onFileWatch: ((msg: { kind?: string; agentId?: unknown }) => void) | null = null;
       return {
         onOpen(_evt, ws) {
           if (wsClients >= MAX_WS_CLIENTS) {
@@ -182,6 +193,30 @@ const MAX_WS_CLIENTS = 64;
             send(ev);
           };
           bus.on("update", onUpdate);
+          const wsRef = ws;
+          const watchFilesFor = (agentId: string) => {
+            if (fileWatches.has(agentId)) return;
+            const agent = master.agents.get(agentId);
+            if (!agent) return;
+            fileWatches.set(
+              agentId,
+              watchWorkspace(agent.workspace, () => {
+                try {
+                  wsRef.send(JSON.stringify({ kind: "files-changed", agentId }));
+                } catch {
+                }
+              }),
+            );
+          };
+          onFileWatch = (msg) => {
+            const agentId = String(msg.agentId ?? "");
+            if (!agentId) return;
+            if (msg.kind === "watch-files") watchFilesFor(agentId);
+            else if (msg.kind === "unwatch-files") {
+              fileWatches.get(agentId)?.();
+              fileWatches.delete(agentId);
+            }
+          };
           ka = setInterval(() => {
             if (awaitingPong) {
               try {
@@ -199,12 +234,15 @@ const MAX_WS_CLIENTS = 64;
             const m = JSON.parse(String(evt.data));
             if (m?.kind === "ping") ws.send(JSON.stringify({ kind: "pong" }));
             if (m?.kind === "pong") awaitingPong = false;
+            if (m?.kind === "watch-files" || m?.kind === "unwatch-files") onFileWatch?.(m);
           } catch {
           }
         },
         onClose() {
           if (ka) clearInterval(ka);
           if (onUpdate) bus.off("update", onUpdate);
+          for (const release of fileWatches.values()) release();
+          fileWatches.clear();
           if (counted) wsClients = Math.max(0, wsClients - 1);
         },
       };
@@ -245,9 +283,7 @@ const MAX_WS_CLIENTS = 64;
     return c.json({ closed: n });
   });
 
-  app.get(
-    "/api/agents/:id/term",
-    upgradeWebSocket((c) => {
+  app.get("/api/agents/:id/term", upgradeWebSocket((c) => {
       const agentId = c.req.param("id") ?? "";
       const wanted = c.req.query("terminal") ?? "";
       let attachedId = "";

@@ -88,6 +88,29 @@ function scanFile(file: string): Hit[] {
       }
     }
 
+    /**
+     * `const Card: Component<CardProps> = ({ title }) => …` — the parameter carries no annotation, so the type that says "this is
+     * props" is on the DECLARATOR. MEASURED as a false negative before this was handled.
+     */
+    if (node.type === "VariableDeclarator" && node.id?.type === "Identifier" && node.init && node.id.typeAnnotation) {
+      const ann = node.id.typeAnnotation.typeAnnotation;
+      const isComponent = /^(Parent)?Component$/.test(typeNameOf(ann));
+      const fn = node.init;
+      if (
+        isComponent &&
+        (fn.type === "ArrowFunctionExpression" || fn.type === "FunctionExpression") &&
+        fn.params?.[0]?.type === "ObjectPattern"
+      ) {
+        hits.push({
+          file: path.relative(ROOT, file),
+          line: lineAt(fn.params[0].start),
+          column: colAt(fn.params[0].start),
+          source: `{ … }: ${typeNameOf(ann)}`,
+          kind: "parameter",
+        });
+      }
+    }
+
     // function X({ a }: SomeProps) {}   /   const X = ({ a }: SomeProps) => …
     if (
       (node.type === "FunctionDeclaration" ||
@@ -103,8 +126,12 @@ function scanFile(file: string): Hit[] {
          * A named `*Props` type always counts. An INLINE object type counts too when the file is `.tsx` — that is a
          * component in a component file, and the pattern is the same read-once.
          */
-        const isProps =
-          typeName.endsWith("Props") || (typeName === "<inline>" && file.endsWith(".tsx"));
+        /**
+         * A NAMED `*Props` type always counts. An INLINE object type counts only when the function returns JSX: in a `.tsx`
+         * file that is the difference between a component and an ordinary helper, and MEASURED as a false positive —
+         * `const formatUser = ({ name }: { name: string }) => name.trim()` was reported as props destructuring.
+         */
+        const isProps = typeName.endsWith("Props") || (typeName === "<inline>" && returnsJsx(node));
         if (isProps) {
           hits.push({
             file: path.relative(ROOT, file),
@@ -129,18 +156,57 @@ function scanFile(file: string): Hit[] {
   return hits;
 }
 
+/** Does this function RETURN JSX? (a component, rather than a helper that happens to take an object) */
+function returnsJsx(fn: any): boolean {
+  const body = fn.body;
+  if (!body) return false;
+  const isJsx = (n: any): boolean =>
+    !!n && typeof n === "object" && (n.type === "JSXElement" || n.type === "JSXFragment");
+  const contains = (root: any): boolean => {
+    if (!root || typeof root !== "object") return false;
+    if (isJsx(root)) return true;
+    for (const key of Object.keys(root)) {
+      if (key === "loc" || key === "range") continue;
+      const v = root[key];
+      if (Array.isArray(v)) {
+        if (v.some(contains)) return true;
+      } else if (v && typeof v === "object" && contains(v)) return true;
+    }
+    return false;
+  };
+  // an expression body IS the returned value; a block body is searched for a `return <jsx>`
+  return body.type === "JSXElement" || body.type === "JSXFragment" || contains(body);
+}
+
 /**
  * What the annotation is CALLED, for the "is this props?" question.
  *
  * An inline object type (`function B({ a }: { a: string })`) has no name, so it is reported as `<inline>` and the caller
  * decides: in a `.tsx` file that is a component, and a destructured parameter there is the same read-once mistake.
  */
+/**
+ * The name to ask "is this props?" of, seeing through the wrappers that hide it.
+ *
+ * `Omit<CardProps, "id">` and `CardProps & { … }` are both props — MEASURED as false negatives with a `TSTypeReference`-only
+ * check — so an intersection reports its first element that names something, and a utility type reports its first type argument
+ * (`Extract`/`Exclude` take a union as their second, so the FIRST is the one that describes the object).
+ */
 function typeNameOf(t: any): string {
   if (!t) return "";
   if (t.type === "TSTypeReference") {
     const n = t.typeName;
     const name = typeof n?.name === "string" ? n.name : (n?.right?.name ?? "");
+    if (name && /^(Omit|Pick|Partial|Required|Readonly)$/.test(name) && Array.isArray(t.typeArguments?.params)) {
+      return typeNameOf(t.typeArguments.params[0]) || "<inline>";
+    }
     return name || "<inline>";
+  }
+  if (t.type === "TSIntersectionType" && Array.isArray(t.types)) {
+    for (const part of t.types) {
+      const named = typeNameOf(part);
+      if (named && named !== "<inline>") return named;
+    }
+    return "<inline>";
   }
   if (t.type === "TSTypeLiteral") return "<inline>";
   return "";

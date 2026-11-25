@@ -325,6 +325,22 @@ nobody. Eleven of these pointed at `Agent.opts`; they became `Agent.updateOption
 `AgentOptions` (so an upstream rename breaks the compile), and `toolCtx.subAgents` became `Agent.attachSubAgents(hooks)`.
 What legitimately remains: `process.execve`, which Node's types do not declare.
 
+## A panel that watches is a panel with no refresh button
+
+The files tree had a ⟳ button because nothing could tell it a file had appeared. Editors do not work that way, and neither does
+this: `/api/agents/:id/files-watch` is a WebSocket that the server feeds from `fs.watch(workspace, { recursive: true })`
+(`src/server/workspace-watch.ts`), debounced, one watcher per workspace refcounted across panels, ignoring `node_modules`/`.git`
+churn. The panel refetches exactly the directories it has expanded, and `mergeKids` applies the result without disturbing
+anything on screen.
+
+Two rules that came out of building it:
+
+- **A socket needs a reconnect even when it is a "watcher"** — a closed one does not fail, it goes quiet (see the terminal note
+  above), so the panel reconnects and the server keeps a 30s ping. The token travels as a query parameter because a browser cannot
+  set headers on a handshake; `wsTokenQuery()` in `lib/api.ts` is the one owner now that three sockets need it.
+- **`MockWS.instances.at(-1)` is not "the app socket" any more.** The smoke harness assumed the last socket opened was the app's, so
+  one component with its own socket silently redirected every frame the checks pushed. `appSocket()` asks by URL.
+
 ## A frozen listing is worse than no listing
 
 The system prompt carried a `## Workspace snapshot (top level)` block: the workspace's top level, captured at the FIRST prompt

@@ -82,3 +82,37 @@ test("the detector actually catches each shape — a green scan above means some
 
   t.diagnostic(`caught ${hits.length} shape(s)`);
 });
+
+
+test("the shapes a naive AST walk misses — each one was a measured false negative or positive", () => {
+  /**
+   * A checker is only as good as the shapes it can see, so the gaps found by review are pinned here rather than trusted:
+   *
+   *   - `Component<Props>` puts the type on the DECLARATOR, and the parameter has no annotation at all;
+   *   - `Omit<Props, "id">` and `Props & { … }` hide the name behind a wrapper;
+   *   - an INLINE object type in a `.tsx` is only props when the function returns JSX, or a plain helper is flagged.
+   */
+  const dir = mkdtempSync(path.join(tmpdir(), "props-detect2-"));
+  writeFileSync(
+    path.join(dir, "shapes2.tsx"),
+    [
+      "export const Named = ({ title }: CardProps) => <div>{title}</div>;",
+      "export function Omitted({ a }: Omit<CardProps, 'id'>) { return <b>{a}</b>; }",
+      "export function Intersected({ a }: CardProps & { x: boolean }) { return <b>{a}</b>; }",
+      "export const ViaComponent: Component<CardProps> = ({ title }) => <div>{title}</div>;",
+      "const formatUser = ({ name }: { name: string }) => name.trim();",
+    ].join("\n"),
+  );
+
+  const { hits } = findPropsDestructuring(dir);
+  const lines = hits.map((h) => h.line).sort((a, b) => a - b);
+  assert.deepEqual(
+    lines,
+    [1, 2, 3, 4],
+    `all four props shapes must be caught, and the helper on line 5 must not be (caught: ${JSON.stringify(hits)})`,
+  );
+  assert.ok(
+    !hits.some((h) => h.line === 5),
+    "a helper that takes an object and returns a string is not a component — flagging it is a false positive",
+  );
+});

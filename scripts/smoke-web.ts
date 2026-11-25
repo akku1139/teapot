@@ -159,6 +159,17 @@ let fetchCount = 0;
 const requestedUrls: string[] = [];
 
 const WS_EVENTS: unknown[] = []; 
+/**
+ * The APP's socket — not "the last one opened".
+ *
+ * The files panel opens its own `/files-watch` socket, so `instances.at(-1)` started pointing at whichever component mounted
+ * last, and every check that pushed a frame through it drove the wrong socket. Asking by URL is the question the harness
+ * actually means.
+ */
+function appSocket(): MockWS | undefined {
+  return MockWS.instances.find((i) => i.url.includes("/api/ws"));
+}
+
 class MockWS {
   static instances: MockWS[] = [];
   url: string;
@@ -167,7 +178,9 @@ class MockWS {
   onmessage: ((m: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
-  send(_data: string) {
+  sent: string[] = [];
+  send(data: string) {
+    this.sent.push(data);
   }
   close(): void {
     this.readyState = 3;
@@ -615,7 +628,7 @@ console.log("deep render ok: feed rows present");
   console.log("deep render ok: an answered ask_user disables its options at once (#55)");
 
   {
-    const sock = MockWS.instances.at(-1);
+    const sock = appSocket();
     if (!sock) {
       console.error("smoke: no app socket — the bundle never opened one");
       process.exit(1);
@@ -757,7 +770,7 @@ console.log("deep render ok: feed rows present");
       };
     return apiResponse(url);
   });
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   if (!sock) {
     console.error("reasoning→tool check: no app socket — the bundle never opened one");
     process.exit(1);
@@ -853,7 +866,7 @@ console.log("deep render ok: feed rows present");
 
 {
   const fail = (msg: string) => { console.error(`#reasoning REGRESSION: ${msg}`); process.exit(1); };
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   if (!sock?.onmessage) {
     fail("no app socket to drive");
     throw new Error("unreachable");
@@ -1060,7 +1073,7 @@ console.log("deep render ok: feed rows present");
     return origFetch(url, init);
   });
 
-  const appWs = MockWS.instances.at(-1);
+  const appWs = appSocket();
   if (!appWs?.onmessage) { console.error("MOCK WS missing"); process.exit(1); }
   if (!appWs.onmessage) {
     console.error("[dbg] appWs has NO onmessage handler!");
@@ -1183,7 +1196,7 @@ console.log("deep render ok: feed rows present");
      * A prompt only waits when a turn is running (or something is queued ahead), so state the turn — that is the one
      * fact the client knows at send time, and it draws "queued…" from it in the very first frame.
      */
-    MockWS.instances.at(-1)?.onmessage?.({
+    appSocket()?.onmessage?.({
       data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "running" } }),
     });
     await new Promise((r) => setTimeout(r, 80));
@@ -1236,7 +1249,7 @@ console.log("deep render ok: feed rows present");
    * 出てる". The row below is the positive control: it fails if the frame is consumed instead of merged.
    */
   {
-    const ws = MockWS.instances.at(-1);
+    const ws = appSocket();
     if (!ws) {
       console.error("#ask check: no socket was opened — the check would be vacuous");
       process.exit(1);
@@ -1287,7 +1300,7 @@ console.log("deep render ok: feed rows present");
    * refuses ANY transition of a prompt row between "queued…" and a settled timestamp.
    */
   {
-    const ws = MockWS.instances.at(-1);
+    const ws = appSocket();
     const ta2 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement;
     const form2 = ta2?.closest("form") as HTMLFormElement;
     const spacer = w.document.querySelector(".feed .msg") as HTMLElement | null;
@@ -1356,7 +1369,7 @@ console.log("deep render ok: feed rows present");
      * chip looked like the operator's own message. The row now carries `tone-<author>` and the marker inherits it.
      */
     // the queue comes from the snapshot; re-state it so this check does not depend on which block ran last
-    MockWS.instances.at(-1)?.onmessage?.({
+    appSocket()?.onmessage?.({
       data: JSON.stringify({
         kind: "agent-update",
         agentId: AGENT.id,
@@ -1409,7 +1422,7 @@ console.log("deep render ok: feed rows present");
      * called something else — and an older log can still carry `by: "human"`, which must read the same.
      */
     const send = (id: string, by: string) =>
-      MockWS.instances.at(-1)?.onmessage?.({
+      appSocket()?.onmessage?.({
         data: JSON.stringify({
           kind: "event",
           agentId: AGENT.id,
@@ -1589,7 +1602,7 @@ console.log("deep render ok: feed rows present");
   }
 
   {
-    const sock = MockWS.instances.at(-1);
+    const sock = appSocket();
     if (!sock) {
       console.error("smoke: no app socket — the bundle never opened one");
       process.exit(1);
@@ -1882,7 +1895,7 @@ console.log("deep render ok: feed rows present");
       }
       return origFetchToggle(u, init);
     });
-    const sockT = MockWS.instances.at(-1);
+    const sockT = appSocket();
     if (!sockT?.onmessage) {
       console.error("#59 check: no app socket to drive");
       process.exit(1);
@@ -2655,7 +2668,7 @@ console.log("deep render ok: feed rows present");
   }
 
   {
-    const sock = MockWS.instances.at(-1);
+    const sock = appSocket();
     if (!sock) {
       console.error("smoke: no app socket — the bundle never opened one");
       process.exit(1);
@@ -2983,7 +2996,7 @@ console.log("deep render ok: feed rows present");
      * The growth has to arrive the way a live session delivers it — a WS `event` plus a taller feed — because the pin
      * that drags the reader back is the one the events effect runs when the feed's height changed.
      */
-    const sock = MockWS.instances.at(-1);
+    const sock = appSocket();
     sock?.onmessage?.({
       data: JSON.stringify({
         kind: "event",
@@ -3320,7 +3333,7 @@ console.log("deep render ok: feed rows present");
     return origFetch(url, init);
   });
   await new Promise((r) => setTimeout(r, 150));
-  const appWs2 = MockWS.instances.at(-1);
+  const appWs2 = appSocket();
   if (!appWs2) {
     console.error("smoke: no app socket for the update check");
     process.exit(1);
@@ -3504,7 +3517,7 @@ console.log("deep render ok: feed rows present");
       };
     return origFetch(url, init);
   });
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   sock?.onmessage?.({
     data: JSON.stringify({ kind: "agent-update", agentId: THIRD.id, snapshot: THIRD }),
   });
@@ -3777,7 +3790,7 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) <= 1100) {
       return { ok: true, status: 200, json: async () => ({ agents: [RUNNING_FOR_ESC] }) };
     return realFetch(url, init);
   });
-  MockWS.instances.at(-1)?.onmessage?.({
+  appSocket()?.onmessage?.({
     data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: RUNNING_FOR_ESC }),
   });
   const agentIsRunning = await waitFor("agent shows as running", () =>
@@ -3907,7 +3920,7 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
 }
 
 {
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   if (!sock?.onmessage) {
     console.error("#108 REGRESSION: no app socket to drive");
     process.exit(1);
@@ -4015,7 +4028,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
  * never from a lagging snapshot count or from which component drew the row.
  */
 {
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   const ta3 = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
   const form3 = ta3?.closest("form") as HTMLFormElement | null;
   if (!sock || !ta3 || !form3) {
@@ -4097,7 +4110,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   ([...w.document.querySelectorAll(".agent-item")].find((el) =>
     new RegExp("\\balpha\\b").test(el.textContent ?? "")) as HTMLElement | undefined)?.click();
   for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
-  MockWS.instances.at(-1)?.onmessage?.({
+  appSocket()?.onmessage?.({
     data: JSON.stringify({
       kind: "agent-update",
       agentId: AGENT.id,
@@ -4128,7 +4141,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
    * One word for one person: the operator asked why this said "human".
    */
   const pushTodo = (id: string, by: string) =>
-    MockWS.instances.at(-1)?.onmessage?.({
+    appSocket()?.onmessage?.({
       data: JSON.stringify({
         kind: "event",
         agentId: AGENT.id,
@@ -4186,7 +4199,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
    * row, dragged the layout with it. The header is the anchor now (test/bgjobs-anchor.test.ts pins the CSS) and this pins
    * the wiring: press it and a dialog appears inside the header; press ✕ and it goes.
    */
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   sock?.onmessage?.({
     data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "idle", bgRunning: 2 } }),
   });
@@ -4287,7 +4300,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
    * slot now (`components/notif-panel.tsx`), and this pins that the slot is actually filled AND that the panel keeps its own
    * close button: a slot that silently replaces the ✕ would leave the panel with no way out.
    */
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   sock?.onmessage?.({
     data: JSON.stringify({
       kind: "event",
@@ -4344,6 +4357,74 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log("deep render ok: the notifications panel renders its header slot and clear-all empties it (#notif)");
 }
 
+{
+  /**
+   * The files panel refreshes ITSELF: the server says "the workspace changed" and the tree refetches (#fileslive).
+   *
+   * It had a ⟳ button because nothing could tell it — the fallback for a missing signal, not a feature. The panel now opens
+   * `/api/agents/:id/files-watch` and refetches the directories it has expanded on every `changed` frame; this pins the wiring
+   * (frame → refetch) and that the manual button is gone. The SERVER half — that a write in the workspace produces the frame — is
+   * `test/workspace-watch.test.ts`, and the whole path was measured in a real browser against a real server.
+   */
+  const sock = appSocket();
+  const openDetails = [...w.document.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("▤"));
+  if (!openDetails) {
+    console.error("#fileslive check: no details toggle — vacuous");
+    process.exit(1);
+  }
+  (openDetails as HTMLElement).click();
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+  if (!w.document.querySelector(".filebox")) {
+    console.error("#fileslive check: the files panel did not open — vacuous");
+    process.exit(1);
+  }
+  if ([...w.document.querySelectorAll("button")].some((b) => (b.textContent ?? "").includes("⟳"))) {
+    console.error("#fileslive REGRESSION: the manual refresh button is back — the tree is supposed to refresh itself");
+    process.exit(1);
+  }
+
+  /**
+   * The panel subscribes over the APP socket — it must not open one of its own (#fileslive).
+   *
+   * What this harness can prove: the subscription was SENT (the mock records frames) and no second socket appeared. What it
+   * cannot prove is "a frame caused a refetch": MEASURED both ways, the tree-read count grew 6 → 13 with the handler stubbed out,
+   * because every mount of the panel fetches the root itself. That was measured where it is observable — a real browser against a
+   * real server (a file appearing appears in the tree, a removal disappears, no click) — plus the server half in
+   * `test/workspace-watch.test.ts`.
+   */
+  const sockForFiles = appSocket();
+  const watched = (): { agentId?: string }[] =>
+    (sockForFiles?.sent ?? [])
+      .map((raw) => {
+        try {
+          return JSON.parse(raw) as { kind?: string; agentId?: string };
+        } catch {
+          return {};
+        }
+      })
+      .filter((m) => m.kind === "watch-files");
+  const sub = await waitFor("the files panel to subscribe over the app socket", () => watched().length > 0, 4_000);
+  if (!sub) {
+    console.error("#fileslive REGRESSION: the panel never asked the app socket to watch the workspace");
+    process.exit(1);
+  }
+  if (watched().every((m) => !m.agentId)) {
+    console.error("#fileslive REGRESSION: the subscription does not name an agent, so the server cannot know what to watch");
+    process.exit(1);
+  }
+  if (MockWS.instances.some((i) => i.url.includes("/files-watch"))) {
+    console.error("#fileslive REGRESSION: the panel opened a socket of its own — this belongs on the app socket");
+    process.exit(1);
+  }
+
+  // and a pushed frame is what the panel acts on: sending it must not throw, and the shadowed socket stays the only one
+  sockForFiles?.onmessage?.({ data: JSON.stringify({ kind: "files-changed", agentId: AGENT.id }) });
+  for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  console.log("deep render ok: the files panel subscribes over the app socket, and has no refresh button (#fileslive)");
+  void sock;
+}
+
 
 {
   /**
@@ -4353,7 +4434,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
    * finish summary was the odd one out, with its own copy button below the text. The header carries it now (plus a
    * "summary-only" button when the message also has reasoning), so every row is the same shape.
    */
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   sock?.onmessage?.({
     data: JSON.stringify({
       kind: "event",
@@ -4450,7 +4531,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
    * boundary (or on a fresh `hello`), so a status change that happened while the page was asleep left a `thinking…` row
    * under a `waiting` header. The snapshot is authoritative about "is work in flight".
    */
-  const sock = MockWS.instances.at(-1);
+  const sock = appSocket();
   sock?.onmessage?.({
     data: JSON.stringify({ kind: "agent-update", agentId: AGENT.id, snapshot: { ...AGENT, status: "running", live: true } }),
   });
