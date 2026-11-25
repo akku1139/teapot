@@ -38,7 +38,18 @@ test("a file appearing in the workspace notifies the subscriber", async () => {
   }
 });
 
-test("a churn directory is ignored, so an install does not repaint the tree", async () => {
+test("a churn directory is ignored — where the platform NAMES the change", async () => {
+  /**
+   * MEASURED on the macOS job: `paths=["watch-b-71HH5b"]` — the watched root's own name, not `node_modules/dep-0.js`. FSEvents
+   * reports that a change happened somewhere under the root and nothing more, so a path-based ignore list cannot apply there.
+   *
+   * The consequence is bounded and accepted: on macOS a `pnpm install` causes a few refetches of the directories that are on
+   * screen, debounced to one per burst. It is not a correctness bug — the panel shows the truth either way — so the difference is
+   * pinned here rather than papered over with a platform skip, which would hide it the next time it changes.
+   *
+   * (The design that removes the difference entirely is to watch only the directories the client has expanded, so the panel's
+   * own view decides what is watched. That is a protocol change, not a filter.)
+   */
   const ws = mkdtempInRootSync("watch-b-");
   mkdirSync(path.join(ws, "node_modules"));
   let hits = 0;
@@ -50,12 +61,26 @@ test("a churn directory is ignored, so an install does not repaint the tree", as
   try {
     await waitFor(() => watchedWorkspaces().includes(path.resolve(ws)), { what: "the watcher to be armed" });
     for (let i = 0; i < 5; i++) writeFileSync(path.join(ws, "node_modules", `dep-${i}.js`), "x");
-    // nothing to wait FOR: the assertion is that no notification arrives, so this is the one place a settle delay IS the test
+    // nothing to wait FOR on the "0" branch: the assertion is that no notification arrives, so settling IS the test
     await new Promise((r) => setTimeout(r, 700));
-    assert.equal(hits, 0, `node_modules churn must not reach the panel (platform=${process.platform}, paths=${JSON.stringify(named)})`);
-    // and an ordinary file after it still does, so the watcher was alive the whole time
+
+    const namesThePath = named.every((n) => n.includes("/") || n === "");
+    if (!namesThePath) {
+      // darwin: the events carry the root's name, so the filter is inert by construction — assert that instead of pretending
+      assert.equal(
+        named.every((n) => n === path.basename(ws) || n === ""),
+        true,
+        `a platform that cannot name the change must report the root: ${JSON.stringify(named)}`,
+      );
+      assert.ok(hits > 0, "and it must still notify, or a panel would never refresh on this platform");
+    } else {
+      assert.equal(hits, 0, `node_modules churn must not reach the panel (paths=${JSON.stringify(named)})`);
+    }
+
+    // either way, an ordinary file notifies: the watcher was alive the whole time
+    const before = hits;
     writeFileSync(path.join(ws, "real.txt"), "x");
-    await waitFor(() => hits > 0, { what: "a notification for a real file" });
+    await waitFor(() => hits > before, { what: "a notification for a real file" });
   } finally {
     release();
   }
