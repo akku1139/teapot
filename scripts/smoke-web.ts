@@ -4278,6 +4278,72 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   console.log("deep render ok: the shells badge opens its panel inside the header, and ✕ closes it (#bgjobs)");
 }
 
+{
+  /**
+   * The notifications panel is a component with the header's ACTIONS passed in.
+   *
+   * It was inline JSX in `App.tsx` with "clear all" written into the header — the condition to show it
+   * (`notifs().length > 0`) and the markup lived in different places, so neither read alone. The header's right side is a
+   * slot now (`components/notif-panel.tsx`), and this pins that the slot is actually filled AND that the panel keeps its own
+   * close button: a slot that silently replaces the ✕ would leave the panel with no way out.
+   */
+  const sock = MockWS.instances.at(-1);
+  sock?.onmessage?.({
+    data: JSON.stringify({
+      kind: "event",
+      agentId: AGENT.id,
+      event: {
+        agent: AGENT.id, id: "e-notif-1", seq: 9600, ts: "2026-01-01T11:30:00Z",
+        session: AGENT.session, branch: "br0", parent: null, type: "message",
+        data: { role: "assistant", content: "all done here", final: true },
+      },
+    }),
+  });
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+  const bell = [...w.document.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("🔔"));
+  if (!bell) {
+    console.error("#notifpanel check: no notifications bell — vacuous");
+    process.exit(1);
+  }
+  (bell as HTMLElement).click();
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+  const panelEl = w.document.querySelector(".notifpanel");
+  if (!panelEl) {
+    console.error("#notifpanel REGRESSION: the bell opened no panel");
+    process.exit(1);
+  }
+  if (!w.document.querySelector(".notifbackdrop")) {
+    console.error("#notifpanel REGRESSION: the panel rendered without its backdrop — they are one appearance");
+    process.exit(1);
+  }
+  const head = panelEl.querySelector(".notifhead") as HTMLElement | null;
+  const clearAll = [...(head?.querySelectorAll("button") ?? [])].find((b) =>
+    (b.textContent ?? "").includes("clear all"),
+  );
+  if (!clearAll) {
+    console.error(`#notifpanel REGRESSION: the header has no "clear all" slot (${head?.textContent?.trim()})`);
+    process.exit(1);
+  }
+  const closeBtn = [...(head?.querySelectorAll("button") ?? [])].find((b) => (b.textContent ?? "").includes("✕"));
+  if (!closeBtn) {
+    console.error("#notifpanel REGRESSION: the slot replaced the close button, so the panel has no way out");
+    process.exit(1);
+  }
+  (clearAll as HTMLElement).click();
+  for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+  if (w.document.querySelector(".notifitem")) {
+    console.error("#notifpanel REGRESSION: clear all left items behind");
+    process.exit(1);
+  }
+  if (!w.document.querySelector(".notifpanel .notifempty")) {
+    console.error("#notifpanel REGRESSION: the emptied panel shows no empty hint");
+    process.exit(1);
+  }
+  console.log("deep render ok: the notifications panel renders its header slot and clear-all empties it (#notif)");
+}
+
 
 {
   /**

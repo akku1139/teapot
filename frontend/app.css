@@ -3327,6 +3327,10 @@ html[data-appearance="dark"] .toolbody.shiki span { color: var(--shiki-dark); }
  * Reported as "通知の clear all ボタンのかたちが違う / 高さ保証すべき" (#254). It is the same height as its neighbour and
  * centred the same way.
  */
+/* the header's actions live in one row; the panel renders whatever the caller passes, so this is layout only */
+.notifactions { display: flex; gap: var(--space-2); align-items: center; }
+.notifempty { padding: 10px; }
+
 .notifhead .editbtn {
   height: var(--ctl-h);
   padding: 0 var(--space-2);

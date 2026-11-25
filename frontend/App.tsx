@@ -19,6 +19,7 @@ import { buildTimelineWithCount, type TimelineEvent, type PendingEchoLike } from
 import { isPlaceholderDetail } from "./lib/goal-timeline";
 import { Card } from "./components/card";
 import { BgJobsPanel, type BgJob } from "./components/bg-jobs";
+import { NotifPanel, type Notif as NotifRow } from "./components/notif-panel";
 import { GoalEditor } from "./components/goal-pane";
 import { Loading } from "./components/loading";
 import { pickInitialAgent } from "./lib/session-restore";
@@ -1114,16 +1115,8 @@ const isTimelineLive = (): boolean => {
     if (pendingKey() === key) setPendingMsgs(deduped);
   }
 
-  type Notif = {
-    id: string;
-    agentId: string;
-    kind: "progress" | "finish" | "question" | "error";
-    title: string;
-    body: string;
-    at: number;
-    read: boolean;
-    eventId?: string | undefined;
-  };
+  /** the shape lives with the panel that renders it (components/notif-panel.tsx) */
+  type Notif = NotifRow;
   const [notifs, setNotifs] = createSignal<Notif[]>([]);
   const [hideGhosts, setHideGhosts] = createSignal(
     localStorage.getItem("teapot.hideGhosts") === "1",
@@ -5282,62 +5275,24 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
         </Show>
       </aside>
     </div>
-    <Show when={showNotifs()}>
-      {}
-      {}
-      <div class="notifbackdrop" onClick={() => setShowNotifs(false)} />
-      <div class="notifpanel">
-        <div class="notifhead">
-          notifications
-          <span style="display:flex;gap:8px;align-items:center">
-            <Show when={notifs().length > 0}>
-              <button class="editbtn" onClick={() => setNotifs([])}>clear all</button>
-            </Show>
-            <button class="iconbtn" title="close notifications" onClick={() => setShowNotifs(false)}>✕</button>
-          </span>
-        </div>
-        <Show
-          when={notifs().length > 0}
-          fallback={<div class="muted" style="padding:10px">nothing yet — progress, finishes, questions and errors will land here</div>}
-        >
-          <div class="notiflist">
-            <For each={notifs()}>
-              {(n) => (
-                <div
-                  class={"notifitem " + n.kind + (n.read ? " read" : "")}
-                  title={`from ${n.agentId}`}
-                  onClick={() => {
-                    setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
-                    if (selected() !== n.agentId && agents().some((a) => a.id === n.agentId)) select(n.agentId);
-                    setShowNotifs(false);
-                    if (n.eventId)
-                      // the jump waits for the row to exist on the timeline being shown; no guessed delay
-                      jumpToEvent(n.eventId!);
-                  }}
-                >
-                  <div class="nhead">
-                    <span class="nicon">{n.kind === "finish" ? "✅" : n.kind === "question" ? "❓️" : n.kind === "error" ? "⚠️" : "📈"}</span>
-                    <span class="ntitle">{n.title}</span>
-                    <span class="meta muted">{relTime(new Date(n.at).toISOString())}</span>
-                    <button
-                      class="iconbtn nreadbtn"
-                      title={n.read ? "already read" : "mark as read"}
-                      onClick={(e: MouseEvent) => {
-                        e.stopPropagation();
-                        setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
-                      }}
-                    >{n.read ? "✓" : "○"}</button>
-                  </div>
-                  <Show when={n.body}>
-                    <div class="nbody">{truncate(n.body, 160)}</div>
-                  </Show>
-                </div>
-              )}
-            </For>
-          </div>
+    <NotifPanel
+      open={showNotifs()}
+      notifs={notifs()}
+      onClose={() => setShowNotifs(false)}
+      actions={
+        <Show when={notifs().length > 0}>
+          <button class="editbtn" onClick={() => setNotifs([])}>clear all</button>
         </Show>
-      </div>
-    </Show>
+      }
+      onMarkRead={(n) => setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)))}
+      onSelect={(n) => {
+        setNotifs((list) => list.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+        if (selected() !== n.agentId && agents().some((a) => a.id === n.agentId)) select(n.agentId);
+        setShowNotifs(false);
+        // the jump waits for the row to exist on the timeline being shown; no guessed delay
+        if (n.eventId) jumpToEvent(n.eventId);
+      }}
+    />
     <Show when={showNew()}>
       <NewAgentModal
         providers={Object.keys(cfg().providers ?? {})}
@@ -5501,9 +5456,6 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
  * the operator answer with something that wasn't among the offered options.
  */
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + " …" : s;
-}
 
 /** "in 5m" / "3m ago" — for schedule next/last columns */
 
