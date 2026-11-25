@@ -37,11 +37,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
 import { Window } from "happy-dom";
 import { renderMarkdown } from "../frontend/md.ts";
 import { goalLine } from "../frontend/lib/goal-timeline.ts";
-import { cssRuleBody } from "./helpers/css.ts";
+
 
 
 /* ---------- the rule ---------- */
@@ -82,28 +81,5 @@ test("a goal card's contract is multi-line and reaches a <pre> (#111)", () => {
   assert.ok(
     (pre!.textContent ?? "").length > 120,
     "and it holds the whole contract, not a summary (#111)",
-  );
-});
-
-/* ---------- against the SHIPPED stylesheet, not the source ---------- */
-
-test("the shipped CSS has the wrapping rule (#111)", () => {
-  // the source rule could be tree-shaken, renamed or not included; assert on the
-  // built asset so the check cannot pass while the bundle lacks it
-  const dir = new URL("../public/assets/", import.meta.url);
-  let name: string | undefined;
-  try {
-    name = readdirSync(dir).find((f) => f.endsWith(".css"));
-  } catch {
-    return; // no build present (CI runs this before `vite build`); source rule is covered above
-  }
-  if (!name) return;
-  const built = readFileSync(new URL(name, dir), "utf8");
-  const body = cssRuleBody(built, ".content pre>code") ?? "";
-  assert.ok(body, `the SHIPPED css must carry the goal-card code rule (#111); ${name}`);
-  assert.match(
-    body,
-    /white-space:\s*pre-wrap/,
-    `the SHIPPED css must wrap goal-card code (#111); ${name}`,
   );
 });

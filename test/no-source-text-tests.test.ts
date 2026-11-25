@@ -76,7 +76,7 @@ test("no test asserts on implementation source (#meta)", () => {
 
 
 
-test("a stylesheet a test does read goes through the CRLF-normalising helper (#meta)", () => {
+test("no test reads a stylesheet's text (#meta)", () => {
   /**
    * The only stylesheet reads left in this suite exist for a CSS contract (happy-dom does no layout, so geometry has to be
    * stated as CSS). Reading one with a bare `readFileSync` is the Windows-only failure MEASURED on the v0.37.231 run:
@@ -95,21 +95,23 @@ test("a stylesheet a test does read goes through the CRLF-normalising helper (#m
     const src = readFileSync(path.join(TEST_DIR, file), "utf8");
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/[^\n]*/gm, "");
     for (const line of code.split("\n")) {
-      if (/readFileSync\([^)]*\.css/.test(line)) offenders.push(`${file}: ${line.trim().slice(0, 100)}`);
+      if (/(readFileSync|readFile)\([^)]*\.css/.test(line)) offenders.push(`${file}: ${line.trim().slice(0, 100)}`);
     }
   }
   assert.deepEqual(
     offenders,
     [],
-    "read a stylesheet with readSourceUrl() from test/helpers/source.ts, or a CRLF checkout fails where nobody can iterate:\n  " +
+    "a stylesheet is source text: assert the COMPUTED style against the built bundle (scripts/smoke-web.ts loads it into " +
+      "happy-dom) or measure it in Firefox. Reading the sheet and matching a selector breaks on renames that fix nothing " +
+      "and stays green while the cascade is broken:\n  " +
       offenders.join("\n  "),
   );
-  // positive control: the shapes that were actually written
+  // positive control: the shapes that were actually written, both of which shipped in this suite
   for (const line of [
     `const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");`,
-    `const css = readFileSync(path.join(ROOT, "frontend/app.css"), "utf8");`,
+    `const css = await readFile(path.join(import.meta.dirname, "..", "frontend/app.css"), "utf8");`,
   ]) {
-    assert.ok(/readFileSync\([^)]*\.css/.test(line), `the guard must see this shape: ${line}`);
+    assert.ok(/(readFileSync|readFile)\([^)]*\.css/.test(line), `the guard must see this shape: ${line}`);
   }
 });
 

@@ -12,22 +12,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { oneLineFull } from "../frontend/lib/timeline-row.ts";
-import { cssRuleBody } from "./helpers/css.ts";
-import { readSourceUrl } from "./helpers/source.ts";
 
-const css = readSourceUrl(new URL("../frontend/app.css", import.meta.url));
-
-/** the declarations of the rule whose selector list has `selector` as one entry */
-const ruleBody = (selector: string): string => cssRuleBody(css, selector.replace(/,$/, ""));
-
-test("the tool label clips with CSS rather than wrapping", () => {
-  const body = ruleBody(".embed summary > b,");
-  assert.match(body, /white-space:\s*nowrap/, "text-overflow needs one line to act on");
-  assert.match(body, /text-overflow:\s*ellipsis/);
-  assert.match(body, /overflow:\s*hidden/);
-  assert.match(body, /min-width:\s*0/, "a flex item refuses to shrink without this");
-});
-
+/**
+ * The LABEL's flattening is behaviour, and it is all this file tests.
+ *
+ * It used to assert the CSS that makes the box clip instead of wrap (`.embed summary > b`'s `nowrap` / `text-overflow` /
+ * `min-width`). That is source matching with extra steps — it breaks on a rename that fixes nothing and stays green while the UI
+ * is broken — and it cost twice over: the same shape failed the Windows job on a CRLF checkout. What it protected is now checked
+ * where the cascade actually resolves (the smoke harness loads the BUILT stylesheet into happy-dom) and measured where layout
+ * exists (Firefox; the numbers live in the commit).
+ */
 test("the label is flattened but not length-capped", () => {
   const long = "x".repeat(500);
   assert.equal(oneLineFull(`  ${long}\n\n more  `), `${long} more`, "newlines collapse to one line");

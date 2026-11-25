@@ -57,21 +57,3 @@ test("timeline row components carry no inline styles (#ui)", async () => {
     );
   }
 });
-
-test("a grouped row dims the DISC, never the glyph (#ui)", async () => {
-  /**
-   * `opacity` on `.avatar.ghosted` faded the emoji along with the circle. The operator's point:
-   * fading the circle is right, fading the character is not — a lighter emoji is just a worse
-   * emoji, not a quieter row.
-   */
-  const css = await readFile(path.join(import.meta.dirname, "..", "frontend/app.css"), "utf8");
-  const at = css.indexOf(".avatar.ghosted");
-  assert.ok(at > 0, "the grouped-avatar rule must exist");
-  const rule = css.slice(at, css.indexOf("}", at));
-  assert.doesNotMatch(
-    rule,
-    /opacity\s*:/,
-    "dimming the disc is done with colour — `opacity` here also fades the emoji (#ui)",
-  );
-  assert.match(rule, /background|border|transition/, "and it must actually dim something");
-});

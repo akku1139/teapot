@@ -206,16 +206,31 @@ recovery, so do not add one.
     passes while the loader points at a module that no longer exists; CALLING
     `highlightLangChunks` and asserting the output carries `--shiki-` does not.
 
-  A stylesheet (`app.css`) remains the one legitimate read: happy-dom does no layout, so
-  the rendered contract (`flex: 1`, `overflow-y: auto`) has to be stated as CSS, and a
-  class rename breaks the UI and the test together.
+  **A stylesheet is source text too, and reading it is the same defect.** This was written as "the one legitimate read"
+  (`happy-dom` does no layout, so state the contract as CSS), and it was wrong in the way that matters: a selector match cannot
+  fail for a real reason. MEASURED here — `.iconbtn`'s own note records a case where the helper read the FIRST matching rule while
+  a LATER one won the cascade, so the assertion and the rendered page disagreed and both stayed "green"; and one of these tests
+  broke the Windows job on a CRLF checkout, a cost paid for a guard that proves nothing.
+
+  What to do instead, in order:
+  - **computed style against the BUILT bundle** — `scripts/smoke-web.ts` injects the built `*.css` into happy-dom and exposes
+    `getComputedStyle`, so a rename breaks the UI and the check together and the cascade is resolved. MEASURED limits: it answers
+    `display`/`align-self`/`width` correctly and does NOT resolve `inherit` (it returns the inherited literal), so there is no
+    `line-height: inherit` check.
+  - **headless Firefox** for anything with geometry (heights, bottoms, alignment under a grown box). The numbers go in the commit
+    message; they are the evidence, and a text assertion is not a substitute for them.
+  - `test/no-source-text-tests.test.ts` refuses any `readFile`/`readFileSync` of a `.css` in `test/`, and
+    `test/helpers/css.ts` (the selector-matching helper those tests shared) is gone with them.
+
+  A **structural LINT** over JSX is a different thing and stays: it enforces a SHAPE the operator asked to be enforced
+  (one-glyph ⇒ `.iconbtn`, no props destructuring, no inline style on a row), and it cannot be satisfied while the shape is wrong.
 
 - **Test the behaviour instead.** Put pure logic in a `.ts` helper next to `App.tsx`
   (e.g. `frontend/session-scope.ts`) and unit-test it directly with `node --test`.
   Anything that depends on the real bundle — rendering, the drawer, the live buffer,
   the toggles, the feed — belongs in `scripts/smoke-web.mjs`, which loads the BUILT
-  bundle in happy-dom and drives it. happy-dom does **no layout**, so geometry is
-  asserted as a CSS contract (`test/helpers/css.ts`), never as pixels.
+  bundle in happy-dom and drives it. happy-dom does **no layout**, so geometry belongs in headless Firefox; the CSS itself is
+  asserted as a COMPUTED style there (`getComputedStyle`), never as selector text.
 
   A smoke check must assert its own PRECONDITION (that the row exists, that the
   bubble has text, that the element is scrollable) or it passes vacuously, and it

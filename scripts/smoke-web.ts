@@ -1696,6 +1696,26 @@ console.log("deep render ok: feed rows present");
       const cssOf = (el: Element) => w.document.defaultView.getComputedStyle(el);
       const groupedRows = [...w.document.querySelectorAll(".msg.grouped")];
       const feedRows = [...w.document.querySelectorAll(".msg")];
+      /**
+       * A continuation row dims the DISC, never the glyph.
+       *
+       * MEASURED cause of the original report: `opacity` on `.avatar.ghosted` faded the 🧩 along with the circle, so a grouped
+       * row read as "a washed-out icon" rather than "a quieter row". The computed `opacity` of the avatar is the property the
+       * browser actually applies, so a rule that reintroduces it fails here — a test that read `app.css` and matched the absence
+       * of a declaration stayed green through every other way of breaking the same thing.
+       */
+      for (const row of groupedRows) {
+        const disc = row.querySelector(".avatar");
+        if (!disc) continue;
+        const opacity = w.getComputedStyle(disc as never).opacity;
+        if (opacity && opacity !== "1") {
+          console.error(
+            `#grouped REGRESSION: a continuation row's avatar has opacity ${opacity} — that fades the glyph too, and a ` +
+              "lighter emoji is a worse emoji",
+          );
+          process.exit(1);
+        }
+      }
       if (groupedRows.length === 0) {
         console.error("#grouped REGRESSION: no grouped rows to measure — the check is vacuous");
         process.exit(1);
@@ -4646,6 +4666,77 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     process.exit(1);
   }
   console.log("deep render ok: a followed session returns at the tail (#248)");
+}
+
+/**
+ * CSS contracts that the CASCADE can answer, asserted against the built bundle.
+ *
+ * A test file used to pin these by reading `app.css` and matching selector text. That is the same defect the suite bans for `.ts`:
+ * it breaks on a rename that fixes nothing and stays green while the UI is broken — MEASURED here, `.iconbtn`'s own comment
+ * records a case where `cssRuleBody()` read the FIRST matching rule while a later one won the cascade, so the assertion and the
+ * rendered page disagreed. Loading the built stylesheet into happy-dom answers the question the browser actually asks, and a
+ * rename now breaks the UI and this check together.
+ *
+ * What it CANNOT answer is measured and therefore not asserted here: `line-height: inherit` comes back as the inherited literal
+ * (`1.45`, not the resolved value) and no box has geometry. Heights and alignments are measured in headless Firefox instead, and
+ * the numbers go in the commit.
+ */
+{
+  /**
+   * MEASURED in Firefox before this rule existed: a decision summary was 21.85px tall against a tool summary's 18px, and its
+   * label was cut off with no ellipsis at all. The label is built by the markdown renderer, so its text arrives in a child block —
+   * and `text-overflow` only clips a box's own INLINE content, so the ellipsis on the label could never reach it.
+   */
+  const decide = {
+    agent: AGENT.id, id: "e-9001", session: AGENT.session,
+    seq: 9001, ts: "2026-01-01T11:00:00Z", branch: "br0", parent: null,
+    type: "decision",
+    data: { decision: "a decision worth pinning", rationale: "because", alternatives: [] },
+  };
+  appSocket()?.onmessage?.({ data: JSON.stringify({ kind: "event", agentId: AGENT.id, event: decide }) });
+  await new Promise((r) => setTimeout(r, 150));
+
+  const label = w.document.querySelector(".embed.decision summary > b");
+  if (!label) {
+    console.error("#css-cascade REGRESSION: no decision label rendered, so nothing under test exists");
+    process.exit(1);
+  }
+  const child = label.querySelector("*");
+  if (!child) {
+    console.error("#css-cascade REGRESSION: the label rendered no markdown child — the fixture no longer matches the real shape");
+    process.exit(1);
+  }
+  const childDisplay = w.getComputedStyle(child as never).display;
+  if (childDisplay !== "inline") {
+    console.error(
+      `#css-cascade REGRESSION: the label's markdown child is ${childDisplay}, so the label's text-overflow cannot reach it — ` +
+        "the decision line gets cut off with no ellipsis",
+    );
+    process.exit(1);
+  }
+  if (w.getComputedStyle(label as never).textOverflow !== "ellipsis") {
+    console.error("#css-cascade REGRESSION: a summary label is not ellipsised at all");
+    process.exit(1);
+  }
+
+  /**
+   * MEASURED in Firefox with a four-line draft: `send` at bottom 655, `⤢` and `📎` at 655 as well. Before the rule they were
+   * centred against a box 24px taller than they were, because `align-self` on `.iconbtn` beats the form's `align-items`.
+   */
+  const form = w.document.querySelector(".composer form");
+  const icon = form?.querySelector(".iconbtn");
+  if (!form || !icon) {
+    console.error("#css-cascade REGRESSION: the composer has no icon button, so the alignment rule is untestable");
+    process.exit(1);
+  }
+  const align = w.getComputedStyle(icon as never).alignSelf;
+  if (align !== "flex-end") {
+    console.error(
+      `#css-cascade REGRESSION: the composer's icon button aligns ${align}, so it floats up as the prompt grows while send stays down`,
+    );
+    process.exit(1);
+  }
+  console.log("deep render ok: the cascade gives summary labels an ellipsis and composer icons a bottom edge (#css-cascade)");
 }
 
 await new Promise((r) => setTimeout(r, 120));
