@@ -6,6 +6,7 @@ import { CopyBtn } from "./chrome";
 import { api } from "../lib/api";
 import { flashHint } from "../lib/flash";
 import { isSentinelText } from "../lib/placeholder-text";
+import { summarizeTodo, type TodoEventData } from "../lib/todo-summary";
 import { openLightbox } from "../lib/lightbox";
 import { hasAnsi, stripAnsi } from "../lib/ansi";
 import { fmtDur, truncate } from "../lib/format";
@@ -642,11 +643,14 @@ export function MessageRow(props: { e: Ev; prev?: Ev | undefined; next?: Ev | un
     );
   }
   if (e.type === "todo") {
-    // one word for one person: the server says "operator" (agent.ts setGoalStatus/setTodo), so the row must not say
-    // "human" for the same actor — the operator asked for consistency, and "human" was the only place it appeared
-    const by = String(e.data?.by ?? "operator");
-    // the same shape as the goal row: a label on its own line, not a full-width divider
-    return <Note label={`✅ tasks updated (${by === "human" ? "operator" : by})`} divider={false} />;
+    /**
+     * The row says WHICH items moved, by update type — not just "tasks updated".
+     *
+     * A completion, an addition, a reopen and a removal all rendered as the same line, so the timeline could not answer the one
+     * question it is for: what changed? `summarizeTodo` reads the event's own detail (the texts are recorded beside the counts).
+     */
+    const summary = summarizeTodo(e.data as TodoEventData);
+    return <Note label={summary.label} body={summary.body || undefined} markdown={false} />;
   }
   if (e.type === "state") {
     if (e.data.from === e.data.to) return null;

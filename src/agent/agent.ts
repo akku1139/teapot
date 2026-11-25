@@ -1471,6 +1471,19 @@ export class Agent {
     let matched = 0;
     let added = 0;
     let removed = 0;
+    /**
+     * WHICH items changed, kept so the timeline can say what happened rather than only how many.
+     *
+     * The counts alone made the row read "✅ tasks updated (agent)" — the same line for "I finished the parser" and "I added
+     * three new steps", which is the one thing the operator wants to know at a glance: "アップデートのタイプ(追加、完了、置換など)に
+     * よって上手いこと". The text is the item as written in todo.md, so the row matches the panel.
+     */
+    const changed: { done: string[]; reopened: string[]; added: string[]; removed: string[] } = {
+      done: [],
+      reopened: [],
+      added: [],
+      removed: [],
+    };
     const unmatched: string[] = [];
     for (const u of updates) {
       const action = u.action ?? (u.done === false ? "reopen" : "done");
@@ -1491,6 +1504,7 @@ export class Agent {
         }
         lines.push(`- [ ] ${u.item.trim()}`);
         added++;
+        changed.added.push(u.item.trim());
         continue;
       }
       if (idx === -1) {
@@ -1498,13 +1512,17 @@ export class Agent {
         continue;
       }
       if (action === "remove") {
+        const removedText = lines[idx]!.replace(/^\s*[-*+] \[[ xX]\]\s*/, "").trim();
         lines.splice(idx, 1);
         removed++;
+        changed.removed.push(removedText || u.item.trim());
         continue;
       }
       const checked = action === "done";
       lines[idx] = lines[idx]!.replace(/^(.* \[)[ xX](\].*)$/, (_s, a, b) => `${a}${checked ? "x" : " "}${b}`);
       matched++;
+      const text = lines[idx]!.replace(/^\s*[-*+] \[[ xX]\]\s*/, "").trim();
+      (checked ? changed.done : changed.reopened).push(text || u.item.trim());
     }
     if (matched > 0 || added > 0 || removed > 0) {
       while (lines.length > 1 && lines[lines.length - 1]!.trim() === "" && lines[lines.length - 2]!.trim() === "")
@@ -1518,6 +1536,14 @@ export class Agent {
         ...(added ? { added } : {}),
         ...(removed ? { removed } : {}),
         ...(unmatched.length ? { unknown: unmatched } : {}),
+        /**
+         * The TEXTS, not just the counts — see `changed`. Empty lists are omitted so an old log and a new one differ only
+         * where they have something to say.
+         */
+        ...(changed.done.length ? { done: changed.done } : {}),
+        ...(changed.reopened.length ? { reopened: changed.reopened } : {}),
+        ...(changed.added.length ? { addedItems: changed.added } : {}),
+        ...(changed.removed.length ? { removedItems: changed.removed } : {}),
       });
     }
     const parts: string[] = [];
