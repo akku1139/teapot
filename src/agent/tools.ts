@@ -63,6 +63,14 @@ export interface ToolContext {
   onBackgroundExit?: (info: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string }) => void;
   /** fired when a background shell STARTS, so the count the UI shows can be pushed rather than polled */
   onBackgroundStart?: (id: string) => void;
+  /**
+   * Fired when a running job's OUTPUT grows, so the panel's tail is pushed instead of polled.
+   *
+   * Without this the socket carries a background job's row exactly twice — at start and at exit — and a panel opened in between
+   * is frozen at the state it was opened with: MEASURED as "background shells パネルが開いたときの状態で固定されて、時刻カウントも
+   * ライブ更新も進まない". The refresh is the SENDER's job because only the writer knows it wrote.
+   */
+  onBackgroundOutput?: (id: string) => void;
 }
 
 export interface ToolResult {
@@ -525,9 +533,23 @@ function startBackgroundShell(
     owner: ctx.agentId ?? "",
     ...(opts.holdExitNotify ? { holdExitNotify: true } : {}),
   };
+  /**
+   * How often a growing job may push a snapshot.
+   *
+   * A chatty job (a build, a dev server) writes many times a second, and one snapshot per write would flood the socket with
+   * copies of an ever-growing tail. One push a second is what a human can read, and it is what the removed 2-second poll
+   * effectively gave the panel.
+   */
+  const OUTPUT_PUSH_MS = 1_000;
+  let lastPush = 0;
   const collect = (chunk: Buffer) => {
     if (sh.out.length < 200_000) sh.out += chunk.toString("utf8");
     else sh.truncated = true;
+    const now = Date.now();
+    if (!sh.exited && now - lastPush >= OUTPUT_PUSH_MS) {
+      lastPush = now;
+      ctx.onBackgroundOutput?.(id);
+    }
   };
   if (ctx.stateDir) {
     rememberJob(ctx.stateDir, {

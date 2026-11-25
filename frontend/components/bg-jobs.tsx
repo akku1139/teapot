@@ -1,5 +1,6 @@
-import { For, Show } from "solid-js";
+import { For, Show, onCleanup } from "solid-js";
 import { fmtDur } from "../lib/format";
+import { nowMs, startClock } from "../lib/clock";
 import { oneLine } from "../lib/timeline-row";
 
 /**
@@ -30,6 +31,14 @@ export function BgJobsPanel(props: {
   onClose: () => void;
   onKill: (job: BgJob) => void | Promise<void>;
 }) {
+  /**
+   * A running job's elapsed time is a CLOCK, not a fact in the snapshot: without one it renders the instant of the last update
+   * and freezes there, which is half of "時刻カウントもライブ更新も進まない". The other half was the missing push.
+   *
+   * The clock is the app's single one (`frontend/lib/clock.ts`), started here because this panel is a place that reads it.
+   */
+  const stopClock = startClock();
+  onCleanup(stopClock);
   return (
     <Show when={props.open}>
       <div class="bgjobs-pop" role="dialog" aria-label="background shells">
@@ -51,7 +60,7 @@ export function BgJobsPanel(props: {
                     {j.detached
                       ? `detached · pid ${j.pid ?? "?"}`
                       : j.running
-                        ? fmtDur(Date.now() - j.startedAt)
+                        ? fmtDur(nowMs() - j.startedAt)
                         : `exit ${j.code ?? "?"}`}
                     {j.truncated ? " · truncated" : ""}
                   </span>

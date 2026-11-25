@@ -1,16 +1,14 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onSettled } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { ansiRuns, hasAnsi } from "../lib/ansi";
 import { fmtDur } from "../lib/format";
 import { cacheHighlighted, highlightedHtml } from "../lib/highlight-cache";
+import { nowMs, startClock } from "../lib/clock";
 
 export function BashElapsed(props: { startedAt: string; inline?: boolean; timeoutMs?: number | undefined }) {
-  const start = new Date(props.startedAt).getTime();
-  const [now, setNow] = createSignal(Date.now());
-  onSettled(() => {
-    const t = setInterval(() => setNow(Date.now()), 500);
-    onCleanup(() => clearInterval(t));
-  });
-  const txt = () => fmtDur(Math.max(0, now() - start));
+  const stopClock = startClock();
+  onCleanup(stopClock);
+  // read `props.startedAt` INSIDE the computation: a value captured once would not follow a re-render with a new start
+  const txt = () => fmtDur(Math.max(0, nowMs() - new Date(props.startedAt).getTime()));
   if (props.inline) {
     return (
       <span class="bashelapsed">
@@ -22,14 +20,11 @@ export function BashElapsed(props: { startedAt: string; inline?: boolean; timeou
 }
 
 export function ThinkingTimer(props: { startedAt: number }) {
-  const [now, setNow] = createSignal(Date.now());
-  onSettled(() => {
-    const t = setInterval(() => setNow(Date.now()), 500);
-    onCleanup(() => clearInterval(t));
-  });
+  const stopClock = startClock();
+  onCleanup(stopClock);
   const txt = () => {
     if (!props.startedAt) return null;
-    const elapsed = Math.max(0, now() - props.startedAt);
+    const elapsed = Math.max(0, nowMs() - props.startedAt);
     if (elapsed > 24 * 60 * 60 * 1000) return null;
     return fmtDur(elapsed);
   };

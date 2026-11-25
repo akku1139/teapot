@@ -622,6 +622,10 @@ export class Agent {
       hasPendingPrompts: () => this.pendingPrompts.length > 0,
       onBackgroundExit: (info) => this.onBackgroundJobExit(info),
       onBackgroundStart: () => this.emitSnapshotUpdate(),
+      /**
+       * A growing tail is pushed, not polled — the snapshot carries `bgJobs`, so one emit is the whole delivery.
+       */
+      onBackgroundOutput: () => this.emitSnapshotUpdate(),
       onFileRead: (p) => this.trackFileRead(p),
     };
     this.mainSession = path.basename(opts.sessionDir);

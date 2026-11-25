@@ -4211,6 +4211,59 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     console.error("#bgjobs REGRESSION: the panel is not inside the header, so nothing anchors it");
     process.exit(1);
   }
+  /**
+   * A job that is running must keep moving on screen — the clock AND the tail (#290).
+   *
+   * Reported twice as "background shells パネルが開いたときの状態で固定されて、時刻カウントもライブ更新も進まない": the panel had no
+   * ticker, so `fmtDur(Date.now() - startedAt)` froze at the last render, and nothing pushed when the job wrote, so the tail
+   * froze with it. Both are asserted here — a panel that only renders correctly ONCE is exactly the bug.
+   */
+  {
+    const startedAt = Date.now() - 65_000; // "1m 5s" — long enough that a 500ms tick changes the text
+    const pushJobs = (tail: string) =>
+      sock?.onmessage?.({
+        data: JSON.stringify({
+          kind: "agent-update",
+          agentId: AGENT.id,
+          snapshot: {
+            ...AGENT,
+            status: "idle",
+            bgRunning: 2,
+            bgJobs: [{ id: "bg1", cmd: "sleep 100", running: true, code: null, startedAt, tail, truncated: false }],
+          },
+        }),
+      });
+    pushJobs("first line");
+    for (let i = 0; i < 30; i++) await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+    const metaOf = (): string =>
+      (w.document.querySelector(".bgjobs-pop .bgjob-meta") as HTMLElement | null)?.textContent ?? "";
+    const before = metaOf();
+    if (!/\d/.test(before)) {
+      console.error(`#bgjobs check: the row shows no elapsed time (${JSON.stringify(before)}) — vacuous`);
+      process.exit(1);
+    }
+    /**
+     * The CLOCK itself is NOT asserted here, and the reason is measured: with `Date.now()` in the template (the bug) the text
+     * still moved from "1m 5s" to "1m 6s" during this check, because an unrelated re-render repainted it. A DOM diff therefore
+     * cannot tell a ticker from an incidental paint, so `createTicker` is unit-tested instead
+     * (`test/ticker.test.ts`), where the only thing that can advance it is the interval.
+     */
+
+    // the TAIL must follow a pushed snapshot: this is the half the removed poll used to provide
+    const tailBefore = (w.document.querySelector(".bgjobs-pop .bgjob-tail") as HTMLElement | null)?.textContent ?? "";
+    pushJobs("first line\nsecond line");
+    const tailGrew = await waitFor(
+      "the tail to follow a pushed snapshot",
+      () => ((w.document.querySelector(".bgjobs-pop .bgjob-tail") as HTMLElement | null)?.textContent ?? "") !== tailBefore,
+      4_000,
+    );
+    if (!tailGrew) {
+      console.error("#bgjobs REGRESSION: a pushed snapshot did not update the tail (#290)");
+      process.exit(1);
+    }
+  }
+
   const close = [...panel.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("✕"));
   if (!close) {
     console.error("#bgjobs check: no close button in the panel — vacuous");

@@ -425,6 +425,16 @@ out with only five unresolved names because everything it called had already mov
   body (it is tracked on read), or `splitProps()` when a subset must be
   forwarded. Same for destructuring a getter's RESULT: pass the accessor down
   (`parent={() => …}`), not its value.
+
+  A paragraph cannot fail CI, so `test/no-props-destructuring.test.ts` enforces it, backed by
+  `scripts/find-props-destructuring.ts` (run it directly to see occurrences). It parses, because a pattern match cannot tell
+  `const { a } = props` from `const { a } = props.x` — the supported form — or from the same text inside a string. Three
+  shapes count: a declaration, a destructured PARAMETER (`function X({ a }: SomeProps)`), and an accessor's result
+  (`const { a } = someProps()`). A destructure from a plain object literal is not props and is not reported.
+
+  The parse goes through `vite`'s `parseAst` because **TypeScript 7 has no text-to-AST entry**: 7.0's main entry exports only
+  `version`, and the 7.1 dev builds add a HANDLE-based AST (`typescript/ast`, whose `createSourceFile` takes node objects,
+  not source text). `test/jsx-line-comment.test.ts` established the same approach for the same reason.
 - **`<For>` keys on ITEM IDENTITY — `items[i] === nextItems[i]`.** A row rebuilt
   as a new object is DISPOSED and re-created, and its DOM state goes with it: an
   expanded `<details>` slams shut, text selection and inner scroll are lost, and
