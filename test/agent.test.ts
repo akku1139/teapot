@@ -268,6 +268,11 @@ test("image attachments flow into multimodal content parts and survive replay", 
 });
 
 test("background bash exit notifies the agent at the next turn boundary", async () => {
+  /**
+   * `bgStartupMs: 0` turns the startup window off (#297). With it on, a job that exits immediately is reported by the TOOL
+   * RESULT — output and exit code — and deliberately emits no wake, so this test's subject (the wake) needs the window
+   * closed. `test/bg-startup-output.test.ts` asserts the other half.
+   */
   // regression: background jobs were pure polling — the agent had no idea a
   // job finished (or failed) until it happened to call bash_output. Now the
   // exit folds into a later LLM call as a harness report with the exit code.
@@ -285,7 +290,7 @@ test("background bash exit notifies the agent at the next turn boundary", async 
     }
     return reply("working");
   };
-  await withAgent({ chatFn, autoContinue: true, continueDelayMs: 20 }, async (agent) => {
+  await withAgent({ chatFn, autoContinue: true, continueDelayMs: 20 , bgStartupMs: 0 }, async (agent) => {
     await agent.setGoal("watch background jobs");
     agent.enqueuePrompt("run something");
     agent.start("t");
@@ -348,7 +353,7 @@ test("a bg job that exits as the round parks still wakes the agent", async () =>
     }
     return reply("waiting");
   };
-  await withAgent({ chatFn, autoContinue: true, continueDelayMs: 20 }, async (agent, _ws, _sd) => {
+  await withAgent({ chatFn, autoContinue: true, continueDelayMs: 20 , bgStartupMs: 0 }, async (agent, _ws, _sd) => {
     await agent.setGoal("watch a background job");
     agent.enqueuePrompt("start it");
     agent.start("t");
@@ -1394,7 +1399,7 @@ test("auto-continue is suppressed while a background bash runs; its exit wakes t
     }
     throw new Error(`too many llm calls (n=${req.n})`);
   });
-  await withAgent({ chatFn: mock.chat }, async (agent, _ws) => {
+  await withAgent({ chatFn: mock.chat , bgStartupMs: 0 }, async (agent, _ws) => {
     await agent.setGoal("keep the dev server alive");
     agent.enqueuePrompt("start it and wait");
     agent.start("test");

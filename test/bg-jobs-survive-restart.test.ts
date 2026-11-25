@@ -19,7 +19,15 @@ import { executeTool, listBgShells, killBgShell, recoverableJobs } from "../src/
  * this test started and then reaped.
  */
 const ctxFor = (ws: string, stateDir: string) =>
-  ({ cwd: ws, agentId: "a1", stateDir, signal: undefined, maxOutputBytes: 1_000_000 }) as never;
+  ({
+    cwd: ws,
+    agentId: "a1",
+    stateDir,
+    signal: undefined,
+    maxOutputBytes: 1_000_000,
+    // this test is about the RECORD on disk, not about the startup window: `sleep 5` must still be running when it looks
+    bgStartupMs: 0,
+  }) as never;
 
 test("a job is recoverable from its record after the owning process is gone (#bgjobs)", async () => {
   const ws = mkdtempInRootSync("bgjobs-restart-");

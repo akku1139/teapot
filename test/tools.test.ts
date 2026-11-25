@@ -13,9 +13,10 @@ import { markPosixOnly } from "./helpers/posix-only.ts";
 // opting out is explicit rather than by filename.
 markPosixOnly("runs POSIX commands through the bash tool; POSIX file modes");
 
-async function withCtx(fn: (ctx: ToolContext) => Promise<void>): Promise<void> {
+async function withCtx(fn: (ctx: ToolContext) => Promise<void>, over: Partial<ToolContext> = {}): Promise<void> {
   await useTempDir("teapot-tools-", async (dir) => {
     await fn({
+      ...over,
       cwd: dir,
       defaultTimeoutMs: 5_000,
       maxOutputBytes: 10_000,
@@ -621,6 +622,11 @@ test("save_skill bundles helper scripts next to SKILL.md (regression)", async ()
 /* ---------- background shells: exit vs close (#23) ---------- */
 
 test("a background shell that forks an inheriting child still reports its exit (#23)", async () => {
+  /**
+   * `bgStartupMs: 0` disables the startup collection (#297). This test is about the EXIT PATH — a job whose shell is gone
+   * while a forked grandchild still holds stdout — and with a collection window an immediately-exiting job is reported by
+   * the tool result instead of by a wake, which is a different (also tested) behaviour.
+   */
   await withCtx(async (ctx) => {
     const exits: { id: string; code: number | null; cmd: string }[] = [];
     ctx.onBackgroundExit = (i) => exits.push({ id: i.id, code: i.code, cmd: i.cmd });
@@ -653,7 +659,7 @@ test("a background shell that forks an inheriting child still reports its exit (
     // auto-continue loop would suppress its nudge forever
     const { hasRunningBgShells } = await import("../src/agent/tools.ts");
     assert.equal(hasRunningBgShells(ctx.cwd), false, "a dead shell must not look alive");
-  });
+  }, { bgStartupMs: 0 });
 });
 
 test("a normally-exiting background shell still notifies exactly once (#23)", async () => {
@@ -663,6 +669,7 @@ test("a normally-exiting background shell still notifies exactly once (#23)", as
     const r = await executeTool(
       "bash",
       JSON.stringify({ command: "echo hi", background: true }),
+      // the startup window is off: this asserts the WAKE path, which a fast exit now bypasses by design (#297)
       ctx,
     );
     assert.ok(r.ok, r.result);
@@ -674,7 +681,7 @@ test("a normally-exiting background shell still notifies exactly once (#23)", as
     // exit AND close both fire here — the notification must not double up
     await new Promise((r) => setTimeout(r, 250));
     assert.deepEqual(exits, [0], "exactly one notification, with the real code");
-  });
+  }, { bgStartupMs: 0 });
 });
 
 test("a background job makes ONLY its own agent live, not its workspace siblings (#panel)", async () => {

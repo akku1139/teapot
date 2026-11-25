@@ -21,6 +21,13 @@ export interface ToolContext {
   agentId?: string;
   stateDir?: string;
   defaultTimeoutMs: number;
+  /**
+   * How long `bash(background=true)` may spend collecting the job's FIRST output before returning.
+   *
+   * Injectable because a test that starts a short-lived job (or a caller in a hurry) should not be held for the production
+   * window; `0` returns immediately with no startup output.
+   */
+  bgStartupMs?: number;
   maxOutputBytes: number;
   skillRoots?: { dir: string; source: string }[];
   signal?: AbortSignal;
@@ -275,7 +282,7 @@ export function safeJoin(cwd: string, p: string): string {
   return abs;
 }
 
-interface BgShell {
+export interface BgShell {
   id: string;
   cmd: string;
   child: import("node:child_process").ChildProcess;
@@ -285,10 +292,81 @@ interface BgShell {
   exited: boolean;
   code: number | null;
   owner: string;
+  /**
+   * While set, an exit is RECORDED but not announced.
+   *
+   * `bash(background=true)` collects the first moments of output, and a job that dies inside that window is reported by the
+   * tool result itself — a wake on top of it would be a second, redundant signal for something the model has already been
+   * told, and it would start a round to re-read what it just read.
+   */
+  holdExitNotify?: boolean;
+  /** the exit that happened while the notification was held — the holder decides what to do with it */
+  pendingExit?: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string } | undefined;
 }
 const bgShellsByWs = new Map<string, Map<string, BgShell>>();
 let bgSeq = 0;
 const bgReadCursors = new Map<string, number>();
+
+/**
+ * End the startup hold, and say whether a WAKE is still owed.
+ *
+ * Two outcomes, and the caller has already shown one of them:
+ *
+ *  - it exited while held → the tool result carries the output and the exit code, so no wake is emitted. This is the
+ *    reported shape: "5秒待ちの間に落ちたら通知じゃなくてツール出力で完結するようにして".
+ *  - it is still running → the wake is what the model was told to expect, so the hold is simply released and the job's exit
+ *    announces itself later, exactly as it always did.
+ */
+export function releaseStartupHold(id: string): { wakeOwed: boolean } {
+  for (const map of bgShellsByWs.values()) {
+    const sh = map.get(id);
+    if (!sh) continue;
+    sh.holdExitNotify = false;
+    if (sh.pendingExit || sh.exited) {
+      sh.pendingExit = undefined;
+      return { wakeOwed: false };
+    }
+    return { wakeOwed: true };
+  }
+  return { wakeOwed: false };
+}
+
+/**
+ * The output a background job produced in its first moments, for the `bash(background=true)` result.
+ *
+ * Returns as soon as there is something to show (or the job exits), and never waits longer than `budgetMs`: a dev server
+ * that prints one line should not delay the turn for five seconds, and a job that dies instantly should be reported as
+ * having done so rather than as "started".
+ */
+export async function collectStartupOutput(
+  id: string,
+  budgetMs: number,
+  find: (id: string) => BgShell | undefined = (jobId) => {
+    for (const map of bgShellsByWs.values()) {
+      const sh = map.get(jobId);
+      if (sh) return sh;
+    }
+    return undefined;
+  },
+  now: () => number = Date.now,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<{ text: string; exited: boolean; elapsedMs: number; code: number | null }> {
+  const started = now();
+  const POLL_MS = 50;
+  /** enough to see the failure, not enough to flood the context */
+  const MAX_CHARS = 4_000;
+  for (;;) {
+    const sh = find(id);
+    const elapsedMs = now() - started;
+    const out = (sh?.out ?? "").trimEnd();
+    const exited = sh?.exited ?? false;
+    if (out || exited || elapsedMs >= budgetMs) {
+      const clipped = out.length > MAX_CHARS ? out.slice(0, MAX_CHARS) + `\n…[${out.length - MAX_CHARS} more chars — bash_output(job_id="${id}") for the rest]` : out;
+      return { text: clipped, exited, elapsedMs, code: sh?.code ?? null };
+    }
+    await sleep(Math.min(POLL_MS, Math.max(0, budgetMs - elapsedMs)));
+  }
+}
 
 function bgMapFor(cwd: string): Map<string, BgShell> {
   let m = bgShellsByWs.get(cwd);
@@ -382,7 +460,11 @@ export function recoverableJobs(dir: string, alive: (pid: number) => boolean): B
   return live;
 }
 
-function startBackgroundShell(cmd: string, ctx: ToolContext): string {
+function startBackgroundShell(
+  cmd: string,
+  ctx: ToolContext,
+  opts: { holdExitNotify?: boolean } = {},
+): string {
   const map = bgMapFor(ctx.cwd);
   for (const [id, sh] of map) {
     if (sh.exited && Date.now() - sh.startedAt > 30 * 60_000 && !map.delete(id)) void id;
@@ -400,6 +482,7 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     out: "", truncated: false,
     startedAt: Date.now(), exited: false, code: null,
     owner: ctx.agentId ?? "",
+    ...(opts.holdExitNotify ? { holdExitNotify: true } : {}),
   };
   const collect = (chunk: Buffer) => {
     if (sh.out.length < 200_000) sh.out += chunk.toString("utf8");
@@ -421,14 +504,23 @@ function startBackgroundShell(cmd: string, ctx: ToolContext): string {
     if (exitNotified) return;
     exitNotified = true;
     if (ctx.stateDir) forgetJob(ctx.stateDir, id);
+    const info = {
+      id,
+      code: sh.code,
+      cmd,
+      durationMs: Date.now() - sh.startedAt,
+      outputTail: sh.out.slice(-2000),
+    };
+    /**
+     * Held means the startup collection is still running: it will put the exit into the tool result, so announcing it here
+     * would wake the agent for news it already has.
+     */
+    if (sh.holdExitNotify) {
+      sh.pendingExit = info;
+      return;
+    }
     try {
-      ctx.onBackgroundExit?.({
-        id,
-        code: sh.code,
-        cmd,
-        durationMs: Date.now() - sh.startedAt,
-        outputTail: sh.out.slice(-2000),
-      });
+      ctx.onBackgroundExit?.(info);
     } catch {
     }
   };
@@ -1685,7 +1777,29 @@ export const TOOLS: ToolDef[] = [
     },
     async run(args, ctx) {
       if (args.background === true) {
-        const id = startBackgroundShell(str(args.command), ctx);
+        /**
+         * The exit notification is HELD while the startup output is collected.
+         *
+         * A job that dies in those first moments is fully reported by this tool result — its output and its exit code — and a
+         * wake on top of that would start a round to re-read what the model was just told. If it is still running when the
+         * collection ends, the hold is released and the wake is armed as usual.
+         */
+        const id = startBackgroundShell(str(args.command), ctx, { holdExitNotify: true });
+        /**
+         * Show what the job did in its first moments, instead of spending a whole turn finding out.
+         *
+         * A background job that dies immediately (a typo, a missing binary, a port already in use) used to report only
+         * "started in background (job bgN)" — the model had to wait for the wake, then read `bash_output`, which is a turn
+         * spent on something the start could have said. Reported as "背景shellを起動した直後の出力はツール出力でそのまま渡す
+         * ようにする / 直後に落ちて1ターン消費するみたいなパターンが多いし、起動して何が起きたかくらいは知らせてもよさそう /
+         * 5秒分くらいは取ってあげたほうがいいかな".
+         *
+         * The wait ends EARLY when the job exits, and stops as soon as there is output to show — a long-running build is not
+         * held for five seconds just to prove it printed a banner.
+         */
+        const startup = await collectStartupOutput(id, ctx.bgStartupMs ?? 5_000);
+        // the hold is released either way; a wake is owed only if the job is still running
+        releaseStartupHold(id);
         /**
          * The result has to say two things the model kept getting wrong (#231, #235).
          *
@@ -1705,6 +1819,21 @@ export const TOOLS: ToolDef[] = [
             return `  ${j.id}${j.id === id ? " (just started)" : ""} · ${when} · ${cmd}`;
           })
           .join("\n");
+        /**
+         * A job that died inside the collection window is reported as a FINISHED command, not as a started one.
+         *
+         * It is complete here — output, exit code, nothing left to wait for — so the wording drops the wake entirely. Saying
+         * "you are WOKEN when it exits" about something that already exited is what sends the model to `bash_output` for a
+         * turn, and the earlier text did exactly that.
+         */
+        if (startup.exited) {
+          return {
+            ok: startup.code === 0,
+            result:
+              `background job ${id} ran and EXITED (exit ${startup.code ?? "?"}) after ${Math.round(startup.elapsedMs / 1000)}s — ` +
+              `there is nothing to wait for.${startup.text ? `\nOutput:\n${startup.text}` : " It printed nothing."}`,
+          };
+        }
         return {
           ok: true,
           result:
@@ -1712,7 +1841,8 @@ export const TOOLS: ToolDef[] = [
             `You are WOKEN when it exits (exit code + output tail), so waiting is not your job: do not poll it, do not ` +
             `sleep, and do not start another round just to check — end your turn (or do other work) and the harness will ` +
             `call you when it finishes.\n` +
-            `Output mid-run: bash_output(job_id="${id}"). Stop: bash_output(job_id="${id}", action="kill").\n` +
+            (startup.text ? `\nOutput so far (first ${Math.round(startup.elapsedMs / 1000)}s):\n${startup.text}\n` : "") +
+            `\nOutput mid-run: bash_output(job_id="${id}"). Stop: bash_output(job_id="${id}", action="kill").\n` +
             `running background jobs for this workspace (${running.length}):\n${list}` +
             (others.length ? `\nDo not start a duplicate of a job that is already here.` : ""),
         };

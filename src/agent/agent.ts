@@ -140,6 +140,13 @@ export interface AgentOptions {
   onError?: "stop" | "retry";
   retryDelayMs?: number;
   llmRetryWaitsMs?: number[];
+  /**
+   * How long `bash(background=true)` collects a job's first output before returning (#297).
+   *
+   * Injectable so a test that asserts the EXIT WAKE can turn the window off: with it on, a job that exits immediately is
+   * reported by the tool result instead of by a wake, which is the intended behaviour and a different assertion.
+   */
+  bgStartupMs?: number;
   parent?: string;
   chatFn?: ChatFn;
 }
@@ -353,8 +360,8 @@ export class Agent {
     costUsd: 0 as number | undefined,
   };
 
-  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads" | "sessionTitleOf">> &
-    Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads" | "sessionTitleOf"> & { chatFn?: ChatFn };
+  private opts: Required<Omit<AgentOptions, "chatFn" | "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads" | "sessionTitleOf" | "bgStartupMs">> &
+    Pick<AgentOptions, "supportedParameters" | "supportedEfforts" | "llmRetryWaitsMs" | "deferSessionReads" | "sessionTitleOf" | "bgStartupMs"> & { chatFn?: ChatFn };
   private messages: ChatMessage[] = [];
   get conversation(): readonly ChatMessage[] {
     return this.messages;
@@ -585,6 +592,7 @@ export class Agent {
       stateDir: opts.sessionDir,
       defaultTimeoutMs: 120_000,
       maxOutputBytes: 60_000,
+      ...(this.opts.bgStartupMs !== undefined ? { bgStartupMs: this.opts.bgStartupMs } : {}),
       skillRoots: this.skillRoots,
       signal: this.toolAbort.signal,
       readOnly: this.opts.readOnlyTools,
