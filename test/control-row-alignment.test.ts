@@ -13,17 +13,17 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { cssRuleBody } from "./helpers/css.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-
-function ruleBody(selector: string): string {
-  const at = css.indexOf(selector);
-  assert.ok(at >= 0, `no rule for ${selector}`);
-  const open = css.indexOf("{", at);
-  const close = css.indexOf("}", open);
-  return css.slice(open + 1, close);
-}
+/**
+ * The SHARED rule lookup, with line endings normalised.
+ *
+ * A local `indexOf(selector)` misses a selector written across two lines on a Windows checkout (CRLF), and reads raw text in
+ * which a rule's own explanatory comment can satisfy the assertion after the declaration was commented out.
+ */
+const css = readSourceUrl(new URL("../frontend/app.css", import.meta.url));
+const ruleBody = (selector: string): string => cssRuleBody(css, selector.replace(/\s*\{$/, ""));
 
 test("the icon button centres itself, so it cannot drop to the bottom of a taller row", () => {
   const body = ruleBody(".iconbtn {");
@@ -43,7 +43,7 @@ test("the composer's icon buttons sit on its BOTTOM line, however many lines the
    * exists — before it they were centred against a 24px taller box. `.iconbtn`'s own `center` is right for an ordinary row,
    * so the composer states the exception in one place instead of every button opting in.
    */
-  const body = ruleBody(".composer form .iconbtn {");
+  const body = ruleBody(".composer form .iconbtn");
   assert.match(
     body,
     /align-self:\s*flex-end/,

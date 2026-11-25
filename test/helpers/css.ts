@@ -18,19 +18,25 @@ export function stripCssComments(body: string): string {
   return body.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-/** Every selector in a stylesheet, in source order. */
-function* rules(css: string): Generator<{ selector: string; body: string }> {
+/**
+ * Every selector in a stylesheet, in source order.
+ *
+ * COMMENTS ARE REMOVED BEFORE THE BRACE WALK, not after. A comment in this file routinely quotes the CSS it explains — the one
+ * that broke it read `` `.iconbtn { align-self: center }` `` — and the walker counts braces in the raw text, so the quoted pair
+ * left every later rule's selector and body shifted by one. The symptom was a selector that exists (grep finds it) reported as
+ * `no rule whose selector is exactly …`.
+ *
+ * Stripping first is safe here because a CSS string literal cannot contain `/*` in this stylesheet (checked: `content:` holds
+ * glyphs and empty strings), and it also removes the old workaround for a comment sitting between two rules.
+ */
+function* rules(raw: string): Generator<{ selector: string; body: string }> {
+  const css = stripCssComments(raw);
   let i = 0;
   for (;;) {
     const open = css.indexOf("{", i);
     if (open === -1) return;
     const prevClose = css.lastIndexOf("}", open);
-    // the selector may itself contain a comment (a comment between rules is
-    // consumed by the PREVIOUS body's brace walk), so strip before matching
-    const selector = css
-      .slice(prevClose === -1 ? 0 : prevClose + 1, open)
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .trim();
+    const selector = css.slice(prevClose === -1 ? 0 : prevClose + 1, open).trim();
     let depth = 0;
     let close = -1;
     for (let j = open; j < css.length; j++) {
@@ -44,7 +50,7 @@ function* rules(css: string): Generator<{ selector: string; body: string }> {
       }
     }
     if (close === -1) return;
-    yield { selector, body: stripCssComments(css.slice(open + 1, close)) };
+    yield { selector, body: css.slice(open + 1, close) };
     i = close + 1;
   }
 }

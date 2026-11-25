@@ -17,35 +17,44 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { cssRuleBody } from "./helpers/css.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
-
-function ruleBody(selector: string): string {
-  const at = css.indexOf(selector);
-  assert.ok(at >= 0, `no rule for ${selector}`);
-  const open = css.indexOf("{", at);
-  const close = css.indexOf("}", open);
-  return css.slice(open + 1, close);
-}
+/**
+ * LF whatever the checkout used, and the SHARED rule lookup rather than a local `indexOf`.
+ *
+ * MEASURED on the Windows runner: a selector written across two lines matched nothing there (`no rule for .embed summary > b,
+ * .embed summary > .meta`), because git checks that file out with CRLF — a local `indexOf` searching for `"\n"` cannot find
+ * `"\r\n"`. `readSourceUrl` normalises it, which is what `test/helpers/source.ts` exists for.
+ *
+ * The shared `cssRuleBody` also strips comments and matches one selector ENTRY exactly. A hand-rolled scanner reads the raw
+ * text, so a declaration quoted inside a rule's own explanatory comment satisfies the assertion after the real declaration has
+ * been commented out — the failure mode that produced the helper in the first place.
+ */
+const css = readSourceUrl(new URL("../frontend/app.css", import.meta.url));
 
 test("the decision body's margin is a CHILD rule, so it cannot reach the header label", () => {
-  const body = ruleBody(".embed.decision > .content {");
+  const body = cssRuleBody(css, ".embed.decision > .content");
   assert.match(body, /margin-top/, "this rule exists to space the body under the header");
   assert.ok(
     !css.includes(".embed.decision .content {"),
     "a descendant selector here also matches the label, which carries .content — that is the 3.85px",
   );
+  assert.throws(
+    () => cssRuleBody(css, ".embed.decision .content"),
+    /no rule/,
+    "and it must not survive anywhere else in the sheet either",
+  );
 });
 
 test("a markdown label's rendered children are INLINE, or the ellipsis cannot apply", () => {
-  const body = ruleBody(".embed summary .inline-md > *,");
+  const body = cssRuleBody(css, ".embed summary .inline-md > *");
   assert.match(body, /display:\s*inline/, "a child <p> is a block box, and text-overflow does not reach into one");
   assert.match(body, /margin:\s*0/, "a rendered paragraph carries margins that would fatten the line it sits in");
 });
 
 test("a header label takes the header's line-height, not prose's", () => {
-  const body = ruleBody(".embed summary .inline-md {");
+  const body = cssRuleBody(css, ".embed summary .inline-md");
   assert.match(
     body,
     /line-height:\s*inherit/,
@@ -54,7 +63,7 @@ test("a header label takes the header's line-height, not prose's", () => {
 });
 
 test("the label inside a summary is still the only part allowed to shrink", () => {
-  const body = ruleBody(".embed summary > b,\n.embed summary > .meta {");
+  const body = cssRuleBody(css, ".embed summary > b");
   assert.match(body, /min-width:\s*0/, "without this the label refuses to shrink and pushes the row wider");
   assert.match(body, /text-overflow:\s*ellipsis/);
   assert.match(body, /white-space:\s*nowrap/, "text-overflow applies to a single line only");

@@ -76,6 +76,43 @@ test("no test asserts on implementation source (#meta)", () => {
 
 
 
+test("a stylesheet a test does read goes through the CRLF-normalising helper (#meta)", () => {
+  /**
+   * The only stylesheet reads left in this suite exist for a CSS contract (happy-dom does no layout, so geometry has to be
+   * stated as CSS). Reading one with a bare `readFileSync` is the Windows-only failure MEASURED on the v0.37.231 run:
+   *
+   *     ✖ the label inside a summary is still the only part allowed to shrink
+   *       AssertionError: no rule for .embed summary > b,
+   *       .embed summary > .meta {
+   *
+   * A selector written across two lines cannot be found in a CRLF checkout, and nothing in the suite objects on Linux, where the
+   * author runs it. `readSourceUrl` normalises the line endings — `test/helpers/source.ts` exists for exactly this — so the rule
+   * is "no raw read of a stylesheet", enforced rather than remembered.
+   */
+  const offenders: string[] = [];
+  for (const file of testFiles) {
+    if (file === "no-source-text-tests.test.ts") continue;
+    const src = readFileSync(path.join(TEST_DIR, file), "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/[^\n]*/gm, "");
+    for (const line of code.split("\n")) {
+      if (/readFileSync\([^)]*\.css/.test(line)) offenders.push(`${file}: ${line.trim().slice(0, 100)}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "read a stylesheet with readSourceUrl() from test/helpers/source.ts, or a CRLF checkout fails where nobody can iterate:\n  " +
+      offenders.join("\n  "),
+  );
+  // positive control: the shapes that were actually written
+  for (const line of [
+    `const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");`,
+    `const css = readFileSync(path.join(ROOT, "frontend/app.css"), "utf8");`,
+  ]) {
+    assert.ok(/readFileSync\([^)]*\.css/.test(line), `the guard must see this shape: ${line}`);
+  }
+});
+
 test("the guard would actually catch a source-comparing test (#meta)", () => {
   /**
    * A guard that cannot fire is worse than none — it is a false assurance. MEASURED earlier in this

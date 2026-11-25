@@ -11,19 +11,14 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { oneLineFull } from "../frontend/lib/timeline-row.ts";
+import { cssRuleBody } from "./helpers/css.ts";
+import { readSourceUrl } from "./helpers/source.ts";
 
-const css = readFileSync(new URL("../frontend/app.css", import.meta.url), "utf8");
+const css = readSourceUrl(new URL("../frontend/app.css", import.meta.url));
 
-/** the declarations of the rule whose selectors include `selector` */
-function ruleBody(selector: string): string {
-  const at = css.indexOf(selector);
-  assert.ok(at >= 0, `no rule for ${selector}`);
-  const open = css.indexOf("{", at);
-  const close = css.indexOf("}", open);
-  return css.slice(open + 1, close);
-}
+/** the declarations of the rule whose selector list has `selector` as one entry */
+const ruleBody = (selector: string): string => cssRuleBody(css, selector.replace(/,$/, ""));
 
 test("the tool label clips with CSS rather than wrapping", () => {
   const body = ruleBody(".embed summary > b,");
