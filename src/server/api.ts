@@ -500,7 +500,7 @@ const MAX_WS_CLIENTS = 64;
     let abs: string;
     try {
       abs = safeJoin(a.workspace, rel);
-    } catch (err) {
+    } catch {
       return c.json({ error: `path is outside the workspace: ${rel}` }, 400);
     }
     let dirents;
@@ -778,9 +778,7 @@ const MAX_WS_CLIENTS = 64;
       return c.json({ error: "this server has no url — OAuth needs an http(s) endpoint" }, 400);
     try {
       mcp.registerUnsaved({ name: body.name, url: targetUrl, transport: body.transport ?? "http", enabled: true });
-      const { url } = await mcp.startOAuth(body.name, {
-        ...(body.scopes?.length ? { scopes: body.scopes } : {}),
-      });
+      const { url } = await mcp.startOAuth(body.name, (body.scopes?.length ? { scopes: body.scopes } : {}));
       const st = mcp.oauthStatus(body.name);
       if (!url && st.authorized)
         return c.json({ ok: true, alreadyAuthorized: true });

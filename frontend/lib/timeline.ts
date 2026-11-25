@@ -93,7 +93,7 @@ export function expandSubRows(events: readonly TimelineEvent[]): TimelineEvent[]
     const d = e.data as { sub?: string; type?: string; data?: any };
     const kind = String(d?.type ?? "message");
     if (kind === "state") continue;
-    out.push({ ...e, type: kind, data: { ...(d?.data ?? {}), actor: d?.sub } });
+    out.push({ ...e, type: kind, data: { ...d?.data, actor: d?.sub } });
   }
   return out;
 }
@@ -264,7 +264,7 @@ function withCancelled(e: TimelineEvent, noteSeq: number): TimelineEvent {
   }
   const hit = byNote.get(noteSeq);
   if (hit) return hit;
-  const marked = { ...e, data: { ...(e.data ?? {}), cancelled: true } };
+  const marked = { ...e, data: { ...e.data, cancelled: true } };
   byNote.set(noteSeq, marked);
   return marked;
 }

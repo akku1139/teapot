@@ -191,7 +191,7 @@ export async function connectMcp(cfg: McpServerConfig, auth?: McpAuth): Promise<
     session = new sdk.StdioClientTransport({
       command: cfg.command,
       args: cfg.args ?? [],
-      env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
+      env: { ...(process.env as Record<string, string>), ...cfg.env },
       ...(cfg.cwd ? { cwd: cfg.cwd } : {}),
       stderr: "inherit",
     });

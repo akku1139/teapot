@@ -294,6 +294,23 @@ Two ways this repo's lint was silently doing nothing, both found by checking rat
   project config the whole file is discarded, so a typo there silently disables every rule in it. A rule you cannot see
   reported is a rule you do not have: after changing this file, run `pnpm lint` and check the count actually moved.
 
+**An auto-fix is a code change, so read its diff.** `oxlint --fix` with `no-useless-escape` turned
+`/^```.+\`\`\`/` into `/^```.+`\``/` — THREE literal backticks became TWO, so a row ending in a double backtick started
+matching a closed fence. MEASURED: `"```js x `` tail"` matched after the fix and did not before. This is upstream
+oxc-project/oxc#29467, fixed by #29508 ("demote useless escape fixes to suggestions", which is what ESLint does) and
+shipped in **oxlint 1.94.0** — this repo was on 1.87.0, so the answer was to upgrade, not to report anything.
+
+**Every rule that is `off` in `.oxlintrc.json` is `off` because it could not pass, and the reason is here:**
+
+| rule | why it stays off |
+|---|---|
+| `unicorn/no-useless-spread` | `[...map.values()]` is a deliberate SNAPSHOT — the loop deletes from that map. Removing the spread would be a real bug. |
+| `eslint/no-control-regex` | parsing ANSI escapes and control characters IS the job. |
+| `eslint/no-unassigned-vars` | Solid assigns a `let x` through `ref={x}`; the compiler emits the write, so the rule cannot see it. |
+| `typescript/no-floating-promises` | 29 fire-and-forget calls in event handlers; each needs a decision, not a blanket `void`. |
+| `typescript/no-base-to-string` / `restrict-template-expressions` | stringifying `unknown` across the codebase; needs type guards first. |
+| `typescript/no-unsafe-type-assertion` / `no-explicit-any` | the current backlog (289 / 3 at the time of writing). `--type-aware` is what makes them report at all, so the number is measurable: re-run and watch it fall. |
+
 `pnpm lint` runs with `--type-aware` (which needs `oxlint-tsgolint`), because the rules that catch a CAST need types:
 `no-unsafe-type-assertion` reports nothing at all without it. Type-aware rules are also why 4 `await`-on-a-non-promise
 calls were sitting in `master.ts` (`await mkdirSync(...)`, `await enqueuePromise(...)`) — each one looked like it waited

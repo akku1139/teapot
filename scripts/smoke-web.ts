@@ -2285,7 +2285,7 @@ console.log("deep render ok: feed rows present");
 
       const html = w.document.documentElement;
       const activeId = html.dataset.theme ?? "";
-      if (!/^custom-/.test(activeId)) {
+      if (!activeId.startsWith("custom-")) {
         bgFail(
           `after creating a theme the active theme is ${JSON.stringify(activeId)}, not the new ` +
             `custom one — edits cannot be visible because applyCustomTheme only paints the ACTIVE theme`,

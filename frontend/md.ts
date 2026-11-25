@@ -69,7 +69,14 @@ function renderEscaped(lines: string[]): string {
     // slash-y pseudo-paths, which made the line fall through to paragraph
     // handling and HANGED the renderer on such chats.
     const fence = line.match(/^(`{3,})([^\n]*)$/);
-    if (fence && !/^```.+\`\`\`/.test(line)) {
+    /**
+     * Three UNESCAPED backticks: a regex literal is delimited by `/`, so a backtick needs no escaping there.
+     *
+     * Written with escapes, `oxlint --fix` (no-useless-escape) used to collapse `\`\`\`` into TWO backticks, silently changing what
+     * this matches — a line ending in a double backtick started being treated as a closed fence. Upstream demoted that fix to a
+     * suggestion in oxlint 1.94; the escapes are removed here so the rule has nothing to say.
+     */
+    if (fence && !/^```.+```/.test(line)) {
       const ticks = g(fence, 1).length;
       // The INFO STRING is kept as a class, which is what makes syntax highlighting
       // possible at all — it used to be discarded, so every block rendered unhighlighted.

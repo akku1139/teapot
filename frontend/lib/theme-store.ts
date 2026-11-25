@@ -97,7 +97,7 @@ export function sanitizeTheme(raw: unknown): CustomTheme | null {
   if (typeof t.backgroundImage === "string") {
     const img = t.backgroundImage;
     const isAsset = /^\/api\/assets\/[a-f0-9]{32}\.(png|jpe?g|gif|webp|avif)$/i.test(img);
-    const isData = /^data:image\//.test(img) && img.length <= MAX_BACKGROUND_BYTES;
+    const isData = img.startsWith("data:image/") && img.length <= MAX_BACKGROUND_BYTES;
     const isRemote = /^https?:\/\//.test(img);
     if (isAsset || isData || isRemote) out.backgroundImage = img;
   }

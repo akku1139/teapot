@@ -767,7 +767,7 @@ test("a hashline new_text is stripped, never pasted into the file (#7)", async (
     await executeTool("write_file", JSON.stringify({ path: "f.c", content: "int a;\nint b;\nint c;\n" }), ctx);
     // read with anchors, exactly as the tool tells the model to
     const read = await executeTool("read_file", JSON.stringify({ path: "f.c", line_ids: "hash" }), ctx);
-    const rowB = read.result.split("\n").find((l) => /\| int b;$/.test(l))!;
+    const rowB = read.result.split("\n").find((l) => l.endsWith("| int b;"))!;
     assert.ok(rowB, `the anchored read must contain the target row: ${read.result}`);
     // the measured mistake: new_text carrying the READ's anchors — the model meant "these lines,
     // rewritten" but pasted the gutter on both sides, so old_text and new_text were IDENTICAL

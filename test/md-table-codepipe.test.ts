@@ -77,8 +77,16 @@ test("an unclosed backtick is literal text, so its pipes are boundaries", () => 
 
 test("an escaped pipe still works, and is redundant inside a span", () => {
   assert.deepEqual(cells(table("a | b", "e \\| f | g")), ["e | f", "g"], "\\| outside a span");
+  /**
+   * A REAL backslash inside the span — `"\\|"` in source, `\|` at runtime.
+   *
+   * The case used to be written `"`x\|y`"`, which in a double-quoted JS string is not an escape at all: `\|` collapses to
+   * `|`. So the assertion passed a plain pipe while its name and message claimed to test an escaped one, and the renderer's
+   * handling of `\|` inside a span was never exercised. `oxlint --fix` spotted the useless escape and deleted it, which is
+   * correct but would have left the test silently mislabelled for good.
+   */
   assert.deepEqual(
-    cells(table("a | b", "`x\|y` | z")),
+    cells(table("a | b", "`x\\|y` | z")),
     ["<code>x|y</code>", "z"],
     "\\| inside a span is a literal pipe, not markup",
   );

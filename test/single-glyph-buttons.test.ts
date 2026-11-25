@@ -18,7 +18,7 @@ function tsxFiles(dir: string): string[] {
   for (const name of readdirSync(dir)) {
     const p = path.join(dir, name);
     if (statSync(p).isDirectory()) out.push(...tsxFiles(p));
-    else if (/\.tsx$/.test(name)) out.push(p);
+    else if (name.endsWith(".tsx")) out.push(p);
   }
   return out;
 }

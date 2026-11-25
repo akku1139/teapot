@@ -651,7 +651,7 @@ export class Agent {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!.trim();
       if (!line) continue;
-      if (/^<!--/.test(line) || /^_from:/.test(line)) continue;
+      if (line.startsWith("<!--") || line.startsWith("_from:")) continue;
       const isHeading = /^#{1,6}\s/.test(line);
       const isBullet = /^[-*]\s/.test(line);
       if (!isHeading && !isBullet) {
@@ -1970,7 +1970,7 @@ export class Agent {
      * A prompt's own row is written by an async append, and callers read the log right after `settled()`. Waiting only on
      * `runChain` let that append land afterwards, so the row looked missing.
      */
-    while (this.pendingAppends.size) await Promise.allSettled([...this.pendingAppends]);
+    while (this.pendingAppends.size) await Promise.allSettled(this.pendingAppends);
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -2736,7 +2736,7 @@ export class Agent {
       const provenanceAt = (idx: number): string => {
         for (let i = idx; i >= Math.max(0, idx - 6); i--) {
           const l = lines[i]!.trim();
-          if (/^_from:/.test(l)) return l.replace(/^_|_$/g, "");
+          if (l.startsWith("_from:")) return l.replace(/^_|_$/g, "");
         }
         return "";
       };
@@ -4438,8 +4438,10 @@ async function rebuildMessagesFrom(list: TeapotEvent[], imagesDir: string): Prom
               ],
             }
           : { role: "user", content: text };
-      if (openCalls.size > 0) bufferedUsers.push(text), bufferedParts.push(imgs);
-      else msgs.push(mk());
+      if (openCalls.size > 0) {
+        bufferedUsers.push(text);
+        bufferedParts.push(imgs);
+      } else msgs.push(mk());
     } else if (e.type === "message") {
       if (d.final === true || d.operatorFacing === true) continue;
       const role = d.role === "assistant" ? "assistant" : "user";

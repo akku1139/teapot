@@ -88,7 +88,7 @@ export function ThemeEditor(props: {
 
   const importFile = async (file: File | undefined) => {
     if (!file) return;
-    if (!/^image\//.test(file.type)) {
+    if (!file.type.startsWith("image/")) {
       flashHint(`that file is ${JSON.stringify(file.type || "unknown")} — pick an image`);
       return;
     }
