@@ -1,4 +1,4 @@
-import { promises as fs, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { promises as fs, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { EventLog, readEvents, type TeapotEvent } from "../log/events.ts";
 import { storeImage, resolveImages } from "../log/image-store.ts";
@@ -3210,50 +3210,25 @@ export class Agent {
 
   private agentsMd = "";
   private agentsMdLoaded = false;
-  private wsSnapshot = "";
   private skillCatalogue = "";
   private memoryDigest = "";
 
   private systemPrompt(): string {
     if (!this.agentsMdLoaded) {
       this.agentsMdLoaded = true;
-      const snapPath = path.join(this.opts.sessionDir, "workspace-snapshot.txt");
-      try {
-        this.wsSnapshot = readFileSync(snapPath, "utf8");
-      } catch {
-        this.wsSnapshot = "";
-      }
-      if (this.wsSnapshot === "" && existsSync(snapPath)) {
-        this.wsSnapshot = "(empty workspace)"; 
-      }
-      if (!this.wsSnapshot) {
-        this.agentsMd = this.readAgentsMd();
-        try {
-          const entries = readdirSync(this.opts.workspace, { withFileTypes: true });
-          const lines: string[] = [];
-          for (const e of entries.slice(0, 60)) {
-            if (e.name.startsWith(".")) continue;
-            let size = "";
-            if (!e.isDirectory()) {
-              try {
-                size = `${(statSync(path.join(this.opts.workspace, e.name)).size / 1024).toFixed(1)}K`;
-              } catch {
-              }
-            }
-            lines.push(e.isDirectory() ? `${e.name}/` : `${e.name} (${size})`);
-          }
-          this.wsSnapshot = lines.join("\n");
-          if (!this.wsSnapshot) this.wsSnapshot = "(empty workspace)";
-          try {
-            void fs.writeFile(snapPath, this.wsSnapshot, "utf8");
-          } catch {
-          }
-        } catch {
-          this.wsSnapshot = "(workspace not readable)";
-        }
-      } else {
-        this.agentsMd = this.readAgentsMd();
-      }
+      this.agentsMd = this.readAgentsMd();
+      /**
+       * The workspace listing is NOT in the system prompt any more.
+       *
+       * It used to be a `workspace-snapshot.txt` beside the session: the top level of the workspace, captured ONCE at the first
+       * prompt and then frozen — deliberately, to keep the prompt's prefix byte-identical for the provider's cache. What that
+       * bought was a prompt that claimed the workspace looked a certain way forever, followed by the instruction "do NOT list
+       * again what is already here", which tells the model to TRUST the stale listing over the tool that answers correctly.
+       * MEASURED: 723 such files, 2.9MB, one per session, all copies of the same directory at different moments.
+       *
+       * `list_dir` answers the same question in one call, always current, and the model already has it. Nothing is written now
+       * and nothing is read; existing files are simply ignored.
+       */
       this.skillCatalogue = this.skillCatalogueText();
       this.memoryDigest = this.memoryDigestText();
     }
@@ -3266,9 +3241,6 @@ export class Agent {
         `\n\n## Project instructions (AGENTS.md)\n` +
         `(complete file, ${this.agentsMd.length.toLocaleString()} characters)\n\n` +
         this.agentsMd;
-    }
-    if (this.wsSnapshot) {
-      sys += `\n\n## Workspace snapshot (top level)\n${this.wsSnapshot}\nUse list_dir/read_file for anything deeper — do NOT list again what is already here.`;
     }
     if (this.skillCatalogue) {
       sys +=

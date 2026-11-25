@@ -5543,7 +5543,7 @@ function NewAgentModal(props: {
     <Modal title="new agent" onClose={props.onClose}>
       <form onSubmit={create} style="display:flex;flex-direction:column;gap:10px">
         <label>workspace directory
-          <div style="display:flex;gap:6px">
+          <div class="ctlrow">
             <input type="text" class="w100 mono" value={dir()} onInput={(e) => setDir(e.currentTarget.value)} />
             <button type="button" onClick={() => browse(dir())}>go</button>
             <button type="button" class="iconbtn" title="parent directory" onClick={() => parent() ? browse(parent()) : browse("..")}>↑</button>
@@ -5554,7 +5554,7 @@ function NewAgentModal(props: {
             <div class="direntry" onClick={() => browse(`${dir()}/${n}`.replace(/\/+/g, "/"))}>📁 {n}</div>
           }</For>
         </div>
-        <div style="display:flex;gap:10px">
+        <div class="ctlrow" style="gap:10px">
           <label style="flex:1">agent name <input type="text" placeholder="(directory name)" value={name()} onInput={(e) => setName(e.currentTarget.value)} /></label>
           <label style="flex:0 1 auto;min-width:0">provider
             <select value={provider()} onChange={(e) => setProvider(e.currentTarget.value)}>

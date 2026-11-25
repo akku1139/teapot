@@ -2385,6 +2385,15 @@ html[data-bg-image="on"] .composer form {
 .msg.pending .msg-head .editbtn { opacity: 1; }
 .msg-head .editbtn:focus-visible { opacity: 1; outline: 2px solid var(--acc); outline-offset: 1px; }
 .msg-head .editbtn:hover { color: var(--acc); }
+/**
+ * A row of CONTROLS: input plus buttons.
+ *
+ * `align-items: center` is the point. A flex row defaults to `stretch`, so an input (33px here) and a 26px button start at the
+ * same top and the shorter one looks sunk — MEASURED in the new-agent dialog: `go` at 37px, `↑` at 44px, both in one 33px row.
+ * Reported as "go と ↑ の縦位置がズレてて謎".
+ */
+.ctlrow { display: flex; gap: var(--space-2); align-items: center; }
+
 .modal textarea { resize: vertical; }
 .branch-row { display: flex; justify-content: space-between; padding: 3px 0; color: var(--dim); font-size: var(--text-xs); cursor: pointer; }
 .branch-row:hover, .branch-row.cur { color: var(--fg); }
@@ -2614,9 +2623,17 @@ html[data-bg-image="on"] .composer form {
   /* centre the emoji in the button box. Without this the glyph sits on the
      text baseline, which reads as "not centred" — the first half of #44. */
   display: inline-flex; align-items: center; justify-content: center;
-  /* never stretch: a flex parent with `align-items: stretch` (the maximized
-     composer) otherwise pulls the button into a tall strip (#44) */
-  align-self: flex-end; flex: 0 0 auto; padding: 0;
+  /**
+   * CENTRE, not `flex-end`.
+   *
+   * `flex-end` was here so a `align-items: stretch` parent could not pull the button into a tall strip (#44) — but the composer,
+   * which is the case that needed it, sets `align-items: flex-end` on `.composer form` itself. Everywhere else it pushed the
+   * button to the BOTTOM of a taller row: MEASURED in the new-agent dialog, `go` and `↑` sat at top 37px and 44px in the same
+   * 33px row — a 7px drop, reported as "go と ↑ の縦位置がズレてて謎".
+   *
+   * `center` still cannot stretch (a definite height is never stretched), so #44 stays fixed and the ordinary row looks right.
+   */
+  align-self: center; flex: 0 0 auto; padding: 0;
   /* hover/active live in THIS block, not a second `.iconbtn` rule: `cssRuleBody()`
      reads the FIRST matching rule, so a later one silently won the cascade while
      the CSS-contract tests kept asserting the earlier declaration. */

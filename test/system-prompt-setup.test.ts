@@ -123,18 +123,6 @@ test("an AGENTS.md added after the first run is still picked up (#64)", async ()
 
 /* ---------- the other setup elements ---------- */
 
-test("the workspace snapshot is present and lists the workspace (#64)", async () => {
-  const f = await fixture("R");
-  try {
-    await writeFile(path.join(f.ws, "a-file.txt"), "x", "utf8");
-    const p = await promptFor(f, false);
-    assert.match(p, /## Workspace snapshot/, "the snapshot block must be present (#64)");
-    assert.match(p, /a-file\.txt/, "listing the workspace top level (#64)");
-  } finally {
-    await f.cleanup();
-  }
-});
-
 test("the skills catalogue is present and names each skill (#64)", async () => {
   const f = await fixture("R", { name: "my-skill", description: "does a thing" });
   try {
@@ -345,9 +333,7 @@ test("the workspace snapshot and skills stay FROZEN across the reload (#64)", as
     agent.start("t");
     await agent.settled();
     const before = prompts.at(-1)!;
-    const beforeList = before.match(/## Workspace snapshot[\s\S]*?(?=\n##|$)/)?.[0] ?? "";
     const beforeSkills = before.match(/## Skills available[\s\S]*?(?=\n##|$)/)?.[0] ?? "";
-    assert.ok(beforeList, "precondition: a snapshot is present (#64)");
     assert.ok(beforeSkills, "precondition: a catalogue is present (#64)");
 
     // change EVERYTHING the workspace could report
@@ -367,13 +353,13 @@ test("the workspace snapshot and skills stay FROZEN across the reload (#64)", as
     const after = prompts.at(-1)!;
 
     assert.match(after, /V2_RULE/, "AGENTS.md IS re-read (#64)");
-    assert.doesNotMatch(after, /brand-new-file/, "the listing must stay frozen (#64)");
     assert.doesNotMatch(after, /\bs2\b/, "the skills catalogue must stay frozen (#64)");
-    assert.equal(
-      after.match(/## Workspace snapshot[\s\S]*?(?=\n##|$)/)?.[0] ?? "",
-      beforeList,
-      "the snapshot must be byte-identical (#64)",
-    );
+    /**
+     * The workspace LISTING is gone from the prompt entirely, so a file created after the first prompt must not appear — and
+     * neither must a stale copy of the directory. `list_dir` is what answers that question now.
+     */
+    assert.doesNotMatch(after, /brand-new-file/, "no workspace listing is injected any more");
+    assert.doesNotMatch(after, /## Workspace snapshot/, "the frozen listing block is gone (#64)");
     await agent.dispose();
   } finally {
     await f.cleanup();

@@ -325,6 +325,29 @@ nobody. Eleven of these pointed at `Agent.opts`; they became `Agent.updateOption
 `AgentOptions` (so an upstream rename breaks the compile), and `toolCtx.subAgents` became `Agent.attachSubAgents(hooks)`.
 What legitimately remains: `process.execve`, which Node's types do not declare.
 
+## A frozen listing is worse than no listing
+
+The system prompt carried a `## Workspace snapshot (top level)` block: the workspace's top level, captured at the FIRST prompt
+and then frozen on purpose (to keep the prefix byte-identical for the provider's cache) — followed by the instruction "do NOT
+list again what is already here". So it told the model to trust a listing that could never be right for long, over the tool that
+answers correctly. MEASURED: 723 `workspace-snapshot.txt` files, 2.9MB, one per session.
+
+It is gone. `list_dir` answers the same question in one call, always current. Nothing writes the file and nothing reads it;
+existing ones are ignored (do not migrate, and do not delete an operator's files to tidy a format).
+
+**The general shape: a cache that is never invalidated is a lie with a timestamp.** When the prompt tells a model what the world
+looks like, that claim has to be either current or marked as a past observation.
+
+## A control row aligns on the CENTRE, and a control does not choose its parent's alignment
+
+`go` and `↑` sat at top 37px and 44px in one 33px row — MEASURED in headless Firefox, a 7px drop on the icon button only. The
+cause was `align-self: flex-end` on `.iconbtn`, added so a `stretch` parent could not pull the button into a tall strip (#44).
+`flex-end` cannot stretch either, so `center` fixes #44 just as well — and the case that genuinely wanted the bottom, the maximized
+composer, declares `align-items: flex-end` on `.composer form` itself.
+
+So: a shared `.ctlrow` (`display: flex; align-items: center`) for input+button rows, and `.iconbtn { align-self: center }`.
+`test/control-row-alignment.test.ts` pins all three (including that the composer keeps its bottom alignment).
+
 ## Comments
 
 A comment says **what the code is**, and — only where the choice is genuinely non-obvious — **why it
