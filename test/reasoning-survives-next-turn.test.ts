@@ -73,8 +73,8 @@ test("restoring from the log keeps the reasoning (#187)", async () => {
     await fs.writeFile(
       path.join(sd!, "chat.jsonl"),
       [
-        { v: 1, id: "e1", seq: 1, ts: "2026-01-01T00:00:00Z", agent: "t", session: "s", branch: "br0", type: "prompt", data: { source: "user", text: "go" } },
-        { v: 1, id: "e2", seq: 2, ts: "2026-01-01T00:00:01Z", agent: "t", session: "s", branch: "br0", type: "message", data: { role: "assistant", content: "answered", reasoning: "the thinking from before" } },
+        { seq: 1, ts: "2026-01-01T00:00:00Z", branch: "br0", parent: null, type: "prompt", data: { source: "user", text: "go" } },
+        { seq: 2, ts: "2026-01-01T00:00:01Z", branch: "br0", parent: "e1", type: "message", data: { role: "assistant", content: "answered", reasoning: "the thinking from before" } },
       ].map((e) => JSON.stringify(e)).join("\n") + "\n",
     );
     let history: { role: string; reasoning_content?: string }[] | null = null;

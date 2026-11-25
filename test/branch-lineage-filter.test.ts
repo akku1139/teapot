@@ -31,7 +31,6 @@ let seq = 0;
 function ev(branch: string, parent: string | null, data: unknown = {}): TeapotEvent {
   seq++;
   return {
-    v: 1,
     id: `e${seq}`,
     seq,
     ts: "2026-01-01T00:00:00Z",

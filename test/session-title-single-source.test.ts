@@ -46,9 +46,8 @@ const seedSession = async (dataDir: string, text: string) => {
   await fs.writeFile(
     path.join(dir, "chat.jsonl"),
     JSON.stringify({
-      v: 1, id: "e1", seq: 1, ts: "2026-01-01T00:00:00Z",
-      agent: "t1", session: "t1", branch: "br0",
-      type: "prompt", data: { source: "user", text },
+      seq: 1, ts: "2026-01-01T00:00:00Z", branch: "br0",
+      parent: null, type: "prompt", data: { source: "user", text },
     }) + "\n",
   );
 };

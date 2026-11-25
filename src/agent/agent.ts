@@ -5,7 +5,7 @@ import { storeImage, resolveImages } from "../log/image-store.ts";
 import { chat, chatStream, type ChatFn, type ChatMessage, type LlmConfig } from "./llm.ts";
 import { auditPrompt, parseAuditVerdict } from "./goal-audit.ts";
 import { createCatalog } from "./tool-catalog.ts";
-import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShellsFor, killBgShells, runningBgShellCount, listBgShells, clipLines, type ToolContext } from "./tools.ts";
+import { resetToolCatalog, executeTool, toolSpecs, currentSkills, safeJoin, isContextOverflow, isRequestNodeLimit, hasRunningBgShellsFor, killBgShells, runningBgShellCount, listBgShells, clipLines, type SubAgentHooks, type ToolContext } from "./tools.ts";
 import { effortChoosable } from "./llm.ts";
 import { turnAnchor } from "./timing.ts";
 import { isBareAcknowledgement } from "./ack.ts";
@@ -20,6 +20,27 @@ import { metaToolSpecs, type MetaToolName } from "./meta-tools.ts";
 import { skillRootsFingerprint, foreignSkillRoots, type SkillDef } from "./skills.ts";
 import { extractRules, enforceRules, type Rule, RULES_HEADING } from "./compact-rules.ts";
 import { bus, type BusEvent } from "../bus.ts";
+
+/**
+ * The options the operator's settings may change on a LIVE agent.
+ *
+ * A `Pick` of `AgentOptions` rather than a restatement: a rename or a type change upstream then breaks this file instead of
+ * silently succeeding through a cast.
+ */
+export type AgentSettableOptions = Pick<
+  AgentOptions,
+  | "autoContinue"
+  | "autoCompact"
+  | "progressIntervalMs"
+  | "progressMinChars"
+  | "shortContext"
+  | "provider"
+  | "reasoningEffort"
+  | "supportedParameters"
+  | "supportedEfforts"
+  | "contextWindowTokens"
+  | "contextTokenBudget"
+>;
 
 export const AUTO_CONTINUE_NUDGE =
   "Continue working toward the current goal. If you are blocked, explain why briefly. " +
@@ -599,7 +620,7 @@ export class Agent {
       onIdlePark: (reason) => this.parkForTool(reason),
       onIdleUnpark: () => this.unparkFromTool(),
       hasPendingPrompts: () => this.pendingPrompts.length > 0,
-      onBackgroundExit: (info) => void this.onBackgroundJobExit(info),
+      onBackgroundExit: (info) => this.onBackgroundJobExit(info),
       onBackgroundStart: () => this.emitSnapshotUpdate(),
       onFileRead: (p) => this.trackFileRead(p),
     };
@@ -862,6 +883,34 @@ export class Agent {
      * next attempt run with the model that was just chosen.
      */
     if (this.retrySleeping) this.wake?.();
+  }
+
+  /**
+   * Change the live options of a running agent, as the OPERATOR's settings page does.
+   *
+   * The alternative is what this replaced, at eleven call sites:
+   *
+   *     (a as unknown as { opts: { autoContinue: boolean } }).opts.autoContinue = body.value;
+   *
+   * A double cast onto a PRIVATE field compiles no matter what the field is called or what type it holds, so a rename or a
+   * type change in `AgentOptions` would be found by nobody and the write would silently target the wrong thing — or a field
+   * that no longer exists. One typed entry point makes that a compile error.
+   *
+   * Only the keys listed here are settable from outside: everything else an agent owns is its own business.
+   */
+  updateOptions(patch: AgentSettableOptions): void {
+    Object.assign(this.opts, patch);
+  }
+
+  /**
+   * Give this agent the hooks its sub-agent tools call back through.
+   *
+   * Assigned by the harness once the child agents exist. It used to be
+   * `(agent as unknown as { toolCtx: { subAgents: … } }).toolCtx.subAgents = hooks`, which compiled even if the field were
+   * renamed — the exact failure mode a cast like that hides.
+   */
+  attachSubAgents(hooks: SubAgentHooks): void {
+    this.toolCtx.subAgents = hooks;
   }
 
   async init(): Promise<void> {

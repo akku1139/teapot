@@ -95,7 +95,7 @@ Run all of these and make them pass. "It typechecks" is not one of them.
 pnpm typecheck      # server
 pnpm typecheck-web  # frontend
 pnpm typecheck:scripts  # test/ + scripts/ — CI runs it and a local run does NOT cover it
-pnpm lint           # oxlint
+pnpm lint           # oxlint, TYPE-AWARE (see below) — `pnpm lint:fast` skips type info
 pnpm build          # required before pnpm test — the web bundle tests need it
 pnpm test           # node --test test/*.test.ts
 ```
@@ -282,6 +282,31 @@ recovery, so do not add one.
 - If production code hardcodes a delay the test must wait out, make it injectable
   instead of sleeping (`llmRetryWaitsMs` exists for exactly this). Test time is a
   real cost: it is why an over-long suite gets skipped locally and stops being run.
+
+## Lint: a config nobody loads is not a rule
+
+Two ways this repo's lint was silently doing nothing, both found by checking rather than assuming:
+
+- **The config was named `oxlint.json`, and oxlint only auto-discovers `.oxlintrc.json`.** Every rule in it had never run;
+  `pnpm lint` was reporting oxlint's DEFAULTS. Renaming it took the warning count from 2008 to 356 and surfaced 4 real
+  errors immediately.
+- **`"extends": ["oxlint:recommended"]` is not a valid value** — oxlint is not ESLint and rejects its shared configs. In a
+  project config the whole file is discarded, so a typo there silently disables every rule in it. A rule you cannot see
+  reported is a rule you do not have: after changing this file, run `pnpm lint` and check the count actually moved.
+
+`pnpm lint` runs with `--type-aware` (which needs `oxlint-tsgolint`), because the rules that catch a CAST need types:
+`no-unsafe-type-assertion` reports nothing at all without it. Type-aware rules are also why 4 `await`-on-a-non-promise
+calls were sitting in `master.ts` (`await mkdirSync(...)`, `await enqueuePromise(...)`) — each one looked like it waited
+and did nothing.
+
+**Overrides need `**/` globs.** `files: ["**/*.test.ts"]` matches; `files: ["test/**/*.test.ts"]` silently matches NOTHING,
+which is how a relaxation for tests turns into no relaxation at all or (worse) the opposite.
+
+**A double cast onto a private field is the shape to refuse.** `(a as unknown as { opts: { autoContinue: boolean } }).opts
+.autoContinue = x` compiles whatever that field is called and whatever it holds, so a rename or a type change is caught by
+nobody. Eleven of these pointed at `Agent.opts`; they became `Agent.updateOptions(patch)` where the patch is a `Pick` of
+`AgentOptions` (so an upstream rename breaks the compile), and `toolCtx.subAgents` became `Agent.attachSubAgents(hooks)`.
+What legitimately remains: `process.execve`, which Node's types do not declare.
 
 ## Comments
 
@@ -493,6 +518,28 @@ out with only five unresolved names because everything it called had already mov
   `idle`. Use `live`/`isBusy` for control decisions.
 - Log events are append-only JSONL; the UI rebuilds state from them. Never
   rewrite history in place.
+
+- **A line of `chat.jsonl` is `LogEvent`: `seq · ts · branch · parent · type · data`.** Nothing else is written.
+  `id` (`e<seq>`), `agent` (the session's manifest) and `session` (the log's own directory) are DERIVED on read, and a
+  `v` version field is gone entirely. MEASURED before the change: 1,000,000 events / 973MB where those four fields cost
+  99MB (10%); a line's header shrank 188B → 119B (36.7%).
+
+  So: **do not add a field to the line that the file already implies**, and do not read those three off a parsed line —
+  `readEvents`/`readEventsTail`/`readEventsWindow` return `TeapotEvent` (the line plus the identity), and that is the only
+  shape the rest of the code sees. A test that asserts an event is on disk looks for `"seq":N`, not `e.id`: the id is not in
+  the file any more, and looking for it would test the format instead of the ordering.
+
+  **NEVER MIGRATE EXISTING LOGS.** They run to gigabytes per session, so rewriting them is a disk-IO event nobody asked
+  for; the only thing required is that nothing WRITES the dropped fields again and nothing READS them. An old line still
+  has the extra keys — they are ignored because no reader looks at them, and the derived value is what every caller gets.
+  There is no compatibility branch anywhere for them, and adding one would be the same mistake with extra steps. The
+  `agent`-scraping session recovery path was deleted rather than kept for old files for exactly that reason.
+
+- **Session ownership is `config.agents[].session`, then the directory NAME, then the manifest.** MEASURED: 774 pointers,
+  none disagreeing with the directory name. The name is evidence only with its hash (`<agentId>-<hash>`, which teapot mints);
+  a bare `<agentId>` directory is the agent's default dir and says nothing — trusting it let a planted
+  `sessions/worker` with an `{agentId:"impostor"}` manifest be adopted on restart. The manifest is never trusted over the
+  other two: it is a cache, and a bad `addAgent()` run that rewrote 813 of them once orphaned 493 agents' history.
 - **A feed row that renders nothing must not stay in the feed array.** `prev` is
   taken positionally from `chatEvents()`, and `groupedWith()` keys on the row
   TYPE, so an invisible row (e.g. `state`, which is in `FEED_TYPES` but has no

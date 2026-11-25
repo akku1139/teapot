@@ -25,18 +25,17 @@ import { useTempDir } from "./helpers/tmp.ts";
 import { EventLog, readEvents } from "../src/log/events.ts";
 
 /** a log with `n` well-formed events, returned as its JSONL text */
-function logText(n: number, agent = "a", branch = "br0"): string {
+function logText(n: number): string {
   const lines: string[] = [];
   let parent: string | null = null;
   for (let i = 1; i <= n; i++) {
-    const id = `e${i}`;
     lines.push(
       JSON.stringify({
-        v: 1, id, seq: i, ts: "2026-01-01T10:00:00.000Z", agent, session: "s", branch,
+        seq: i, ts: "2026-01-01T10:00:00.000Z", branch: "br0",
         parent, type: "message", data: { role: "assistant", content: `event ${i}` },
       }),
     );
-    parent = id;
+    parent = `e${i}`;
   }
   return lines.join("\n") + "\n";
 }
@@ -81,16 +80,27 @@ test("a small log still loads completely, including older branches (#143)", asyn
     const file = path.join(dir, "chat.jsonl");
     // one event on a second branch, then lots on the first — a small file, so the
     // whole thing is read and nothing is dropped
+    /**
+     * The line is `seq/ts/branch/parent/type/data` — the id is `e<seq>` derived on read, so a branch head is named by its
+     * SEQUENCE, not by an id the writer used to store.
+     */
     const side = JSON.stringify({
-      v: 1, id: "side1", seq: 1, ts: "2026-01-01T09:00:00.000Z", agent: "a", session: "s",
-      branch: "side", parent: null, type: "message", data: {},
+      seq: 1, ts: "2026-01-01T09:00:00.000Z", branch: "side", parent: null, type: "message", data: {},
     });
-    writeFileSync(file, `${side}\n${logText(20)}`);
+    const rest = logText(20)
+      .trim()
+      .split("\n")
+      .map((l, i) => {
+        const e = JSON.parse(l) as { seq: number; parent: string | null };
+        return JSON.stringify({ ...e, seq: i + 2 });
+      })
+      .join("\n");
+    writeFileSync(file, `${side}\n${rest}\n`);
 
     const log = new EventLog(file, "a");
     await log.load();
-    assert.equal(log.lastEventId("side"), "side1", "a branch inside the window keeps its head (#143)");
-    assert.equal(log.lastEventId("br0"), "e20");
+    assert.equal(log.lastEventId("side"), "e1", "a branch inside the window keeps its head (#143)");
+    assert.equal(log.lastEventId("br0"), `e${rest.split("\n").length + 1}`, "and its own head, which is the last seq");
   });
 });
 
@@ -98,7 +108,7 @@ test("a torn final line does not corrupt the seq (#143)", async () => {
   await useTempDir("loadtail-", async (dir) => {
     const file = path.join(dir, "chat.jsonl");
     const N = 6000;
-    writeFileSync(file, logText(N) + '{"v":1,"id":"e6001","seq":6001,"ag');
+    writeFileSync(file, logText(N) + '{"seq":6001,"ts":"2026-01-01T10:00:00.000Z","br' );
     const log = new EventLog(file, "a");
     await log.load();
     const ev = await log.append("prompt", "s", "br0", { source: "user", text: "x" });

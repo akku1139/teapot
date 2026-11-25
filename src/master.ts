@@ -587,15 +587,11 @@ export class Master {
     if (patch.defaultProvider !== undefined) this.config.defaultProvider = patch.defaultProvider;
     if (patch.progressIntervalMs !== undefined) {
       this.config.progressIntervalMs = patch.progressIntervalMs;
-      for (const a of this.agents.values())
-        (a as unknown as { opts: { progressIntervalMs: number } }).opts.progressIntervalMs =
-          patch.progressIntervalMs;
+      for (const a of this.agents.values()) a.updateOptions({ progressIntervalMs: patch.progressIntervalMs });
     }
     if (patch.progressMinChars !== undefined) {
       this.config.progressMinChars = patch.progressMinChars;
-      for (const a of this.agents.values())
-        (a as unknown as { opts: { progressMinChars: number } }).opts.progressMinChars =
-          patch.progressMinChars;
+      for (const a of this.agents.values()) a.updateOptions({ progressMinChars: patch.progressMinChars });
     }
     if (patch.contextTokenBudget !== undefined) {
       this.config.contextTokenBudget =
@@ -605,9 +601,7 @@ export class Master {
     if (patch.mcpServers !== undefined) this.config.mcpServers = patch.mcpServers;
     if (patch.shortContext !== undefined) {
       this.config.shortContext = patch.shortContext;
-      for (const a of this.agents.values())
-        (a as unknown as { opts: { shortContext?: boolean } }).opts.shortContext =
-          patch.shortContext;
+      for (const a of this.agents.values()) a.updateOptions({ shortContext: patch.shortContext });
     }
     if (patch.maxTurnsPerRound !== undefined) this.config.maxTurnsPerRound = patch.maxTurnsPerRound;
     if (patch.onError !== undefined) this.config.onError = patch.onError;
@@ -662,8 +656,7 @@ export class Master {
         else delete merged.keyPool;
         agent.setLlmConfig(merged);
         // the name shown in the UI has to match the llm actually in use
-        (agent as unknown as { opts: { provider: string } }).opts.provider =
-          ac.provider ?? this.config.defaultProvider ?? "";
+        agent.updateOptions({ provider: ac.provider ?? this.config.defaultProvider ?? "" });
       }
     }
     this.saveConfig();
@@ -738,7 +731,7 @@ export class Master {
       this.deferConfigWrites = false;
       if (this.configDirty) this.flushConfig();
     }
-    setInterval(() => void this.tick(), 15_000).unref();
+    setInterval(() => this.tick(), 15_000).unref();
   }
 
   async applySetup(body: {
@@ -788,7 +781,8 @@ export class Master {
     let agentId: string | undefined;
     if (body.workspace?.trim()) {
       const ws = resolveWorkspace(body.workspace, path.dirname(this.configPath));
-      await mkdirSync(ws, { recursive: true });
+      // `mkdirSync` is synchronous: the `await` here made it look async and did nothing
+      mkdirSync(ws, { recursive: true });
       const name =
         (body.agentName?.trim() || path.basename(ws))
           .replace(/[^\w.-]/g, "-")
@@ -853,7 +847,8 @@ export class Master {
     const inferredWindow = needsWindow && list ? contextLengthFor(list, llm.model) : undefined;
     const modelMeta = list?.find((m) => m.id === llm.model);
     const sessionDir = this.resolveSessionDir(ac.id, opts.fresh === true);
-    await mkdirSync(sessionDir, { recursive: true });
+    // `mkdirSync` is synchronous: the `await` here made it look async and did nothing
+    mkdirSync(sessionDir, { recursive: true });
     this.writeSessionManifest(sessionDir, ac.id);
     const agent = new Agent({
       id: ac.id,
@@ -972,11 +967,7 @@ export class Master {
         wait: (ids: string[] | undefined, ms: number) =>
           this.waitChildren(ac.id, ids, ms, self.toolCtx.signal),
       };
-      (
-        agent as unknown as {
-          toolCtx: { subAgents: typeof hooks };
-        }
-      ).toolCtx.subAgents = hooks;
+      agent.attachSubAgents(hooks);
     }
     await agent.init();
     /**
@@ -1108,7 +1099,8 @@ export class Master {
       child.importMessages(parent.exportMessages());
     }
     await child.setGoal(`${directive}${o.task}`.slice(0, 2000));
-    await child.enqueuePrompt(
+    // `enqueuePrompt` returns the prompt ID synchronously; awaiting it waited for nothing
+    child.enqueuePrompt(
       (o.context === "fork"
         ? `[harness] You are sub-agent ${id}, spawned by @${parentId}.
 
@@ -1294,44 +1286,47 @@ if (active().length === 0) wake();
     }
   }
 
+  /**
+   * Who owns a session directory: `config.agents[].session` first, then the directory's NAME.
+   *
+   * `config.json` already states the mapping — every agent records which session it points at — so it answers this exactly,
+   * with no convention to re-derive and no cache to distrust. MEASURED on the operator's data: 774 pointers, 0 of which
+   * disagree with the directory's name.
+   *
+   * The name answers for a directory no agent points at (an orphan being recovered, or an imported session). It is
+   * `<agentId>-<hash>`, composed by teapot when the directory was created and written by nothing else, and the longest
+   * matching id wins so `dup` cannot claim a `dup-2-…` session.
+   *
+   * The manifest is NOT consulted: it is a cache of exactly this answer, and trusting it once let a bad `addAgent()` run that
+   * rewrote 813 manifests orphan 493 agents' history.
+   */
   private inferSessionOwner(
     dirName: string,
     candidateIds: Iterable<string>,
   ): { owner: string | null; hadManifest: boolean } {
-    const fromManifest = this.readSessionOwner(dirName);
-    if (fromManifest) return { owner: fromManifest, hadManifest: true };
+    const hadManifest = this.readSessionOwner(dirName) !== null;
+    for (const a of this.config.agents) {
+      if (a.session === dirName && a.id) return { owner: a.id, hadManifest };
+    }
+    for (const [liveId, agent] of this.agents) {
+      if (agent.currentSession === dirName && liveId) return { owner: liveId, hadManifest };
+    }
+    /**
+     * The name is evidence only when it has the HASH: `teapot` mints `<agentId>-<hash>` and nothing else writes that shape.
+     *
+     * A BARE `<agentId>` directory is the agent's own default dir, which any caller can create, so it says nothing about who
+     * owns it — trusting it once let a planted `sessions/worker` with an `{agentId:"impostor"}` manifest be adopted on restart.
+     */
     let best: { id: string; len: number } | null = null;
     for (const id of candidateIds) {
       if (!id) continue;
-      if ((id === dirName || dirName.startsWith(`${id}-`)) && (!best || id.length > best.len))
-        best = { id, len: id.length };
+      if (dirName.startsWith(`${id}-`) && (!best || id.length > best.len)) best = { id, len: id.length };
     }
-    return { owner: best?.id ?? null, hadManifest: false };
-  }
-
-  private logOwner(dirName: string): string | null {
-    let fd: number | undefined;
-    try {
-      fd = openSync(path.join(this.sessionsRoot(), dirName, "chat.jsonl"), "r");
-      const buf = Buffer.alloc(8 * 1024);
-      const n = readSync(fd, buf, 0, buf.length, 0);
-      if (n <= 0) return null;
-      const head = buf.subarray(0, n).toString("utf8");
-      const nl = head.indexOf("\n");
-      const line = (nl >= 0 ? head.slice(0, nl) : head).trim();
-      if (!line) return null;
-      const parsed = JSON.parse(line) as { agent?: unknown };
-      return typeof parsed.agent === "string" && parsed.agent ? parsed.agent : null;
-    } catch {
-      return null; 
-    } finally {
-      if (fd !== undefined) {
-        try {
-          closeSync(fd);
-        } catch {
-        }
-      }
-    }
+    if (best) return { owner: best.id, hadManifest };
+    /**
+     * Nothing else can own it, so the manifest is the last word — it is the only record of who had this session created.
+     */
+    return { owner: this.readSessionOwner(dirName), hadManifest };
   }
 
   /** The session's own name, from its manifest. One place, so it cannot go stale in another. */
@@ -1435,17 +1430,23 @@ if (active().length === 0) wake();
     }
   }
 
-  private writeSessionManifest(dirPath: string, agentId: string): void {
+  /**
+   * Write (or repair) a session's manifest.
+   *
+   * `proven` says the caller has established ownership independently — the directory NAME is `<agentId>-<hash>`, which teapot
+   * composed and nothing else writes. Without it this only fills in a MISSING manifest: overwriting one that names another
+   * agent would be how a bad caller steals a session, and the manifest is a cache of the name, not a claim on it.
+   */
+  private writeSessionManifest(dirPath: string, agentId: string, proven = false): void {
     try {
       const file = path.join(dirPath, "session.json");
       if (existsSync(file)) {
         const current = this.readSessionOwner(path.basename(dirPath));
         if (current === agentId) return;
-        const proven = this.logOwner(path.basename(dirPath));
-        if (proven !== agentId) return; 
+        if (!proven) return;
         console.log(
           `[teapot] repairing session manifest for ${path.basename(dirPath)}: ` +
-            `${JSON.stringify(current)} → ${JSON.stringify(agentId)} (the log says ${JSON.stringify(agentId)})`,
+            `${JSON.stringify(current)} → ${JSON.stringify(agentId)} (the directory name says ${JSON.stringify(agentId)})`,
         );
       }
       writeFileSync(file, `${JSON.stringify({ v: 1, agentId }, null, 2)}\n`);
@@ -1453,19 +1454,29 @@ if (active().length === 0) wake();
     }
   }
 
+  /** every agent id this process knows: configured, live, plus the one being resolved */
+  private candidateAgentIds(extra?: string): Set<string> {
+    const ids = new Set<string>();
+    if (extra) ids.add(extra);
+    for (const a of this.config.agents) if (a.id) ids.add(a.id);
+    for (const [liveId] of this.agents) ids.add(liveId);
+    return ids;
+  }
+
   private findLatestSessionDir(agentId: string): string | null {
-    const candidateIds = new Set<string>([agentId]); 
-    for (const a of this.config.agents) if (a.id) candidateIds.add(a.id);
-    for (const [liveId] of this.agents) candidateIds.add(liveId);
+    const candidateIds = this.candidateAgentIds(agentId);
     let dirs: string[] = [];
     try {
       const withHistory: { d: string; m: number }[] = [];
       const empty: { d: string; m: number }[] = [];
       for (const d of readdirSync(this.sessionsRoot())) {
-        const { owner } = this.inferSessionOwner(d, candidateIds);
-        const mineByLog = owner !== agentId && this.logOwner(d) === agentId;
-        if (owner !== agentId && !mineByLog) continue;
-        if (mineByLog) this.writeSessionManifest(path.join(this.sessionsRoot(), d), agentId);
+        const { owner, hadManifest } = this.inferSessionOwner(d, candidateIds);
+        if (owner !== agentId) continue;
+        /**
+         * A directory that IS ours by name gets its manifest repaired, so the cache agrees with the name again.
+         */
+        if (!hadManifest || this.readSessionOwner(d) !== agentId)
+          this.writeSessionManifest(path.join(this.sessionsRoot(), d), agentId);
         const dirPath = path.join(this.sessionsRoot(), d);
         const m = this.sessionMtime(dirPath);
         let size = 0;
@@ -1498,16 +1509,17 @@ if (active().length === 0) wake();
     const recorded = this.config.agents.find((a) => a.id === agentId)?.session;
     if (!fresh && recorded) {
       const dir = path.join(root, recorded);
-      const owner = this.readSessionOwner(recorded);
-      const mineByManifest = owner === null || owner === agentId;
-      const mineByLog = owner !== agentId && this.logOwner(recorded) === agentId;
-      if (existsSync(dir) && (mineByManifest || mineByLog)) {
-        if (mineByLog) this.writeSessionManifest(dir, agentId); 
+      /**
+       * `recorded` IS this agent's answer: `config.json` is where the agent says which session it points at. The only thing
+       * that can make it unusable is the directory being gone.
+       */
+      if (existsSync(dir)) {
+        if (this.readSessionOwner(recorded) !== agentId) this.writeSessionManifest(dir, agentId, true);
         return dir;
       }
       console.log(
         `[teapot] session ${recorded} for ${agentId} is unusable ` +
-          `(${existsSync(dir) ? `manifest owner ${JSON.stringify(owner)}` : "directory missing"}); ` +
+          `(${existsSync(dir) ? `manifest owner ${JSON.stringify(this.readSessionOwner(recorded))}` : "directory missing"}); ` +
           `starting a new one`,
       );
     }
@@ -1740,20 +1752,20 @@ if (active().length === 0) wake();
     }
     const effortList = await fetchModelList(llm.baseUrl, llm.apiKey).catch(() => [] as ModelMeta[]);
     const meta = effortList.find((m) => m.id === (model || llm.model));
-    const opts = agent as unknown as {
-      opts: { reasoningEffort: string; supportedParameters?: string[] | undefined; supportedEfforts?: string[] | undefined };
-    };
-    if (reasoningEffort !== undefined) {
-      opts.opts.reasoningEffort = isReasoningEffort(reasoningEffort) ? reasoningEffort : "";
+    const effort = reasoningEffort !== undefined ? (isReasoningEffort(reasoningEffort) ? reasoningEffort : "") : undefined;
+    if (effort !== undefined) {
       const cfgEntry = this.config.agents.find((a) => a.id === id);
-      if (cfgEntry) cfgEntry.reasoningEffort = opts.opts.reasoningEffort || undefined;
+      if (cfgEntry) cfgEntry.reasoningEffort = effort || undefined;
     }
-    opts.opts.supportedEfforts = meta?.supportedEfforts;
-    opts.opts.supportedParameters = meta?.supportedParameters;
+    agent.updateOptions({
+      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+      supportedEfforts: meta?.supportedEfforts,
+      supportedParameters: meta?.supportedParameters,
+    });
     if (!llm.model) throw new Error("no model resolved (pass model or set one on the provider)");
     if (!llm.baseUrl) throw new Error("no baseUrl resolved");
     agent.setLlmConfig(llm);
-    (agent as unknown as { opts: { provider: string } }).opts.provider = effectiveProvider;
+    agent.updateOptions({ provider: effectiveProvider });
     const ac = this.config.agents.find((a) => a.id === id);
     if (ac && providerName) ac.provider = providerName;
     if (ac) ac.model = llm.model;
@@ -1767,16 +1779,10 @@ if (active().length === 0) wake();
     }
     if (win !== undefined) {
       if (ac) ac.contextWindowTokens = win;
-      const opts = agent as unknown as {
-        opts: {
-          contextWindowTokens: number;
-          contextTokenBudget: number;
-          manualCompactBudget?: boolean;
-        };
-      };
-      opts.opts.contextWindowTokens = win;
-      if (!agent.compactBudgetIsManual)
-        opts.opts.contextTokenBudget = Math.round(win * 0.75);
+      agent.updateOptions({
+        contextWindowTokens: win,
+        ...(agent.compactBudgetIsManual ? {} : { contextTokenBudget: Math.round(win * 0.75) }),
+      });
     }
     try {
       const list = await fetchModelList(llm.baseUrl, llm.apiKey);
@@ -1809,7 +1815,8 @@ if (active().length === 0) wake();
         bus.emit("update", { kind: "tasks", tasks: this.tasksView() });
         void (async () => {
           if (t.task.forked) await agent.fork();
-          await agent.enqueuePrompt(t.task.prompt, `scheduler:${t.task.id}`);
+          // `enqueuePrompt` is synchronous (it returns the prompt id); the `await` waited for nothing
+          agent.enqueuePrompt(t.task.prompt, `scheduler:${t.task.id}`);
           if (agent.status !== "running") agent.start(`scheduled:${t.task.id}`);
         })();
       } catch (err) {

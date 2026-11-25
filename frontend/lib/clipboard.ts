@@ -43,10 +43,17 @@ export async function copyText(text: string, deps: CopyDeps = {}): Promise<CopyR
       };
     });
 
-  const writeText = clipboard?.writeText;
+  /**
+   * Bound, so the call cannot lose `this` — a clipboard object with its own `writeText` implementation would otherwise be
+   * invoked detached, which some browsers reject with an "Illegal invocation".
+   *
+   * The second `?.` is not decoration: `writeText` may be MISSING entirely (an older clipboard object, or a test double), and
+   * `undefined.bind(...)` throws before the `typeof` check below can fall back to the textarea path.
+   */
+  const writeText = clipboard?.writeText?.bind(clipboard);
   if (typeof writeText === "function") {
     try {
-      await writeText.call(clipboard, text);
+      await writeText(text);
       return "copied";
     } catch {
     }

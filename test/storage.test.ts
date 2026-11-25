@@ -564,7 +564,11 @@ test("manifest ownership: an impostor manifest on the bare-name dir cannot hijac
     // impostor dir: bare name + non-empty log + manifest owned by someone else
     const impostor = path.join(m.sessionsRoot(), "worker");
     mkdirSync(impostor, { recursive: true });
-    writeFileSync(path.join(impostor, "chat.jsonl"), '{"v":1,"id":"e1","seq":1,"ts":"t","agent":"x","session":"worker","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"not yours"}}\n');
+    // a CURRENT line: no v/id/agent/session — those are derived, and a fixture that writes them tests a format that is gone
+    writeFileSync(
+      path.join(impostor, "chat.jsonl"),
+      '{"seq":1,"ts":"2026-01-01T00:00:00Z","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"not yours"}}\n',
+    );
     writeFileSync(path.join(impostor, "session.json"), JSON.stringify({ v: 1, agentId: "impostor" }));
 
     // restart: the guarded selfDir check must skip the impostor and find the
@@ -581,7 +585,15 @@ test("manifest ownership: an impostor manifest on the bare-name dir cannot hijac
 test("legacy flat <id>.jsonl is migrated into sessions/<id>/chat.jsonl", async () => {
   await useTempDirs(["legacy-root-", "legacy-ws-"], async ([dataDir, ws]) => {
     await mkdir(path.dirname(path.join(dataDir, "s.jsonl")), { recursive: true });
-    await writeFile(path.join(dataDir, "s.jsonl"), '{"v":1,"id":"e1","seq":1,"ts":"2026-01-01T00:00:00Z","agent":"s","session":"s","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"old"}}\n');
+    /**
+     * The migration is a RENAME (`src/migrations/sessions.ts` renames the file; it never parses a line), so its fixture uses
+     * the CURRENT line format: nothing in this repo fabricates the dropped fields, and that a real old file still reads is
+     * pinned where the format lives (`test/events.test.ts`).
+     */
+    await writeFile(
+      path.join(dataDir, "s.jsonl"),
+      '{"seq":1,"ts":"2026-01-01T00:00:00Z","branch":"br0","parent":null,"type":"prompt","data":{"source":"user","text":"old"}}\n',
+    );
     const m = mkMaster(dataDir);
     // the flat-layout move is a BOOT migration now (src/migrations/), not something addAgent does
     await m.start();

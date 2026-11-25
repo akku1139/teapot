@@ -16,6 +16,27 @@ import { editorConfigFor } from "./editorconfig.ts";
 import { mcp, MCP_PREFIX, flattenToolName } from "./mcp-registry.ts";
 import { createCatalog, SEARCH_TOOL, RUN_TOOL, type Catalog } from "./tool-catalog.ts";
 
+/**
+ * What the sub-agent tools call back into the harness with.
+ *
+ * A named type, because an `Agent` has to be GIVEN one (`Agent.attachSubAgents`) and the assignment used to go through
+ * `(agent as unknown as { toolCtx: … }).toolCtx.subAgents = hooks` — a double cast that made a rename or a shape change
+ * invisible to the compiler.
+ */
+export interface SubAgentHooks {
+  depth: number;
+  spawn(o: {
+    task: string;
+    context: "none" | "fork";
+    name?: string | undefined;
+    reasoning_effort?: string;
+  }): Promise<{ id: string }>;
+  list(): { id: string; status: string; goal: string; parent: string; nested: boolean }[];
+  stop(ids?: string[]): Promise<{ stopped: string[] }>;
+  message(id: string, text: string): Promise<void>;
+  wait(ids: string[] | undefined, timeoutMs: number): Promise<{ note: string }>;
+}
+
 export interface ToolContext {
   cwd: string;
   agentId?: string;
@@ -33,19 +54,7 @@ export interface ToolContext {
   signal?: AbortSignal;
   readOnly?: boolean;
   allowMutatingForReview?: string[];
-  subAgents?: {
-    depth: number;
-    spawn(o: {
-      task: string;
-      context: "none" | "fork";
-      name?: string | undefined;
-      reasoning_effort?: string;
-    }): Promise<{ id: string }>;
-    list(): { id: string; status: string; goal: string; parent: string; nested: boolean }[];
-    stop(ids?: string[]): Promise<{ stopped: string[] }>;
-    message(id: string, text: string): Promise<void>;
-    wait(ids: string[] | undefined, timeoutMs: number): Promise<{ note: string }>;
-  };
+  subAgents?: SubAgentHooks;
   onIdlePark?: (reason: string) => boolean;
   onIdleUnpark?: () => void;
   hasPendingPrompts?: () => boolean;

@@ -33,19 +33,30 @@ test("readEventsTail returns exactly the last N events, in order", async () => {
     const f = path.join(dir, "chat.jsonl");
     const log = new EventLog(f, "a");
     await log.load();
-    for (let i = 1; i <= 500; i++) await log.append("message", "s", "br0", { i });
+    /**
+     * Enough lines that the tail read is genuinely PARTIAL.
+     *
+     * 500 was enough when a line carried `v`, `id`, `agent` and `session`; without them a line is ~112 bytes and 500 of them
+     * fit inside the reader's 64KB minimum window, so the whole file was read and `truncated` was correctly false — the
+     * assertion below would have been measuring the fixture, not the reader. The precondition is asserted with it.
+     */
+    const COUNT = 1200;
+    for (let i = 1; i <= COUNT; i++) await log.append("message", "s", "br0", { i });
     await log.close();
+
+    const bytes = (await import("node:fs")).statSync(f).size;
+    assert.ok(bytes > 64 * 1024, `precondition: the file must exceed the minimum read window; got ${bytes}`);
 
     const got = await readEventsTail(f, 50);
     assert.equal(got.events.length, 50, "must return the tail, not the whole file (#59)");
-    assert.equal(got.events.at(-1)!.seq, 500, "newest last (#59)");
-    assert.equal(got.events[0]!.seq, 451, "exactly the last 50 (#59)");
+    assert.equal(got.events.at(-1)!.seq, COUNT, "newest last (#59)");
+    assert.equal(got.events[0]!.seq, COUNT - 49, "exactly the last 50 (#59)");
     // `total` is deliberately APPROXIMATE — "at least this many". Reporting an
     // exact count would mean counting every line in the file, i.e. reading it
     // all, which is the exact cost this function exists to avoid. It is a lower
     // bound and is used only for the "load older" affordance.
     assert.ok(
-      got.total >= got.events.length && got.total <= 500,
+      got.total >= got.events.length && got.total <= COUNT,
       `total must be a within-file count, not a guess: got ${got.total} (#59)`,
     );
     assert.equal(got.truncated, true, "the read was partial, and must say so (#59)");
@@ -138,7 +149,7 @@ test("a torn final line is skipped, not fatal (#59)", async () => {
     for (let i = 1; i <= 5; i++) await log.append("message", "s", "br0", { i });
     await log.close();
     // a crash mid-write leaves a partial line
-    await (await import("node:fs/promises")).appendFile(f, '{"v":1,"id":"e6","seq":6,');
+    await (await import("node:fs/promises")).appendFile(f, '{"seq":6,"ts":"2026-01-01T10:00:00.000Z",' );
 
     const got = await readEventsTail(f, 10);
     assert.equal(got.events.length, 5, "the torn line is dropped, the intact ones survive (#59)");
@@ -155,7 +166,7 @@ test("a torn line is skipped even when it lands INSIDE the read window (#59)", a
     await log.load();
     for (let i = 1; i <= 300; i++) await log.append("message", "s", "br0", { i, pad: "z".repeat(40) });
     await log.close();
-    await (await import("node:fs/promises")).appendFile(f, '{"v":1,"id":"eX"');
+    await (await import("node:fs/promises")).appendFile(f, '{"seq":' );
 
     const got = await readEventsTail(f, 40);
     assert.ok(got.events.length > 0, "the window still yields events (#59)");

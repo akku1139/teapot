@@ -7,3 +7,4 @@ teapot.config.json
 public/
 __pycache__/
 *.pyc
+typescript

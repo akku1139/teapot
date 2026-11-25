@@ -52,7 +52,14 @@ async function reloadMisses(n: number): Promise<{ seen: number; missed: number; 
   log.onEvent = async (e) => {
     seen++;
     const txt = await readFile(file, "utf8").catch(() => "");
-    if (!txt.includes(e.id)) missed++;
+    /**
+     * The evidence is the SEQ, because the line no longer carries the id.
+     *
+     * `id` is `e<seq>` derived on read (see `TeapotEvent`), so looking for `e.id` in the file would now fail for every event
+     * — the assertion would be measuring the format, not the ordering it exists for: "is this event on disk by the time the
+     * notification fires?".
+     */
+    if (!txt.includes(`"seq":${e.seq},`)) missed++;
   };
   for (let i = 0; i < n; i++)
     await log.append("message", "s", "br0", { role: "assistant", content: `m${i}` });
@@ -88,9 +95,9 @@ test("notification happens after the write, not before (#54)", async () => {
   await log.load();
   let ordered = true;
   log.onEvent = (e) => {
-    // SYNCHRONOUS sample — no await between onEvent and the read
+    // SYNCHRONOUS sample — no await between onEvent and the read. The SEQ is what the line carries now (the id is derived).
     const txt = readFileSync(file, "utf8");
-    if (!txt.includes(e.id)) ordered = false;
+    if (!txt.includes(`"seq":${e.seq},`)) ordered = false;
   };
   await log.append("message", "s", "br0", { role: "assistant", content: "x" });
   await new Promise((r) => setTimeout(r, 150));

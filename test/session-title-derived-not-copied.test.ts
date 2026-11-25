@@ -27,8 +27,7 @@ const boot = async (dataDir: string, sessionTitles: Record<string, string> = {})
   await fs.writeFile(
     path.join(sessDir, "chat.jsonl"),
     JSON.stringify({
-      v: 1, id: "e1", seq: 1, ts: "2026-01-01T00:00:00Z",
-      agent: "hono-ja", session: "hono-ja-58f5d7b2", branch: "br0",
+      seq: 1, ts: "2026-01-01T00:00:00Z", branch: "br0", parent: null,
       type: "prompt", data: { source: "user", text: "origin/sync ブランチをマージして" },
     }) + "\n",
   );

@@ -29,8 +29,8 @@ test("an agent whose workspace is gone reports as a ghost at boot (#ghost)", asy
       await fs.writeFile(
         path.join(d, "chat.jsonl"),
         JSON.stringify({
-          v: 1, id: "e1", seq: 1, ts: "2026-01-01T00:00:00Z",
-          agent: id, session: id, branch: "br0", type: "prompt", data: { source: "user", text: "hi" },
+          seq: 1, ts: "2026-01-01T00:00:00Z", branch: "br0", parent: null,
+          type: "prompt", data: { source: "user", text: "hi" },
         }) + "\n",
       );
     }

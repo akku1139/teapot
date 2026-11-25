@@ -37,8 +37,8 @@ function writeConfig(configPath: string, realRoot: string): void {
   writeFileSync(
     path.join(realRoot, "sessions", sid, "chat.jsonl"),
     JSON.stringify({
-      v: 1, id: "e1", seq: 1, ts: "2026-01-01T10:00:00.000Z", agent: "worker",
-      session: sid, branch: "br0", parent: null, type: "prompt", data: { source: "user", text: "hi" },
+      seq: 1, ts: "2026-01-01T10:00:00.000Z", branch: "br0", parent: null,
+      type: "prompt", data: { source: "user", text: "hi" },
     }) + "\n",
   );
   writeFileSync(

@@ -54,7 +54,7 @@ export interface LiveBufferStatus {
 export function liveBufferStatus(
   buf: LiveBuf,
   events: { type?: string; ts?: string; data?: { role?: string; content?: string } }[],
-  _status?: string | undefined,
+  _status?: string,
 ): LiveBufferStatus {
   const text = buf.text.trim();
   const assistant = assistantTexts(events);

@@ -1,5 +1,5 @@
 import { createWriteStream, WriteStream } from "node:fs";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 export type EventType =
@@ -23,17 +23,95 @@ export type EventType =
   | "compaction" 
   | "audit_step"; 
 
-export interface TeapotEvent {
-  v: 1;
-  id: string;
+/**
+ * ONE line of a session's log.
+ *
+ * This is the whole format: what is written is what is read. It deliberately does NOT repeat what the FILE already says —
+ * a line belongs to its session (the directory) and to that session's agent (the manifest beside it) — because carrying two
+ * constants on every line cost 69MB of 973MB (7.1%, MEASURED over 1,000,000 events). A `v` version field was written on every
+ * line and read by nothing, so it is gone rather than kept for a hypothetical reader.
+ *
+ * Anything that needs the identity asks for it: `TeapotEvent` is this plus the identity, and only `readEvents` and its
+ * siblings can produce one.
+ */
+export interface LogEvent {
   seq: number;
   ts: string;
-  agent: string;
-  session: string;
   branch: string;
   parent: string | null;
   type: EventType;
   data: unknown;
+}
+
+/** A log line AND what the FILE it came from already says — the only shape the rest of the code sees. */
+export interface TeapotEvent extends LogEvent {
+  /** `e<seq>`: the id is the sequence, so storing it stored the same number twice */
+  id: string;
+  /** the session the log belongs to: its directory name */
+  session: string;
+  /** the agent that owns that session, from its manifest */
+  agent: string;
+}
+
+/**
+ * The line as WRITTEN: the identity is not in it.
+ *
+ * `append()` builds a `TeapotEvent` because everything downstream wants the identity, so the write has to drop it here — one
+ * place, so a new field cannot be half-persisted.
+ */
+export function logLine(e: TeapotEvent): LogEvent {
+  const { session: _session, agent: _agent, id: _id, ...line } = e;
+  return line;
+}
+
+/**
+ * Where a log lives, and who owns it — resolved once per file, not per line.
+ *
+ * `sessions/<session>/chat.jsonl`, with `session.json` beside it naming the agent. A session with no manifest is named by its
+ * directory, which is what the directory IS.
+ */
+export function sessionIdentityOf(filePath: string): { session: string; agent: string } {
+  const dir = path.dirname(filePath);
+  const session = path.basename(dir);
+  let agent = "";
+  try {
+    const raw = JSON.parse(readFileSync(path.join(dir, "session.json"), "utf8")) as { agentId?: unknown };
+    if (typeof raw.agentId === "string") agent = raw.agentId;
+  } catch {
+    // no manifest: the directory name is the session, and it names the agent too
+  }
+  return { session, agent: agent || session };
+}
+
+/**
+ * A parsed line plus what the file it came from already says.
+ *
+ * The fields are listed EXPLICITLY rather than spread, so a key an old line still carries (`v`, a stored `agent`) cannot ride
+ * along into the event every caller sees. MEASURED: a spread kept `v` on the returned object, so deleting the field from the
+ * format would have left it reachable from outside — exactly the "do not access it any more" the type is meant to enforce.
+ */
+function decorate(line: LogEvent, identity: { session: string; agent: string }): TeapotEvent {
+  return {
+    id: eventId(line.seq),
+    seq: line.seq,
+    ts: line.ts,
+    branch: line.branch,
+    parent: line.parent,
+    type: line.type,
+    data: line.data,
+    session: identity.session,
+    agent: identity.agent,
+  };
+}
+
+/**
+ * The event id, from its sequence.
+ *
+ * `id` was `e${++seq}` and nothing else, so it was the same number written twice — 13.1MB of 973MB (1.3%, MEASURED). Every
+ * reader asks for `e.id`, and it is a function of `seq`, which IS stored.
+ */
+export function eventId(seq: number): string {
+  return `e${seq}`;
 }
 
 const IDLE_CLOSE_MS = 15_000;
@@ -103,9 +181,10 @@ export class EventLog {
       for (const line of text.split("\n")) {
         if (!line.trim()) continue;
         try {
-          const e = JSON.parse(line) as TeapotEvent;
+          // only the sequence and the branch chain matter here — the event is not retained, so it is not decorated
+          const e = JSON.parse(line) as LogEvent;
           if (typeof e.seq === "number" && e.seq > this.seq) this.seq = e.seq;
-          this.lastByBranch.set(e.branch, e.id);
+          this.lastByBranch.set(e.branch, eventId(e.seq));
         } catch {
         }
       }
@@ -178,10 +257,15 @@ export class EventLog {
     branch: string,
     data: unknown,
   ): Promise<TeapotEvent> {
+    /**
+     * The line carries NONE of `id`, `agent`, `session` or `v`.
+     *
+     * `id` is the sequence spelled out, `agent` and `session` are the file's own identity (its directory and the manifest
+     * beside it), and `v` was written on every line and read by nothing. All four are derived on read — see `TeapotEvent`.
+     */
     const evt: TeapotEvent = {
-      v: 1,
-      id: `e${++this.seq}`,
-      seq: this.seq,
+      id: eventId(this.seq + 1),
+      seq: ++this.seq,
       ts: new Date().toISOString(),
       agent: this.agentId,
       session,
@@ -198,7 +282,7 @@ export class EventLog {
           console.error(`[teapot] event dropped after log close (${this.agentId}): ${type}`);
           return resolve(evt);
         }
-        this.openStream().write(JSON.stringify(evt) + "\n", "utf8", (err) => {
+        this.openStream().write(JSON.stringify(logLine(evt)) + "\n", "utf8", (err) => {
           if (err) return reject(err);
           written = true;
           resolve(evt);
@@ -259,6 +343,7 @@ export class EventLog {
  */
 export async function readEvents(filePath: string): Promise<TeapotEvent[]> {
   const out: TeapotEvent[] = [];
+  const identity = sessionIdentityOf(filePath);
   try {
     const [{ createReadStream }, { createInterface }] = await Promise.all([
       import("node:fs"),
@@ -271,7 +356,7 @@ export async function readEvents(filePath: string): Promise<TeapotEvent[]> {
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
-        out.push(JSON.parse(line) as TeapotEvent);
+        out.push(decorate(JSON.parse(line) as LogEvent, identity));
       } catch {
       }
     }
@@ -312,6 +397,7 @@ export async function readEventsWindow(
       input: createReadStream(filePath, { encoding: "utf8" }),
       crlfDelay: Infinity,
     });
+    const identity = sessionIdentityOf(filePath);
     let seen = 0;
     let collecting = opts.after === undefined;
     let found = opts.after === undefined;
@@ -319,7 +405,7 @@ export async function readEventsWindow(
       if (!line.trim()) continue;
       let e: TeapotEvent;
       try {
-        e = JSON.parse(line) as TeapotEvent;
+        e = decorate(JSON.parse(line) as LogEvent, identity);
       } catch {
         continue;
       }
@@ -370,11 +456,12 @@ export async function branchCounts(
       input: createReadStream(filePath, { encoding: "utf8" }),
       crlfDelay: Infinity,
     });
+    const identity = sessionIdentityOf(filePath);
     for await (const line of rl) {
       if (!line.trim()) continue;
       let e: TeapotEvent;
       try {
-        e = JSON.parse(line) as TeapotEvent;
+        e = decorate(JSON.parse(line) as LogEvent, identity);
       } catch {
         continue;
       }
@@ -418,7 +505,7 @@ export async function readEventsTail(
 
     let want = Math.min(st.size, Math.max(TAIL_MIN_BYTES, limit * 512));
     for (;;) {
-      const r = await readWindow(fh, st.size, want);
+      const r = await readWindow(fh, st.size, want, sessionIdentityOf(filePath));
       if (r.events.length >= limit || want >= st.size) {
         return {
           events: r.events.slice(-limit),
@@ -440,6 +527,7 @@ async function readWindow(
   fh: import("node:fs/promises").FileHandle,
   size: number,
   bytes: number,
+  identity: { session: string; agent: string },
 ): Promise<{ events: TeapotEvent[]; bytes: number }> {
   const start = Math.max(0, size - bytes);
   const buf = Buffer.alloc(size - start);
@@ -451,7 +539,7 @@ async function readWindow(
   for (const line of body.split("\n")) {
     if (!line.trim()) continue;
     try {
-      events.push(JSON.parse(line) as TeapotEvent);
+      events.push(decorate(JSON.parse(line) as LogEvent, identity));
     } catch {
     }
   }

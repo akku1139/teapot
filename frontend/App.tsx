@@ -1070,7 +1070,7 @@ export default function App() {
     (qid) => {
       if (!qid || qid === lastQuestionJump) return;
       lastQuestionJump = qid;
-      void jumpToEvent(qid, 0);
+      jumpToEvent(qid, 0);
     },
   );
   const queuedCount = () => {

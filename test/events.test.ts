@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { useTempDir } from "./helpers/tmp.ts";
+import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import { EventLog, readEvents } from "../src/log/events.ts";
 
 test("events: parent chain + monotonic seq", async () => {
@@ -30,7 +31,7 @@ test("events: torn trailing line is ignored and seq resumes after reload", async
     await log.append("prompt", "s", "br0", { text: "one" });
     await log.close();
 
-    await appendFile(f, '{"v":1,"id":"e99","seq":9,"torn');
+    await appendFile(f, '{"seq":9,"torn' );
 
     const log2 = new EventLog(f, "a");
     await log2.load();
@@ -55,4 +56,50 @@ test("events: branches track independent parents", async () => {
     assert.equal(log.lastEventId("br1"), "e3");
     await log.close();
   });
+});
+
+/**
+ * An OLD line needs no migration: it reads correctly, and the derived values win.
+ *
+ * This is the whole compatibility story for the format change that dropped `v`/`id`/`agent`/`session` from the line
+ * (1,000,000 events / 973MB, where those fields cost 99MB). Rewriting existing logs to the new shape would be a disk-IO event
+ * measured in gigabytes per session, so the rule is only that nothing WRITES them again and nothing READS them — an old line
+ * still carries the keys, they are simply not looked at.
+ *
+ * Pinned here, next to the format, so no future session concludes a migration is required.
+ */
+test("an old-format line reads correctly without any migration (#format)", async () => {
+  const dir = mkdtempInRootSync("ev-old-");
+  const file = path.join(dir, "chat.jsonl");
+  await writeFile(
+    path.join(dir, "session.json"),
+    JSON.stringify({ v: 1, agentId: "real-agent" }),
+  );
+  // exactly what an older version wrote, including a stored session that does NOT match the directory
+  await writeFile(
+    file,
+    JSON.stringify({
+      v: 1,
+      id: "e1",
+      seq: 1,
+      ts: "2026-01-01T00:00:00Z",
+      agent: "WRONG-AGENT",
+      session: "WRONG-SESSION",
+      branch: "br0",
+      parent: null,
+      type: "message",
+      data: { content: "old" },
+    }) + "\n",
+  );
+
+  const [e] = await readEvents(file);
+  assert.ok(e, "the old line is read, not skipped");
+  assert.equal(e.seq, 1);
+  assert.equal(e.id, "e1", "the id is derived from the sequence");
+  assert.equal(e.agent, "real-agent", "the manifest wins over the stored agent");
+  assert.equal(e.session, path.basename(dir), "the directory wins over the stored session");
+  assert.equal((e.data as { content: string }).content, "old", "and the payload is untouched");
+
+  // and the dropped fields do not ride along into the event every caller sees
+  assert.ok(!Object.hasOwn(e, "v"), "an old `v` must not leak onto the event");
 });

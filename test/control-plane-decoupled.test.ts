@@ -62,7 +62,8 @@ test("onEvent sees the event ALREADY on disk, sampled synchronously (#126)", asy
   log.onEvent = (e) => {
     // SYNCHRONOUS: no await may sit between onEvent and the read, or the write
     // can complete during the yield and the old code would still pass
-    if (!readFileSync(file, "utf8").includes(e.id)) ordered = false;
+    // the SEQ is what the line carries (the id is derived from it — see `TeapotEvent`)
+    if (!readFileSync(file, "utf8").includes(`"seq":${e.seq},`)) ordered = false;
   };
   await log.append("message", "s", "br0", { role: "assistant", content: "x" });
   await new Promise((r) => setTimeout(r, 150));
