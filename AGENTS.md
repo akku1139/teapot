@@ -503,6 +503,14 @@ out with only five unresolved names because everything it called had already mov
   `100.x` and `fd7a:…` — an IPv4-only listener is unreachable from an IPv6
   client. `dualStackHost()` in `src/server/api.ts` maps the wildcard to a
   missing hostname for this reason.
+- **`bash(background=true)` collects the job's first moments, and a command that finishes inside that window is a
+  FINISHED COMMAND, not a job.** Its output and exit code go into the tool result, no wake is emitted (the exit is held
+  during collection), and the id is discarded — an id is a handle for `bash_output`/`kill`, neither of which applies to
+  something already reported. So a test that needs a job id, a listed job, or an exit notification must pass
+  `bgStartupMs: 0`; the default window is for the model, not for fixtures. Collection stops 500ms after the first output
+  rather than at the full window, so a dev server that prints a banner is not delayed — but "prints, then dies" still
+  lands inside the grace.
+
 - **A tool the prompt advertises must be a tool the loop can RUN.** Meta tools
   (`finish`, `set_todo`, `read_memory`, `ask_user`…) are handled by
   `runTurnsUntilIdle`, not by `executeTool`. Their specs live in

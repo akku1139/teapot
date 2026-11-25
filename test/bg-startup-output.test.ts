@@ -1,77 +1,157 @@
 /**
- * `bash(background=true)` reports what the job did in its first moments (#297).
+ * `bash(background=true)` reports the job's first output, and CONCURRENCY must not blur the jobs (#297).
  *
- * "background shellを起動した直後の出力はツール出力でそのまま渡すようにする / 直後に落ちて1ターン消費するみたいなパターンが多いし、
- * 起動して何が起きたかくらいは知らせてもよさそう / 5秒分くらいは取ってあげたほうがいいかな".
+ * "出力して即exitなら5秒枠内でoutputが取れるから次のターンまで待つ必要ないのでは? / あと、並列実行中のジョブがあってもちゃんとされることも
+ * チェック / (即exitの場合はbg job idを割り振るべきかも)".
  *
- * Two rules come out of that, and they pull in opposite directions if both signals fire:
+ * Three rules, and each one is a way the feature can be wrong:
  *
- *   1. a job that is still running when the collection ends keeps the wake it always had — that is how the model waits;
- *   2. a job that DIES inside the window is reported entirely by the tool result (output + exit code), so no wake is
- *      emitted for it: a wake would start a round to re-read what the result already said, and the wording drops the
- *      "you are WOKEN" sentence because there is nothing left to wait for.
- *
- * Both directions are measured here against a real shell, because the whole point is timing.
+ *   1. a command that finishes inside the window is a FINISHED COMMAND, not a background job: its output and exit code are in
+ *      the result, no wake is emitted, and no job id is left behind — an id is a handle for `bash_output`/`kill`, neither of
+ *      which applies to something already done;
+ *   2. a job that prints and then keeps running is NOT held for the whole window (that would delay every dev server by five
+ *      seconds), so the collection stops shortly after the first output — "prints, then dies" still lands inside that grace;
+ *   3. with several jobs in flight — same workspace and different — each result carries ITS OWN job's output, ids are
+ *      distinct, and discarding a finished one does not disturb the others.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
-import { executeTool, releaseStartupHold, type ToolContext } from "../src/agent/tools.ts";
-import { waitFor } from "./helpers/wait-for.ts";
+import { executeTool, listBgShells, type ToolContext } from "../src/agent/tools.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
 
 markPosixOnly("spawns real shells");
 
-function ctxWithExits(): { ctx: ToolContext; exits: string[] } {
-  const exits: string[] = [];
-  const cwd = mkdtempInRootSync("bg-startup-");
-  const ctx = {
+function ctxFor(cwd: string, exits: string[] = []): ToolContext {
+  return {
     cwd,
     defaultTimeoutMs: 5_000,
-    maxOutputBytes: 4_000,
+    maxOutputBytes: 8_000,
     skillRoots: [],
     onBackgroundExit: (info: { id: string; code: number | null }) => {
       exits.push(`${info.id} exit=${info.code}`);
     },
   } as unknown as ToolContext;
-  return { ctx, exits };
 }
 
-test("a job that dies immediately is reported by the RESULT, with no wake and no 'you are woken'", async () => {
-  const { ctx, exits } = ctxWithExits();
-  const r = await executeTool(
-    "bash",
-    JSON.stringify({ command: "echo 'FATAL: no such config'; exit 3", background: true }),
-    ctx,
-  );
+/** the result body without the "other running jobs" listing, which names OTHER jobs' commands on purpose (#231) */
+const outputSection = (result: string): string =>
+  result
+    .split("\n")
+    .filter((l) => !/^started in background|^You are WOKEN|^Output mid-run|^Do not start|^running background jobs|^  bg/.test(l))
+    .join("\n");
 
-  assert.equal(r.ok, false, "a non-zero exit is a failed tool call, not a started job");
-  assert.match(r.result, /EXITED \(exit 3\)/, "the exit code is in the result");
-  assert.match(r.result, /FATAL: no such config/, "and so is the output that explains it");
-  assert.ok(!/WOKEN/i.test(r.result), "there is nothing to wait for, so nothing promises a wake");
+test("a command that exits inside the window is a finished command, with no id and no wake", async () => {
+  const ws = mkdtempInRootSync("bg297-exit0-");
+  const exits: string[] = [];
+  const ctx = ctxFor(ws, exits);
 
-  // the hold is what suppresses it; give the exit a moment to have been recorded
-  await new Promise((r) => setTimeout(r, 300));
+  const r = await executeTool("bash", JSON.stringify({ command: "echo all good; exit 0", background: true }), ctx);
+
+  assert.equal(r.ok, true, "exit 0 is a success");
+  assert.match(r.result, /not a background job/, "it is reported as a finished command");
+  assert.match(r.result, /all good/, "with its output");
+  assert.match(r.result, /exit 0/, "and its code");
+  assert.ok(!/bg\d+/.test(r.result), "no job id: there is nothing to read, stop or wait for");
+  assert.ok(!/WOKEN/i.test(r.result), "and nothing promising a wake");
+  assert.deepEqual(listBgShells(ws), [], "and nothing left in the panel");
+
+  await new Promise((r) => setTimeout(r, 250));
   assert.deepEqual(exits, [], "a wake for news already delivered would start a pointless round");
 });
 
-test("a job that is still running keeps its wake, and shows what it printed", async () => {
-  const { ctx, exits } = ctxWithExits();
+test("a NON-zero exit inside the window is also folded in, and says it failed", async () => {
+  const ws = mkdtempInRootSync("bg297-exit1-");
+  const exits: string[] = [];
   const r = await executeTool(
     "bash",
-    JSON.stringify({ command: "echo started; sleep 0.4; exit 7", background: true }),
-    ctx,
+    JSON.stringify({ command: "echo 'FATAL: no such config'; exit 3", background: true }),
+    ctxFor(ws, exits),
   );
 
-  assert.equal(r.ok, true, "still running");
-  assert.match(r.result, /started/, "the startup output is in the result");
-  assert.match(r.result, /WOKEN/i, "and the wake is promised, because this one is still running");
-
-  await waitFor(() => exits.length > 0, { what: "the wake for the job that exited later" });
-  assert.match(exits[0]!, /exit=7/);
+  assert.equal(r.ok, false, "a failed command is a failed tool call");
+  assert.match(r.result, /exit 3/);
+  assert.match(r.result, /FATAL: no such config/);
+  assert.deepEqual(listBgShells(ws), [], "nothing left behind");
+  await new Promise((r) => setTimeout(r, 250));
+  assert.deepEqual(exits, [], "still no wake");
 });
 
-test("the hold is released either way, so a later exit is never swallowed", () => {
-  // an unknown id is not an error: a job already forgotten reports no wake owed
-  assert.deepEqual(releaseStartupHold("bg-does-not-exist"), { wakeOwed: false });
+test("prints and keeps running: not held for the whole window, and it keeps its wake", async () => {
+  const ws = mkdtempInRootSync("bg297-server-");
+  const exits: string[] = [];
+  const t0 = Date.now();
+  const r = await executeTool(
+    "bash",
+    JSON.stringify({ command: "echo listening; sleep 30", background: true }),
+    ctxFor(ws, exits),
+  );
+  const elapsed = Date.now() - t0;
+
+  assert.equal(r.ok, true, "a running job is not a failure");
+  assert.match(r.result, /listening/, "its startup output is there");
+  assert.match(r.result, /WOKEN/i, "and the wake is promised, because it is still running");
+  assert.match(r.result, /bg\d+/, "with a handle for bash_output/kill");
+  assert.ok(elapsed < 4_000, `a server must not be held for the whole window; took ${elapsed}ms`);
+
+  const jobs = listBgShells(ws);
+  assert.equal(jobs.length, 1, "and it IS a background job");
+  assert.equal(jobs[0]!.running, true);
+});
+
+test("prints, then dies shortly after: still folded into the result, not left for a wake", async () => {
+  const ws = mkdtempInRootSync("bg297-crash-");
+  const exits: string[] = [];
+  const r = await executeTool(
+    "bash",
+    JSON.stringify({ command: "echo booting; sleep 0.3; exit 2", background: true }),
+    ctxFor(ws, exits),
+  );
+
+  assert.equal(r.ok, false, "exit 2");
+  assert.match(r.result, /not a background job/, "the grace after the first output is what catches this");
+  assert.match(r.result, /booting/);
+  assert.deepEqual(listBgShells(ws), [], "nothing left in the panel");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(exits, [], "and no wake");
+});
+
+test("concurrent jobs in the SAME workspace keep their own output and ids", async () => {
+  const ws = mkdtempInRootSync("bg297-parallel-");
+  const exits: string[] = [];
+  const ctx = ctxFor(ws, exits);
+
+  const [a, b] = await Promise.all([
+    executeTool("bash", JSON.stringify({ command: "sleep 0.2; echo FIRST; sleep 30", background: true }), ctx),
+    executeTool("bash", JSON.stringify({ command: "sleep 0.2; echo SECOND; sleep 30", background: true }), ctx),
+  ]);
+
+  const idOf = (r: { result: string }) => /bg\d+/.exec(r.result)?.[0] ?? "";
+  assert.notEqual(idOf(a), idOf(b), "two jobs, two ids");
+
+  const bodyA = outputSection(a.result);
+  const bodyB = outputSection(b.result);
+  assert.match(bodyA, /FIRST/, "each result carries its own output");
+  assert.ok(!/SECOND/.test(bodyA), "not the other job's — the listing below names it separately, on purpose");
+  assert.match(bodyB, /SECOND/);
+  assert.ok(!/FIRST/.test(bodyB));
+
+  assert.equal(listBgShells(ws).length, 2, "both are listed");
+});
+
+test("a finished command in one workspace does not disturb running jobs in another", async () => {
+  const wsA = mkdtempInRootSync("bg297-wsA-");
+  const wsB = mkdtempInRootSync("bg297-wsB-");
+  const ctxA = ctxFor(wsA);
+  const ctxB = ctxFor(wsB);
+
+  const running = await executeTool("bash", JSON.stringify({ command: "sleep 30", background: true }), ctxA);
+  assert.match(running.result, /bg\d+/);
+
+  // an instantly-finished command in the OTHER workspace must not remove it
+  const quick = await executeTool("bash", JSON.stringify({ command: "echo quick; exit 0", background: true }), ctxB);
+  assert.match(quick.result, /not a background job/);
+
+  assert.equal(listBgShells(wsA).length, 1, "the running job survives");
+  assert.deepEqual(listBgShells(wsB), [], "and only its own finished command was dropped");
 });

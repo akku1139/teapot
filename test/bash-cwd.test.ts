@@ -78,8 +78,12 @@ test("a config with a relative workspace gives the agent the config-dir path (#3
 
 /* ---------- B: the shell actually starts in the workspace ---------- */
 
+/**
+ * `bgStartupMs: 0` disables the startup-output collection (#297): the background test below needs a JOB ID, and a command
+ * that exits inside the collection window is now reported by the tool result and never gets one.
+ */
 function ctxIn(dir: string): ToolContext {
-  return { cwd: dir, defaultTimeoutMs: 10_000, maxOutputBytes: 10_000 };
+  return { cwd: dir, defaultTimeoutMs: 10_000, maxOutputBytes: 10_000, bgStartupMs: 0 };
 }
 
 /**

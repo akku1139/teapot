@@ -15,7 +15,11 @@ import { executeTool, listBgShells, killBgShell } from "../src/agent/tools.ts";
  * property that matters is that the two agree: a list the route can serve but the tool never fills
  * would look right and be empty.
  */
-const ctxFor = (ws: string) => ({ cwd: ws, signal: undefined, maxOutputBytes: 1_000_000 }) as never;
+/**
+ * `bgStartupMs: 0` disables the startup-output collection (#297) — these tests are about the JOB LIST, and a command that
+ * exits inside that window is reported by the tool result and never becomes a listed job.
+ */
+const ctxFor = (ws: string) => ({ cwd: ws, signal: undefined, maxOutputBytes: 1_000_000, bgStartupMs: 0 }) as never;
 
 test("a started job is listed with its command, owner and LIVE tail (#bgjobs)", async () => {
   const ws = mkdtempInRootSync("bgjobs-list-");

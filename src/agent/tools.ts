@@ -355,17 +355,49 @@ export async function collectStartupOutput(
   const POLL_MS = 50;
   /** enough to see the failure, not enough to flood the context */
   const MAX_CHARS = 4_000;
+  /**
+   * How long to keep watching for an EXIT once output has appeared.
+   *
+   * The two shapes this has to serve pull in opposite directions:
+   *
+   *  - "prints, then dies" (a crash, a failed bind, a typo): the output is already in hand and the exit is what makes this a
+   *    finished command, so folding it in saves the whole extra turn. MEASURED: those exit in tens of milliseconds.
+   *  - "prints, then keeps running" (a dev server, a watcher): waiting the full window would delay every such call by five
+   *    seconds for no information — nothing more is coming, and the wake is what reports the eventual exit.
+   *
+   * A short grace after the first output separates them: a crash lands inside it, a server does not. Output already seen is
+   * always returned, so nothing is lost either way.
+   */
+  const EXIT_GRACE_AFTER_OUTPUT_MS = 500;
+  let firstOutputAt: number | undefined;
   for (;;) {
     const sh = find(id);
     const elapsedMs = now() - started;
     const out = (sh?.out ?? "").trimEnd();
     const exited = sh?.exited ?? false;
-    if (out || exited || elapsedMs >= budgetMs) {
+    if (out && firstOutputAt === undefined) firstOutputAt = elapsedMs;
+    const outAge = firstOutputAt === undefined ? undefined : elapsedMs - firstOutputAt;
+    const overdue = elapsedMs >= budgetMs || (outAge !== undefined && outAge >= EXIT_GRACE_AFTER_OUTPUT_MS);
+    if (exited || overdue) {
       const clipped = out.length > MAX_CHARS ? out.slice(0, MAX_CHARS) + `\n…[${out.length - MAX_CHARS} more chars — bash_output(job_id="${id}") for the rest]` : out;
       return { text: clipped, exited, elapsedMs, code: sh?.code ?? null };
     }
     await sleep(Math.min(POLL_MS, Math.max(0, budgetMs - elapsedMs)));
   }
+}
+
+/**
+ * Drop a job that turned out not to be a background job at all.
+ *
+ * A command that exits inside the startup window is a FOREGROUND command with an unusual call site: its output and exit code
+ * are in the tool result, and nothing is left to read, stop or wait for. Keeping it in the map would leave a dead entry in the
+ * panel and a `bash_output` handle to something already reported — and an id the model may then try to use.
+ */
+export function discardBackgroundShell(id: string, ctx: ToolContext): void {
+  for (const [cwd, map] of bgShellsByWs) {
+    if (map.delete(id) && map.size === 0) bgShellsByWs.delete(cwd);
+  }
+  if (ctx.stateDir) forgetJob(ctx.stateDir, id);
 }
 
 function bgMapFor(cwd: string): Map<string, BgShell> {
@@ -1827,11 +1859,19 @@ export const TOOLS: ToolDef[] = [
          * turn, and the earlier text did exactly that.
          */
         if (startup.exited) {
+          /**
+           * It never became a background job: the command is COMPLETE and its id is dropped.
+           *
+           * "即exitの場合はbg job idを割り振るべきかも" — no: an id is a handle for `bash_output` and `action:"kill"`, and
+           * this job needs neither. Reporting one invites a call that can only fail, and leaves a finished entry in the panel.
+           * The result reads as a finished command, which is what happened.
+           */
+          discardBackgroundShell(id, ctx);
           return {
             ok: startup.code === 0,
             result:
-              `background job ${id} ran and EXITED (exit ${startup.code ?? "?"}) after ${Math.round(startup.elapsedMs / 1000)}s — ` +
-              `there is nothing to wait for.${startup.text ? `\nOutput:\n${startup.text}` : " It printed nothing."}`,
+              `the command finished inside ${Math.round(startup.elapsedMs / 1000)}s (exit ${startup.code ?? "?"}), so it is not a ` +
+              `background job — there is nothing to wait for or to stop.${startup.text ? `\nOutput:\n${startup.text}` : " It printed nothing."}`,
           };
         }
         return {

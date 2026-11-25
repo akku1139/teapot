@@ -171,6 +171,11 @@ test("starting a background shell notifies through the tool context — the push
       defaultTimeoutMs: 10_000,
       maxOutputBytes: 10_000,
       onBackgroundStart: (id: string) => started.push(id),
+      /**
+       * `sleep 3` now finishes INSIDE the startup window, which folds it into the tool result and discards the job (#297).
+       * This test is about the notification hook, so the window is closed.
+       */
+      bgStartupMs: 0,
     } as never;
     const r = await executeTool("bash", JSON.stringify({ command: "sleep 3", background: true }), ctx);
     assert.ok(r.ok, r.result);
