@@ -37,6 +37,20 @@ test("a control ROW centres its items", () => {
   assert.match(body, /align-items:\s*center/, "a flex row defaults to stretch, which leaves a short button looking sunk");
 });
 
+test("the composer's icon buttons sit on its BOTTOM line, however many lines the prompt grows to", () => {
+  /**
+   * MEASURED in headless Firefox with a four-line draft: `send` at bottom 655, `⤢` and `📎` at 655 as well, once this rule
+   * exists — before it they were centred against a 24px taller box. `.iconbtn`'s own `center` is right for an ordinary row,
+   * so the composer states the exception in one place instead of every button opting in.
+   */
+  const body = ruleBody(".composer form .iconbtn {");
+  assert.match(
+    body,
+    /align-self:\s*flex-end/,
+    "a centred attach button floats up beside the last line while `send` stays down",
+  );
+});
+
 test("the composer keeps the bottom alignment it was written for (#44)", () => {
   const body = ruleBody(".composer form {");
   assert.match(

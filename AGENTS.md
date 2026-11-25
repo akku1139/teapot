@@ -364,6 +364,11 @@ composer, declares `align-items: flex-end` on `.composer form` itself.
 So: a shared `.ctlrow` (`display: flex; align-items: center`) for input+button rows, and `.iconbtn { align-self: center }`.
 `test/control-row-alignment.test.ts` pins all three (including that the composer keeps its bottom alignment).
 
+**`align-self` beats the parent's `align-items` — so "the parent declares `flex-end`" does NOT reach these buttons.** That was
+written here as the reason the composer was safe, and it was wrong: with a four-line draft the `📎` and `⤢` sat centred while
+`send` stayed down ("添付ボタンがsendボタンと同じ行にないのでプロンプト行数が増えるとズレる"). The composer states its exception itself,
+`.composer form .iconbtn { align-self: flex-end }`, and the test pins that rule rather than the container's.
+
 ## Comments
 
 A comment says **what the code is**, and — only where the choice is genuinely non-obvious — **why it

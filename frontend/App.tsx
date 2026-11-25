@@ -4571,7 +4571,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                         title={`${t.cwd ? `${t.cwd}\n` : ""}${t.title} — click to show in focused pane`}
                       >
                         ⌨ {tabLabel(t)}
-                        <button class="tabx" onClick={(e) => { e.stopPropagation(); closeTab(i()); }} title="close this shell">✕</button>
+                        <button class="iconbtn tabx" onClick={(e) => { e.stopPropagation(); closeTab(i()); }} title="close this shell">✕</button>
                       </span>
                     )}
                   </For>
@@ -4659,7 +4659,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       <img src={im.url} alt={im.name} title="click to enlarge" onClick={() => openLightbox(im.url)} />
                       <button
                         type="button"
-                        class="imgx"
+                        class="iconbtn imgx danger"
                         title="remove"
                         onClick={() => setPendingImages((l) => l.filter((_, j) => j !== i()))}
                       >✕</button>

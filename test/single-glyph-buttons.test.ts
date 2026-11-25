@@ -5,6 +5,12 @@
  * glyph-sized button without the class takes its width from padding, so `✕` in a `.cfgrow` came out 31x26 — and the next
  * one added will do the same. This is a lint, not a behaviour test: it reads the JSX for the SHAPE that produces the bug, and
  * the square geometry itself is verified in a real browser.
+ *
+ * There are NO exemptions. `.imgx` and `.tabx` used to be listed — "their own rule makes them square at THAT size" — and that
+ * was true and useless: `.imgx` was still sized by `.composer button:not(.iconbtn)`, MEASURED at 30x26 with 14px side padding,
+ * because it was not an `.iconbtn` and the composer rule keys on the class. A list of classes to skip means every new mini
+ * glyph has to be added to it, and the failure is silent. Both carry `.iconbtn` now and keep their 16px size through their own
+ * (more specific) rule.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -37,12 +43,6 @@ test("every one-glyph button carries .iconbtn (#254)", () => {
       const label = rawLabel.trim();
       if (!ONE_GLYPH.test(label)) continue;
       if (/\bclass="[^"]*\biconbtn\b/.test(attrs) || /class=\{[^}]*iconbtn/.test(attrs)) continue;
-      /**
-       * The two deliberate mini glyphs: a 16px ✕ on a thumbnail and a 16px ✕ in a terminal tab. Both live in a
-       * 16px-tall strip where the standard 26px square would not fit, and both have their own rule that makes them
-       * square at THAT size.
-       */
-      if (/\bclass="[^"]*\b(imgx|tabx)\b/.test(attrs)) continue;
       offenders.push(`${path.relative(ROOT, file)}: ${label}`);
     }
   }

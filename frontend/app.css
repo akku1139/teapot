@@ -1555,6 +1555,26 @@ html[data-bg-image="on"] .embed {
  * The copy buttons keep `flex-shrink: 0` (`.toolcopy`), so the shrinking lands on the text, which is
  * the only thing that should ever be cut.
  */
+/**
+ * A label rendered from markdown is still ONE line, and the ellipsis has to reach its content.
+ *
+ * `text-overflow` clips the INLINE content of the box that declares it. A label built by the markdown renderer arrives as
+ * `<b class="content inline-md"><p>…</p></b>`, and a child block is not that box's inline content, so the label was simply cut
+ * off with no ellipsis ("text-overflow: ellipsis もついてない"). Making the rendered children inline puts them back inside the
+ * line box the ellipsis knows about.
+ */
+.embed summary .inline-md > *,
+.embed summary .inline-md > * > * {
+  display: inline;
+  margin: 0;
+}
+/**
+ * A header is not body text, so it does not take the body's line-height.
+ *
+ * `.content` sets `line-height: 1.45` for prose; on a summary label that is 18.85px where a tool header is 18px, and the
+ * difference shows as a row that is a hair taller than its neighbours.
+ */
+.embed summary .inline-md { line-height: inherit; }
 .embed summary > b,
 .embed summary > .meta {
   min-width: 0;
@@ -1720,7 +1740,14 @@ html[data-bg-image="on"] .embed {
 .embed.decision > summary.decisionhead > b { flex: 1; }
 .embed.decision > summary.decisionhead > .meta { flex-shrink: 0; }
 .embed.decision summary .meta { margin-left: 6px; }
-.embed.decision .content { font-size: var(--text-sm); margin-top: 3px; }
+/**
+ * Only the BODY, never the header label.
+ *
+ * The label carries `class="content inline-md"` too, so a descendant selector put `margin-top: 3px` on a flex item inside
+ * `summary` — MEASURED: the decision header stood 21.85px tall against a tool header's 18px. Both used the same height, so the
+ * extra 3.85px of line box showed as a subtly fat row rather than as an obvious bug.
+ */
+.embed.decision > .content { font-size: var(--text-sm); margin-top: 3px; }
 .embed summary { cursor: pointer; user-select: none; list-style-position: outside; }
 .embed summary::marker { color: var(--dim); }
 .embed[open] summary { margin-bottom: 4px; }
@@ -1816,7 +1843,7 @@ html[data-bg-image="on"] .embed {
 .imgchip { position: relative; display: inline-flex; }
 .imgchip img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-md); border: 1px solid var(--line); }
 .imgchip .imgx {
-  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px;
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; min-width: 16px;
   border-radius: 50%; border: none; background: var(--err); color: #fff;
   font-size: var(--text-xs); cursor: pointer;
   /* #57: two separate defects broke the circle.
@@ -1973,7 +2000,12 @@ html[data-bg-image="on"] .termpane {
  * `!important` — so hovering the tab's close button showed a SQUARE tint in a pill-shaped tab ("ターミナル ✕ ボタンの
  * 背景に角丸が効いてない"). Rounding the element is enough; the blanket rule then paints a shape that fits.
  */
-.tabx {
+/**
+ * Scoped to the tab strip, because `.iconbtn` comes LATER in this file and is equally specific — measured 26x26 with a 9px
+ * radius when the class was added, which is the standard square, not this one. A mini glyph keeps its own size by being
+ * MORE specific than the family it joins, not by being excluded from it.
+ */
+.termtabs .tabx {
   /* deliberately 16px, not `--ctl-h`: it lives inside a 2px-padded tab strip, where a 26px square would make the tab taller
      than the strip (#254 keeps it) */
   height: 16px;
@@ -1984,7 +2016,7 @@ html[data-bg-image="on"] .termpane {
   background: none; border: none; color: inherit; opacity: .5; cursor: pointer; font-size: var(--text-xs); padding: 0;
   border-radius: var(--radius-sm); flex: 0 0 auto;
 }
-.tabx:hover { opacity: 1; color: var(--err); }
+.termtabs .tabx:hover { opacity: 1; color: var(--err); }
 .termbody { flex: 1; display: flex; min-height: 0; padding: 4px; gap: var(--space-2); background: var(--term-bg); }
 .termbody.split .termpane { width: 50%; }
 .termpane { flex: 1; min-width: 0; position: relative; border-radius: var(--radius-md); overflow: hidden; background: var(--term-bg); }
@@ -2221,6 +2253,14 @@ html[data-bg-image="on"] .composer form {
  * 圧倒的に角丸、基本ボタンのスタイルオーバーライドはやらないほうがいい". The exception list stays small and explicit: one-glyph
  * buttons (`.iconbtn`), the theme/background pickers and the goal status chips.
  */
+/**
+ * The composer's controls align to the BOTTOM, and that is the form's rule — not each button's.
+ *
+ * `.iconbtn { align-self: center }` exists so a stretched parent cannot turn a one-glyph button into a tall strip, but the
+ * composer is the case that genuinely wants the bottom: as the box grows to three lines, a centred `📎` floats up beside the
+ * last line while `send` stays down — "添付ボタンがsendボタンと同じ行にないのでプロンプト行数が増えるとズレる".
+ */
+.composer form .iconbtn { align-self: flex-end; }
 .composer button:not(.iconbtn) {
   background: var(--acc); border: none; color: white; border-radius: var(--radius-md);
   height: var(--ctl-h); padding: 0 14px; cursor: pointer; font-weight: 600;
