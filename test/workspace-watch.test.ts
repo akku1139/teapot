@@ -42,15 +42,17 @@ test("a churn directory is ignored, so an install does not repaint the tree", as
   const ws = mkdtempInRootSync("watch-b-");
   mkdirSync(path.join(ws, "node_modules"));
   let hits = 0;
-  const release = watchWorkspace(ws, () => {
+  const named: string[] = [];
+  const release = watchWorkspace(ws, (changed) => {
     hits++;
+    named.push(changed);
   });
   try {
     await waitFor(() => watchedWorkspaces().includes(path.resolve(ws)), { what: "the watcher to be armed" });
     for (let i = 0; i < 5; i++) writeFileSync(path.join(ws, "node_modules", `dep-${i}.js`), "x");
     // nothing to wait FOR: the assertion is that no notification arrives, so this is the one place a settle delay IS the test
     await new Promise((r) => setTimeout(r, 700));
-    assert.equal(hits, 0, "node_modules churn must not reach the panel");
+    assert.equal(hits, 0, `node_modules churn must not reach the panel (platform=${process.platform}, paths=${JSON.stringify(named)})`);
     // and an ordinary file after it still does, so the watcher was alive the whole time
     writeFileSync(path.join(ws, "real.txt"), "x");
     await waitFor(() => hits > 0, { what: "a notification for a real file" });

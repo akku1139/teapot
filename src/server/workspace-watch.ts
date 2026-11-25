@@ -26,7 +26,7 @@ const DEBOUNCE_MS = 300;
 
 interface Entry {
   watcher: FSWatcher;
-  clients: Set<() => void>;
+  clients: Set<(changedPath: string) => void>;
   timer: ReturnType<typeof setTimeout> | undefined;
 }
 
@@ -39,8 +39,10 @@ const watching = new Map<string, Entry>();
  * macOS (the platforms this runs as a product); where it throws — Windows — the caller simply gets no live update, and the tree
  * still loads by fetching, which is the same as before this existed.
  */
-export function watchWorkspace(root: string, onChange: () => void): () => void {
+export function watchWorkspace(root: string, onChange: (changedPath: string) => void): () => void {
   const key = path.resolve(root);
+  // what the last event named — reported to the subscriber so a platform that names nothing is visible
+  let lastName = "";
   let entry = watching.get(key);
   if (!entry) {
     let watcher: FSWatcher;
@@ -59,12 +61,13 @@ export function watchWorkspace(root: string, onChange: () => void): () => void {
     watcher.on("change", (_event, filename) => {
       const rel = typeof filename === "string" ? filename : filename?.toString() ?? "";
       if (rel && IGNORED.test(rel.replace(/\\/g, "/"))) return;
+      lastName = rel;
       if (fresh.timer) clearTimeout(fresh.timer);
       fresh.timer = setTimeout(() => {
         fresh.timer = undefined;
         for (const notify of fresh.clients) {
           try {
-            notify();
+            notify(lastName);
           } catch {
           }
         }
