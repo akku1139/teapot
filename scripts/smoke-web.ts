@@ -3135,6 +3135,90 @@ console.log("deep render ok: feed rows present");
   }
 
   /**
+   * A DRAFT belongs to the session it was typed in, and surviving a switch is the whole point of keeping it.
+   *
+   * MEASURED as a regression against a real server: type a prompt, switch away, switch back, and the box was empty. `saveDraft`
+   * keyed its map by `selected()`, and `setSelected()` is not visible to a read in the same synchronous block, so the switch stored
+   * the NEW session's (empty) draft under the id it was leaving — the entry for the session on screen was deleted on the way out.
+   */
+  {
+    const ta = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+    const home = [...w.document.querySelectorAll(".agent-item")].find((el) => el.classList.contains("sel")) as
+      | HTMLElement
+      | undefined;
+    if (!ta || !home) {
+      console.error("#draft check: no composer or no selected row — cannot drive the switch");
+      process.exit(1);
+    }
+    /**
+     * The SESSION must be asserted, not assumed.
+     *
+     * Navigating a row is not enough: the route resolves through the agent list, and a click that does not switch leaves the same
+     * timeline on screen — which is how a reproduction of a per-session bug passes against the broken code with one agent and two
+     * session directories. The header's `.sub` line names the session on screen, so that is the precondition.
+     */
+    /** the rows the feed is actually showing carry `data-session`; that is the identity, not the header text */
+    const shown = () => [...w.document.querySelectorAll(".feed .msg[data-session]")].map((r) => r.getAttribute("data-session") ?? "");
+    const homeSessions = new Set(shown());
+    ta.focus();
+    ta.value = "DRAFT-ONE";
+    ta.dispatchEvent(new w.Event("input", { bubbles: true }) as never);
+    await new Promise((r) => setTimeout(r, 120));
+
+    /** the same row the #switch check drives — one that actually resolves to another SESSION */
+    const away = [...w.document.querySelectorAll(".agent-item")].find((el) => /\bbeta\b/.test(el.textContent ?? "")) as
+      | HTMLElement
+      | undefined;
+    away?.click();
+    await new Promise((r) => setTimeout(r, 300));
+    const awaySessions = new Set(shown());
+    if (awaySessions.size > 0 && [...awaySessions].every((x) => homeSessions.has(x))) {
+      console.error(`#draft check: the click did not switch sessions (rows still ${JSON.stringify([...awaySessions])}) — vacuous`);
+      process.exit(1);
+    }
+    /**
+     * The other session may legitimately hold a draft of its OWN (earlier checks type into the box), so the question is not
+     * "is it empty" but "is OUR text in it".
+     */
+    const other = (w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null)?.value ?? "";
+    if (other.includes("DRAFT-ONE")) {
+      console.error(`#draft REGRESSION: the other session shows "${other}" — a draft leaked across sessions`);
+      process.exit(1);
+    }
+
+    const backRow = [...w.document.querySelectorAll(".agent-item")].find((el) => /\balpha\b/.test(el.textContent ?? "")) as
+      | HTMLElement
+      | undefined;
+    backRow?.click();
+    await new Promise((r) => setTimeout(r, 300));
+    /**
+     * The composer is the thing under test, and the drafts map is keyed by the session on screen — so the return has to be
+     * asserted before the value means anything. `.sub` and `data-session` both describe it; the rows are what the app renders.
+     */
+    const backSessions = shown();
+    if (backSessions.length && !backSessions.some((x) => homeSessions.has(x))) {
+      console.error(`#draft check: did not return to the original session (rows ${JSON.stringify(backSessions)}) — vacuous`);
+      process.exit(1);
+    }
+    const restored = (w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null)?.value ?? "";
+    if (restored !== "DRAFT-ONE") {
+      console.error(
+        `#draft REGRESSION: coming back to a session lost its unsent draft (got ${JSON.stringify(restored)}) — ` +
+          "the switch deletes the entry it was meant to keep",
+      );
+      process.exit(1);
+    }
+    // leave the box as it was found, so later checks are not typing into a draft
+    const box = w.document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+    if (box) {
+      box.value = "";
+      box.dispatchEvent(new w.Event("input", { bubbles: true }) as never);
+    }
+    await new Promise((r) => setTimeout(r, 120));
+    console.log("deep render ok: an unsent draft survives a session switch, and does not leak into another (#draft)");
+  }
+
+  /**
    * A switch with NO cache shows the loading state — never the session being left.
    *
    * Keeping the outgoing rows is what removed the empty-frame scroll jump, but on a first visit there is nothing worth

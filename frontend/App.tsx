@@ -250,13 +250,21 @@ export default function App() {
   const [branches, setBranches] = createSignal<BranchInfo[]>([]);
   const [metrics, setMetrics] = createSignal<Metrics | null>(null);
   const drafts = new Map<string, string>();
+  /**
+   * WHICH session the textarea's text belongs to, tracked as a plain variable on purpose.
+   *
+   * `selected()` is a SIGNAL, and a write to it is not visible to a read in the same synchronous block (Solid defers the update), so
+   * `saveDraft` keyed by `selected()` wrote under the session being LEFT: switching away stored an empty draft over the one the
+   * operator had typed, and coming back showed nothing. MEASURED with the draft map logged: after `setSelected("study-blog")`,
+   * `selected()` still read `"solidocs"`, and the entry for `"solidocs"` was deleted.
+   */
+  let draftOwner: string | null = selected();
   const [draft, setDraft] = createSignal(drafts.get(selected() ?? "") ?? "");
   const saveDraft = (v: string) => {
     setDraft(v);
-    const id = selected();
-    if (id) {
-      if (v) drafts.set(id, v);
-      else drafts.delete(id);
+    if (draftOwner) {
+      if (v) drafts.set(draftOwner, v);
+      else drafts.delete(draftOwner);
     }
   };
   const [cfg, setCfg] = createSignal<FeConfig>({ providers: {} });
@@ -2084,6 +2092,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
     }
     setSelected(id);
     setTimelineId(tid);
+    draftOwner = id;
     saveDraft(drafts.get(id) ?? "");
     setBranchFilter(null);
     setOlderDone(false);
