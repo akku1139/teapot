@@ -4753,6 +4753,52 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
 }
 
 /**
+ * A tool header is TWO slots: the label shrinks, the dim tail does not.
+ *
+ * MEASURED regression: a bash header with a long command ellipsised its own execution time away, because the label and the tail were
+ * both flex items with `min-width: 0` and the browser shrank both. At a 760px window the tail measured 71px of its natural 114px —
+ * "826ms · timeout 60s" cut off.
+ *
+ * `RowHead` seals the shape at the TYPE level (its props are a union of strings, so no caller can put a third flex item between them),
+ * and this checks the cascade that shape depends on. happy-dom has no layout, so the clipping itself was measured in Firefox; what is
+ * checkable here is which slot may shrink, which is the whole mechanism.
+ */
+{
+  const heads = [...w.document.querySelectorAll(".feed .embed summary")].filter((s) => s.querySelector(".rowhead-bold"));
+  if (!heads.length) {
+    console.error("#rowhead check: no row header rendered — nothing under test");
+    process.exit(1);
+  }
+  for (const s of heads) {
+    const bold = s.querySelector(".rowhead-bold")!;
+    const boldFlex = w.getComputedStyle(bold as never).flex;
+    if (!/^1 1/.test(boldFlex)) {
+      console.error(`#rowhead REGRESSION: the label computes flex ${boldFlex} — it must be the part that gives way`);
+      process.exit(1);
+    }
+    if (w.getComputedStyle(bold as never).textOverflow !== "ellipsis") {
+      console.error("#rowhead REGRESSION: the label is not ellipsised, so a long command is cut with no marker");
+      process.exit(1);
+    }
+    const dim = s.querySelector(".rowhead-dim");
+    if (!dim) continue;
+    const dimFlex = w.getComputedStyle(dim as never).flex;
+    if (!/^0 0/.test(dimFlex)) {
+      console.error(
+        `#rowhead REGRESSION: the dim tail computes flex ${dimFlex} — when it can shrink, a long label eats the duration`,
+      );
+      process.exit(1);
+    }
+  }
+  const withDuration = heads.map((s) => s.querySelector(".rowhead-dim")?.textContent ?? "").find((t) => /\d+ms|\ds/.test(t));
+  if (!withDuration) {
+    console.error("#rowhead check: no header carries a duration in its dim slot — the fixture does not exercise the bug");
+    process.exit(1);
+  }
+  console.log("deep render ok: a row header shrinks its label and keeps its dim tail whole (#rowhead)");
+}
+
+/**
  * CSS contracts that the CASCADE can answer, asserted against the built bundle.
  *
  * A test file used to pin these by reading `app.css` and matching selector text. That is the same defect the suite bans for `.ts`:

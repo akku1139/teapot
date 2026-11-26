@@ -1575,6 +1575,31 @@ html[data-bg-image="on"] .embed {
  * difference shows as a row that is a hair taller than its neighbours.
  */
 .embed summary .inline-md { line-height: inherit; }
+/**
+ * THE LABEL shrinks; the DIM TAIL does not.
+ *
+ * Reported: a bash header with a long command cut its own execution time off ("長いヘッダーで実行時間が見切れる"). Both were flex
+ * items with `min-width: 0`, so the browser shrank BOTH and the tail — the narrowest thing in the row — went to nothing.
+ *
+ * `RowHead` (`frontend/components/row-head.tsx`) is the one place that decides which is which, and its props are sealed to strings so
+ * no caller can slip a third item between them and quietly undo this.
+ */
+.embed summary > .rowhead-bold {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.embed summary > .rowhead-glyph,
+.embed summary > .rowhead-dim,
+.embed summary > .rowhead-actor {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--dim);
+  font-size: var(--text-xs);
+}
+.embed summary > .rowhead-actor { color: var(--warn); }
 .embed summary > b,
 .embed summary > .meta {
   min-width: 0;
@@ -1730,16 +1755,11 @@ html[data-bg-image="on"] .embed {
 .embed.question .meta { margin-top: 6px; }
 .embed.decision { border-color: var(--acc); background: #5865f20f; }
 /**
- * The decision header is ONE line: glyph, the decision, the hint.
- *
- * The glyph used to sit INSIDE the `<b>`, and `.embed summary > b` is a flex item with `overflow: hidden` — so the label's
- * own box forced a break between the glyph and the text ("何故か絵文字とヘッドラインの間に改行がある"). The glyph is its
- * own item now, and the label is the only thing that may shrink and wrap.
+ * The decision header is ONE line: glyph, the decision, the hint — the same three slots as a tool header, so it is drawn by the
+ * same `RowHead` and inherits the same flex contract (only the label shrinks). It had its own copy of those rules, which is how the
+ * glyph ended up INSIDE the `<b>` and forced a break between the glyph and the text ("何故か絵文字とヘッドラインの間に改行がある").
  */
-.embed.decision > summary.decisionhead { display: flex; align-items: baseline; gap: 6px; }
-.embed.decision > summary.decisionhead > b { flex: 1; }
-.embed.decision > summary.decisionhead > .meta { flex-shrink: 0; }
-.embed.decision summary .meta { margin-left: 6px; }
+
 /**
  * Only the BODY, never the header label.
  *

@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { JSX } from "@solidjs/web";
-import { AnsiText, BashElapsed, HighlightedCode } from "./code";
+import { AnsiText, HighlightedCode } from "./code";
+import { RowHead } from "./row-head";
 import { Card } from "./card";
 import { CopyBtn } from "./chrome";
 import { api } from "../lib/api";
@@ -515,20 +516,19 @@ export function ToolRow(props: { e: Ev; prev?: Ev | undefined; res?: () => Ev | 
     >
       <summary>
         {}
-        <b>{derived().label}</b>
-        <Show when={e.data?.actor}>
-          <span class="actor">@{String(e.data.actor)}</span>
-        </Show>
-        <span class="meta">
-          {res()
-            ? derived().hint || ""
-            : staleDone()
-              ? "(result missed)"
-              : name === "bash" || effTimeout()
-                ?
-                  <BashElapsed startedAt={e.ts} inline timeoutMs={effTimeout()} /> // visible while folded
-                : "running…"}
-        </span>
+        {/**
+          * The caller answers ONLY "what are the two strings" — the header owns how they sit.
+          *
+          * A running tool has no duration yet, so it passes `elapsedSince` and the header renders the live counter; a finished one
+          * passes `dim`. Everything else (a missed result, "running…") is a string the caller chooses.
+          */}
+        <RowHead
+          bold={derived().label}
+          actor={e.data?.actor ? String(e.data.actor) : undefined}
+          dim={res() ? derived().hint || "" : staleDone() ? "(result missed)" : name === "bash" || effTimeout() ? undefined : "running…"}
+          elapsedSince={!res() && !staleDone() && (name === "bash" || !!effTimeout()) ? e.ts : undefined}
+          elapsedTimeoutMs={effTimeout()}
+        />
         {}
         <span class="toolcopy">
           <CopyBtn text={cmdText()} label="⧉ cmd" title={`copy the ${name} arguments`} />
@@ -955,10 +955,12 @@ export function SwitchContent(props: { e: Ev; prev?: Ev | undefined; res?: (() =
       const alts = Array.isArray(e.data?.alternatives) ? (e.data.alternatives as string[]) : [];
       return (
         <details class="embed decision">
-          <summary class="decisionhead">
-            <span class="meta">📌</span>
-            <b class="content inline-md" innerHTML={renderMarkdownCached(String(e.data?.decision ?? ""))} />
-            <span class="meta">decision logged</span>
+          <summary>
+            <RowHead
+              glyph="📌"
+              boldHtml={renderMarkdownCached(String(e.data?.decision ?? ""))}
+              dim="decision logged"
+            />
           </summary>
           {}
           <MdContent html={renderMarkdownCached(String(e.data?.rationale ?? ""))} />
