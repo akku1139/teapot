@@ -494,6 +494,18 @@ out with only five unresolved names because everything it called had already mov
   The parse goes through `vite`'s `parseAst` because **TypeScript 7 has no text-to-AST entry**: 7.0's main entry exports only
   `version`, and the 7.1 dev builds add a HANDLE-based AST (`typescript/ast`, whose `createSourceFile` takes node objects,
   not source text). `test/jsx-line-comment.test.ts` established the same approach for the same reason.
+- **A signal WRITE is not visible to a READ in the same synchronous block.** `setSelected(id)` followed by `selected()` returns the
+  OLD value (Solid defers the update), so code that keys a `Map` by a just-set signal writes under the wrong key — and silently.
+  MEASURED: the composer's `saveDraft` stored each session's draft under `selected()`, so every session switch saved the NEW session's
+  empty draft over the one being LEFT; an unsent prompt vanished on return and nothing logged an error. If a value must be "the one
+  we are switching to", assign it to a plain `let` first and read that.
+
+- **A control row's slots are owned by ONE component, and its props are sealed to strings.** `RowHead`
+  (`frontend/components/row-head.tsx`) takes `bold`/`boldHtml` (a union, so only one of them), an optional `dim`, `elapsedSince`,
+  `actor` and `glyph` — no JSX — because the flex contract is what keeps a long label from eating the tail that follows it. MEASURED:
+  a bash header ellipsised its own "826ms · timeout 60s" to 71px of 114px, since both slots were `min-width: 0` items. Two copies of
+  that contract (a `summary.decisionhead` of its own) is how the glyph ended up inside the `<b>`.
+
 - **`<For>` keys on ITEM IDENTITY — `items[i] === nextItems[i]`.** A row rebuilt
   as a new object is DISPOSED and re-created, and its DOM state goes with it: an
   expanded `<details>` slams shut, text selection and inner scroll are lost, and
