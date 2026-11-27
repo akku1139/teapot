@@ -3788,6 +3788,25 @@ export class Agent {
       if (this.estimateTokens(this.messages.slice(i)) > keepTokens) break;
       cut = i;
     }
+    /**
+     * A TAIL BIGGER THAN THE KEEP WINDOW still has a past worth compacting.
+     *
+     * The walk above keeps the newest messages that fit in `keepTokens` and cuts before them — but one message larger than that
+     * window ends the walk on its first step, leaving `cut` at -1. MEASURED with a 120KB message at the tail: `maybeCompact(force)`
+     * returned without doing anything, so `/compact` answered "nothing to compact yet" about a history of hundreds of thousands of
+     * tokens, and the AUTOMATIC path never fired either — a single big tool result (60KB, the `maxOutputBytes` cap) would block
+     * compaction for the rest of the session.
+     *
+     * Keeping that message and compacting everything before it is the answer: the summary is what shrinks, not the tail the model
+     * is currently working from. `safeCut` still refuses to cut through a tool call/result pair.
+     */
+    /**
+     * …and it is a FALLBACK, not a this-many-messages rule: it applies when the walk found nothing at all (`cut < 0`), which is the
+     * "the tail alone overflows the keep window" case. `cut === 0` means the whole history fits the window and there is genuinely
+     * nothing to do — inventing a cut there would rewrite a fresh conversation, and it also left the pass too shallow to be worth
+     * summarizing (MEASURED: every pass then took the truncate route).
+     */
+    if (cut < 0 && this.messages.length > 2) cut = this.messages.length - 1;
     cut = this.safeCut(cut);
     if (cut <= 0) return; 
 

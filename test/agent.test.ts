@@ -835,8 +835,15 @@ test("compaction summarizes old turns when the budget is exceeded", async () => 
     assert.equal(note.role, "user");
     assert.match(note.content ?? "", /Context was compacted/);
     assert.match(note.content ?? "", /made big\.txt/, `the summary text must be the summarizer's, not a truncation notice: ${String(note.content).slice(0, 80)}`);
-    // kept tail still starts at a valid boundary and contains the exchange
-    assert.equal(agent.conversation[1]!.role, "assistant");
+    /**
+     * The kept tail starts at a boundary `safeCut` allows — which means "never between a tool call and its result", NOT "always at an
+     * assistant turn". Asserting `assistant` here pinned where the cut happened to land in one fixture: with a large message at the
+     * tail the keep-window walk finds no prefix and the fallback keeps only the last message, so the tail begins with the prompt that
+     * produced it. Both are valid; a tool result without its call is not.
+     */
+    const kept = agent.conversation[1]!;
+    assert.notEqual(kept.role, "tool", "the kept tail must not open with a tool result whose call was summarized away");
+    assert.ok((kept.content ?? "").length > 0, "and it must carry content");
     const events = await readEvents(agent.log.filePath);
     const noteEv = events.find(
       (e) => e.type === "system_note" && (e.data as Record<string, unknown>).event === "context-compacted",

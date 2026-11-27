@@ -129,31 +129,62 @@ test("the start note is on disk WHILE the summarizer is still running (#56)", as
     let duringPass: string[] = [];
     let captured = false;
     const agent = compactingAgent(ws!, sessionDir!, async () => {
-      // the FIRST summarize call is the one that proves the point: later passes
-      // run after earlier ones completed, so their log already holds a completion
-      // note and would fail the "not there yet" assertion for the wrong reason
+      /**
+       * Capture the FIRST pass whose start note is on disk WITHOUT its completion note for THAT pass.
+       *
+       * "the first summarize call" was the old condition, and it was wrong twice over: a pass can announce itself and then be
+       * SKIPPED (`context-compaction-skipped-summarize`), and a later pass runs after an earlier one completed, so its log already
+       * holds a completion note — both would fail the assertion below for a reason that has nothing to do with the marker.
+       */
       if (captured) return;
-      captured = true;
       // read the FILE, not in-memory state — the operator only ever sees
       // events that have been APPENDED to the log
       const text = await readFile(agent.log.filePath, "utf8");
-      duringPass = text
+      /**
+       * Read what is COMPLETE: the log is appended to while this runs, so the final line can be a half-written JSON object and
+       * `JSON.parse` on it throws out of the summarizer call — which fails the compaction and looks like "the window was never
+       * reached" rather than "the fixture read a partial line".
+       */
+      const notes = text
         .split("\n")
         .filter(Boolean)
-        .map((l) => JSON.parse(l))
+        .flatMap((l) => {
+          try {
+            return [JSON.parse(l) as TeapotEvent];
+          } catch {
+            return [];
+          }
+        })
         .filter((e: TeapotEvent) => e.type === "system_note")
         .map((e: TeapotEvent) => String((e.data as any)?.event ?? ""));
+      /**
+       * ORDER within this pass, not membership in the file.
+       *
+       * The log accumulates across passes, so `notes.includes("context-compacted")` is true after the FIRST pass whatever this one is
+       * doing — asking it that question is unanswerable from a growing file. What matters is the LAST EVENT: if the most recent
+       * system note is a start, the pass is running and its completion has not been written.
+       */
+      if (notes.at(-1) !== "context-compaction-started") return;
+      captured = true;
+      duringPass = notes;
     });
     await agent.init();
     await fill(agent);
 
+    if (!captured) {
+      assert.fail(
+        "no summarize pass was ever observed with a start note and no completion note — the fixture stopped reaching the window",
+      );
+    }
     assert.ok(
       duringPass.includes("context-compaction-started"),
       `the start note must be on disk DURING the summarize pass, saw: ${duringPass.join(", ") || "(none)"}`,
     );
-    assert.ok(
-      !duringPass.includes("context-compacted"),
-      "the completion note must not be there yet — that is the whole point of the start marker",
+    assert.equal(
+      duringPass.at(-1),
+      "context-compaction-started",
+      "the LAST note during the pass must be the start marker — earlier passes' completions are in the same file, so this is about " +
+        "order, not membership",
     );
     await agent.dispose();
   });
