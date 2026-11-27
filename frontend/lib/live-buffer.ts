@@ -46,6 +46,19 @@ export function isLiveStatus(status: string | undefined): boolean {
   return status === "running" || status === "waiting" || status === "needs_operator";
 }
 
+/**
+ * Is this agent doing (or holding) work? — asked of a SNAPSHOT, never of a bare status string.
+ *
+ * The server already answers it: `Agent.snapshot()` sends `live: isLive()`, decided where the flags live (`parkedByTool`, pending
+ * prompts, a queued compaction), and `status` is the already-translated `shownStatus()`. This module used to re-derive the same thing
+ * from the status STRING in four places (`a.live ?? (a.status === "running" || …)`) — a second rule for one question, which is exactly
+ * how the panel and the timeline drifted apart in #260. The string list stays only as the fallback for a frame that predates the field.
+ */
+export function agentIsLive(a: { status?: string | undefined; live?: boolean | undefined } | undefined): boolean {
+  if (!a) return false;
+  return a.live ?? isLiveStatus(a.status);
+}
+
 export interface LiveBufferStatus {
   textCovered: boolean;
   reasoningStale: boolean;
@@ -191,9 +204,6 @@ export function clearThinkClockIfDone(
   if (!startedAt) return 0;
   if (live) return startedAt;
   if (!selected) return 0;
-  const a = agents.find((x) => x.id === selected);
-  if (a?.status === "running" || a?.status === "waiting" || a?.status === "needs_operator") {
-    return startedAt;
-  }
+  if (agentIsLive(agents.find((x) => x.id === selected))) return startedAt;
   return 0;
 }
