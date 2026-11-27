@@ -14,6 +14,7 @@ import {
   isOwnLiveWork,
   pruneDeadLiveBuffers,
   reconcileLiveBuffer,
+  agentIsLive,
 } from "./lib/live-buffer";
 import { buildTimelineWithCount, type TimelineEvent, type PendingEchoLike } from "./lib/timeline";
 import { isPlaceholderDetail } from "./lib/goal-timeline";
@@ -1083,11 +1084,7 @@ export default function App() {
     const mine = sel()?.session === pendingKey() || !sel()?.session;
     return queuedBadgeCount({ sameSession: !!mine, echoCount: pendingCount() });
   };
-  const isSelLive = (): boolean => {
-    const a = sel();
-    if (!a) return false;
-    return a.live ?? (a.status === "running" || a.status === "waiting" || a.status === "needs_operator");
-  };
+  const isSelLive = (): boolean => agentIsLive(sel());
 const isTimelineLive = (): boolean => {
     return timelineIsLive(sel() as { id: string; session?: string } | undefined, timelineId(), isSelLive());
   };
@@ -4062,9 +4059,7 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                 >
                   {(() => {
                     const kids = descendantsOf(agents(), row.a.id);
-                    const running = kids.filter(
-                      (k) => k.live ?? (k.status === "running" || k.status === "waiting" || k.status === "needs_operator"),
-                    ).length;
+                    const running = kids.filter((k) => agentIsLive(k)).length;
                     return kids.length > 0 ? (
                       <span
                         class={"subcount" + (running > 0 ? " live" : "")}
@@ -5142,20 +5137,32 @@ function mergeAgentSnapshots(prev: Agent[], next: Agent[]): Agent[] {
                       </div>
                     </Show>
                     {}
-                    <div class="statrow" style="margin-top:4px">
-                      <span class="k">compact at</span>
-                      <b>{fmtK(v().usingDerived ? v().derivedBudget : v().compactAt)} tok</b>
-                      <span class="muted" style="color:var(--dim)">
-                        {v().usingDerived ? "75% of window" : "manual"}
-                      </span>
-                    </div>
-                    <Show when={compacting() || v().compacting}>
-                      <div class="statrow" title="a compaction pass is running right now — the summarizer's output streams in the timeline">
-                        <span class="k">🗜</span>
-                        <b>compacting…</b>
-                        <span class="muted" style="font-size:11px;color:var(--acc)">
-                          {compacting()?.phase ?? String(v().compacting)}
-                        </span>
+                    {/**
+                      * The `compact at` line becomes the progress line WHILE a pass runs.
+                      *
+                      * Reported: "compacting... が変な位置にある … compact at のラインを置換したほうがいいかも". Two rows said what the
+                      * same number means, and the second one pushed the checkbox down while the first showed a figure that is being
+                      * rewritten — so the placeholder is replaced, not added under.
+                      */}
+                    <Show
+                      when={compacting() || v().compacting}
+                      fallback={
+                        <div class="statrow" style="margin-top:4px">
+                          <span class="k">compact at</span>
+                          <b>{fmtK(v().usingDerived ? v().derivedBudget : v().compactAt)} tok</b>
+                          <span class="muted" style="color:var(--dim)">
+                            {v().usingDerived ? "75% of window" : "manual"}
+                          </span>
+                        </div>
+                      }
+                    >
+                      <div
+                        class="statrow"
+                        style="margin-top:4px"
+                        title="a compaction pass is running right now — the summarizer's output streams in the timeline"
+                      >
+                        <span class="k">🗜 compacting…</span>
+                        <b>{compacting()?.phase ?? String(v().compacting)}</b>
                       </div>
                     </Show>
                     <div class="ctrlrow" style="margin-top:6px">

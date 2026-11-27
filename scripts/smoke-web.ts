@@ -4056,6 +4056,29 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
     console.error(`#108: the banner does not name the phase: ${JSON.stringify(banner.textContent)}`);
     process.exit(1);
   }
+  /**
+   * AND the right panel's `compact at` line is REPLACED while a pass runs (#260 follow-up).
+   *
+   * Reported: "compacting... が変な位置にある … compact at のラインを置換したほうがいいかも". Two rows said what the same number means,
+   * and the progress row pushed the auto-compact checkbox down while the figure above it was being rewritten.
+   */
+  const block = w.document.querySelector(".ctxblock");
+  if (!block) {
+    console.error("#ctxline check: the context block is not rendered, so nothing under test");
+    process.exit(1);
+  }
+  const textNow = block.textContent ?? "";
+  if (!/compacting/i.test(textNow)) {
+    console.error(`#ctxline REGRESSION: no compacting row while a pass runs — the operator sees a stale "compact at"`);
+    process.exit(1);
+  }
+  if (/compact at/i.test(textNow)) {
+    console.error(
+      "#ctxline REGRESSION: `compact at` is still shown during a pass — the progress line must REPLACE it, not stack under it",
+    );
+    process.exit(1);
+  }
+
   sock.onmessage({
     data: JSON.stringify({ kind: "compaction-progress", agentId: AGENT.id, phase: "done" }),
   });
@@ -4064,6 +4087,12 @@ if (Number(process.env.SMOKE_WIDTH ?? 1440) > 1100) {
     console.error("#108 REGRESSION: the banner survived its `done` phase");
     process.exit(1);
   }
+  const after = w.document.querySelector(".ctxblock")?.textContent ?? "";
+  if (!/compact at/i.test(after)) {
+    console.error("#ctxline REGRESSION: `compact at` did not come back when the pass finished");
+    process.exit(1);
+  }
+  console.log("deep render ok: the compact-at line is replaced by the live compaction phase (#ctxline)");
 }
 console.log("deep render ok: the compaction banner lives inside the feed (#108)");
 
@@ -4772,7 +4801,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
   for (const s of heads) {
     const bold = s.querySelector(".rowhead-bold")!;
     const boldFlex = w.getComputedStyle(bold as never).flex;
-    if (!/^1 1/.test(boldFlex)) {
+    if (!boldFlex.startsWith("1 1")) {
       console.error(`#rowhead REGRESSION: the label computes flex ${boldFlex} — it must be the part that gives way`);
       process.exit(1);
     }
@@ -4783,7 +4812,7 @@ console.log("deep render ok: the compaction banner lives inside the feed (#108)"
     const dim = s.querySelector(".rowhead-dim");
     if (!dim) continue;
     const dimFlex = w.getComputedStyle(dim as never).flex;
-    if (!/^0 0/.test(dimFlex)) {
+    if (!dimFlex.startsWith("0 0")) {
       console.error(
         `#rowhead REGRESSION: the dim tail computes flex ${dimFlex} — when it can shrink, a long label eats the duration`,
       );
