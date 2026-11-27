@@ -656,6 +656,12 @@ out with only five unresolved names because everything it called had already mov
   rather than at the full window, so a dev server that prints a banner is not delayed — but "prints, then dies" still
   lands inside the grace.
 
+- **A `bash_output(action:"kill")` answers in its own result, and that ending is NOT announced.** The result waits for the exit
+  (bounded) and names it — `stopped (signal SIGKILL)`, since a killed child reports `code: null` — and the job is dropped from the
+  registry, so no `[harness] Background job report` follows. That report is a second signal for one event, and MEASURED in a long
+  session it was read as ANOTHER job ending: the model went on to reason about the ids it had just stopped. The mechanism is
+  `BgShell.silentExit`, the same shape as `holdExitNotify` (the exit is recorded, the announcement is the caller's to make).
+
 - **A tool the prompt advertises must be a tool the loop can RUN.** Meta tools
   (`finish`, `set_todo`, `read_memory`, `ask_user`…) are handled by
   `runTurnsUntilIdle`, not by `executeTool`. Their specs live in

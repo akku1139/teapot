@@ -317,10 +317,41 @@ export interface BgShell {
    * told, and it would start a round to re-read what it just read.
    */
   holdExitNotify?: boolean;
+  /**
+   * Set when the TOOL RESULT carries the ending — a `bash_output` kill.
+   *
+   * The caller asked for the job to stop and is told, in the same tool result, that it stopped: announcing it again as a
+   * `[harness] Background job report` would start a round to re-read what it was just told, and MEASURED in a long session it is
+   * read as a SECOND job ending (the model went on to blame the wrong id).
+   */
+  silentExit?: boolean;
+  /** the signal that ended it, when it was killed rather than exited (a killed child reports `code: null`) */
+  signal?: NodeJS.Signals | null;
   /** the exit that happened while the notification was held — the holder decides what to do with it */
   pendingExit?: { id: string; code: number | null; cmd: string; durationMs: number; outputTail: string } | undefined;
 }
 const bgShellsByWs = new Map<string, Map<string, BgShell>>();
+
+/** how long a kill may take to be confirmed before the result says it was not — a hang here would hold the whole tool call */
+const KILL_SETTLE_MS = 3_000;
+
+/**
+ * Resolve when the child has exited, or after `ms` — whichever comes first.
+ *
+ * A kill has to be part of the tool result that asked for it, and the result cannot be written before the process is gone. The
+ * cap is what keeps a child that ignores SIGKILL (an uninterruptible syscall, a stuck Docker exec) from holding the turn open.
+ */
+function waitForBgExit(sh: BgShell, ms: number): Promise<void> {
+  if (sh.exited) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    sh.child.once("exit", done);
+  });
+}
 let bgSeq = 0;
 const bgReadCursors = new Map<string, number>();
 
@@ -578,6 +609,7 @@ function startBackgroundShell(
      * Held means the startup collection is still running: it will put the exit into the tool result, so announcing it here
      * would wake the agent for news it already has.
      */
+    if (sh.silentExit) return;
     if (sh.holdExitNotify) {
       sh.pendingExit = info;
       return;
@@ -587,7 +619,10 @@ function startBackgroundShell(
     } catch {
     }
   };
-  child.on("exit", (code) => notify(code));
+  child.on("exit", (code, signal) => {
+    sh.signal = signal ?? null;
+    notify(code);
+  });
   child.on("close", (code) => notify(code));
   map.set(id, sh);
   /**
@@ -1951,9 +1986,27 @@ export const TOOLS: ToolDef[] = [
             `jobs are per-workspace and forgotten on harness restart`,
         };
       if (str(args.action) === "kill") {
-        const note = sh.exited ? "(already exited)" : describeKill(killTree(sh.child));
+        /**
+         * The kill ENDS the job here, inside the tool result.
+         *
+         * The result has to be the whole answer: `silentExit` stops the exit from being announced as a harness report, and the
+         * wait below makes the code and the final output part of THIS result instead of a second message later. A kill that
+         * returned while the process was still dying left the model with two signals for one event.
+         */
+        if (sh.exited) {
+          map.delete(sh.id);
+          return { ok: true, result: `job ${sh.id} had already exited (code ${sh.code ?? "?"}). Output so far:\n${clip(sh.out, 4000)}` };
+        }
+        sh.silentExit = true;
+        const note = describeKill(killTree(sh.child));
+        await waitForBgExit(sh, KILL_SETTLE_MS);
         map.delete(sh.id);
-        return { ok: true, result: `job ${sh.id} ${note}. Output so far:\n${clip(sh.out, 4000)}` };
+        const ended = !sh.exited
+          ? `did not confirm exit within ${KILL_SETTLE_MS}ms`
+          : sh.code !== null
+            ? `exited with code ${sh.code}`
+            : `stopped (signal ${sh.signal ?? "?"})`;
+        return { ok: true, result: `job ${sh.id} ${note}, ${ended}. Output so far:\n${clip(sh.out, 4000)}` };
       }
       const fresh = sh.out.slice(bgReadCursors.get(sh.id) ?? 0);
       bgReadCursors.set(sh.id, sh.out.length);

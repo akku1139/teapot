@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { mkdtempInRootSync } from "./helpers/tmp-root.ts";
 import { executeTool, listBgShells, type ToolContext } from "../src/agent/tools.ts";
 import { markPosixOnly } from "./helpers/posix-only.ts";
+import { waitFor } from "./helpers/wait-for.ts";
 
 markPosixOnly("spawns real shells");
 
@@ -154,4 +155,33 @@ test("a finished command in one workspace does not disturb running jobs in anoth
 
   assert.equal(listBgShells(wsA).length, 1, "the running job survives");
   assert.deepEqual(listBgShells(wsB), [], "and only its own finished command was dropped");
+});
+
+/**
+ * A KILL ends the job inside the tool result — no second message about it.
+ *
+ * Reported: "bash_output kill をした場合はそのツールレスポンス内で終了までやって、`[harness] Background job report:` が発行されるべきじゃ
+ * ないと思う / これのせいでLLMが変な挙動してるって節がある". The wake is a second signal for one event, and in a long session the model read
+ * the late report as ANOTHER job's ending — it went on to reason about ids it had already stopped.
+ *
+ * The rules this pins: the result says the job ENDED (its code, not "was asked to stop"), the exit hook is never called, and the job
+ * is gone from the registry, so nothing can report it afterwards.
+ */
+test("a kill reports the exit in its own result, and never as a background job report", async () => {
+  const ws = mkdtempInRootSync("bg297-kill-");
+  const exits: string[] = [];
+  const ctx = ctxFor(ws, exits);
+
+  const started = await executeTool("bash", JSON.stringify({ command: "sleep 60", background: true }), ctx);
+  const id = /job (bg\d+)/.exec(started.result)?.[1];
+  assert.ok(id, `the start result must name the job: ${started.result}`);
+  // PRECONDITION: the job really is running, or the kill below proves nothing
+  await waitFor(() => listBgShells(ws).some((j) => j.id === id), { what: "the background job to be registered" });
+
+  const killed = await executeTool("bash_output", JSON.stringify({ job_id: id, action: "kill" }), ctx);
+
+  // a killed child reports `code: null` and a SIGNAL, so the result must name whichever ending actually happened
+  assert.match(killed.result, /exited with code|stopped \(signal/, `the result must say the job ENDED: ${killed.result}`);
+  assert.deepEqual(exits, [], "a kill must not announce itself — the caller was told inside its own result");
+  assert.deepEqual(listBgShells(ws).map((j) => j.id), [], "and the job must be gone, so nothing can report it later");
 });
